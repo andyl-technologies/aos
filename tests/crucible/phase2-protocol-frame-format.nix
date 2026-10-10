@@ -91,7 +91,7 @@
       }
       {
         label = "closed registry test";
-        needle = "closed_tag_registry_matches_rfc_14_table";
+        needle = "closed_tag_registry_matches_wire_contract";
       }
       {
         label = "unknown tag rejection test";

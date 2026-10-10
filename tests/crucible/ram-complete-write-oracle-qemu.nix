@@ -13,7 +13,7 @@
     else "oracle-positive";
   transformationIdentity = builtins.hashString "sha256" (builtins.toJSON {
     base = atomicPatch.commit;
-    pagedContract = "39be520e712a3ff91abd2f151474f18ae61fcc83bad3022b118ed7cb7bd85ce8";
+    pagedContract = "a2cbeb4e6a557524cfa2876767742eaf0201e15a51309ac9f4281e676361e470";
     notification =
       if omitNotification
       then builtins.hashFile "sha256" notificationTransform
@@ -52,7 +52,7 @@
 
       # The signed precursor already has the SAME-token no-ack comparison.
       # Preserve it byte-for-byte; only the fixed notification lane differs.
-      echo '39be520e712a3ff91abd2f151474f18ae61fcc83bad3022b118ed7cb7bd85ce8  plugins/crucible-paged-ram.c' \
+      echo 'a2cbeb4e6a557524cfa2876767742eaf0201e15a51309ac9f4281e676361e470  plugins/crucible-paged-ram.c' \
         | sha256sum -c -
       echo '4f2f7a9d720e141ad8b3f3a1cb9e155ffa6f2c4d1cbb7365bc0f0b3b748fbbd1  system/physmem.c' \
         | sha256sum -c -
@@ -125,7 +125,7 @@
     '';
   };
 in
-  assert atomicPatch.commit == "d12224c30eeb7079ca8a89044966e0de492df1b8";
+  assert atomicPatch.commit == "fcf3a33f36506fd0f8418ccf9d026d9ed1f35ec0";
   assert !pkgs.stdenv.isCross && pkgs.stdenv.hostPlatform.isLinux;
     precursor.overrideAttrs (original: {
       buildDeps = original.buildDeps ++ [pkgs.coreutils pkgs.diffutils pkgs.grep completeSource];

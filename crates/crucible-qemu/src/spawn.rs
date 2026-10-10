@@ -29,10 +29,23 @@ use crate::{
 };
 
 mod control_delivery_trace;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+mod device_digest_workspace;
 mod image_launch;
 mod materialization;
+mod plugin_startup;
 mod ram_spill;
 mod run_directory;
+mod worker_stack_profile;
+
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub(crate) use device_digest_workspace::{
+    DeviceDigestWorkspaceBody, DeviceDigestWorkspaceIssueError, OriginalDeviceDigestWorkspace,
+};
+
+pub(crate) use plugin_startup::OriginalPluginStartup;
+pub use plugin_startup::PluginStartupError;
+pub(crate) use worker_stack_profile::GuardedWorkerStackProfile;
 
 pub(crate) use control_delivery_trace::valid_control_delivery_row;
 pub(crate) use run_directory::valid_rr_control_boundary_row;
@@ -50,7 +63,8 @@ const QEMU_ROOT_OVERLAY_WRITE_LAUNCH_FD: RawFd = QEMU_ROOT_OVERLAY_READ_LAUNCH_F
 // Every inherited source is relocated above all fixed exec targets before dup2.
 pub(crate) const QEMU_RAM_SOURCE_LAUNCH_FD: RawFd = 10;
 pub(crate) const QEMU_RAM_SPILL_LAUNCH_FD: RawFd = 11;
-const CHILD_SOURCE_FD_MIN: RawFd = QEMU_RAM_SPILL_LAUNCH_FD + 1;
+pub(crate) const QEMU_STARTUP_CANCELLATION_FD: RawFd = QEMU_RAM_SPILL_LAUNCH_FD + 1;
+const CHILD_SOURCE_FD_MIN: RawFd = QEMU_STARTUP_CANCELLATION_FD + 1;
 const CGROUP_ATTACH_SELF: &[u8] = b"0\n";
 const MAX_SUPERVISOR_GROUPS: usize = 65_536;
 const VMSTATE_FILE_NAME_C: &[u8] = b"crucible-vmstate.qcow2\0";
@@ -561,11 +575,26 @@ pub struct QemuSpawnHostResources {
     wake_fd: OwnedFd,
     region_len: u64,
     fault_node_hash: [u8; 32],
+    process_generation: u64,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    device_digest_workspace: Option<Arc<DeviceDigestWorkspaceBody>>,
     service_lease: Option<crucible_linux_resource::host_services::HostServiceLease>,
     launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
 }
 
 impl QemuSpawnHostResources {
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn retain_device_digest_workspace(&mut self, body: Arc<DeviceDigestWorkspaceBody>) {
+        self.device_digest_workspace = Some(body);
+    }
+
+    // Copy the same identity that was validated and emitted before child birth.
+    fn bind_plugin_launch(&mut self, command: &QemuLaunchCommand) {
+        self.fault_node_hash = command.plugin_fault_node_hash();
+        self.process_generation = command.plugin_process_generation();
+        self.ram_control = command.ram_control();
+    }
+
     pub(crate) fn retain_launch_cleanup(&mut self, cleanup: crate::launch_cleanup::LaunchCleanup) {
         self.launch_cleanup = Some(cleanup);
     }
@@ -631,6 +660,9 @@ impl QemuSpawnHostResources {
             wake_fd: self.wake_fd,
             region_len: self.region_len,
             fault_node_hash: self.fault_node_hash,
+            process_generation: self.process_generation,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            device_digest_workspace: self.device_digest_workspace,
             launch_cleanup: self.launch_cleanup,
         }
     }
@@ -647,11 +679,26 @@ pub struct QemuSpawnSetupResources {
     wake_fd: OwnedFd,
     region_len: u64,
     fault_node_hash: [u8; 32],
+    process_generation: u64,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    device_digest_workspace: Option<Arc<DeviceDigestWorkspaceBody>>,
     service_lease: Option<crucible_linux_resource::host_services::HostServiceLease>,
     launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
 }
 
 impl QemuSpawnSetupResources {
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn take_device_digest_workspace(
+        &mut self,
+    ) -> Option<Arc<DeviceDigestWorkspaceBody>> {
+        self.device_digest_workspace.take()
+    }
+
+    /// Returns the same generation retained from the validated launch command.
+    pub(crate) const fn process_generation(&self) -> u64 {
+        self.process_generation
+    }
+
     pub(crate) fn launch_cleanup(&self) -> Option<crate::launch_cleanup::LaunchCleanup> {
         self.launch_cleanup.clone()
     }
@@ -771,6 +818,9 @@ impl QemuSpawnedChild {
 /// Errors returned while preparing or spawning a QEMU child.
 #[derive(Debug, Error)]
 pub enum QemuSpawnError {
+    /// The guarded environment does not preserve the matched worker request.
+    #[error("guarded QEMU worker stack profile is unsupported")]
+    UnsupportedWorkerStackProfile,
     /// Explicit per-node host service descriptor admission failed before allocation.
     #[error(transparent)]
     HostServices {
@@ -1089,6 +1139,9 @@ pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
     host_services: Option<&crucible_linux_resource::host_services::HostServiceAllocator>,
     launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
 ) -> Result<QemuSpawnedChild, QemuSpawnError> {
+    GuardedWorkerStackProfile::for_environment(command.diagnostic_envs())
+        .ok_or(QemuSpawnError::UnsupportedWorkerStackProfile)?;
+
     run_directory.validate_launch_basis(command, contract)?;
     run_directory.revalidate()?;
     let spill_quota = if command.ram_control().is_some() {
@@ -1114,8 +1167,7 @@ pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
     )?;
     let (mut resources, mut child_resources) = create_spawn_resources(region_len)?;
     resources.service_lease = service_lease;
-    resources.fault_node_hash = command.plugin_fault_node_hash();
-    resources.ram_control = command.ram_control();
+    resources.bind_plugin_launch(command);
     if let Some(cleanup) = &launch_cleanup {
         resources.retain_launch_cleanup(cleanup.clone());
     }
@@ -1132,7 +1184,10 @@ pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
         child_resources,
         &image_pins,
         command.diagnostic_envs(),
-        Some(contract),
+        Some(BorrowedSpawnProcessContract {
+            process: contract,
+            startup: command.plugin_setup_plan().startup_operation(),
+        }),
     )?;
     let mut child = QemuNodeChild::new(child);
     if let Some(cleanup) = launch_cleanup {
@@ -1203,6 +1258,9 @@ fn create_spawn_resources(
             wake_fd: host_wake,
             region_len,
             fault_node_hash: [0; 32],
+            process_generation: 0,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            device_digest_workspace: None,
         },
         QemuSpawnChildResources {
             control_socket: child_control,
@@ -1227,10 +1285,20 @@ pub(crate) fn create_test_spawn_resource_pair(
 ) -> Result<(QemuSpawnHostResources, UnixStream), QemuSpawnError> {
     let (mut host_resources, child_resources) = create_spawn_resources(region_len)?;
     host_resources.fault_node_hash = crate::qemu_fault_target_hash("standalone-vm-slot-0");
+    // This explicit standalone fixture models its existing first generation.
+    host_resources.process_generation = 1;
     Ok((
         host_resources,
         UnixStream::from(child_resources.control_socket),
     ))
+}
+
+// The startup borrow belongs to the same already-authenticated launch plan.
+// Grouping it with the actual process contract keeps retention at this private
+// spawn boundary; neither a bool nor a numeric descriptor issues authority.
+struct BorrowedSpawnProcessContract<'contract> {
+    process: &'contract QemuChildProcessContract,
+    startup: Option<&'contract crucible_protocol::plugin_setup_plan::StartupOperation>,
 }
 
 fn spawn_process_with_resources(
@@ -1240,8 +1308,11 @@ fn spawn_process_with_resources(
     child_resources: QemuSpawnChildResources,
     image_pins: &GuardedLaunchImagePins,
     envs: &[(&str, &str)],
-    process_contract: Option<&QemuChildProcessContract>,
+    process_contract: Option<BorrowedSpawnProcessContract<'_>>,
 ) -> Result<Child, QemuSpawnError> {
+    let retain_startup_cancellation = process_contract
+        .as_ref()
+        .is_some_and(|contract| contract.startup.is_some());
     let control_fd = child_resources.control_socket.as_raw_fd();
     let ram_control_fd = child_resources.ram_control_socket.as_raw_fd();
     let ram_source_fd = child_resources.ram_source_socket.as_raw_fd();
@@ -1253,12 +1324,12 @@ fn spawn_process_with_resources(
         libc::getpid()
     };
     let process_contract = process_contract.map(|contract| ChildProcessContractRaw {
-        cgroup_procs: contract.cgroup_procs.as_raw_fd(),
-        cancellation_event: contract.cancellation_event.as_raw_fd(),
-        maximum_file_bytes: contract.maximum_writable_bytes,
-        maximum_file_descriptors: contract.maximum_file_descriptors,
-        maximum_locked_bytes: contract.maximum_locked_bytes,
-        credentials: contract.credentials,
+        cgroup_procs: contract.process.cgroup_procs.as_raw_fd(),
+        cancellation_event: contract.process.cancellation_event.as_raw_fd(),
+        maximum_file_bytes: contract.process.maximum_writable_bytes,
+        maximum_file_descriptors: contract.process.maximum_file_descriptors,
+        maximum_locked_bytes: contract.process.maximum_locked_bytes,
+        credentials: contract.process.credentials,
     });
     let pinned_run_directory = PreparedRunDirectoryRaw {
         directory: run_directory.directory.as_raw_fd(),
@@ -1286,6 +1357,13 @@ fn spawn_process_with_resources(
             if let Some(credentials) = process_contract.and_then(|contract| contract.credentials) {
                 install_child_credentials(credentials)?;
             }
+            // Contract and directory sources may occupy descriptor 12. Consume
+            // them first, then preserve cancellation before fixed exec targets.
+            if retain_startup_cancellation {
+                let contract =
+                    process_contract.ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
+                dup_to_fixed_child_fd(contract.cancellation_event, QEMU_STARTUP_CANCELLATION_FD)?;
+            }
             install_child_process_contract(control_fd, shmem_fd, wake_fd, expected_parent_pid)?;
             dup_to_fixed_child_fd(ram_control_fd, crate::QEMU_PLUGIN_RAM_CONTROL_FD)?;
             dup_to_fixed_child_fd(ram_source_fd, QEMU_RAM_SOURCE_LAUNCH_FD)?;
@@ -1295,7 +1373,8 @@ fn spawn_process_with_resources(
             }
             close_child_source_fd(ram_control_fd)?;
             close_child_source_fd(ram_source_fd)?;
-            install_guarded_launch_image_pins(vmstate_fd, overlay_fds)
+            install_guarded_launch_image_pins(vmstate_fd, overlay_fds)?;
+            Ok(())
         });
     }
 

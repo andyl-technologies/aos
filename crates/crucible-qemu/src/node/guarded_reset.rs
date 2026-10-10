@@ -155,6 +155,14 @@ impl QemuNode {
                 "reset reached its bound without a fresh authenticated idle",
             ));
         }
+        // An authenticated idle and fresh digest do not themselves publish an
+        // ordinary native stop. Use the existing pause handoff before capture;
+        // the later typed backing stream still verifies actual stopped origin.
+        self.host_io_runtime
+            .quiesce_for_checkpoint_under_original(&original)
+            .map_err(|source| {
+                QemuNodeError::from_async_driver(crate::QemuAsyncDriverError::Runtime(source))
+            })?;
         let fingerprint = self.fresh_execution_fingerprint_under_original(&original)?;
         self.reset_resume_pending = None;
         Ok(fingerprint)
@@ -229,6 +237,7 @@ impl QemuNode {
                 ),
             ))
         })?;
+        self.fault_fingerprint_invalidated = false;
         Ok(fingerprint)
     }
 }

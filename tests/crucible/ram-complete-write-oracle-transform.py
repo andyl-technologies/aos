@@ -10,9 +10,9 @@ import hashlib
 import json
 from pathlib import Path
 
-NATIVE_COMMIT = "d12224c30eeb7079ca8a89044966e0de492df1b8"
+NATIVE_COMMIT = "fcf3a33f36506fd0f8418ccf9d026d9ed1f35ec0"
 PHYSICAL_SHA256 = "4f2f7a9d720e141ad8b3f3a1cb9e155ffa6f2c4d1cbb7365bc0f0b3b748fbbd1"
-PAGED_SHA256 = "39be520e712a3ff91abd2f151474f18ae61fcc83bad3022b118ed7cb7bd85ce8"
+PAGED_SHA256 = "a2cbeb4e6a557524cfa2876767742eaf0201e15a51309ac9f4281e676361e470"
 FIRST = 700_000
 HEADER = '#include "exec/page-vary.h"\n'
 HEADER_WITH_CLOCK = HEADER + '#include "exec/icount.h"\n'

@@ -385,10 +385,12 @@ pub const QEMU_PLUGIN_HOT_FORK_CHILD_INITIALIZE: u32 = 1;
 pub const QEMU_PLUGIN_HOT_FORK_CHILD_QUERY: u32 = 2;
 /// Fork-child runtime callback action that releases reconstructed workers.
 pub const QEMU_PLUGIN_HOT_FORK_CHILD_RELEASE: u32 = 3;
+/// Authenticated early child action that disarms inherited workspace ownership.
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_DISARM: u32 = 4;
 /// Current fixed-layout fork-child runtime plan schema.
-pub const QEMU_PLUGIN_HOT_FORK_CHILD_PLAN_VERSION: u32 = 4;
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_PLAN_VERSION: u32 = 5;
 /// Current fixed-layout fork-child runtime status schema.
-pub const QEMU_PLUGIN_HOT_FORK_CHILD_STATUS_VERSION: u32 = 4;
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_STATUS_VERSION: u32 = 5;
 /// Child status flag indicating that callback admission remains held.
 pub const QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_CALLBACKS_HELD: u32 = 1_u32 << 0;
 /// Child status flag indicating that the private shared-memory mapping exists.
@@ -399,16 +401,18 @@ pub const QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_WORKERS_READY: u32 = 1_u32 << 2;
 pub const QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_ACTIVE: u32 = 1_u32 << 3;
 /// Child status flag indicating a terminal reconstruction failure.
 pub const QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_FAILED: u32 = 1_u32 << 4;
+/// Child status flag recording actual inherited-workspace disarm completion.
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_WORKSPACE_DISARMED: u32 = 1_u32 << 5;
 
 /// Exact staged-resource basis supplied to a fork-child runtime.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct QemuPluginHotForkChildPlan {
-    /// Plan schema version, currently four.
+    /// Plan schema version, currently five.
     pub schema_version: u32,
     /// Exact C ABI structure size.
     pub struct_size: u32,
-    /// Closed flag mask; version four requires zero.
+    /// Closed flag mask; version five requires zero.
     pub flags: u32,
     /// Reserved field that must remain zero.
     pub reserved: u32,
@@ -440,7 +444,7 @@ pub struct QemuPluginHotForkChildPlan {
     pub source_mapping_start: u64,
     /// Exact authenticated template setup-region VMA length.
     pub source_mapping_length: u64,
-    /// Exact authenticated template setup-region file offset; version four requires zero.
+    /// Exact authenticated template setup-region file offset; version five requires zero.
     pub source_mapping_offset: u64,
     /// Descriptor carrying the branch-private shared-memory object.
     pub private_ring_fd: i32,
@@ -450,13 +454,27 @@ pub struct QemuPluginHotForkChildPlan {
     pub wake_fd: i32,
     /// Reserved descriptor field that must remain negative one.
     pub reserved_fd: i32,
+    /// Actual original child-account generation authenticated by native staging.
+    pub account_generation: u64,
+    /// Once-issued child workspace resource generation.
+    pub workspace_generation: u64,
+    /// Actual device number of the child-private workspace descriptor.
+    pub workspace_device: u64,
+    /// Actual inode number of the child-private workspace descriptor.
+    pub workspace_inode: u64,
+    /// Exact workspace extent; enabled fingerprint workers require 65536 bytes.
+    pub workspace_length: u64,
+    /// Child-private workspace descriptor, or negative one when disabled.
+    pub workspace_fd: i32,
+    /// Reserved field that must remain zero.
+    pub workspace_reserved: u32,
 }
 
 /// Exact process-local progress reported by the fork-child runtime callback.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct QemuPluginHotForkChildStatus {
-    /// Status schema version, currently four.
+    /// Status schema version, currently five.
     pub schema_version: u32,
     /// Exact C ABI structure size.
     pub struct_size: u32,
@@ -494,6 +512,20 @@ pub struct QemuPluginHotForkChildStatus {
     pub pending_worker_mask: u64,
     /// Replacement worker operations admitted before their hold.
     pub worker_operations_in_flight: u64,
+    /// Actual original child-account generation retained by the child runtime.
+    pub account_generation: u64,
+    /// Once-issued child workspace resource generation.
+    pub workspace_generation: u64,
+    /// Actual device number of the child-private workspace descriptor.
+    pub workspace_device: u64,
+    /// Actual inode number of the child-private workspace descriptor.
+    pub workspace_inode: u64,
+    /// Exact workspace extent; enabled fingerprint workers require 65536 bytes.
+    pub workspace_length: u64,
+    /// Installed child-private workspace descriptor, or negative one when disabled.
+    pub workspace_fd: i32,
+    /// Reserved field that must remain zero.
+    pub workspace_reserved: u32,
 }
 
 /// Plugin callback that initializes, observes, or releases the fork-child runtime.

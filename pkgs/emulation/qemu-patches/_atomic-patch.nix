@@ -6,26 +6,26 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "618e8fe2bfe1d4b06f784ea99fe9065e9df41f41317e157e3b981679fd385e45";
-  subject = "Refuse legacy full RAM load under admitted paging ownership";
-  body = "Carry the complete QEMU integration and exact selectable reset boundary.\n\nReject legacy snapshot and incoming full RAM loaders before their effects\nwhen the admitted paging owner is present. Preserve the authenticated lazy\nRAM replacement and its bounded device-only FULL/EOF state stream, with\niterable and command refusal before dispatch. Cover internal RAM loaders\nand retain ordinary load behavior without admitted paging ownership.\n\nKeep fourteen production-body regression controls in the normal check.\nPreserve per-file licenses and complete corresponding source. This source\ndoes not qualify deployed cache/restore, original resource payment, kernel\nswap, complete stack bounds or performance parity.";
-  commit = "d12224c30eeb7079ca8a89044966e0de492df1b8";
-  tree = "0646c19006bbdee4430f2cd2e0c57aa0b801a0c2";
+  sha256 = "d85de74447a6de15ae11db4ed65eb9d3827c50e93ac0acfb93f7a365ca03a195";
+  subject = "Integrate original startup custody and x86 descriptor-table identity";
+  body = "Retain the installing owner's original monotonic deadline and cancellation\nevent through readiness and failed startup custody. Pin the original\nmetadata total and initial generation, and exclude retained owners from\nreset, uninstall, and initial fork effects.\n\nInclude GDTR and IDTR base and limit in version 3 of the x86 identity\nprojection. Register generated startup control slices as an include header\nso Meson preserves their generation dependency without compiling them as\na separate translation unit. Retain all reviewed component assertions.\n\nPreserve the reviewed native source tree in one integration change on the\npristine prerequisite. Workspace-purpose and separately admitted child\nstartup acceptance remain unsupported. This source integration does not\nestablish complete-state projection or configured emulator qualification.";
+  commit = "fcf3a33f36506fd0f8418ccf9d026d9ed1f35ec0";
+  tree = "4bfef8cff136f7f9d3002007569e2b5a93103703";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/native-legacy-ram-load-refusal";
+  branchRef = "dplecki/native-startup-source-projection-final";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "c14f0aecd42d0b5a9821242e193f1f26ef9735c7b8c786e49126376e40d28c59";
+  bundleSha256 = "c0a4585433976f023c7d92d0013137acd5c8da495a864793eca4000388a4d8ae";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
-  deterministicPatchDate = "2026-10-09T11:59:44+00:00";
+  deterministicPatchDate = "2026-10-10T03:21:01+00:00";
 
   additionalCapabilities = [
     {

@@ -149,6 +149,22 @@ pub trait QemuAttemptProcessResourceGuard: QemuAttemptResourceGuard {
         Ok(None)
     }
 
+    /// Launches a fresh node through the same retained physical owner.
+    ///
+    /// Original owners preserve their closed generation witness and typed
+    /// refusal custody. Other owners use the ordinary admitted fresh route.
+    ///
+    /// # Errors
+    /// Returns the actual fresh admission or launch refusal.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn launch_fresh_node(
+        &self,
+        config: &crucible_qemu::QemuLiveNodeStepGateConfig,
+        admission: crucible_qemu::QemuProductionFreshLaunchAdmission<'_>,
+    ) -> Result<crucible_qemu::QemuNode, crucible_qemu::QemuLiveNodeStepGateError> {
+        crucible_qemu::launch_qemu_production_fresh_node(config, admission)
+    }
+
     /// Returns the exact child-process containment contract for this attempt.
     ///
     /// # Errors

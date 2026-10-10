@@ -112,6 +112,28 @@ impl IndexSnapshot {
         backend: &PackedBlobBackend,
         operation: &mut Operation<'_>,
     ) -> Result<Self, StoreError> {
+        Self::read_under::<true>(backend, operation)
+    }
+
+    /// Authenticates visible index bytes without confirming their durability.
+    pub(super) fn read(
+        backend: &PackedBlobBackend,
+        original: &DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<Self, StoreError> {
+        Self::read_under::<false>(
+            backend,
+            &mut Operation {
+                original: Some(original),
+                boundary,
+            },
+        )
+    }
+
+    fn read_under<const CONFIRM_DURABILITY: bool>(
+        backend: &PackedBlobBackend,
+        operation: &mut Operation<'_>,
+    ) -> Result<Self, StoreError> {
         operation.with_path(&backend.admin, INDEX_FILE, |operation, path| {
             let file = operation.open(path, false)?;
             let length =
@@ -125,7 +147,12 @@ impl IndexSnapshot {
             let bytes = operation.read(file.file(), 0, length)?;
             let header = Header::decode(&bytes.value, backend.configuration)?;
             operation.require_eof(file.file(), length as u64)?;
-            operation.sync_admin(backend)?;
+            // Publication and recovery retain the root file and its original
+            // loans through confirmation. A read produces no durable receipt.
+            if CONFIRM_DURABILITY {
+                operation.sync_admin(backend)?;
+            }
+
             Ok(Self { bytes, header })
         })
     }

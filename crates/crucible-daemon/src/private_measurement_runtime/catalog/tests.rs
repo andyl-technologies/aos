@@ -68,13 +68,13 @@ impl DecodeResourceAuthority for FixtureDecode {
     }
 }
 
-struct FixtureDecoder {
+pub(crate) struct FixtureDecoder {
     budget: Option<DecodeBudget>,
     authority: Arc<FixtureDecode>,
 }
 
 impl FixtureDecoder {
-    fn budget(&self) -> Result<&DecodeBudget, DecodeAdmissionError> {
+    pub(crate) fn budget(&self) -> Result<&DecodeBudget, DecodeAdmissionError> {
         let budget = self
             .budget
             .as_ref()
@@ -83,7 +83,7 @@ impl FixtureDecoder {
         Ok(budget)
     }
 
-    fn try_close(mut self) -> Result<(), Self> {
+    pub(crate) fn try_close(mut self) -> Result<(), Self> {
         if self.budget().and_then(DecodeBudget::verify_live).is_err() {
             return Err(self);
         }
@@ -95,7 +95,7 @@ impl FixtureDecoder {
     }
 }
 
-struct GraphQuotaFixture(DecodeBudget);
+pub(crate) struct GraphQuotaFixture(pub(crate) DecodeBudget);
 
 impl crucible_cas::content_store::StorePhysicalQuotaGuard for GraphQuotaFixture {
     fn verify(&self) -> Result<(), StoreError> {
@@ -134,7 +134,17 @@ impl crucible_cas::content_store::StorePhysicalQuotaGuard for GraphQuotaFixture 
     }
 }
 
-fn fixture() -> (
+pub(crate) fn fixture_original(owner: &OriginalActorCatalogOwner) -> Arc<HostOperationGuard> {
+    let accounts = &owner.authority.as_ref().unwrap().accounts;
+    match accounts {
+        CatalogAccounts::Fixture(accounts) => Arc::clone(&accounts.original),
+        CatalogAccounts::Original(_) => {
+            panic!("fixture original requires the local mechanism owner")
+        }
+    }
+}
+
+pub(crate) fn fixture() -> (
     HostOperationSupervisor,
     FixtureDecoder,
     OriginalActorCatalogOwner,
@@ -173,6 +183,63 @@ fn fixture() -> (
         close_failure: None,
     };
     (supervisor, decoder, owner)
+}
+
+/// Constructs the closed production-class catalog profile for creation controls.
+///
+/// The concrete values match original_actor/workflow.rs CATALOG exactly.
+/// This method accepts no amount, issues no production evidence and changes no
+/// existing fixture. The owner and original pair precede all tested operations.
+pub(crate) fn campaign_creation_fixture() -> (
+    HostOperationSupervisor,
+    FixtureDecoder,
+    OriginalActorCatalogOwner,
+    HostServiceLeasePair,
+) {
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+    let original = Arc::new(supervisor.begin(HostOperationClass::Preparation).unwrap());
+    let resident = HostServiceAllocator::new(1, 128, 512 << 20).unwrap();
+    let metadata = HostServiceAllocator::new(1, 128, 256 << 20).unwrap();
+    // This fixed test profile follows the actual CATALOG resident/metadata/FD
+    // vector. Existing small controls keep their independent 4 MiB profile.
+    // Prepay the same decode authority Arc before its actual allocation; this
+    // external loan stays with the caller until that authority is freed.
+    let decode_bytes =
+        shared_extent::<FixtureDecode>().unwrap() + 2 * HostServiceLease::metadata_bytes();
+    let (decode_first, decode_second) = resident
+        .reserve_paired_bytes(&metadata, decode_bytes)
+        .unwrap();
+    let decode_controls = HostServiceLeasePair::new(decode_first, decode_second);
+    let authority = Arc::new(FixtureDecode {
+        original: Arc::clone(&original),
+        resident: resident.clone(),
+        metadata: metadata.clone(),
+    });
+    let decoder = FixtureDecoder {
+        budget: Some(DecodeBudget::new(authority.clone(), 256 << 20).unwrap()),
+        authority,
+    };
+    let bytes = shared_extent::<CatalogAuthority>().unwrap()
+        + shared_extent::<CatalogSupervisor>().unwrap()
+        + shared_extent::<CatalogCause>().unwrap()
+        + 2 * HostServiceLease::metadata_bytes();
+    let (first, second) = resident.reserve_paired_bytes(&metadata, bytes).unwrap();
+    let authority = Arc::new(CatalogAuthority {
+        physical: Mutex::new(None),
+        accounts: CatalogAccounts::Fixture(FixtureAccounts {
+            original,
+            supervisor: supervisor.clone(),
+        }),
+        budget: decoder.budget().unwrap().clone(),
+        failure: Mutex::new(None),
+    });
+    let owner = OriginalActorCatalogOwner {
+        supervisor: Some(Arc::new(CatalogSupervisor(Arc::clone(&authority)))),
+        authority: Some(authority),
+        controls: Some(HostServiceLeasePair::new(first, second)),
+        close_failure: None,
+    };
+    (supervisor, decoder, owner, decode_controls)
 }
 
 #[test]

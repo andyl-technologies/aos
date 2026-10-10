@@ -116,13 +116,7 @@ fn fingerprint_state(
         test_fingerprint_capture,
     );
     test_live_state_with_fault_commands(90, 1, 0, slot, Box::new(bridge))
-        .and_then(|state| {
-            state.attach_fingerprint(
-                sampling,
-                fingerprint_slot,
-                LiveWorkerQuiescence::new(crate::runtime::worker_quiescence::WORKER_ALL),
-            )
-        })
+        .and_then(|state| attach_test_fingerprint(state, sampling, fingerprint_slot))
         .unwrap_or_else(|error| panic!("live fingerprint state should build: {error}"))
 }
 

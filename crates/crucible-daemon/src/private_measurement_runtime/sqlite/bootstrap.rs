@@ -6,14 +6,14 @@
 //! retains physical prebirth Source financing; this token creates no account,
 //! native launch permission or entitlement from a scalar bound.
 
+use crucible::owned_decode::json_profiles::bootstrap::{Request, Target};
+
 use std::fs::File;
 use std::io::Read;
 
-use crucible::owned_decode::from_json_slice;
+use crucible::owned_decode::from_json_slice_closed;
 use crucible_cas::content_store::StoreError;
 use crucible_linux_resource::measurement_origin::MeasurementOriginError;
-use serde::Deserialize;
-use serde::de::IgnoredAny;
 
 use super::{OriginalActorSqliteBootstrapError, OriginalActorSqliteOwner, verify};
 use crucible_qemu::{OriginalActorAccountError, OriginalActorDecodeOwner};
@@ -32,68 +32,11 @@ pub struct OriginalActorSqliteBootstrap {
     actor: OriginalGuestServiceHandle,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Target<'input> {
-    #[serde(borrow)]
-    schema: &'input str,
-    #[serde(borrow)]
-    source_record_sha256: &'input str,
-    #[serde(borrow)]
-    geometry_record_sha256: &'input str,
-    #[serde(borrow)]
-    linked_record_sha256: &'input str,
-    #[serde(borrow)]
-    glibc_build_record_sha256: &'input str,
-    #[serde(borrow)]
-    sqlite: Image<'input>,
-    #[serde(borrow)]
-    libc: Image<'input>,
-    #[serde(borrow)]
-    stack_records: [StackRecord<'input>; 1],
-    #[serde(borrow)]
-    conditional_main_arena_backing: BackingCase<'input>,
-    case_requirements: IgnoredAny,
+trait BootstrapTargetValidation {
+    fn validate(&self) -> Result<(), MeasurementOriginError>;
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Image<'input> {
-    #[serde(borrow)]
-    path: &'input str,
-    #[serde(borrow)]
-    sha256: &'input str,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StackRecord<'input> {
-    #[serde(borrow)]
-    name: &'input str,
-    #[serde(borrow)]
-    sha256: &'input str,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct BackingCase<'input> {
-    #[serde(borrow)]
-    case: &'input str,
-    additional_backing_upper_bytes: u64,
-    requests: [Request; 2],
-    required_case: IgnoredAny,
-}
-
-#[derive(Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Request {
-    request_bytes: u64,
-    chunk_bytes: u64,
-    ordinary_growth_upper_bytes: u64,
-    additional_backing_upper_bytes: u64,
-}
-
-impl Target<'_> {
+impl BootstrapTargetValidation for Target<'_> {
     fn validate(&self) -> Result<(), MeasurementOriginError> {
         let backing = &self.conditional_main_arena_backing;
         let expected = [
@@ -195,11 +138,12 @@ impl OriginalActorSqliteOwner {
         }
         let budget = decoder.budget()?;
         let _scope = budget.enter();
-        let target: Target<'_> =
-            from_json_slice(input).map_err(|source| OriginalActorAccountError::WorkflowDecode {
+        let target: Target<'_> = from_json_slice_closed(input, budget).map_err(|source| {
+            OriginalActorAccountError::WorkflowDecode {
                 source,
                 original: actor.original_check().err(),
-            })?;
+            }
+        })?;
         target
             .validate()
             .map_err(|source| OriginalActorAccountError::WorkflowBoundary {

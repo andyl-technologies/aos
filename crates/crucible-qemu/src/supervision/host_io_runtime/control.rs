@@ -113,17 +113,23 @@ impl QemuLiveHostIoRuntime {
         }
     }
 
-    /// Releases a failed pause transaction while retaining both diagnostics.
+    /// Releases a failed pause while preserving its typed first cause and both diagnostics.
     pub(super) fn fail_checkpoint_pause(
         &mut self,
         primary: QemuAsyncDriverRuntimeError,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         match self.abort_checkpoint_pause_with_wake() {
             Ok(()) => Err(primary),
-            Err(cleanup) => Err(QemuAsyncDriverRuntimeError::new(
-                "rollback failed checkpoint pause",
-                format!("primary failure: {primary}; pause release failure: {cleanup}"),
-            )),
+            Err(cleanup) => {
+                let message =
+                    format!("primary failure: {primary}; pause release failure: {cleanup}");
+                // The initiating original refusal remains the actual source;
+                // a secondary wake failure must not reclassify it as Message.
+                let mut primary = primary;
+                primary.operation = "rollback failed checkpoint pause";
+                primary.message = message;
+                Err(primary)
+            }
         }
     }
 

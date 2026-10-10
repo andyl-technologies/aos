@@ -573,6 +573,19 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
         })
     }
 
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn capture_readonly_backing<'host, 'owner>(
+        &mut self,
+        _observation: crate::OriginalBoundBackingObservation<'host, 'owner>,
+        _visitor: &mut dyn for<'event> FnMut(
+            crate::QmpReadOnlyBackingEvent<'event>,
+        ) -> std::io::Result<()>,
+    ) -> Result<crate::QmpReadOnlyBackingReceipt, crate::QemuReadOnlyBackingError<'owner>> {
+        Err(crate::QemuReadOnlyBackingError::Binding(
+            crate::OriginalActorAccountError::Unavailable,
+        ))
+    }
+
     #[cfg(feature = "kernel-swap-measurement")]
     fn discover_kernel_swap_admission(
         &mut self,

@@ -7,6 +7,28 @@ use thiserror::Error;
 /// Error returned by the live [`QemuNode`] bounded-step gate.
 #[derive(Debug, Error)]
 pub enum QemuLiveNodeStepGateError {
+    /// Enabled fingerprinting has no issued prebirth workspace owner.
+    #[error("fingerprint startup requires an issued device-digest workspace")]
+    DeviceDigestWorkspaceUnavailable,
+    /// The same original native account refused the fixed launch purpose.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[error("original native launch account refused: {source}")]
+    OriginalNativeAccount {
+        /// The actual original account or supervision refusal.
+        #[source]
+        source: crate::OriginalActorAccountError,
+    },
+    /// The paid same-slot error control retains the first launch and postcut.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[error("original native fresh launch refused: {source}")]
+    OriginalNativeLaunch {
+        /// The same existing shared control retained by the external slot.
+        #[source]
+        source: std::sync::Arc<crate::linux_attempt_host::OriginalNativeFreshLaunchError>,
+    },
+    /// The original prebirth startup owner or cancellation role refused.
+    #[error(transparent)]
+    PluginStartup(#[from] crate::spawn::PluginStartupError),
     /// A live operational budget or original-start outer cap refused progress.
     #[error(transparent)]
     HostSupervision(#[from] crucible_linux_resource::host_supervision::HostSupervisionError),

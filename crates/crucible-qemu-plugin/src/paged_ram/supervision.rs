@@ -30,7 +30,7 @@ impl OperationalStart {
 
 /// Finite containment cap for explicit non-live transport utilities.
 #[cfg(test)]
-pub(super) struct TransportDeadline {
+pub(crate) struct TransportDeadline {
     started: OperationalStart,
     total: Duration,
 }
@@ -41,7 +41,7 @@ impl TransportDeadline {
     ///
     /// # Errors
     /// Refuses zero or unrepresentable absolute monotonic allowances.
-    pub(super) fn new(total: Duration) -> io::Result<Self> {
+    pub(crate) fn new(total: Duration) -> io::Result<Self> {
         let started = OperationalStart::begin();
         if total.is_zero() || started.0.checked_add(total).is_none() {
             return Err(io::Error::new(
@@ -56,7 +56,7 @@ impl TransportDeadline {
     ///
     /// # Errors
     /// Returns timeout when the original cap has expired.
-    pub(super) fn remaining(&self) -> io::Result<Duration> {
+    pub(crate) fn remaining(&self) -> io::Result<Duration> {
         self.total
             .checked_sub(self.started.elapsed())
             .filter(|duration| !duration.is_zero())

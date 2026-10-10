@@ -20,7 +20,7 @@ pub(super) fn lookup(
     checked_reader::check(original, boundary)?;
     let _lifecycle = checked_io::lock(backend, LIFECYCLE_LOCK_FILE, true, original, boundary)?;
     let _state = checked_io::lock(backend, STATE_LOCK_FILE, false, original, boundary)?;
-    let index = index_snapshot::IndexSnapshot::load(backend, original, boundary)?;
+    let index = index_snapshot::IndexSnapshot::read(backend, original, boundary)?;
     if index.header.count == 0 {
         return Err(StoreError::NotFound { id });
     }

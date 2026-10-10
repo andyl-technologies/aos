@@ -411,3 +411,6 @@ fn canonical_cbor_refuses_indefinite_text_without_changing_the_ordinary_parser()
     budget.verify_live()?;
     Ok(())
 }
+
+#[path = "json_diagnostic_tests.rs"]
+mod closed_json;

@@ -10,6 +10,8 @@ mod block_coordinator;
 mod network_output;
 #[path = "host_io_runtime_tests/original_fingerprint.rs"]
 mod original_fingerprint;
+#[path = "host_io_runtime_tests/original_quiescence.rs"]
+mod original_quiescence;
 
 #[test]
 fn hot_fork_network_rejects_duplicate_source_ring() -> Result<(), Box<dyn std::error::Error>> {

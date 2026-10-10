@@ -17,7 +17,14 @@ use crate::QemuVmRealizationError;
 use crate::linux_attempt_process::LinuxQemuAttemptProcessOwner;
 use crate::linux_attempt_storage::LinuxQemuAttemptStorageOwner;
 
+mod device_digest;
+
+pub(crate) use device_digest::OriginalDeviceDigestWorkspacePurpose;
+
 const MAX_NATIVE_WORKERS: usize = 4;
+// The fixed workflow has one VM; its existing lifecycle admits one active
+// generation and one staged successor. This is not another native vector.
+const MAX_ORIGINAL_NATIVE_NODE_GENERATIONS: u8 = 2;
 
 /// Retains the finite original native account roster outside all funded owners.
 ///
@@ -328,6 +335,231 @@ mod tests {
             &cleanup
         ));
     }
+
+    fn node_roster() -> (
+        OriginalNativeAccountRoster,
+        OriginalNativeAccountFactoryBinding,
+        Arc<HostOperationGuard>,
+        HostOperationSupervisor,
+    ) {
+        let supervisor =
+            HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+        let original = Arc::new(supervisor.begin(HostOperationClass::Preparation).unwrap());
+        let (credit, _, _) =
+            OriginalNativeAccountCredit::mechanism_credit(Arc::clone(&original)).unwrap();
+        let (roster, factory) =
+            OriginalNativeAccountRoster::publish([Some(credit), None, None, None], 1).unwrap();
+        (roster, factory, original, supervisor)
+    }
+
+    #[test]
+    fn unqualified_device_workspace_refuses_before_purpose_assignment() {
+        let (_roster, factory, original, _supervisor) = node_roster();
+        let attempt = factory.claim(1, 512 << 20, 1 << 30).unwrap();
+        let held = factory.roster.upgrade().unwrap();
+        let before_generation = held.lock().unwrap().next_workspace_generation;
+
+        assert!(matches!(
+            attempt.prepare_device_digest_workspace(&original, 1),
+            Err(OriginalActorAccountError::Unavailable)
+        ));
+
+        let state = held.lock().unwrap();
+        assert_eq!(state.next_workspace_generation, before_generation);
+        assert!(
+            state.slots[0]
+                .digest_purposes
+                .iter()
+                .all(|purpose| !purpose.is_live())
+        );
+        assert_eq!(state.slots[0].active, Some(attempt.generation));
+        assert!(!state.slots[0].launch_abandoned);
+        drop(state);
+        attempt.cleanup().unwrap();
+        attempt.close_vector().unwrap();
+    }
+
+    #[test]
+    fn device_workspace_refusal_preserves_actual_original_cancellation() {
+        let (_roster, factory, original, supervisor) = node_roster();
+        let attempt = factory.claim(1, 512 << 20, 1 << 30).unwrap();
+        supervisor.cancel().unwrap();
+
+        assert!(matches!(
+            attempt.prepare_device_digest_workspace(&original, 1),
+            Err(OriginalActorAccountError::Supervision(_))
+        ));
+
+        let held = factory.roster.upgrade().unwrap();
+        let state = held.lock().unwrap();
+        assert!(
+            state.slots[0]
+                .digest_purposes
+                .iter()
+                .all(|purpose| !purpose.is_live())
+        );
+        assert_eq!(state.slots[0].active, Some(attempt.generation));
+    }
+
+    #[test]
+    fn active_and_staged_node_witnesses_block_control_and_reuse_until_both_drop() {
+        let (_roster, factory, original, _supervisor) = node_roster();
+        let attempt = factory.claim(1, 512 << 20, 1 << 30).unwrap();
+        let witness = attempt.prepare_node_binding(&original).unwrap();
+        attempt.cleanup().unwrap();
+
+        witness.verify_against(&attempt, &original).unwrap();
+        let staged = attempt.prepare_node_binding(&original).unwrap();
+        assert!(attempt.prepare_node_binding(&original).is_err());
+        assert!(attempt.close_vector().is_err());
+        assert!(factory.claim(1, 512 << 20, 1 << 30).is_err());
+        let held = factory.roster.upgrade().unwrap();
+        assert_eq!(held.lock().unwrap().slots[0].node_bindings_live, 2);
+
+        drop(witness);
+        assert!(attempt.close_vector().is_err());
+        drop(staged);
+        attempt.close_vector().unwrap();
+        let next = factory.claim(1, 512 << 20, 1 << 30).unwrap();
+        assert_ne!(next.generation, attempt.generation);
+        assert_eq!(held.lock().unwrap().slots[0].node_bindings_live, 0);
+        assert!(attempt.prepare_node_binding(&original).is_err());
+        next.prepare_node_binding(&original).unwrap();
+    }
+
+    #[test]
+    fn node_witness_rejects_other_roster_and_preparation_before_binding() {
+        let (_roster, factory, original, _supervisor) = node_roster();
+        let (_other_roster, other_factory, other_original, _other_supervisor) = node_roster();
+        let attempt = factory.claim(1, 512 << 20, 1 << 30).unwrap();
+        let other_attempt = other_factory.claim(1, 512 << 20, 1 << 30).unwrap();
+        assert_eq!(attempt.generation, other_attempt.generation);
+        assert!(attempt.prepare_node_binding(&other_original).is_err());
+        let witness = attempt.prepare_node_binding(&original).unwrap();
+
+        assert!(
+            witness
+                .verify_against(&other_attempt, &other_original)
+                .is_err()
+        );
+        assert!(witness.verify_against(&attempt, &other_original).is_err());
+        witness.verify_against(&attempt, &original).unwrap();
+    }
+
+    #[test]
+    fn node_witness_real_cancellation_keeps_outstanding_generation() {
+        let (_roster, factory, original, supervisor) = node_roster();
+        let attempt = factory.claim(1, 512 << 20, 1 << 30).unwrap();
+        let witness = attempt.prepare_node_binding(&original).unwrap();
+        supervisor.cancel().unwrap();
+
+        assert!(matches!(
+            witness.verify_against(&attempt, &original),
+            Err(OriginalActorAccountError::Supervision(_))
+        ));
+        assert!(attempt.prepare_node_binding(&original).is_err());
+        assert!(attempt.close_vector().is_err());
+        let held = factory.roster.upgrade().unwrap();
+        assert_eq!(held.lock().unwrap().slots[0].node_bindings_live, 1);
+        drop(witness);
+        assert_eq!(held.lock().unwrap().slots[0].node_bindings_live, 0);
+        assert_eq!(
+            held.lock().unwrap().slots[0].active,
+            Some(attempt.generation)
+        );
+    }
+
+    #[test]
+    fn fixed_launch_refusal_retains_same_paid_control_and_terminal_slot() {
+        let (_roster, factory, original, supervisor) = node_roster();
+        let attempt = factory.claim(1, 512 << 20, 1 << 30).unwrap();
+        let preparation = attempt.prepare_fresh_launch().unwrap();
+        let held = factory.roster.upgrade().unwrap();
+        let assigned = held.lock().unwrap().slots[0].launch_controls_bytes;
+        assert!(assigned > 0);
+        drop(preparation);
+        drop(attempt.prepare_fresh_launch().unwrap());
+        assert_eq!(
+            held.lock().unwrap().slots[0].launch_controls_bytes,
+            assigned
+        );
+        let cleanup = attempt.cleanup().unwrap();
+        let mut preparation = attempt.prepare_fresh_launch().unwrap();
+        preparation.enter_mechanism();
+
+        supervisor.cancel().unwrap();
+        let after = original.wait_slice().unwrap_err();
+        let retained = attempt.retain_launch_refusal(
+            preparation.mechanism_refusal(OriginalActorAccountError::Unavailable, after),
+        );
+        assert_eq!(retained.original_after(), Some(&after));
+        assert!(std::error::Error::source(retained.as_ref()).is_some());
+        assert!(Arc::ptr_eq(
+            &retained,
+            held.lock().unwrap().slots[0]
+                .launch_refusal
+                .as_ref()
+                .unwrap(),
+        ));
+        assert!(attempt.prepare_fresh_launch().is_err());
+        assert!(attempt.prepare_node_binding(&original).is_err());
+        assert!(attempt.close_vector().is_err());
+        assert!(factory.claim(1, 512 << 20, 1 << 30).is_err());
+        // Terminal launch refusal prevents reuse, but it does not remove the
+        // independently saved cleanup control from the same physical owner.
+        assert!(Arc::ptr_eq(
+            &cleanup,
+            held.lock().unwrap().slots[0].cleanup.as_ref().unwrap(),
+        ));
+        drop(retained);
+        assert!(held.lock().unwrap().slots[0].launch_refusal.is_some());
+    }
+
+    #[test]
+    fn same_slot_concurrent_launch_refuses_until_unused_preparation_drops() {
+        let (_roster, factory, _original, _supervisor) = node_roster();
+        let attempt = factory.claim(1, 512 << 20, 1 << 30).unwrap();
+        let preparation = attempt.prepare_fresh_launch().unwrap();
+
+        std::thread::scope(|scope| {
+            let second = scope.spawn(|| attempt.prepare_fresh_launch().is_err());
+            assert!(second.join().unwrap());
+        });
+        assert!(attempt.close_vector().is_err());
+        drop(preparation);
+
+        let next = attempt.prepare_fresh_launch().unwrap();
+        let held = factory.roster.upgrade().unwrap();
+        assert!(held.lock().unwrap().slots[0].launch_in_flight);
+        assert!(!held.lock().unwrap().slots[0].launch_abandoned);
+        drop(next);
+        assert!(!held.lock().unwrap().slots[0].launch_in_flight);
+    }
+
+    #[test]
+    fn entered_launch_unwind_retains_terminal_slot_without_an_error_arc() {
+        let (_roster, factory, _original, _supervisor) = node_roster();
+        let attempt = factory.claim(1, 512 << 20, 1 << 30).unwrap();
+        let preparation = attempt.prepare_fresh_launch().unwrap();
+
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let mut preparation = preparation;
+            preparation.enter_mechanism();
+            panic!("actual entered preparation unwind");
+        }));
+        assert!(unwind.is_err());
+
+        let held = factory.roster.upgrade().unwrap();
+        let state = held.lock().unwrap();
+        assert!(!state.slots[0].launch_in_flight);
+        assert!(state.slots[0].launch_abandoned);
+        assert!(state.slots[0].launch_refusal.is_none());
+        assert_eq!(state.slots[0].active, Some(attempt.generation));
+        drop(state);
+        assert!(attempt.prepare_fresh_launch().is_err());
+        assert!(attempt.close_vector().is_err());
+        assert!(factory.claim(1, 512 << 20, 1 << 30).is_err());
+    }
 }
 
 /// Binds one genuine factory to the original external roster without credit.
@@ -337,6 +569,18 @@ mod tests {
 /// process-birth permission.
 pub struct OriginalNativeAccountFactoryBinding {
     roster: Weak<Mutex<NativeRoster>>,
+}
+
+/// Identifies one admitted native generation from birth through node destruction.
+///
+/// Only the actual attempt issues this move-only witness. Its weak reference
+/// uses the existing roster allocation; its outstanding count blocks reuse until
+/// the node has physically dropped this inline field. It is not a Source or
+/// process-birth permission.
+pub(crate) struct OriginalNativeNodeBinding {
+    roster: Weak<Mutex<NativeRoster>>,
+    index: usize,
+    generation: u64,
 }
 
 pub(crate) struct NativeAccountAttempt {
@@ -426,11 +670,19 @@ struct NativeRoster {
     slots: [NativeSlot; MAX_NATIVE_WORKERS],
     width: usize,
     next_generation: u64,
+    next_workspace_generation: u64,
 }
 
 struct NativeSlot {
     credit: Option<OriginalNativeAccountCredit>,
     active: Option<u64>,
+    node_bindings_live: u8,
+    digest_purposes:
+        [device_digest::DigestPurposeState; MAX_ORIGINAL_NATIVE_NODE_GENERATIONS as usize],
+    launch_controls_bytes: u64,
+    launch_in_flight: bool,
+    launch_abandoned: bool,
+    launch_refusal: Option<Arc<super::original_node::OriginalNativeFreshLaunchError>>,
     control: Option<OriginalNativeControlRetirement>,
     cleanup: Option<Arc<HostOperationGuard>>,
     unsettled: Option<RetainedNativeHost>,
@@ -511,12 +763,20 @@ impl OriginalNativeAccountRoster {
             slots: credits.map(|credit| NativeSlot {
                 credit,
                 active: None,
+                node_bindings_live: 0,
+                digest_purposes: [device_digest::DigestPurposeState::default();
+                    MAX_ORIGINAL_NATIVE_NODE_GENERATIONS as usize],
+                launch_controls_bytes: 0,
+                launch_in_flight: false,
+                launch_abandoned: false,
+                launch_refusal: None,
                 control: None,
                 cleanup: None,
                 unsettled: None,
             }),
             width,
             next_generation: 1,
+            next_workspace_generation: 1,
         }));
         let binding = OriginalNativeAccountFactoryBinding {
             roster: Arc::downgrade(&roster),
@@ -626,7 +886,12 @@ impl OriginalNativeAccountFactoryBinding {
             .slots
             .iter()
             .take(state.width)
-            .position(|slot| slot.active.is_none() && slot.unsettled.is_none())
+            .position(|slot| {
+                slot.active.is_none()
+                    && slot.unsettled.is_none()
+                    && slot.launch_refusal.is_none()
+                    && !slot.launch_abandoned
+            })
             .ok_or(OriginalActorAccountError::Unavailable)?;
         let credit = state.slots[index]
             .credit
@@ -714,6 +979,181 @@ impl NativeAccountAttempt {
                 }),
             },
         }
+    }
+
+    pub(super) fn prepare_fresh_launch(
+        &self,
+    ) -> Result<super::original_node::OriginalNativeFreshPreparation, OriginalActorAccountError>
+    {
+        let roster = self
+            .roster
+            .upgrade()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let mut state = roster
+            .lock()
+            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+        let slot = state
+            .slots
+            .get_mut(self.index)
+            .filter(|slot| {
+                slot.active == Some(self.generation)
+                    && slot.launch_refusal.is_none()
+                    && !slot.launch_abandoned
+                    && !slot.launch_in_flight
+            })
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let credit = slot
+            .credit
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        credit.require_original()?;
+
+        // Assign this fixed target purpose once within the already reserved
+        // TOTAL pair, before any error Arc exists. Future native allowance must
+        // subtract this assignment together with the other native control rows;
+        // it is not another physical resident grant or another paired debit.
+        if slot.launch_controls_bytes == 0 {
+            let (error_layout, _) = std::alloc::Layout::new::<(
+                std::sync::atomic::AtomicUsize,
+                std::sync::atomic::AtomicUsize,
+            )>()
+            .extend(std::alloc::Layout::new::<
+                super::original_node::OriginalNativeFreshLaunchError,
+            >())
+            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+            let bytes = error_layout
+                .pad_to_align()
+                .size()
+                .checked_add(
+                    usize::from(MAX_ORIGINAL_NATIVE_NODE_GENERATIONS)
+                        * std::mem::size_of::<Option<OriginalNativeNodeBinding>>(),
+                )
+                .and_then(|bytes| {
+                    bytes.checked_add(std::mem::size_of::<
+                        super::original_node::OriginalNativeFreshPreparation,
+                    >())
+                })
+                .and_then(|bytes| {
+                    bytes.checked_add(std::mem::size_of::<
+                        Arc<super::original_node::OriginalNativeFreshLaunchError>,
+                    >())
+                })
+                .and_then(|bytes| u64::try_from(bytes).ok())
+                .ok_or(OriginalActorAccountError::Unavailable)?;
+            if bytes > credit.total_metadata_bytes() {
+                return Err(OriginalActorAccountError::Unavailable);
+            }
+            slot.launch_controls_bytes = bytes;
+        }
+        let preparation = credit.prepare_fresh_launch(NativeAccountAttempt {
+            roster: Weak::clone(&self.roster),
+            index: self.index,
+            generation: self.generation,
+        })?;
+        slot.launch_in_flight = true;
+        Ok(preparation)
+    }
+
+    pub(super) fn finish_fresh_launch(&self, entered: bool, completed: bool) {
+        let Some(roster) = self.roster.upgrade() else {
+            return;
+        };
+        let Ok(mut state) = roster.lock() else {
+            return;
+        };
+        if let Some(slot) = state
+            .slots
+            .get_mut(self.index)
+            .filter(|slot| slot.active == Some(self.generation) && slot.launch_in_flight)
+        {
+            slot.launch_in_flight = false;
+            if entered && !completed {
+                // A failed or unwound entered launch is terminal even if no
+                // typed error reached publication. Its physical owners and
+                // precharged error purpose remain in this same active slot.
+                slot.launch_abandoned = true;
+            }
+        }
+    }
+
+    pub(super) fn retain_launch_refusal(
+        &self,
+        retained: Arc<super::original_node::OriginalNativeFreshLaunchError>,
+    ) -> Arc<super::original_node::OriginalNativeFreshLaunchError> {
+        // Only a successful fixed-purpose preparation calls this method. The
+        // external slot already holds its complete error-control assignment;
+        // preserve the actual cause even if later publication itself is unsure.
+        let Some(roster) = self.roster.upgrade() else {
+            std::mem::forget(Arc::clone(&retained));
+            return retained;
+        };
+        let Ok(mut state) = roster.lock() else {
+            std::mem::forget(Arc::clone(&retained));
+            return retained;
+        };
+        let Some(slot) = state.slots.get_mut(self.index).filter(|slot| {
+            slot.active == Some(self.generation)
+                && slot.launch_controls_bytes != 0
+                && slot.launch_in_flight
+                && slot.launch_refusal.is_none()
+                && !slot.launch_abandoned
+        }) else {
+            std::mem::forget(Arc::clone(&retained));
+            return retained;
+        };
+        slot.launch_refusal = Some(Arc::clone(&retained));
+        retained
+    }
+
+    pub(crate) fn prepare_node_binding(
+        &self,
+        original: &Arc<HostOperationGuard>,
+    ) -> Result<OriginalNativeNodeBinding, OriginalActorAccountError> {
+        let roster = self
+            .roster
+            .upgrade()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let mut state = roster
+            .lock()
+            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+        let slot = state
+            .slots
+            .get_mut(self.index)
+            .filter(|slot| {
+                slot.active == Some(self.generation)
+                    && slot.node_bindings_live < MAX_ORIGINAL_NATIVE_NODE_GENERATIONS
+                    && slot.unsettled.is_none()
+                    && slot.launch_refusal.is_none()
+                    && !slot.launch_abandoned
+            })
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let credit = slot
+            .credit
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        credit.verify_preparation(original)?;
+
+        // The external native pair already retains TOTAL metadata. This inline
+        // purpose belongs within that same TOTAL; it supplies no additional
+        // native allowance. A completed native-floor calculation must include
+        // this field before native installation can become eligible.
+        let extent = u64::try_from(std::mem::size_of::<Option<OriginalNativeNodeBinding>>())
+            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+        if extent > credit.total_metadata_bytes() {
+            return Err(OriginalActorAccountError::Unavailable);
+        }
+        slot.node_bindings_live += 1;
+        let binding = OriginalNativeNodeBinding {
+            roster: Weak::clone(&self.roster),
+            index: self.index,
+            generation: self.generation,
+        };
+        drop(state);
+        if let Err(error) = self.require_original() {
+            drop(binding);
+            return Err(error);
+        }
+        Ok(binding)
     }
 
     pub(crate) fn require_original(&self) -> Result<(), OriginalActorAccountError> {
@@ -862,7 +1302,12 @@ impl NativeAccountAttempt {
         let slot = state
             .slots
             .get_mut(self.index)
-            .filter(|slot| slot.active == Some(self.generation) && slot.unsettled.is_none())
+            .filter(|slot| {
+                slot.active == Some(self.generation)
+                    && slot.unsettled.is_none()
+                    && slot.launch_refusal.is_none()
+                    && !slot.launch_abandoned
+            })
             .ok_or(OriginalActorAccountError::Unavailable)?;
         close_slot(slot)
     }
@@ -900,6 +1345,17 @@ fn retain_cleanup(
 }
 
 fn close_control(slot: &mut NativeSlot) -> Result<(), OriginalActorAccountError> {
+    if slot.node_bindings_live != 0
+        || slot
+            .digest_purposes
+            .iter()
+            .any(device_digest::DigestPurposeState::is_live)
+        || slot.launch_refusal.is_some()
+        || slot.launch_in_flight
+        || slot.launch_abandoned
+    {
+        return Err(OriginalActorAccountError::Unavailable);
+    }
     let cleanup = slot
         .cleanup
         .as_ref()
@@ -921,6 +1377,17 @@ fn close_control(slot: &mut NativeSlot) -> Result<(), OriginalActorAccountError>
 }
 
 fn close_slot(slot: &mut NativeSlot) -> Result<(), OriginalActorAccountError> {
+    if slot.node_bindings_live != 0
+        || slot
+            .digest_purposes
+            .iter()
+            .any(device_digest::DigestPurposeState::is_live)
+        || slot.launch_refusal.is_some()
+        || slot.launch_in_flight
+        || slot.launch_abandoned
+    {
+        return Err(OriginalActorAccountError::Unavailable);
+    }
     close_control(slot)?;
     let cleanup = slot
         .cleanup
@@ -931,4 +1398,59 @@ fn close_slot(slot: &mut NativeSlot) -> Result<(), OriginalActorAccountError> {
     // Paired credit remains fully charged after genuine vector closure.
     slot.active = None;
     Ok(())
+}
+
+impl OriginalNativeNodeBinding {
+    pub(crate) fn verify_against(
+        &self,
+        attempt: &NativeAccountAttempt,
+        original: &Arc<HostOperationGuard>,
+    ) -> Result<(), OriginalActorAccountError> {
+        if !Weak::ptr_eq(&self.roster, &attempt.roster)
+            || self.index != attempt.index
+            || self.generation != attempt.generation
+        {
+            return Err(OriginalActorAccountError::Unavailable);
+        }
+        let roster = self
+            .roster
+            .upgrade()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let state = roster
+            .lock()
+            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+        let slot = state
+            .slots
+            .get(self.index)
+            .filter(|slot| {
+                slot.active == Some(self.generation)
+                    && slot.node_bindings_live > 0
+                    && slot.unsettled.is_none()
+                    && slot.launch_refusal.is_none()
+                    && !slot.launch_abandoned
+            })
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        slot.credit
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?
+            .verify_preparation(original)
+    }
+}
+
+impl Drop for OriginalNativeNodeBinding {
+    fn drop(&mut self) {
+        let Some(roster) = self.roster.upgrade() else {
+            return;
+        };
+        let Ok(mut state) = roster.lock() else {
+            return;
+        };
+        if let Some(slot) = state
+            .slots
+            .get_mut(self.index)
+            .filter(|slot| slot.active == Some(self.generation) && slot.node_bindings_live > 0)
+        {
+            slot.node_bindings_live -= 1;
+        }
+    }
 }

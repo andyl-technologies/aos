@@ -16,6 +16,7 @@ use self::deadline::{OperationDecision, decide_operation, operation_status_from_
 
 mod bootstrap;
 mod deadline;
+mod startup;
 
 pub use bootstrap::HostSupervisionBootstrap;
 
@@ -352,6 +353,7 @@ struct Operation {
     completed: u64,
     required: u64,
     state: HostOperationState,
+    startup_cancellation: Option<startup::SetupCancellation>,
 }
 
 #[derive(Debug)]
@@ -434,7 +436,7 @@ impl HostOperationSupervisor {
         let changed = Arc::new(Condvar::new());
         // Sampling before the Instant origin cannot extend the native cap.
         let original_monotonic_ns = kernel_monotonic_ns()?;
-        Ok(Self {
+        let supervisor = Self {
             shared: Arc::new(Shared {
                 started: host_now(),
                 #[cfg(feature = "private-measurement-domain")]
@@ -464,7 +466,17 @@ impl HostOperationSupervisor {
                     rosters: BTreeMap::from([(0, (budgets, None))]),
                 })),
             }),
-        })
+        };
+        supervisor
+            .shared
+            .outer
+            .lock()
+            .map_err(|_| HostSupervisionError::Unavailable)?
+            .rosters
+            .get_mut(&0)
+            .ok_or(HostSupervisionError::Unavailable)?
+            .1 = Some(Arc::downgrade(&supervisor.shared));
+        Ok(supervisor)
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, SupervisionState>, HostSupervisionError> {
@@ -595,19 +607,62 @@ impl HostOperationSupervisor {
     }
 
     fn notify_owners(&self) -> Result<(), HostSupervisionError> {
-        let outer = self
-            .shared
-            .outer
-            .lock()
-            .map_err(|_| HostSupervisionError::Unavailable)?;
-        outer.root_wakeup.notify_all();
-        self.shared.changed.notify_all();
-        for (_, owner) in outer.rosters.values() {
-            if let Some(owner) = owner.as_ref().and_then(Weak::upgrade) {
+        self.notify_owners_with_visitor(|_| {})
+    }
+
+    fn notify_owners_with_visitor(
+        &self,
+        mut visited: impl FnMut(u64),
+    ) -> Result<(), HostSupervisionError> {
+        let final_owner = {
+            let outer = self
+                .shared
+                .outer
+                .lock()
+                .map_err(|_| HostSupervisionError::Unavailable)?;
+            outer.root_wakeup.notify_all();
+            outer.rosters.last_key_value().map(|(&id, _)| id)
+        };
+        let Some(final_owner) = final_owner else {
+            return Ok(());
+        };
+        let mut cursor = None;
+        let mut failure = None;
+        loop {
+            // Release the outer lock before the owner's operation lock. All
+            // mutation/decision paths acquire these locks in the other order.
+            let next = {
+                let outer = self
+                    .shared
+                    .outer
+                    .lock()
+                    .map_err(|_| HostSupervisionError::Unavailable)?;
+                let bounds = (
+                    cursor.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
+                    std::ops::Bound::Included(final_owner),
+                );
+                outer
+                    .rosters
+                    .range(bounds)
+                    .next()
+                    .map(|(&id, (_, owner))| (id, owner.as_ref().and_then(Weak::upgrade)))
+            };
+            let Some((id, owner)) = next else {
+                break;
+            };
+            cursor = Some(id);
+            // Owners registered later derive the current policy. They cannot
+            // extend this revocation walk beyond its original finite roster.
+            visited(id);
+            if let Some(owner) = owner {
                 owner.changed.notify_all();
+                let revoked = startup::revoke_setup_operations(&owner);
+                if failure.is_none() {
+                    failure = revoked.err();
+                }
             }
         }
-        Ok(())
+        failure.map_or(Ok(()), Err)
     }
 
     fn elapsed(&self) -> Duration {
@@ -747,6 +802,7 @@ impl HostOperationSupervisor {
                 completed: 0,
                 required: required_work_units,
                 state: HostOperationState::Running,
+                startup_cancellation: None,
             },
         );
         Ok(HostOperationGuard {
@@ -955,6 +1011,7 @@ impl HostOperationSupervisor {
             .rosters
             .values()
             .filter_map(|(_, owner)| owner.as_ref().and_then(Weak::upgrade))
+            .filter(|shared| shared.budget_owner != 0)
             .map(|shared| Self { shared })
             .collect();
         let cap = self.outer_cap_status()?;
@@ -1428,8 +1485,14 @@ impl HostOperationGuard {
             .operations
             .get_mut(&self.id)
             .ok_or(HostSupervisionError::Unavailable)?;
+        if let Some(cancellation) = &operation.startup_cancellation {
+            cancellation.check()?;
+        }
         operation.completed = operation.required;
         operation.state = HostOperationState::Completed;
+        // The descriptor closes before its loan; no completed operation keeps
+        // a revocation alias that can affect later work on the same event.
+        drop(operation.startup_cancellation.take());
         drop(state);
         self.status()
     }

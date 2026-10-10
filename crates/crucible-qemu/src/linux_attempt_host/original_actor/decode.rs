@@ -13,7 +13,7 @@ use crucible::owned_decode::{DecodeAdmissionError, DecodeBudget, DecodeResourceA
 use crucible_linux_resource::host_services::{
     HostServiceAllocator, HostServiceError, HostServiceLease, HostServiceLeasePair,
 };
-use crucible_linux_resource::host_supervision::HostOperationGuard;
+use crucible_linux_resource::host_supervision::{HostOperationGuard, HostSupervisionError};
 use crucible_ram::ResourceLoan;
 
 use super::OriginalActorAccountError;
@@ -152,6 +152,22 @@ fn shared_extent<T>() -> Result<u64, HostServiceError> {
 }
 
 impl OriginalActorDecodeOwner {
+    /// Checks the retained original independently of recorded decode refusals.
+    ///
+    /// This check exposes no guard or account. It lets an effect owner preserve
+    /// its first failure while observing a later original cancellation separately.
+    ///
+    /// # Errors
+    /// Returns the actual original refusal, or unavailable consumed custody.
+    pub fn verify_original_boundary(&self) -> Result<(), HostSupervisionError> {
+        self.authority
+            .as_ref()
+            .ok_or(HostSupervisionError::Unavailable)?
+            .original
+            .wait_slice()?;
+        Ok(())
+    }
+
     pub(super) fn verify_original(
         &self,
         original: &Arc<HostOperationGuard>,
@@ -207,6 +223,63 @@ impl OriginalActorDecodeOwner {
         owner.budget = Some(budget);
         original.wait_slice()?;
         Ok(owner)
+    }
+
+    /// Lends one actor-local transport purpose to its exact retained original.
+    ///
+    /// Only the closed node adapter invokes this method. Descriptor, buffer and
+    /// codec admission happen before their births; this identity check neither
+    /// issues a native observer purpose nor authenticates a process contract.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn prepare_readonly_backing_purpose<'owner>(
+        &'owner self,
+        original: &'owner Arc<HostOperationGuard>,
+    ) -> Result<
+        crate::qmp::readonly_backing_transport::ActorBackingTransportPurpose<'owner>,
+        OriginalActorAccountError,
+    > {
+        self.verify_original(original)?;
+        Ok(
+            crate::qmp::readonly_backing_transport::ActorBackingTransportPurpose::verified(
+                self, original,
+            ),
+        )
+    }
+
+    /// Prepays the fixed final capture failure body under this exact actor.
+    ///
+    /// No account or budget is exposed. Scratch admission itself checks the
+    /// saved original; its refusal retains that actual decoder cause and a
+    /// separate raw original postcut before any transport effect.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn prepare_readonly_backing_failure_owner<'owner>(
+        &'owner self,
+        original: &'owner Arc<HostOperationGuard>,
+    ) -> Result<
+        crate::qmp::readonly_backing_transport::PreparedBackingCaptureFailure<'owner>,
+        crate::qmp::readonly_backing_transport::BackingCaptureFailure<'owner>,
+    > {
+        use crate::qmp::readonly_backing_transport::{
+            ActorBackingTransportPurpose, BackingCaptureFailure, PreparedBackingCaptureFailure,
+        };
+        let authority = self
+            .authority
+            .as_ref()
+            .ok_or_else(|| BackingCaptureFailure::unavailable(original.wait_slice().err()))?;
+        if !Arc::ptr_eq(original, &authority.original) {
+            return Err(BackingCaptureFailure::unavailable(
+                original.wait_slice().err(),
+            ));
+        }
+        let budget = self
+            .budget
+            .as_ref()
+            .ok_or_else(|| BackingCaptureFailure::unavailable(original.wait_slice().err()))?;
+        PreparedBackingCaptureFailure::prepare(
+            budget,
+            ActorBackingTransportPurpose::verified(self, original),
+            || original.wait_slice().err(),
+        )
     }
 
     /// Borrows the admitted budget for actual guarded decoding.
@@ -479,4 +552,149 @@ mod tests {
         assert!(resident.reserve_resources(1, 64, 1 << 20).is_err());
         assert!(metadata.reserve_resources(1, 64, 1 << 20).is_err());
     }
+
+    #[test]
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn transport_postcheck_observes_cancel_after_sticky_budget_refusal() {
+        use crate::qmp::readonly_backing_transport::BackingTransportPurpose;
+
+        let (supervisor, original) = preparation();
+        let resident = HostServiceAllocator::new(1, 64, 1 << 20).unwrap();
+        let metadata = HostServiceAllocator::new(1, 64, 1 << 20).unwrap();
+        let owner =
+            OriginalActorDecodeOwner::prepare(&original, &resident, &metadata, 1 << 20).unwrap();
+        let purpose = owner.prepare_readonly_backing_purpose(&original).unwrap();
+        let refusal = owner
+            .budget()
+            .unwrap()
+            .reserve_scratch_bytes((1 << 20) + 1)
+            .err()
+            .unwrap();
+
+        assert!(matches!(
+            purpose.check_original(),
+            Err(OriginalActorAccountError::Decode(_))
+        ));
+        assert!(purpose.check_original_post().is_ok());
+        supervisor.cancel().unwrap();
+
+        assert!(matches!(
+            purpose.check_original_post(),
+            Err(OriginalActorAccountError::Supervision(
+                crucible_linux_resource::host_supervision::HostSupervisionError::Terminal {
+                    state: crucible_linux_resource::host_supervision::HostOperationState::Canceled
+                }
+            ))
+        ));
+        drop(purpose);
+        drop(refusal);
+        assert!(owner.try_close().is_err());
+    }
+
+    #[test]
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn capture_failure_storage_refusal_constructs_no_final_body() {
+        use crate::qmp::readonly_backing_transport::PreparedBackingCaptureFailure;
+
+        let (_supervisor, original) = preparation();
+        let resident = HostServiceAllocator::new(1, 64, 1 << 20).unwrap();
+        let metadata = HostServiceAllocator::new(1, 64, 1 << 20).unwrap();
+        let owner =
+            OriginalActorDecodeOwner::prepare(&original, &resident, &metadata, 1 << 20).unwrap();
+        let sticky = owner
+            .budget()
+            .unwrap()
+            .reserve_scratch_bytes((1 << 20) + 1)
+            .err()
+            .unwrap();
+        let (result, body, _counts) = TestAllocationObserver::capture_layout_and_count(
+            PreparedBackingCaptureFailure::body_layout(),
+            || owner.prepare_readonly_backing_failure_owner(&original),
+        );
+
+        let failure = match result {
+            Ok(_) => panic!("sticky refusal accepted a final failure body"),
+            Err(failure) => failure,
+        };
+        assert!(body.is_none(), "denied final body was physically allocated");
+        assert!(
+            std::error::Error::source(&failure)
+                .unwrap()
+                .is::<crucible::owned_decode::DecodeAdmissionError>()
+        );
+        assert_eq!(
+            std::error::Error::source(&failure)
+                .unwrap()
+                .downcast_ref::<crucible::owned_decode::DecodeAdmissionError>(),
+            Some(&sticky)
+        );
+        assert!(failure.original_post().is_none());
+        assert!(original.wait_slice().is_ok());
+        // Decoder refusal may allocate its inherited cause. This control only
+        // denies the selected final body; it makes no universal allocation claim.
+    }
+
+    #[test]
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn capture_failure_storage_moves_first_and_raw_post_without_allocation() {
+        use crate::qmp::readonly_backing_transport::{
+            BackingTransportCause, BackingTransportFailure, PreparedBackingCaptureFailure,
+        };
+
+        let (supervisor, original) = preparation();
+        let resident = HostServiceAllocator::new(1, 64, 1 << 20).unwrap();
+        let metadata = HostServiceAllocator::new(1, 64, 1 << 20).unwrap();
+        let owner =
+            OriginalActorDecodeOwner::prepare(&original, &resident, &metadata, 1 << 20).unwrap();
+        // A separately observed physical free samples the existing actor credit
+        // without admitting another loan. Other retained controls must not mask
+        // an early refund of this selected body's credit.
+        let (probe, probe_identity) =
+            TestAllocationObserver::capture(7, || std::hint::black_box(Box::new([0u8; 7])));
+        let (_, baseline) = TestAllocationObserver::observe(
+            &resident,
+            probe_identity.expect("actual baseline probe allocation"),
+            || drop(probe),
+        );
+        let baseline = baseline.expect("original baseline counter is readable");
+        let (prepared, body, _counts) = TestAllocationObserver::capture_layout_and_count(
+            PreparedBackingCaptureFailure::body_layout(),
+            || owner.prepare_readonly_backing_failure_owner(&original),
+        );
+        let mut prepared = prepared.unwrap();
+        let body = body.expect("actual final body was allocated before failure");
+        supervisor.cancel().unwrap();
+        let expected = original.wait_slice().unwrap_err();
+        let (_, first) = prepared.parts();
+        *first = Some(BackingTransportFailure {
+            primary: BackingTransportCause::Io(std::io::ErrorKind::BrokenPipe.into()),
+            original_post: Some(OriginalActorAccountError::Supervision(expected)),
+        });
+
+        let (failure, counts) = TestAllocationObserver::count(|| prepared.refuse());
+
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert_eq!(failure.original_post(), Some(&expected));
+        assert_eq!(
+            std::error::Error::source(&failure)
+                .unwrap()
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
+        let (_, retained_at_body_free) =
+            TestAllocationObserver::observe(&resident, body, || drop(failure));
+        let selected_extent = PreparedBackingCaptureFailure::body_layout().size() as u64;
+        assert!(retained_at_body_free.is_some_and(|bytes| bytes >= baseline + selected_extent));
+        assert!(resident.reserve_resources(1, 64, 1 << 20).is_err());
+        // The cancelled original remains contained. The observed counter and
+        // selected body free are component custody, not complete Source proof.
+    }
 }
+
+#[cfg(test)]
+#[path = "decode/json_error_tests.rs"]
+mod json_error_tests;

@@ -43,9 +43,15 @@ fn host_messages_round_trip_through_big_endian_frames() {
     );
     assert_host_roundtrip(
         HostMsg::Setup {
+            process_generation: 1,
+            device_digest_workspace: None,
             region_len: 450_560,
         },
-        &[0, 0, 0, 9, 0x01, 0, 0, 0, 0, 0, 6, 0xE0, 0],
+        &[
+            0, 0, 0, 57, 1, 0, 0, 0, 0, 0, 6, 224, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0,
+        ],
     );
     assert_host_roundtrip(HostMsg::Quit, &[0, 0, 0, 1, 0x12]);
 }

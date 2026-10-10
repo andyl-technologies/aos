@@ -162,7 +162,6 @@ pub use ram_source_observation::ProductionRamSourceDecorator;
 
 /// Immutable artifacts and bounds for local production QEMU execution.
 pub struct ProductionVmLifecycleConfig {
-    decode_custody: Option<crucible::owned_decode::DecodeCustody>,
     host_ram_registration_factory: Option<Arc<dyn ProductionHostRamRegistrationFactory>>,
     ram_catalog_provider: Option<Arc<dyn ProductionRamCatalogProvider>>,
     #[cfg(any(test, feature = "test-support"))]
@@ -202,6 +201,8 @@ pub struct ProductionVmLifecycleConfig {
     fault_replay: Option<ResolvedEffectTrace>,
     world_artifacts: Option<Arc<dyn DagStore>>,
     bounded_scheduler_preemption: Option<BoundedSchedulerPreemptionFlights>,
+    // Owning configuration members are destroyed before their original credits.
+    decode_custody: Option<crucible::owned_decode::DecodeCustody>,
 }
 
 /// Shared storage and descriptor custody for one durable native RAM catalog.
@@ -2230,6 +2231,9 @@ fn finish_reaped_node_lease_map(
 
 mod checkpoint_recovery;
 use checkpoint_recovery::durable_run_state_api_error;
+mod admitted_assets;
+pub use admitted_assets::{ProductionVmGuestAssetAdmissionError, ProductionVmGuestAssetPaths};
+
 mod admitted_clone;
 mod config;
 pub use admitted_clone::ProductionVmLifecycleConfigCloneError;

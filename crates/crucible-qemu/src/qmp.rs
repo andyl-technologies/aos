@@ -42,11 +42,26 @@ pub use selectable_reset::QmpSelectableResetComplete;
 #[cfg(feature = "kernel-swap-measurement")]
 mod kernel_swap_residency;
 mod paused_cpu;
+#[cfg(any(test, all(target_os = "linux", feature = "private-measurement-domain")))]
+pub(crate) mod readonly_backing_stream;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub use readonly_backing_stream::{
+    BackingEvent as QmpReadOnlyBackingEvent, BackingOwner as QmpReadOnlyBackingOwner,
+};
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub use readonly_backing_stream::{
+    QmpReadOnlyBackingFailure, QmpReadOnlyBackingReceipt, QmpReadOnlyBackingSink,
+    QmpReadOnlyBackingStreamError,
+};
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub(crate) mod readonly_backing_transport;
 #[cfg(feature = "kernel-swap-measurement")]
 pub use kernel_swap_residency::{
     QMP_QUERY_KERNEL_SWAP_ADMISSION_COMMAND, QMP_QUERY_KERNEL_SWAP_RESIDENCY_COMMAND,
     QmpKernelSwapAdmission, QmpKernelSwapCancellation, QmpKernelSwapResidency,
 };
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub use readonly_backing_transport::BackingCaptureFailure as QmpReadOnlyBackingCaptureFailure;
 #[cfg(any(test, feature = "test-support"))]
 mod performance_observation;
 pub use paused_cpu::{QMP_PAUSED_CPU_SCHEMA_VERSION, QMP_QUERY_PAUSED_CPU_COMMAND, QmpPausedCpu};
@@ -236,6 +251,30 @@ pub trait QmpTimeoutStream: Read + Write + Send {
         ))
     }
 
+    /// Polls this connection alongside one backing stream and its cancellation.
+    ///
+    /// The tuple reports QMP readiness and cancellation readiness. This fixed
+    /// progress operation lends no descriptor or ownership to its caller.
+    ///
+    /// # Errors
+    /// Refuses transports without Unix descriptor readiness, invalid time
+    /// conversion, or an actual kernel polling error. The caller supplies its
+    /// existing original interval; polling never creates or extends one.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn poll_qmp_backing_progress(
+        &self,
+        _output: BorrowedFd<'_>,
+        _cancellation: BorrowedFd<'_>,
+        _qmp_pending: bool,
+        _data_pending: bool,
+        _timeout: Duration,
+    ) -> io::Result<(bool, bool)> {
+        Err(io::Error::new(
+            ErrorKind::Unsupported,
+            "QMP stream does not support backing readiness",
+        ))
+    }
+
     /// Permanently closes a stream whose command boundary became ambiguous.
     ///
     /// In-memory test transports may retain the default no-op implementation;
@@ -271,6 +310,48 @@ impl QmpTimeoutStream for UnixStream {
         unix_socket::send_bytes_with_descriptor(self, bytes, descriptor)
     }
 
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn poll_qmp_backing_progress(
+        &self,
+        output: BorrowedFd<'_>,
+        cancellation: BorrowedFd<'_>,
+        qmp_pending: bool,
+        data_pending: bool,
+        timeout: Duration,
+    ) -> io::Result<(bool, bool)> {
+        use rustix::event::{PollFd, PollFlags, Timespec, poll};
+
+        let timeout = Timespec::try_from(timeout)
+            .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "invalid original poll slice"))?;
+        let mut descriptors = [
+            PollFd::new(
+                self,
+                if qmp_pending {
+                    PollFlags::IN
+                } else {
+                    PollFlags::empty()
+                },
+            ),
+            PollFd::new(
+                &output,
+                if data_pending {
+                    PollFlags::IN
+                } else {
+                    PollFlags::empty()
+                },
+            ),
+            PollFd::new(&cancellation, PollFlags::IN),
+        ];
+        match poll(&mut descriptors, Some(&timeout)) {
+            Ok(_) => Ok((
+                !descriptors[0].revents().is_empty(),
+                !descriptors[2].revents().is_empty(),
+            )),
+            Err(rustix::io::Errno::INTR) => Ok((false, false)),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     fn poison_qmp_stream(&mut self) {
         let _result = self.shutdown(std::net::Shutdown::Both);
     }
@@ -290,6 +371,8 @@ pub struct QmpClient<S> {
     selectable_reset_correlation: u64,
     #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
     selectable_reset_observation: u64,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    readonly_backing_correlation: u64,
 }
 
 impl<S> QmpClient<S>
@@ -368,6 +451,8 @@ where
             selectable_reset_correlation: 0,
             #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
             selectable_reset_observation: 0,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            readonly_backing_correlation: 0,
         };
         client.greeting = client.read_greeting()?;
         client.send_command(QmpCommand::Capabilities)?;
@@ -399,6 +484,23 @@ where
         generation: Option<u64>,
     ) -> Result<QmpPausedCpu, QmpError> {
         let response = self.send_command_return(QmpCommand::QueryPausedCpu { vcpu, generation })?;
+        paused_cpu::parse_paused_cpu(&response.value, vcpu, generation)
+    }
+
+    /// Reads ordinary stopped generation under the caller's retained original.
+    ///
+    /// # Errors
+    /// Refuses the same native scope, stale-generation and response failures as
+    /// [`Self::query_paused_cpu`], and the original operation's refusal.
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    pub fn query_paused_cpu_under_original(
+        &mut self,
+        vcpu: u32,
+        generation: Option<u64>,
+        original: &HostOperationGuard,
+    ) -> Result<QmpPausedCpu, QmpError> {
+        let response =
+            self.exchange_under(QmpCommand::QueryPausedCpu { vcpu, generation }, original)?;
         paused_cpu::parse_paused_cpu(&response.value, vcpu, generation)
     }
 
@@ -1675,6 +1777,9 @@ pub enum QmpCommandKind {
     QueryCheckpointEpoch,
     /// Read-only architectural PC at a paused SIM boundary.
     QueryPausedCpu,
+    /// Original-bound complete registered RAM backing export.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    ExportBackingMaterial,
     /// Sealed main-RAM identity at an admitted paused experiment boundary.
     #[cfg(feature = "kernel-swap-measurement")]
     QueryKernelSwapAdmission,
@@ -1769,6 +1874,8 @@ impl QmpCommandKind {
                 QMP_QUERY_FINGERPRINT_PROJECTION_MANIFEST_COMMAND
             }
             Self::QueryPausedCpu => QMP_QUERY_PAUSED_CPU_COMMAND,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            Self::ExportBackingMaterial => "crucible-export-backing-material-v1",
             #[cfg(feature = "kernel-swap-measurement")]
             Self::QueryKernelSwapResidency => QMP_QUERY_KERNEL_SWAP_RESIDENCY_COMMAND,
             #[cfg(feature = "kernel-swap-measurement")]

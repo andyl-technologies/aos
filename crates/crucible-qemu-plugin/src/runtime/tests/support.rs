@@ -133,6 +133,14 @@ impl LiveInstallFixture {
     }
 
     pub(super) fn spawn_host(&self, expected_status: u8) -> thread::JoinHandle<()> {
+        self.spawn_host_with_ack(Some(expected_status))
+    }
+
+    pub(super) fn spawn_host_until_setup(&self) -> thread::JoinHandle<()> {
+        self.spawn_host_with_ack(None)
+    }
+
+    fn spawn_host_with_ack(&self, expected_status: Option<u8>) -> thread::JoinHandle<()> {
         let mut host = self
             .host
             .try_clone()
@@ -163,12 +171,17 @@ impl LiveInstallFixture {
                 host.as_raw_fd(),
                 region_len,
                 SetupDescriptorFds {
+                    process_generation: 1,
+                    device_digest_workspace: None,
                     shmem_fd: region.as_raw_fd(),
                     wake_fd: wake.as_raw_fd(),
                     plugin_setup_plan_fd: branch_plan.as_raw_fd(),
                 },
             )
             .unwrap_or_else(|error| panic!("host setup should send: {error}"));
+            let Some(expected_status) = expected_status else {
+                return;
+            };
             let frame = read_control_frame(&mut host)
                 .unwrap_or_else(|error| panic!("setup ack should read: {error}"));
             let PluginMsg::SetupAck { status } = control_decode_plugin_msg(&frame)

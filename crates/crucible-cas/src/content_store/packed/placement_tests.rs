@@ -22,6 +22,7 @@ const DESCRIPTORS: u64 = 8;
 struct Quota {
     resources: FixtureResourceBudget,
     closed: AtomicBool,
+    refuse_page_reservation: AtomicBool,
 }
 
 impl StorePhysicalQuotaGuard for Quota {
@@ -39,6 +40,9 @@ impl StorePhysicalQuotaGuard for Quota {
 
     fn reserve_resources(&self, descriptors: u64, bytes: u64) -> Result<ResourceLoan, StoreError> {
         self.verify()?;
+        if bytes == wire::PAGE_BYTES as u64 && self.refuse_page_reservation.load(Ordering::SeqCst) {
+            return Err(StoreError::Quota);
+        }
         self.resources.reserve(descriptors, bytes)
     }
 }
@@ -79,6 +83,7 @@ impl Fixture {
         let quota = Arc::new(Quota {
             resources: FixtureResourceBudget::new(DESCRIPTORS, RESIDENT_BYTES),
             closed: AtomicBool::new(false),
+            refuse_page_reservation: AtomicBool::new(false),
         });
         let original = DecodeBudget::for_store(quota.clone())?;
         Ok(Self {
@@ -898,5 +903,359 @@ fn placement_shrink_to_inline_reclaims_actual_previous_arena() -> Result<(), Fix
     assert_eq!(index.header.count, 63);
     assert_eq!(index.header.packs, 1);
     assert_eq!(index.header.records, 64);
+    Ok(())
+}
+
+// Keeps the predecessor's two independent searches as the differential lane.
+fn insert_predecessor(
+    update: &mut Update,
+    backend: &PackedBlobBackend,
+    key: Key,
+    value: Value,
+    operation: &mut Operation<'_>,
+) -> Result<(), StoreError> {
+    if update.find(key, operation)?.is_some() {
+        return Err(StoreError::InvalidComposition {
+            reason: "Packed insertion requires confirmed absence",
+        });
+    }
+    update.set(backend, key, Some(value), operation)?;
+    Ok(())
+}
+
+#[test]
+fn placement_insert_absent_matches_ordered_predecessor() -> Result<(), FixtureError> {
+    for fused in [false, true] {
+        let fixture = Fixture::new()?;
+        let baseline = fixture.usage()?;
+        {
+            let mut boundary = || Ok(());
+            let mut operation = Operation {
+                original: Some(&fixture.original),
+                boundary: &mut boundary,
+            };
+            let initial =
+                EncodedIndex::empty_under(&fixture.backend, [31; 32], &mut operation)?.snapshot();
+            let mut update = Update::new(&initial, &fixture.backend, &mut operation)?;
+            for ordinal in 0..80 {
+                let key = Key::object(object(ordinal));
+                let value = value(ordinal);
+                if fused {
+                    update.insert_absent(&fixture.backend, key, value, &mut operation)?;
+                } else {
+                    insert_predecessor(&mut update, &fixture.backend, key, value, &mut operation)?;
+                }
+            }
+            let index = update.finish(&fixture.backend, &mut operation)?.snapshot();
+            assert_eq!(index.header.count, 80);
+            assert_eq!(index.header.generation, 80);
+            assert_eq!(index.header.logical_bytes, 80);
+            let reader = index.reader(&fixture.backend, &mut operation)?;
+            for ordinal in 0..80 {
+                assert_eq!(
+                    reader.find(Key::object(object(ordinal)), &mut operation)?,
+                    Some(value(ordinal))
+                );
+            }
+        }
+        assert_eq!(fixture.usage()?, baseline);
+    }
+    Ok(())
+}
+
+#[test]
+fn placement_insert_absent_keeps_duplicate_before_value_refusal() -> Result<(), FixtureError> {
+    let fixture = Fixture::new()?;
+    let baseline = fixture.usage()?;
+    {
+        let mut boundary = || Ok(());
+        let mut operation = Operation {
+            original: Some(&fixture.original),
+            boundary: &mut boundary,
+        };
+        let initial =
+            EncodedIndex::empty_under(&fixture.backend, [32; 32], &mut operation)?.snapshot();
+        let mut update = Update::new(&initial, &fixture.backend, &mut operation)?;
+        update.insert_absent(
+            &fixture.backend,
+            Key::object(object(0)),
+            value(0),
+            &mut operation,
+        )?;
+        let before = update
+            .finish(&fixture.backend, &mut operation)?
+            .bytes()
+            .to_vec();
+        let invalid = Value::object(IndexEntry {
+            pack: PackId([7; 32]),
+            offset: u64::MAX,
+            length: 1,
+        });
+
+        assert!(matches!(
+            update.insert_absent(
+                &fixture.backend,
+                Key::object(object(0)),
+                invalid,
+                &mut operation,
+            ),
+            Err(StoreError::InvalidComposition {
+                reason: "Packed insertion requires confirmed absence"
+            })
+        ));
+        assert!(matches!(
+            update.insert_absent(
+                &fixture.backend,
+                Key::object(object(1)),
+                invalid,
+                &mut operation,
+            ),
+            Err(StoreError::Incompatible)
+        ));
+        assert_eq!(
+            update.finish(&fixture.backend, &mut operation)?.bytes(),
+            before
+        );
+        assert!(!update.uncommitted_backing());
+    }
+    assert_eq!(fixture.usage()?, baseline);
+    Ok(())
+}
+
+#[test]
+fn placement_insert_absent_keeps_page_admission_before_header_overflow() -> Result<(), FixtureError>
+{
+    let fixture = Fixture::new()?;
+    let baseline = fixture.usage()?;
+    {
+        let mut index = published_two_leaf_index(&fixture)?;
+        index.header.generation = u64::MAX;
+        let mut healthy = || Ok(());
+        let mut operation = Operation {
+            original: Some(&fixture.original),
+            boundary: &mut healthy,
+        };
+        let mut update = Update::new(&index, &fixture.backend, &mut operation)?;
+        let mut search_calls = 0;
+        let mut count = || {
+            search_calls += 1;
+            Ok(())
+        };
+        assert_eq!(
+            update.find(
+                Key::object(object(65)),
+                &mut Operation {
+                    original: Some(&fixture.original),
+                    boundary: &mut count,
+                }
+            )?,
+            None
+        );
+        let before = fs::read(fixture.backend.admin.join(INDEX_FILE))?;
+        let mut calls = 0;
+        let mut refuse = || {
+            calls += 1;
+            if calls == search_calls {
+                fixture
+                    .quota
+                    .refuse_page_reservation
+                    .store(true, Ordering::SeqCst);
+            }
+            Ok(())
+        };
+        let error = update
+            .insert_absent(
+                &fixture.backend,
+                Key::object(object(65)),
+                value(65),
+                &mut Operation {
+                    original: Some(&fixture.original),
+                    boundary: &mut refuse,
+                },
+            )
+            .expect_err("the original page admission precedes scalar overflow");
+        assert!(matches!(error, StoreError::DecodeAdmission { .. }));
+        assert!(!update.uncommitted_backing());
+        assert_eq!(fs::read(fixture.backend.admin.join(INDEX_FILE))?, before);
+        fixture
+            .quota
+            .refuse_page_reservation
+            .store(false, Ordering::SeqCst);
+    }
+    assert_eq!(fixture.usage()?, baseline);
+    Ok(())
+}
+
+#[test]
+fn placement_insert_absent_cancel_after_search_keeps_root_and_loans() -> Result<(), FixtureError> {
+    let fixture = Fixture::new()?;
+    let baseline = fixture.usage()?;
+    {
+        let index = published_two_leaf_index(&fixture)?;
+        let mut healthy = || Ok(());
+        let mut update = Update::new(
+            &index,
+            &fixture.backend,
+            &mut Operation {
+                original: Some(&fixture.original),
+                boundary: &mut healthy,
+            },
+        )?;
+        let mut search_calls = 0;
+        let mut count = || {
+            search_calls += 1;
+            Ok(())
+        };
+        assert_eq!(
+            update.find(
+                Key::object(object(65)),
+                &mut Operation {
+                    original: Some(&fixture.original),
+                    boundary: &mut count,
+                }
+            )?,
+            None
+        );
+        let before = fs::read(fixture.backend.admin.join(INDEX_FILE))?;
+        let mut calls = 0;
+        let mut cancel = || {
+            calls += 1;
+            if calls == search_calls + 1 {
+                Err(StoreError::Unauthorized)
+            } else {
+                Ok(())
+            }
+        };
+        assert!(matches!(
+            update.insert_absent(
+                &fixture.backend,
+                Key::object(object(65)),
+                value(65),
+                &mut Operation {
+                    original: Some(&fixture.original),
+                    boundary: &mut cancel,
+                },
+            ),
+            Err(StoreError::Unauthorized)
+        ));
+        assert_eq!(calls, search_calls + 1);
+        assert!(!update.uncommitted_backing());
+        assert_eq!(fs::read(fixture.backend.admin.join(INDEX_FILE))?, before);
+    }
+    assert_eq!(fixture.usage()?, baseline);
+    Ok(())
+}
+
+#[test]
+fn placement_insert_absent_tamper_and_overflow_have_explicit_priority() -> Result<(), FixtureError>
+{
+    for overflow in [false, true] {
+        for fused in [false, true] {
+            let fixture = Fixture::new()?;
+            let baseline = fixture.usage()?;
+            {
+                let mut index = published_two_leaf_index(&fixture)?;
+                if overflow {
+                    index.header.generation = u64::MAX;
+                }
+                let mut healthy = || Ok(());
+                let mut update = Update::new(
+                    &index,
+                    &fixture.backend,
+                    &mut Operation {
+                        original: Some(&fixture.original),
+                        boundary: &mut healthy,
+                    },
+                )?;
+                let mut search_calls = 0;
+                let mut count = || {
+                    search_calls += 1;
+                    Ok(())
+                };
+                assert_eq!(
+                    update.find(
+                        Key::object(object(65)),
+                        &mut Operation {
+                            original: Some(&fixture.original),
+                            boundary: &mut count,
+                        }
+                    )?,
+                    None
+                );
+                let reference = PageReference::decode(index.body())?;
+                let name = index_io::arena_name(index.header.arena.expect("paged fixture"));
+                let file = OpenOptions::new().read(true).write(true).open(
+                    fixture
+                        .backend
+                        .admin
+                        .join(std::str::from_utf8(&name).unwrap()),
+                )?;
+                let before = fs::read(fixture.backend.admin.join(INDEX_FILE))?;
+                let mut expected_arena = fs::read(
+                    fixture
+                        .backend
+                        .admin
+                        .join(std::str::from_utf8(&name).unwrap()),
+                )?;
+                let byte_offset = reference.offset + u64::from(reference.length) - 1;
+                expected_arena[byte_offset as usize] ^= 1;
+                let changed_byte = expected_arena[byte_offset as usize];
+                let mut calls = 0;
+                let mut tamper = || {
+                    calls += 1;
+                    if calls == search_calls + 1 {
+                        file.write_all_at(&[changed_byte], byte_offset)
+                            .map_err(|source| StoreError::StreamIo {
+                                operation: "fixture-tamper-after-search",
+                                source,
+                            })?;
+                    }
+                    Ok(())
+                };
+                let mut operation = Operation {
+                    original: Some(&fixture.original),
+                    boundary: &mut tamper,
+                };
+                let error = if fused {
+                    update.insert_absent(
+                        &fixture.backend,
+                        Key::object(object(65)),
+                        value(65),
+                        &mut operation,
+                    )
+                } else {
+                    insert_predecessor(
+                        &mut update,
+                        &fixture.backend,
+                        Key::object(object(65)),
+                        value(65),
+                        &mut operation,
+                    )
+                }
+                .expect_err("neither corruption nor exhausted generation publishes");
+
+                // The omitted redundant read changes only this combined priority:
+                // header overflow precedes the candidate's next authenticated read.
+                if overflow && fused {
+                    assert!(matches!(error, StoreError::Quota));
+                } else {
+                    assert!(matches!(error, StoreError::Incompatible));
+                }
+                assert!(calls > search_calls);
+                assert!(!update.uncommitted_backing());
+                assert_eq!(fs::read(fixture.backend.admin.join(INDEX_FILE))?, before);
+                assert_eq!(
+                    fs::read(
+                        fixture
+                            .backend
+                            .admin
+                            .join(std::str::from_utf8(&name).unwrap())
+                    )?,
+                    expected_arena
+                );
+            }
+            assert_eq!(fixture.usage()?, baseline);
+        }
+    }
     Ok(())
 }

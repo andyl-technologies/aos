@@ -25,6 +25,8 @@ mod original_actor;
 #[cfg(feature = "private-measurement-domain")]
 mod original_host;
 #[cfg(feature = "private-measurement-domain")]
+mod original_node;
+#[cfg(feature = "private-measurement-domain")]
 mod original_roster;
 use native_resources::NativeResourceState;
 #[cfg(feature = "private-measurement-domain")]
@@ -33,14 +35,20 @@ pub use native_resources::{LinuxQemuNativeResourceController, LinuxQemuNativeRes
 #[cfg(feature = "private-measurement-domain")]
 pub use original_actor::{
     OriginalActorAccountCustody, OriginalActorAccountError, OriginalActorCatalogAccounts,
-    OriginalActorCatalogPurpose, OriginalActorDecodeOwner, OriginalActorServicePolicy,
-    OriginalCatalogAuditError, OriginalCatalogPhysicalAudit, OriginalGuestServiceHandle,
-    OriginalGuestServiceOwner,
+    OriginalActorCatalogPurpose, OriginalActorDecodeOwner, OriginalActorServiceLaunchPurpose,
+    OriginalActorServicePolicy, OriginalCatalogAuditError, OriginalCatalogPhysicalAudit,
+    OriginalGuestServiceHandle, OriginalGuestServiceOwner,
 };
 #[cfg(feature = "private-measurement-domain")]
 pub use original_host::OriginalNativePhysicalRetirement;
 #[cfg(feature = "private-measurement-domain")]
-pub(crate) use original_roster::NativeAccountAttempt;
+pub use original_node::OriginalBoundBackingObservation;
+#[cfg(feature = "private-measurement-domain")]
+pub use original_node::{OriginalBackingObservationError, OriginalNativeFreshLaunchError};
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) use original_roster::{
+    NativeAccountAttempt, OriginalDeviceDigestWorkspacePurpose, OriginalNativeNodeBinding,
+};
 #[cfg(feature = "private-measurement-domain")]
 pub use original_roster::{OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster};
 use std::sync::atomic::{AtomicU8, Ordering};

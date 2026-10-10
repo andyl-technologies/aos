@@ -97,11 +97,17 @@ use maintenance::CampaignStoreMaintenanceOwner;
 mod original_graph;
 #[cfg(feature = "private-measurement-domain")]
 mod original_repository;
+#[cfg(feature = "private-measurement-domain")]
+mod original_service;
 pub use maintenance::{CampaignStoreMaintenanceConfig, CampaignStoreMaintenanceConfigError};
 #[cfg(feature = "private-measurement-domain")]
 pub(crate) use original_graph::{prepare_original_directory_refs, prepare_original_sqlite_graph};
 #[cfg(feature = "private-measurement-domain")]
 pub(crate) use original_repository::OriginalCampaignRepositoryBootstrap;
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) use original_service::{
+    OriginalPreparedCampaignServiceOwner, OriginalPreparedServiceError,
+};
 pub use runtime_registry::CampaignRuntimeAttachmentHandle;
 use runtime_registry::{CampaignRuntimeRegistryOwner, CanonicalCampaignRuntimeController};
 

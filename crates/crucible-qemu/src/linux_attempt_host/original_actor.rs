@@ -21,7 +21,9 @@ mod service_accounts;
 pub use service_accounts::{OriginalGuestServiceHandle, OriginalGuestServiceOwner};
 
 mod workflow;
-pub use workflow::{OriginalActorCatalogPurpose, OriginalActorServicePolicy};
+pub use workflow::{
+    OriginalActorCatalogPurpose, OriginalActorServiceLaunchPurpose, OriginalActorServicePolicy,
+};
 
 use crucible_linux_resource::host_services::{
     HostServiceAllocator, HostServiceBootstrap, HostServiceError, HostServiceLeasePair,
@@ -50,7 +52,7 @@ pub enum OriginalActorAccountError {
     WorkflowDecode {
         /// Actual parser syntax or typed admission marker.
         #[source]
-        source: serde_json::Error,
+        source: crucible::owned_decode::ClosedJsonError,
         /// The same retained preparation's independent postcheck.
         original: Option<HostSupervisionError>,
     },
@@ -387,6 +389,24 @@ impl OriginalNativeAccountCredit {
             resident,
             metadata,
         ))
+    }
+
+    pub(super) fn prepare_fresh_launch(
+        &self,
+        attempt: super::NativeAccountAttempt,
+    ) -> Result<super::original_node::OriginalNativeFreshPreparation, OriginalActorAccountError>
+    {
+        self.require_original()?;
+        let retained = self
+            .original
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        Ok(
+            super::original_node::OriginalNativeFreshPreparation::retain(
+                &retained.preparation,
+                attempt,
+            ),
+        )
     }
 
     pub(super) fn begin_cleanup(&self) -> Result<HostOperationGuard, OriginalActorAccountError> {

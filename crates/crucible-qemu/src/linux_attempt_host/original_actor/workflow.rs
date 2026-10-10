@@ -6,17 +6,28 @@
 //! Scenario, schedule and native artifact authentication remain the genuine
 //! packaged service's responsibility before execution.
 
+use crucible::owned_decode::json_profiles::workflow::{
+    Aggregate, InstalledInput, ResourceVector, ServiceMode, ServiceServer, WorkflowProjection,
+};
+
 use std::sync::Arc;
 
-use crucible::owned_decode::from_json_slice;
-use crucible_linux_resource::host_supervision::HostOperationGuard;
+use crucible::owned_decode::from_json_slice_closed;
+#[cfg(test)]
+use crucible::owned_decode::json_profiles::workflow::{
+    GuestAssets, ServiceOperator, ServiceProfile,
+};
+use crucible_linux_resource::host_supervision::{HostOperationGuard, HostSupervisionError};
 use crucible_linux_resource::measurement_origin::{
     CertifiedMeasurementMode, MeasurementOriginError,
 };
-use serde::Deserialize;
+#[cfg(test)]
 use serde::de::IgnoredAny;
 
 use super::{OriginalActorAccountCustody, OriginalActorAccountError, OriginalActorDecodeOwner};
+
+mod guest_assets;
+use guest_assets::GuestAssetsValidation;
 
 /// Retains required SQLite service declarations authenticated by the parent.
 ///
@@ -26,6 +37,7 @@ use super::{OriginalActorAccountCustody, OriginalActorAccountError, OriginalActo
 /// filesystem capacity. Those physical purposes remain separately qualified.
 pub struct OriginalActorServicePolicy {
     pub(super) catalog: Option<OriginalActorCatalogPurpose>,
+    pub(super) launch: Option<OriginalActorServiceLaunchPurpose>,
     pub(super) original: Arc<HostOperationGuard>,
     pub(super) bootstrap_bytes: u64,
     pub(super) heap_bytes: u64,
@@ -34,6 +46,80 @@ pub struct OriginalActorServicePolicy {
     pub(super) bootstrap_digest: [u8; 32],
     pub(super) campaign_digest: [u8; 32],
     pub(super) campaign_projection_digest: [u8; 32],
+}
+
+/// Retains the authenticated listener declaration and component-file identity.
+///
+/// This move-only declaration grants no listener, worker or native admission.
+/// The daemon must reserve actual construction and serving purposes separately.
+pub struct OriginalActorServiceLaunchPurpose {
+    original: Arc<HostOperationGuard>,
+    server: ServiceServer,
+    mode: ServiceMode,
+    components_digest: [u8; 32],
+    workflow_digest: [u8; 32],
+}
+
+impl OriginalActorServiceLaunchPurpose {
+    /// Returns the six authenticated server declarations in wire-field order.
+    #[must_use]
+    pub fn server_declarations(&self) -> (usize, usize, usize, u64, u64, u64) {
+        let server = &self.server;
+        (
+            server.connection_workers,
+            server.pending_connections,
+            server.maximum_requests_per_connection,
+            server.accept_poll_millis,
+            server.read_timeout_millis,
+            server.write_timeout_millis,
+        )
+    }
+
+    /// Returns whether the authenticated service denies mutations.
+    #[must_use]
+    pub fn is_read_only(&self) -> bool {
+        matches!(self.mode, ServiceMode::ReadOnly)
+    }
+
+    /// Borrows the exact installed component-authority file digest.
+    #[must_use]
+    pub fn component_authorities_digest(&self) -> &[u8; 32] {
+        &self.components_digest
+    }
+
+    /// Authenticates the same workflow bytes without exposing their authority.
+    ///
+    /// # Errors
+    /// Refuses altered workflow bytes, cancellation or original expiry.
+    pub fn verify_workflow_bytes(&self, bytes: &[u8]) -> Result<(), OriginalActorAccountError> {
+        self.original.wait_slice()?;
+        if blake3::hash(bytes).as_bytes() != &self.workflow_digest {
+            return Err(OriginalActorAccountError::WorkflowBoundary {
+                source: MeasurementOriginError::Authentication("original asset workflow bytes"),
+                original: self.original.wait_slice().err(),
+            });
+        }
+        self.original.wait_slice().map(|_| ()).map_err(Into::into)
+    }
+
+    /// Verifies the exact decoder owner without exposing a guard or account.
+    ///
+    /// # Errors
+    /// Refuses an unrelated original allocation, cancellation or expiry.
+    pub fn verify_decoder(
+        &self,
+        decoder: &OriginalActorDecodeOwner,
+    ) -> Result<(), OriginalActorAccountError> {
+        decoder.verify_original(&self.original)
+    }
+
+    /// Checks the original preparation retained by this declaration.
+    ///
+    /// # Errors
+    /// Refuses the same original's terminal state or absolute expiry.
+    pub fn verify_original(&self) -> Result<(), HostSupervisionError> {
+        self.original.wait_slice().map(|_| ())
+    }
 }
 
 /// Carries the one catalog entitlement authenticated by the same workflow.
@@ -47,6 +133,19 @@ pub struct OriginalActorCatalogPurpose {
 }
 
 impl OriginalActorServicePolicy {
+    /// Moves the one authenticated prepared-service declaration.
+    ///
+    /// # Errors
+    /// Refuses repeated transfer, cancellation or expiry of this original.
+    pub fn take_launch_purpose(
+        &mut self,
+    ) -> Result<OriginalActorServiceLaunchPurpose, OriginalActorAccountError> {
+        self.original.wait_slice()?;
+        self.launch
+            .take()
+            .ok_or(OriginalActorAccountError::Unavailable)
+    }
+
     /// Moves the one authenticated catalog purpose into its physical owner.
     ///
     /// # Errors
@@ -73,66 +172,11 @@ impl OriginalActorServicePolicy {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct WorkflowProjection<'input> {
-    #[serde(borrow)]
-    schema: &'input str,
-    #[serde(borrow)]
-    family: &'input str,
-    native_count: u64,
-    hot_fork: Option<IgnoredAny>,
-    world_memory_mib: u64,
-    execution_quanta: u64,
-    #[serde(borrow)]
-    service_profile: ServiceProfile<'input>,
-    qemu: IgnoredAny,
-    plugin: IgnoredAny,
-    rows: IgnoredAny,
+trait InstalledInputValidation {
+    fn digest(&self, expected_path: &str) -> Result<[u8; 32], MeasurementOriginError>;
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ServiceProfile<'input> {
-    #[serde(borrow)]
-    operator: ServiceOperator<'input>,
-    catalog: ResourceVector,
-    catalog_maximum_inodes: u64,
-    native: ResourceVector,
-    aggregate: Aggregate,
-    preparation_seconds: u64,
-    invocation_seconds: u64,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ServiceOperator<'input> {
-    sqlite_bootstrap_bytes: u64,
-    sqlite_heap_bytes: u64,
-    sqlite_connections: usize,
-    actor_main_stack_bytes: u64,
-    #[serde(borrow)]
-    sqlite_bootstrap_proof: InstalledInput<'input>,
-    #[serde(borrow)]
-    campaign_policy: InstalledInput<'input>,
-    #[serde(borrow)]
-    campaign_policy_projection: InstalledInput<'input>,
-    registry: ResourceVector,
-    registry_project_id: u32,
-    catalog_project_id: u32,
-    registry_maximum_inodes: u64,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct InstalledInput<'input> {
-    #[serde(borrow)]
-    path: &'input str,
-    #[serde(borrow)]
-    blake3: &'input str,
-}
-
-impl InstalledInput<'_> {
+impl InstalledInputValidation for InstalledInput<'_> {
     fn digest(&self, expected_path: &str) -> Result<[u8; 32], MeasurementOriginError> {
         if self.path != expected_path
             || self.blake3.len() != 64
@@ -151,34 +195,6 @@ impl InstalledInput<'_> {
                 MeasurementOriginError::Authentication("original installed service digest")
             })
     }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ResourceVector {
-    resident_peak_bytes: u64,
-    backing_peak_bytes: u64,
-    metadata_bytes: u64,
-    staging_bytes: u64,
-    paging_io_slots: u64,
-    cpu_slots: u64,
-    task_slots: u64,
-    file_descriptors: u64,
-}
-
-#[derive(PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Aggregate {
-    native_slots: u64,
-    cpu_slots: u64,
-    resident_bytes: u64,
-    backing_bytes: u64,
-    metadata_bytes: u64,
-    staging_bytes: u64,
-    task_slots: u64,
-    file_descriptors: u64,
-    paging_io_slots: u64,
-    dirty_units: u64,
 }
 
 const CATALOG: ResourceVector = ResourceVector {
@@ -216,7 +232,11 @@ const AGGREGATE: Aggregate = Aggregate {
     dirty_units: 150_000,
 };
 
-impl WorkflowProjection<'_> {
+trait WorkflowProjectionValidation {
+    fn validate(&self, native_count: u64) -> Result<(), MeasurementOriginError>;
+}
+
+impl WorkflowProjectionValidation for WorkflowProjection<'_> {
     fn validate(&self, native_count: u64) -> Result<(), MeasurementOriginError> {
         let profile = &self.service_profile;
         let operator = &profile.operator;
@@ -287,6 +307,7 @@ impl WorkflowProjection<'_> {
         operator
             .campaign_policy_projection
             .digest("/etc/crucible/measurement-service-policy.json")?;
+        self.guest_assets.validate()?;
         // These fields remain in the authenticated input for the genuine
         // packaged decoder. Ignoring their shape here supplies no artifact,
         // scenario, schedule or completed-row authentication.
@@ -330,7 +351,7 @@ impl OriginalActorAccountCustody {
 
         let budget = owner.budget()?;
         let _scope = budget.enter();
-        let decoded: WorkflowProjection<'_> = match from_json_slice(bytes) {
+        let decoded: WorkflowProjection<'_> = match from_json_slice_closed(bytes, budget) {
             Ok(decoded) => decoded,
             Err(source) => {
                 return Err(OriginalActorAccountError::WorkflowDecode {
@@ -347,7 +368,19 @@ impl OriginalActorAccountCustody {
         }
         budget.check().map_err(OriginalActorAccountError::Decode)?;
         held.preparation.wait_slice()?;
+        let components_digest = decoded
+            .service_profile
+            .operator
+            .component_authorities
+            .digest("/etc/crucible/measurement-components.v1")?;
         Ok(OriginalActorServicePolicy {
+            launch: Some(OriginalActorServiceLaunchPurpose {
+                original: Arc::clone(&held.preparation),
+                server: decoded.service_profile.operator.campaign_server,
+                mode: decoded.service_profile.operator.campaign_mode,
+                components_digest,
+                workflow_digest: *held.evidence.workflow_digest(),
+            }),
             catalog: Some(OriginalActorCatalogPurpose {
                 original: Arc::clone(&held.preparation),
                 project_id: decoded.service_profile.operator.catalog_project_id,
@@ -390,6 +423,19 @@ mod tests {
             execution_quanta: 32,
             service_profile: ServiceProfile {
                 operator: ServiceOperator {
+                    campaign_server: ServiceServer {
+                        connection_workers: 1,
+                        pending_connections: 1,
+                        maximum_requests_per_connection: 1,
+                        accept_poll_millis: 1,
+                        read_timeout_millis: 100,
+                        write_timeout_millis: 100,
+                    },
+                    campaign_mode: ServiceMode::ReadWrite,
+                    component_authorities: InstalledInput {
+                        path: "/etc/crucible/measurement-components.v1",
+                        blake3: "0000000000000000000000000000000000000000000000000000000000000000",
+                    },
                     sqlite_bootstrap_bytes: 4096,
                     sqlite_heap_bytes: 8192,
                     sqlite_connections: 1,
@@ -427,6 +473,7 @@ mod tests {
                 preparation_seconds: 3600,
                 invocation_seconds: 3900,
             },
+            guest_assets: GuestAssets::fixture(),
             qemu: IgnoredAny,
             plugin: IgnoredAny,
             rows: IgnoredAny,

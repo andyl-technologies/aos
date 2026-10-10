@@ -7,10 +7,12 @@ use std::error::Error;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 
 use crucible_protocol::{
-    DescriptorHandoverError, HostMsg, ReceivedSetup, ReceivedSetupDescriptors, SetupDescriptorFds,
+    DescriptorHandoverError, DeviceDigestWorkspaceBinding, HostMsg, ReceivedSetup,
+    ReceivedSetupDescriptors, SetupDescriptorFds, SetupDeviceDigestWorkspaceFd,
     control_encode_host_msg, recv_setup_with_descriptors, send_setup_with_descriptors,
 };
 
@@ -25,6 +27,8 @@ fn setup_handover_transfers_three_descriptors_in_fixed_order() -> Result<(), Box
         host.as_raw_fd(),
         450_560,
         SetupDescriptorFds {
+            process_generation: 1,
+            device_digest_workspace: None,
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
             plugin_setup_plan_fd: branch_plan.as_raw_fd(),
@@ -32,9 +36,12 @@ fn setup_handover_transfers_three_descriptors_in_fixed_order() -> Result<(), Box
     )?;
 
     let ReceivedSetup {
+        process_generation: _,
+        device_digest_workspace: _,
         region_len,
         descriptors:
             ReceivedSetupDescriptors {
+                device_digest_workspace: _,
                 shmem_fd,
                 wake_fd,
                 plugin_setup_plan_fd,
@@ -57,7 +64,11 @@ fn setup_handover_accepts_split_descriptor_control_messages() -> Result<(), Box<
     let shmem = File::open("/dev/null")?;
     let wake = File::open("/dev/zero")?;
     let branch_plan = File::open("/dev/null")?;
-    let frame = control_encode_host_msg(&HostMsg::Setup { region_len: 8192 });
+    let frame = control_encode_host_msg(&HostMsg::Setup {
+        process_generation: 1,
+        device_digest_workspace: None,
+        region_len: 8192,
+    });
 
     send_setup_with_split_descriptor_cmsgs(
         host.as_raw_fd(),
@@ -66,9 +77,12 @@ fn setup_handover_accepts_split_descriptor_control_messages() -> Result<(), Box<
     )?;
 
     let ReceivedSetup {
+        process_generation: _,
+        device_digest_workspace: _,
         region_len,
         descriptors:
             ReceivedSetupDescriptors {
+                device_digest_workspace: _,
                 shmem_fd,
                 wake_fd,
                 plugin_setup_plan_fd,
@@ -92,6 +106,8 @@ fn setup_handover_reports_closed_peer_on_send() -> Result<(), Box<dyn Error>> {
         host.as_raw_fd(),
         4096,
         SetupDescriptorFds {
+            process_generation: 1,
+            device_digest_workspace: None,
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
             plugin_setup_plan_fd: branch_plan.as_raw_fd(),
@@ -128,7 +144,11 @@ fn assert_received_fd_order(
 #[test]
 fn setup_handover_rejects_wrong_descriptor_count() -> Result<(), Box<dyn Error>> {
     let (mut host, plugin) = UnixStream::pair()?;
-    let frame = control_encode_host_msg(&HostMsg::Setup { region_len: 4096 });
+    let frame = control_encode_host_msg(&HostMsg::Setup {
+        process_generation: 1,
+        device_digest_workspace: None,
+        region_len: 4096,
+    });
     host.write_all(&frame)?;
 
     assert!(matches!(
@@ -139,12 +159,131 @@ fn setup_handover_rejects_wrong_descriptor_count() -> Result<(), Box<dyn Error>>
     Ok(())
 }
 
+#[test]
+fn setup_handover_transfers_workspace_as_the_fourth_owned_cloexec_descriptor()
+-> Result<(), Box<dyn Error>> {
+    let (host, plugin) = UnixStream::pair()?;
+    let shmem = File::open("/dev/null")?;
+    let wake = File::open("/dev/zero")?;
+    let plan = File::open("/dev/full")?;
+    let workspace = File::open("/dev/urandom")?;
+    let identity = workspace.metadata()?;
+    let binding = DeviceDigestWorkspaceBinding {
+        account_generation: 2,
+        workspace_generation: 3,
+        device: identity.dev(),
+        inode: identity.ino(),
+    };
+
+    // This observes socket ordering only; native backing/purpose validation is separate.
+    send_setup_with_descriptors(
+        host.as_raw_fd(),
+        4096,
+        SetupDescriptorFds {
+            shmem_fd: shmem.as_raw_fd(),
+            wake_fd: wake.as_raw_fd(),
+            plugin_setup_plan_fd: plan.as_raw_fd(),
+            process_generation: 1,
+            device_digest_workspace: Some(SetupDeviceDigestWorkspaceFd {
+                fd: workspace.as_raw_fd(),
+                binding,
+            }),
+        },
+    )?;
+    let received = recv_setup_with_descriptors(plugin.as_raw_fd())?;
+
+    assert_eq!(received.process_generation, 1);
+    assert_eq!(received.device_digest_workspace, Some(binding));
+    let received_workspace = File::from(received.descriptors.device_digest_workspace.unwrap());
+    for (actual, expected) in [
+        (File::from(received.descriptors.shmem_fd), &shmem),
+        (File::from(received.descriptors.wake_fd), &wake),
+        (File::from(received.descriptors.plugin_setup_plan_fd), &plan),
+        (received_workspace, &workspace),
+    ] {
+        assert_close_on_exec(actual.as_raw_fd())?;
+        assert_eq!(actual.metadata()?.dev(), expected.metadata()?.dev());
+        assert_eq!(actual.metadata()?.ino(), expected.metadata()?.ino());
+    }
+    Ok(())
+}
+
+#[test]
 #[cfg(any(target_os = "android", target_os = "linux"))]
-fn send_setup_with_split_descriptor_cmsgs(
+fn setup_handover_refuses_a_fifth_descriptor_under_the_fixed_cap() -> Result<(), Box<dyn Error>> {
+    let (host, plugin) = UnixStream::pair()?;
+    let descriptor = File::open("/dev/null")?;
+    let frame = control_encode_host_msg(&HostMsg::Setup {
+        region_len: 4096,
+        process_generation: 1,
+        device_digest_workspace: Some(DeviceDigestWorkspaceBinding {
+            account_generation: 2,
+            workspace_generation: 3,
+            device: 0,
+            inode: 0,
+        }),
+    });
+    send_setup_with_split_descriptor_cmsgs(host.as_raw_fd(), &frame, [descriptor.as_raw_fd(); 5])?;
+
+    assert!(matches!(
+        recv_setup_with_descriptors(plugin.as_raw_fd()),
+        Err(DescriptorHandoverError::WrongDescriptorCount { count: 5 })
+    ));
+    Ok(())
+}
+
+#[test]
+#[cfg(any(target_os = "android", target_os = "linux"))]
+fn setup_handover_refuses_workspace_presence_with_only_three_descriptors()
+-> Result<(), Box<dyn Error>> {
+    let (host, plugin) = UnixStream::pair()?;
+    let descriptor = File::open("/dev/null")?;
+    let frame = control_encode_host_msg(&HostMsg::Setup {
+        region_len: 4096,
+        process_generation: 1,
+        device_digest_workspace: Some(DeviceDigestWorkspaceBinding {
+            account_generation: 2,
+            workspace_generation: 3,
+            device: 0,
+            inode: 0,
+        }),
+    });
+    send_setup_with_split_descriptor_cmsgs(host.as_raw_fd(), &frame, [descriptor.as_raw_fd(); 3])?;
+
+    assert!(matches!(
+        recv_setup_with_descriptors(plugin.as_raw_fd()),
+        Err(DescriptorHandoverError::WrongDescriptorCount { count: 3 })
+    ));
+    Ok(())
+}
+
+#[test]
+#[cfg(any(target_os = "android", target_os = "linux"))]
+fn setup_handover_refuses_a_fourth_descriptor_when_workspace_is_absent()
+-> Result<(), Box<dyn Error>> {
+    let (host, plugin) = UnixStream::pair()?;
+    let descriptor = File::open("/dev/null")?;
+    let frame = control_encode_host_msg(&HostMsg::Setup {
+        region_len: 4096,
+        process_generation: 1,
+        device_digest_workspace: None,
+    });
+    send_setup_with_split_descriptor_cmsgs(host.as_raw_fd(), &frame, [descriptor.as_raw_fd(); 4])?;
+
+    assert!(matches!(
+        recv_setup_with_descriptors(plugin.as_raw_fd()),
+        Err(DescriptorHandoverError::WrongDescriptorCount { count: 4 })
+    ));
+    Ok(())
+}
+
+#[cfg(any(target_os = "android", target_os = "linux"))]
+fn send_setup_with_split_descriptor_cmsgs<const N: usize>(
     socket_fd: RawFd,
     frame: &[u8],
-    fds: [RawFd; 3],
+    fds: [RawFd; N],
 ) -> Result<(), Box<dyn Error>> {
+    assert!((3..=5).contains(&N));
     let mut iov = libc::iovec {
         iov_base: frame.as_ptr().cast::<libc::c_void>().cast_mut(),
         iov_len: frame.len(),
@@ -162,20 +301,16 @@ fn send_setup_with_split_descriptor_cmsgs(
         msg_flags: 0,
     };
 
-    // SAFETY: `message` points to live ancillary storage with room for the first header.
-    let first = unsafe { libc::CMSG_FIRSTHDR(&message) };
-    assert!(!first.is_null());
-    write_single_fd_cmsg(first, fds[0])?;
-
-    // SAFETY: `first` is the first header in `message`; `message` has space for another one.
-    let second = unsafe { libc::CMSG_NXTHDR(&message, first) };
-    assert!(!second.is_null());
-    write_single_fd_cmsg(second, fds[1])?;
-
-    // SAFETY: `second` is a valid header and `message` has space for a third one.
-    let third = unsafe { libc::CMSG_NXTHDR(&message, second) };
-    assert!(!third.is_null());
-    write_single_fd_cmsg(third, fds[2])?;
+    // SAFETY: the fixed storage holds at least five split one-FD headers.
+    let mut cmsg = unsafe { libc::CMSG_FIRSTHDR(&message) };
+    for (index, fd) in fds.iter().enumerate() {
+        assert!(!cmsg.is_null());
+        write_single_fd_cmsg(cmsg, *fd)?;
+        if index + 1 < N {
+            // SAFETY: the validated count and control extent retain another header.
+            cmsg = unsafe { libc::CMSG_NXTHDR(&message, cmsg) };
+        }
+    }
 
     // SAFETY: `message` references live frame and ancillary buffers for this syscall.
     let sent = unsafe { libc::sendmsg(socket_fd, &message, send_flags()) };

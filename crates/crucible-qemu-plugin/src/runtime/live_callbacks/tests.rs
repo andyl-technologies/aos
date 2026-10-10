@@ -1,6 +1,7 @@
 //! Live QEMU callback integration tests.
 
 use super::*;
+use std::sync::mpsc;
 
 use std::cell::Cell;
 use std::ffi::CString;
@@ -1599,3 +1600,34 @@ fn live_state_rejects_bad_init_and_regressing_or_excess_progress() {
 
 mod registration_stubs;
 use registration_stubs::*;
+
+fn attach_test_fingerprint(
+    mut state: LiveVcpuTimeCallbackState,
+    sampling: crate::fingerprint_sampler::PluginFingerprintSampling,
+    slot: &FingerprintSampleSlot,
+) -> Result<LiveVcpuTimeCallbackState, LiveVcpuTimeCallbackError> {
+    attach_test_fingerprint_in_place(
+        &mut state,
+        sampling,
+        slot,
+        LiveWorkerQuiescence::new(crate::runtime::worker_quiescence::WORKER_ALL),
+    )?;
+    Ok(state)
+}
+
+fn attach_test_fingerprint_in_place(
+    state: &mut LiveVcpuTimeCallbackState,
+    sampling: crate::fingerprint_sampler::PluginFingerprintSampling,
+    slot: &FingerprintSampleSlot,
+    worker_quiescence: Arc<LiveWorkerQuiescence>,
+) -> Result<(), LiveVcpuTimeCallbackError> {
+    let mut failure = None;
+    state.attach_fingerprint_in_place(
+        sampling,
+        StableFingerprintSlotHandle::new(slot),
+        worker_quiescence,
+        crate::device_digest_workspace::DeviceDigestWorkspace::test_owner(),
+        &mut || Ok(std::time::Duration::from_millis(1)),
+        &mut failure,
+    )
+}

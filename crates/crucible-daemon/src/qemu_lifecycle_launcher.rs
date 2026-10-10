@@ -16,8 +16,11 @@ use crucible_api::{
 };
 use crucible_qemu::{
     QemuChildProcessContract, QemuLiveNodeIdentity, QemuNode, QemuPreparedRunDirectory,
-    QemuProductionFreshLaunchAdmission, launch_qemu_production_fresh_node,
+    QemuProductionFreshLaunchAdmission,
 };
+
+#[cfg(not(feature = "private-measurement-domain"))]
+use crucible_qemu::launch_qemu_production_fresh_node;
 
 use crate::{
     ExactCheckpointStore, ExecutionCancellation, QemuAttemptGenerationLease,
@@ -257,12 +260,37 @@ where
                 process_contract,
                 identity,
             )
-            .and_then(|admission| launch_qemu_production_fresh_node(&launch, admission));
+            .and_then(|admission| {
+                #[cfg(feature = "private-measurement-domain")]
+                {
+                    self.owner.launch_fresh_node(&launch, admission)
+                }
+                #[cfg(not(feature = "private-measurement-domain"))]
+                {
+                    launch_qemu_production_fresh_node(&launch, admission)
+                }
+            });
             (launched, retained_contract)
         };
         let node = match launched {
             Ok(node) => node,
             Err(mut error) => {
+                #[cfg(feature = "private-measurement-domain")]
+                if let crucible_qemu::QemuLiveNodeStepGateError::OriginalNativeLaunch { source } =
+                    error
+                {
+                    // The original slot already owns this exact prepaid Arc,
+                    // including any node created before the independent postcut.
+                    // No ordinary error formatting or second shared allocation
+                    // may replace that first cause or release its native credit.
+                    self.owner.quarantine_original_launch();
+                    drop(lease);
+                    return Err(LifecycleApiError::BackendConstruction {
+                        source: crucible_api::LifecycleBackendConstructionError::from_shared(
+                            source,
+                        ),
+                    });
+                }
                 let message = launch_error_chain(&error);
                 if let Some(child) = error.take_unreaped_child() {
                     self.owner.retain_failed_launch_child(child);

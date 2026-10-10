@@ -363,17 +363,8 @@ pub(super) fn replacement(
         progress,
     )?;
     for (id, entry) in entries {
-        if update.find(Key::object(*id), operation)?.is_some() {
-            return Err(StoreError::InvalidComposition {
-                reason: "Packed insertion requires confirmed absence",
-            });
-        }
-        let work = update.set(
-            backend,
-            Key::object(*id),
-            Some(Value::object(*entry)),
-            operation,
-        );
+        let work =
+            update.insert_absent(backend, Key::object(*id), Value::object(*entry), operation);
         progress.outcome.index_reclamation_pending |= update.uncommitted_backing();
         work?;
     }

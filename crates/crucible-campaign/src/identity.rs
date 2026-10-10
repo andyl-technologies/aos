@@ -75,11 +75,8 @@ impl CampaignHash {
             let low = hex_nibble(pair[1]).ok_or(CampaignCodecError::InvalidHex)?;
             bytes[index] = (high << 4) | low;
         }
-        let hash = Self(bytes);
-        if hash.to_hex() != value {
-            return Err(CampaignCodecError::InvalidHex);
-        }
-        Ok(hash)
+        // Exact length and lowercase-only nibbles already prove canonical text.
+        Ok(Self(bytes))
     }
 }
 

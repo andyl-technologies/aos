@@ -547,6 +547,18 @@ where
         }
     }
 
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn launch_fresh_node(
+        &self,
+        config: &crucible_qemu::QemuLiveNodeStepGateConfig,
+        admission: crucible_qemu::QemuProductionFreshLaunchAdmission<'_>,
+    ) -> Result<crucible_qemu::QemuNode, crucible_qemu::QemuLiveNodeStepGateError> {
+        match self {
+            Self::Fresh(guard) => guard.launch_fresh_node(config, admission),
+            Self::Retained(guard) => guard.launch_fresh_node(config, admission),
+        }
+    }
+
     fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
         match self {
             Self::Fresh(guard) => guard.child_process_contract(),

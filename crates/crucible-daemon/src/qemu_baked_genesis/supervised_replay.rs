@@ -179,6 +179,15 @@ impl<G: QemuAttemptProcessResourceGuard> QemuAttemptProcessResourceGuard
         self.native.native_resource_controller()
     }
 
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn launch_fresh_node(
+        &self,
+        config: &crucible_qemu::QemuLiveNodeStepGateConfig,
+        admission: crucible_qemu::QemuProductionFreshLaunchAdmission<'_>,
+    ) -> Result<crucible_qemu::QemuNode, crucible_qemu::QemuLiveNodeStepGateError> {
+        self.native.launch_fresh_node(config, admission)
+    }
+
     fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
         self.native.child_process_contract()
     }

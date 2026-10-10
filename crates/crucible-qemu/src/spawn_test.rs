@@ -2129,12 +2129,37 @@ fn open_prepared_run_directory_for_test(
     )?)
 }
 
+#[test]
+fn setup_resources_retain_the_validated_launch_generation() -> Result<(), Box<dyn Error>> {
+    let command = guarded_resource_test_command_builder_for_generation(37)?.build()?;
+    let (mut resources, _child_resources) = create_spawn_resources(4096)?;
+
+    resources.bind_plugin_launch(&command);
+    let setup = resources.into_setup_resources();
+
+    assert!(
+        command
+            .args()
+            .iter()
+            .any(|argument| argument.contains("process_generation=37"))
+    );
+    assert_eq!(setup.process_generation(), 37);
+    assert_eq!(setup.fault_node_hash(), command.plugin_fault_node_hash());
+    Ok(())
+}
+
 fn guarded_resource_test_command() -> Result<QemuLaunchCommand, Box<dyn Error>> {
     Ok(guarded_resource_test_command_builder()?.build()?)
 }
 
 fn guarded_resource_test_command_builder() -> Result<crate::QemuLaunchCommandBuilder, Box<dyn Error>>
 {
+    guarded_resource_test_command_builder_for_generation(1)
+}
+
+fn guarded_resource_test_command_builder_for_generation(
+    generation: u64,
+) -> Result<crate::QemuLaunchCommandBuilder, Box<dyn Error>> {
     let profile = crate::DeterministicLaunchProfile::conservative_default()?;
     let vm = crate::QemuVmLaunchConfig::new(
         "vm-a",
@@ -2151,7 +2176,8 @@ fn guarded_resource_test_command_builder() -> Result<crate::QemuLaunchCommandBui
         "/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
         0,
     )
-    .with_fault_target_node("vm-a");
+    .with_fault_target_node("vm-a")
+    .with_process_generation(generation);
     Ok(crate::QemuLaunchCommandBuilder::new_for_live_gate(
         profile,
         vm,

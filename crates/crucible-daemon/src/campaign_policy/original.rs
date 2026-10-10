@@ -5,8 +5,11 @@
 //! string and B-tree entry before constructing the same policy representation.
 //! The resulting custody stays external to the local service's policy Arc.
 
-use crucible::owned_decode::{DecodeAdmissionError, DecodeBudget, DecodeCustody, from_json_slice};
-use serde::Deserialize;
+use crucible::owned_decode::json_profiles::policy::{Document, Projection};
+
+use crucible::owned_decode::{
+    ClosedJsonError, DecodeAdmissionError, DecodeBudget, DecodeCustody, from_json_slice_closed,
+};
 use std::alloc::Layout;
 use std::sync::Arc;
 
@@ -18,6 +21,7 @@ pub(crate) struct OriginalCampaignPolicyOwner {
     service: Option<Arc<UnixPeerCampaignPolicy>>,
     _custody: DecodeCustody,
     budget: DecodeBudget,
+    closed: bool,
 }
 
 /// Retains projection, policy and original failures independently.
@@ -34,7 +38,7 @@ enum OriginalCampaignPolicyCause {
     #[error("original policy admission refused: {0}")]
     Admission(#[from] DecodeAdmissionError),
     #[error("original policy JSON refused: {0}")]
-    Json(#[from] serde_json::Error),
+    Json(#[from] ClosedJsonError),
     #[error("original policy identity or schema changed")]
     Identity,
     #[error("original policy mapping refused: {0}")]
@@ -43,49 +47,8 @@ enum OriginalCampaignPolicyCause {
     Name(#[from] CampaignCodecError),
     #[error("original policy operation label is unsupported")]
     Operation,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Projection<'input> {
-    #[serde(borrow)]
-    schema: &'input str,
-    #[serde(borrow)]
-    original_toml_blake3: &'input str,
-    #[serde(borrow)]
-    document: Document<'input>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Document<'input> {
-    #[serde(borrow)]
-    schema: &'input str,
-    version: u32,
-    #[serde(borrow)]
-    bindings: Vec<Binding<'input>>,
-    #[serde(borrow)]
-    grants: Vec<Grant<'input>>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Binding<'input> {
-    user_id: u32,
-    group_id: u32,
-    #[serde(borrow)]
-    principal: &'input str,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Grant<'input> {
-    #[serde(borrow)]
-    principal: &'input str,
-    #[serde(borrow)]
-    operation: &'input str,
-    #[serde(borrow)]
-    campaign: &'input str,
+    #[error("the same service policy still has strong or weak aliases")]
+    Aliases,
 }
 
 impl OriginalCampaignPolicyOwner {
@@ -106,13 +69,14 @@ impl OriginalCampaignPolicyOwner {
             service: None,
             _custody: budget.custody(),
             budget: budget.clone(),
+            closed: false,
         };
         let work = (|| {
             if blake3::hash(bytes).as_bytes() != expected_projection {
                 return Err(OriginalCampaignPolicyCause::Identity);
             }
             let _scope = budget.enter();
-            let projection: Projection<'_> = from_json_slice(bytes)?;
+            let projection: Projection<'_> = from_json_slice_closed(bytes, budget)?;
             let digest = blake3::Hash::from_hex(projection.original_toml_blake3)
                 .map_err(|_| OriginalCampaignPolicyCause::Identity)?;
             if projection.schema != "crucible.measurement-campaign-policy.v1"
@@ -173,9 +137,67 @@ impl OriginalCampaignPolicyOwner {
             }),
         }
     }
+
+    pub(crate) fn share_for_service(
+        &self,
+    ) -> Result<Arc<UnixPeerCampaignPolicy>, OriginalCampaignPolicyError> {
+        self.budget
+            .verify_live()
+            .map_err(|source| OriginalCampaignPolicyError {
+                source: source.into(),
+                original_after: None,
+            })?;
+        self.service
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or(OriginalCampaignPolicyError {
+                source: OriginalCampaignPolicyCause::Identity,
+                original_after: None,
+            })
+    }
+
+    pub(crate) fn try_close(&mut self) -> Result<(), OriginalCampaignPolicyError> {
+        if self.closed {
+            return Ok(());
+        }
+        let work = (|| {
+            self.budget.check()?;
+            self.budget.verify_live()?;
+            if let Some(service) = self.service.as_mut() {
+                Arc::get_mut(service).ok_or(OriginalCampaignPolicyCause::Aliases)?;
+            }
+            // The unchanged original budget stays outside both the owning
+            // policy maps and the actual Arc body/control allocation.
+            drop(self.service.take());
+            drop(self.policy.take());
+            Ok(())
+        })();
+        let after = self.budget.verify_live();
+        match (work, after) {
+            (Ok(()), Ok(())) => {
+                self.closed = true;
+                Ok(())
+            }
+            (Err(source), after) => Err(OriginalCampaignPolicyError {
+                source,
+                original_after: after.err(),
+            }),
+            (Ok(()), Err(source)) => Err(OriginalCampaignPolicyError {
+                source: source.into(),
+                original_after: None,
+            }),
+        }
+    }
 }
 
-impl Document<'_> {
+trait PolicyDocumentAdmission {
+    fn admit(
+        self,
+        budget: &DecodeBudget,
+    ) -> Result<UnixPeerCampaignPolicy, OriginalCampaignPolicyCause>;
+}
+
+impl PolicyDocumentAdmission for Document<'_> {
     fn admit(
         self,
         budget: &DecodeBudget,
@@ -243,8 +265,14 @@ impl Document<'_> {
 
 impl Drop for OriginalCampaignPolicyOwner {
     fn drop(&mut self) {
-        drop(self.service.take());
-        drop(self.policy.take());
+        if !self.closed {
+            // A caller drop is uncertainty, not proof of final service/Weak
+            // closure. Keep the actual maps and original payment together.
+            std::mem::forget(self.service.take());
+            std::mem::forget(self.policy.take());
+            std::mem::forget(self.budget.clone());
+            std::mem::forget(self._custody.clone());
+        }
     }
 }
 
@@ -321,6 +349,7 @@ mod tests {
         assert!(owner.policy.is_none());
         assert_eq!(owner.service.as_ref().map(|p| p.grants.len()), Some(1));
         assert!(owner.admit_service_arc().is_err());
+        owner.try_close()?;
         drop(owner);
         assert!(
             authority.admitted.load(Ordering::SeqCst) > 0,
@@ -369,6 +398,41 @@ mod tests {
                 ..
             })
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn actual_policy_weak_control_keeps_original_payment_until_final_free()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (authority, budget) = fixture()?;
+        let mut owner = OriginalCampaignPolicyOwner::decode(
+            INPUT,
+            blake3::hash(INPUT).as_bytes(),
+            &[0; 32],
+            &budget,
+        )?;
+        owner.admit_service_arc()?;
+        let service = owner.share_for_service()?;
+        let weak = Arc::downgrade(&service);
+
+        assert!(owner.try_close().is_err());
+        drop(service);
+        assert!(matches!(
+            owner.try_close(),
+            Err(OriginalCampaignPolicyError {
+                source: OriginalCampaignPolicyCause::Aliases,
+                ..
+            })
+        ));
+        assert!(authority.admitted.load(Ordering::SeqCst) > 0);
+        assert!(weak.upgrade().is_some());
+        drop(weak);
+
+        owner.try_close()?;
+        assert!(owner.service.is_none());
+        drop(owner);
+        drop(budget);
+        assert_eq!(authority.admitted.load(Ordering::SeqCst), 0);
         Ok(())
     }
 }

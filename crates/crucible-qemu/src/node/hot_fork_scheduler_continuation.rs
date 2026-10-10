@@ -37,6 +37,7 @@ pub struct QemuHotForkNodeStateContinuation {
     next_fault_command_sequence: u64,
     setup_fault_command_sequence_floor: u64,
     next_fault_event_sequence: u64,
+    fault_fingerprint_invalidated: bool,
 }
 
 impl QemuHotForkNodeStateContinuation {
@@ -81,6 +82,7 @@ impl QemuHotForkNodeStateContinuation {
             next_fault_command_sequence: source.next_fault_command_sequence,
             setup_fault_command_sequence_floor: source.setup_fault_command_sequence_floor,
             next_fault_event_sequence: source.next_fault_event_sequence,
+            fault_fingerprint_invalidated: source.fault_fingerprint_invalidated,
         })
     }
 
@@ -170,6 +172,8 @@ impl QemuHotForkSchedulerNodeContinuation {
             qmp_machine_control: Box::new(crate::QemuQmpExactSnapshotControlChannel::new(
                 child_qmp,
             )),
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            original_native_binding: None,
         };
         Self {
             request,
@@ -356,8 +360,13 @@ impl QemuHotForkSchedulerNodeContinuation {
             setup_fault_command_sequence_floor: state.setup_fault_command_sequence_floor,
             next_fault_event_sequence: state.next_fault_event_sequence,
             fault_event_terminal_failure: None,
+            fault_fingerprint_invalidated: state.fault_fingerprint_invalidated,
             // External fork custody uses its separately installed process authority.
             _launch_cleanup: launch_cleanup,
+            // A source generation's original witness cannot authorize a fork
+            // child. Only the admitted fresh factory issues this observation.
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            original_native_binding: None,
         })
     }
 }

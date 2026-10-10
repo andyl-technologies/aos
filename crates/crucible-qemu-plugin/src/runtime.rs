@@ -9,6 +9,7 @@
 //! concrete trap and guest-memory callback ABI is available.
 
 pub(crate) mod callback_quiescence;
+mod device_workspace;
 pub(crate) mod live_callbacks;
 mod live_whitebox;
 mod worker_quiescence;
@@ -21,7 +22,9 @@ use worker_quiescence::{
 
 #[cfg(test)]
 use live_callbacks::clear_live_vcpu_time_state_for_test;
-pub use live_callbacks::{LiveDeviceCallbackError, LiveVcpuTimeCallbackError};
+pub use live_callbacks::{
+    FingerprintWorkerFailure, LiveDeviceCallbackError, LiveVcpuTimeCallbackError,
+};
 use live_callbacks::{LiveVcpuTimeCallbackCapabilities, LiveVcpuTimeCallbackRegistrar};
 
 #[cfg(unix)]
@@ -108,7 +111,7 @@ struct HotForkChildWorkerOwner {
 }
 
 /// Exact QEMU-staged resource basis installed into one fork child.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct HotForkChildResourceBinding {
     parent_process_generation: u64,
     child_process_generation: u64,
@@ -121,6 +124,36 @@ struct HotForkChildResourceBinding {
     source_mapping_start: u64,
     source_mapping_length: u64,
     source_mapping_offset: u64,
+    account_generation: u64,
+    workspace_generation: u64,
+    workspace_device: u64,
+    workspace_inode: u64,
+    workspace_length: u64,
+    workspace_fd: i32,
+}
+
+impl Default for HotForkChildResourceBinding {
+    fn default() -> Self {
+        Self {
+            parent_process_generation: 0,
+            child_process_generation: 0,
+            template_generation: 0,
+            private_ring_generation: 0,
+            plugin_endpoint_generation: 0,
+            plugin_barrier_generation: 0,
+            control_socket_cookie: 0,
+            wake_eventfd_id: 0,
+            source_mapping_start: 0,
+            source_mapping_length: 0,
+            source_mapping_offset: 0,
+            account_generation: 0,
+            workspace_generation: 0,
+            workspace_device: 0,
+            workspace_inode: 0,
+            workspace_length: 0,
+            workspace_fd: -1,
+        }
+    }
 }
 
 impl From<crate::QemuPluginHotForkChildPlan> for HotForkChildResourceBinding {
@@ -137,6 +170,12 @@ impl From<crate::QemuPluginHotForkChildPlan> for HotForkChildResourceBinding {
             source_mapping_start: plan.source_mapping_start,
             source_mapping_length: plan.source_mapping_length,
             source_mapping_offset: plan.source_mapping_offset,
+            account_generation: plan.account_generation,
+            workspace_generation: plan.workspace_generation,
+            workspace_device: plan.workspace_device,
+            workspace_inode: plan.workspace_inode,
+            workspace_length: plan.workspace_length,
+            workspace_fd: plan.workspace_fd,
         }
     }
 }
@@ -159,6 +198,11 @@ struct HotForkChildRuntimeSnapshot {
 /// Failure while replacing template-process resources in a fork child.
 #[derive(Debug, Error)]
 enum HotForkChildRuntimeError {
+    /// Early inherited-workspace disposition or fresh claim failed.
+    #[error("fork-child device workspace failed: {source}")]
+    Workspace {
+        source: crate::DeviceDigestWorkspaceError,
+    },
     /// This process already attempted or completed child initialization.
     #[error("fork-child runtime initialization is unavailable in phase {phase}")]
     WrongPhase {
@@ -366,9 +410,24 @@ pub(crate) struct OwnedCallbackRuntimeState {
     slot_index: u32,
     control_fd: std::os::fd::RawFd,
     request_shutdown: QemuRequestShutdownFn,
+    startup_failure: Option<crate::StartupSourceError>,
+    plugin_id: Option<QemuPluginId>,
+    owner_process: u32,
+    workspace_disarmed: bool,
+    claimed_workspace_fd: i32,
+    refused_child_workspace: Option<crate::device_digest_workspace::DeviceDigestWorkspace>,
     #[cfg(test)]
     allow_missing_fault_command_state: bool,
     _pin: PhantomPinned,
+}
+
+fn check_fingerprint_setup_original(
+    state: &mut OwnedCallbackRuntimeState,
+) -> Result<(), LiveVcpuTimeCallbackError> {
+    live_callbacks::fingerprint_worker::check_setup_before_birth(
+        &mut || state.setup.original_startup_slice(),
+        &mut state.startup_failure,
+    )
 }
 
 impl OwnedCallbackRuntimeState {
@@ -398,6 +457,12 @@ impl OwnedCallbackRuntimeState {
             slot_index,
             control_fd,
             request_shutdown,
+            startup_failure: None,
+            plugin_id: None,
+            owner_process: std::process::id(),
+            workspace_disarmed: false,
+            claimed_workspace_fd: -1,
+            refused_child_workspace: None,
             #[cfg(test)]
             allow_missing_fault_command_state: false,
             _pin: PhantomPinned,
@@ -490,6 +555,15 @@ impl OwnedCallbackRuntimeState {
         {
             return Err(HotForkChildRuntimeError::ProcessGeneration);
         }
+        if !self.workspace_disarmed || self.owner_process == std::process::id() {
+            return Err(HotForkChildRuntimeError::TemplateNotQuiescent);
+        }
+
+        // A child needs its separately issued native Source before any fresh
+        // workspace/control reconstruction. The parent installer and pager
+        // operation cannot authorize the child incarnation.
+        self.require_child_startup_source()?;
+        let workspace = self.prepare_child_device_workspace(binding)?;
 
         let control = crate::abi::duplicate_control_stream(self.control_fd)
             .map_err(|source| HotForkChildRuntimeError::DuplicateControl { source })?;
@@ -543,7 +617,16 @@ impl OwnedCallbackRuntimeState {
             );
             live.as_mut()
                 .get_mut()
-                .reinitialize_hot_fork_child_workers(Arc::clone(&self.workers))
+                .reinitialize_hot_fork_child_workers(
+                    Arc::clone(&self.workers),
+                    workspace,
+                    &mut || {
+                        Err(crate::StartupSourceError::Ownership {
+                            reason: "separately issued child startup Source is unavailable",
+                        })
+                    },
+                    &mut self.startup_failure,
+                )
                 .map_err(|source| HotForkChildRuntimeError::FingerprintWorker { source })?;
         }
 
@@ -611,6 +694,7 @@ impl OwnedCallbackRuntimeState {
             *installed_binding = Some(binding);
         }
         self.process_generation = binding.child_process_generation;
+        self.owner_process = std::process::id();
         self.child_runtime_state
             .store(CHILD_RUNTIME_WORKERS_HELD, Ordering::Release);
         Ok(self.hot_fork_child_snapshot())
@@ -635,7 +719,7 @@ impl OwnedCallbackRuntimeState {
 
     /// Releases a fully reconstructed child runtime into ordinary execution.
     fn release_hot_fork_child(
-        &self,
+        &mut self,
     ) -> Result<HotForkChildRuntimeSnapshot, HotForkChildRuntimeError> {
         let phase = self.child_runtime_state.load(Ordering::Acquire);
         if phase != CHILD_RUNTIME_WORKERS_HELD {
@@ -652,6 +736,8 @@ impl OwnedCallbackRuntimeState {
         if !rings.quiescent() {
             return Err(HotForkChildRuntimeError::RingBarrier);
         }
+
+        self.require_child_startup_source()?;
 
         self.setup
             .mapped_region()
@@ -699,6 +785,7 @@ impl OwnedCallbackRuntimeState {
     )]
     fn prepare_live_vcpu_time_state(
         self: Pin<&mut Self>,
+        plugin_id: QemuPluginId,
         vcpu_count: u32,
         slot_index: u32,
         fault_node_hash: [u8; 32],
@@ -722,6 +809,10 @@ impl OwnedCallbackRuntimeState {
         // independently pinned callback allocation. The new allocation is
         // installed before its address becomes observable to QEMU.
         let state = unsafe { self.get_unchecked_mut() };
+        state.plugin_id = Some(plugin_id);
+        if fingerprint.is_some() {
+            check_fingerprint_setup_original(state)?;
+        }
         let stop_backing_identity = state.setup.mapped_region().backing_identity();
         let header = std::ptr::NonNull::from(state.setup.mapped_region().header());
         let fault_commands = crate::fault_command::FaultCommandBridge::new(
@@ -811,10 +902,19 @@ impl OwnedCallbackRuntimeState {
                 .mapped_region()
                 .fingerprint_sample(slot_index)
                 .map_err(|source| LiveVcpuTimeCallbackError::MappedFingerprintSlot { source })?;
+            let slot = live_callbacks::StableFingerprintSlotHandle::new(slot);
+            check_fingerprint_setup_original(state)?;
+            let workspace = state
+                .setup
+                .take_device_digest_workspace(plugin_id, process_generation)
+                .map_err(|source| LiveVcpuTimeCallbackError::DeviceDigestWorkspace { source })?;
             callback_state.attach_fingerprint_in_place(
                 sampling,
                 slot,
                 Arc::clone(&state.workers),
+                workspace,
+                &mut || state.setup.original_startup_slice(),
+                &mut state.startup_failure,
             )?;
         }
         callback_state.rebind_control_stage_identity(
@@ -997,6 +1097,53 @@ impl std::fmt::Debug for RequiredOwnedCallbacksRegistered {
 }
 
 impl RequiredOwnedCallbacksRegistered {
+    /// Observes actual fingerprint registration before publishing SetupAck(0).
+    fn wait_fingerprint_ready(&self) -> Result<(), PluginRuntimeInstallError> {
+        let state = self.state.as_ref().get_ref();
+        if let Some(live) = state.live_vcpu_time.as_ref() {
+            live.as_ref()
+                .get_ref()
+                .wait_fingerprint_registered(|| state.setup.original_startup_slice())
+                .map_err(
+                    |source| PluginRuntimeInstallError::FingerprintWorkerReadiness { source },
+                )?;
+        }
+        state
+            .setup
+            .check_original_startup()
+            .map_err(|source| PluginRuntimeInstallError::StartupSource { source })
+    }
+
+    #[cfg(not(test))]
+    fn check_original_startup(&self) -> Result<(), crate::ram_error::RamError> {
+        self.state
+            .as_ref()
+            .get_ref()
+            .setup
+            .check_original_startup()
+            .map_err(crate::startup_source::InstallerStartupSource::retained_ram_error)
+    }
+
+    #[cfg(not(test))]
+    fn original_startup_slice(&self) -> Result<std::time::Duration, crate::ram_error::RamError> {
+        self.state
+            .as_ref()
+            .get_ref()
+            .setup
+            .original_startup_slice()
+            .map_err(crate::startup_source::InstallerStartupSource::retained_ram_error)
+    }
+
+    #[cfg(not(test))]
+    fn complete_original_startup_registration(&mut self) -> Result<(), crate::ram_error::RamError> {
+        // SAFETY: this mutates only the inline Source completion bit/owner,
+        // without moving the pinned callback state or mapping.
+        unsafe { self.state.as_mut().get_unchecked_mut() }
+            .setup
+            .complete_original_startup_registration()
+            .map_err(crate::startup_source::InstallerStartupSource::retained_ram_error)
+    }
+
     fn from_registered(
         state: Pin<Box<OwnedCallbackRuntimeState>>,
         registration_mask: OwnedCallbackRegistrationMask,
@@ -1603,6 +1750,16 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
                             .mapping_excluded_from_child
                             .store(true, Ordering::Release);
                     }
+                    if snapshot.in_flight == 0
+                        && workers.parked_mask == workers.worker_mask
+                        && workers.pending_mask == 0
+                        && workers.operations_in_flight == 0
+                        && let Some(live) = state.live_vcpu_time.as_ref()
+                    {
+                        // SAFETY: the complete held callback/worker snapshots
+                        // exclude all access to the transferred workspace.
+                        unsafe { live.hold_fingerprint_workspace() }.map_err(|_| -libc::EPROTO)?;
+                    }
                     (snapshot, rings, workers)
                 }
                 crate::QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY => {
@@ -1611,9 +1768,26 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
                         return Err(-libc::EPROTO);
                     };
                     let workers = state.workers.snapshot();
+                    if snapshot.hot_fork_held
+                        && snapshot.in_flight == 0
+                        && workers.held
+                        && workers.parked_mask == workers.worker_mask
+                        && workers.pending_mask == 0
+                        && workers.operations_in_flight == 0
+                        && let Some(live) = state.live_vcpu_time.as_ref()
+                    {
+                        // SAFETY: this is the same complete held/parked cut.
+                        unsafe { live.hold_fingerprint_workspace() }.map_err(|_| -libc::EPROTO)?;
+                    }
                     (snapshot, rings, workers)
                 }
                 crate::QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE => {
+                    if let Some(live) = state.live_vcpu_time.as_ref() {
+                        // SAFETY: callbacks/workers remain excluded until the
+                        // same parent workspace has been restored successfully.
+                        unsafe { live.restore_fingerprint_workspace() }
+                            .map_err(|_| -libc::EPROTO)?;
+                    }
                     if state.mapping_excluded_from_child.load(Ordering::Acquire) {
                         if let Err(error) = state
                             .setup
@@ -1693,6 +1867,21 @@ extern "C" fn crucible_qemu_plugin_hot_fork_child_runtime(
     // QEMU invokes initialization/release only while the complete plugin
     // barrier excludes every callback and inherited worker operation.
     let state = unsafe { &mut *userdata.cast::<OwnedCallbackRuntimeState>() };
+    if action == crate::QEMU_PLUGIN_HOT_FORK_CHILD_DISARM {
+        if plan.is_null() {
+            return -libc::EINVAL;
+        }
+        // SAFETY: native code retains this fixed synchronous early-entry plan.
+        let plan = unsafe { *plan };
+        let disarmed = match state.disarm_child_device_workspace(&plan) {
+            Ok(disarmed) => disarmed,
+            Err(status) => return status,
+        };
+        // SAFETY: native code retains the non-null fixed output through return.
+        unsafe { status.write(disarmed) };
+        return 0;
+    }
+
     let result = match action {
         crate::QEMU_PLUGIN_HOT_FORK_CHILD_INITIALIZE => {
             if plan.is_null() {
@@ -1753,7 +1942,9 @@ extern "C" fn crucible_qemu_plugin_hot_fork_child_runtime(
         | (u32::from(snapshot.phase == CHILD_RUNTIME_ACTIVE)
             * crate::QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_ACTIVE)
         | (u32::from(snapshot.phase == CHILD_RUNTIME_FAILED)
-            * crate::QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_FAILED);
+            * crate::QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_FAILED)
+        | (u32::from(state.workspace_disarmed)
+            * crate::QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_WORKSPACE_DISARMED);
     // SAFETY: the caller supplied a non-null out pointer for this synchronous
     // callback. QEMU validates the exact fixed layout before using the result.
     unsafe {
@@ -1777,6 +1968,13 @@ extern "C" fn crucible_qemu_plugin_hot_fork_child_runtime(
             parked_worker_mask: snapshot.workers.parked_mask,
             pending_worker_mask: snapshot.workers.pending_mask,
             worker_operations_in_flight: snapshot.workers.operations_in_flight,
+            account_generation: snapshot.binding.account_generation,
+            workspace_generation: snapshot.binding.workspace_generation,
+            workspace_device: snapshot.binding.workspace_device,
+            workspace_inode: snapshot.binding.workspace_inode,
+            workspace_length: snapshot.binding.workspace_length,
+            workspace_fd: state.claimed_workspace_fd,
+            workspace_reserved: 0,
         });
     }
     0
@@ -1794,7 +1992,7 @@ fn hot_fork_child_plan_rejection(
     state: &OwnedCallbackRuntimeState,
 ) -> Option<&'static str> {
     let expected_size = std::mem::size_of::<crate::QemuPluginHotForkChildPlan>();
-    let checks: [(&'static str, bool); 21] = [
+    let checks: [(&'static str, bool); 23] = [
         (
             "schema version",
             plan.schema_version == crate::QEMU_PLUGIN_HOT_FORK_CHILD_PLAN_VERSION,
@@ -1844,6 +2042,11 @@ fn hot_fork_child_plan_rejection(
         (
             "mapping basis",
             hot_fork_child_mapping_basis_matches(plan, &state.setup),
+        ),
+        ("workspace disarmed", state.workspace_disarmed),
+        (
+            "workspace fields",
+            device_workspace::child_workspace_matches(plan, state),
         ),
         ("plan", true),
     ];
@@ -1978,6 +2181,7 @@ fn hot_fork_eventfd_identity_token_from_fdinfo(text: &str) -> io::Result<u64> {
 fn hot_fork_child_runtime_status(error: HotForkChildRuntimeError) -> std::os::raw::c_int {
     match error {
         HotForkChildRuntimeError::WrongPhase { .. } => -libc::EALREADY,
+        HotForkChildRuntimeError::Workspace { .. } => -libc::EPROTO,
         HotForkChildRuntimeError::WorkersNotReady => -libc::EAGAIN,
         HotForkChildRuntimeError::DuplicateControl { source }
         | HotForkChildRuntimeError::WorkerSpawn { source, .. } => source
@@ -2263,6 +2467,10 @@ pub fn active_runtime_is_published() -> bool {
 pub(crate) struct PluginRuntimeReservation {
     irreversible: bool,
     finished: bool,
+    #[cfg(unix)]
+    startup_source: Option<crate::startup_source::InstallerStartupSource>,
+    #[cfg(all(test, unix))]
+    startup_source_model: Option<crate::startup_source::test_support::InstallerStartupSourceModel>,
 }
 
 impl PluginRuntimeReservation {
@@ -2315,6 +2523,10 @@ pub(crate) fn reserve_runtime() -> Result<PluginRuntimeReservation, PluginRuntim
     Ok(PluginRuntimeReservation {
         irreversible: false,
         finished: false,
+        #[cfg(unix)]
+        startup_source: None,
+        #[cfg(all(test, unix))]
+        startup_source_model: None,
     })
 }
 
@@ -2392,12 +2604,44 @@ where
     let setup = sequence
         .receive_setup_with_descriptors_lifecycle(&mut control_stream)
         .map_err(registration_error)?;
-    let setup = {
+    // This is the sole production Source acquisition: the actual SCM receive
+    // above produced this same third OwnedFd. Reserve its inline custody before
+    // invoking native code, including nonzero/ambiguous returns and unwinds.
+    let (input, plan) = crate::setup::separate_received_plan(setup);
+    reservation.startup_source =
+        Some(crate::startup_source::InstallerStartupSource::retain_received_plan(plugin_id, plan));
+    let original =
+        reservation
+            .startup_source
+            .as_mut()
+            .ok_or(PluginRuntimeInstallError::StartupSource {
+                source: crate::StartupSourceError::Ownership {
+                    reason: "reserved original startup custody is absent",
+                },
+            })?;
+    #[cfg(test)]
+    if let Some(model) = reservation.startup_source_model.take() {
+        original.inject_model(model);
+    }
+    original
+        .acquire()
+        .map_err(|source| PluginRuntimeInstallError::StartupSource { source })?;
+    let mut setup = {
         let mut setup_writer = PluginSetupWriter(&mut control_stream);
         sequence
-            .prepare_setup_completion(&mut setup_writer, setup, handshake)
+            .prepare_setup_completion_under_original(&mut setup_writer, input, original, handshake)
             .map_err(registration_error)?
     };
+    let original =
+        reservation
+            .startup_source
+            .take()
+            .ok_or(PluginRuntimeInstallError::StartupSource {
+                source: crate::StartupSourceError::Ownership {
+                    reason: "original startup custody was already transferred",
+                },
+            })?;
+    setup.retain_startup_source(original);
 
     let (teardown_sender, teardown_receiver) = mpsc::channel();
     let teardown_router = LiveRuntimeTeardownRouter::new(teardown_sender.clone());
@@ -2547,6 +2791,13 @@ where
 
         post_registration_stage = PostRegistrationStage::SendReadyAck;
         maybe_inject_post_registration_panic(post_registration_stage);
+        if let Err(error) = retained.registered()?.wait_fingerprint_ready() {
+            return Err(fail_post_registration_before_ready_ack_lifecycle(
+                &mut control_stream,
+                error,
+                &mut acknowledgement_state,
+            ));
+        }
         acknowledgement_state = PostRegistrationAckState::ReadyAttempted;
         let setup_ack = {
             let mut setup_writer = PluginSetupWriter(&mut control_stream);
@@ -2586,13 +2837,9 @@ where
                 fatal_policy.terminate(PluginRuntimeInstallError::ControlLifecycle { source });
             }
             #[cfg(not(test))]
+            let mut callbacks_registered = callbacks_registered;
+            #[cfg(not(test))]
             let (control_reader, teardown_worker) = {
-                let startup = crate::paged_ram::controller::runtime_setup_operation()
-                    .unwrap_or_else(|source| {
-                        fatal_policy.terminate(PluginRuntimeInstallError::WorkerIdentityAdmission {
-                            source,
-                        })
-                    });
                 let teardown_handle =
                     match callbacks_registered.control_teardown_handle(args.slot()) {
                         Ok(handle) => handle,
@@ -2600,6 +2847,10 @@ where
                     };
                 let request_shutdown = capabilities.request_shutdown;
                 let teardown_workers = callbacks_registered.worker_quiescence();
+                if let Err(source) = callbacks_registered.check_original_startup() {
+                    fatal_policy
+                        .terminate(PluginRuntimeInstallError::WorkerIdentityAdmission { source });
+                }
                 let teardown_worker = match std::thread::Builder::new()
                     .name(String::from("crucible-teardown"))
                     .spawn(move || {
@@ -2618,6 +2869,10 @@ where
                 };
                 let reader_sender = teardown_sender.clone();
                 let control_workers = callbacks_registered.worker_quiescence();
+                if let Err(source) = callbacks_registered.check_original_startup() {
+                    fatal_policy
+                        .terminate(PluginRuntimeInstallError::WorkerIdentityAdmission { source });
+                }
                 let control_reader = match std::thread::Builder::new()
                     .name(String::from("crucible-run-control"))
                     .spawn(move || {
@@ -2630,24 +2885,13 @@ where
                     Err(source) => fatal_policy
                         .terminate(PluginRuntimeInstallError::ControlWorkerSpawn { source }),
                 };
-                if let Some(operation) = startup {
-                    let workers = callbacks_registered.worker_quiescence();
-                    if let Err(source) = workers
-                        .wait_initial_ready(|| {
-                            operation
-                                .wait_slice()
-                                .map_err(crate::ram_error::RamError::from)
-                        })
-                        .and_then(|()| {
-                            operation
-                                .complete()
-                                .map_err(crate::ram_error::RamError::from)
-                        })
-                    {
-                        fatal_policy.terminate(
-                            PluginRuntimeInstallError::WorkerIdentityAdmission { source },
-                        );
-                    }
+                let workers = callbacks_registered.worker_quiescence();
+                if let Err(source) = workers
+                    .wait_initial_ready(|| callbacks_registered.original_startup_slice())
+                    .and_then(|()| callbacks_registered.complete_original_startup_registration())
+                {
+                    fatal_policy
+                        .terminate(PluginRuntimeInstallError::WorkerIdentityAdmission { source });
                 }
                 (Some(control_reader), Some(teardown_worker))
             };
@@ -2855,6 +3099,18 @@ pub(crate) enum PluginLiveBoundaryError {
 /// An error produced while building or publishing the live plugin runtime.
 #[derive(Debug, Error)]
 pub enum PluginRuntimeInstallError {
+    /// The original installing Source refused before owning plan decode.
+    #[error("original installing Source refused: {source}")]
+    StartupSource {
+        /// Exact unformatted native status or missing compulsory entry point.
+        source: crate::StartupSourceError,
+    },
+    /// The digest thread did not publish actual registered readiness.
+    #[error("fingerprint worker readiness failed: {source}")]
+    FingerprintWorkerReadiness {
+        /// Same retained worker failure or missing original Setup authority.
+        source: LiveVcpuTimeCallbackError,
+    },
     /// The inherited control descriptor could not be duplicated safely.
     #[error("duplicating plugin control fd {fd} failed: {source}")]
     DuplicateControlFd {

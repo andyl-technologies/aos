@@ -21,7 +21,7 @@ fn frame_format_uses_big_endian_length_tag_and_payload() {
 }
 
 #[test]
-fn closed_tag_registry_matches_rfc_14_table() {
+fn closed_tag_registry_matches_wire_contract() {
     assert_eq!(
         ALL_CONTROL_TAGS,
         [
@@ -53,7 +53,7 @@ fn closed_tag_registry_rejects_unregistered_wire_values() {
 #[test]
 fn tag_directions_and_payload_lengths_match_control_lifecycle() {
     let expected = [
-        (ControlTag::Setup, ControlDirection::HostToPlugin, 8),
+        (ControlTag::Setup, ControlDirection::HostToPlugin, 56),
         (ControlTag::SetupAck, ControlDirection::PluginToHost, 1),
         (ControlTag::Quit, ControlDirection::HostToPlugin, 0),
         (ControlTag::Hello, ControlDirection::PluginToHost, 8),

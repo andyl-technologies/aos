@@ -15,9 +15,16 @@ use super::*;
 #[cfg(test)]
 mod tests;
 
+type OriginalPreparedRepositoryParts = (
+    Arc<CampaignRepository>,
+    Option<CampaignLocalRepositoryMaintenance>,
+    Option<PlannerAuthorityKey>,
+);
+
 pub(crate) struct OriginalCampaignRepositoryBootstrap {
     repository: Option<Arc<CampaignRepository>>,
     maintenance: Option<CampaignLocalRepositoryMaintenance>,
+    planner: Option<PlannerAuthorityKey>,
     control: Option<DecodeScratch>,
     budget: DecodeBudget,
     custody: DecodeCustody,
@@ -25,10 +32,29 @@ pub(crate) struct OriginalCampaignRepositoryBootstrap {
 }
 
 impl OriginalCampaignRepositoryBootstrap {
+    #[cfg(test)]
     pub(crate) fn prepare(
         graph: &mut OriginalSqliteGraphOwner,
         refs: &OriginalDirectoryRefOwner,
         budget: &DecodeBudget,
+    ) -> Result<Self, StoreError> {
+        Self::prepare_inner(graph, refs, budget, None)
+    }
+
+    pub(crate) fn prepare_with_components(
+        graph: &mut OriginalSqliteGraphOwner,
+        refs: &OriginalDirectoryRefOwner,
+        budget: &DecodeBudget,
+        components: (PlannerAuthorityKey, DebuggerAuthorityKey),
+    ) -> Result<Self, StoreError> {
+        Self::prepare_inner(graph, refs, budget, Some(components))
+    }
+
+    fn prepare_inner(
+        graph: &mut OriginalSqliteGraphOwner,
+        refs: &OriginalDirectoryRefOwner,
+        budget: &DecodeBudget,
+        components: CampaignComponentAuthorities,
     ) -> Result<Self, StoreError> {
         budget
             .verify_live()
@@ -42,6 +68,7 @@ impl OriginalCampaignRepositoryBootstrap {
         let mut owner = Self {
             repository: None,
             maintenance: None,
+            planner: None,
             control: Some(control),
             budget: budget.clone(),
             custody: budget.custody(),
@@ -68,15 +95,37 @@ impl OriginalCampaignRepositoryBootstrap {
         // CampaignRepository::new only moves its authorities, clones the blob
         // handle into its inline MerkleMap and initializes empty cache maps.
         // The only allocation here is this already admitted repository Arc.
-        owner.repository = Some(Arc::new(CampaignRepository::new(
-            store,
-            refs,
-            CampaignRamAdmission::Available(budget.clone()),
-        )));
+        let admission = CampaignRamAdmission::Available(budget.clone());
+        let repository = if let Some((planner, debugger)) = components {
+            owner.planner = Some(planner.clone());
+            CampaignRepository::with_component_authorities(
+                store, refs, admission, planner, debugger,
+            )
+            .map_err(|_| StoreError::InvalidComposition {
+                reason: "original component authorities are invalid",
+            })?
+        } else {
+            CampaignRepository::new(store, refs, admission)
+        };
+        owner.repository = Some(Arc::new(repository));
         budget
             .verify_live()
             .map_err(|source| original_error(budget, source))?;
         Ok(owner)
+    }
+
+    pub(super) fn share_for_service(
+        &mut self,
+    ) -> Result<OriginalPreparedRepositoryParts, StoreError> {
+        self.budget
+            .verify_live()
+            .map_err(|source| original_error(&self.budget, source))?;
+        let repository = self.repository.as_ref().ok_or(StoreError::Unavailable)?;
+        Ok((
+            Arc::clone(repository),
+            self.maintenance.take(),
+            self.planner.take(),
+        ))
     }
 
     pub(crate) fn try_close(&mut self) -> Result<(), StoreError> {

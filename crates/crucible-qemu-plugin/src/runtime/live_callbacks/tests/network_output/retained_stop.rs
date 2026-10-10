@@ -439,10 +439,24 @@ fn child_and_logical_restore_require_original_output_consumption()
     });
     let generation = fixture.slot.arm_logical_time_restore(1_000)?;
 
+    let mut first_setup_failure = None;
+    let startup_queries = std::cell::Cell::new(0);
+    let mut unavailable_startup = || {
+        startup_queries.set(startup_queries.get() + 1);
+        Err(crate::StartupSourceError::Ownership {
+            reason: "no child startup Source is admitted in this output-only fixture",
+        })
+    };
+
     // These are the actual Rust reset entry points. The SDK/mapping admission
     // is modeled; this does not certify a physical child adoption or VMState.
     assert_eq!(
-        state.reinitialize_hot_fork_child_workers(LiveWorkerQuiescence::new(WORKER_REQUIRED)),
+        state.reinitialize_hot_fork_child_workers(
+            LiveWorkerQuiescence::new(WORKER_REQUIRED),
+            None,
+            &mut unavailable_startup,
+            &mut first_setup_failure,
+        ),
         expected
     );
     assert_eq!(state.restore_logical_time_if_requested(20, false), expected);
@@ -450,9 +464,16 @@ fn child_and_logical_restore_require_original_output_consumption()
     let consumed = fixture.outbound.dequeue(&fixture.outbound_entries)?;
     assert!(consumed.is_some());
 
-    state.reinitialize_hot_fork_child_workers(LiveWorkerQuiescence::new(WORKER_REQUIRED))?;
+    state.reinitialize_hot_fork_child_workers(
+        LiveWorkerQuiescence::new(WORKER_REQUIRED),
+        None,
+        &mut unavailable_startup,
+        &mut first_setup_failure,
+    )?;
     state.restore_logical_time_if_requested(20, true)?;
 
+    assert_eq!(startup_queries.get(), 0);
+    assert_eq!(first_setup_failure, None);
     assert_eq!(fixture.slot.snapshot().logical_time_restore_ack, generation);
     assert_eq!(fixture.slot.snapshot().current_icount, 1_000);
     Ok(())

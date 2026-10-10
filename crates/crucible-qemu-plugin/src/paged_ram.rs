@@ -18,8 +18,11 @@ pub(crate) mod research_resident;
 mod source;
 mod storage;
 mod supervision;
+
 pub(crate) use engine::PausedPagingOwner;
 pub(crate) use lifecycle::install;
+#[cfg(test)]
+pub(crate) use supervision::TransportDeadline;
 mod restore;
 
 pub(crate) use kernel::{FaultEvent, Registration};

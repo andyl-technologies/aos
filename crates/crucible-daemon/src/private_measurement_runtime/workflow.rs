@@ -16,15 +16,15 @@ use crucible_qemu::{OriginalActorDecodeOwner, OriginalActorServicePolicy};
 use super::MeasurementRuntimeAdmissionError;
 use super::actor_roles::OriginalActorRoleIssuer;
 
+mod assets;
+pub use assets::OriginalWorkflowArtifactsError;
+
 const WORKFLOW_PATH: &str = "/etc/crucible/measurement-workflow.json";
 
 /// Keeps the descriptor and its original authority through subsequent use.
 pub(super) struct OriginalResidentWorkflowOwner {
     policy: Option<OriginalActorServicePolicy>,
-    input: Option<Vec<u8>>,
-    file: Option<File>,
-    descriptors: Option<DecodeDescriptorLoan>,
-    input_credit: Option<DecodeScratch>,
+    input: Option<InstalledServiceInput>,
     decoder: Option<OriginalActorDecodeOwner>,
     bootstrap: Option<InstalledServiceInput>,
     campaign: Option<InstalledServiceInput>,
@@ -36,6 +36,18 @@ pub(super) struct OriginalResidentWorkflowOwner {
     repository: Option<crate::campaign_bootstrap::OriginalCampaignRepositoryBootstrap>,
     service_state: Option<crate::campaign_bootstrap::OriginalCampaignStateBootstrap>,
     prepared_state: Option<crate::campaign_bootstrap::PreparedCampaignStateOwner>,
+    retention: Option<crate::hot_checkpoint_retention::OriginalHotCheckpointRetentionOwner>,
+    transfers: Option<crate::campaign_transfer::OriginalCampaignTransferJournalOwner>,
+    prepared_retention: Option<std::sync::Arc<crate::DirectoryHotCheckpointFallbackRetentionStore>>,
+    prepared_transfers: Option<crate::DirectoryCampaignTransferJournal>,
+    prepared_policy: Option<std::sync::Arc<crate::UnixPeerCampaignPolicy>>,
+    components: Option<InstalledServiceInput>,
+    component_authorities: Option<(
+        crucible_campaign::PlannerAuthorityKey,
+        crucible_campaign::DebuggerAuthorityKey,
+    )>,
+    prepared_service: Option<crate::campaign_bootstrap::OriginalPreparedCampaignServiceOwner>,
+    artifacts: Option<assets::OriginalWorkflowArtifactsOwner>,
 }
 
 /// Preserves an actual read refusal before its independent original boundary.
@@ -45,8 +57,10 @@ pub struct OriginalWorkflowReadError {
     /// First actual kernel read, file identity or allocation refusal.
     #[source]
     pub source: OriginalWorkflowInputError,
-    /// The same decoder's original post-effect refusal, when present.
+    /// The same decoder's independent sticky admission postcheck, when present.
     pub original_after: Option<DecodeAdmissionError>,
+    /// The retained raw original boundary, independent of sticky decode state.
+    pub guard_after: Option<crucible_linux_resource::host_supervision::HostSupervisionError>,
 }
 
 /// Classifies input failures without flattening their typed original causes.
@@ -55,6 +69,12 @@ pub enum OriginalWorkflowInputError {
     /// The same closed actor's original custody refused without a new wrapper.
     #[error("workflow actor custody refused: {0}")]
     Actor(#[from] crucible_qemu::OriginalActorAccountError),
+    /// The independently retained original interval refused.
+    #[error("workflow original boundary refused: {0}")]
+    Original(#[from] crucible_linux_resource::host_supervision::HostSupervisionError),
+    /// The authenticated component bytes violate the existing key protocol.
+    #[error("workflow component authority refused: {0}")]
+    Component(#[from] crucible_campaign::CampaignCodecError),
     /// The actual fixed-path kernel operation failed.
     #[error("workflow kernel operation refused: {0}")]
     Io(#[from] std::io::Error),
@@ -77,9 +97,6 @@ impl OriginalResidentWorkflowOwner {
         let mut owner = Self {
             policy: None,
             input: None,
-            file: None,
-            descriptors: None,
-            input_credit: None,
             decoder: Some(decoder),
             bootstrap: None,
             campaign: None,
@@ -87,12 +104,20 @@ impl OriginalResidentWorkflowOwner {
             campaign_policy: None,
             service_state: None,
             prepared_state: None,
+            retention: None,
+            transfers: None,
+            prepared_retention: None,
+            prepared_transfers: None,
+            prepared_policy: None,
+            components: None,
+            component_authorities: None,
+            prepared_service: None,
+            artifacts: None,
             catalog: None,
             graph: None,
             refs: None,
             repository: None,
         };
-        owner.read_fixed_input()?;
         let decoder =
             owner
                 .decoder
@@ -100,85 +125,24 @@ impl OriginalResidentWorkflowOwner {
                 .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
                     "retained workflow decoder",
                 ))?;
-        let input =
+        owner.input = Some(InstalledServiceInput::read_workflow(decoder)?);
+        let decoder =
             owner
-                .input
-                .as_deref()
+                .decoder
+                .as_ref()
                 .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
-                    "retained workflow input",
+                    "retained workflow decoder",
                 ))?;
+        let input = owner
+            .input
+            .as_ref()
+            .map(|input| input.bytes.as_slice())
+            .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                "retained workflow input",
+            ))?;
         owner.policy = Some(actor.admit_workflow_service(decoder, input)?);
         actor.require_original()?;
         Ok(owner)
-    }
-
-    fn read_fixed_input(&mut self) -> Result<(), OriginalWorkflowReadError> {
-        let decoder = self
-            .decoder
-            .as_ref()
-            .ok_or_else(|| OriginalWorkflowReadError {
-                source: OriginalWorkflowInputError::Identity,
-                original_after: None,
-            })?;
-        let budget = decoder
-            .budget()
-            .map_err(|source| OriginalWorkflowReadError {
-                source: OriginalWorkflowInputError::Actor(source),
-                original_after: None,
-            })?;
-        let result: Result<(), OriginalWorkflowInputError> = (|| {
-            self.descriptors = Some(budget.reserve_descriptors(1)?);
-            budget.verify_live()?;
-            // The trusted rootfs installs a symlink to its immutable store
-            // object. Pin the actual opened file before the fallible original
-            // postcut; matching its contents is authenticated separately.
-            self.file = Some(File::open(WORKFLOW_PATH)?);
-            budget.verify_live()?;
-            let file = self
-                .file
-                .as_mut()
-                .ok_or(OriginalWorkflowInputError::Identity)?;
-            let metadata = file.metadata()?;
-            budget.verify_live()?;
-            if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o222 != 0 {
-                return Err(OriginalWorkflowInputError::Identity);
-            }
-            let length = usize::try_from(metadata.len())
-                .ok()
-                .filter(|length| *length != 0)
-                .ok_or(OriginalWorkflowInputError::Identity)?;
-            self.input_credit = Some(budget.reserve_scratch_bytes(metadata.len())?);
-            let mut bytes = Vec::new();
-            bytes.try_reserve_exact(length)?;
-            bytes.resize(length, 0);
-            self.input = Some(bytes);
-            budget.verify_live()?;
-            let bytes = self
-                .input
-                .as_mut()
-                .ok_or(OriginalWorkflowInputError::Identity)?;
-            file.read_exact(bytes)?;
-            budget.verify_live()?;
-            // A fixed one-byte stack probe refuses a changed length. It owns
-            // no extra retained buffer or independently inferred descriptor.
-            let mut trailing = [0];
-            if file.read(&mut trailing)? != 0 {
-                return Err(OriginalWorkflowInputError::Identity);
-            }
-            Ok(())
-        })();
-        let after = budget.verify_live();
-        match (result, after) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(source), after) => Err(OriginalWorkflowReadError {
-                source,
-                original_after: after.err(),
-            }),
-            (Ok(()), Err(source)) => Err(OriginalWorkflowReadError {
-                source: OriginalWorkflowInputError::Admission(source),
-                original_after: None,
-            }),
-        }
     }
 
     pub(super) fn prepare_campaign_state(
@@ -283,6 +247,261 @@ impl OriginalResidentWorkflowOwner {
         Ok(())
     }
 
+    pub(super) fn prepare_campaign_support(
+        &mut self,
+    ) -> Result<(), MeasurementRuntimeAdmissionError> {
+        let catalog =
+            self.catalog
+                .as_ref()
+                .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                    "retained original catalog for service support",
+                ))?;
+        let decoder =
+            self.decoder
+                .as_ref()
+                .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                    "retained original support decoder",
+                ))?;
+        let budget = decoder.budget()?;
+        self.retention = Some(
+            crate::hot_checkpoint_retention::OriginalHotCheckpointRetentionOwner::prepare(
+                catalog
+                    .supervisor()
+                    .map_err(MeasurementRuntimeAdmissionError::CampaignGraph)?,
+                catalog
+                    .physical_quota()
+                    .map_err(MeasurementRuntimeAdmissionError::CampaignGraph)?,
+                budget,
+            )
+            .map_err(super::OriginalCampaignSupportError::Retention)?,
+        );
+        self.transfers = Some(
+            crate::campaign_transfer::OriginalCampaignTransferJournalOwner::prepare(
+                catalog
+                    .supervisor()
+                    .map_err(MeasurementRuntimeAdmissionError::CampaignGraph)?,
+                catalog
+                    .physical_quota()
+                    .map_err(MeasurementRuntimeAdmissionError::CampaignGraph)?,
+                budget,
+            )
+            .map_err(super::OriginalCampaignSupportError::Transfer)?,
+        );
+        // These are the actual handles destined for the existing prepared
+        // service. The external owners remain alongside them through cleanup;
+        // sharing creates no second control allocation or replacement bank.
+        self.prepared_retention = Some(
+            self.retention
+                .as_ref()
+                .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                    "retained original retention owner",
+                ))?
+                .share()
+                .map_err(super::OriginalCampaignSupportError::Retention)?,
+        );
+        self.prepared_transfers = Some(
+            self.transfers
+                .as_ref()
+                .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                    "retained original transfer owner",
+                ))?
+                .share()
+                .map_err(super::OriginalCampaignSupportError::Transfer)?,
+        );
+        Ok(())
+    }
+
+    pub(super) fn close_campaign_support(
+        &mut self,
+    ) -> Result<(), super::OriginalCampaignSupportError> {
+        drop(self.prepared_transfers.take());
+        drop(self.prepared_retention.take());
+        if let Some(transfers) = self.transfers.as_mut() {
+            transfers
+                .try_close()
+                .map_err(super::OriginalCampaignSupportError::Transfer)?;
+        }
+        drop(self.transfers.take());
+        if let Some(retention) = self.retention.as_mut() {
+            retention
+                .try_close()
+                .map_err(super::OriginalCampaignSupportError::Retention)?;
+        }
+        drop(self.retention.take());
+        Ok(())
+    }
+
+    pub(super) fn prepare_component_authorities(
+        &mut self,
+        declaration: &crucible_qemu::OriginalActorServiceLaunchPurpose,
+    ) -> Result<(), MeasurementRuntimeAdmissionError> {
+        let decoder =
+            self.decoder
+                .as_ref()
+                .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                    "retained component decoder",
+                ))?;
+        declaration.verify_decoder(decoder)?;
+        let budget = decoder.budget()?;
+        crate::campaign_bootstrap::OriginalPreparedCampaignServiceOwner::verify_declaration(
+            declaration,
+            budget,
+        )?;
+        self.components = Some(InstalledServiceInput::read_mode(
+            decoder,
+            "/etc/crucible/measurement-components.v1",
+            Some(0o600),
+            Some(72),
+        )?);
+        let input =
+            self.components
+                .as_ref()
+                .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                    "retained component file",
+                ))?;
+        let work = (|| {
+            if blake3::hash(&input.bytes).as_bytes() != declaration.component_authorities_digest()
+                || input.bytes.len() != 72
+                || &input.bytes[..8] != b"CRUCCA01"
+            {
+                return Err(OriginalWorkflowInputError::Identity);
+            }
+            let planner: [u8; 32] = input.bytes[8..40]
+                .try_into()
+                .map_err(|_| OriginalWorkflowInputError::Identity)?;
+            let debugger: [u8; 32] = input.bytes[40..72]
+                .try_into()
+                .map_err(|_| OriginalWorkflowInputError::Identity)?;
+            if planner == debugger {
+                return Err(OriginalWorkflowInputError::Identity);
+            }
+            self.component_authorities = Some((
+                crucible_campaign::PlannerAuthorityKey::from_bytes(planner)?,
+                crucible_campaign::DebuggerAuthorityKey::from_bytes(debugger)?,
+            ));
+            Ok(())
+        })();
+        let after = budget.verify_live();
+        let guard_after = decoder.verify_original_boundary();
+        match (work, after, guard_after) {
+            (Ok(()), Ok(()), Ok(())) => Ok(()),
+            (Err(source), after, guard_after) => Err(OriginalWorkflowReadError {
+                source,
+                original_after: after.err(),
+                guard_after: guard_after.err(),
+            }
+            .into()),
+            (Ok(()), Err(source), guard_after) => Err(OriginalWorkflowReadError {
+                source: OriginalWorkflowInputError::Admission(source),
+                original_after: None,
+                guard_after: guard_after.err(),
+            }
+            .into()),
+            (Ok(()), Ok(()), Err(source)) => Err(OriginalWorkflowReadError {
+                source: OriginalWorkflowInputError::Original(source),
+                original_after: None,
+                guard_after: None,
+            }
+            .into()),
+        }
+    }
+
+    pub(super) fn prepare_service(
+        &mut self,
+        declaration: crucible_qemu::OriginalActorServiceLaunchPurpose,
+    ) -> Result<(), MeasurementRuntimeAdmissionError> {
+        let decoder =
+            self.decoder
+                .as_ref()
+                .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                    "retained service decoder",
+                ))?;
+        declaration.verify_decoder(decoder)?;
+        let repository =
+            self.repository
+                .as_mut()
+                .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                    "retained service repository",
+                ))?;
+        let state =
+            self.prepared_state
+                .take()
+                .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                    "retained service state",
+                ))?;
+        let policy =
+            self.prepared_policy
+                .take()
+                .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                    "retained service policy",
+                ))?;
+        let retention = self.prepared_retention.take().ok_or(
+            MeasurementRuntimeAdmissionError::MissingPurpose("retained service retention"),
+        )?;
+        let transfers = self.prepared_transfers.take().ok_or(
+            MeasurementRuntimeAdmissionError::MissingPurpose("retained service transfers"),
+        )?;
+        self.prepared_service = Some(
+            crate::campaign_bootstrap::OriginalPreparedCampaignServiceOwner::prepare(
+                declaration,
+                repository,
+                state,
+                policy,
+                retention,
+                transfers,
+                decoder.budget()?,
+            )?,
+        );
+        Ok(())
+    }
+
+    pub(super) fn import_fixed_campaign_inputs(
+        &mut self,
+    ) -> Result<(), MeasurementRuntimeAdmissionError> {
+        let decoder =
+            self.decoder
+                .as_ref()
+                .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                    "retained artifact decoder",
+                ))?;
+        let bytes = self
+            .input
+            .as_ref()
+            .map(|input| input.bytes.as_slice())
+            .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                "retained authenticated workflow",
+            ))?;
+        let service = self.prepared_service.as_ref().ok_or(
+            MeasurementRuntimeAdmissionError::MissingPurpose("retained prepared campaign service"),
+        )?;
+        self.artifacts = Some(assets::OriginalWorkflowArtifactsOwner::load_and_import(
+            bytes, decoder, service,
+        )?);
+        Ok(())
+    }
+
+    pub(super) fn close_artifacts(&mut self) -> Result<(), OriginalWorkflowArtifactsError> {
+        if let Some(artifacts) = self.artifacts.as_mut() {
+            let service = self
+                .prepared_service
+                .as_ref()
+                .ok_or_else(assets::missing_service)?;
+            artifacts.try_close(service)?;
+        }
+        drop(self.artifacts.take());
+        Ok(())
+    }
+
+    pub(super) fn close_prepared_service(
+        &mut self,
+    ) -> Result<(), crate::campaign_bootstrap::OriginalPreparedServiceError> {
+        if let Some(service) = self.prepared_service.as_mut() {
+            service.try_close()?;
+        }
+        drop(self.prepared_service.take());
+        Ok(())
+    }
+
     pub(super) fn prepare_campaign_repository(
         &mut self,
     ) -> Result<(), MeasurementRuntimeAdmissionError> {
@@ -305,10 +524,11 @@ impl OriginalResidentWorkflowOwner {
                 "retained repository references",
             ))?;
         self.repository = Some(
-            crate::campaign_bootstrap::OriginalCampaignRepositoryBootstrap::prepare(
+            crate::campaign_bootstrap::OriginalCampaignRepositoryBootstrap::prepare_with_components(
                 graph,
                 refs,
                 decoder.budget()?,
+                self.component_authorities.take().ok_or(MeasurementRuntimeAdmissionError::MissingPurpose("authenticated repository components"))?,
             )
             .map_err(MeasurementRuntimeAdmissionError::CampaignRepository)?,
         );
@@ -347,6 +567,7 @@ impl OriginalResidentWorkflowOwner {
                 .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
                     "retained workflow decoder",
                 ))?;
+        let budget = decoder.budget()?;
         self.bootstrap = Some(InstalledServiceInput::read(
             decoder,
             "/etc/crucible/sqlite-bootstrap-target.json",
@@ -364,7 +585,8 @@ impl OriginalResidentWorkflowOwner {
         if blake3::hash(&campaign.bytes).as_bytes() != campaign_digest {
             return Err(OriginalWorkflowReadError {
                 source: OriginalWorkflowInputError::Identity,
-                original_after: decoder.budget()?.verify_live().err(),
+                original_after: budget.verify_live().err(),
+                guard_after: decoder.verify_original_boundary().err(),
             }
             .into());
         }
@@ -411,6 +633,25 @@ impl OriginalResidentWorkflowOwner {
                 "retained policy owner",
             ))?
             .admit_service_arc()?;
+        self.prepared_policy = Some(
+            self.campaign_policy
+                .as_ref()
+                .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                    "retained service policy owner",
+                ))?
+                .share_for_service()?,
+        );
+        Ok(())
+    }
+
+    pub(super) fn close_campaign_policy(
+        &mut self,
+    ) -> Result<(), crate::campaign_policy::OriginalCampaignPolicyError> {
+        drop(self.prepared_policy.take());
+        if let Some(owner) = self.campaign_policy.as_mut() {
+            owner.try_close()?;
+        }
+        drop(self.campaign_policy.take());
         Ok(())
     }
 
@@ -427,6 +668,12 @@ impl OriginalResidentWorkflowOwner {
 
 impl Drop for OriginalResidentWorkflowOwner {
     fn drop(&mut self) {
+        drop(self.prepared_service.take());
+        drop(self.prepared_policy.take());
+        drop(self.prepared_transfers.take());
+        drop(self.prepared_retention.take());
+        drop(self.transfers.take());
+        drop(self.retention.take());
         drop(self.repository.take());
         drop(self.refs.take());
         drop(self.graph.take());
@@ -435,13 +682,12 @@ impl Drop for OriginalResidentWorkflowOwner {
         drop(self.catalog.take());
         drop(self.policy.take());
         drop(self.campaign_policy.take());
+        drop(self.components.take());
+        self.component_authorities = None;
         drop(self.projection.take());
         drop(self.campaign.take());
         drop(self.bootstrap.take());
         drop(self.input.take());
-        drop(self.file.take());
-        drop(self.descriptors.take());
-        drop(self.input_credit.take());
         if let Some(decoder) = self.decoder.take() {
             // A refused close returns the same fail-sticky owner. Its Drop
             // retains opaque errors and original credit until actor teardown.
@@ -463,11 +709,39 @@ impl InstalledServiceInput {
         decoder: &OriginalActorDecodeOwner,
         path: &'static str,
     ) -> Result<Self, OriginalWorkflowReadError> {
+        Self::read_inner(decoder, path, None, None, false)
+    }
+
+    fn read_workflow(
+        decoder: &OriginalActorDecodeOwner,
+    ) -> Result<Self, OriginalWorkflowReadError> {
+        // Only this authenticated fixed workflow locator may follow the trusted
+        // rootfs symlink. Copied proof, policy and authority leaves remain NOFOLLOW.
+        Self::read_inner(decoder, WORKFLOW_PATH, None, None, true)
+    }
+
+    fn read_mode(
+        decoder: &OriginalActorDecodeOwner,
+        path: &'static str,
+        required_mode: Option<u32>,
+        required_length: Option<u64>,
+    ) -> Result<Self, OriginalWorkflowReadError> {
+        Self::read_inner(decoder, path, required_mode, required_length, false)
+    }
+
+    fn read_inner(
+        decoder: &OriginalActorDecodeOwner,
+        path: &'static str,
+        required_mode: Option<u32>,
+        required_length: Option<u64>,
+        follow_workflow: bool,
+    ) -> Result<Self, OriginalWorkflowReadError> {
         let budget = decoder
             .budget()
             .map_err(|source| OriginalWorkflowReadError {
                 source: OriginalWorkflowInputError::Actor(source),
                 original_after: None,
+                guard_after: decoder.verify_original_boundary().err(),
             })?;
         let mut owner = Self {
             bytes: Vec::new(),
@@ -476,9 +750,24 @@ impl InstalledServiceInput {
             credit: None,
         };
         let work: Result<(), OriginalWorkflowInputError> = (|| {
+            decoder.verify_original_boundary()?;
             owner.descriptors = Some(budget.reserve_descriptors(1)?);
             budget.verify_live()?;
-            owner.file = Some(File::open(path)?);
+            owner.file = Some(
+                rustix::fs::open(
+                    path,
+                    rustix::fs::OFlags::RDONLY
+                        | rustix::fs::OFlags::CLOEXEC
+                        | if follow_workflow {
+                            rustix::fs::OFlags::empty()
+                        } else {
+                            rustix::fs::OFlags::NOFOLLOW
+                        },
+                    rustix::fs::Mode::empty(),
+                )
+                .map_err(|source| std::io::Error::from_raw_os_error(source.raw_os_error()))?
+                .into(),
+            );
             budget.verify_live()?;
             let file = owner
                 .file
@@ -486,7 +775,14 @@ impl InstalledServiceInput {
                 .ok_or(OriginalWorkflowInputError::Identity)?;
             let metadata = file.metadata()?;
             budget.verify_live()?;
-            if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o222 != 0 {
+            if !metadata.is_file()
+                || metadata.uid() != 0
+                || metadata.gid() != 0
+                || required_mode.map_or(metadata.mode() & 0o222 != 0, |mode| {
+                    metadata.mode() & 0o777 != mode
+                })
+                || required_length.is_some_and(|length| metadata.len() != length)
+            {
                 return Err(OriginalWorkflowInputError::Identity);
             }
             let length = usize::try_from(metadata.len())
@@ -506,15 +802,23 @@ impl InstalledServiceInput {
             Ok(())
         })();
         let after = budget.verify_live();
-        match (work, after) {
-            (Ok(()), Ok(())) => Ok(owner),
-            (Err(source), after) => Err(OriginalWorkflowReadError {
+        let guard_after = decoder.verify_original_boundary();
+        match (work, after, guard_after) {
+            (Ok(()), Ok(()), Ok(())) => Ok(owner),
+            (Ok(()), Ok(()), Err(source)) => Err(OriginalWorkflowReadError {
+                source: OriginalWorkflowInputError::Original(source),
+                original_after: None,
+                guard_after: None,
+            }),
+            (Err(source), after, guard_after) => Err(OriginalWorkflowReadError {
                 source,
                 original_after: after.err(),
+                guard_after: guard_after.err(),
             }),
-            (Ok(()), Err(source)) => Err(OriginalWorkflowReadError {
+            (Ok(()), Err(source), guard_after) => Err(OriginalWorkflowReadError {
                 source: OriginalWorkflowInputError::Admission(source),
                 original_after: None,
+                guard_after: guard_after.err(),
             }),
         }
     }

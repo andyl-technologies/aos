@@ -55,6 +55,7 @@ mod preemption;
 mod restore;
 pub use error::QemuMappedQuantumShmemHotPathError;
 pub(crate) use fingerprint::black_box_execution_fingerprint;
+pub(crate) use fingerprint::validate_black_box_fingerprint_sample;
 
 /// An owned, mapped shared-memory hot-path channel for one QEMU node.
 pub struct QemuMappedQuantumShmemHotPath {

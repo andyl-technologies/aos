@@ -12,7 +12,7 @@ use std::ptr::NonNull;
 use std::sync::atomic::{
     AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering,
 };
-use std::sync::{Arc, Mutex, TryLockError, mpsc};
+use std::sync::{Arc, Mutex, TryLockError};
 
 use crucible_shmem::{
     AdvanceStopCondition, DirectedRing, FingerprintSampleSlot, FrameEntry, MappedDirectedRingMut,
@@ -60,7 +60,7 @@ mod control_callback_witness;
 pub(super) use control_callback_witness::ControlCallbackWitness;
 mod devices;
 mod error;
-mod fingerprint_worker;
+pub(super) mod fingerprint_worker;
 mod initialization;
 mod logical_restore;
 mod network_inbound;
@@ -69,6 +69,7 @@ mod preemption;
 pub use devices::LiveDeviceCallbackError;
 use devices::LiveDeviceCallbackState;
 pub use error::LiveVcpuTimeCallbackError;
+pub use fingerprint_worker::FingerprintWorkerFailure;
 use fingerprint_worker::LiveFingerprintDigestWorker;
 use logical_restore::raw_icount_publication_is_superseded;
 #[cfg(test)]
@@ -378,6 +379,19 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
         let capabilities = self
             .required_capabilities(args)
             .map_err(live_callback_registration_error)?;
+        state
+            .as_ref()
+            .get_ref()
+            .setup
+            .validate_device_digest_workspace_mode(
+                args.fingerprint().is_on(),
+                args.process_generation(),
+            )
+            .map_err(|source| {
+                live_callback_registration_error(LiveVcpuTimeCallbackError::DeviceDigestWorkspace {
+                    source,
+                })
+            })?;
         (self.install_ram_management)(args, self.plugin_id).map_err(|message| {
             live_callback_registration_error(LiveVcpuTimeCallbackError::RamObserverSetup {
                 message,
@@ -400,6 +414,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
         let callback_state = state
             .as_mut()
             .prepare_live_vcpu_time_state(
+                self.plugin_id,
                 self.execution_model.smp_vcpus(),
                 args.slot(),
                 args.fault_node_hash(),
@@ -605,7 +620,7 @@ impl StableNodeSlotHandle {
 
 /// Stable fingerprint-slot address retained by the setup mapping owner.
 #[derive(Clone, Copy)]
-struct StableFingerprintSlotHandle {
+pub(super) struct StableFingerprintSlotHandle {
     slot: NonNull<FingerprintSampleSlot>,
 }
 
@@ -615,7 +630,7 @@ struct StableFingerprintSlotHandle {
 unsafe impl Send for StableFingerprintSlotHandle {}
 
 impl StableFingerprintSlotHandle {
-    fn new(slot: &FingerprintSampleSlot) -> Self {
+    pub(super) fn new(slot: &FingerprintSampleSlot) -> Self {
         Self {
             slot: NonNull::from(slot),
         }
@@ -1330,31 +1345,74 @@ impl LiveVcpuTimeCallbackState {
     /// fingerprint sample and queues its detached preimages to a dedicated
     /// digest worker. `slot` is the per-node [`FingerprintSampleSlot`] retained by
     /// the same setup mapping owner as the node slot and directed rings.
-    #[cfg(test)]
-    pub(super) fn attach_fingerprint(
-        mut self,
-        sampling: PluginFingerprintSampling,
-        slot: &FingerprintSampleSlot,
-        worker_quiescence: Arc<LiveWorkerQuiescence>,
-    ) -> Result<Self, LiveVcpuTimeCallbackError> {
-        self.attach_fingerprint_in_place(sampling, slot, worker_quiescence)?;
-        Ok(self)
-    }
-
     pub(super) fn attach_fingerprint_in_place(
         &mut self,
         sampling: PluginFingerprintSampling,
-        slot: &FingerprintSampleSlot,
+        slot: StableFingerprintSlotHandle,
         worker_quiescence: Arc<LiveWorkerQuiescence>,
+        workspace: crate::device_digest_workspace::DeviceDigestWorkspace,
+        wait_slice: &mut impl FnMut() -> Result<std::time::Duration, crate::StartupSourceError>,
+        first_setup_failure: &mut Option<crate::StartupSourceError>,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
-        let slot = StableFingerprintSlotHandle::new(slot);
-        let worker = LiveFingerprintDigestWorker::spawn(slot, worker_quiescence)?;
+        let worker = LiveFingerprintDigestWorker::spawn(
+            slot,
+            worker_quiescence,
+            workspace,
+            wait_slice,
+            first_setup_failure,
+        )?;
         self.fingerprint = Some(LiveFingerprintCallbackState {
             sampling,
             slot,
             worker,
         });
         Ok(())
+    }
+
+    pub(super) fn wait_fingerprint_registered(
+        &self,
+        wait_slice: impl FnMut() -> Result<std::time::Duration, crate::StartupSourceError>,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        let Some(fingerprint) = self.fingerprint.as_ref() else {
+            return Ok(());
+        };
+        fingerprint.worker.wait_registered(wait_slice)
+    }
+
+    /// Moves the workspace only after the complete native barrier is parked.
+    pub(super) unsafe fn hold_fingerprint_workspace(
+        &self,
+    ) -> Result<(), crate::DeviceDigestWorkspaceError> {
+        if let Some(fingerprint) = self.fingerprint.as_ref() {
+            // SAFETY: the caller retains callback and worker exclusion.
+            unsafe { fingerprint.worker.hold_workspace_for_fork() }?;
+        }
+        Ok(())
+    }
+
+    /// Restores the same parent workspace before any worker can resume.
+    pub(super) unsafe fn restore_fingerprint_workspace(
+        &self,
+    ) -> Result<(), crate::DeviceDigestWorkspaceError> {
+        if let Some(fingerprint) = self.fingerprint.as_ref() {
+            // SAFETY: the caller retains callback and worker exclusion.
+            unsafe { fingerprint.worker.restore_workspace_after_fork() }?;
+        }
+        Ok(())
+    }
+
+    /// Disarms the directly held child copy before native reconstruction.
+    pub(super) fn disarm_fingerprint_workspace(
+        &mut self,
+    ) -> Result<(), crate::DeviceDigestWorkspaceError> {
+        if let Some(fingerprint) = self.fingerprint.as_mut() {
+            fingerprint.worker.disarm_child_workspace()?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn fingerprint_enabled(&self) -> bool {
+        self.fingerprint.is_some()
     }
 
     /// Replaces the vanished template fingerprint worker in a fork child.
@@ -1366,12 +1424,26 @@ impl LiveVcpuTimeCallbackState {
     pub(super) fn reinitialize_hot_fork_child_workers(
         &mut self,
         worker_quiescence: Arc<LiveWorkerQuiescence>,
+        workspace: Option<crate::device_digest_workspace::DeviceDigestWorkspace>,
+        wait_slice: &mut impl FnMut() -> Result<std::time::Duration, crate::StartupSourceError>,
+        first_setup_failure: &mut Option<crate::StartupSourceError>,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
         self.require_consumed_network_output_stop()?;
         let Some(fingerprint) = self.fingerprint.as_mut() else {
             return Ok(());
         };
-        let worker = LiveFingerprintDigestWorker::spawn(fingerprint.slot, worker_quiescence)?;
+        let workspace = workspace.ok_or(LiveVcpuTimeCallbackError::DeviceDigestWorkspace {
+            source: crate::DeviceDigestWorkspaceError::Ownership {
+                reason: "fork child lacks its separately admitted workspace",
+            },
+        })?;
+        let worker = LiveFingerprintDigestWorker::spawn(
+            fingerprint.slot,
+            worker_quiescence,
+            workspace,
+            wait_slice,
+            first_setup_failure,
+        )?;
         let inherited = std::mem::replace(&mut fingerprint.worker, worker);
         std::mem::forget(inherited);
         Ok(())

@@ -59,7 +59,7 @@ fn protocol_abi_conformance_runs_named_checks() {
     assert_selectable_v1_golden_vectors();
     assert_selectable_catalog_plan_v5_golden_vector();
     assert_selectable_pending_transport_v2_golden_vector();
-    assert_plugin_setup_plan_v2_golden_vector();
+    assert_plugin_setup_plan_v3_golden_vector();
     assert_doorbell_decoder_fuzz_corpus();
     assert_structure_aware_fuzz_corpus();
     assert_protocol_codec_fuzz_corpus();
@@ -115,11 +115,11 @@ fn assert_selectable_pending_transport_v2_golden_vector() {
 }
 
 #[test]
-fn plugin_setup_plan_v2_golden_vector_matches_live_codec() {
-    assert_plugin_setup_plan_v2_golden_vector();
+fn plugin_setup_plan_v3_golden_vector_matches_live_codec() {
+    assert_plugin_setup_plan_v3_golden_vector();
 }
 
-fn assert_plugin_setup_plan_v2_golden_vector() {
+fn assert_plugin_setup_plan_v3_golden_vector() {
     let selectable = SelectableCatalogPlan::new(
         SelectablePlanLimits::new(1, 1, 1)
             .unwrap_or_else(|error| panic!("catalog plan limits must validate: {error}")),
@@ -140,15 +140,18 @@ fn assert_plugin_setup_plan_v2_golden_vector() {
     expected[16..20].copy_from_slice(&(total_len as u32).to_be_bytes());
     expected[20..24].copy_from_slice(&(16_u32).to_be_bytes());
     expected[24..28].copy_from_slice(&(SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
-    expected[28..36].copy_from_slice(&APP_RANDOM_BRANCH_PLAN_MAGIC);
-    expected[36..40].copy_from_slice(&APP_RANDOM_BRANCH_PLAN_VERSION.to_be_bytes());
-    expected[44..52].copy_from_slice(&SELECTABLE_CATALOG_PLAN_MAGIC);
-    expected[52..56].copy_from_slice(&SELECTABLE_CATALOG_PLAN_VERSION.to_be_bytes());
-    expected[56..60].copy_from_slice(&(SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
-    expected[60..64].copy_from_slice(&(SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
-    expected[68..72].copy_from_slice(&(1_u32).to_be_bytes());
-    expected[84..92].copy_from_slice(&(1_u64).to_be_bytes());
+    // The two absent purpose records have independent zero length fields.
+    expected[28..32].copy_from_slice(&0_u32.to_be_bytes());
+    expected[32..36].copy_from_slice(&0_u32.to_be_bytes());
+    expected[36..44].copy_from_slice(&APP_RANDOM_BRANCH_PLAN_MAGIC);
+    expected[44..48].copy_from_slice(&APP_RANDOM_BRANCH_PLAN_VERSION.to_be_bytes());
+    expected[52..60].copy_from_slice(&SELECTABLE_CATALOG_PLAN_MAGIC);
+    expected[60..64].copy_from_slice(&SELECTABLE_CATALOG_PLAN_VERSION.to_be_bytes());
+    expected[64..68].copy_from_slice(&(SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
+    expected[68..72].copy_from_slice(&(SELECTABLE_CATALOG_PLAN_HEADER_BYTES as u32).to_be_bytes());
+    expected[76..80].copy_from_slice(&(1_u32).to_be_bytes());
     expected[92..100].copy_from_slice(&(1_u64).to_be_bytes());
+    expected[100..108].copy_from_slice(&(1_u64).to_be_bytes());
     assert_eq!(bytes, expected);
     assert_eq!(PluginSetupPlan::decode(&bytes), Ok(plan));
 }
@@ -357,16 +360,20 @@ fn protocol_golden_vectors_freeze_literal_frame_bytes() {
 }
 
 fn assert_version_bump_regenerates_vectors() {
-    assert_vector_bytes("hello", &[0, 0, 0, 9, 0xF0, 0, 0, 0, 4, 0, 0, 0, 1]);
+    assert_vector_bytes("hello", &[0, 0, 0, 9, 0xF0, 0, 0, 0, 5, 0, 0, 0, 1]);
     assert_vector_bytes(
         "hello-ack",
         &[
-            0, 0, 0, 17, 0xF1, 0, 0, 0, 4, 0, 0, 0, 1, 0, 0, 0, 7, 0, 0, 0, 32,
+            0, 0, 0, 17, 0xF1, 0, 0, 0, 5, 0, 0, 0, 1, 0, 0, 0, 7, 0, 0, 0, 32,
         ],
     );
     assert_vector_bytes(
         "setup-payload",
-        &[0, 0, 0, 9, 0x01, 0, 0, 0, 0, 0, 6, 0xE0, 0],
+        &[
+            0, 0, 0, 57, 1, 0, 0, 0, 0, 0, 6, 224, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0,
+        ],
     );
     assert_vector_bytes("setup-ack", &[0, 0, 0, 2, 0x02, 0]);
     assert_vector_bytes("quit", &[0, 0, 0, 1, 0x12]);
@@ -870,7 +877,11 @@ fn encode_vector(vector: ControlGoldenVector) -> Vec<u8> {
             node_count,
         }),
         ControlGoldenVectorMessage::SetupPayload { region_len } => {
-            control_encode_host_msg(&HostMsg::Setup { region_len })
+            control_encode_host_msg(&HostMsg::Setup {
+                process_generation: 1,
+                device_digest_workspace: None,
+                region_len,
+            })
         }
         ControlGoldenVectorMessage::Quit => control_encode_host_msg(&HostMsg::Quit),
     }
@@ -901,8 +912,13 @@ fn decode_vector(vector: ControlGoldenVector) -> ControlGoldenVectorMessage {
                 slot_index,
                 node_count,
             },
-            Ok(HostMsg::Setup { region_len }) => {
-                ControlGoldenVectorMessage::SetupPayload { region_len }
+            Ok(HostMsg::Setup {
+                region_len,
+                process_generation: 1,
+                device_digest_workspace: None,
+            }) => ControlGoldenVectorMessage::SetupPayload { region_len },
+            Ok(HostMsg::Setup { .. }) => {
+                panic!("golden setup has an unexpected generation or workspace")
             }
             Ok(HostMsg::Quit) => ControlGoldenVectorMessage::Quit,
             Err(error) => panic!("host golden vector should decode: {error}"),

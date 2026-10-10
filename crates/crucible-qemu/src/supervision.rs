@@ -63,6 +63,8 @@ pub use ninep_io_servicer::{
     QemuLive9pIoServiceStep, QemuLive9pIoServicer, QemuLive9pIoServicerError,
     QemuLive9pIoTransactionCheckpoint, QemuLive9pResponseEvidence,
 };
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub(crate) use node_step_gate::launch_qemu_original_fresh_node;
 pub use node_step_gate::{
     QemuLiveHotForkChildReport, QemuLiveHotForkChildStressReport, QemuLiveNodeIdentity,
     QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError, QemuProductionFreshLaunchAdmission,

@@ -42,6 +42,10 @@ use crucible_shmem::{
 mod channels;
 #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
 mod guarded_reset;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+mod readonly_backing;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub use readonly_backing::QemuReadOnlyBackingError;
 mod paused_observation;
 pub(crate) use channels::QemuQmpMachineControlChannel;
 pub use channels::{QemuNodePendingQuantum, QemuPluginIpcControlChannel, QemuShmemHotPathChannel};
@@ -57,6 +61,7 @@ pub use exact_snapshot::{
     QemuExactCheckpointCaptureResult,
 };
 mod fault_events;
+mod fault_fingerprint;
 #[cfg(target_os = "linux")]
 #[path = "node/hot_fork_child_console.rs"]
 mod hot_fork_child_console;
@@ -310,6 +315,8 @@ pub struct QemuNodeChild {
     ram_source: Option<Box<crate::ram_source::QemuRamSourceService>>,
     #[cfg(target_os = "linux")]
     launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
+    #[cfg(target_os = "linux")]
+    original_plugin_startup: Option<crate::spawn::OriginalPluginStartup>,
 }
 
 impl QemuNodeChild {
@@ -334,6 +341,8 @@ impl QemuNodeChild {
             ram_source: None,
             #[cfg(target_os = "linux")]
             launch_cleanup: None,
+            #[cfg(target_os = "linux")]
+            original_plugin_startup: None,
         }
     }
 
@@ -348,8 +357,44 @@ impl QemuNodeChild {
         self.launch_cleanup = Some(cleanup);
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retain_original_plugin_startup(
+        &mut self,
+        startup: crate::spawn::OriginalPluginStartup,
+    ) {
+        self.original_plugin_startup = Some(startup);
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn complete_original_plugin_startup(
+        &self,
+    ) -> Result<(), crucible_linux_resource::host_supervision::HostSupervisionError> {
+        if let Some(startup) = &self.original_plugin_startup {
+            startup.complete()?;
+        }
+        Ok(())
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn device_digest_workspace_setup_view(
+        &self,
+    ) -> Result<
+        Option<std::sync::Arc<crate::spawn::DeviceDigestWorkspaceBody>>,
+        crate::spawn::PluginStartupError,
+    > {
+        self.original_plugin_startup
+            .as_ref()
+            .map(crate::spawn::OriginalPluginStartup::workspace_view)
+            .transpose()
+            .map(Option::flatten)
+    }
+
     fn mark_reaped(&mut self) {
         self.reaped = true;
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        if let Some(startup) = self.original_plugin_startup.as_mut() {
+            startup.retire_workspace_after_reap();
+        }
         #[cfg(target_os = "linux")]
         if let Some(cleanup) = &self.launch_cleanup {
             cleanup.child_reaped();
@@ -539,6 +584,11 @@ impl Drop for QemuNodeChild {
             if let Some(source) = self.ram_source.take() {
                 std::mem::forget(source);
             }
+            if let Some(startup) = self.original_plugin_startup.take() {
+                // An uncertain child may still borrow the original operation
+                // and event role; retain its account through containment.
+                std::mem::forget(startup);
+            }
         }
     }
 }
@@ -551,20 +601,45 @@ pub struct QemuNodeChannels {
     plugin_control: Box<dyn QemuPluginIpcControlChannel>,
     shmem_hot_path: Box<dyn QemuShmemHotPathChannel>,
     qmp_machine_control: Box<dyn QemuQmpMachineControlChannel>,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    original_native_binding: Option<crate::linux_attempt_host::OriginalNativeNodeBinding>,
 }
 
 impl QemuNodeChannels {
     /// Builds the three-plane role bundle for one QEMU child.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub(crate) fn new(
         plugin_control: impl QemuPluginIpcControlChannel + 'static,
         shmem_hot_path: impl QemuShmemHotPathChannel + 'static,
         qmp_machine_control: impl QemuQmpMachineControlChannel + 'static,
     ) -> Self {
+        Self::new_with_original_binding(
+            plugin_control,
+            shmem_hot_path,
+            qmp_machine_control,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            None,
+        )
+    }
+
+    // The completed factory consumes the move-only witness before exposing
+    // the Node. There is no attachment operation for an existing channel.
+    pub(crate) fn new_with_original_binding(
+        plugin_control: impl QemuPluginIpcControlChannel + 'static,
+        shmem_hot_path: impl QemuShmemHotPathChannel + 'static,
+        qmp_machine_control: impl QemuQmpMachineControlChannel + 'static,
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        original_native_binding: Option<
+            crate::linux_attempt_host::OriginalNativeNodeBinding,
+        >,
+    ) -> Self {
         Self {
             plugin_control: Box::new(plugin_control),
             shmem_hot_path: Box::new(shmem_hot_path),
             qmp_machine_control: Box::new(qmp_machine_control),
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            original_native_binding,
         }
     }
 
@@ -642,11 +717,18 @@ pub struct QemuNode {
     setup_fault_command_sequence_floor: u64,
     next_fault_event_sequence: u64,
     fault_event_terminal_failure: Option<String>,
+    // A command can change controller or RAM state without advancing icount.
+    fault_fingerprint_invalidated: bool,
     #[cfg(target_os = "linux")]
     _launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
-    // Drop the retained original after every other node-owned resource.
+    // Retain the reset original through the other node-owned resources.
     #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
     reset_resume_pending: Option<guarded_reset::ResetResumeTransition>,
+    // Release the slot witness only after every channel, runtime, staged owner
+    // and reset keeper has finished destruction. Channel closure alone cannot
+    // permit the external host to retire or reuse this native generation.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    original_native_binding: Option<crate::linux_attempt_host::OriginalNativeNodeBinding>,
 }
 
 impl QemuNode {
@@ -752,6 +834,12 @@ impl QemuNode {
     ) -> Self {
         #[cfg(target_os = "linux")]
         let launch_cleanup = child.launch_cleanup.clone();
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        let (channels, original_native_binding) = {
+            let mut channels = channels;
+            let binding = channels.original_native_binding.take();
+            (channels, binding)
+        };
         Self {
             child: QemuNodeProcessControl::Direct(child),
             channels,
@@ -808,8 +896,11 @@ impl QemuNode {
             setup_fault_command_sequence_floor: initial_fault_command_sequence,
             next_fault_event_sequence: 1,
             fault_event_terminal_failure: None,
+            fault_fingerprint_invalidated: false,
             #[cfg(target_os = "linux")]
             _launch_cleanup: launch_cleanup,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            original_native_binding,
         }
     }
 
@@ -984,7 +1075,11 @@ impl QemuNode {
     ) -> Result<(), QemuNodeChannelError> {
         self.channels
             .shmem_hot_path
-            .enqueue_fault_command(header, payload)
+            .enqueue_fault_command(header, payload)?;
+        // Publication precedes result delivery. An uncertain result must not
+        // make the previously published same-icount sample usable again.
+        self.fault_fingerprint_invalidated = true;
+        Ok(())
     }
 
     /// Removes one completed fault result from this node's mapped data plane.
@@ -2200,6 +2295,9 @@ impl QemuNode {
             "execution_fingerprint",
         )
         .map_err(map_supervision)?;
+        if self.fault_fingerprint_invalidated {
+            return self.read_fresh_fault_fingerprint(&deadline);
+        }
         let mut capture_requested = false;
 
         loop {
@@ -2271,6 +2369,9 @@ impl QemuNode {
     /// Returns [`QemuNodeError`] when the plugin has not published the current
     /// sample or the shared-memory channel cannot read it.
     pub fn fingerprint_sample(&mut self) -> Result<QemuFingerprintSample, QemuNodeError> {
+        if self.fault_fingerprint_invalidated {
+            return self.read_fresh_fault_fingerprint_sample();
+        }
         self.channels
             .shmem_hot_path
             .fingerprint_sample()

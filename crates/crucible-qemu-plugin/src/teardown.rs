@@ -511,6 +511,8 @@ mod tests {
             peer.as_raw_fd(),
             4096,
             SetupDescriptorFds {
+                process_generation: 1,
+                device_digest_workspace: None,
                 shmem_fd: shmem.as_raw_fd(),
                 wake_fd: wake.as_raw_fd(),
                 plugin_setup_plan_fd: shmem.as_raw_fd(),

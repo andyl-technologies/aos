@@ -24,7 +24,9 @@ pub(super) enum CollectionHints {
 ///
 /// The caller retains [`super::DecodeCustody`] with the resulting owner. This
 /// adapter preserves JSON semantics and is not an admission for unrelated
-/// custom visitor allocations or later clones.
+/// custom visitor allocations or later clones. Its returned raw Serde error
+/// remains an ordinary diagnostic; controlled service DTOs use
+/// [`from_json_slice_closed`] to retain their diagnostic purpose.
 ///
 /// # Errors
 /// Rejects malformed or trailing JSON and exhausted original admission. The
@@ -61,6 +63,114 @@ pub fn from_json_slice<'de, T: Deserialize<'de>>(bytes: &'de [u8]) -> Result<T, 
     })?;
     decoder.end()?;
     Ok(result)
+}
+
+/// Decodes a sealed service DTO with an original-owned JSON diagnostic.
+///
+/// The same explicit budget reserves parser scratch, the concrete diagnostic
+/// envelope and its holder before parser construction. The caller retains its
+/// existing output custody. This entry accepts only the reviewed slice DTOs;
+/// IO deserializers and caller-defined diagnostic formatters cannot enter it.
+///
+/// # Errors
+/// Returns the same original admission error or an opaque paid syntax, data or
+/// EOF error. New diagnostic and holder admission cuts precede parser birth.
+/// Unsupported target layouts and checked extent overflow refuse without
+/// constructing a Serde error.
+pub fn from_json_slice_closed<'input, T>(
+    bytes: &'input [u8],
+    budget: &DecodeBudget,
+) -> Result<T, super::ClosedJsonError>
+where
+    T: super::json_profiles::ClosedJsonProfile<'input>,
+{
+    use super::json_diagnostic::PreparedDiagnostic;
+
+    budget.check()?;
+    let diagnostic = PreparedDiagnostic::prepare::<T>(budget, bytes)?;
+    let scratch = (bytes.len() as u64)
+        .checked_add(16)
+        .and_then(|bytes| bytes.checked_mul(3))
+        .ok_or_else(|| PreparedDiagnostic::refusal(budget, "JSON scratch size overflow"))?;
+    let parser_scratch = budget.reserve_scratch_bytes(scratch)?;
+
+    // The parser and partially constructed DTO close inside this scope. A
+    // returned error is already backed by diagnostic, independent of scratch.
+    let result = (|| {
+        admit_seed::<T, serde_json::Error>(budget)?;
+        let mut decoder = serde_json::Deserializer::from_slice(bytes);
+        let value = T::deserialize(BudgetDeserializer {
+            inner: &mut decoder,
+            budget: budget.clone(),
+            borrow_parser_bytes: false,
+            collection_hints: CollectionHints::Suppress,
+        })?;
+        decoder.end()?;
+        Ok(value)
+    })();
+    drop(parser_scratch);
+
+    finish_closed_json(budget, diagnostic, result)
+}
+
+pub(super) fn finish_closed_json<T>(
+    budget: &DecodeBudget,
+    diagnostic: super::json_diagnostic::PreparedDiagnostic,
+    result: Result<T, serde_json::Error>,
+) -> Result<T, super::ClosedJsonError> {
+    match result {
+        Ok(value) => {
+            if let Err(original) = budget.check() {
+                drop(value);
+                drop(diagnostic);
+                return Err(original.into());
+            }
+            drop(diagnostic);
+            Ok(value)
+        }
+        Err(source) if is_admission_relay(&source) => match budget.failure() {
+            Ok(None) => Err(diagnostic.retain(source).into()),
+            // Only the fixed admission marker yields to its actual original.
+            // A later account failure cannot replace another JSON diagnostic.
+            Ok(Some(original)) | Err(original) => {
+                drop(source);
+                drop(diagnostic);
+                Err(original.into())
+            }
+        },
+        Err(source) => Err(diagnostic.retain(source).into()),
+    }
+}
+
+pub(super) struct AdmissionRelayPrefix {
+    matched: bool,
+    position: usize,
+}
+
+impl std::fmt::Write for AdmissionRelayPrefix {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        let marker = b"original decoded metadata admission refused";
+        let count = (marker.len() - self.position).min(text.len());
+        self.matched &= text.as_bytes()[..count] == marker[self.position..self.position + count];
+        self.position += count;
+        Ok(())
+    }
+}
+
+fn is_admission_relay(error: &serde_json::Error) -> bool {
+    use std::fmt::Write;
+
+    // In these sealed schemas, no user-derived message has this prefix. The
+    // derived/identity errors use their distinct fixed templates. Display may
+    // append only the actual line/column; it creates no formatting allocation.
+    let mut prefix = AdmissionRelayPrefix {
+        matched: true,
+        position: 0,
+    };
+    error.is_data()
+        && write!(&mut prefix, "{error}").is_ok()
+        && prefix.matched
+        && prefix.position == b"original decoded metadata admission refused".len()
 }
 
 fn admit_seed<T, E: serde::de::Error>(budget: &DecodeBudget) -> Result<(), E> {

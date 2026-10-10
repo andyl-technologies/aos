@@ -36,5 +36,5 @@ tracing = { workspace = true }
 [dev-dependencies]
 crucible-linux-resource = { path = "../crucible-linux-resource", default-features = false, features = ["test-support"] }
 crucible-cas = { workspace = true, features = ["test-support"] }
-crucible = { path = "../crucible", features = ["test-double"] }
+crucible = { path = "../crucible", features = ["test-double", "test-support"] }
 rustix = { workspace = true, features = ["time"] }

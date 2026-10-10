@@ -143,6 +143,45 @@ impl Update {
             value.validate_for(key)?;
         }
         let prior = self.find(key, operation)?;
+        self.apply_known(backend, key, value, prior, operation)
+    }
+
+    /// Inserts only after this update confirms absence, without a second read.
+    pub(super) fn insert_absent(
+        &mut self,
+        backend: &PackedBlobBackend,
+        key: Key,
+        value: Value,
+        operation: &mut Operation<'_>,
+    ) -> Result<(), StoreError> {
+        if self.find(key, operation)?.is_some() {
+            return Err(StoreError::InvalidComposition {
+                reason: "Packed insertion requires confirmed absence",
+            });
+        }
+        value.validate_for(key)?;
+
+        if matches!(self.root, Root::Page(_)) {
+            // Preserve the preliminary page admission and allocation cut,
+            // then retire it before header checks or copy-on-write pages.
+            let page = operation.buffer(wire::PAGE_BYTES)?;
+            drop(page);
+            operation.check()?;
+        }
+        self.apply_known(backend, key, Some(value), None, operation)?;
+        Ok(())
+    }
+
+    // Only the immediately preceding search supplies this scalar prior value.
+    // No page bytes or absence certificate escape the mutably borrowed update.
+    fn apply_known(
+        &mut self,
+        backend: &PackedBlobBackend,
+        key: Key,
+        value: Option<Value>,
+        prior: Option<Value>,
+        operation: &mut Operation<'_>,
+    ) -> Result<Option<Value>, StoreError> {
         if prior == value {
             return Ok(prior);
         }

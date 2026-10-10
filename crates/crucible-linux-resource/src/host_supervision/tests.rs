@@ -5,6 +5,27 @@
 
 use super::*;
 
+// The root roster retains a Weak to this allocation. Temporarily remove only
+// that self-reference while the fixture owns the sole supervisor, then restore
+// it before any operation can observe the unchanged original authority.
+fn backdate_original_start(supervisor: &mut HostOperationSupervisor, elapsed: Duration) {
+    assert_eq!(Arc::strong_count(&supervisor.shared), 1);
+    assert_eq!(Arc::weak_count(&supervisor.shared), 1);
+    assert_eq!(supervisor.shared.budget_owner, 0);
+
+    let outer = Arc::clone(&supervisor.shared.outer);
+    let mut authority = outer.lock().unwrap();
+    assert_eq!(authority.rosters.len(), 1);
+    let root = authority.rosters.get_mut(&0).unwrap();
+    let registered = root.1.take().unwrap();
+    assert_eq!(registered.as_ptr(), Arc::as_ptr(&supervisor.shared));
+    drop(registered);
+
+    Arc::get_mut(&mut supervisor.shared).unwrap().started = host_now() - elapsed;
+    root.1 = Some(Arc::downgrade(&supervisor.shared));
+    assert_eq!(Arc::weak_count(&supervisor.shared), 1);
+}
+
 #[test]
 fn bounded_status_refuses_an_oversized_roster_without_retiring_operations() {
     let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
@@ -198,7 +219,7 @@ fn elapsed_cap_wins_amendment_without_a_watcher() {
         Some(Duration::from_secs(1)),
     )
     .unwrap();
-    Arc::get_mut(&mut supervisor.shared).unwrap().started = host_now() - Duration::from_secs(2);
+    backdate_original_start(&mut supervisor, Duration::from_secs(2));
 
     assert!(matches!(
         supervisor.amend_outer_cap(0, Some(Duration::from_secs(60))),
@@ -216,7 +237,7 @@ fn shortening_below_elapsed_accepts_revision_and_cancels_atomically() {
         Some(Duration::from_secs(60)),
     )
     .unwrap();
-    Arc::get_mut(&mut supervisor.shared).unwrap().started = host_now() - Duration::from_secs(2);
+    backdate_original_start(&mut supervisor, Duration::from_secs(2));
 
     assert_eq!(
         supervisor
@@ -391,7 +412,7 @@ fn original_liveness_records_expiry_without_renewing_the_original_cap() {
         Some(Duration::from_secs(1)),
     )
     .unwrap();
-    Arc::get_mut(&mut root.shared).unwrap().started = host_now() - Duration::from_secs(2);
+    backdate_original_start(&mut root, Duration::from_secs(2));
 
     assert!(matches!(
         root.verify_original_live(),

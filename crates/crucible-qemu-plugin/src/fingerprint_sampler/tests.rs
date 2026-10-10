@@ -8,6 +8,13 @@ use std::io::Write as _;
 use std::os::fd::IntoRawFd as _;
 use std::os::unix::fs::MetadataExt as _;
 
+fn test_workspace() -> Box<[u8; 65_536]> {
+    vec![0; 65_536]
+        .into_boxed_slice()
+        .try_into()
+        .unwrap_or_else(|_| panic!("fixed test workspace extent"))
+}
+
 fn digest_bytes(seed: u8) -> [u8; FINGERPRINT_DIGEST_BYTES] {
     Sha256::digest([seed]).into()
 }
@@ -160,7 +167,7 @@ fn aggregate_capture_rejects_a_descriptor_without_close_on_exec() {
 #[test]
 fn detached_capture_digests_every_component_into_the_slot_sample() {
     let sample = captured_sample()
-        .digest()
+        .digest(&mut test_workspace())
         .unwrap_or_else(|error| panic!("complete material should digest: {error}"));
 
     assert_eq!(sample.sample_icount, 100_000);
@@ -188,7 +195,7 @@ fn detached_capture_refuses_incomplete_component_material() {
     captured.device.material_length = 2;
 
     assert_eq!(
-        captured.digest(),
+        captured.digest(&mut test_workspace()),
         Err(FingerprintSamplerError::DigestRead {
             component: "device state",
             remaining_bytes: 1,
@@ -236,4 +243,120 @@ fn aggregate_capture_rejects_wrong_ram_identity_contract() {
         Err(FingerprintSamplerError::InvalidCaptureEvidence)
     );
     assert_eq!(std::mem::size_of::<QemuFingerprintCaptureV2>(), 120);
+}
+
+#[derive(Clone, Copy)]
+enum ReadStep {
+    Interrupted,
+    Bytes(usize),
+    Eof,
+    Failure,
+}
+
+struct TranscriptReader {
+    payload: Vec<u8>,
+    offset: usize,
+    steps: std::collections::VecDeque<ReadStep>,
+    requests: Vec<usize>,
+}
+
+impl Read for TranscriptReader {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        self.requests.push(output.len());
+        match self.steps.pop_front().unwrap_or(ReadStep::Eof) {
+            ReadStep::Interrupted => Err(std::io::ErrorKind::Interrupted.into()),
+            ReadStep::Eof => Ok(0),
+            ReadStep::Failure => Err(std::io::ErrorKind::PermissionDenied.into()),
+            ReadStep::Bytes(length) => {
+                assert!(length <= output.len());
+                output[..length].copy_from_slice(&self.payload[self.offset..self.offset + length]);
+                self.offset += length;
+                Ok(length)
+            }
+        }
+    }
+}
+
+#[test]
+fn borrowed_digest_preserves_full_stride_short_reads_and_interrupted_requests() {
+    let payload: Vec<u8> = (0..70_000).map(|offset| (offset % 251) as u8).collect();
+    let expected: [u8; 32] = Sha256::digest(&payload).into();
+    let mut reader = TranscriptReader {
+        payload,
+        offset: 0,
+        steps: [
+            ReadStep::Interrupted,
+            ReadStep::Bytes(1_024),
+            ReadStep::Bytes(65_536),
+            ReadStep::Bytes(3_440),
+        ]
+        .into(),
+        requests: Vec::new(),
+    };
+    let mut workspace = test_workspace();
+
+    let actual =
+        digest_device_material(&mut reader, 70_000, "device state", &mut workspace).unwrap();
+
+    assert_eq!(actual, expected);
+    assert_eq!(reader.requests, [65_536, 65_536, 65_536, 3_440]);
+    assert_eq!(reader.offset, 70_000);
+    assert!(reader.steps.is_empty());
+}
+
+#[test]
+fn borrowed_digest_preserves_the_exact_remaining_extent_at_eof_and_io_refusal() {
+    for refusal in [ReadStep::Eof, ReadStep::Failure] {
+        let mut reader = TranscriptReader {
+            payload: vec![0x3a; 100],
+            offset: 0,
+            steps: [ReadStep::Bytes(7), refusal].into(),
+            requests: Vec::new(),
+        };
+        let mut workspace = test_workspace();
+
+        assert_eq!(
+            digest_device_material(&mut reader, 100, "device state", &mut workspace),
+            Err(FingerprintSamplerError::DigestRead {
+                component: "device state",
+                remaining_bytes: 93,
+            }),
+        );
+        assert_eq!(reader.requests, [100, 93]);
+        assert_eq!(reader.offset, 7);
+    }
+}
+
+#[test]
+fn borrowed_digest_does_not_read_beyond_the_declared_material() {
+    let mut reader = TranscriptReader {
+        payload: vec![0x3a; 20],
+        offset: 0,
+        steps: [ReadStep::Bytes(7), ReadStep::Failure].into(),
+        requests: Vec::new(),
+    };
+    let mut workspace = test_workspace();
+
+    let actual = digest_device_material(&mut reader, 7, "device state", &mut workspace).unwrap();
+
+    assert_eq!(actual, <[u8; 32]>::from(Sha256::digest([0x3a; 7])));
+    assert_eq!(reader.requests, [7]);
+    assert_eq!(reader.steps.len(), 1);
+}
+
+#[test]
+fn zero_extent_digest_has_no_read_request() {
+    let mut reader = TranscriptReader {
+        payload: Vec::new(),
+        offset: 0,
+        steps: [ReadStep::Failure].into(),
+        requests: Vec::new(),
+    };
+    let mut workspace = test_workspace();
+
+    let actual = digest_device_material(&mut reader, 0, "device state", &mut workspace).unwrap();
+
+    assert_eq!(actual, <[u8; 32]>::from(Sha256::digest([])));
+    assert!(reader.requests.is_empty());
+    assert_eq!(reader.steps.len(), 1);
 }

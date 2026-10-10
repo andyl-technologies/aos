@@ -15,6 +15,16 @@ pub struct LifecycleBackendConstructionError {
 }
 
 impl LifecycleBackendConstructionError {
+    /// Retains an already owned shared backend cause without another allocation.
+    ///
+    /// The caller retains the original purpose outside this existing control
+    /// through its final alias and physical cleanup. This method issues no
+    /// resource entitlement and performs no backend operation.
+    #[must_use]
+    pub fn from_shared(source: Arc<dyn Error + Send + Sync>) -> Self {
+        Self { source }
+    }
+
     pub(crate) fn new(source: impl Error + Send + Sync + 'static) -> Self {
         Self {
             source: Arc::new(source),

@@ -389,6 +389,7 @@ mod tests {
         (
             supervisor,
             OriginalActorServicePolicy {
+                launch: None,
                 catalog: None,
                 original,
                 bootstrap_bytes: 4096,

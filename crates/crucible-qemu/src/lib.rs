@@ -198,9 +198,10 @@ pub use linux_attempt_host::{
 #[doc(hidden)]
 pub use linux_attempt_host::{
     OriginalActorAccountCustody, OriginalActorAccountError, OriginalActorCatalogAccounts,
-    OriginalActorCatalogPurpose, OriginalActorDecodeOwner, OriginalActorServicePolicy,
-    OriginalCatalogAuditError, OriginalCatalogPhysicalAudit, OriginalGuestServiceHandle,
-    OriginalGuestServiceOwner, OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster,
+    OriginalActorCatalogPurpose, OriginalActorDecodeOwner, OriginalActorServiceLaunchPurpose,
+    OriginalActorServicePolicy, OriginalBoundBackingObservation, OriginalCatalogAuditError,
+    OriginalCatalogPhysicalAudit, OriginalGuestServiceHandle, OriginalGuestServiceOwner,
+    OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster,
     OriginalNativeControlRetirement, OriginalNativePhysicalRetirement,
 };
 #[cfg(target_os = "linux")]
@@ -223,6 +224,8 @@ pub use live_plugin_gate::{
 #[cfg(unix)]
 pub use mapped_quantum::{QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError};
 pub(crate) use node::QemuQmpMachineControlChannel;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub use node::QemuReadOnlyBackingError;
 pub use node::operational_health::native_actor::{
     QemuNativeFaultActorFailure, QemuNativeOperationFailure,
 };
@@ -356,6 +359,12 @@ pub use qmp::{
     QmpKernelSwapAdmission, QmpKernelSwapCancellation, QmpKernelSwapResidency,
 };
 pub(crate) use qmp::{QmpCheckpointCapture, QmpCheckpointCaptureRequest, QmpCheckpointTopology};
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub use qmp::{
+    QmpReadOnlyBackingCaptureFailure, QmpReadOnlyBackingEvent, QmpReadOnlyBackingFailure,
+    QmpReadOnlyBackingOwner, QmpReadOnlyBackingReceipt, QmpReadOnlyBackingSink,
+    QmpReadOnlyBackingStreamError,
+};
 pub use quantum::{
     QemuDeviceIoFreezeObservation, QemuDeviceIoFreezeReport, QemuInboundFrame, QemuOutboundFrame,
     QemuPendingQuantum, QemuQuantumError, QemuQuantumOperation, QemuQuantumOperationPlane,
@@ -384,8 +393,8 @@ pub use shutdown::{
 pub(crate) use spawn::spawn_prepared_qemu_child_with_fds_in_directory_guarded;
 #[cfg(target_os = "linux")]
 pub use spawn::{
-    QemuChildProcessContract, QemuPreparedRunDirectory, QemuSpawnError, QemuSpawnHostResources,
-    QemuSpawnSetupResources, QemuSpawnedChild,
+    PluginStartupError, QemuChildProcessContract, QemuPreparedRunDirectory, QemuSpawnError,
+    QemuSpawnHostResources, QemuSpawnSetupResources, QemuSpawnedChild,
 };
 pub use storage_array::{
     StorageArrayError, StorageArrayMemberWrite, StorageArrayWritePlan, plan_storage_array_write,

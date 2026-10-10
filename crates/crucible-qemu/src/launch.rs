@@ -389,6 +389,7 @@ pub struct QemuLaunchCommand {
     qmp: Option<QemuQmpChannelConfig>,
     plugin_coverage: QemuLaunchPluginSwitch,
     plugin_fault_node_hash: [u8; 32],
+    plugin_process_generation: u64,
     ram_control: Option<QemuRamControlLaunch>,
     ram_backing_quota_bytes: Option<u64>,
     fault_capability_requirement: crate::QemuFaultCapabilityRequirement,
@@ -554,6 +555,11 @@ impl QemuLaunchCommand {
     #[must_use]
     pub const fn plugin_fault_node_hash(&self) -> [u8; 32] {
         self.plugin_fault_node_hash
+    }
+
+    /// Returns the process generation encoded in the validated plugin arguments.
+    pub(crate) const fn plugin_process_generation(&self) -> u64 {
+        self.plugin_process_generation
     }
 
     /// Returns the descriptor-bound independent pager controller setup.
@@ -1028,6 +1034,7 @@ impl QemuLaunchCommandBuilder {
             qmp: self.qmp,
             plugin_coverage: self.plugin.coverage(),
             plugin_fault_node_hash: self.plugin.fault_node_hash(),
+            plugin_process_generation: self.plugin.process_generation(),
             ram_control: self.plugin.ram_control(),
             ram_backing_quota_bytes: self.plugin.ram_spill_quota(),
             fault_capability_requirement,

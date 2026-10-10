@@ -84,6 +84,8 @@ fn running_host_lifecycle_stream(
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
             plugin_setup_plan_fd: shmem.as_raw_fd(),
+            process_generation: 1,
+            device_digest_workspace: None,
         },
     )?;
     let _setup = crucible_protocol::recv_setup_with_descriptors(peer.as_raw_fd())?;

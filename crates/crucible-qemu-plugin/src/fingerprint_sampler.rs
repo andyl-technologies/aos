@@ -82,30 +82,41 @@ impl CapturedFingerprintMaterial {
     fn digest(
         mut self,
         component: &'static str,
+        workspace: &mut [u8; 65_536],
     ) -> Result<[u8; FINGERPRINT_DIGEST_BYTES], FingerprintSamplerError> {
-        let mut hasher = Sha256::new();
-        let mut remaining = self.material_length;
-        let mut buffer = [0_u8; 64 * 1024];
+        digest_device_material(&mut self.file, self.material_length, component, workspace)
+    }
+}
 
-        while remaining != 0 {
-            // The minimum is bounded by the local buffer on every host.
-            let requested = remaining.min(buffer.len() as u64) as usize;
-            match self.file.read(&mut buffer[..requested]) {
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Ok(0) | Err(_) => {
-                    return Err(FingerprintSamplerError::DigestRead {
-                        component,
-                        remaining_bytes: remaining,
-                    });
-                }
-                Ok(read) => {
-                    hasher.update(&buffer[..read]);
-                    remaining -= read as u64;
-                }
+// The declared workspace preserves the original read transcript. In particular,
+// a short read reduces the next request by only the actual bytes read, and an
+// Interrupted read neither updates the hash nor consumes the remaining extent.
+fn digest_device_material(
+    reader: &mut impl Read,
+    material_length: u64,
+    component: &'static str,
+    workspace: &mut [u8; 65_536],
+) -> Result<[u8; FINGERPRINT_DIGEST_BYTES], FingerprintSamplerError> {
+    let mut hasher = Sha256::new();
+    let mut remaining = material_length;
+
+    while remaining != 0 {
+        let requested = remaining.min(workspace.len() as u64) as usize;
+        match reader.read(&mut workspace[..requested]) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Ok(0) | Err(_) => {
+                return Err(FingerprintSamplerError::DigestRead {
+                    component,
+                    remaining_bytes: remaining,
+                });
+            }
+            Ok(read) => {
+                hasher.update(&workspace[..read]);
+                remaining -= read as u64;
             }
         }
-        Ok(hasher.finalize().into())
     }
+    Ok(hasher.finalize().into())
 }
 
 /// An exact-coordinate sample whose device projection digest remains pending.
@@ -122,14 +133,28 @@ pub(crate) struct CapturedFingerprintSample {
 }
 
 impl CapturedFingerprintSample {
+    #[cfg(test)]
+    pub(crate) fn test_empty() -> Self {
+        Self {
+            sample: FingerprintSample::default(),
+            device: CapturedFingerprintMaterial {
+                file: File::open("/dev/null").unwrap(),
+                material_length: 0,
+            },
+        }
+    }
+
     /// Digests the detached device projection and preserves the coherent RAM root.
     ///
     /// # Errors
     ///
     /// Returns an error if detached component bytes cannot be read completely.
     /// Failed material must not be published or acknowledge an exact request.
-    pub(crate) fn digest(mut self) -> Result<FingerprintSample, FingerprintSamplerError> {
-        let device = self.device.digest("device state")?;
+    pub(crate) fn digest(
+        mut self,
+        workspace: &mut [u8; 65_536],
+    ) -> Result<FingerprintSample, FingerprintSamplerError> {
+        let device = self.device.digest("device state", workspace)?;
         self.sample.device_state_digest = device;
         Ok(self.sample)
     }

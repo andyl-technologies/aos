@@ -10,6 +10,16 @@ The atomic integration patch creates these QEMU source files:
 
 | Created file | License | Basis |
 | --- | --- | --- |
+| `include/qemu/crucible-device-workspace.h` | GPL-2.0-or-later | Explicit SPDX identifier; fixed workspace and original startup wire declarations |
+| `plugins/crucible-device-workspace.c` | GPL-2.0-or-later | Explicit SPDX identifier; bounded wire and sealed descriptor decoding |
+| `plugins/crucible-startup-source.c` | GPL-2.0-or-later | Explicit SPDX identifier; original installer deadline, cancellation, and retained custody |
+| `plugins/crucible-startup-source.h` | GPL-2.0-or-later | Explicit SPDX identifier; private native startup control declarations |
+| `tests/unit/extract-crucible-startup-source-controls.py` | GPL-2.0-or-later | Explicit SPDX identifier; literal production-body control extraction |
+| `tests/unit/extract-crucible-x86-table-projection.py` | GPL-2.0-or-later | Explicit SPDX identifier; literal descriptor-table projection extraction |
+| `tests/unit/test-crucible-device-workspace.c` | GPL-2.0-or-later | Explicit SPDX identifier; wire, sealed descriptor, and private ABI controls |
+| `tests/unit/test-crucible-startup-source-layout.c` | GPL-2.0-or-later | Explicit SPDX identifier; native startup control layout measurement |
+| `tests/unit/test-crucible-startup-source.c` | GPL-2.0-or-later | Explicit SPDX identifier; original startup custody and refusal controls |
+| `tests/unit/test-crucible-x86-table-projection.c` | GPL-2.0-or-later | Explicit SPDX identifier; descriptor-table identity and projection purity controls |
 | `include/system/crucible-kernel-swap-observation.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-kernel-swap-observation.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-ram-owner-diagnostic.c` | GPL-2.0-or-later | Explicit SPDX identifier; original native report implementation retained |

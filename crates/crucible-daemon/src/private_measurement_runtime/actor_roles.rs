@@ -11,7 +11,8 @@ use std::sync::Arc;
 use crucible_linux_resource::host_supervision::{HostOperationGuard, HostOperationSupervisor};
 use crucible_linux_resource::measurement_origin::AuthenticatedParentInvocation;
 use crucible_qemu::{
-    OriginalActorAccountCustody, OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster,
+    OriginalActorAccountCustody, OriginalActorAccountError, OriginalNativeAccountFactoryBinding,
+    OriginalNativeAccountRoster,
 };
 
 use super::MeasurementRuntimeAdmissionError;
@@ -37,6 +38,18 @@ struct PublishedActor {
     preparation: Arc<HostOperationGuard>,
     supervisor: HostOperationSupervisor,
     accounts: OriginalActorAccountCustody,
+}
+
+impl PublishedActor {
+    fn retain_preparation(&self) -> Result<OriginalPreparation, OriginalActorAccountError> {
+        self.accounts.require_original()?;
+        let original = OriginalPreparation::retain_admitted(
+            Arc::clone(&self.preparation),
+            self.supervisor.clone(),
+        );
+        self.accounts.require_original()?;
+        Ok(original)
+    }
 }
 
 impl OriginalActorRoleIssuer {
@@ -204,15 +217,25 @@ impl OriginalActorRoleIssuer {
         service: &crate::PreparedCampaignLocalService,
         config: crate::PackagedQemuExecutorConfig,
     ) -> Result<OriginalPreparedPackagedExecutor<'actor>, OriginalPackagedPreparationError> {
-        let original = self.retain_preparation()?;
-        let (roster, binding) = self.prepare_native_account_roster()?;
+        let held = self
+            .held
+            .as_mut()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let original = held.retain_preparation()?;
+        let (roster, binding) = held.accounts.prepare_native_account_roster()?;
         let executor = service.prepare_original_packaged_executor(config, original, binding)?;
         let owner = OriginalPreparedPackagedExecutor {
             _actor: self,
             roster: Some(roster),
             executor: Some(executor),
         };
-        if let Err(source) = owner._actor.require_original() {
+        let after = owner
+            ._actor
+            .held
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)
+            .and_then(|held| held.accounts.require_original());
+        if let Err(source) = after {
             // Publish physical and external custody together before the
             // fallible original postcut, including an already-open factory.
             std::mem::forget(owner);
@@ -233,19 +256,13 @@ impl OriginalActorRoleIssuer {
     pub fn retain_preparation(
         &self,
     ) -> Result<OriginalPreparation, MeasurementRuntimeAdmissionError> {
-        self.require_original()?;
         let held = self
             .held
             .as_ref()
             .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
                 "retained original actor custody",
             ))?;
-        let original = OriginalPreparation::retain_admitted(
-            Arc::clone(&held.preparation),
-            held.supervisor.clone(),
-        );
-        self.require_original()?;
-        Ok(original)
+        Ok(held.retain_preparation()?)
     }
 }
 
@@ -278,7 +295,7 @@ pub struct OriginalPreparedPackagedExecutor<'actor> {
 pub enum OriginalPackagedPreparationError {
     /// The same actor's retained original accounts or interval refused.
     #[error("original packaged account preparation refused: {0}")]
-    Actor(#[from] MeasurementRuntimeAdmissionError),
+    Actor(#[from] OriginalActorAccountError),
     /// The genuine repository, capture or factory preparation refused.
     #[error("original packaged service preparation refused: {0}")]
     Service(#[from] crate::CampaignLocalServiceError),

@@ -2017,6 +2017,8 @@ pub(super) fn complete_reference_sim_double_setup(backend: &mut SimDouble) {
 
     let setup = control_encode_host_msg(&HostMsg::Setup {
         region_len: backend.shmem_layout().region_size,
+        process_generation: 1,
+        device_digest_workspace: None,
     });
     match backend.accept_host_control_frame(&setup) {
         Ok(Some(_setup_ack)) => {}

@@ -174,6 +174,30 @@ impl OriginalPreparation {
         node.resume_reset_to_fresh_idle_under_original(liveness_ceiling, &self.original)
     }
 
+    /// Observes all RAM backing through the same actor, host and original Node.
+    ///
+    /// This lends the retained preparation directly to the Node's closed slot
+    /// verification. It creates no operation or cancellation contract. The
+    /// caller retains the real host and decoder through actual physical cleanup;
+    /// the returned receipt alone grants no native role or full-state authority.
+    ///
+    /// # Errors
+    /// Returns the exact binding, original, transport, parser or visitor refusal.
+    pub fn observe_node_backing_under_original<'owner>(
+        &'owner self,
+        node: &mut crucible_qemu::QemuNode,
+        host: &crucible_qemu::LinuxQemuAttemptHostOwner,
+        decoder: &'owner crucible_qemu::OriginalActorDecodeOwner,
+        visitor: &mut dyn for<'event> FnMut(
+            crucible_qemu::QmpReadOnlyBackingEvent<'event>,
+        ) -> std::io::Result<()>,
+    ) -> Result<
+        crucible_qemu::QmpReadOnlyBackingReceipt,
+        crucible_qemu::QemuReadOnlyBackingError<'owner>,
+    > {
+        node.capture_readonly_backing_under_original(host, decoder, &self.original, visitor)
+    }
+
     pub(crate) fn boundary(&self) -> Result<(), HostSupervisionError> {
         self.original.wait_slice().map(|_| ())
     }

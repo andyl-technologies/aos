@@ -324,6 +324,26 @@ pub trait QemuHostIoRuntime: Send {
         ))
     }
 
+    /// Models a fresh capture for an explicit unsupervised test fixture.
+    ///
+    /// This method grants no live executor authority. Production captures use
+    /// the caller's existing original guard; fixtures must model a new request
+    /// and its acknowledgement rather than coalesce an older pending request.
+    ///
+    /// # Errors
+    /// Refuses fixtures that do not implement this boundary, or returns their
+    /// actual capture refusal within the remaining fixture timeout.
+    #[cfg(any(test, feature = "test-support"))]
+    fn publish_fresh_execution_fingerprint_for_test(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "publish fresh fault fingerprint",
+            "fixture has no fresh capture boundary",
+        ))
+    }
+
     /// Requests a coordinated shared-memory pause and waits for quiescence.
     ///
     /// Runtimes without a live external executor have nothing to pause. A live
@@ -339,6 +359,24 @@ pub trait QemuHostIoRuntime: Send {
         _timeout: Duration,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         Ok(())
+    }
+
+    /// Requests the existing checkpoint pause under the caller's saved operation.
+    ///
+    /// The live runtime borrows the same deadline through device settling,
+    /// ceiling revocation and plugin acknowledgement. Unsupported runtimes
+    /// refuse before effects rather than replacing the original admission.
+    ///
+    /// # Errors
+    /// Returns the actual original refusal or checkpoint handoff error.
+    fn quiesce_for_checkpoint_under_original(
+        &mut self,
+        _original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "quiesce for checkpoint",
+            "runtime has no original-owned pause boundary",
+        ))
     }
 
     /// Clears a coordinated plugin pause while QEMU is already stopped.

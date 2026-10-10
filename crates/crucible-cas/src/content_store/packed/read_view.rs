@@ -31,7 +31,7 @@ impl View {
             .map_err(|error| batch::admission_under(original, error))?;
         let lifecycle = checked_io::lock(backend, LIFECYCLE_LOCK_FILE, true, original, boundary)?;
         let state = checked_io::lock(backend, STATE_LOCK_FILE, false, original, boundary)?;
-        let snapshot = IndexSnapshot::load(backend, original, boundary)?;
+        let snapshot = IndexSnapshot::read(backend, original, boundary)?;
         checked_reader::check(original, boundary)?;
         Ok(Self {
             snapshot,

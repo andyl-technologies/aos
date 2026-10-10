@@ -106,6 +106,15 @@ impl OriginalCampaignStateBootstrap {
         Self::prepare_at(Path::new(STATE_ROOT), 0, 0, budget)
     }
 
+    #[cfg(test)]
+    pub(super) fn fixture_at(
+        root: &Path,
+        budget: &DecodeBudget,
+    ) -> Result<Self, OriginalCampaignStateError> {
+        use rustix::process::{getgid, getuid};
+        Self::prepare_at(root, getuid().as_raw(), getgid().as_raw(), budget)
+    }
+
     fn prepare_at(
         root_path: &Path,
         user_id: u32,
@@ -651,6 +660,15 @@ impl From<OriginalCampaignStateHandle> for PreparedCampaignStateOwner {
 }
 
 impl PreparedCampaignStateOwner {
+    pub(super) fn transfer_identity(&self) -> Result<&str, CampaignLocalServiceError> {
+        match &self.0 {
+            StateOwnerKind::Ordinary(state) => Ok(state.transfer_identity()),
+            StateOwnerKind::Original(state) => state
+                .transfer_identity()
+                .map_err(CampaignLocalServiceError::OriginalState),
+        }
+    }
+
     pub(super) fn debug_session_inventory_path(
         &self,
     ) -> Result<PathBuf, CampaignLocalServiceError> {

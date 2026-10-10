@@ -30,7 +30,7 @@
 //!
 //! Unsafe boundary discipline: raw `sendmsg`/`recvmsg` and ancillary-buffer
 //! details stay private; public callers use safe setup descriptor handover wrappers.
-//! These validate the fixed three-fd order and descriptor count before exposing
+//! These validate the fixed three-or-four-fd order and descriptor count before exposing
 //! owned close-on-exec descriptors.
 //!
 //! Wire-format:
@@ -51,6 +51,7 @@ mod choice;
 mod codec_fuzz;
 mod control_lifecycle;
 pub mod debug_gateway;
+mod device_digest_workspace;
 mod device_group_opportunity;
 mod doorbell_abi;
 mod doorbell_frame;
@@ -87,6 +88,10 @@ pub use control_lifecycle::{
     ControlLifecycleState, ControlLifecycleStream, NORMAL_CONTROL_LIFECYCLE,
     validate_complete_control_lifecycle, validate_control_lifecycle_trace,
 };
+#[cfg(unix)]
+pub use device_digest_workspace::SetupDeviceDigestWorkspaceFd;
+pub use device_digest_workspace::{DEVICE_DIGEST_WORKSPACE_BYTES, DeviceDigestWorkspaceBinding};
+
 pub use device_group_opportunity::{
     DEVICE_GROUP_OPPORTUNITY_BYTES, DEVICE_GROUP_OPPORTUNITY_MAX_MEMBERS,
     DEVICE_GROUP_OPPORTUNITY_VERSION, DeviceGroupOpportunity, DeviceGroupOpportunityError,
@@ -170,7 +175,7 @@ pub const FRAME_INTEGERS_ARE_BIG_ENDIAN: bool = true;
 /// Exact control-protocol version this crate accepts.
 pub const CONTROL_PROTOCOL_VERSION: u32 = include!("control_protocol_version.in");
 #[cfg(unix)]
-const SETUP_DESCRIPTOR_RECV_CAPACITY: usize = SETUP_DESCRIPTOR_COUNT + 1;
+const SETUP_DESCRIPTOR_RECV_CAPACITY: usize = SETUP_WORKSPACE_DESCRIPTOR_COUNT + 1;
 #[cfg(unix)]
 const ANCILLARY_STORAGE_HEADERS: usize = 8;
 #[cfg(all(
@@ -266,7 +271,7 @@ impl ControlTag {
     #[must_use]
     pub const fn payload_len(self) -> usize {
         match self {
-            Self::Setup => 8,
+            Self::Setup => 56,
             Self::SetupAck => 1,
             Self::Quit => 0,
             Self::Hello => 8,
@@ -319,10 +324,14 @@ pub enum HostMsg {
         /// Number of node slots in the shared-memory region.
         node_count: u32,
     },
-    /// Setup frame carrying the region byte length.
+    /// Setup frame carrying the region and fixed workspace binding.
     Setup {
         /// Total byte length of the shared-memory region to map.
         region_len: u64,
+        /// Actual native process generation assigned by the launch owner.
+        process_generation: u64,
+        /// Already admitted workspace identity, present only for fingerprint sampling.
+        device_digest_workspace: Option<DeviceDigestWorkspaceBinding>,
     },
     /// Graceful shutdown request.
     Quit,
@@ -331,6 +340,9 @@ pub enum HostMsg {
 /// Number of file descriptors attached to a `Setup` frame.
 #[cfg(unix)]
 pub const SETUP_DESCRIPTOR_COUNT: usize = 3;
+/// Exact descriptor count when the device digest workspace is present.
+#[cfg(unix)]
+pub const SETUP_WORKSPACE_DESCRIPTOR_COUNT: usize = 4;
 /// `SetupAck.status` value meaning the plugin is ready to run via shared memory.
 pub const SETUP_ACK_STATUS_READY: u8 = 0;
 /// Generic `SetupAck.status` value for setup failures without a narrower code.
@@ -344,8 +356,12 @@ pub struct SetupDescriptorFds {
     pub shmem_fd: RawFd,
     /// Wake descriptor, sent second in the `SCM_RIGHTS` list.
     pub wake_fd: RawFd,
-    /// Sealed v3 composite plugin-plan descriptor, sent third.
+    /// Sealed current-version composite plugin-plan descriptor, sent third.
     pub plugin_setup_plan_fd: RawFd,
+    /// Actual native process generation derived from the retained launch owner.
+    pub process_generation: u64,
+    /// Writable digest workspace, sent fourth only when sampling is enabled.
+    pub device_digest_workspace: Option<SetupDeviceDigestWorkspaceFd>,
 }
 
 /// Owned descriptors received from an inbound `Setup` frame.
@@ -356,8 +372,10 @@ pub struct ReceivedSetupDescriptors {
     pub shmem_fd: OwnedFd,
     /// Wake descriptor received second in the `SCM_RIGHTS` list.
     pub wake_fd: OwnedFd,
-    /// Sealed v3 composite plugin-plan descriptor received third.
+    /// Sealed current-version composite plugin-plan descriptor received third.
     pub plugin_setup_plan_fd: OwnedFd,
+    /// Writable digest workspace received fourth, when present.
+    pub device_digest_workspace: Option<OwnedFd>,
 }
 
 /// A decoded `Setup` frame plus its attached descriptors.
@@ -366,6 +384,10 @@ pub struct ReceivedSetupDescriptors {
 pub struct ReceivedSetup {
     /// Total byte length of the shared-memory region to map.
     pub region_len: u64,
+    /// Actual native generation encoded by the launch owner.
+    pub process_generation: u64,
+    /// Fixed observational workspace binding, not allocation authority.
+    pub device_digest_workspace: Option<DeviceDigestWorkspaceBinding>,
     /// Fixed-order descriptors attached to the setup frame.
     pub descriptors: ReceivedSetupDescriptors,
 }
@@ -428,6 +450,12 @@ pub struct NegotiatedHandshake {
 /// Typed errors returned by pure control-frame decoding.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum FrameDecodeError {
+    /// The fixed setup workspace schema or binding is invalid.
+    #[error("invalid setup workspace: {reason}")]
+    InvalidSetupWorkspace {
+        /// Fixed explanation of the rejected public fields.
+        reason: &'static str,
+    },
     /// The byte buffer is empty.
     #[error("control frame is empty")]
     EmptyFrame,
@@ -738,8 +766,31 @@ pub fn control_encode_host_msg(message: &HostMsg) -> Vec<u8> {
                 FieldValue::U32(*node_count),
             ],
         ),
-        HostMsg::Setup { region_len } => {
-            encode_frame(ControlTag::Setup, &[FieldValue::U64(*region_len)])
+        HostMsg::Setup {
+            region_len,
+            process_generation,
+            device_digest_workspace,
+        } => {
+            let workspace = device_digest_workspace.unwrap_or(DeviceDigestWorkspaceBinding {
+                account_generation: 0,
+                workspace_generation: 0,
+                device: 0,
+                inode: 0,
+            });
+            let present = u32::from(device_digest_workspace.is_some());
+            encode_frame(
+                ControlTag::Setup,
+                &[
+                    FieldValue::U64(*region_len),
+                    FieldValue::U32(present),
+                    FieldValue::U32(present),
+                    FieldValue::U64(*process_generation),
+                    FieldValue::U64(workspace.account_generation),
+                    FieldValue::U64(workspace.workspace_generation),
+                    FieldValue::U64(workspace.device),
+                    FieldValue::U64(workspace.inode),
+                ],
+            )
         }
         HostMsg::Quit => encode_frame(ControlTag::Quit, &[]),
     }
@@ -761,9 +812,49 @@ pub fn control_decode_host_msg(frame: &[u8]) -> Result<HostMsg, FrameDecodeError
             slot_index: read_u32_be(decoded.payload, 8),
             node_count: read_u32_be(decoded.payload, 12),
         }),
-        ControlTag::Setup => Ok(HostMsg::Setup {
-            region_len: read_u64_be(decoded.payload, 0),
-        }),
+        ControlTag::Setup => {
+            let process_generation = read_u64_be(decoded.payload, 16);
+            if process_generation == 0 {
+                return Err(FrameDecodeError::InvalidSetupWorkspace {
+                    reason: "native process generation must be nonzero",
+                });
+            }
+            let schema = read_u32_be(decoded.payload, 8);
+            let flags = read_u32_be(decoded.payload, 12);
+            let binding = DeviceDigestWorkspaceBinding {
+                account_generation: read_u64_be(decoded.payload, 24),
+                workspace_generation: read_u64_be(decoded.payload, 32),
+                device: read_u64_be(decoded.payload, 40),
+                inode: read_u64_be(decoded.payload, 48),
+            };
+            let device_digest_workspace = match (schema, flags) {
+                (0, 0)
+                    if binding
+                        == (DeviceDigestWorkspaceBinding {
+                            account_generation: 0,
+                            workspace_generation: 0,
+                            device: 0,
+                            inode: 0,
+                        }) =>
+                {
+                    None
+                }
+                (1, 1) => {
+                    binding.validate()?;
+                    Some(binding)
+                }
+                _ => {
+                    return Err(FrameDecodeError::InvalidSetupWorkspace {
+                        reason: "workspace schema, flags, or absent fields are invalid",
+                    });
+                }
+            };
+            Ok(HostMsg::Setup {
+                region_len: read_u64_be(decoded.payload, 0),
+                process_generation,
+                device_digest_workspace,
+            })
+        }
         ControlTag::Quit => Ok(HostMsg::Quit),
         ControlTag::SetupAck | ControlTag::Hello => Err(FrameDecodeError::UnexpectedDirection {
             tag: decoded.tag,
@@ -1090,18 +1181,33 @@ pub fn send_setup_with_descriptors(
     region_len: u64,
     descriptors: SetupDescriptorFds,
 ) -> Result<(), DescriptorHandoverError> {
-    let frame = control_encode_host_msg(&HostMsg::Setup { region_len });
+    let frame = control_encode_host_msg(&HostMsg::Setup {
+        region_len,
+        process_generation: descriptors.process_generation,
+        device_digest_workspace: descriptors
+            .device_digest_workspace
+            .map(|workspace| workspace.binding),
+    });
+    control_decode_host_msg(&frame).map_err(|source| DescriptorHandoverError::Decode { source })?;
     let fds = [
         descriptors.shmem_fd,
         descriptors.wake_fd,
         descriptors.plugin_setup_plan_fd,
+        descriptors
+            .device_digest_workspace
+            .map_or(-1, |workspace| workspace.fd),
     ];
-    send_frame_with_fds(socket_fd, &frame, &fds)
+    let count = if descriptors.device_digest_workspace.is_some() {
+        SETUP_WORKSPACE_DESCRIPTOR_COUNT
+    } else {
+        SETUP_DESCRIPTOR_COUNT
+    };
+    send_frame_with_fds(socket_fd, &frame, &fds[..count])
 }
 
 /// Receives a `Setup` frame and its fixed-order descriptors from a Unix socket.
 ///
-/// The frame must carry exactly three `SCM_RIGHTS` descriptors. The returned
+/// The frame carries exactly three descriptors without sampling or four with a digest workspace. The returned
 /// descriptors are owned, marked close-on-exec, and returned in the RFC-defined
 /// order: shmem first, wake second, immutable current-version plugin plan third.
 ///
@@ -1109,7 +1215,7 @@ pub fn send_setup_with_descriptors(
 ///
 /// Returns [`DescriptorHandoverError`] when the socket closes early, the
 /// ancillary data is truncated or malformed, the descriptor count is not
-/// exactly three, or the frame does not decode to [`HostMsg::Setup`].
+/// consistent with the fixed workspace presence, or the frame does not decode to [`HostMsg::Setup`].
 #[cfg(unix)]
 pub fn recv_setup_with_descriptors(
     socket_fd: RawFd,
@@ -1141,10 +1247,27 @@ pub fn recv_setup_with_descriptors(
     match control_decode_host_msg(&frame)
         .map_err(|source| DescriptorHandoverError::Decode { source })?
     {
-        HostMsg::Setup { region_len } => Ok(ReceivedSetup {
+        HostMsg::Setup {
             region_len,
-            descriptors,
-        }),
+            process_generation,
+            device_digest_workspace,
+        } => {
+            if device_digest_workspace.is_some() != descriptors.device_digest_workspace.is_some() {
+                return Err(DescriptorHandoverError::WrongDescriptorCount {
+                    count: if descriptors.device_digest_workspace.is_some() {
+                        SETUP_WORKSPACE_DESCRIPTOR_COUNT
+                    } else {
+                        SETUP_DESCRIPTOR_COUNT
+                    },
+                });
+            }
+            Ok(ReceivedSetup {
+                region_len,
+                process_generation,
+                device_digest_workspace,
+                descriptors,
+            })
+        }
         message => Err(DescriptorHandoverError::UnexpectedMessage { message }),
     }
 }
@@ -1248,7 +1371,7 @@ fn empty_cmsghdr() -> libc::cmsghdr {
 fn send_frame_with_fds(
     socket_fd: RawFd,
     frame: &[u8],
-    fds: &[RawFd; SETUP_DESCRIPTOR_COUNT],
+    fds: &[RawFd],
 ) -> Result<(), DescriptorHandoverError> {
     let mut iov = libc::iovec {
         iov_base: frame.as_ptr().cast::<libc::c_void>().cast_mut(),
@@ -1273,7 +1396,7 @@ fn send_frame_with_fds(
         });
     }
 
-    let payload_len = fds.len() * std::mem::size_of::<RawFd>();
+    let payload_len = std::mem::size_of_val(fds);
     let cmsg_len = cmsg_len(payload_len)?;
     // SAFETY: `cmsg` points into live aligned `control` storage, and `payload_len` exactly covers `fds`.
     unsafe {
@@ -1488,35 +1611,35 @@ fn append_rights_fds(
 fn setup_descriptors_from_raw_fds(
     fds: Vec<RawFd>,
 ) -> Result<ReceivedSetupDescriptors, DescriptorHandoverError> {
-    let [shmem_fd, wake_fd, plugin_setup_plan_fd] =
-        match <[RawFd; SETUP_DESCRIPTOR_COUNT]>::try_from(fds) {
-            Ok(fds) => fds,
-            Err(fds) => {
-                let count = fds.len();
-                close_raw_fds(fds);
-                return Err(DescriptorHandoverError::WrongDescriptorCount { count });
-            }
-        };
+    if fds.len() != SETUP_DESCRIPTOR_COUNT && fds.len() != SETUP_WORKSPACE_DESCRIPTOR_COUNT {
+        let count = fds.len();
+        close_raw_fds(fds);
+        return Err(DescriptorHandoverError::WrongDescriptorCount { count });
+    }
+    for &fd in &fds {
+        if let Err(error) = set_cloexec_on_raw_fd(fd) {
+            close_raw_fds(fds);
+            return Err(error);
+        }
+    }
+    let (shmem_fd, wake_fd, plugin_setup_plan_fd, workspace_fd) = match fds.as_slice() {
+        [shmem, wake, plan] => (*shmem, *wake, *plan, None),
+        [shmem, wake, plan, workspace] => (*shmem, *wake, *plan, Some(*workspace)),
+        _ => {
+            let count = fds.len();
+            close_raw_fds(fds);
+            return Err(DescriptorHandoverError::WrongDescriptorCount { count });
+        }
+    };
 
-    if let Err(error) = set_cloexec_on_raw_fd(shmem_fd) {
-        close_raw_fds(vec![shmem_fd, wake_fd, plugin_setup_plan_fd]);
-        return Err(error);
-    }
-    if let Err(error) = set_cloexec_on_raw_fd(wake_fd) {
-        close_raw_fds(vec![shmem_fd, wake_fd, plugin_setup_plan_fd]);
-        return Err(error);
-    }
-    if let Err(error) = set_cloexec_on_raw_fd(plugin_setup_plan_fd) {
-        close_raw_fds(vec![shmem_fd, wake_fd, plugin_setup_plan_fd]);
-        return Err(error);
-    }
-
-    // SAFETY: the descriptors came from `SCM_RIGHTS` and are uniquely wrapped here.
+    // SAFETY: SCM_RIGHTS returned distinct, uniquely owned descriptors; each
+    // is wrapped exactly once after the complete list passes validation.
     let descriptors = unsafe {
         ReceivedSetupDescriptors {
             shmem_fd: OwnedFd::from_raw_fd(shmem_fd),
             wake_fd: OwnedFd::from_raw_fd(wake_fd),
             plugin_setup_plan_fd: OwnedFd::from_raw_fd(plugin_setup_plan_fd),
+            device_digest_workspace: workspace_fd.map(|fd| OwnedFd::from_raw_fd(fd)),
         }
     };
     Ok(descriptors)

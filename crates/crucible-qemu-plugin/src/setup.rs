@@ -165,10 +165,154 @@ pub struct PluginSetupCompletion {
     app_random_branch_plan: AppRandomBranchPlan,
     selectable_catalog_plan: Option<SelectableCatalogPlan>,
     registered_wake_fd: Option<RegisteredWakeFd>,
+    process_generation: u64,
+    device_digest_purpose_plan: Option<OwnedFd>,
+    startup_source: Option<crate::startup_source::InstallerStartupSource>,
+    refused_device_digest_workspace:
+        Option<crate::device_digest_workspace::RefusedInitialDeviceDigestWorkspace>,
+    device_digest_workspace: Option<(crucible_protocol::DeviceDigestWorkspaceBinding, OwnedFd)>,
 }
 
 #[cfg(unix)]
 impl PluginSetupCompletion {
+    pub(crate) fn retain_startup_source(
+        &mut self,
+        source: crate::startup_source::InstallerStartupSource,
+    ) {
+        self.startup_source = Some(source);
+    }
+
+    pub(crate) fn check_original_startup(&self) -> Result<(), crate::StartupSourceError> {
+        self.original_startup()?.check()
+    }
+
+    pub(crate) fn original_startup_slice(
+        &self,
+    ) -> Result<std::time::Duration, crate::StartupSourceError> {
+        self.original_startup()?.wait_slice()
+    }
+
+    #[cfg(not(test))]
+    pub(crate) fn complete_original_startup_registration(
+        &mut self,
+    ) -> Result<(), crate::StartupSourceError> {
+        self.startup_source
+            .as_mut()
+            .ok_or(crate::StartupSourceError::Ownership {
+                reason: "initial installer Source is absent",
+            })?
+            .registration_complete()
+    }
+
+    fn original_startup(
+        &self,
+    ) -> Result<&crate::startup_source::InstallerStartupSource, crate::StartupSourceError> {
+        self.startup_source
+            .as_ref()
+            .ok_or(crate::StartupSourceError::Ownership {
+                reason: "initial installer Source is absent",
+            })
+    }
+
+    /// Rejects extra or absent workspace resources before callback allocation.
+    pub(crate) fn validate_device_digest_workspace_mode(
+        &self,
+        enabled: bool,
+        process_generation: u64,
+    ) -> Result<(), crate::DeviceDigestWorkspaceError> {
+        if self.process_generation != process_generation
+            || self.device_digest_workspace.is_some() != enabled
+        {
+            return Err(crate::DeviceDigestWorkspaceError::Ownership {
+                reason: "workspace selection or process generation differs from installation",
+            });
+        }
+        Ok(())
+    }
+
+    /// Consumes the fixed handover only for its actual installing incarnation.
+    pub(crate) fn take_device_digest_workspace(
+        &mut self,
+        plugin_id: crate::QemuPluginId,
+        process_generation: u64,
+    ) -> Result<
+        crate::device_digest_workspace::DeviceDigestWorkspace,
+        crate::DeviceDigestWorkspaceError,
+    > {
+        if self.refused_device_digest_workspace.is_some() {
+            return Err(crate::DeviceDigestWorkspaceError::Ownership {
+                reason: "the native workspace claim remains refused or uncertain",
+            });
+        }
+        if self.process_generation != process_generation {
+            return Err(crate::DeviceDigestWorkspaceError::Ownership {
+                reason: "setup process generation differs from installation",
+            });
+        }
+        if let Some(original) = self.startup_source.as_ref() {
+            original
+                .check()
+                .map_err(|source| crate::DeviceDigestWorkspaceError::StartupSource { source })?;
+        }
+        let (binding, descriptor) = self.device_digest_workspace.take().ok_or(
+            crate::DeviceDigestWorkspaceError::Ownership {
+                reason: "fingerprint-enabled setup lacks its compulsory workspace",
+            },
+        )?;
+        if let Some(original) = self.startup_source.as_ref() {
+            let result = crate::device_digest_workspace::DeviceDigestWorkspace::prepare(
+                plugin_id,
+                process_generation,
+                binding,
+                descriptor,
+                original
+                    .plan_fd()
+                    .map_err(|source| crate::DeviceDigestWorkspaceError::StartupSource { source })?
+                    .as_raw_fd(),
+            );
+            return match result {
+                Ok(workspace) => Ok(workspace),
+                Err(failure) => {
+                    let source = failure.source;
+                    self.refused_device_digest_workspace = Some(
+                        crate::device_digest_workspace::RefusedInitialDeviceDigestWorkspace::retain_with_source_owner(failure),
+                    );
+                    Err(source)
+                }
+            };
+        }
+        let purpose_plan = self.device_digest_purpose_plan.take().ok_or(
+            crate::DeviceDigestWorkspaceError::Ownership {
+                reason: "the sealed fixed-purpose plan is absent",
+            },
+        )?;
+        let result = crate::device_digest_workspace::DeviceDigestWorkspace::prepare(
+            plugin_id,
+            process_generation,
+            binding,
+            descriptor,
+            purpose_plan.as_raw_fd(),
+        );
+        // The initial claim has synchronously authenticated the existing sealed
+        // descriptor. Its independent owner closes only after that claim cut.
+        match result {
+            Ok(workspace) => {
+                drop(purpose_plan);
+                Ok(workspace)
+            }
+            Err(failure) => {
+                let source = failure.source;
+                self.refused_device_digest_workspace = Some(
+                    crate::device_digest_workspace::RefusedInitialDeviceDigestWorkspace::retain(
+                        failure,
+                        purpose_plan,
+                    ),
+                );
+                Err(source)
+            }
+        }
+    }
+
     /// Returns the mapped shared-memory region.
     #[must_use]
     pub const fn mapped_region(&self) -> &MappedSetupRegion {
@@ -309,12 +453,12 @@ impl PluginReadySetupAck {
     }
 }
 
-/// Receives the setup frame and its three fixed-order descriptors.
+/// Receives the setup frame and its three or four fixed-order descriptors.
 ///
 /// # Errors
 ///
 /// Returns [`PluginSetupError::ReceiveSetup`] when the control socket does not
-/// carry a valid `Setup` frame with exactly three `SCM_RIGHTS` descriptors, or
+/// carry a valid `Setup` frame with the required three or four `SCM_RIGHTS` descriptors, or
 /// [`PluginSetupError::SendFailureAck`] when that setup failure cannot be
 /// acknowledged.
 #[cfg(unix)]
@@ -374,10 +518,71 @@ pub fn prepare_setup_completion<W>(
 where
     W: Write,
 {
-    let region_len = setup.region_len;
-    let shmem_fd = setup.descriptors.shmem_fd;
-    let wake_fd = setup.descriptors.wake_fd;
-    let plugin_setup_plan_fd = setup.descriptors.plugin_setup_plan_fd;
+    let (input, plan) = separate_received_plan(setup);
+    let mut completion =
+        prepare_setup_completion_borrowing_plan(writer, input, plan.as_fd(), None, handshake)?;
+    completion.device_digest_purpose_plan =
+        completion.device_digest_workspace.as_ref().map(|_| plan);
+    Ok(completion)
+}
+
+/// Received setup resources with the independently retained third owner removed.
+#[cfg(unix)]
+pub(crate) struct SetupPreparationInput {
+    region_len: u64,
+    process_generation: u64,
+    shmem_fd: OwnedFd,
+    wake_fd: OwnedFd,
+    workspace_binding: Option<crucible_protocol::DeviceDigestWorkspaceBinding>,
+    workspace_fd: Option<OwnedFd>,
+}
+
+#[cfg(unix)]
+pub(crate) fn separate_received_plan(setup: ReceivedSetup) -> (SetupPreparationInput, OwnedFd) {
+    (
+        SetupPreparationInput {
+            region_len: setup.region_len,
+            process_generation: setup.process_generation,
+            shmem_fd: setup.descriptors.shmem_fd,
+            wake_fd: setup.descriptors.wake_fd,
+            workspace_binding: setup.device_digest_workspace,
+            workspace_fd: setup.descriptors.device_digest_workspace,
+        },
+        setup.descriptors.plugin_setup_plan_fd,
+    )
+}
+
+// This core never acquires Source from a caller-supplied descriptor. Runtime's
+// sole receive path retains the original owner outside every fallible effect.
+#[cfg(unix)]
+pub(crate) fn prepare_setup_completion_borrowing_plan<W: Write>(
+    writer: &mut W,
+    input: SetupPreparationInput,
+    plugin_setup_plan_fd: BorrowedFd<'_>,
+    original: Option<&crate::startup_source::InstallerStartupSource>,
+    handshake: PluginControlHandshake,
+) -> Result<PluginSetupCompletion, PluginSetupError> {
+    let SetupPreparationInput {
+        region_len,
+        process_generation,
+        shmem_fd,
+        wake_fd,
+        workspace_binding,
+        workspace_fd,
+    } = input;
+    let device_digest_workspace = match (workspace_binding, workspace_fd) {
+        (Some(binding), Some(descriptor)) => Some((binding, descriptor)),
+        (None, None) => None,
+        _ => {
+            send_setup_failure_ack(writer, PluginSetupFailureStage::ReceiveSetup)?;
+            return Err(PluginSetupError::DeviceDigestWorkspacePresence);
+        }
+    };
+    if let Some(original) = original {
+        original
+            .check()
+            .map_err(|source| PluginSetupError::StartupSource { source })?;
+    }
 
     let (shared_memory_device, shared_memory_inode) = match shared_memory_identity(shmem_fd.as_fd())
     {
@@ -395,6 +600,12 @@ where
             return Err(PluginSetupError::ValidatePluginSetupPlan { source });
         }
     };
+
+    if let Some(original) = original {
+        original
+            .check()
+            .map_err(|source| PluginSetupError::StartupSource { source })?;
+    }
 
     // The mmap lifetime is carried by `MappedSetupRegion`; no raw pointer to
     // shmem escapes setup without that owner and the validated-region token.
@@ -441,6 +652,11 @@ where
         app_random_branch_plan: decoded_plans.app_random_branch_plan,
         selectable_catalog_plan: decoded_plans.selectable_catalog_plan,
         registered_wake_fd: None,
+        process_generation,
+        refused_device_digest_workspace: None,
+        device_digest_purpose_plan: None,
+        startup_source: None,
+        device_digest_workspace,
     })
 }
 
@@ -474,7 +690,7 @@ struct DecodedPluginSetupPlans {
 
 #[cfg(target_os = "linux")]
 fn read_plugin_setup_plan(
-    fd: OwnedFd,
+    fd: BorrowedFd<'_>,
 ) -> Result<DecodedPluginSetupPlans, PluginSetupPlanDescriptorError> {
     let required_seals =
         libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE | libc::F_SEAL_SEAL;
@@ -578,7 +794,7 @@ fn read_plugin_setup_plan(
 
 #[cfg(all(unix, not(target_os = "linux")))]
 fn read_plugin_setup_plan(
-    _fd: OwnedFd,
+    _fd: BorrowedFd<'_>,
 ) -> Result<DecodedPluginSetupPlans, PluginSetupPlanDescriptorError> {
     Err(PluginSetupPlanDescriptorError::UnsupportedPlatform)
 }
@@ -949,6 +1165,15 @@ pub enum WakeFdSignalError {
 #[cfg(unix)]
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum PluginSetupError {
+    /// The original installing invocation refused before setup effects.
+    #[error("original startup Source refused: {source}")]
+    StartupSource {
+        /// Fixed native status or unavailable entry point; no formatted wrapper.
+        source: crate::StartupSourceError,
+    },
+    /// The workspace binding and descriptor presence disagree.
+    #[error("setup workspace binding and descriptor presence disagree")]
+    DeviceDigestWorkspacePresence,
     /// Receiving the setup frame and descriptors failed.
     #[error("receiving setup descriptors failed")]
     ReceiveSetup {

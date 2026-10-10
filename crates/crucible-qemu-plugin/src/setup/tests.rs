@@ -37,8 +37,11 @@ static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 fn prepare_setup_maps_validates_and_arms_wake_fd_before_ready_ack() {
     let layout = valid_layout();
     let setup = ReceivedSetup {
+        process_generation: 1,
+        device_digest_workspace: None,
         region_len: layout.region_size,
         descriptors: ReceivedSetupDescriptors {
+            device_digest_workspace: None,
             shmem_fd: valid_region_file(layout).into(),
             wake_fd: wake_fd().into(),
             plugin_setup_plan_fd: test_plugin_setup_plan_fd(),
@@ -88,8 +91,11 @@ fn prepare_setup_maps_validates_and_arms_wake_fd_before_ready_ack() {
 fn prepare_setup_rejects_a_raw_app_random_body() {
     let layout = valid_layout();
     let setup = ReceivedSetup {
+        process_generation: 1,
+        device_digest_workspace: None,
         region_len: layout.region_size,
         descriptors: ReceivedSetupDescriptors {
+            device_digest_workspace: None,
             shmem_fd: valid_region_file(layout).into(),
             wake_fd: wake_fd().into(),
             plugin_setup_plan_fd: test_sealed_setup_plan_fd(
@@ -113,8 +119,11 @@ fn prepare_setup_rejects_a_raw_app_random_body() {
 fn prepare_setup_sends_nonzero_ack_when_region_validation_fails() {
     let region_len = REGION_HEADER_SIZE as u64;
     let setup = ReceivedSetup {
+        process_generation: 1,
+        device_digest_workspace: None,
         region_len,
         descriptors: ReceivedSetupDescriptors {
+            device_digest_workspace: None,
             shmem_fd: zeroed_region_file(region_len).into(),
             wake_fd: wake_fd().into(),
             plugin_setup_plan_fd: test_plugin_setup_plan_fd(),
@@ -138,8 +147,11 @@ fn prepare_setup_sends_nonzero_ack_when_region_validation_fails() {
 fn prepare_setup_rejects_a_mutable_or_non_memfd_branch_plan_before_ready() {
     let layout = valid_layout();
     let setup = ReceivedSetup {
+        process_generation: 1,
+        device_digest_workspace: None,
         region_len: layout.region_size,
         descriptors: ReceivedSetupDescriptors {
+            device_digest_workspace: None,
             shmem_fd: valid_region_file(layout).into(),
             wake_fd: wake_fd().into(),
             plugin_setup_plan_fd: temp_region_file().into(),
@@ -161,6 +173,8 @@ fn prepare_setup_rejects_a_mutable_or_non_memfd_branch_plan_before_ready() {
 fn receive_setup_sends_nonzero_ack_when_descriptor_count_is_wrong() {
     let (mut host, mut plugin) = setup_socket_pair();
     let frame = control_encode_host_msg(&HostMsg::Setup {
+        process_generation: 1,
+        device_digest_workspace: None,
         region_len: REGION_HEADER_SIZE as u64,
     });
     if let Err(error) = host.write_all(&frame) {
@@ -193,6 +207,8 @@ fn receive_and_prepare_setup_receives_descriptors_and_cross_checks_handshake() {
         host.as_raw_fd(),
         layout.region_size,
         SetupDescriptorFds {
+            process_generation: 1,
+            device_digest_workspace: None,
             shmem_fd: region_file.as_raw_fd(),
             wake_fd: wake_file.as_raw_fd(),
             plugin_setup_plan_fd: branch_plan_file.as_raw_fd(),
@@ -224,8 +240,11 @@ fn receive_and_prepare_setup_receives_descriptors_and_cross_checks_handshake() {
 fn prepare_setup_sends_nonzero_ack_when_handshake_node_count_disagrees() {
     let layout = valid_layout();
     let setup = ReceivedSetup {
+        process_generation: 1,
+        device_digest_workspace: None,
         region_len: layout.region_size,
         descriptors: ReceivedSetupDescriptors {
+            device_digest_workspace: None,
             shmem_fd: valid_region_file(layout).into(),
             wake_fd: wake_fd().into(),
             plugin_setup_plan_fd: test_plugin_setup_plan_fd(),
@@ -254,8 +273,11 @@ fn prepare_setup_sends_nonzero_ack_when_handshake_node_count_disagrees() {
 fn prepare_setup_sends_nonzero_ack_when_handshake_slot_exceeds_region() {
     let layout = valid_layout();
     let setup = ReceivedSetup {
+        process_generation: 1,
+        device_digest_workspace: None,
         region_len: layout.region_size,
         descriptors: ReceivedSetupDescriptors {
+            device_digest_workspace: None,
             shmem_fd: valid_region_file(layout).into(),
             wake_fd: wake_fd().into(),
             plugin_setup_plan_fd: test_plugin_setup_plan_fd(),
@@ -335,8 +357,11 @@ fn wake_fd_registration_rejects_qemu_failure_status() {
 fn prepare_setup_sends_nonzero_ack_when_wake_fd_registration_fails() {
     let layout = valid_layout();
     let setup = ReceivedSetup {
+        process_generation: 1,
+        device_digest_workspace: None,
         region_len: layout.region_size,
         descriptors: ReceivedSetupDescriptors {
+            device_digest_workspace: None,
             shmem_fd: valid_region_file(layout).into(),
             wake_fd: wake_fd().into(),
             plugin_setup_plan_fd: test_plugin_setup_plan_fd(),

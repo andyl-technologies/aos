@@ -61,6 +61,17 @@ where
             .reset_selectable_under_original(pending, original)
     }
 
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn capture_readonly_backing<'host, 'owner>(
+        &mut self,
+        observation: crate::linux_attempt_host::OriginalBoundBackingObservation<'host, 'owner>,
+        visitor: &mut dyn for<'event> FnMut(
+            crate::QmpReadOnlyBackingEvent<'event>,
+        ) -> std::io::Result<()>,
+    ) -> Result<crate::QmpReadOnlyBackingReceipt, crate::QemuReadOnlyBackingError<'owner>> {
+        self.vmstate.capture_readonly_backing(observation, visitor)
+    }
+
     #[cfg(feature = "kernel-swap-measurement")]
     fn discover_kernel_swap_admission(
         &mut self,
@@ -754,6 +765,8 @@ pub(crate) struct QemuNodeFactoryRuntime<A, R> {
     async_policy: QemuAsyncDriverPolicy,
     crash_detector: QemuCrashDetector,
     host_io_runtime: R,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    original_native_binding: Option<crate::linux_attempt_host::OriginalNativeNodeBinding>,
 }
 
 impl<A, R> QemuNodeFactoryRuntime<A, R> {
@@ -774,7 +787,18 @@ impl<A, R> QemuNodeFactoryRuntime<A, R> {
             async_policy,
             crash_detector,
             host_io_runtime,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            original_native_binding: None,
         }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn with_original_binding(
+        mut self,
+        binding: crate::linux_attempt_host::OriginalNativeNodeBinding,
+    ) -> Self {
+        self.original_native_binding = Some(binding);
+        self
     }
 }
 
@@ -810,16 +834,22 @@ where
         async_policy,
         crash_detector,
         host_io_runtime,
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        original_native_binding,
     } = runtime;
     let prepared_setup = prepare_qemu_node_setup(setup, shmem_config, send_authorizer)?;
     Ok(build_qemu_node_from_prepared_setup(
         child,
         prepared_setup,
         qmp,
-        shutdown_policy,
-        async_policy,
-        crash_detector,
-        host_io_runtime,
+        PreparedNodeRuntime {
+            shutdown_policy,
+            async_policy,
+            crash_detector,
+            host_io_runtime,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            original_native_binding,
+        },
     ))
 }
 
@@ -919,6 +949,8 @@ where
         async_policy,
         crash_detector,
         mut host_io_runtime,
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        original_native_binding,
     } = runtime;
     if let Some(supervisor) = host_io_runtime.host_operation_supervisor() {
         qmp.set_host_operation_supervisor(supervisor.clone());
@@ -1162,10 +1194,14 @@ where
         child,
         prepared_setup,
         qmp,
-        shutdown_policy,
-        async_policy,
-        crash_detector,
-        host_io_runtime,
+        PreparedNodeRuntime {
+            shutdown_policy,
+            async_policy,
+            crash_detector,
+            host_io_runtime,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            original_native_binding,
+        },
     );
     if let Err(source) = node.restore_node_continuation(node_continuation) {
         let primary = QemuNodeFactoryError::NodeContinuationRestore {
@@ -1218,24 +1254,40 @@ where
     })
 }
 
-fn build_qemu_node_from_prepared_setup<S, R>(
-    child: QemuNodeChild,
-    prepared_setup: PreparedQemuNodeSetup,
-    qmp: QemuQmpVmStateControlChannel<S>,
+struct PreparedNodeRuntime<R> {
     shutdown_policy: QemuShutdownPolicy,
     async_policy: QemuAsyncDriverPolicy,
     crash_detector: QemuCrashDetector,
     host_io_runtime: R,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    original_native_binding: Option<crate::linux_attempt_host::OriginalNativeNodeBinding>,
+}
+
+fn build_qemu_node_from_prepared_setup<S, R>(
+    child: QemuNodeChild,
+    prepared_setup: PreparedQemuNodeSetup,
+    qmp: QemuQmpVmStateControlChannel<S>,
+    runtime: PreparedNodeRuntime<R>,
 ) -> QemuNode
 where
     S: QmpTimeoutStream + 'static,
     R: QemuHostIoRuntime + 'static,
 {
+    let PreparedNodeRuntime {
+        shutdown_policy,
+        async_policy,
+        crash_detector,
+        host_io_runtime,
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        original_native_binding,
+    } = runtime;
     let qmp_machine_control = QemuQmpExactSnapshotControlChannel::new(qmp);
-    let channels = QemuNodeChannels::new(
+    let channels = QemuNodeChannels::new_with_original_binding(
         prepared_setup.plugin_control,
         prepared_setup.shmem_hot_path,
         qmp_machine_control,
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        original_native_binding,
     );
 
     QemuNode::new(

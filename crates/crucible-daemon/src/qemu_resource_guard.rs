@@ -96,6 +96,22 @@ pub trait QemuAttemptHostResourceOwner {
     #[must_use]
     fn resource_limits(&self) -> AttemptResourceLimits;
 
+    /// Launches a fresh node through the same retained physical owner.
+    ///
+    /// Original owners preserve their closed generation witness and typed
+    /// refusal custody. Other owners use the ordinary admitted fresh route.
+    ///
+    /// # Errors
+    /// Returns the actual fresh admission or launch refusal.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn launch_fresh_node(
+        &self,
+        config: &crucible_qemu::QemuLiveNodeStepGateConfig,
+        admission: crucible_qemu::QemuProductionFreshLaunchAdmission<'_>,
+    ) -> Result<crucible_qemu::QemuNode, crucible_qemu::QemuLiveNodeStepGateError> {
+        crucible_qemu::launch_qemu_production_fresh_node(config, admission)
+    }
+
     /// Returns the sealed child-process launch contract.
     ///
     /// # Errors
@@ -441,6 +457,15 @@ impl QemuAttemptHostResourceOwner for LinuxQemuAttemptHostResourceOwner {
         self.host.native_resource_controller().map(Some)
     }
 
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn launch_fresh_node(
+        &self,
+        config: &crucible_qemu::QemuLiveNodeStepGateConfig,
+        admission: crucible_qemu::QemuProductionFreshLaunchAdmission<'_>,
+    ) -> Result<crucible_qemu::QemuNode, crucible_qemu::QemuLiveNodeStepGateError> {
+        self.host.launch_fresh_node(config, admission)
+    }
+
     fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
         self.host.process_contract()
     }
@@ -764,6 +789,15 @@ where
     ) -> Result<Option<crucible_qemu::LinuxQemuNativeResourceController>, QemuVmRealizationError>
     {
         self.host.native_resource_controller()
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn launch_fresh_node(
+        &self,
+        config: &crucible_qemu::QemuLiveNodeStepGateConfig,
+        admission: crucible_qemu::QemuProductionFreshLaunchAdmission<'_>,
+    ) -> Result<crucible_qemu::QemuNode, crucible_qemu::QemuLiveNodeStepGateError> {
+        self.host.launch_fresh_node(config, admission)
     }
 
     fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {

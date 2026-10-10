@@ -26,7 +26,7 @@ mod accounts;
 use accounts::CatalogAccounts;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 mod physical;
 

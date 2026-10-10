@@ -207,6 +207,19 @@ where
         ));
     }
 
+    /// Retains terminal original launch custody without allocating a diagnostic.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn quarantine_original_launch(&mut self) {
+        if self.terminal {
+            return;
+        }
+        self.guard.quarantine();
+        self.terminal = true;
+        // The enclosing typed error retains the actual cause. Replacing it
+        // with a separately allocated terminal message would lose that custody.
+        self.terminal_failure = None;
+    }
+
     /// Checks cancellation and hard-resource state between bounded operations.
     ///
     /// # Errors
@@ -266,6 +279,23 @@ where
         self.guard.child_process_contract().map_err(|error| {
             generation_error(format!("lend QEMU generation process contract: {error}"))
         })
+    }
+
+    /// Launches under this owner's retained guard without replacing its custody.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn launch_fresh_node(
+        &self,
+        config: &crucible_qemu::QemuLiveNodeStepGateConfig,
+        admission: crucible_qemu::QemuProductionFreshLaunchAdmission<'_>,
+    ) -> Result<crucible_qemu::QemuNode, crucible_qemu::QemuLiveNodeStepGateError> {
+        if self.terminal {
+            return Err(
+                crucible_qemu::QemuLiveNodeStepGateError::OriginalNativeAccount {
+                    source: crucible_qemu::OriginalActorAccountError::Unavailable,
+                },
+            );
+        }
+        self.guard.launch_fresh_node(config, admission)
     }
 
     /// Retains an unreaped child from a failed generation launch.

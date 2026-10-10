@@ -65,6 +65,8 @@ fn complete_sim_double_setup(backend: &mut SimDouble) {
     }
 
     let setup = control_encode_host_msg(&HostMsg::Setup {
+        process_generation: 1,
+        device_digest_workspace: None,
         region_len: backend.shmem_layout().region_size,
     });
     match backend.accept_host_control_frame(&setup) {

@@ -165,6 +165,17 @@ impl UnixPeerCampaignPolicy {
             .ok_or(CampaignAuthorizationError::Unauthorized)
     }
 
+    // Original in-process requests compare the actual inherited identity
+    // without allocating a clone or manufacturing socket peer credentials.
+    #[cfg(any(test, feature = "private-measurement-domain"))]
+    pub(crate) fn matches_identity(
+        &self,
+        identity: UnixPeerCampaignIdentity,
+        principal: &CampaignPrincipal,
+    ) -> bool {
+        self.principals.get(&identity) == Some(principal)
+    }
+
     /// Builds one closed policy from bounded binding and grant iterators.
     ///
     /// Empty inputs form an explicit deny-all policy. Every configured grant

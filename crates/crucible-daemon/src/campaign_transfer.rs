@@ -270,14 +270,28 @@ pub struct DirectoryCampaignTransferJournal {
     inner: Arc<DirectoryCampaignTransferJournalInner>,
 }
 
+#[cfg(feature = "private-measurement-domain")]
+mod original;
+
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) use original::{OriginalCampaignTransferJournalOwner, OriginalJournalError};
+
 struct DirectoryCampaignTransferJournalInner {
     root: PathBuf,
     writer_lock: File,
     lifecycle: RwLock<()>,
+    #[cfg(feature = "private-measurement-domain")]
+    original_release: Option<original::OriginalWriterRelease>,
 }
 
 impl Drop for DirectoryCampaignTransferJournalInner {
     fn drop(&mut self) {
+        #[cfg(feature = "private-measurement-domain")]
+        if self.original_release.is_some() {
+            // The original owner retains uncertain custody or has already
+            // observed the one actual unlock. Drop must not signal again.
+            return;
+        }
         let _ = flock(&self.writer_lock, FlockOperation::Unlock);
     }
 }
@@ -310,6 +324,8 @@ impl DirectoryCampaignTransferJournal {
                 root,
                 writer_lock,
                 lifecycle: RwLock::new(()),
+                #[cfg(feature = "private-measurement-domain")]
+                original_release: None,
             }),
         };
         cleanup_staging(&journal.inner.root.join(STAGING_DIRECTORY))?;

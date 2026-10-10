@@ -18,7 +18,13 @@ pub use bounded_visitors::{deserialize_prepaid_map, deserialize_prepaid_sequence
 
 mod serde_budget;
 pub use serde_budget::deserialize_with_budget;
-pub use serde_budget::from_json_slice;
+pub use serde_budget::{from_json_slice, from_json_slice_closed};
+
+/// Owns the sealed controlled service JSON schemas.
+pub mod json_profiles;
+
+mod json_diagnostic;
+pub use json_diagnostic::{ClosedJsonError, JsonProfileRefusal, PaidJsonError};
 
 mod cbor_encode;
 pub use cbor_encode::{CborEncodeError, to_cbor_vec_prefixed};
@@ -40,3 +46,7 @@ mod tests;
 
 mod retained_vec;
 pub use retained_vec::grow_retained_vec;
+
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use json_diagnostic::closed_json_diagnostic_extent_for_test;

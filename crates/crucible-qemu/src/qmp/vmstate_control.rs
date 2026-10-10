@@ -44,6 +44,17 @@ impl<S> QemuQmpVmStateControlChannel<S>
 where
     S: QmpTimeoutStream,
 {
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn capture_readonly_backing<'host, 'owner>(
+        &mut self,
+        observation: crate::linux_attempt_host::OriginalBoundBackingObservation<'host, 'owner>,
+        visitor: &mut dyn for<'event> FnMut(
+            super::QmpReadOnlyBackingEvent<'event>,
+        ) -> std::io::Result<()>,
+    ) -> Result<super::QmpReadOnlyBackingReceipt, crate::QemuReadOnlyBackingError<'owner>> {
+        observation.capture(&mut self.client, visitor)
+    }
+
     #[cfg(feature = "kernel-swap-measurement")]
     pub(crate) fn discover_kernel_swap_admission(
         &mut self,

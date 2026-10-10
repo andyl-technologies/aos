@@ -100,6 +100,7 @@ impl HostSupervisionBootstrap {
                 completed: 0,
                 required: 1,
                 state: HostOperationState::Running,
+                startup_cancellation: None,
             },
         })
     }
@@ -155,6 +156,7 @@ impl HostSupervisionBootstrap {
                 completed: 0,
                 required: 1,
                 state: HostOperationState::Running,
+                startup_cancellation: None,
             },
         };
         bootstrap.wait_slice()?;

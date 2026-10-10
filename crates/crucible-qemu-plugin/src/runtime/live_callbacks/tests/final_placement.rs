@@ -148,9 +148,13 @@ fn final_placement_pointer_survives_attachment_pin_and_worker_cleanup() {
         introspector,
         test_fingerprint_capture,
     );
-    state
-        .attach_fingerprint_in_place(sampling, &fingerprint_slot, Arc::clone(&worker_quiescence))
-        .unwrap_or_else(|error| panic!("fingerprint worker should attach: {error}"));
+    attach_test_fingerprint_in_place(
+        &mut state,
+        sampling,
+        &fingerprint_slot,
+        Arc::clone(&worker_quiescence),
+    )
+    .unwrap_or_else(|error| panic!("fingerprint worker should attach: {error}"));
     assert_eq!(std::ptr::from_ref(state.as_ref()), pointer);
 
     let pinned = std::pin::Pin::from(state);

@@ -185,6 +185,9 @@ pub struct QemuLaunchPluginConfig {
     ram_spill_quota: Option<u64>,
     ram_initial_budgets: Option<String>,
     ram_outer_cap: Option<String>,
+    original_startup: Option<crucible_protocol::plugin_setup_plan::StartupOperation>,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    device_digest_purpose: Option<crucible_protocol::plugin_setup_plan::DeviceDigestPurpose>,
 }
 
 impl QemuLaunchPluginConfig {
@@ -215,6 +218,9 @@ impl QemuLaunchPluginConfig {
             ram_spill_quota: None,
             ram_initial_budgets: None,
             ram_outer_cap: None,
+            original_startup: None,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            device_digest_purpose: None,
         }
     }
 
@@ -486,13 +492,39 @@ impl QemuLaunchPluginConfig {
         }
     }
 
+    pub(crate) fn with_original_startup(
+        mut self,
+        owner: &crate::spawn::OriginalPluginStartup,
+    ) -> Result<Self, crate::spawn::PluginStartupError> {
+        self.original_startup = Some(owner.record()?);
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        if let Some(body) = owner.workspace_view()? {
+            self.device_digest_purpose = Some(
+                *body
+                    .record()
+                    .map_err(|source| owner.workspace_refusal(source))?,
+            );
+        }
+        Ok(self)
+    }
+
     /// Returns the complete process-neutral plugin setup plan.
     #[must_use]
     pub fn plugin_setup_plan(&self) -> crucible_protocol::plugin_setup_plan::PluginSetupPlan {
-        crucible_protocol::plugin_setup_plan::PluginSetupPlan::new(
+        let plan = crucible_protocol::plugin_setup_plan::PluginSetupPlan::new(
             self.app_random_branch_plan().clone(),
             self.selectable_catalog_plan().clone(),
-        )
+        );
+        let plan = match self.original_startup {
+            Some(startup) => plan.with_startup_operation(startup),
+            None => plan,
+        };
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        let plan = match self.device_digest_purpose {
+            Some(purpose) => plan.with_device_digest_purpose(purpose),
+            None => plan,
+        };
+        plan
     }
 
     /// Returns the single-VM fingerprint sampling switch passed to the plugin.

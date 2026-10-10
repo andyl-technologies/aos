@@ -81,6 +81,77 @@ impl Fixture {
 }
 
 #[test]
+fn checked_read_authenticates_without_durability_confirmation_descriptor() {
+    let bytes = b"authenticated read is not a durable publication receipt";
+    let fixture = Fixture::new(bytes).unwrap();
+    let baseline = fixture.quota.resources.usage().unwrap();
+    let pressure = fixture
+        .original
+        .reserve_descriptors(DESCRIPTORS - 3)
+        .unwrap();
+    let reading = fixture.original.child().unwrap();
+
+    let handle = lookup(&fixture.backend, &reading, fixture.id, None, &mut || Ok(())).unwrap();
+    let authenticated = handle
+        .read_all_with_boundary(&reading, bytes.len() as u64, &mut || Ok(()))
+        .unwrap();
+
+    assert_eq!(&*authenticated, bytes);
+    drop((authenticated, handle, reading));
+    assert_eq!(fixture.quota.resources.usage().unwrap().0, DESCRIPTORS - 3);
+
+    let publishing = fixture.original.child().unwrap();
+    let source = BlobHandle::from_bytes(bytes.to_vec());
+    let failure = fixture
+        .backend
+        .put_many_if_absent_with_boundary(&publishing, &[(fixture.id, source)], &mut || Ok(()))
+        .unwrap_err();
+    let StoreError::PackedScope { source } = &failure else {
+        panic!("retain failed durability confirmation: {failure:?}");
+    };
+    let Some(StoreError::DecodeAdmission { source: cause, .. }) = source.work_failure() else {
+        panic!("retain the original descriptor refusal: {failure:?}");
+    };
+
+    assert!(matches!(
+        std::error::Error::source(cause)
+            .unwrap()
+            .downcast_ref::<StoreError>(),
+        Some(StoreError::Quota)
+    ));
+    assert!(source.first_boundary().is_none());
+    assert_eq!(source.outcome().durable_objects, 0);
+    assert!(!source.outcome().index_visibility_uncertain);
+    assert_eq!(publishing.check().unwrap_err(), *cause);
+    drop((failure, publishing, pressure));
+
+    fixture.original.verify_live().unwrap();
+    assert_eq!(fixture.quota.resources.usage().unwrap(), baseline);
+}
+
+#[test]
+fn checked_read_view_begin_does_not_confirm_directory_durability() {
+    let fixture = Fixture::new(b"authenticated stopped inventory generation").unwrap();
+    let baseline = fixture.quota.resources.usage().unwrap();
+    let pressure = fixture
+        .original
+        .reserve_descriptors(DESCRIPTORS - 3)
+        .unwrap();
+    let reading = fixture.original.child().unwrap();
+
+    let view =
+        super::super::read_view::View::begin(&fixture.backend, &reading, &mut || Ok(())).unwrap();
+
+    // The retained view still owns its two exclusion locks. Its later reader
+    // needs an arena and pack descriptor; this cut only qualifies view birth.
+    assert_eq!(fixture.quota.resources.usage().unwrap().0, DESCRIPTORS - 1);
+    drop((view, reading, pressure));
+
+    fixture.original.verify_live().unwrap();
+    assert_eq!(fixture.quota.resources.usage().unwrap(), baseline);
+}
+
+#[test]
 fn checked_pack_chunks_and_ranges_authenticate_and_keep_old_inodes_after_repack() {
     let bytes = vec![0x47; 192 * 1024];
     let fixture = Fixture::new(&bytes).unwrap();
