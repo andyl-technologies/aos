@@ -1247,7 +1247,7 @@ fn virtual_time_savepoint_capture_replays_and_authenticates_the_same_boundary() 
 fn run_guarded_default_campaign_with_runner_and_retention_source<R>(
     request: GuardedDefaultCampaignRunRequest,
     runner: R,
-    execution_evidence: QemuAttemptExecutionEvidence,
+    execution_evidence: AttemptExecutionEvidence,
 ) -> Result<
     (
         GuardedDefaultCampaignRun,
@@ -2542,4 +2542,124 @@ fn try_selectable_campaign_with_store(
         });
     let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
     run_guarded_default_campaign_with_store(request, runner, evidence, blobs, refs)
+}
+
+#[test]
+fn neutral_replay_closure_preserves_parent_nonempty_literal_and_legacy_path() {
+    let (request, node) = selectable_request();
+    let scenario = request.scenario.clone();
+    let completed = run_selectable_campaign(request, node, Arc::new(AtomicUsize::new(0)));
+    let schedule = &completed.terminal_configuration().schedule;
+    let parent_bytes =
+        include_bytes!("../../campaign_replay_closure/fixtures/parent-nonempty-v1.ccrc");
+
+    assert_eq!(
+        completed
+            .replay_closure()
+            .to_canonical_bytes()
+            .expect("neutral bytes"),
+        parent_bytes.as_slice(),
+    );
+    let legacy = replay_closure::GuardedCampaignReplayClosure::from_canonical_bytes(parent_bytes)
+        .expect("legacy path decodes original bytes");
+    let neutral =
+        crate::campaign_replay_closure::GuardedCampaignReplayClosure::from_canonical_bytes(
+            parent_bytes,
+        )
+        .expect("neutral path decodes original bytes");
+
+    legacy
+        .validate_for_schedule(&scenario, schedule)
+        .expect("original legacy context");
+    neutral
+        .validate_for_schedule(&scenario, schedule)
+        .expect("original neutral context");
+    assert_eq!(legacy, neutral);
+    assert_eq!(
+        legacy.to_canonical_bytes().expect("legacy bytes"),
+        parent_bytes.as_slice()
+    );
+
+    // Existing public getters remain assignable to their compatibility aliases.
+    let _: &super::super::QemuAttemptExecutionEvidenceSnapshot = completed.evidence();
+}
+
+#[test]
+fn neutral_and_legacy_evidence_aliases_share_original_state_and_errors() {
+    let neutral = AttemptExecutionEvidence::default();
+    let legacy: super::super::QemuAttemptExecutionEvidence = neutral.clone();
+    assert_eq!(
+        neutral
+            .record_preselection_settlement(&[])
+            .expect_err("missing quantum")
+            .to_string(),
+        legacy
+            .record_preselection_settlement(&[])
+            .expect_err("same missing quantum")
+            .to_string(),
+    );
+
+    neutral
+        .record(9, VirtualTime { ticks: 7 }, &[])
+        .expect("record original progress");
+    let legacy_snapshot: super::super::QemuAttemptExecutionEvidenceSnapshot =
+        legacy.snapshot().expect("legacy shared state");
+    assert_eq!(
+        legacy_snapshot,
+        neutral.snapshot().expect("neutral shared state")
+    );
+    assert_eq!(legacy_snapshot.quanta(), 9);
+    assert_eq!(legacy_snapshot.frontier().ticks, 7);
+
+    legacy.reset().expect("reset same shared evidence");
+    assert_eq!(
+        neutral
+            .snapshot()
+            .expect("reset visible through neutral alias"),
+        AttemptExecutionEvidenceSnapshot::default()
+    );
+}
+
+fn finding_export_compatibility_fixture() -> GuardedCampaignFindingExport {
+    let (request, node) = selectable_request();
+    let exploration = GuardedCampaignExploration::new(
+        3,
+        None,
+        true,
+        GuardedCampaignExplorationStrategy::BreadthFirst,
+    )
+    .expect("finding-bounded compatibility exploration");
+    let (factory, evidence) =
+        QemuObservedFreshAttemptLifecycleFactory::with_evidence(SelectableLifecycleFactory {
+            node,
+            starts: Arc::new(AtomicUsize::new(0)),
+            terminal_failure: Some(vec![String::from("selected branch violated invariant")]),
+        });
+    let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
+    let completed = run_guarded_default_campaign_with_runner(
+        request.with_exploration(exploration),
+        runner,
+        evidence,
+    )
+    .expect("original scenario finding capture");
+    assert!(completed.finding_export().findings().is_empty());
+    completed.finding_export().clone()
+}
+
+#[test]
+fn neutral_finding_export_preserves_parent_query_bytes_after_repository_teardown() {
+    let retained = finding_export_compatibility_fixture();
+    let clone: crate::campaign_finding_export::GuardedCampaignFindingExport = retained.clone();
+    drop(retained);
+    let parent = include_bytes!("../../campaign_finding_export/fixtures/parent-query-v1.cfxt");
+
+    assert_eq!(
+        finding_export::retained_response_material(&clone),
+        parent.as_slice()
+    );
+    assert_eq!(
+        crate::campaign_finding_export::retained_response_material(&clone),
+        parent.as_slice()
+    );
+    crate::campaign_finding_export::validate_retained_responses_for_test(&clone);
 }

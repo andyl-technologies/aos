@@ -1252,6 +1252,37 @@ Public operator capture/restore/Resume integration, initial or already-resumed
 Stops, physical ingress, 9p, replay, fork, general Compute and broader readiness
 remain separately unqualified.
 
+## Backend-neutral choice closure and finding export
+
+Shared attempt evidence, choice-closure encoding and final finding-export
+transcripts now have backend-neutral module owners. Existing QEMU compatibility
+paths, nominal errors, registered schema-owner paths, original request/Merkle
+bytes, cancellation behavior, transfer credits and deadlines remain unchanged.
+The extraction moves the same algorithms and retains the original public proof
+types and forwarding entrypoints.
+
+Current-source central checks pass eight export cases, 33 guarded campaign
+cases, three choice-closure cases, the schema registry case, 37 source-hygiene
+cases and daemon all-target strict checks. The fixed choice closure is nonempty;
+the finding golden preserves an empty incorporated catalog with its complete
+authenticated query transcript. It does not assert a nonempty finding catalog
+or native object materialization. The initial formatter check identifies two
+files requiring declaration sorting and a wrapped test-helper reexport; these
+formatting changes are tracked separately from the functional extraction.
+
+Independent reviews verify all 14 source images, the exact approved predecessor
+algorithms and the two affected campaign responsibility rows. Current Root,
+Clock and cold-condition rows remain unchanged. All 8,560 source leaves agree
+before and after the central checks; actual daemon/schema/scanner executables
+are retained locally with the scanners bound to this worktree. These results
+supply extraction and compatibility credit only, without new native execution,
+capability, schema, replay applicability or performance claims.
+
+Fresh hermetic application unit/integration target compilation also passes the
+committed `596e83bf03` Root/Initial checkpoint, yielding
+`sxpz7dn0fmm1myljgd9j1vpvi9478xfz-aos-test-targets-0.1.0`. That source-specific
+result supplies no subsequent cold-condition or extraction compilation credit.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

@@ -93,6 +93,12 @@ mod anchored_fs;
 pub mod modeled_campaign_driver;
 pub mod assignment_ledger;
 pub mod attempt_evidence;
+pub mod campaign_replay_closure;
+pub mod campaign_finding_export;
+
+pub(crate) use qemu_campaign_lifecycle::{
+    GuardedDefaultCampaignInvariantError, GuardedDefaultCampaignRunError,
+};
 pub mod automatic_finding_runner;
 pub mod campaign_attachment;
 pub mod campaign_bootstrap;
