@@ -85,7 +85,10 @@ pub(super) async fn fixture_database(
                 IssueFamily::SourceHealth,
             ],
             threshold: NotificationThreshold::AllAttention,
-            frequency: NotificationFrequency::Immediate,
+            package_coordinates: Vec::new(),
+            severity: None,
+            suppressions: Vec::new(),
+            frequency: NotificationFrequency::Immediate {},
             destination_reference: destination.destination_reference.clone(),
             destination_revision: destination.revision,
             destination_digest: destination.digest()?,
@@ -205,6 +208,157 @@ async fn event_and_compact_outbox_intent_commit_or_roll_back_together() -> Resul
     assert_eq!(body.events.len(), 1);
     assert_eq!(body.events[0].sequence, 2);
     assert_eq!(body.subscription_revision, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn notification_filters_bind_historical_alert_facts_and_preserve_atomic_journal() -> Result<()>
+{
+    selector_transaction(Database::open_in_memory().await?).await
+}
+
+#[cfg(feature = "postgres")]
+#[tokio::test]
+#[ignore = "Requires AOS_ASSESSMENT_PG_URL_FILE pointing to a disposable PostgreSQL database"]
+async fn postgres_notification_filters_bind_historical_alert_facts() -> Result<()> {
+    let path =
+        std::env::var_os("AOS_ASSESSMENT_PG_URL_FILE").context("PostgreSQL fixture URL file")?;
+    let url = std::fs::read_to_string(path)?;
+    let backend = crate::backend::SqlxBackend::connect_postgres(url.trim()).await?;
+    selector_transaction(Database::with_backend(Box::new(backend)).await?).await
+}
+
+async fn selector_transaction(database: Database) -> Result<()> {
+    use aos_assessment::input::Profile;
+    use aos_assessment_runtime::alerts::{
+        AlertTransitionKind, AssessmentAlertV1, AttentionState, IssueObservation,
+    };
+    use aos_assessment_runtime::attention_selection::{AttentionSelectionContext, SeverityBand};
+    use aos_assessment_runtime::notifications::{
+        NotificationSeverityFilter, NotificationSuppression,
+    };
+
+    let (db, registry_id, mut request, identity, fences) = fixture_database(database).await?;
+    let now = db.assessment_database_time().await?;
+    let issue_key = Sha256Digest::of_bytes(b"scoped exact historical issue");
+    request.configuration.events = vec![NotificationEventKind::AlertOpened];
+    request.configuration.package_coordinates = vec!["publisher/selected".into()];
+    request.configuration.severity = Some(NotificationSeverityFilter {
+        minimum: SeverityBand::High,
+        include_unknown: false,
+    });
+    request.configuration.suppressions = vec![NotificationSuppression {
+        issue_key,
+        until: now.clone(),
+    }];
+    db.write_assessment_subscription_fenced(registry_id, &request, &identity, &fences)
+        .await?;
+
+    let mut alert = AssessmentAlertV1 {
+        schema: "aos.assessment-alert/v1".into(),
+        issue_key,
+        issue: IssueObservation {
+            issue_key,
+            context_digest: Sha256Digest::of_bytes(b"subject-component-context"),
+            family: IssueFamily::Vulnerability,
+            profile: Profile::Vulnerabilities,
+            lineage_ids: vec!["CVE-2026-10001".into()],
+            source_keys: vec![Sha256Digest::of_bytes(b"osv-query")],
+            material_digest: Sha256Digest::of_bytes(b"material"),
+            uncertain: false,
+            selection_context: Some(AttentionSelectionContext {
+                package_coordinate: "publisher/selected".into(),
+                severity_bands: vec![SeverityBand::Critical],
+                unknown_severity: false,
+            }),
+        },
+        state: AttentionState::Open,
+        episode: 1,
+        sequence: 1,
+        assessment_digest: Sha256Digest::of_bytes(b"retained assessment"),
+        updated_at: now.clone(),
+        acknowledgements: Vec::new(),
+        lineage_keys: Vec::new(),
+    };
+    alert.validate()?;
+
+    // The current inventory contains a different coordinate. Selection must use
+    // the event's immutable facts, and must not read a moving assessment head.
+    let payload = |alert: &AssessmentAlertV1| AssessmentEventPayload::Alert {
+        transition: AlertTransitionKind::Opened,
+        alert: Box::new(alert.clone()),
+    };
+    let selected = db
+        .assessment_event_statements(registry_id, vec![payload(&alert)], &now)
+        .await?;
+    let mut rejected = selected.clone();
+    rejected.push(
+        Statement::new(
+            "UPDATE registries SET scope_key = scope_key WHERE id = ?1",
+            vals![registry_id + 1],
+        )
+        .expecting(1),
+    );
+    assert!(db.backend.checked_batch(&rejected).await.is_err());
+    assert_eq!(outbox_count(&db, registry_id, "pending").await?, 0);
+    assert_eq!(db.assessment_event_page(registry_id, 0, 10).await?.len(), 1);
+
+    db.backend.checked_batch(&selected).await?;
+    assert_eq!(outbox_count(&db, registry_id, "pending").await?, 1);
+    alert
+        .issue
+        .selection_context
+        .as_mut()
+        .context("selection facts")?
+        .package_coordinate = "other-publisher/selected".into();
+    db.backend
+        .checked_batch(
+            &db.assessment_event_statements(registry_id, vec![payload(&alert)], &now)
+                .await?,
+        )
+        .await?;
+    alert
+        .issue
+        .selection_context
+        .as_mut()
+        .context("selection facts")?
+        .package_coordinate = "publisher/selected".into();
+    alert
+        .issue
+        .selection_context
+        .as_mut()
+        .context("selection facts")?
+        .severity_bands = vec![SeverityBand::Low];
+    db.backend
+        .checked_batch(
+            &db.assessment_event_statements(registry_id, vec![payload(&alert)], &now)
+                .await?,
+        )
+        .await?;
+    assert_eq!(outbox_count(&db, registry_id, "pending").await?, 1);
+    assert_eq!(db.assessment_event_page(registry_id, 0, 10).await?.len(), 4);
+
+    request.expected_revision = 1;
+    request.configuration.suppressions[0].until = request.configuration.review_expires_at.clone();
+    db.write_assessment_subscription_fenced(registry_id, &request, &identity, &fences)
+        .await?;
+    alert
+        .issue
+        .selection_context
+        .as_mut()
+        .context("selection facts")?
+        .severity_bands = vec![SeverityBand::Critical];
+    db.backend
+        .checked_batch(
+            &db.assessment_event_statements(registry_id, vec![payload(&alert)], &now)
+                .await?,
+        )
+        .await?;
+    // Re-review revokes the old pending intent; suppression leaves the new event
+    // visible in the durable inbox instead of changing or dropping the finding.
+    assert_eq!(outbox_count(&db, registry_id, "pending").await?, 0);
+    assert_eq!(outbox_count(&db, registry_id, "revoked").await?, 1);
+    assert_eq!(db.assessment_event_page(registry_id, 0, 10).await?.len(), 6);
     Ok(())
 }
 

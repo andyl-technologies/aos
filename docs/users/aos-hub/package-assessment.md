@@ -327,6 +327,35 @@ an identical write preserves that original authority; replacing or disabling a
 review revokes its pending and leased deliveries. A disabled or rotated destination
 does not prevent an unchanged subscription from being disabled.
 
+The complete subscription configuration also supports `packageCoordinates`,
+`severity`, and `suppressions`. An absent or empty coordinate list includes the
+resource; a nonempty list selects exact publisher-scoped coordinates, including
+all versions and outputs of each selected package. At most 256 sorted, unique
+coordinates are accepted. Selection uses facts retained with the committed
+alert revision, never a later inventory or assessment head. Operational events
+without package context do not match a package filter.
+
+`severity` selects vulnerability attention only. Its `minimum` is `none`, `low`,
+`medium`, `high`, or `critical`, and its required `includeUnknown` boolean makes
+unknown-score handling explicit. Any supported source's supplied CVSS v3/v4
+base score meeting the threshold selects the event; conflicting source scores
+are retained. Bands follow the [FIRST CVSS v3.1 specification](https://www.first.org/cvss/v3.1/specification-document#Qualitative-Severity-Rating-Scale)
+and [CVSS v4.0 specification](https://www.first.org/cvss/v4.0/specification-document#Qualitative-Severity-Rating-Scale).
+Missing scores, vector-only entries, unsupported schemes and malformed decimal
+scores remain unknown. This filter does not compute vectors or assert risk.
+Historical alerts without selection context match only an explicitly included
+unknown severity, and cannot match a package selector.
+
+`suppressions` contains at most 128 sorted entries, each with an exact `issueKey`
+and exclusive UTC `until` deadline within the configuration's review expiry.
+Each issue may appear once. A silence applies to this subscription's recipient
+and to events committed before its deadline. It does not change findings,
+acknowledgements, alert episodes, or release decisions. Expiration selects future
+events; it does not replay previously silenced events. These selectors and
+silences bind the same reviewed configuration digest as the destination and
+delivery frequency. The web console supports editing them, and the CLI accepts
+them in the complete subscription request document.
+
 Native controller configuration accepts an optional `notifications` member:
 
 ```json

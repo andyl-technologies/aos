@@ -21,6 +21,7 @@ pub mod application;
 pub mod control;
 pub mod credentials;
 pub mod attention;
+pub mod attention_selection;
 pub mod attention_control;
 pub mod events;
 pub mod installation;

@@ -18,10 +18,13 @@ mod summary;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod selection_tests;
+
 pub use auth::{CallbackSignature, NotificationWorkAuth};
 pub use configuration::{
-    NotificationConfigurationV1, NotificationFrequency, NotificationThreshold, SubscriptionV1,
-    SubscriptionWriteV1,
+    NotificationConfigurationV1, NotificationFrequency, NotificationSeverityFilter,
+    NotificationSuppression, NotificationThreshold, SubscriptionV1, SubscriptionWriteV1,
 };
 pub use control::{DestinationReviewQueryV1, SubscriptionPageV1, SubscriptionQueryV1};
 pub use delivery::{

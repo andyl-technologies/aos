@@ -353,11 +353,21 @@ impl Database {
             .await?
             .context("notification inventory is absent")?;
         let summary = NotificationSummaryV1::from_event(event)?;
+        let selection_context = match &event.payload {
+            AssessmentEventPayload::Alert { alert, .. }
+            | AssessmentEventPayload::Acknowledged { alert } => {
+                alert.issue.selection_context.as_ref()
+            }
+            _ => None,
+        };
         let mut statements = Vec::new();
         for record in subscriptions {
             if !record.enabled
                 || record.review.authority_expires_at <= event.occurred_at
-                || !record.review.configuration.selects(&summary)
+                || !record
+                    .review
+                    .configuration
+                    .selects(&summary, selection_context)
             {
                 continue;
             }
@@ -389,7 +399,7 @@ impl Database {
             )
             .await?;
             let not_before = match record.review.configuration.frequency {
-                NotificationFrequency::Immediate => event.occurred_at.unix_seconds(),
+                NotificationFrequency::Immediate {} => event.occurred_at.unix_seconds(),
                 NotificationFrequency::Digest { window_seconds } => {
                     let width = u64::from(window_seconds);
                     event.occurred_at.unix_seconds() / width * width + width

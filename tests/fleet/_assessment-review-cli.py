@@ -119,6 +119,10 @@ try:
                            'events': ['scan-completed'],
                            'families': ['vulnerability'],
                            'threshold': 'all-attention',
+                           'packageCoordinates': ['publisher/selected'],
+                           'severity': {'minimum': 'high', 'includeUnknown': True},
+                           'suppressions': [{'issueKey': 'sha256:' + 'c' * 64,
+                                             'until': '2026-12-31T00:00:00Z'}],
                            'frequency': {'kind': 'immediate'},
                            'destinationReference': 'webhook:42',
                            'destinationRevision': 1,
@@ -153,6 +157,25 @@ try:
             run([f'apply-{kind}', '--plan-id', f'exact-{kind}', '--idempotency-key', 'exact-apply'], okay=False)
             run([*apply_arguments, '--request', str(path)], okay=False)
             assert len(calls) == before + 2, 'invalid apply inputs must not make HTTP calls'
+
+        # Invalid selector documents must fail locally before planning or HTTP.
+        for mutation in ('duplicate-package', 'duplicate-issue', 'unbounded-silence', 'unknown-score-field'):
+            invalid = copy.deepcopy(subscription)
+            filters = invalid['configuration']
+            if mutation == 'duplicate-package':
+                filters['packageCoordinates'] *= 2
+            elif mutation == 'duplicate-issue':
+                filters['suppressions'] *= 2
+            elif mutation == 'unbounded-silence':
+                filters['suppressions'][0]['until'] = '2027-01-02T00:00:00Z'
+            else:
+                filters['severity']['scoreOverride'] = 'clean'
+            path = state / f'invalid-{mutation}.json'
+            path.write_text(json.dumps(invalid))
+            before = len(calls)
+            run(['subscription', '--registry', 'fixture', '--request', str(path),
+                 '--idempotency-key', mutation], okay=False)
+            assert len(calls) == before, 'invalid filters must not make HTTP calls'
         print('PASS: actual CLI plan/apply RPC separation, exact frozen configuration, and refusal before HTTP')
 finally:
     server.shutdown()

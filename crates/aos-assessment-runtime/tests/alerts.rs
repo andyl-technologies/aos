@@ -25,6 +25,7 @@ fn observation(ids: &[&str]) -> Result<IssueObservation> {
             "exact OSV query identity and product/version",
         )],
         material_digest: Sha256Digest::of_bytes("critical severity"),
+        selection_context: None,
         uncertain: false,
     })
 }

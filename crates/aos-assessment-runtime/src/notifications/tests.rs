@@ -259,6 +259,15 @@ fn attention_disclosure_omits_acknowledgement_notes_provider_ids_and_source_loca
                     lineage_ids: vec!["private-upstream-identity".into()],
                     source_keys: vec![Sha256Digest::of_bytes(b"https://private-source.example")],
                     material_digest: Sha256Digest::of_bytes(b"material"),
+                    selection_context: Some(
+                        crate::attention_selection::AttentionSelectionContext {
+                            package_coordinate: "private-publisher/private-package".into(),
+                            severity_bands: vec![
+                                crate::attention_selection::SeverityBand::Critical,
+                            ],
+                            unknown_severity: false,
+                        },
+                    ),
                     uncertain: true,
                 },
                 state: AttentionState::Open,
@@ -284,6 +293,7 @@ fn attention_disclosure_omits_acknowledgement_notes_provider_ids_and_source_loca
     let disclosed = String::from_utf8(plan.body.to_bytes().unwrap()).unwrap();
     for private in [
         "private-upstream-identity",
+        "private-publisher/private-package",
         "private-principal",
         "private-customer-note",
         "https://private-source.example",
@@ -295,17 +305,20 @@ fn attention_disclosure_omits_acknowledgement_notes_provider_ids_and_source_loca
         events: vec![NotificationEventKind::AlertOpened],
         families: vec![IssueFamily::Vulnerability],
         threshold: NotificationThreshold::ConfirmedAttention,
-        frequency: NotificationFrequency::Immediate,
+        package_coordinates: Vec::new(),
+        severity: None,
+        suppressions: Vec::new(),
+        frequency: NotificationFrequency::Immediate {},
         destination_reference: "webhook-42".into(),
         destination_revision: 3,
         destination_digest: plan.destination_digest,
         review_expires_at: time(1500),
     };
     configuration.validate().unwrap();
-    assert!(!configuration.selects(&summary));
+    assert!(!configuration.selects(&summary, None));
     let mut includes_uncertainty = configuration;
     includes_uncertainty.threshold = NotificationThreshold::AllAttention;
-    assert!(includes_uncertainty.selects(&summary));
+    assert!(includes_uncertainty.selects(&summary, None));
 }
 
 #[test]

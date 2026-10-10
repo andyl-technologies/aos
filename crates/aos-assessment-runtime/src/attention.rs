@@ -15,6 +15,7 @@ use aos_contract::Sha256Digest;
 use serde_json::json;
 
 use crate::alerts::{IssueFamily, IssueObservation, ResolutionProof};
+use crate::attention_selection::AttentionSelectionContext;
 
 /// Carries attention observations and exact resolution proofs for one subject.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -127,6 +128,10 @@ pub fn project(
                     issue_key: issue_key(context, IssueFamily::Coverage, &["coverage".into()])?,
                     context_digest: context,
                     family: IssueFamily::Coverage,
+                    selection_context: Some(AttentionSelectionContext::from_severities(
+                        subject.package_coordinate.clone(),
+                        &[],
+                    )),
                     profile: *profile,
                     lineage_ids: vec!["coverage".into()],
                     source_keys: vec![],
@@ -165,11 +170,25 @@ pub fn project(
             if version.decision == VersionDecision::UpdateAvailable {
                 let lineage = vec!["maintained-stream".into()];
                 projected.issues.push(IssueObservation {
-                    issue_key: issue_key(context, IssueFamily::PackageUpdate, &lineage)?, context_digest: context,
-                    family: IssueFamily::PackageUpdate, profile: Profile::Updates, lineage_ids: lineage, source_keys: keys,
-                    material_digest: Sha256Digest::of_canonical("aos.assessment-issue-material/v1", &json!({
-                        "current":version.current, "eligible":version.eligible, "decision":version.decision,
-                    }))?, uncertain: false,
+                    issue_key: issue_key(context, IssueFamily::PackageUpdate, &lineage)?,
+                    context_digest: context,
+                    family: IssueFamily::PackageUpdate,
+                    profile: Profile::Updates,
+                    lineage_ids: lineage,
+                    source_keys: keys,
+                    selection_context: Some(AttentionSelectionContext::from_severities(
+                        subject.package_coordinate.clone(),
+                        &[],
+                    )),
+                    material_digest: Sha256Digest::of_canonical(
+                        "aos.assessment-issue-material/v1",
+                        &json!({
+                            "current": version.current,
+                            "eligible": version.eligible,
+                            "decision": version.decision,
+                        }),
+                    )?,
+                    uncertain: false,
                 });
             }
         }
@@ -221,14 +240,30 @@ pub fn project(
                 .map(|fix| fix.version.as_str())
                 .collect::<BTreeSet<_>>();
             projected.issues.push(IssueObservation {
-                issue_key: issue_key(context, IssueFamily::Vulnerability, &finding.advisory_ids)?, context_digest: context,
-                family: IssueFamily::Vulnerability, profile: Profile::Vulnerabilities, lineage_ids: finding.advisory_ids.clone(),
-                source_keys: keys.into_iter().collect(), uncertain: finding.applicability != Applicability::Affected
-                    || !coverage.get(&Profile::Vulnerabilities).is_some_and(|value| value.state == CoverageState::Complete),
-                material_digest: Sha256Digest::of_canonical("aos.assessment-issue-material/v1", &json!({
-                    "applicability":finding.applicability, "severity":finding.severity, "fixes":fixes,
-                    "knownExploitation":!finding.exploit_signals.is_empty(), "dispositions":finding.disposition_refs,
-                }))?,
+                issue_key: issue_key(context, IssueFamily::Vulnerability, &finding.advisory_ids)?,
+                context_digest: context,
+                family: IssueFamily::Vulnerability,
+                profile: Profile::Vulnerabilities,
+                lineage_ids: finding.advisory_ids.clone(),
+                selection_context: Some(AttentionSelectionContext::from_severities(
+                    subject.package_coordinate.clone(),
+                    &finding.severity,
+                )),
+                source_keys: keys.into_iter().collect(),
+                uncertain: finding.applicability != Applicability::Affected
+                    || !coverage
+                        .get(&Profile::Vulnerabilities)
+                        .is_some_and(|value| value.state == CoverageState::Complete),
+                material_digest: Sha256Digest::of_canonical(
+                    "aos.assessment-issue-material/v1",
+                    &json!({
+                        "applicability": finding.applicability,
+                        "severity": finding.severity,
+                        "fixes": fixes,
+                        "knownExploitation": !finding.exploit_signals.is_empty(),
+                        "dispositions": finding.disposition_refs,
+                    }),
+                )?,
             });
         }
         projected.issues.sort_by_key(|issue| issue.issue_key);

@@ -50,6 +50,9 @@ pub struct IssueObservation {
     pub source_keys: Vec<Sha256Digest>,
     /// Digest of material severity/exploitation/candidate/applicability state.
     pub material_digest: Sha256Digest,
+    /// Immutable selection facts, absent in historical revisions predating their projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_context: Option<crate::attention_selection::AttentionSelectionContext>,
     /// Retains source uncertainty without resolving prior evidence.
     pub uncertain: bool,
 }
@@ -60,6 +63,12 @@ impl IssueObservation {
     /// # Errors
     /// Returns an error for missing/unsorted support or malformed lineage IDs.
     pub fn validate(&self) -> Result<()> {
+        if let Some(context) = &self.selection_context {
+            context.validate()?;
+            if self.family != IssueFamily::Vulnerability && !context.severity_bands.is_empty() {
+                bail!("non-vulnerability attention cannot assert severity bands");
+            }
+        }
         if self.lineage_ids.is_empty()
             || self.lineage_ids.len() > 128
             || self.source_keys.len() > 128

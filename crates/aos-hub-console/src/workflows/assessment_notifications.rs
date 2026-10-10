@@ -2,17 +2,19 @@
 
 use aos_assessment::time::Timestamp;
 use aos_assessment_runtime::alerts::IssueFamily;
+use aos_assessment_runtime::attention_selection::SeverityBand;
 use aos_assessment_runtime::notifications::{
     DestinationReviewQueryV1, NotificationConfigurationV1, NotificationDestinationV1,
-    NotificationEventKind, NotificationFrequency, NotificationThreshold, SubscriptionPageV1,
-    SubscriptionQueryV1, SubscriptionV1, SubscriptionWriteV1,
+    NotificationEventKind, NotificationFrequency, NotificationSeverityFilter,
+    NotificationSuppression, NotificationThreshold, SubscriptionPageV1, SubscriptionQueryV1,
+    SubscriptionV1, SubscriptionWriteV1,
 };
 use leptos::prelude::*;
 
 use super::assessment_deliveries::RegistryAssessmentDeliveries;
-use super::assessments::{start_status_poll, AssessmentReadGuard};
+use super::assessments::{AssessmentReadGuard, start_status_poll};
 use crate::components::InlineError;
-use crate::mutation::{idempotency_key, scoped_workflow_tasks, PendingPlan};
+use crate::mutation::{PendingPlan, idempotency_key, scoped_workflow_tasks};
 use crate::transport::ApiClient;
 
 /// Shows reviewed notifications without exposing private actor or signing material.
@@ -34,6 +36,12 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
     let digest = RwSignal::new(false);
     let window = RwSignal::new("300".to_owned());
     let uncertainty = RwSignal::new(true);
+    let packages = RwSignal::new(String::new());
+    let minimum_severity = RwSignal::new("all".to_owned());
+    let unknown_severity = RwSignal::new(true);
+    let silences = RwSignal::new(Vec::<NotificationSuppression>::new());
+    let silence_issue = RwSignal::new(String::new());
+    let silence_until = RwSignal::new(String::new());
     let enabled = RwSignal::new(true);
     let busy = RwSignal::new(false);
     let failure = RwSignal::new(None::<String>);
@@ -101,6 +109,18 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
         let use_digest = digest.get_untracked();
         let seconds = window.get_untracked();
         let include_uncertainty = uncertainty.get_untracked();
+        let package_coordinates = packages
+            .get_untracked()
+            .lines()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let severity_selection = minimum_severity.get_untracked();
+        let include_unknown = unknown_severity.get_untracked();
+        let suppressions = silences.get_untracked();
         let is_enabled = enabled.get_untracked();
         let (client, registry_slug) = context.get_value();
         busy.set(true);
@@ -171,6 +191,22 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
                         } else {
                             NotificationThreshold::ConfirmedAttention
                         },
+                        package_coordinates,
+                        severity: match severity_selection.as_str() {
+                            "all" => None,
+                            value => Some(NotificationSeverityFilter {
+                                minimum: match value {
+                                    "none" => SeverityBand::None,
+                                    "low" => SeverityBand::Low,
+                                    "medium" => SeverityBand::Medium,
+                                    "high" => SeverityBand::High,
+                                    "critical" => SeverityBand::Critical,
+                                    _ => return Err("Select a supported severity threshold".to_owned()),
+                                },
+                                include_unknown,
+                            }),
+                        },
+                        suppressions,
                         frequency: if use_digest {
                             NotificationFrequency::Digest {
                                 window_seconds: seconds.parse().map_err(|_| {
@@ -178,7 +214,7 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
                                 })?,
                             }
                         } else {
-                            NotificationFrequency::Immediate
+                            NotificationFrequency::Immediate {}
                         },
                         destination_reference: reviewed.destination_reference.clone(),
                         destination_revision: reviewed.revision,
@@ -326,8 +362,18 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
                                                     destination.set(subscription.configuration.destination_reference.clone());
                                                     expiry.set(subscription.configuration.review_expires_at.to_string());
                                                     uncertainty.set(subscription.configuration.threshold == NotificationThreshold::AllAttention);
+                                                    packages.set(subscription.configuration.package_coordinates.join("\n"));
+                                                    minimum_severity.set(subscription.configuration.severity.as_ref().map_or("all", |filter| match filter.minimum {
+                                                        SeverityBand::None => "none",
+                                                        SeverityBand::Low => "low",
+                                                        SeverityBand::Medium => "medium",
+                                                        SeverityBand::High => "high",
+                                                        SeverityBand::Critical => "critical",
+                                                    }).to_owned());
+                                                    unknown_severity.set(subscription.configuration.severity.as_ref().is_none_or(|filter| filter.include_unknown));
+                                                    silences.set(subscription.configuration.suppressions.clone());
                                                     match subscription.configuration.frequency {
-                                                        NotificationFrequency::Immediate => digest.set(false),
+                                                        NotificationFrequency::Immediate {} => digest.set(false),
                                                         NotificationFrequency::Digest { window_seconds } => {
                                                             digest.set(true);
                                                             window.set(window_seconds.to_string());
@@ -377,9 +423,49 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
                     <label><input type="checkbox" prop:checked=move || digest.get() disabled=move || (busy.get() || pending.get().is_some()) || (!enabled.get() && selected.get().is_some()) on:change=move |event| digest.set(event_target_checked(&event))/>"Group events into digests"</label>
                     <label>"Digest window in seconds"<input type="number" min="60" max="86400" prop:value=move || window.get() disabled=move || (busy.get() || pending.get().is_some()) || !digest.get() || (!enabled.get() && selected.get().is_some()) on:input=move |event| window.set(event_target_value(&event))/></label>
                     <label><input type="checkbox" prop:checked=move || uncertainty.get() disabled=move || (busy.get() || pending.get().is_some()) || (!enabled.get() && selected.get().is_some()) on:change=move |event| uncertainty.set(event_target_checked(&event))/>"Include uncertain attention"</label>
+                    <label>"Package coordinates (one per line; empty includes the resource)"<textarea prop:value=move || packages.get() disabled=move || busy.get() || pending.get().is_some() || (!enabled.get() && selected.get().is_some()) on:input=move |event| packages.set(event_target_value(&event))/></label>
+                    <label>"Vulnerability severity"<select prop:value=move || minimum_severity.get() disabled=move || busy.get() || pending.get().is_some() || (!enabled.get() && selected.get().is_some()) on:change=move |event| minimum_severity.set(event_target_value(&event))>
+                        <option value="all">"All issue families and severities"</option>
+                        <option value="none">"Vulnerabilities: any known severity"</option>
+                        <option value="low">"Vulnerabilities: low or higher"</option>
+                        <option value="medium">"Vulnerabilities: medium or higher"</option>
+                        <option value="high">"Vulnerabilities: high or critical"</option>
+                        <option value="critical">"Vulnerabilities: critical"</option>
+                    </select></label>
+                    <label><input type="checkbox" prop:checked=move || unknown_severity.get() disabled=move || minimum_severity.get() == "all" || busy.get() || pending.get().is_some() || (!enabled.get() && selected.get().is_some()) on:change=move |event| unknown_severity.set(event_target_checked(&event))/>"Include unknown vulnerability severity"</label>
+                    <p>"Package and severity filters select matching attention events. Unknown scores stay unknown; operational events have no package or severity."</p>
+                    <fieldset disabled=move || busy.get() || pending.get().is_some() || (!enabled.get() && selected.get().is_some())>
+                        <legend>"Silence notifications for an issue"</legend>
+                        <p>"Silences affect this subscription until the chosen time. Findings and alert history remain visible."</p>
+                        <label>"Exact issue key"<input placeholder="sha256:…" prop:value=move || silence_issue.get() on:input=move |event| silence_issue.set(event_target_value(&event))/></label>
+                        <label>"Silence until (UTC)"<input placeholder="2026-10-10T00:00:00Z" prop:value=move || silence_until.get() on:input=move |event| silence_until.set(event_target_value(&event))/></label>
+                        <button class="secondary-button" on:click=move |_| {
+                            let outcome = (|| {
+                                let issue_key = aos_contract::Sha256Digest::parse(silence_issue.get_untracked().trim()).map_err(|error| error.to_string())?;
+                                let until = Timestamp::parse(silence_until.get_untracked().trim()).map_err(|error| error.to_string())?;
+                                let review_expiry = Timestamp::parse(expiry.get_untracked().trim()).map_err(|error| error.to_string())?;
+                                if until > review_expiry { return Err("The silence must end within the reviewed notification authority".to_owned()); }
+                                let mut entries = silences.get_untracked();
+                                entries.retain(|entry| entry.issue_key != issue_key);
+                                if entries.len() >= 128 { return Err("A subscription supports at most 128 issue silences".to_owned()); }
+                                entries.push(NotificationSuppression { issue_key, until });
+                                entries.sort();
+                                Ok(entries)
+                            })();
+                            match outcome {
+                                Ok(entries) => { silences.set(entries); silence_issue.set(String::new()); silence_until.set(String::new()); failure.set(None); },
+                                Err(error) => failure.set(Some(error)),
+                            }
+                        }>"Add or update silence"</button>
+                        <ul>{move || silences.get().into_iter().map(|entry| view! {
+                            <li>{format!("{} · until {}", entry.issue_key, entry.until)}
+                                <button class="secondary-button" on:click=move |_| silences.update(|entries| entries.retain(|candidate| candidate.issue_key != entry.issue_key))>"Remove silence"</button>
+                            </li>
+                        }).collect_view()}</ul>
+                    </fieldset>
                     <label><input type="checkbox" prop:checked=move || enabled.get() disabled=move || (busy.get() || pending.get().is_some()) on:change=move |event| enabled.set(event_target_checked(&event))/>"Enable notifications"</label>
                     <button class="primary-button" disabled=move || (busy.get() || pending.get().is_some()) || !polling.get() || scope.get().is_none() on:click=save>"Plan notification review"</button>
-                    <button class="secondary-button" disabled=move || (busy.get() || pending.get().is_some()) on:click=move |_| { selected.set(None); identity.set(String::new()); enabled.set(true); failure.set(None); }>"New subscription"</button>
+                    <button class="secondary-button" disabled=move || (busy.get() || pending.get().is_some()) on:click=move |_| { selected.set(None); identity.set(String::new()); packages.set(String::new()); minimum_severity.set("all".to_owned()); unknown_severity.set(true); silences.set(Vec::new()); silence_issue.set(String::new()); silence_until.set(String::new()); enabled.set(true); failure.set(None); }>"New subscription"</button>
 
                     {move || pending.get().map(|(review, _)| {
                         let effects = review.plan.effects.join("\n");

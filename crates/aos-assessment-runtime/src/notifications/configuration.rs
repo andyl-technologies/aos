@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{NotificationEventKind, NotificationSummaryV1};
 use crate::alerts::IssueFamily;
+use crate::attention_selection::{AttentionSelectionContext, SeverityBand};
 use crate::validation::{decode, encoded, sorted, text};
 
 /// Separates uncertain attention from confirmed attention without changing findings.
@@ -24,7 +25,7 @@ pub enum NotificationThreshold {
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum NotificationFrequency {
     /// Admits an independent delivery for each selected committed event.
-    Immediate,
+    Immediate {},
     /// Groups at most fifty ordered events from a fixed time window.
     #[serde(rename_all = "camelCase")]
     Digest {
@@ -45,6 +46,15 @@ pub struct NotificationConfigurationV1 {
     pub families: Vec<IssueFamily>,
     /// Explicit uncertainty threshold, independent of the canonical assessment.
     pub threshold: NotificationThreshold,
+    /// Sorted exact subject coordinates; an empty list preserves resource-wide selection.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub package_coordinates: Vec<String>,
+    /// Optional vulnerability-only base-score threshold with explicit unknown handling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity: Option<NotificationSeverityFilter>,
+    /// Sorted issue-specific notification silences for this subscription only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suppressions: Vec<NotificationSuppression>,
     /// Immediate or bounded digest selection.
     pub frequency: NotificationFrequency,
     /// Registered destination identity; neither provider data nor packages supply a URL.
@@ -77,6 +87,32 @@ impl NotificationConfigurationV1 {
         );
         sorted(&self.events, "notification event selection")?;
         sorted(&self.families, "notification family selection")?;
+        ensure!(
+            self.package_coordinates.len() <= 256,
+            "excessive package selectors"
+        );
+        sorted(&self.package_coordinates, "notification package selectors")?;
+        for coordinate in &self.package_coordinates {
+            text(coordinate, 1024, "notification package selector")?;
+        }
+        ensure!(
+            self.suppressions.len() <= 128,
+            "excessive notification suppressions"
+        );
+        sorted(&self.suppressions, "notification suppressions")?;
+        ensure!(
+            !self
+                .suppressions
+                .windows(2)
+                .any(|pair| pair[0].issue_key == pair[1].issue_key),
+            "duplicate notification suppression issue"
+        );
+        for suppression in &self.suppressions {
+            ensure!(
+                suppression.until <= self.review_expires_at,
+                "suppression exceeds its reviewed authority"
+            );
+        }
         text(
             &self.destination_reference,
             128,
@@ -98,13 +134,59 @@ impl NotificationConfigurationV1 {
 
     /// Selects a compact event using the exact reviewed threshold and families.
     #[must_use]
-    pub fn selects(&self, event: &NotificationSummaryV1) -> bool {
+    pub fn selects(
+        &self,
+        event: &NotificationSummaryV1,
+        context: Option<&AttentionSelectionContext>,
+    ) -> bool {
         self.events.binary_search(&event.kind).is_ok()
             && event
                 .family
                 .is_none_or(|family| self.families.binary_search(&family).is_ok())
             && (self.threshold == NotificationThreshold::AllAttention || !event.uncertain)
+            && (self.package_coordinates.is_empty()
+                || context.is_some_and(|context| {
+                    self.package_coordinates
+                        .binary_search(&context.package_coordinate)
+                        .is_ok()
+                }))
+            && self.severity.as_ref().is_none_or(|filter| {
+                event.family == Some(IssueFamily::Vulnerability)
+                    && match context {
+                        Some(context) => {
+                            context
+                                .severity_bands
+                                .iter()
+                                .any(|band| *band >= filter.minimum)
+                                || (filter.include_unknown && context.unknown_severity)
+                        }
+                        None => filter.include_unknown,
+                    }
+            })
+            && !self.suppressions.iter().any(|silence| {
+                event.issue_key == Some(silence.issue_key) && event.occurred_at < silence.until
+            })
     }
+}
+
+/// Selects any supported source score meeting the threshold, preserving disagreement.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct NotificationSeverityFilter {
+    /// Minimum FIRST CVSS v3/v4 base-score band.
+    pub minimum: SeverityBand,
+    /// Whether missing, unsupported or malformed severity also selects the event.
+    pub include_unknown: bool,
+}
+
+/// Silences one stable issue for one reviewed recipient without altering findings.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct NotificationSuppression {
+    /// Exact stable issue key, including its immutable artifact/component scope.
+    pub issue_key: Sha256Digest,
+    /// Exclusive expiry evaluated against the committed event time.
+    pub until: Timestamp,
 }
 
 /// Creates or replaces a complete subscription using an exact revision precondition.
