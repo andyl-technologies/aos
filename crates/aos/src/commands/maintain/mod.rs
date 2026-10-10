@@ -2,6 +2,7 @@
 
 mod confinement;
 mod assessment;
+mod assessment_report;
 mod assessment_handoff;
 mod assessment_evidence;
 mod assessment_scans;
@@ -44,6 +45,7 @@ use crate::cli::{Cli, ColorChoice, MaintainArgs, MaintainCommand, ProgressChoice
 const MAX_SCAN_DIAGNOSTICS: usize = 128;
 
 pub use assessment::run_assessment;
+pub use assessment_report::run_assessment_report;
 pub use assessment_evidence::run_local_assessment_evidence;
 pub use assessment_scans::run_local_scans;
 pub use assessment_status::run_local_status;

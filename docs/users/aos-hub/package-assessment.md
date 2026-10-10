@@ -165,6 +165,52 @@ aos maintain scans recover --limit 100
 aos maintain status --profiles all --limit 100
 ```
 
+## Report policy for automation
+
+Shared local scans and waited Hub scans accept the same explicit report policy:
+
+```text
+aos maintain scan --profile all --fail-on vulnerabilities,updates,coverage
+aos hub maintain scan --registry REGISTRY --profile all \
+    --package publisher/package --idempotency-key KEY --wait \
+    --fail-on vulnerabilities,updates,coverage
+```
+
+The command prints one valid report and returns `20` when any selected condition
+matches. Otherwise it returns `0`. Execution, authentication, custody and input
+errors keep their existing error codes. Report-policy failure does not turn a
+committed successful or partial scan into failed work, cancel it, or retry it.
+Without `--fail-on`, existing command exit behavior remains unchanged.
+
+`updates` matches an actionable maintained-stream update. Stabilizing, manual or
+frozen candidates alone do not match. `vulnerabilities` matches any raw applicable,
+potentially applicable or unresolved vulnerability claim, independently of
+reviewed dispositions. `coverage` matches incomplete or unknown requested
+coverage. Update and vulnerability conditions require their corresponding
+evaluated profiles; local scan policy requires explicit `--profile`, and Hub
+scan policy requires `--wait`. Conditions are sorted and deduplicated in output.
+
+JSON adds `reportPolicy`, with the exact assessment digest, normalized policy,
+matched conditions and failure decision. Human output ends with the policy
+decision. The shared result and policy contracts reproduce the same decision
+from the same immutable assessment in every execution mode.
+
+Inspect an exact historical result with the same policy:
+
+```text
+aos maintain report --assessment-digest DIGEST --fail-on updates,coverage
+aos hub maintain get --registry REGISTRY DIGEST --fail-on updates,coverage
+```
+
+Historical policy evaluates the frozen result at its original evaluation time.
+It does not assert current freshness, update package status, acquire sources or
+grant release authority. Use current status or request a new scan for current
+freshness. Repeating a local idempotent scan with report policy reads its retained
+result and preserves the original receipt, provider budget and assessment heads.
+An operation without a committed report fails explicitly instead of reporting
+that selected conditions passed. Legacy cached-discovery `maintain report`
+filters continue to work without `--assessment-digest`.
+
 Hub scan listings use retained pages:
 
 ```text

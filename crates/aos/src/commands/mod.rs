@@ -9,6 +9,7 @@
 
 pub mod ability;
 pub(crate) mod assessment_presentation;
+pub(crate) mod assessment_policy;
 pub mod build;
 pub mod cache;
 pub mod completions;

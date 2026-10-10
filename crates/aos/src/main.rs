@@ -25,6 +25,8 @@
 //! error; `3` Nix not found. Maintenance commands additionally use stable
 //! outcome codes `10` through `14` and `130`; see
 //! `aos_maintain::presentation::CommandDisposition`.
+//! Explicit assessment report policies use `20` after a valid report when a
+//! selected condition matches; scan execution state remains committed.
 
 /// Runs the `aos` CLI.
 #[tokio::main]

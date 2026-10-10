@@ -122,6 +122,10 @@ pub struct MaintainInventoryArgs {
 
 #[derive(Args)]
 pub struct MaintainScanArgs {
+    /// Return exit code 20 when selected report conditions match
+    #[arg(long, value_enum, value_delimiter = ',', requires = "profiles")]
+    pub fail_on: Vec<super::AssessmentFailureArg>,
+
     /// Reuse an exact frozen local assessment request without another scan
     #[arg(long, requires = "profiles")]
     pub idempotency_key: Option<String>,
@@ -225,6 +229,14 @@ pub enum MaintainScansCommand {
 
 #[derive(Args)]
 pub struct MaintainReportArgs {
+    /// Read one exact retained shared assessment instead of the legacy report
+    #[arg(long, conflicts_with_all = ["outdated", "unknown", "advisory", "vulnerable", "license_change", "family"])]
+    pub assessment_digest: Option<String>,
+
+    /// Return exit code 20 when selected report conditions match
+    #[arg(long, value_enum, value_delimiter = ',', requires = "assessment_digest")]
+    pub fail_on: Vec<super::AssessmentFailureArg>,
+
     /// Show only units with a selectable newer release
     #[arg(long, conflicts_with_all = ["unknown", "advisory", "vulnerable", "license_change"])]
     pub outdated: bool,

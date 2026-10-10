@@ -6,6 +6,16 @@
 use aos_assessment::input::{FreshnessMode, Profile};
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
+pub enum AssessmentFailureArg {
+    /// Fail for incomplete or unknown requested coverage
+    Coverage,
+    /// Fail for an actionable maintained-stream package update
+    Updates,
+    /// Fail for any raw applicable or unresolved vulnerability claim
+    Vulnerabilities,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
 pub enum AssessmentProfileArg {
     /// Check eligible upstream package updates
     Updates,

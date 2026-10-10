@@ -38,5 +38,6 @@ in {
       )
       assert "PASS: actual CLI pinned selection, bounded pages and changed receipt refusal" in output, output
       assert "PASS: actual CLI source failure events and malformed fact refusal" in output, output
+      assert "PASS: actual Hub CLI waited report-policy exits and conflicting report refusal" in output, output
     '';
 }

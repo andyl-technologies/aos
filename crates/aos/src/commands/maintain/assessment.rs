@@ -48,6 +48,10 @@ pub async fn run_assessment(
     printer: &Printer,
 ) -> Result<()> {
     let profiles = crate::cli::assessment_profiles(&command.profiles);
+    let report_policy = crate::commands::assessment_policy::policy(&command.fail_on)?;
+    if let Some(policy) = &report_policy {
+        policy.validate_profiles(&profiles)?;
+    }
     let freshness = if command.offline {
         FreshnessMode::Offline
     } else {
@@ -165,6 +169,15 @@ pub async fn run_assessment(
         issued_at.clone(),
     )?;
     if !is_new {
+        if let Some(policy) = &report_policy {
+            let digest = receipt.assessment_digest.context(
+                "the retained operation has no report yet; wait for it before applying report policy",
+            )?;
+            let bundle = store.export_local_assessment_evidence(digest)?;
+            let outcome = policy.evaluate(&bundle.assessment)?;
+            outcome.to_bytes(&bundle.assessment)?;
+            return print_policy_replay(args, printer, &receipt, &bundle, &outcome);
+        }
         super::assessment_scans::print_local_receipt(args, printer, &receipt);
         return Ok(());
     }
@@ -198,7 +211,9 @@ pub async fn run_assessment(
         }
     };
     if let Err(error) = executed {
-        store.fail_local_assessment_scan(&scan_id, "local-scan-failed")?;
+        if !error.is::<crate::commands::assessment_policy::AssessmentPolicyFailure>() {
+            store.fail_local_assessment_scan(&scan_id, "local-scan-failed")?;
+        }
         return Err(error);
     }
     Ok(())
@@ -251,6 +266,9 @@ async fn execute_assessment(
     let evaluated_at = PhysicalClock.now()?;
     let input = data.freeze_selected(profiles, subjects, evaluated_at)?;
     let result = aos_assessment::evaluator::evaluate(&input, &data)?;
+    let report_outcome = crate::commands::assessment_policy::policy(&command.fail_on)?
+        .map(|policy| policy.evaluate(&result))
+        .transpose()?;
     let usage = store.inspect_local_assessment_scan(&port.scan_id)?.usage;
     let receipt =
         store.commit_local_assessment_scan(&port.scan_id, &input, &data, &result, &usage)?;
@@ -307,11 +325,16 @@ async fn execute_assessment(
         output.sync_all()?;
     }
     if cli.json || args.jsonl || printer.mode() == OutputMode::Json {
-        printer.json(&serde_json::json!({
+        let mut envelope = serde_json::json!({
             "schema_version":"aos.assessment-cli/v1", "kind":"package-assessment",
             "execution":{"mode":"local", "scan_id":port.scan_id,"scan_input_digest":input.digest()?,"diagnostics":diagnostics,"scan":receipt},
             "data":result,
-        }));
+        });
+        if let Some(outcome) = &report_outcome {
+            outcome.to_bytes(&result)?;
+            envelope["reportPolicy"] = serde_json::to_value(outcome)?;
+        }
+        printer.json(&envelope);
     } else {
         for subject in &result.subject_results {
             let package = data
@@ -332,7 +355,33 @@ async fn execute_assessment(
             printer.info(&diagnostic);
         }
     }
-    Ok(())
+    crate::commands::assessment_policy::finish(printer, args.jsonl, report_outcome.as_ref())
+}
+
+fn print_policy_replay(
+    args: &MaintainArgs,
+    printer: &Printer,
+    receipt: &aos_assessment_runtime::application::ScanReceiptV1,
+    bundle: &AssessmentBundleV1,
+    outcome: &aos_assessment::report_policy::AssessmentReportPolicyOutcomeV1,
+) -> Result<()> {
+    if args.jsonl || printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "schema_version":"aos.assessment-cli/v1", "kind":"package-assessment",
+            "execution":{"mode":"local", "scan_id":receipt.scan_id,
+                "scan_input_digest":bundle.input.digest()?, "scan":receipt},
+            "data":bundle.assessment, "reportPolicy":outcome,
+        }));
+    } else {
+        for subject in &bundle.assessment.subject_results {
+            for line in
+                aos_maintain::presentation::assessment_subject_lines(subject, &subject.subject_ref)
+            {
+                printer.info(&line);
+            }
+        }
+    }
+    crate::commands::assessment_policy::finish(printer, args.jsonl, Some(outcome))
 }
 
 fn read_secret(name: &str) -> Result<Option<Zeroizing<String>>> {

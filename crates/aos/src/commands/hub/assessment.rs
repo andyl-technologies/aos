@@ -3,7 +3,7 @@
 //! Domain payloads retain their original field names inside the Hub CLI
 //! envelope so local tooling can consume the exact same inner document.
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use aos_assessment::result::PackageAssessmentV1;
 use aos_assessment_runtime::application::ScanReceiptV1;
 use aos_assessment_runtime::application::{AssessmentStatusV1, StatusQueryV1};
@@ -241,6 +241,7 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
             selection,
             wait,
             wait_seconds,
+            fail_on,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref()).await?;
             let submission = if let Some(request) = request {
@@ -249,6 +250,10 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
             } else {
                 super::assessment_selection::resolve(&client, registry, selection).await?
             };
+            let report_policy = crate::commands::assessment_policy::policy(fail_on)?;
+            if let Some(policy) = &report_policy {
+                policy.validate_profiles(&submission.profiles)?;
+            }
             let response = client
                 .call_topology(
                     hub_rpc::RequestPackageScan,
@@ -274,7 +279,11 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
             } else {
                 receipt
             };
-            print_receipt(printer, receipt)
+            if let Some(policy) = report_policy {
+                print_scan_policy_report(printer, &client, registry, &receipt, &policy).await
+            } else {
+                print_receipt(printer, receipt)
+            }
         }
         HubAssessmentCmd::Scans { command } => run_scans(printer, command).await,
         HubAssessmentCmd::Status {
@@ -324,6 +333,7 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
             access,
             registry,
             digest,
+            fail_on,
         } => {
             let digest = Sha256Digest::parse(digest)?;
             let client = hub_client(&access.hub, access.token.as_deref()).await?;
@@ -341,8 +351,18 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
                 assessment.digest()? == digest,
                 "Hub returned a different assessment identity"
             );
+            let outcome = crate::commands::assessment_policy::policy(fail_on)?
+                .map(|policy| policy.evaluate(&assessment))
+                .transpose()?;
             if printer.mode() == OutputMode::Json {
-                printer.json(&serde_json::json!({"schema_version":"aos.hub.cli/v1", "kind":"package-assessment", "data":assessment}));
+                let mut envelope = serde_json::json!({"schema_version":"aos.hub.cli/v1", "kind":"package-assessment", "data":assessment});
+                if let Some(outcome) = &outcome {
+                    outcome.to_bytes(&assessment)?;
+                    envelope["schema_version"] = serde_json::json!("aos.assessment-cli/v1");
+                    envelope["execution"] = serde_json::json!({"mode":"hub", "scan_input_digest":assessment.input_digest});
+                    envelope["reportPolicy"] = serde_json::to_value(outcome)?;
+                }
+                printer.json(&envelope);
             } else {
                 for subject in &assessment.subject_results {
                     for line in aos_maintain::presentation::assessment_subject_lines(
@@ -353,9 +373,64 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
                     }
                 }
             }
-            Ok(())
+            crate::commands::assessment_policy::finish(printer, false, outcome.as_ref())
         }
     }
+}
+
+async fn print_scan_policy_report(
+    printer: &Printer,
+    client: &aos_remote::HubClient,
+    registry: &str,
+    receipt: &ScanReceiptV1,
+    policy: &aos_assessment::report_policy::AssessmentReportPolicyV1,
+) -> Result<()> {
+    let digest = receipt
+        .assessment_digest
+        .context("the Hub operation has no committed assessment report")?;
+    let response = client
+        .call_topology(
+            hub_rpc::GetPackageAssessment,
+            &hub_types::AssessmentObjectRequest {
+                registry_slug: registry.into(),
+                assessment_digest: digest.to_string(),
+            },
+        )
+        .await?;
+    let assessment = PackageAssessmentV1::from_slice(&response.document_json)?;
+    anyhow::ensure!(
+        assessment.digest()? == digest
+            && assessment
+                .subject_results
+                .iter()
+                .map(|subject| &subject.subject_ref)
+                .eq(receipt.request.subjects.iter())
+            && assessment.subject_results.iter().all(|subject| subject
+                .coverage
+                .iter()
+                .map(|coverage| coverage.profile)
+                .eq(receipt.request.profiles.iter().copied())),
+        "Hub report differs from the exact admitted scan result or selection"
+    );
+    let outcome = policy.evaluate(&assessment)?;
+    outcome.to_bytes(&assessment)?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "schema_version":"aos.assessment-cli/v1", "kind":"package-assessment",
+            "execution":{"mode":"hub", "scan_id":receipt.scan_id,
+                "scan_input_digest":assessment.input_digest, "scan":receipt},
+            "data":assessment, "reportPolicy":outcome,
+        }));
+    } else {
+        for subject in &assessment.subject_results {
+            for line in
+                aos_maintain::presentation::assessment_subject_lines(subject, &subject.subject_ref)
+            {
+                printer.info(&line);
+            }
+        }
+    }
+    crate::commands::assessment_policy::finish(printer, false, Some(&outcome))
 }
 
 fn render_schedule(printer: &Printer, schedule: &ScheduleV1) {

@@ -24,6 +24,7 @@
 //! - [`disposition`] binds reviewed claims to exact components and source revisions.
 //! - [`evaluator`] and [`findings`] construct deterministic scoped assessments.
 //! - [`result`] defines shared version, finding, diagnostic and coverage records.
+//! - [`report_policy`] evaluates explicit automation exit policy over immutable results.
 //! - [`bundle`] verifies portable exports and offline reproduction without granting authority.
 //! - [`action_intent`] binds exact candidate recommendations for independent local planning.
 //!
@@ -48,6 +49,7 @@ pub mod metadata;
 pub mod nvd;
 pub mod observation;
 pub mod ranges;
+pub mod report_policy;
 pub mod result;
 pub mod reproduction;
 pub mod scan_inventory;

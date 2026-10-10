@@ -46,5 +46,6 @@ in {
       )
       assert "PASS: actual CLI exact assessment handoff, independent local discovery and stale-source refusal" in output, output
       assert "PASS: actual CLI evidence export and non-authoritative idempotent import" in output, output
+      assert "PASS: actual CLI distinct report-policy exits and immutable historical replay" in output, output
     '';
 }

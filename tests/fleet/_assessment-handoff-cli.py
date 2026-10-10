@@ -57,9 +57,18 @@ discovery = command([support, "assessment-handoff-discovery", envelope]).stdout
 write(discovery_path, discovery)
 assert json.loads(discovery)["units"][0]["components"][0]["selected"]["upstreamId"] == "v1.4.0"
 before = discovery_path.read_bytes()
-scan = json.loads(cli("scan", "--profile", "updates", "--freshness", "offline", "--assessment-input", input_path,
-    "--evidence-output", bundle_path, "--update-intent-subject", "subject", "--update-intent-output", intent_path).stdout)
+scan_arguments = ["scan", "--profile", "updates", "--freshness", "offline",
+                  "--assessment-input", input_path, "--idempotency-key", "handoff-policy-scan"]
+policy_scan = cli(*scan_arguments, "--fail-on", "updates,coverage,updates",
+                 "--evidence-output", bundle_path, "--update-intent-subject", "subject",
+                 "--update-intent-output", intent_path, okay=False)
+assert policy_scan.returncode == 20, (policy_scan.stdout, policy_scan.stderr)
+scan = json.loads(policy_scan.stdout)
 assert scan["execution"]["scan"]["usage"]["providerRequests"] == 0
+assert scan["execution"]["scan"]["state"] == "succeeded"
+assert scan["reportPolicy"]["failed"]
+assert scan["reportPolicy"]["policy"]["conditions"] == ["coverage", "updates"]
+assert scan["reportPolicy"]["matchedConditions"] == ["updates"]
 intent = json.loads(intent_path.read_text())
 assert intent["components"][0]["target"]["upstreamId"] == "v1.3.0"
 assert (intent_path.stat().st_mode & 0o777) == 0o600
@@ -98,6 +107,40 @@ journal_path = envelope.parent / "assessments/journal.json"
 journal_before = journal_path.read_bytes()
 exported_path = artifacts / "exported-evidence.json"
 assessment_digest = scan["execution"]["scan"]["assessmentDigest"]
+assert scan["reportPolicy"]["assessmentDigest"] == assessment_digest
+
+# Policy failure follows a successful scan commit. Applying it again reproduces
+# the same historical report and does not rewrite the receipt, heads or budget.
+replay = cli(*scan_arguments, "--fail-on", "coverage,updates", okay=False)
+assert replay.returncode == 20, (replay.stdout, replay.stderr)
+replayed = json.loads(replay.stdout)
+assert replayed["data"] == scan["data"]
+assert replayed["reportPolicy"] == scan["reportPolicy"]
+assert replayed["execution"]["scan"] == scan["execution"]["scan"]
+assert json.loads(cli(*scan_arguments).stdout)["data"] == scan["execution"]["scan"]
+
+retained = json.loads(cli("report", "--assessment-digest", assessment_digest).stdout)
+assert retained["data"] == scan["data"]
+assert "reportPolicy" not in retained
+failed_report = cli("report", "--assessment-digest", assessment_digest,
+                    "--fail-on", "updates", okay=False)
+assert failed_report.returncode == 20, (failed_report.stdout, failed_report.stderr)
+assert json.loads(failed_report.stdout)["reportPolicy"]["matchedConditions"] == ["updates"]
+passing = json.loads(cli("report", "--assessment-digest", assessment_digest,
+                        "--fail-on", "coverage").stdout)
+assert not passing["reportPolicy"]["failed"]
+human = command([binary, "maintain", "--state-dir", state, "report",
+                 "--assessment-digest", assessment_digest, "--fail-on", "updates"], okay=False)
+assert human.returncode == 20, (human.stdout, human.stderr)
+assert "Report policy: fail" in human.stdout + human.stderr
+assert "selected assessment report policy failed" not in human.stdout + human.stderr
+
+invalid_policy = cli(*scan_arguments, "--fail-on", "vulnerabilities", okay=False)
+assert invalid_policy.returncode != 20
+assert journal_path.read_bytes() == journal_before
+assert discovery_path.read_bytes() == before
+print("PASS: actual CLI distinct report-policy exits and immutable historical replay")
+
 exported = json.loads(cli("evidence", "export", assessment_digest, "--output", exported_path).stdout)
 assert exported["data"]["assessmentDigest"] == assessment_digest
 assert (exported_path.stat().st_mode & 0o777) == 0o600

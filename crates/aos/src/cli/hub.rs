@@ -521,6 +521,9 @@ pub enum HubAssessmentCmd {
         /// Wait for the admitted operation to reach a terminal state
         #[arg(long)]
         wait: bool,
+        /// Return exit code 20 when selected report conditions match
+        #[arg(long, value_enum, value_delimiter = ',', requires = "wait")]
+        fail_on: Vec<super::AssessmentFailureArg>,
         /// Bound waiting without cancelling the durable Hub operation
         #[arg(long, requires = "wait", default_value_t = 3600, value_parser = clap::value_parser!(u32).range(1..=3600))]
         wait_seconds: u32,
@@ -567,6 +570,9 @@ pub enum HubAssessmentCmd {
         registry: String,
         /// Exact immutable assessment digest
         digest: String,
+        /// Return exit code 20 when selected report conditions match
+        #[arg(long, value_enum, value_delimiter = ',')]
+        fail_on: Vec<super::AssessmentFailureArg>,
     },
 }
 

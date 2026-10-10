@@ -18,11 +18,32 @@ binary = Path(sys.argv[2])
 calls = []
 scenario = "complete"
 profiles = ["license-signals", "updates", "vulnerabilities"]
+admitted_receipt = None
 
 
 def digest(domain, value):
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return "sha256:" + hashlib.sha256(domain.encode() + bytes([0]) + encoded).hexdigest()
+
+
+def assessment():
+    counts = {name: 0 for name in ["declared", "evaluated", "unmapped", "unsupported", "stale", "failed"]}
+    result = {
+        "schema": "aos.package-assessment/v1", "inputDigest": "sha256:" + "f" * 64,
+        "subjectResults": [{
+            "subjectRef": subject, "versions": [], "findings": [],
+            "coverage": [{
+                "profile": profile, "state": "unknown", "counts": counts,
+                "reasons": ["fixture-evidence-missing"],
+            } for profile in profiles],
+        } for subject in ["a", "b"]],
+        "diagnostics": [], "coverage": "unknown",
+    }
+    if scenario == "report-selection-mismatch":
+        result["subjectResults"].pop()
+    elif scenario == "report-profile-mismatch":
+        result["subjectResults"][0]["coverage"].pop()
+    return result
 
 
 def status(position):
@@ -69,14 +90,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_POST(self):
+        global admitted_receipt
         assert self.headers["Authorization"] == "Bearer public-fixture-token"
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         assert request["registrySlug"] == "fixture"
-        field = "queryJson" if self.path.endswith("/GetStatus") else "documentJson"
+        field = "assessmentDigest" if self.path.endswith("/GetAssessment") else (
+            "queryJson" if self.path.endswith("/GetStatus") else "documentJson")
         assert set(request) == {"registrySlug", field}, request
-        document = json.loads(base64.b64decode(request[field]))
+        document = request[field] if field == "assessmentDigest" else json.loads(base64.b64decode(request[field]))
         calls.append((self.path, document))
-        if self.path == "/aos.hub.v1.AssessmentService/ListEvents":
+        if self.path == "/aos.hub.v1.AssessmentService/GetAssessment":
+            response = assessment()
+            assert document == digest("aos.package-assessment/v1", response)
+            if scenario == "report-digest-mismatch":
+                response["inputDigest"] = "sha256:" + "e" * 64
+        elif self.path == "/aos.hub.v1.ScanService/GetScan":
+            assert document == {"schema": "aos.assessment-scan-lookup/v1", "scanId": "fixture-durable-scan"}
+            response = copy.deepcopy(admitted_receipt)
+            response["resourceVersion"] += 1
+            if scenario == "terminal-no-report":
+                response.update({"state": "failed", "failureCode": "fixture-source-failed"})
+            else:
+                response.update({"state": "partial", "assessmentDigest": digest("aos.package-assessment/v1", assessment())})
+        elif self.path == "/aos.hub.v1.AssessmentService/ListEvents":
             assert document == {
                 "schema": "aos.assessment-event-query/v1", "limit": 10,
                 "afterSequence": 0,
@@ -134,6 +170,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "usage": {"providerRequests": 0, "tasks": 0, "normalizedBytes": 0},
                 "createdAt": "2026-10-10T00:00:00Z", "resourceVersion": 1,
             }
+            admitted_receipt = copy.deepcopy(response)
         encoded = json.dumps({
             "documentJson": base64.b64encode(json.dumps(response).encode()).decode(),
         }).encode()
@@ -154,20 +191,60 @@ try:
             "XDG_STATE_HOME": str(Path(directory) / "state"), "AOS_ROOT": str(root),
         })
 
-        def run(package="fixture/example", okay=True):
+        def run(package="fixture/example", okay=True, extra=()):
             result = subprocess.run([
                 str(binary), "--json", "hub", "maintain", "scan", "--registry", "fixture",
                 "--hub", f"http://127.0.0.1:{server.server_port}", "--token", "public-fixture-token",
                 "--profile", "all,updates", "--package", package, "--freshness", "offline",
                 "--idempotency-key", "fixture-selection",
+                *extra,
             ], cwd=root, env=environment, capture_output=True, text=True, timeout=30)
             assert (result.returncode == 0) == okay, (result.stdout, result.stderr)
-            if okay:
+            if okay and not extra:
                 response = json.loads(result.stdout)
                 assert response["data"]["request"]["subjects"] == ["a", "b"], response
+            return result
 
         run()
         assert len(calls) == 3
+
+        scenario = "report-policy"
+        calls.clear()
+        failed_policy = run(okay=False, extra=["--wait", "--fail-on", "coverage,coverage"])
+        assert failed_policy.returncode == 20, (failed_policy.stdout, failed_policy.stderr)
+        report = json.loads(failed_policy.stdout)
+        assert report["data"] == assessment()
+        assert report["execution"]["scan"]["state"] == "partial"
+        assert report["reportPolicy"]["matchedConditions"] == ["coverage"]
+        assert report["reportPolicy"]["assessmentDigest"] == digest("aos.package-assessment/v1", assessment())
+        assert len(calls) == 5 and calls[-2][0].endswith("/GetScan") and calls[-1][0].endswith("/GetAssessment")
+        passing_policy = json.loads(run(extra=["--wait", "--fail-on", "updates"]).stdout)
+        assert not passing_policy["reportPolicy"]["failed"]
+        assert passing_policy["data"] == report["data"]
+        legacy_wait = json.loads(run(extra=["--wait"]).stdout)
+        assert legacy_wait["data"]["state"] == "partial"
+        assert "reportPolicy" not in legacy_wait
+
+        historical_digest = digest("aos.package-assessment/v1", assessment())
+        for conditions, expected in [("coverage", 20), ("updates", 0), (None, 0)]:
+            result = subprocess.run([
+                str(binary), "--json", "hub", "maintain", "get", "--registry", "fixture",
+                "--hub", f"http://127.0.0.1:{server.server_port}", "--token", "public-fixture-token",
+                historical_digest, *(["--fail-on", conditions] if conditions else []),
+            ], cwd=root, env=environment, capture_output=True, text=True, timeout=30)
+            assert result.returncode == expected, (result.stdout, result.stderr)
+            retained = json.loads(result.stdout)
+            assert retained["data"] == assessment()
+            assert ("reportPolicy" in retained) == (conditions is not None)
+        for scenario in ["report-digest-mismatch", "report-selection-mismatch", "report-profile-mismatch", "terminal-no-report"]:
+            calls.clear()
+            rejected = run(okay=False, extra=["--wait", "--fail-on", "coverage"])
+            assert rejected.returncode != 20, (rejected.stdout, rejected.stderr)
+            if scenario == "terminal-no-report":
+                assert len(calls) == 4 and not any(path.endswith("/GetAssessment") for path, _ in calls)
+        print("PASS: actual Hub CLI waited report-policy exits and conflicting report refusal")
+
+        scenario = "complete"
         calls.clear()
         run("fixture/absent", okay=False)
         assert len(calls) == 2 and all(path.endswith("/GetStatus") for path, _ in calls)
