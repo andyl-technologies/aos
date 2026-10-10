@@ -137,6 +137,8 @@ pub(in crate::guard) struct OriginalVerifier {
     publication: Arc<PublicationCheck>,
     tag: Arc<TagCheck>,
     requalification: Arc<requalification::RequalificationCheck>,
+    #[cfg(all(feature = "tokio", unix))]
+    current: Arc<current::CurrentHistoryCheck>,
     #[cfg(unix)]
     preparation: Arc<cold::PreparationCheck>,
     retained: Option<RetainedControls>,
@@ -392,6 +394,8 @@ impl<
             })
         });
         let requalification = requalification::factory(Arc::clone(&concrete), authority.clone());
+        #[cfg(all(feature = "tokio", unix))]
+        let current = current::capture(Arc::clone(&concrete), authority.clone());
         let preparation = cold::factory(Arc::clone(&concrete), authority.clone());
         let commit_guard = concrete;
         let commit: Arc<CommitCheck> = Arc::new(move |baseline, view, held, retained| {
@@ -416,6 +420,8 @@ impl<
             publication,
             tag,
             requalification,
+            #[cfg(all(feature = "tokio", unix))]
+            current,
             preparation,
             retained: None,
         });
