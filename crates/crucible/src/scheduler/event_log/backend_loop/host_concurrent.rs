@@ -474,6 +474,11 @@ where
                     continue;
                 }
                 let runtime = &staged_scheduler.nodes[original.plan.index];
+                if runtime.campaign_parked {
+                    // A parked VM abandons the rest of its RUN at the marker;
+                    // it receives a fresh RUN only after the all-VM join.
+                    continue;
+                }
                 let current = staged_scheduler
                     .node_current_time(runtime)
                     .map_err(|error| self.poison_continuation(error))?;

@@ -630,6 +630,24 @@ fn production_marker_park_unblocks_network_and_requires_join_before_release() ->
 }
 
 #[test]
+fn production_marker_parks_publish_and_park_a_held_marker_peer() -> TestResult {
+    let mut lifecycle = stopped_lifecycle_with_kind(1, true)?;
+    let mut outcome = boundary_outcome(&lifecycle);
+
+    // The source parks, its held peer publishes and stops at the same marker,
+    // and that new source parks in turn without resuming the first VM.
+    let parks = lifecycle.park_held_campaign_markers(&["fault.transport.ready"], &mut outcome)?;
+
+    assert_eq!(parks, 2);
+    assert!(!lifecycle.inner.has_unsettled_host_continuation());
+    assert_eq!(lifecycle.inner.loop_impl().campaign_parked_nodes().len(), 2);
+    let joined = lifecycle.join_campaign_parks_to_frontier()?;
+    assert_eq!(joined, Some(lifecycle.inner.loop_impl().frontier()));
+    lifecycle.shutdown()?;
+    Ok(())
+}
+
+#[test]
 fn committed_request_visibility_refuses_changed_source_counter() -> TestResult {
     let mut lifecycle = stopped_lifecycle(0)?;
     let pending = lifecycle.drain_pending_selectable_requests()?.remove(0);
