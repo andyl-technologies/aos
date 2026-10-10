@@ -213,6 +213,35 @@ profile; owning cold-source and fork Nix qualification remain pending.
 A separate isolated recovery workline
 investigates its concrete `Unsupported` failure. No task is accepted or later
 milestone started by these parallel results.
+Subsequent owning cold-source qualification passes all thirteen cases on
+`f91a83414d`. A second reviewed filesystem-fixture forwarding correction
+preserves the cold-fork effect hooks and resolves its distinct unsupported
+native reader. Combined candidate `2bec2cd378` passes the owning `algebra-fork`
+gate's twelve publication cases and all prerequisites, with forty-seven actual
+passing case summaries. Parent review confirms both registered outputs,
+nonempty receipts and completed raw executions.
+Independent qualification on the first forwarding candidate also passes
+`golden-vectors` with 104 unique exact cases and `core-fuzz` with 64 exact cases.
+The local backend workline passes 119 executions across layout, atomic-write,
+CAS and ranged-get checks; ref CAS remains pending.
+A reviewed production correction uses the existing strict retained publication
+observer for writable replacement staging. Combined candidate `1209fe418a`
+passes native build, strict all-target Clippy, fresh compiler artifacts and
+nine focused recovery counterproofs. The owning recovery check completes its
+actual composite repair case in 442.94 seconds, then fails its late-fault
+counterproof because the intended fault is not reached. Its remaining three
+owning cases are unrun; separate focused authority and deadline cases fail
+during preparation with nested `CAPABILITIES` corruption. The original host
+timeouts remain preserved and do not establish a production deadline failure.
+Two disjoint implementation workers now investigate late-fault dispatch and
+boundary-session preparation. A third reviewed test correction supplies a
+genuinely different configured Guard profile to its replacement counterproof;
+its runtime qualification remains pending. Separate workers qualify the six
+native growing populations, collector gates and current application targets.
+Each owns an isolated checkout and distinct files. All original clocks,
+refusal assertions, required work measurements and the DRV-29 blocker remain
+in place. The complete T1 floor is still red; no new task, freeze or later
+milestone is accepted by these source-specific results.
 The two additional current-token/current-policy cases and four captured-input
 cases pass independent source review. Their owning gate registration extends
 the new current-history population to twenty-six cases while preserving every
