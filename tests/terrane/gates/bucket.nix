@@ -204,8 +204,8 @@ in {
     run_bucket_test store::native_effect::directory_retention::tests::actual_directory_policy_and_parent_replacements_refuse_write
     run_bucket_test store::native_effect::directory_retention::tests::aborted_waiter_retains_directory_and_kernel_exclusion_through_durability
     run_bucket_test store::native_effect::directory_retention::tests::queued_aborted_waiter_retains_actual_directories_and_namespace_lock
-    run_bucket_test bucket::publication::activation::fresh::bootstrap::cohort_tests::extended_cohorts_share_original_descriptor_but_fresh_captures_do_not
-    run_bucket_test bucket::publication::activation::fresh::bootstrap::cohort_tests::cohort_extension_refuses_replaced_ancestor_without_rebinding
+    run_bucket_test store::native_effect::publication::initialization_inputs::fresh::bootstrap::cohort_tests::extended_cohorts_share_original_descriptor_but_fresh_captures_do_not
+    run_bucket_test store::native_effect::publication::initialization_inputs::fresh::bootstrap::cohort_tests::cohort_extension_refuses_replaced_ancestor_without_rebinding
     run_bucket_test store::native_effect::publication::initialization_inputs::fresh::tests::fresh_native_creator_stages_pending_before_selected_activation
     run_bucket_test store::native_effect::publication::initialization_inputs::fresh::tests::fresh_creation_race_returns_existing_without_repairing_winner
     run_bucket_test store::native_effect::publication::initialization_inputs::fresh::tests::fresh_probe_preparation_checks_whole_cap_before_any_staging
