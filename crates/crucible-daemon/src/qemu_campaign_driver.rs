@@ -127,6 +127,16 @@ pub enum QemuFreshModeledDriverError {
         /// The failed host-side boundary condition.
         reason: &'static str,
     },
+    /// A worked-network boundary retained scheduler-owned future work.
+    #[error(
+        "worked-network fault marker is not a settled exact boundary: scheduler-owned world state is not quiescent ({count} blockers: {summary})"
+    )]
+    NetworkFaultBoundaryNotQuiescent {
+        /// Number of scheduler quiescence blockers at the boundary.
+        count: usize,
+        /// Bounded rendering of the leading blockers in canonical order.
+        summary: String,
+    },
     /// A network phase marker claimed a node outside the scenario's VM set.
     #[error("worked-network phase `{phase}` marker sequence {sequence} names unknown VM `{node}`")]
     NetworkFaultMarkerUnknownVm {

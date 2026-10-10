@@ -413,10 +413,13 @@ pub(super) fn validate_network_fault_boundary(
             reason: "phase marker lies beyond the scheduler frontier",
         });
     }
-    if !quiescence.is_some_and(SchedulerQuiescence::is_quiescent) {
+    let Some(quiescence) = quiescence else {
         return Err(QemuFreshModeledDriverError::NetworkFaultBoundary {
-            reason: "scheduler-owned world state is not quiescent",
+            reason: "scheduler quiescence evidence is unavailable",
         });
+    };
+    if !quiescence.is_quiescent() {
+        return Err(not_quiescent_boundary(quiescence));
     }
     if pending_network_outputs != 0 {
         return Err(QemuFreshModeledDriverError::NetworkFaultBoundary {
@@ -437,4 +440,24 @@ pub(super) fn validate_network_fault_boundary(
         });
     }
     Ok(())
+}
+
+/// Names the leading blockers so a failed physical boundary stays diagnosable.
+fn not_quiescent_boundary(quiescence: &SchedulerQuiescence) -> QemuFreshModeledDriverError {
+    const SUMMARY_BLOCKERS: usize = 8;
+
+    let mut summary = quiescence
+        .blockers
+        .iter()
+        .take(SUMMARY_BLOCKERS)
+        .map(|blocker| format!("{blocker:?}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    if quiescence.blockers.len() > SUMMARY_BLOCKERS {
+        summary.push_str("; ...");
+    }
+    QemuFreshModeledDriverError::NetworkFaultBoundaryNotQuiescent {
+        count: quiescence.blockers.len(),
+        summary,
+    }
 }

@@ -360,6 +360,36 @@ fn network_fault_marker_rejects_a_frame_before_the_quiescent_barrier() {
 }
 
 #[test]
+fn nonquiescent_boundary_names_its_scheduler_blockers() {
+    let quiescence = SchedulerQuiescence {
+        blockers: vec![
+            crucible::SchedulerQuiescenceBlocker::DeviceCompletionInFlight {
+                target: node("traffic-west"),
+            },
+        ],
+    };
+
+    let error = validate_network_fault_boundary(
+        1,
+        VirtualTime { ticks: 10 },
+        VirtualTime { ticks: 10 },
+        Some(&quiescence),
+        0,
+        &[],
+        &[],
+    )
+    .expect_err("a queued delivery keeps the boundary open");
+
+    let QemuFreshModeledDriverError::NetworkFaultBoundaryNotQuiescent { count, summary } = &error
+    else {
+        panic!("unexpected boundary error: {error}");
+    };
+    assert_eq!(*count, 1);
+    assert!(summary.contains("DeviceCompletionInFlight"));
+    assert!(summary.contains("traffic-west"));
+}
+
+#[test]
 fn ready_marker_discovers_the_same_public_network_choice_on_repeat() {
     let scenario = network_choice_scenario(&["router-a"]);
     let input = input_for_scenario(scenario, StopCondition::NextChoice);
