@@ -204,6 +204,8 @@ in {
     run_bucket_test store::native_effect::directory_retention::tests::actual_directory_policy_and_parent_replacements_refuse_write
     run_bucket_test store::native_effect::directory_retention::tests::aborted_waiter_retains_directory_and_kernel_exclusion_through_durability
     run_bucket_test store::native_effect::directory_retention::tests::queued_aborted_waiter_retains_actual_directories_and_namespace_lock
+    run_bucket_test bucket::publication::activation::fresh::bootstrap::cohort_tests::extended_cohorts_share_original_descriptor_but_fresh_captures_do_not
+    run_bucket_test bucket::publication::activation::fresh::bootstrap::cohort_tests::cohort_extension_refuses_replaced_ancestor_without_rebinding
     run_bucket_test store::native_effect::publication::initialization_inputs::fresh::tests::fresh_native_creator_stages_pending_before_selected_activation
     run_bucket_test store::native_effect::publication::initialization_inputs::fresh::tests::fresh_creation_race_returns_existing_without_repairing_winner
     run_bucket_test store::native_effect::publication::initialization_inputs::fresh::tests::fresh_probe_preparation_checks_whole_cap_before_any_staging
@@ -223,7 +225,7 @@ in {
     run_core_bucket_test bucket::records::tests::capability_publication_marker_preserves_legacy_bytes_and_rejects_unknown_versions
     run_bucket_test bucket::tests::registered_publication_marker_cannot_authorize_legacy_probe_writes
     ${builtins.concatStringsSep "\n" (map (test: "run_bucket_test bucket::${test}") ["version_tests::v1_readonly_refuses_an_empty_backend_response_after_initial_validation" "version_tests::v1_readonly_preserves_unknown_inventory_and_refuses_every_effect" "version_tests::v1_readonly_rejects_layout_transition_without_upgrading_or_writing" "tests::probe_revalidates_persisted_layout_and_profile_each_open" "tests::missing_capabilities_cache_recovers_existing_selected_state"])}
-    printf 'PASS: native probe, retained initialization/recovery and canonical publication marker conformance (46 exact cases)\n' > "$out/result"
+    printf 'PASS: native probe, retained initialization/recovery and canonical publication marker conformance (48 exact cases)\n' > "$out/result"
   '';
   store-list-not-authoritative = gate "store-list-not-authoritative" ["fault_tests::stale_directory_listing_cannot_change_content_or_ref_results"];
   store-validates-uploads = gate "store-validates-uploads" ["fault_tests::dictionary_backend_unavailability_preserves_put_and_get_failure_kinds" "requirement_tests::opaque_metadata_callback_verifies_real_chunks_before_every_dedup" "content_tests::configured_schema_validator_rejects_canonical_but_invalid_meta" "content_tests::admission_validates_identity_length_profile_and_independent_dedup_context" "content_tests::dictionaries_are_fetched_by_verified_chunk_identity_before_decode" "container_tests::whole_pack_import_verifies_members_without_admitting_them" "manifest_tests::manifest_admission_rechecks_nonfinal_context_after_inventory_only_import" "manifest_tests::manifest_references_accept_an_honest_nonfinal_boundary_and_verified_lengths"];
