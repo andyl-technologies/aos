@@ -249,9 +249,12 @@ pub(super) fn next_network_fault_discovery(
                 .ok_or(QemuFreshModeledDriverError::NetworkFaultBoundary {
                     reason: "parked VM has no authenticated phase marker",
                 })?;
+        // The event log carries the marker's logical tick; the park pairs it
+        // with the raw count recovered at the physical VMStop.
         if parked.marker != phase_marker(phase)
-            || parked.marker_icount != *retired
-            || retired.retired.checked_add(1) != Some(parked.physical_raw_icount.retired)
+            || parked.marker_tick != *retired
+            || parked.marker_icount.retired.checked_add(1)
+                != Some(parked.physical_raw_icount.retired)
         {
             return Err(QemuFreshModeledDriverError::NetworkFaultBoundary {
                 reason: "physical VMStop differs from the authenticated phase marker",

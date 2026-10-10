@@ -89,6 +89,7 @@ impl NetworkBoundaryLifecycle {
                     QemuParkedCampaignMarker {
                         marker: marker.to_owned(),
                         marker_icount: Icount { retired: *retired },
+                        marker_tick: Icount { retired: *retired },
                         physical_raw_icount: Icount {
                             retired: retired + 1,
                         },

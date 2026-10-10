@@ -473,8 +473,13 @@ pub struct QemuNodeSet {
 pub struct QemuParkedCampaignMarker {
     /// The declared campaign boundary marker name.
     pub marker: String,
-    /// Pre-instruction raw retired count recorded by the white-box callback.
+    /// Pre-instruction raw retired count of the marker instruction.
+    ///
+    /// The white-box event carries the instruction's logical tick; this count
+    /// is recovered from it through the stopped slot's calibration.
     pub marker_icount: Icount,
+    /// Pre-instruction logical tick carried by the white-box marker event.
+    pub marker_tick: Icount,
     /// Post-instruction raw retired count paired with QEMU's native VMStop.
     pub physical_raw_icount: Icount,
     /// Scheduler-visible logical tick published with QEMU's native VMStop.
@@ -488,7 +493,8 @@ pub struct QemuCampaignMarkerBoundaryDiagnostic {
     pub node: NodeId,
     /// Campaign marker name decoded from the guest event.
     pub marker: String,
-    /// Raw retired count immediately before the marker instruction.
+    /// Raw retired count immediately before the marker instruction,
+    /// recovered from the marker tick through the stopped slot's calibration.
     pub pre_raw: u64,
     /// Raw retired count immediately after the marker instruction.
     pub post_raw: u64,
@@ -496,8 +502,8 @@ pub struct QemuCampaignMarkerBoundaryDiagnostic {
     pub observed_tick: u64,
     /// Picosecond bias applied after scaling the raw count.
     pub logical_offset_picoseconds: u64,
-    /// Raw coordinate carried by the marker event.
-    pub marker_event_raw: u64,
+    /// Pre-instruction logical tick carried by the marker event.
+    pub marker_event_tick: u64,
     /// Raw retired count paired with the physical VMStop publication.
     pub physical_stop_raw: u64,
     /// Scheduler-visible logical tick of the physical VMStop.
@@ -508,14 +514,14 @@ impl std::fmt::Display for QemuCampaignMarkerBoundaryDiagnostic {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "CRUCIBLE-QEMU-CAMPAIGN-MARKER-BOUNDARY-V2 node={} marker={} pre_raw={} post_raw={} observed_tick={} logical_offset_picoseconds={} marker_event_raw={} physical_stop_raw={} physical_stop_tick={}",
+            "CRUCIBLE-QEMU-CAMPAIGN-MARKER-BOUNDARY-V3 node={} marker={} pre_raw={} post_raw={} observed_tick={} logical_offset_picoseconds={} marker_event_tick={} physical_stop_raw={} physical_stop_tick={}",
             self.node.name,
             self.marker,
             self.pre_raw,
             self.post_raw,
             self.observed_tick,
             self.logical_offset_picoseconds,
-            self.marker_event_raw,
+            self.marker_event_tick,
             self.physical_stop_raw,
             self.physical_stop_tick,
         )
@@ -551,16 +557,13 @@ fn campaign_marker_parked_at(
         if marker_node != node || !CAMPAIGN_BOUNDARY_MARKERS.contains(&marker.name.as_str()) {
             continue;
         }
-        // The trap reports its instruction's pre-retirement raw count. The
-        // stopped slot independently pairs the post-instruction raw count with
-        // its scheduler-visible logical tick.
-        let post_raw =
-            retired_icount
-                .retired
-                .checked_add(1)
-                .ok_or_else(|| BackendError::Rejected {
-                    message: format!("QEMU node `{}` marker retired count overflowed", node.name),
-                })?;
+        // The plugin publishes the marker instruction's pre-retirement logical
+        // tick, bound to its callback raw count. The stopped slot independently
+        // pairs the post-instruction raw count with its scheduler-visible
+        // logical tick, so the raw marker count is recovered through that
+        // calibration and must land exactly one instruction before the stop in
+        // both clock domains.
+        let marker_tick = retired_icount.retired;
         let logical_offset_picoseconds = calibration
             .offset()
             .map_err(|source| BackendError::Rejected {
@@ -569,23 +572,35 @@ fn campaign_marker_parked_at(
                     node.name, marker.name,
                 ),
             })?;
-        let observed_tick = post_raw
-            .checked_mul(crucible::SIM_TICKS_PER_INSTRUCTION)
-            .and_then(|raw_picoseconds| raw_picoseconds.checked_add(logical_offset_picoseconds))
+        let pre_raw = marker_tick
+            .checked_sub(logical_offset_picoseconds)
+            .filter(|scaled| scaled % crucible::SIM_TICKS_PER_INSTRUCTION == 0)
+            .map(|scaled| scaled / crucible::SIM_TICKS_PER_INSTRUCTION)
             .ok_or_else(|| BackendError::Rejected {
                 message: format!(
-                    "QEMU node `{}` campaign marker `{}` logical coordinate overflowed",
+                    "QEMU node `{}` campaign marker `{}` tick {marker_tick} is not on the stopped raw instruction grid with logical offset {logical_offset_picoseconds}",
                     node.name, marker.name,
                 ),
             })?;
+        let (Some(post_raw), Some(observed_tick)) = (
+            pre_raw.checked_add(1),
+            marker_tick.checked_add(crucible::SIM_TICKS_PER_INSTRUCTION),
+        ) else {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "QEMU node `{}` campaign marker `{}` coordinate overflowed",
+                    node.name, marker.name,
+                ),
+            });
+        };
         let diagnostic = QemuCampaignMarkerBoundaryDiagnostic {
             node: node.clone(),
             marker: marker.name.clone(),
-            pre_raw: retired_icount.retired,
+            pre_raw,
             post_raw,
             observed_tick,
             logical_offset_picoseconds,
-            marker_event_raw: retired_icount.retired,
+            marker_event_tick: marker_tick,
             physical_stop_raw: calibration.raw_icount,
             physical_stop_tick: physical_icount.retired,
         };
@@ -599,7 +614,8 @@ fn campaign_marker_parked_at(
         }
         matched = Some(QemuParkedCampaignMarker {
             marker: marker.name.clone(),
-            marker_icount: *retired_icount,
+            marker_icount: Icount { retired: pre_raw },
+            marker_tick: *retired_icount,
             physical_raw_icount: Icount {
                 retired: calibration.raw_icount,
             },

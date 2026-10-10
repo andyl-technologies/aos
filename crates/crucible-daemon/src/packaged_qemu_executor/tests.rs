@@ -1113,6 +1113,7 @@ impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
         Ok(Some(QemuParkedCampaignMarker {
             marker: String::from("fault.transport.ready"),
             marker_icount: Icount { retired: 41 },
+            marker_tick: Icount { retired: 41 },
             physical_raw_icount: Icount { retired: 42 },
             physical_icount: Icount { retired: 42 },
         }))
