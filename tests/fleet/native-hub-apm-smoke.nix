@@ -1024,6 +1024,7 @@ in {
       # Finally publish a locally built AOS toplevel and its authenticated raw
       # OTA image as a sysroot package. Stage it over the Hub, boot it through
       # UEFI, then exercise durable image rollback and roll-forward.
+      print("Native image: preparing the signed release", flush=True)
       publisher.succeed(textwrap.dedent(f"""
           set -eu
           export HOME=/var/lib/aos-fleet-publisher USER=publisher
@@ -1059,6 +1060,7 @@ in {
       # Image preparation can consume most of an API bearer's lifetime.
       # Mint the upload credential after compression and signature checks.
       token = refresh_browser_token()
+      print("Native image: uploading the prepared release", flush=True)
       publication_system = publisher.succeed(textwrap.dedent(f"""
           set -eu
           export HOME=/var/lib/aos-fleet-publisher USER=publisher
@@ -1081,6 +1083,7 @@ in {
           ">/tmp/expected-system-store-miss 2>&1"
       )
 
+      print("Native image: downloading and staging the upgrade", flush=True)
       system_status, system_stdout, system_stderr = consumer.execute(textwrap.dedent(f"""
           set -eu
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
@@ -1103,6 +1106,7 @@ in {
           {JQ} -e '.running == 1 and .default == 2 and .pending == 2' \\
             /var/lib/profiles/image/state.json >/dev/null
       """), timeout=1200)
+      print("Native image: booting the staged upgrade", flush=True)
       consumer.reboot(timeout=600)
       consumer.wait_until_succeeds(
           "systemctl is-active --quiet aos-image-boot-commit.service",
