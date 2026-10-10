@@ -13,6 +13,8 @@ use super::{AssessmentNotificationPlacement, AssessmentNotificationWork, Assessm
 use crate::backend::{CheckedStatement, Statement};
 use crate::db::Database;
 
+mod failure;
+
 async fn emit(db: &Database, registry_id: i64, count: usize, occurred: &Timestamp) -> Result<()> {
     let payloads = (0..count)
         .map(|index| AssessmentEventPayload::ScanCompleted {

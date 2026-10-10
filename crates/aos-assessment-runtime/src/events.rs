@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 use crate::alerts::{AlertTransitionKind, AssessmentAlertV1};
 use crate::validation::text;
 
+mod delivery;
+
+pub use delivery::{DeliveryFailureCode, DeliveryFailureV1};
+
 const LIMITS: JsonLimits = JsonLimits {
     max_bytes: 262_144,
     max_depth: 16,
@@ -62,6 +66,11 @@ pub enum AssessmentEventPayload {
         scan_id: String,
         /// Exact result commitment; coverage remains inside the result.
         assessment_digest: Sha256Digest,
+    },
+    /// Reports one settled failed callback attempt without callback fanout.
+    DeliveryFailed {
+        /// Sanitized immutable operational facts for the exact physical batch.
+        failure: Box<DeliveryFailureV1>,
     },
 }
 
@@ -126,6 +135,15 @@ impl AssessmentEventV1 {
             }
             AssessmentEventPayload::ScanCompleted { scan_id, .. } => {
                 text(scan_id, 128, "assessment event operation")?;
+            }
+            AssessmentEventPayload::DeliveryFailed { failure } => {
+                failure.validate()?;
+                if let Some(retry_at) = &failure.retry_at {
+                    let delay = retry_at.elapsed_since(&self.occurred_at)?;
+                    if delay > 3600 {
+                        bail!("delivery failure retry exceeds the installed one-hour ceiling");
+                    }
+                }
             }
         }
         Ok(())

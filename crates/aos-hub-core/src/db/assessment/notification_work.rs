@@ -17,6 +17,8 @@ use crate::backend::{CheckedStatement, Statement};
 use crate::db::Database;
 use crate::domain::Permission;
 
+mod failure;
+
 /// Selects independently installed service pairing and a notification-only shared quota.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AssessmentNotificationPlacement {
@@ -594,6 +596,16 @@ impl Database {
         };
         checked.push(Statement::new(format!("UPDATE assessment_notification_outbox SET state = ?7, claim_token = NULL, lease_expires_at = NULL, not_before = ?8, last_error_code = ?9, receipt_digest = ?10, resource_version = resource_version + 1, updated_at = {clock}
             WHERE registry_id = ?1 AND subscription_id = ?2 AND subscription_revision = ?3 AND payload_digest = ?4 AND state = 'leased' AND claim_token = ?5 AND attempt = ?6 AND lease_expires_at = ?11 AND {clock} < ?11"), vals![work.registry_id, record.key, record.revision, work.plan.body_digest.to_string(), work.plan.claim_token, u32::from(work.plan.attempt), state, not_before, failure, receipt_digest.to_string(), work.plan.deadline.unix_seconds()]).expecting(work.plan.body.events.len() as u64));
+        checked.extend(
+            self.notification_failure_event_statements(
+                work,
+                receipt,
+                state == "dead-letter",
+                not_before,
+                &now,
+            )
+            .await?,
+        );
         self.backend.checked_batch(&checked).await
     }
 

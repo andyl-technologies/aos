@@ -1,6 +1,6 @@
 //! Compact event disclosure with finite, immutable digest membership.
 
-use anyhow::{Result, ensure};
+use anyhow::{Result, bail, ensure};
 use aos_assessment::time::Timestamp;
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
@@ -112,6 +112,9 @@ impl NotificationSummaryV1 {
             }
             AssessmentEventPayload::SubscriptionChanged { .. } => {
                 value.kind = NotificationEventKind::SubscriptionChanged
+            }
+            AssessmentEventPayload::DeliveryFailed { .. } => {
+                bail!("operational delivery failures cannot be selected for callback fanout");
             }
         }
         value.validate()?;

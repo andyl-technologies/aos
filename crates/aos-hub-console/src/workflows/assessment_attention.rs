@@ -4,12 +4,58 @@ use aos_assessment_runtime::alerts::{AssessmentAlertV1, AttentionState};
 use aos_assessment_runtime::attention_control::{
     AlertAcknowledgementV1, AlertPageV1, AlertQueryV1, EventPageV1, EventQueryV1,
 };
+use aos_assessment_runtime::events::AssessmentEventPayload;
 use leptos::prelude::*;
 
 use super::assessments::{start_status_poll, AssessmentReadGuard};
 use crate::components::InlineError;
 use crate::mutation::{idempotency_key, scoped_workflow_tasks};
 use crate::transport::ApiClient;
+
+fn event_description(payload: &AssessmentEventPayload) -> String {
+    match payload {
+        AssessmentEventPayload::Alert { transition, alert } => {
+            format!("{transition:?} alert {}", alert.issue_key)
+        }
+        AssessmentEventPayload::Acknowledged { alert } => {
+            format!("Acknowledged alert {}", alert.issue_key)
+        }
+        AssessmentEventPayload::ScanCompleted { scan_id, .. } => {
+            format!("Scan {scan_id} completed")
+        }
+        AssessmentEventPayload::ScheduleChanged {
+            schedule_id,
+            revision,
+            enabled,
+        } => {
+            format!(
+                "Schedule {schedule_id} {} at revision {revision}",
+                if *enabled { "enabled" } else { "disabled" }
+            )
+        }
+        AssessmentEventPayload::SubscriptionChanged {
+            subscription_id,
+            revision,
+            enabled,
+        } => {
+            format!(
+                "Subscription {subscription_id} {} at revision {revision}",
+                if *enabled { "enabled" } else { "disabled" }
+            )
+        }
+        AssessmentEventPayload::DeliveryFailed { failure } => {
+            let retry = failure
+                .retry_at
+                .as_ref()
+                .map(|time| format!("; retry eligible at {time}"))
+                .unwrap_or_else(|| "; moved to dead letters".into());
+            format!(
+                "Delivery {} for subscription {} failed on attempt {}{retry}",
+                failure.delivery_id, failure.subscription_id, failure.attempt
+            )
+        }
+    }
+}
 
 /// Renders attention history, scoped replay and exact-episode acknowledgement.
 #[component]
@@ -236,7 +282,7 @@ pub(super) fn RegistryAssessmentAttention(client: ApiClient, slug: String) -> im
             <h3>"Recent committed events"</h3>
             <p>"Event replay resumes from the last committed sequence and checks access on every poll."</p>
             <ul>{move || recent_events.get().iter().map(|event| view! {
-                <li>{format!("{} · {} · {:?}", event.sequence, event.occurred_at, event.payload)}</li>
+                <li>{format!("{} · {} · {}", event.sequence, event.occurred_at, event_description(&event.payload))}</li>
             }).collect_view()}</ul>
         </section>
     }

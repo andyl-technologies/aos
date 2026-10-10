@@ -291,6 +291,14 @@ Callbacks use HTTPS with pinned public DNS, refuse redirects, and do not retain
 response bodies. Destination acceptance means a 2xx HTTP response, rather than
 confirmation of any downstream action.
 
+Each admitted failed attempt records one `delivery.failed` event for the
+physical batch, even when the digest contains several events. The failure
+records the original receipt, attempt, subscription revision and retry or
+dead-letter state. Readers can inspect it through Hub events and the console;
+it contains no callback destination, body or credentials. Failure events
+never create callback intents, so an unavailable destination cannot cause a
+notification loop. Receipt replay creates no additional failure event.
+
 Receivers verify `X-AOS-Signature-Version`, `X-AOS-Signing-Key-Version`,
 `X-AOS-Timestamp`, `X-AOS-Delivery-ID` and `X-AOS-Signature` against the exact
 canonical body. The shared `CallbackSignature::verify` implementation enforces the

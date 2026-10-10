@@ -335,6 +335,11 @@ impl Database {
         registry_id: i64,
         event: &AssessmentEventV1,
     ) -> Result<Vec<CheckedStatement>> {
+        // Failure visibility must never create another callback to a failed
+        // destination or any other subscription, including generic wildcards.
+        if matches!(event.payload, AssessmentEventPayload::DeliveryFailed { .. }) {
+            return Ok(Vec::new());
+        }
         let subscriptions = self.subscription_records(registry_id).await?;
         if subscriptions.is_empty() {
             return Ok(Vec::new());
