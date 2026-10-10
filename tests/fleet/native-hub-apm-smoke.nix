@@ -791,7 +791,8 @@ in {
            f"{APM} docs cache status --json | {JQ} -e "
            "'.retained_documents > 0 and .generated_manpages == 1' >/dev/null"),
           ("export documentation schema",
-           f"{APM} docs schema | {JQ} -e '.title | contains(\"AOS\")' >/dev/null"),
+           f"{APM} docs schema | {JQ} -e "
+           "'.type == \"object\" and .properties.schema.const == \"aos.module.documentation\"' >/dev/null"),
       )
       for documentation_label, documentation_command in documentation_commands:
           status, stdout, stderr = consumer.execute(textwrap.dedent(f"""
