@@ -376,6 +376,14 @@ three doctests execute with no failures or ignored cases; actual store outputs,
 derivers, filtered input and unchanged source seals are retained. The twenty-six
 core and foundation gates and twenty-nine application target compilation retain
 their earlier frozen `4a1ff5d5fb` source. The complete aggregate remains pending.
+The core and foundation run stops after twenty passing gates when
+`prov-commit-signature` executes zero tests for its eighteenth selector;
+the remaining five gates do not run. Source review identifies an unconditional
+move into `recorded::private_cases`, with the exact test body and all negative
+interpretation, Original and history-union assertions unchanged. The parent
+corrects only this stale selector; the stable gate and strict exactly-one-pass
+helper remain unchanged. The failed gate and remaining five checks require
+execution on the corrected candidate before any acceptance.
 No owning gate or task is accepted by these results.
 The same frozen retained-read candidate passes all twenty-nine mandatory
 native read cases in 46.960 seconds and the public SDK case in 0.009 seconds,

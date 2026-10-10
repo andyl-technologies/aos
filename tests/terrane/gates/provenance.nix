@@ -25,7 +25,7 @@ in {
     ${runTest "root_context::bootstrap_fork::prov_commit_bootstrap_copied_fork_comparison_uses_only_view_root_policy_witness"}
     ${runTest "root_context::bootstrap_fork::prov_commit_bootstrap_legacy_parent_requires_independent_original_candidate_baseline"}
     ${runTest "root_context::recorded::recorded_scope_verification_preserves_fixed_interpretations_and_original_authority"}
-    ${runTest "root_context::recorded::recorded_scope_reverification_and_history_union_refuse_interpretation_conflicts"}
+    ${runTest "root_context::recorded::private_cases::recorded_scope_reverification_and_history_union_refuse_interpretation_conflicts"}
     ${runTest "snapshot::prov_snapshot_signature_binds_exact_preimage_and_terminal_key"}
     ${runTest "snapshot::prov_snapshot_verification_rejects_wrong_target_scope_and_signature"}
     ${runTest "snapshot::prov_snapshot_tag_scope_accepts_admin_implication_and_rejects_commit_only"}
