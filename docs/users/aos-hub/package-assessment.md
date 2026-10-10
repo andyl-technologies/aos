@@ -74,6 +74,33 @@ reproducing supplied evidence establishes semantic agreement, not independent
 source authority. It does not import that evidence into Hub or change package
 status. The local command rejects tampered bundles and performs no source HTTP.
 
+A fresh, actionable source assessment can export a typed update recommendation
+alongside its evidence bundle:
+
+```sh
+aos maintain scan --profile updates --freshness cached \
+  --evidence-output bundle.json \
+  --update-intent-subject SUBJECT --update-intent-output intent.json
+aos maintain plan UNIT --assessment-intent intent.json \
+  --assessment-evidence bundle.json
+```
+
+Use the exact source subject from assessment status and its declared update unit.
+Both exports create new private files. The `aos.assessment-update-intent/v1`
+document contains the complete component vector, including unchanged components,
+exact source/definition/input/result/policy/history commitments and the oldest
+source's exclusive freshness deadline. Provisional, stabilizing, unknown,
+manual or frozen selections cannot produce an actionable recommendation.
+
+The local planner reproduces the evidence and verifies the intent, then checks
+its current clean checkout, source content, controller and package policy. Each
+changed candidate must independently occur in locally retained discovery and
+remain eligible under local policy. Imported evidence does not replace local
+discovery. Planning retains its exact selected discovery object while leaving
+the discovery head and repository source untouched. Changed source, expired
+evidence, a partial vector or a different candidate requires renewed planning
+inputs. The intent carries no commands, paths, download URLs or write authority.
+
 Local shared-profile scans retain the same frozen request and scan receipt
 contracts used by the Hub. Inspect and manage them in the repository's protected
 state namespace:

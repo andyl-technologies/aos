@@ -24,6 +24,7 @@
 //!   stdin.
 
 mod artifact_consumption_fixture;
+mod assessment_handoff_fixture;
 mod initrd_contract_fixture;
 mod native_deployment_fixture;
 mod package_assessment_fixture;
@@ -133,6 +134,13 @@ async fn main() -> Result<()> {
         Some("fitness") => fitness(&arguments[1..]),
         Some("maintainer-upstream-proxy") => maintainer_upstream_proxy(&arguments[1..]).await,
         Some("assessment-input") => package_assessment_fixture::input(&arguments[1..]),
+        Some("assessment-handoff-inventory") => {
+            assessment_handoff_fixture::inventory(&arguments[1..])
+        }
+        Some("assessment-handoff-input") => assessment_handoff_fixture::input(&arguments[1..]),
+        Some("assessment-handoff-discovery") => {
+            assessment_handoff_fixture::discovery(&arguments[1..])
+        }
         Some("assessment-verify") => package_assessment_fixture::verify(&arguments[1..]),
         Some("assessment-lane-lock") => package_assessment_fixture::hold_lane(&arguments[1..]),
         None => qualification_executor().await,

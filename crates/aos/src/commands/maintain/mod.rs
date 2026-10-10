@@ -2,6 +2,7 @@
 
 mod confinement;
 mod assessment;
+mod assessment_handoff;
 mod assessment_scans;
 mod assessment_status;
 mod advisories;
@@ -2268,6 +2269,23 @@ fn plan_command(
         ]
     };
     let now = state::now_unix()?;
+    if let Some(path) = &command.assessment_intent {
+        let evidence = command
+            .assessment_evidence
+            .as_deref()
+            .context("assessment intent requires its evidence bundle")?;
+        let unit = unit_id
+            .as_ref()
+            .context("assessment intent requires one exact update unit")?;
+        assessment_handoff::select_from_files(
+            path,
+            evidence,
+            &envelope,
+            &mut snapshot,
+            unit,
+            now,
+        )?;
+    }
     if let Some(target) = &command.target
         && let Err(error) = select_explicit_target(
             &envelope,
@@ -2390,6 +2408,11 @@ fn plan_command(
             );
         }
     };
+    let selection_digest = store.retain_discovery(&snapshot)?;
+    anyhow::ensure!(
+        selection_digest == plan.discovery_snapshot_digest,
+        "plan discovery commitment differs from its retained selection"
+    );
     let digest = if let Some(existing) = store.read_plan(plan.plan_id.as_str())? {
         plan.created_at_unix = existing.created_at_unix;
         if plan != existing {
@@ -2471,6 +2494,8 @@ async fn run_command(
                 campaign: command.campaign.clone(),
                 target: None,
                 component: Vec::new(),
+                assessment_intent: None,
+                assessment_evidence: None,
             },
         )?;
         let Some(plan) = planned.result.data.plan.clone() else {

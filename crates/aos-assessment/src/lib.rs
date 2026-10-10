@@ -25,11 +25,13 @@
 //! - [`evaluator`] and [`findings`] construct deterministic scoped assessments.
 //! - [`result`] defines shared version, finding, diagnostic and coverage records.
 //! - [`bundle`] verifies portable exports and offline reproduction without granting authority.
+//! - [`action_intent`] binds exact candidate recommendations for independent local planning.
 //!
 //! Existing `aos-maintain` paths reexport these contracts for compatibility.
 
 #![forbid(unsafe_code)]
 
+pub mod action_intent;
 pub mod advisory;
 mod aliases;
 pub mod bundle;

@@ -258,6 +258,26 @@ async fn execute_assessment(
         super::assessment_scans::print_local_receipt(args, printer, &receipt);
         bail!("local assessment scan ended in {}", receipt.state.as_str());
     }
+    let handoff = match (
+        &command.update_intent_output,
+        &command.update_intent_subject,
+    ) {
+        (Some(path), Some(subject)) => {
+            let bundle = AssessmentBundleV1::export(
+                input.clone(),
+                data.clone(),
+                BundleProfile::Reference,
+                vec![],
+            )?;
+            let intent = aos_assessment::action_intent::PackageUpdateIntentV1::from_bundle(
+                &bundle, subject,
+            )?;
+            intent.verify_for(&bundle, &PhysicalClock.now()?)?;
+            Some((path, intent.to_bytes()?))
+        }
+        (None, None) => None,
+        _ => bail!("update intent export requires an exact source subject and output"),
+    };
     if let Some(path) = &command.evidence_output {
         let bundle = AssessmentBundleV1::export(
             input.clone(),
@@ -273,6 +293,17 @@ async fn execute_assessment(
             .open(path)
             .context("creating a new assessment evidence export")?;
         output.write_all(&bundle.encoded()?)?;
+        output.sync_all()?;
+    }
+    if let Some((path, bytes)) = handoff {
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)
+            .context("creating a new assessment update intent")?;
+        output.write_all(&bytes)?;
         output.sync_all()?;
     }
     if cli.json || args.jsonl || printer.mode() == OutputMode::Json {

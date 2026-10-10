@@ -1,5 +1,8 @@
 //! Portable fixture closure shared by assessment conformance tests.
 
+#[allow(dead_code)]
+pub mod updates;
+
 use anyhow::Result;
 use aos_assessment::advisory::{
     ADVISORY_RECORD_V1, ADVISORY_SNAPSHOT_V1, AdvisoryRecordV1, AdvisorySnapshotSource,

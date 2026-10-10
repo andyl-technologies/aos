@@ -122,15 +122,27 @@ impl StateStore {
         Ok(Some(inventory))
     }
 
-    /// Writes an immutable content-addressed discovery snapshot and latest pointer.
+    /// Retains exact discovery and advances its local read head.
+    ///
+    /// # Errors
+    /// Returns an error for invalid discovery, conflicting custody or persistence failure.
     pub(super) fn write_discovery(&self, snapshot: &DiscoverySnapshotV1) -> Result<Sha256Digest> {
+        let digest = self.retain_discovery(snapshot)?;
+        atomic_write(&self.repository, "discovery-latest.json", snapshot)?;
+        Ok(digest)
+    }
+
+    /// Retains exact plan-selection evidence without replacing the discovery head.
+    ///
+    /// # Errors
+    /// Returns an error for invalid discovery or conflicting protected custody.
+    pub(super) fn retain_discovery(&self, snapshot: &DiscoverySnapshotV1) -> Result<Sha256Digest> {
         snapshot.validate()?;
         let digest = Sha256Digest::of_canonical(aos_maintain::DISCOVERY_SNAPSHOT_V1, snapshot)?;
         let snapshots = self.repository.join("discovery");
         secure_directory(&snapshots)?;
         let name = format!("{}.json", digest.hex());
         write_immutable(&snapshots, &name, snapshot)?;
-        atomic_write(&self.repository, "discovery-latest.json", snapshot)?;
         Ok(digest)
     }
 

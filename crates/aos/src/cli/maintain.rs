@@ -150,6 +150,14 @@ pub struct MaintainScanArgs {
     #[arg(long, value_name = "PATH", requires = "profiles")]
     pub evidence_output: Option<PathBuf>,
 
+    /// Write an exact actionable source-unit recommendation
+    #[arg(long, value_name = "PATH", requires_all = ["profiles", "update_intent_subject", "evidence_output"])]
+    pub update_intent_output: Option<PathBuf>,
+
+    /// Select the exact source subject for the update recommendation
+    #[arg(long, requires = "update_intent_output")]
+    pub update_intent_subject: Option<String>,
+
     /// Environment variable holding an optional NVD read key
     #[arg(long, default_value = "AOS_NVD_READ_KEY", value_name = "NAME")]
     pub nvd_key_env: String,
@@ -305,6 +313,14 @@ pub struct MaintainPlanArgs {
         requires = "unit"
     )]
     pub component: Vec<String>,
+
+    /// Select the complete candidate vector from a reproduced assessment intent
+    #[arg(long, value_name = "PATH", requires_all = ["unit", "assessment_evidence"], conflicts_with_all = ["target", "component", "campaign"])]
+    pub assessment_intent: Option<PathBuf>,
+
+    /// Verify the exact evidence bundle referenced by the assessment intent
+    #[arg(long, value_name = "PATH", requires = "assessment_intent")]
+    pub assessment_evidence: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -751,5 +767,78 @@ mod tests {
             ])
             .is_ok()
         );
+    }
+
+    #[test]
+    fn assessment_handoffs_require_exact_subject_evidence_and_exclusive_plan_selection() {
+        let export = [
+            "aos",
+            "maintain",
+            "scan",
+            "--profile",
+            "updates",
+            "--update-intent-subject",
+            "source-subject",
+            "--update-intent-output",
+            "intent.json",
+            "--evidence-output",
+            "bundle.json",
+        ];
+        assert!(Cli::try_parse_from(export).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "maintain",
+                "scan",
+                "--profile",
+                "updates",
+                "--update-intent-output",
+                "intent.json"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "maintain",
+                "scan",
+                "--update-intent-subject",
+                "source-subject",
+                "--update-intent-output",
+                "intent.json"
+            ])
+            .is_err()
+        );
+        let plan = [
+            "aos",
+            "maintain",
+            "plan",
+            "fixture-1",
+            "--assessment-intent",
+            "intent.json",
+            "--assessment-evidence",
+            "bundle.json",
+        ];
+        assert!(Cli::try_parse_from(plan).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "maintain",
+                "plan",
+                "fixture-1",
+                "--assessment-intent",
+                "intent.json"
+            ])
+            .is_err()
+        );
+        for conflicting in [
+            vec!["--target", "1.3.0"],
+            vec!["--component", "main=v1.3.0"],
+            vec!["--campaign", "fixture"],
+        ] {
+            let mut args = plan.to_vec();
+            args.extend(conflicting);
+            assert!(Cli::try_parse_from(args).is_err());
+        }
     }
 }
