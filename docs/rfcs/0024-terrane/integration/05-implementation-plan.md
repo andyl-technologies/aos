@@ -520,32 +520,51 @@ all-target Clippy with warnings denied. Actual all-target test compilation
 passes, and its executable-bound inventory contains 1,028 nonignored tests
 across three binaries. All six new preparation witnesses pass in 9.979 seconds
 under the unchanged default limits with tracing unset. Independent review
-verifies all 6,220 source bytes and modes, all three actual executable seals,
-genuine compiler metadata and exact nonignored selector coverage. Feature,
-broader native and population qualification continue separately; these focused
-passes establish neither owning gates nor a deadline fix. A further isolated
+verifies all 6,220 source files' bytes and modes, all three actual executable seals,
+genuine compiler metadata and exact nonignored selector coverage. Host feature
+checks pass, including both required incompatible-feature refusals; no wasm32
+target execution is claimed. The broader native suite passes all 101 cases in
+309.823 seconds, ordinary reads pass all twenty-nine cases in 32.615 seconds,
+and the SDK and key-limit checks pass. The first 1,024-entry index case fails
+during baseline publication after 58.565 seconds, with twenty source and 557
+auxiliary nodes and a typed Commit denial. All tracing switches remain unset;
+neither a timeout nor a deadline cause is established by this run. The remaining
+five population cases stay unrun. Independent review verifies all 219 sealed
+main and archived compiler packet files. These results establish neither the
+owning gate set nor a deadline fix. A further isolated
 T-DRV-2/T-BKT-1 implementation addresses source-proven repeated whole-pack
 parsing during metadata-batch final confirmation. Its three exact reuse,
 physical-refusal and batch-scope witnesses are registered before implementation.
 The design retains fresh artifact reads and exact member validation for every
 offered identity and confines successful pure parsing reuse to one batch.
-Independent review and a separate remaining-requirements audit proceed in
-parallel; no measured bottleneck, speedup or task acceptance is inferred.
+Reviewed implementation `8a8a054af8` retains one exact successful parsing result
+within the borrowed catalog and batch, discarding it after any member failure.
+Every member still performs fresh pack/index reads, artifact hashes, offered
+bytes and schema checks. All three registered refusal and scope witnesses pass
+source review; compiler and runtime qualification remain pending. A separate
+remaining-requirements audit identifies no additional proven production gap.
+No measured bottleneck, speedup or task acceptance is inferred.
 A second disjoint T-DRV-2 workline shares pure namespace preparation between
 consecutive pending-policy preparation and relationship planning over the same
 immutable inputs. Three exact witnesses require output parity, unchanged role
 and refusal ordering, and independently executed history and relationship
 checks. Standalone planning and Legacy paths retain their existing behavior;
-sharing creates no completed context or authority. Both implementation
-worklines use separate checkouts while the qualification source remains frozen.
+sharing creates no completed context or authority. Reviewed implementation
+`d7d6899768` and all three registered witnesses preserve the original checks and
+callback order; compiler and runtime qualification remain pending. Both
+implementation worklines use separate checkouts while the qualification source
+remains frozen.
 A bounded T-CDC-1/T-GC-1 gate workline now extends the existing source-bound
 native test image to fifty-two matching native selectors across six gate
 wrappers. The ordered selector sets and independent execution remain fixed;
 portable/default Cargo checks, the non-Send GC witness and two-phase prerequisites
 retain their existing paths. Source inspection confirms matching feature and
 test profiles but establishes no execution or measured compilation benefit.
-The original frozen CDC, GC and property qualification processes continue
-unchanged; later owning qualification must bind the final composed source.
+Independent review of `0aaee64351` verifies all forty-nine packet payloads,
+5,166 filtered source files and twelve actual derivations. All six expanded
+scripts pass AOS Bash syntax checks. The original frozen GC and property
+qualification processes continue unchanged; later owning qualification must
+bind the final composed source.
 The owning `algebra-merge` gate passes separately on frozen `ea64a04697`,
 executing thirty-two core and six native cases with zero failures or ignored
 tests. Independent review verifies all twenty packet files and the actual
