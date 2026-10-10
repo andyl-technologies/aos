@@ -282,7 +282,11 @@ fn real_graph_publication_reads_three_objects_through_one_closed_packed_view() {
         assert_eq!(work.visits, 3);
         assert_eq!(
             work.io_bytes,
-            fixture.bodies.iter().map(|body| body.len() as u64).sum::<u64>()
+            fixture
+                .bodies
+                .iter()
+                .map(|body| body.len() as u64)
+                .sum::<u64>()
         );
         // Two retained lock files, one transient root-index file and one
         // retained pack file. Reopening the view per object would request 12.

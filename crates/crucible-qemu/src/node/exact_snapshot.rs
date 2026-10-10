@@ -159,9 +159,12 @@ impl<'a> QemuExactCheckpointCaptureBasis<'a> {
                 self.fault_identity.to_hex(),
             ),
         );
-        let frontier = self.scheduler.exact_ram_frontier_identity().map_err(|error| {
-            QemuNodeError::checkpoint(format!("encode exact RAM scheduler frontier: {error}"))
-        })?;
+        let frontier = self
+            .scheduler
+            .exact_ram_frontier_identity()
+            .map_err(|error| {
+                QemuNodeError::checkpoint(format!("encode exact RAM scheduler frontier: {error}"))
+            })?;
         Ok(crate::QmpCheckpointIdentity::new(
             self.checkpoint.id,
             target,

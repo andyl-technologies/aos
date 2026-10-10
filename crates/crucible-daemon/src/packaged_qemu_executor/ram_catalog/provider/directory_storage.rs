@@ -29,8 +29,12 @@ impl CatalogService {
         directory: &Path,
     ) -> Result<GuardedCampaignStorage, StoreError> {
         let quota = self.prepare_directory(directory)?;
-        let original = crucible_cas::owned_decode::DecodeBudget::for_store(quota.clone())
-            .map_err(|source| StoreError::DecodeAdmission { source, custody: None })?;
+        let original = crucible_cas::owned_decode::DecodeBudget::for_store(quota.clone()).map_err(
+            |source| StoreError::DecodeAdmission {
+                source,
+                custody: None,
+            },
+        )?;
         let resources =
             quota.reserve_resources(0, std::mem::size_of::<GuardedCampaignStorage>() as u64)?;
         let objects = directory.join("objects");
