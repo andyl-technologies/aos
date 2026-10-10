@@ -436,18 +436,30 @@ handles terminate before test compilation, inventory or runtime. Independent
 review verifies all fifty-eight retained packet hashes and unchanged 6,216-file
 source seals. A reviewed test-only exception applies solely to that intentional
 fixture include, preserving its bytes and original visibility. On frozen
-`3ab7fa81c9`, strict all-target native Clippy passes with warnings denied; actual
-test compilation and the twenty-four registered focused native cases remain
-under qualification. Neither these host checks nor Clippy establish a wasm32
-target or the complete feature-matrix gate.
+`3ab7fa81c9`, strict all-target native Clippy and actual all-target test
+compilation pass. The executable-bound inventory contains 1,022 nonignored
+tests across three binaries. All twenty-four registered focused cases pass in
+104.445 seconds with unchanged source, executable seals and default limits;
+one locality case passes in 73.907 seconds. Independent review verifies all
+fifty-seven packet hashes and all three actual executable hashes. These host
+checks and focused tests do not establish a wasm32 target, complete feature
+matrix or the six DRV-29 population cases.
 The property-resolution gate on frozen `58730f184a` reaches runtime and passes
 twenty-nine core and six native cases before the recorded-evaluator case fails.
 Its remaining eleven cases do not execute. The original handle is terminal,
 and source seals remain unchanged. The harness exited before printing redirected
 failed-test output, and no sandbox or executable survived, so the assertion
 cause is unavailable. The shared helpers now print complete Cargo output on
-failure without changing selectors, flags or success conditions. Diagnosis and
-the owning gate remain pending; no speculative production fix is made.
+failure without changing selectors, flags or success conditions. A distinct
+new-source diagnostic on frozen `3ab7fa81c9` fails after 22.879 seconds:
+`read_file` accepts the ref when the fixture expects current Read denial.
+The actual fixture publishes a Commit-only ACL; AUTH-22 requires Commit to
+imply Read, so this expectation is invalid. An isolated correction must use a
+genuine published revocation and preserve both ref and immutable-commit read
+refusals, protected historical evidence and typed denial assertions. The old
+failure remains separate; the correction and owning gate are unqualified.
+Independent current-source read and index runtime checks proceed separately
+while fixture implementation leaves their sealed executables unchanged.
 The actual application test-target check passes on frozen `4a1ff5d5fb`, compiling
 all twenty-nine selected packages and 114 test executables: seventy-seven
 integration and thirty-seven unit targets. Every selected compiler artifact has
@@ -468,6 +480,18 @@ nonzero result remains recorded: it incorrectly expected a generic `result`
 file instead of the gate's declared TSV. Read-only artifact validation succeeds
 without a gate rerun or fabricated result. This scoped evidence does not
 qualify the later production index corrections or the complete T1 floor.
+The `derived-attr-record` gate passes on frozen `25ac838bda`: forty-seven
+nonignored tests execute, comprising twenty-one core, twenty-five native and
+one SDK case. All twenty-three required producer-evidence and quarantine
+controls pass. Independent review verifies all thirty-five packet hashes and
+the actual store artifact, deriver and unchanged filtered source. Six compiler
+warnings remain recorded. This evidence does not qualify the later candidate,
+DRV-3 GC, joint DRV-28 backfill or formal task acceptance.
+Collector qualification starts separately on clean private `9a16f49c8a`,
+combining the reviewed native source, observation handoff correction and
+failure-output helpers. Its auxiliary requires all thirty-four exact permanent
+local reconciliation cases; the owning two-phase gate still requires its full
+prerequisite closure. No collector acceptance is inferred from setup.
 Both mandatory formatter commands pass on clean `759c4c9e52` with no edits.
 All sixteen pack gates pass separately on frozen `759c4c9e52`, executing forty
 tests with zero failures or ignored tests. Independent review verifies all 379
