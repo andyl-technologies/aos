@@ -45,6 +45,7 @@ async fn concurrent_same_cohort_has_one_owner_and_verified_result() {
     let requests = (0..=MAX_FOLLOWERS).map(|_| {
         pool.acquire(
             "same-cohort".into(),
+            true,
             || Ok(clock(100)),
             tokio::task::yield_now,
             |_| async {
@@ -65,6 +66,7 @@ async fn concurrent_same_cohort_has_one_owner_and_verified_result() {
     let cached = pool
         .acquire(
             "same-cohort".into(),
+            true,
             || Ok(clock(101)),
             tokio::task::yield_now,
             |_| async { panic!("cache hit dispatched") },
@@ -72,6 +74,62 @@ async fn concurrent_same_cohort_has_one_owner_and_verified_result() {
         .await
         .unwrap();
     assert_eq!(cached, "verified-original");
+}
+
+#[tokio::test]
+async fn new_bulk_reads_share_fresh_issuance_instead_of_the_uploads_cached_lease() {
+    let pool = Rc::new(Renewals::default());
+    let original = pool
+        .acquire(
+            "same-cohort".into(),
+            true,
+            || Ok(clock(100)),
+            tokio::task::yield_now,
+            |_| async { Ok(lease("upload-lease", 100)) },
+        )
+        .await
+        .unwrap();
+    assert_eq!(original, "upload-lease");
+
+    // The upload lease is still valid at 140, but has only 18 conservative
+    // seconds left. Both newly starting reads must use fresh authorization.
+    let calls = Cell::new(0);
+    let requests = (0..2).map(|_| {
+        pool.acquire(
+            "same-cohort".into(),
+            false,
+            || Ok(clock(140)),
+            tokio::task::yield_now,
+            |window| {
+                let calls = &calls;
+                async move {
+                    calls.set(calls.get() + 1);
+                    assert_eq!(window.issued_at, 140);
+                    tokio::task::yield_now().await;
+                    Ok(lease("read-lease", 140))
+                }
+            },
+        )
+    });
+
+    let results = futures_util::future::join_all(requests).await;
+
+    assert_eq!(calls.get(), 1);
+    assert!(results
+        .into_iter()
+        .all(|result| result.unwrap() == "read-lease"));
+    assert!(pool.flights.borrow().is_empty());
+    let metadata = pool
+        .acquire(
+            "same-cohort".into(),
+            true,
+            || Ok(clock(141)),
+            tokio::task::yield_now,
+            |_| async { panic!("metadata cache hit dispatched") },
+        )
+        .await
+        .unwrap();
+    assert_eq!(metadata, "read-lease");
 }
 
 #[tokio::test]
@@ -83,6 +141,7 @@ async fn all_32_cohorts_progress_independently_and_the_next_slot_refuses() {
         .map(|index| {
             Box::pin(pool.acquire(
                 format!("cohort-{index}"),
+                true,
                 || Ok(clock(now.get())),
                 tokio::task::yield_now,
                 |_| async {
@@ -99,6 +158,7 @@ async fn all_32_cohorts_progress_independently_and_the_next_slot_refuses() {
     assert!(pool
         .acquire(
             "overflow".into(),
+            true,
             || Ok(clock(now.get())),
             tokio::task::yield_now,
             |_| async { panic!("full pool dispatched") }
@@ -112,6 +172,7 @@ async fn all_32_cohorts_progress_independently_and_the_next_slot_refuses() {
     let result = pool
         .acquire(
             "fresh".into(),
+            true,
             || Ok(clock(now.get())),
             tokio::task::yield_now,
             |_| async { Ok(lease("fresh-original", 128)) },
@@ -129,6 +190,7 @@ async fn cancelled_owner_refuses_followers_and_new_attempts_until_original_expir
     let calls = Cell::new(0);
     let mut owner = Box::pin(pool.acquire(
         "cohort".into(),
+        true,
         || Ok(clock(now.get())),
         tokio::task::yield_now,
         |_| async {
@@ -139,6 +201,7 @@ async fn cancelled_owner_refuses_followers_and_new_attempts_until_original_expir
     assert!(poll_once(owner.as_mut()).is_pending());
     let mut follower = Box::pin(pool.acquire(
         "cohort".into(),
+        true,
         || Ok(clock(now.get())),
         tokio::task::yield_now,
         |_| async { panic!("follower took ownership") },
@@ -150,6 +213,7 @@ async fn cancelled_owner_refuses_followers_and_new_attempts_until_original_expir
     assert!(pool
         .acquire(
             "cohort".into(),
+            true,
             || Ok(clock(now.get())),
             tokio::task::yield_now,
             |_| async { panic!("cancelled flight retried") }
@@ -163,6 +227,7 @@ async fn cancelled_owner_refuses_followers_and_new_attempts_until_original_expir
     let token = pool
         .acquire(
             "cohort".into(),
+            true,
             || Ok(clock(now.get())),
             tokio::task::yield_now,
             |window| {
@@ -187,6 +252,7 @@ async fn issuer_error_does_not_elect_or_retry_an_owner() {
     let first = pool
         .acquire(
             "cohort".into(),
+            true,
             || Ok(clock(100)),
             tokio::task::yield_now,
             |_| async {
@@ -199,6 +265,7 @@ async fn issuer_error_does_not_elect_or_retry_an_owner() {
     let second = pool
         .acquire(
             "cohort".into(),
+            true,
             || Ok(clock(120)),
             tokio::task::yield_now,
             |_| async { panic!("error retried") },
@@ -222,6 +289,7 @@ async fn original_deadline_drops_pending_work_and_late_positive_is_not_cached() 
     let result = pool
         .acquire(
             "cohort".into(),
+            true,
             || Ok(clock(now.get())),
             || async {
                 now.set(128);
@@ -239,6 +307,7 @@ async fn original_deadline_drops_pending_work_and_late_positive_is_not_cached() 
     let late = pool
         .acquire(
             "other".into(),
+            true,
             || Ok(clock(now.get())),
             tokio::task::yield_now,
             |_| async {
@@ -277,6 +346,7 @@ async fn attestation_capped_short_reply_is_fresh_but_not_reused_as_cached_permis
         let token = pool
             .acquire(
                 "short".into(),
+                true,
                 || Ok(clock(100)),
                 tokio::task::yield_now,
                 |_| async {
@@ -298,6 +368,7 @@ async fn rollback_or_stale_token_refuses_before_reuse_or_dispatch() {
     let pool = Rc::new(Renewals::default());
     pool.acquire(
         "cohort".into(),
+        true,
         || Ok(clock(100)),
         tokio::task::yield_now,
         |_| async { Ok(lease("original", 100)) },
@@ -307,6 +378,7 @@ async fn rollback_or_stale_token_refuses_before_reuse_or_dispatch() {
     assert!(pool
         .acquire(
             "cohort".into(),
+            true,
             || Ok(clock(99)),
             tokio::task::yield_now,
             |_| async { panic!("rollback dispatched") }
@@ -316,6 +388,7 @@ async fn rollback_or_stale_token_refuses_before_reuse_or_dispatch() {
     assert!(pool
         .acquire(
             "other".into(),
+            true,
             || Ok(clock(101)),
             tokio::task::yield_now,
             |_| async { Ok(lease("stale-positive", 10)) }
@@ -325,6 +398,7 @@ async fn rollback_or_stale_token_refuses_before_reuse_or_dispatch() {
     assert!(pool
         .acquire(
             "overflow".into(),
+            true,
             || Ok(clock(i64::MAX)),
             tokio::task::yield_now,
             |_| async { panic!("overflow dispatched") }
@@ -344,6 +418,7 @@ async fn context_or_renewal_material_substitution_never_borrows_another_token() 
     let pool = Rc::new(Renewals::default());
     pool.acquire(
         key.clone(),
+        true,
         || Ok(clock(100)),
         tokio::task::yield_now,
         |_| async { Ok(lease("original-only", 100)) },
@@ -359,6 +434,7 @@ async fn context_or_renewal_material_substitution_never_borrows_another_token() 
         assert_eq!(
             pool.acquire(
                 changed_key,
+                true,
                 || Ok(clock(100)),
                 tokio::task::yield_now,
                 |_| async { Ok(lease("distinct", 100)) }
@@ -373,6 +449,7 @@ async fn context_or_renewal_material_substitution_never_borrows_another_token() 
     assert_eq!(
         pool.acquire(
             changed_key,
+            true,
             || Ok(clock(100)),
             tokio::task::yield_now,
             |_| async { Ok(lease("changed-custody", 100)) }

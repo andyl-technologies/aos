@@ -183,11 +183,17 @@ impl Renewals {
 
     /// Executes one owner future or observes its result with origin-local waits.
     ///
+    /// Callers starting a bulk integrity read disable cached reuse so earlier
+    /// upload work cannot consume their lease window before the stream starts.
+    /// Concurrent callers still share an in-flight issuance. No active read is
+    /// renewed, and the issuer's original lifetime and attestation bounds apply.
+    ///
     /// Errors or cancellation retain an unavailable flight until its original
     /// expiry. They never elect a replacement or claim a remote request drained.
     pub(super) async fn acquire<C, W, WF, I, IF>(
         self: &Rc<Self>,
         key: String,
+        reuse_cached: bool,
         clock: C,
         wait: W,
         issue: I,
@@ -203,7 +209,7 @@ impl Renewals {
         let latest = self.latest(observed)?;
         {
             let mut cache = self.cache.borrow_mut();
-            if let Some(lease) = cache.get_mut(&key) {
+            if let Some(lease) = cache.get_mut(&key).filter(|_| reuse_cached) {
                 if lease.usable(observed, latest) {
                     lease.last_observed_at = observed.observed_at;
                     return Ok(lease.token.clone());

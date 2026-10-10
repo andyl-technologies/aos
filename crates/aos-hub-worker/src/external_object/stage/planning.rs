@@ -238,7 +238,19 @@ async fn prepare_stage_with_mode(
                     if let Some(diagnostics) = diagnostics {
                         diagnostics.recovery(RecoveryPhase::ReadLease);
                     }
-                    acquire_lease(env, &object, domain, &domain.read_cohort).await?
+                    // Uploading parts may have consumed most of a cached lease.
+                    // Start bulk verification with a newly issued read lease;
+                    // the stream keeps that original cutoff until completion.
+                    acquire_configured_lease_with_cache(
+                        env,
+                        &object,
+                        &domain.issuer_installation,
+                        &domain.read_cohort,
+                        &domain.staging_prefix,
+                        admission.intent.dependency_phase
+                            != aos_hub_core::direct_upload::DirectDependencyPhase::Content,
+                    )
+                    .await?
                 }
                 _ => anyhow::bail!("immutable read original lookup differs"),
             };
@@ -446,6 +458,17 @@ pub(in crate::external_object) async fn acquire_configured_lease(
     cohort: &LeaseCohort,
     cache_prefix: &str,
 ) -> Result<String> {
+    acquire_configured_lease_with_cache(env, object, installation, cohort, cache_prefix, true).await
+}
+
+async fn acquire_configured_lease_with_cache(
+    env: &Env,
+    object: &ObjectConfig,
+    installation: &aos_hub_core::storage_authority::lease::control::IssuerInstallation,
+    cohort: &LeaseCohort,
+    cache_prefix: &str,
+    reuse_cached: bool,
+) -> Result<String> {
     installation.validate()?;
     ensure!(
         installation.authority == cohort.authority
@@ -482,6 +505,7 @@ pub(in crate::external_object) async fn acquire_configured_lease(
         .with(Rc::clone)
         .acquire(
             cache_key,
+            reuse_cached,
             || Ok(object.clock()),
             || worker::Delay::from(std::time::Duration::from_millis(POLL_MILLIS)),
             |window| {
