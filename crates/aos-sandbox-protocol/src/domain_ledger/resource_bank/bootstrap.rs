@@ -270,28 +270,28 @@ impl EnrollmentMutation<'_> {
             5
         };
         let mut records = Vec::with_capacity(members);
-        for head in (*self.heads) {
+        for head in *self.heads {
             records.push(JournalRecord::put(
                 RecordNamespace::ControllerResourceReservation,
                 replay::key(replay::HEAD_PREFIX, head.id).to_vec(),
                 codec::encode_head(head)?.to_vec(),
             ));
         }
-        if let Some((head, _)) = (*self.host) {
+        if let Some((head, _)) = *self.host {
             records.push(JournalRecord::put(
                 RecordNamespace::ControllerResourceReservation,
                 replay::key(replay::HEAD_PREFIX, head.id).to_vec(),
                 codec::encode_head(head)?.to_vec(),
             ));
         }
-        for claim in (*self.claims) {
+        for claim in *self.claims {
             records.push(JournalRecord::put(
                 RecordNamespace::ControllerResourceReservation,
                 replay::key(replay::CLAIM_PREFIX, claim.id).to_vec(),
                 codec::encode_claim(claim)?.to_vec(),
             ));
         }
-        if let Some((_, claims)) = (*self.host) {
+        if let Some((_, claims)) = *self.host {
             for claim in claims {
                 records.push(JournalRecord::put(
                     RecordNamespace::ControllerResourceReservation,
@@ -300,35 +300,35 @@ impl EnrollmentMutation<'_> {
                 ));
             }
         }
-        if let Some(claim) = (*self.first_global) {
+        if let Some(claim) = *self.first_global {
             records.push(JournalRecord::put(
                 RecordNamespace::ControllerResourceReservation,
                 replay::key(replay::CLAIM_PREFIX, claim.id).to_vec(),
                 codec::encode_claim(claim)?.to_vec(),
             ));
         }
-        if let Some(claim) = (*self.nix_intake) {
+        if let Some(claim) = *self.nix_intake {
             records.push(JournalRecord::put(
                 RecordNamespace::ControllerResourceReservation,
                 replay::key(replay::CLAIM_PREFIX, claim.id).to_vec(),
                 codec::encode_claim(claim)?.to_vec(),
             ));
         }
-        if let Some(claim) = (*self.q04_intake) {
+        if let Some(claim) = *self.q04_intake {
             records.push(JournalRecord::put(
                 RecordNamespace::ControllerResourceReservation,
                 replay::key(replay::CLAIM_PREFIX, claim.id).to_vec(),
                 codec::encode_claim(claim)?.to_vec(),
             ));
         }
-        if let Some(claim) = (*self.root_receiving) {
+        if let Some(claim) = *self.root_receiving {
             records.push(JournalRecord::put(
                 RecordNamespace::ControllerResourceReservation,
                 replay::key(replay::CLAIM_PREFIX, claim.id).to_vec(),
                 codec::encode_claim(claim)?.to_vec(),
             ));
         }
-        Ok(JournalTransaction::new((*self.transaction_id), records)
+        Ok(JournalTransaction::new(*self.transaction_id, records)
             .map_err(ResourceBankDataError::Transaction)?)
     }
 
@@ -360,7 +360,7 @@ impl EnrollmentMutation<'_> {
         {
             return Err(ResourceBankDataError::Conflict);
         }
-        for (record, head) in transaction.records()[..3].iter().zip((*self.heads)) {
+        for (record, head) in transaction.records()[..3].iter().zip(*self.heads) {
             if !matches_record(
                 record,
                 replay::HEAD_PREFIX,
@@ -371,7 +371,7 @@ impl EnrollmentMutation<'_> {
             }
         }
         let claim_offset = if self.host.is_some() { 4 } else { 3 };
-        if let Some((head, claims)) = (*self.host) {
+        if let Some((head, claims)) = *self.host {
             if !matches_record(
                 &transaction.records()[3],
                 replay::HEAD_PREFIX,
@@ -393,7 +393,7 @@ impl EnrollmentMutation<'_> {
         }
         for (record, claim) in transaction.records()[claim_offset..claim_offset + 2]
             .iter()
-            .zip((*self.claims))
+            .zip(*self.claims)
         {
             if !matches_record(
                 record,
@@ -404,7 +404,7 @@ impl EnrollmentMutation<'_> {
                 return Err(ResourceBankDataError::Conflict);
             }
         }
-        if let Some(claim) = (*self.first_global) {
+        if let Some(claim) = *self.first_global {
             if !matches_record(
                 &transaction.records()[8],
                 replay::CLAIM_PREFIX,
@@ -414,7 +414,7 @@ impl EnrollmentMutation<'_> {
                 return Err(ResourceBankDataError::Conflict);
             }
         }
-        if let Some(claim) = (*self.nix_intake) {
+        if let Some(claim) = *self.nix_intake {
             if !matches_record(
                 &transaction.records()[9],
                 replay::CLAIM_PREFIX,
@@ -424,7 +424,7 @@ impl EnrollmentMutation<'_> {
                 return Err(ResourceBankDataError::Conflict);
             }
         }
-        if let Some(claim) = (*self.q04_intake) {
+        if let Some(claim) = *self.q04_intake {
             if !matches_record(
                 &transaction.records()[10],
                 replay::CLAIM_PREFIX,
@@ -434,7 +434,7 @@ impl EnrollmentMutation<'_> {
                 return Err(ResourceBankDataError::Conflict);
             }
         }
-        if let Some(claim) = (*self.root_receiving) {
+        if let Some(claim) = *self.root_receiving {
             if !matches_record(
                 &transaction.records()[11],
                 replay::CLAIM_PREFIX,
@@ -455,19 +455,19 @@ impl EnrollmentMutation<'_> {
         &self,
         state: &replay::State,
     ) -> Result<(), ResourceBankDataError> {
-        for expected in (*self.heads) {
+        for expected in *self.heads {
             if replay::find_head(state, expected.id)? != expected {
                 return Err(ResourceBankDataError::Conflict);
             }
         }
-        for expected in (*self.claims) {
+        for expected in *self.claims {
             let actual = replay::record_bytes(state, replay::CLAIM_PREFIX, expected.id)
                 .ok_or(ResourceBankDataError::Conflict)?;
             if codec::decode_claim(actual)? != expected {
                 return Err(ResourceBankDataError::Conflict);
             }
         }
-        if let Some((head, claims)) = (*self.host) {
+        if let Some((head, claims)) = *self.host {
             if replay::find_head(state, head.id)? != head {
                 return Err(ResourceBankDataError::Conflict);
             }
@@ -479,28 +479,28 @@ impl EnrollmentMutation<'_> {
                 }
             }
         }
-        if let Some(expected) = (*self.first_global) {
+        if let Some(expected) = *self.first_global {
             let actual = replay::record_bytes(state, replay::CLAIM_PREFIX, expected.id)
                 .ok_or(ResourceBankDataError::Conflict)?;
             if codec::decode_claim(actual)? != expected {
                 return Err(ResourceBankDataError::Conflict);
             }
         }
-        if let Some(expected) = (*self.nix_intake) {
+        if let Some(expected) = *self.nix_intake {
             let actual = replay::record_bytes(state, replay::CLAIM_PREFIX, expected.id)
                 .ok_or(ResourceBankDataError::Conflict)?;
             if codec::decode_claim(actual)? != expected {
                 return Err(ResourceBankDataError::Conflict);
             }
         }
-        if let Some(expected) = (*self.q04_intake) {
+        if let Some(expected) = *self.q04_intake {
             let actual = replay::record_bytes(state, replay::CLAIM_PREFIX, expected.id)
                 .ok_or(ResourceBankDataError::Conflict)?;
             if codec::decode_claim(actual)? != expected {
                 return Err(ResourceBankDataError::Conflict);
             }
         }
-        if let Some(expected) = (*self.root_receiving) {
+        if let Some(expected) = *self.root_receiving {
             let actual = replay::record_bytes(state, replay::CLAIM_PREFIX, expected.id)
                 .ok_or(ResourceBankDataError::Conflict)?;
             if codec::decode_claim(actual)? != expected {

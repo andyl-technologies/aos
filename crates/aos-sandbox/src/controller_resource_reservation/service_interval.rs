@@ -465,7 +465,7 @@ impl ControllerFirstGlobalPrefixAttemptV1 {
         let original = self.original.as_ref()
             .and_then(|result| result.as_ref().ok())
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-        let Some(provision) = (original.policy.bootstrap_provisions().first_global_prefix) else {
+        let Some(provision) = original.policy.bootstrap_provisions().first_global_prefix else {
             // Old image families retain their existing ordinary observation
             // recipe. They do not gain a prefix borrower from this no-op arm.
             return Ok(());

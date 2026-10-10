@@ -48,7 +48,7 @@ use aos_sandbox_protocol::domain_ledger::resource_bank::{
 };
 
 type State = std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
-use crate::{JournalRecord, JournalTransaction, RecordNamespace};
+use crate::{JournalTransaction, RecordNamespace};
 
 // The bootstrap interval is paid by the same original enrollment, not the
 // per-operation request. This is observation only and issues no child loan.

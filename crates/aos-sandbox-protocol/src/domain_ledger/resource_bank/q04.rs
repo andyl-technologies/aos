@@ -501,12 +501,12 @@ impl CoissuanceMutation<'_> {
             row(
                 replay::HEAD_PREFIX,
                 self.after.id,
-                codec::encode_head((*self.after))?.to_vec(),
+                codec::encode_head(*self.after)?.to_vec(),
             ),
             row(
                 replay::CLAIM_PREFIX,
                 self.residual.id,
-                codec::encode_claim((*self.residual))?.to_vec(),
+                codec::encode_claim(*self.residual)?.to_vec(),
             ),
             row(
                 replay::CLAIM_PREFIX,
@@ -516,14 +516,14 @@ impl CoissuanceMutation<'_> {
             row(
                 replay::HEAD_PREFIX,
                 self.child.id,
-                codec::encode_head((*self.child))?.to_vec(),
+                codec::encode_head(*self.child)?.to_vec(),
             ),
             row(
                 replay::CLAIM_PREFIX,
                 self.binding.use_claim.id,
                 codec::encode_claim(self.binding.use_claim)?.to_vec(),
             ),
-            row(PREFIX, self.residual.id, encode((*self.binding))?.to_vec()),
+            row(PREFIX, self.residual.id, encode(*self.binding)?.to_vec()),
         ])
     }
 
@@ -565,9 +565,9 @@ impl CoissuanceMutation<'_> {
         {
             return Err(ResourceBankDataError::Conflict);
         }
-        require_binding((*self.binding))?;
-        if (*self.residual) != residual_claim((*self.binding))?
-            || (*self.child) != child_head((*self.binding))?
+        require_binding(*self.binding)?;
+        if (*self.residual) != residual_claim(*self.binding)?
+            || (*self.child) != child_head(*self.binding)?
         {
             return Err(ResourceBankDataError::Conflict);
         }

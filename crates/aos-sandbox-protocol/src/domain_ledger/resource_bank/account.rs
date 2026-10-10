@@ -279,36 +279,36 @@ impl AccountMutation<'_> {
             JournalRecord::put(
                 RecordNamespace::ControllerResourceReservation,
                 replay::key(replay::HEAD_PREFIX, self.after.id).to_vec(),
-                codec::encode_head((*self.after))?.to_vec(),
+                codec::encode_head(*self.after)?.to_vec(),
             ),
             JournalRecord::put(
                 RecordNamespace::ControllerResourceReservation,
                 replay::key(replay::CLAIM_PREFIX, self.claim.id).to_vec(),
-                codec::encode_claim((*self.claim))?.to_vec(),
+                codec::encode_claim(*self.claim)?.to_vec(),
             ),
         ];
-        if let Some(child) = (*self.child) {
+        if let Some(child) = *self.child {
             records.push(JournalRecord::put(
                 RecordNamespace::ControllerResourceReservation,
                 replay::key(replay::HEAD_PREFIX, child.id).to_vec(),
                 codec::encode_head(child)?.to_vec(),
             ));
         }
-        if let Some(binding) = (*self.preparation) {
+        if let Some(binding) = *self.preparation {
             records.push(JournalRecord::put(
                 RecordNamespace::ControllerResourceReservation,
                 replay::key(replay::PREPARATION_PREFIX, binding.claim.id).to_vec(),
                 codec::encode_preparation(binding)?.to_vec(),
             ));
         }
-        if let Some(binding) = (*self.terminal) {
+        if let Some(binding) = *self.terminal {
             records.push(JournalRecord::put(
                 RecordNamespace::ControllerResourceReservation,
                 replay::key(settlement::PREFIX, binding.original_id()).to_vec(),
                 settlement::encode(binding)?.to_vec(),
             ));
         }
-        Ok(JournalTransaction::new((*self.transaction_id), records)
+        Ok(JournalTransaction::new(*self.transaction_id, records)
             .map_err(ResourceBankDataError::Transaction)?)
     }
 
@@ -336,7 +336,7 @@ impl AccountMutation<'_> {
             .generation
             .checked_add(1)
             .ok_or(ResourceBankDataError::Conflict)?;
-        let account = match (*self.previous_claim) {
+        let account = match *self.previous_claim {
             None if self.claim.state == ClaimState::Reserved => {
                 self.before.account.reserve(self.claim.amount)?
             }
@@ -377,8 +377,8 @@ impl AccountMutation<'_> {
             (Some(bytes), Some(previous)) if codec::decode_claim(bytes)? == previous => {}
             _ => return Err(ResourceBankDataError::Conflict),
         }
-        let head_bytes = codec::encode_head((*self.after))?;
-        let claim_bytes = codec::encode_claim((*self.claim))?;
+        let head_bytes = codec::encode_head(*self.after)?;
+        let claim_bytes = codec::encode_claim(*self.claim)?;
         if matches!(
             self.claim.purpose,
             ClaimPurpose::ControllerFirstGlobalPrefix
@@ -400,8 +400,8 @@ impl AccountMutation<'_> {
         {
             return Err(ResourceBankDataError::Conflict);
         }
-        if let Some(child) = (*self.child) {
-            require_grant_inputs((*self.before), child, (*self.claim))?;
+        if let Some(child) = *self.child {
+            require_grant_inputs(*self.before, child, *self.claim)?;
             if self.previous_claim.is_some()
                 || replay::has_head(state, child.id)
                 || !matches_record(
