@@ -534,6 +534,43 @@ impl<
         Ok(Some(read))
     }
 
+    /// Captures the original protected Guard snapshot recipe before consuming bytes.
+    ///
+    /// This read retains the actual selected holder and protected incarnation for
+    /// a later native closing check. The Guard separately validates configuration;
+    /// the physical recipe supplies no history, ACL or publication authority.
+    ///
+    /// # Errors
+    /// Rejects a foreign holder, changed physical ancestry or selected observation,
+    /// absent or malformed Guard bytes, digest disagreement and unavailable reads.
+    pub(crate) async fn selected_guard_snapshot_record_retained(
+        &self,
+        observed: &SelectedObservation<'_>,
+    ) -> Result<Option<receipts::RecordRead>, StoreFailure> {
+        let control = self.check_observation(observed).await?;
+        let Some(expected) = observed.state().guard else {
+            return Ok(None);
+        };
+        let suffix: String = expected.iter().map(|byte| format!("{byte:02x}")).collect();
+        let batch = control
+            .held_reads(self.fs(), observed.identity())
+            .await?
+            .retaining_original();
+        let read = batch
+            .read_observed(&format!("publication/guards/{suffix}"))
+            .await?;
+        let bytes = read.bytes().ok_or_else(corrupt)?;
+        if digest(bytes) != expected {
+            return Err(corrupt());
+        }
+        terrane_core::gc::publication::evidence::GuardSnapshot::decode(bytes)
+            .map_err(|_| corrupt())?;
+
+        batch.finish().await?;
+        self.check_observation(observed).await?;
+        Ok(Some(read))
+    }
+
     /// Reads the exact protected source lineage selected by this observation.
     ///
     /// # Errors
