@@ -247,6 +247,15 @@ has 532 passes and the same two failures, with no skips, in 6.622 seconds
 (run `c533c3d8-ac28-4143-a7db-9b97a3518e56`). All source, executable and
 metadata seals remain unchanged. No older partial result qualifies the newer
 composed recorded-semantics candidate.
+Fresh assembled candidate `999de08657` fails its actual native library build
+with two `E0509` errors in qualified owner-metadata traversal: `EntryKind` has
+an iterative destructor, so its property and conflict fields cannot be moved
+out. All 6,209 tracked source entries remain unchanged; dependent checks do
+not run. Reviewed correction `ca655eb987` borrows the decoded entries and
+conflict sides, copies target digests and clones only retained graft overrides.
+It preserves traversal order and metadata-only accounting without cloning
+recursive graphs. Corrected native compilation remains pending while the
+independent core qualification proceeds on its frozen candidate.
 No owning gate or task is accepted by these results.
 The same frozen retained-read candidate passes all twenty-nine mandatory
 native read cases in 46.960 seconds and the public SDK case in 0.009 seconds,
