@@ -168,7 +168,8 @@ class PairTests(unittest.TestCase):
 
         self.assertEqual(json.loads(transferred[0][2])["publicOrigin"], "https://aos.fleet.test")
         self.assertEqual(selections[0]["origin"], "https://aos.fleet.test")
-        self.assertIn("setpriv --reuid aos-hub --regid aos-hub --init-groups --", commands[0][1])
+        self.assertIn("setpriv --reuid aos-hub --regid aos-hub --init-groups", commands[0][1])
+        self.assertIn("--inh-caps +sys_ptrace --ambient-caps +sys_ptrace --", commands[0][1])
         self.assertIn("oci-sdk-observe-native --pid 123", commands[0][1])
         self.assertEqual(len(transferred), 3)
 

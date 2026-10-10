@@ -468,10 +468,13 @@ def observe_managed_pair(native, worker, tools, prepared, processes):
     if observer_user is not None:
         require_managed_pair(re.fullmatch(r"[a-z][a-z0-9-]{0,31}", observer_user),
                 "OCI observer requires an explicit service user")
-        # The minimal VM has no PAM login policy. Set the real UID, GID and
-        # supplementary groups directly; the observer still checks ownership.
+        # The minimal VM has no PAM login policy. Keep the actual service UID
+        # and give only this inspection process the capability needed to read
+        # a protected service's /proc environment and executable link.
         observer_arguments = [tools["setpriv"], "--reuid", observer_user,
-            "--regid", observer_user, "--init-groups", "--", *observer_arguments]
+            "--regid", observer_user, "--init-groups",
+            "--inh-caps", "+sys_ptrace", "--ambient-caps", "+sys_ptrace",
+            "--", *observer_arguments]
     private_guest_command(native, shlex.join(observer_arguments), timeout=30)
     for path in (native_observation, native_configuration):
         install_direct_guest_file(worker, tools["python"], root + "/" + path.rsplit("/", 1)[1],
