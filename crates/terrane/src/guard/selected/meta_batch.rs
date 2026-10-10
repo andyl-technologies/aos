@@ -85,6 +85,27 @@ impl<'operation, 'held> ImmutableEffectContext<'operation, 'held> {
             || state.sources != self.selected.sources
             || state.burn_owners != self.selected.burn_owners
         {
+            #[cfg(test)]
+            if std::env::var_os("TERRANE_INDEX_REBUILD_TRACE").is_some() {
+                for (field, changed) in [
+                    ("binding", state.binding != self.selected.binding),
+                    ("guard", state.guard != self.selected.guard),
+                    (
+                        "loss-generation",
+                        state.loss_generation != self.selected.loss_generation,
+                    ),
+                    ("branches", state.branches != self.selected.branches),
+                    ("sources", state.sources != self.selected.sources),
+                    (
+                        "burn-owners",
+                        state.burn_owners != self.selected.burn_owners,
+                    ),
+                ] {
+                    if changed {
+                        eprintln!("index-rebuild-immutable-context-mismatch field={field}");
+                    }
+                }
+            }
             return Err(invalid());
         }
         Ok(())

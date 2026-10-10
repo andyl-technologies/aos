@@ -221,8 +221,11 @@ Its exact-case 180-second runner preparation passes untraced qualification in
 serving, quarantine and unrelated retirement times out at 120.005 seconds;
 the final secure-pack restore case remains unrun. A separate archived trace
 passes that exact restore and all final reopen assertions in 140.99 seconds.
-Its reviewed exact-case 180-second runner preparation awaits untraced
-qualification. Operation, staging and whole-lease clocks remain unchanged. The earlier
+Its committed exact-case 180-second runner preparation passes untraced
+qualification in 110.823 seconds; the final secure-pack restore passes under
+the unchanged 120-second default in 84.868 seconds. These endpoint results
+remain bound to the same archived source and external committed configuration.
+Operation, staging and whole-lease clocks remain unchanged. The earlier
 fourteen passes retain their original source binding and do not establish
 complete qualification of this candidate.
 The reviewed closed-absence diagnosis in `3f598fed48`
@@ -252,7 +255,12 @@ ordinary deadline/refusal fixtures. On combined tree `f6618ce65b`, the actual
 owning native-index-rebuild check passes verification in 136.06 seconds, then
 recovery fails with `Advance(Store(Invalid(MalformedRequest)))` in 260.27
 seconds; the final case remains unrun. The capacity policy does not resolve
-that failure. A distinct traced diagnosis is pending.
+that failure. A distinct trace reproduces the malformed request in 441.49
+seconds, after successful divergent repair, reopen, fork and ordinary advance.
+The missing-primary recovery fails during contextual Commit upload, with
+24.754 seconds elapsed from publication. This identifies the rejecting
+operation, not the precise invariant. Test-only mismatch labels retain every
+immutable-context field check and its error; fresh execution remains pending.
 A broader earlier feature-matrix run is cancelled after seven actual
 missing-placement failures; it is not a passing matrix result. A separate archive diagnostic
 reproduces `Unsupported` in signed fixture setup before the intended loss
@@ -4501,7 +4509,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   included in combined candidate `13540d1139`; execution remains pending.
   Current qualified scopes do not prove these additional contracts.
   — satisfies TREE-14,
-  PROP-1 to PROP-30;
+  PROP-1 to PROP-31;
   `checks.terrane.gates.property-resolution`,
   `checks.terrane.gates.property-required-attrs`,
   `checks.terrane.gates.property-domain-reference`.
