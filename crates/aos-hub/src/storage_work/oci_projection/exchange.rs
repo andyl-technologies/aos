@@ -119,7 +119,32 @@ impl RemoteStorageWorkClient {
                 .checked_add(lookup.clock_uncertainty_seconds)
                 .context("OCI guard clock overflow")?;
             let verified = verify_oci_projection_reply(key, &signature, &bytes, lookup, latest_now)
-                .inspect_err(|_| exchange.finish("invalid_result"))?;
+                .inspect_err(|error| {
+                    exchange.finish("invalid_result");
+                    let reason = match error.root_cause().to_string().as_str() {
+                        "OCI projection control is not canonical" => "noncanonical_reply",
+                        "OCI projection reply differs from its exact original" => {
+                            "original_mismatch"
+                        }
+                        _ => "invalid_reply",
+                    };
+
+                    // Rejected data supplies diagnostic numbers only, never authority.
+                    let reported = serde_json::from_slice::<OciProjectionReply>(&bytes).ok();
+                    tracing::warn!(
+                        reason,
+                        issued_at = lookup.issued_at,
+                        expires_at = lookup.expires_at,
+                        latest_now,
+                        clock_uncertainty_seconds = lookup.clock_uncertainty_seconds,
+                        reported_observed_at =
+                            reported.as_ref().map_or(0, |reply| reply.observed_at),
+                        reported_request_matches = reported
+                            .as_ref()
+                            .is_some_and(|reply| reply.request == *lookup),
+                        "OCI projection result rejected"
+                    );
+                })?;
             exchange.authenticated_control(&bytes);
             Ok(verified)
         };
