@@ -23,6 +23,7 @@
       hub-tool = fixture.toolV1;
       nginx = pkgs.nginx;
       aos-hub = pkgs.aos-hub;
+      aos-configuration-provider = pkgs.aos-configuration-provider;
     };
   };
   updateProject = import ./_container-publication-project.nix {
@@ -123,6 +124,7 @@ in {
       TOOL_V2 = "${fixture.toolV2}"
       HELPER_V2 = "${fixture.helperV2}"
       NGINX = "${pkgs.nginx}"
+      CONFIGURATION_PROVIDER = "${pkgs.aos-configuration-provider}"
       AOS_HUB_PACKAGE = "${pkgs.aos-hub}"
       UPGRADE_TOPLEVEL = "${upgradeToplevel}"
       UPGRADE_IMAGE = "${upgradeImage}"
@@ -633,6 +635,7 @@ in {
             --key-id initial
           {APR} publish {AOS_HUB_PACKAGE} --registry production \\
             --key-id initial
+          {APR} publish {CONFIGURATION_PROVIDER} --registry production --key-id initial
           {APR} publish {TOOL_V1} --registry production --key-id initial
           for dependency in ${lib.concatMapStringsSep " " builtins.toString publicationProject.dependencyPublicationRoots}; do
             {APR} publish "$dependency" --registry production --key-id initial
@@ -774,6 +777,9 @@ in {
             "$HOME/.config/apm/registries.d/production.toml"
           {APM} registry list 2>&1 | grep production >/dev/null
           {APM} update --registry production
+          # The user profile selects its portable configuration backend;
+          # the system profile's backend is not inherited by package modules.
+          {APM} install aos-configuration-provider --registry production --yes
           {APM} install nginx --registry production --yes
       """), timeout=600)
       documentation_commands = (
