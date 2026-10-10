@@ -208,7 +208,15 @@ The unset baseline's internal encoding is incorrectly validated as an explicit
 property binding, and a virtual range starting after a punctuation sibling
 omits crossing graft children. Both corrections remain in the isolated
 materializer workline; no negative refusal or earlier source review qualifies
-these failures. The same frozen candidate passes all twenty-nine mandatory
+these failures. Corrected materializer `f7bb875512` passes its native core build,
+actual test compilation and executable-bound inventory. All twenty-four exact
+overlay cases now pass in 0.163 seconds at the unchanged default deadlines
+(run `43c84b66-1e20-4608-9cd2-87e9c0a6cc1e`), including independent nested
+policy contexts and punctuation-range output. Source and executable seals
+remain unchanged. Strict all-target Clippy still fails only on the fixture's
+constant `chunks_exact` loop; the lint correction and fresh qualification
+remain in that workline. No owning gate or task is accepted by this result.
+The same frozen retained-read candidate passes all twenty-nine mandatory
 native read cases in 46.960 seconds and the public SDK case in 0.009 seconds,
 with source and executable seals unchanged. Its unchanged backfill witness
 fails after 82.167 seconds with a read authorization denial, rather than timing
@@ -223,9 +231,8 @@ shared wiring now uses the object-context decoder, and the boundary gate
 requires a dedicated exact reader witness. The reviewed fixture is composed
 with honest content identities, canonical controls and refusal before returning
 even a prefix before the cut; assembled runtime qualification remains pending.
-Parallel review also identifies
-CDC-19's
-final manifest chunk boundary gap in admission, restoration and guarded reads.
+Parallel review also identifies CDC-19's final manifest chunk boundary gap in
+admission, restoration and guarded reads.
 An isolated codec/manifest witness workline owns the correction; the exact native
 nonfinal and final admission selectors are registered in `cdc-boundaries`.
 The reviewed object-context decoder preserves standalone dictionary admission
