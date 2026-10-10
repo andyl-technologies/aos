@@ -24,7 +24,8 @@ use crucible::node_contract::{
 };
 
 use crate::qmp::{
-    QmpError, QmpKvmOriginalReturnState, QmpKvmOriginalWindowRequest, QmpKvmOriginalWindowState,
+    QmpError, QmpKvmInitialResponseState, QmpKvmOriginalReturnState, QmpKvmOriginalWindowRequest,
+    QmpKvmOriginalWindowState,
 };
 
 use super::{KvmArchitecture, KvmCandidateError, KvmInstalledCandidate};
@@ -78,6 +79,13 @@ pub struct KvmComponentSubmission<T> {
 /// retained original history, never a fresh native observation after timeout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KvmComponentObservation {
+    /// Retains original first-callback facts, including a checked conflicting result.
+    Initial {
+        /// Stores the original callback reply without an execution qualification.
+        state: Option<QmpKvmInitialResponseState>,
+        /// Preserves every original native or transport uncertainty.
+        uncertain: bool,
+    },
     /// Retains original Window facts, if a checked reply was received.
     Window {
         /// Stores the original checked reply without upgrading its qualification.
@@ -272,6 +280,41 @@ impl KvmOwnedComponents {
         token: &KvmComponentToken,
     ) -> Result<QmpKvmOriginalReturnState, KvmComponentError> {
         self.custody.control(|native| native.reconcile_ack(token))
+    }
+
+    /// Authenticates and submits the first callback for one original native row.
+    ///
+    /// This same owner observes the original inventory and full pending receipt
+    /// before retaining a one-time Submit. Recovery uses only Poll; later More
+    /// fragments cannot replace this original lifetime result or its custody.
+    ///
+    /// # Errors
+    /// Refuses duplicate, unknown, non-pending or uncertain original rows and
+    /// unavailable finite credit before callback submission. An ambiguous native
+    /// exchange still returns its original token with sticky effect uncertainty.
+    pub fn submit_initial_response(
+        &mut self,
+        generation: u64,
+        record_index: u32,
+    ) -> Result<KvmComponentSubmission<QmpKvmInitialResponseState>, KvmComponentError> {
+        self.custody.control(|native| {
+            let (token, exchange) = native.submit_initial(generation, record_index)?;
+            Ok(KvmComponentSubmission { token, exchange })
+        })
+    }
+
+    /// Polls the same original first callback without another native submission.
+    ///
+    /// # Errors
+    /// Refuses foreign or wrong-class tokens, exhausted attempt credit and
+    /// unavailable or changed original facts. Original history stays retained
+    /// in the same supervisory capsule, including after uncertain native errors.
+    pub fn reconcile_initial_response(
+        &mut self,
+        token: &KvmComponentToken,
+    ) -> Result<QmpKvmInitialResponseState, KvmComponentError> {
+        self.custody
+            .control(|native| native.reconcile_initial(token))
     }
 
     /// Copies the bounded original observation history without native effects.

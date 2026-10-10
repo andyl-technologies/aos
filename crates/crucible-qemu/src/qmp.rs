@@ -51,13 +51,14 @@ pub(crate) use fingerprint_projection::{
 #[cfg(target_os = "linux")]
 pub use kvm_profile::{
     QmpKvmAccelerationState, QmpKvmClockComponentState, QmpKvmClockOperation, QmpKvmClockRequest,
-    QmpKvmClockV3ComponentState, QmpKvmOriginalAckTransaction, QmpKvmOriginalReturnIdentity,
-    QmpKvmOriginalReturnObservation, QmpKvmOriginalReturnOperation, QmpKvmOriginalReturnRequest,
-    QmpKvmOriginalReturnState, QmpKvmOriginalReturnsObservation, QmpKvmOriginalReturnsRequest,
-    QmpKvmOriginalReturnsState, QmpKvmOriginalWindowObservation, QmpKvmOriginalWindowOperation,
-    QmpKvmOriginalWindowRequest, QmpKvmOriginalWindowState, QmpKvmOriginalWindowTransaction,
-    QmpKvmUserspaceComponentState, QmpKvmUserspaceExitPhase, QmpKvmUserspaceExitRecord,
-    QmpKvmUserspaceInventory,
+    QmpKvmClockV3ComponentState, QmpKvmInitialResponseObservation, QmpKvmInitialResponseOperation,
+    QmpKvmInitialResponseRequest, QmpKvmInitialResponseState, QmpKvmInitialResponseTransaction,
+    QmpKvmOriginalAckTransaction, QmpKvmOriginalReturnIdentity, QmpKvmOriginalReturnObservation,
+    QmpKvmOriginalReturnOperation, QmpKvmOriginalReturnRequest, QmpKvmOriginalReturnState,
+    QmpKvmOriginalReturnsObservation, QmpKvmOriginalReturnsRequest, QmpKvmOriginalReturnsState,
+    QmpKvmOriginalWindowObservation, QmpKvmOriginalWindowOperation, QmpKvmOriginalWindowRequest,
+    QmpKvmOriginalWindowState, QmpKvmOriginalWindowTransaction, QmpKvmUserspaceComponentState,
+    QmpKvmUserspaceExitPhase, QmpKvmUserspaceExitRecord, QmpKvmUserspaceInventory,
 };
 #[cfg(all(test, target_os = "linux"))]
 mod checkpoint_delta_flight_tests;
@@ -1352,6 +1353,9 @@ pub enum QmpCommandKind {
     /// Observes original userspace exit inventory without completion or qualification.
     #[cfg(target_os = "linux")]
     KvmUserspaceExits,
+    /// Submits or polls the original first response without execution authority.
+    #[cfg(target_os = "linux")]
+    KvmInitialResponse,
     /// Controls an original native window component without whole-node qualification.
     #[cfg(target_os = "linux")]
     KvmOriginalWindow,
@@ -1452,6 +1456,8 @@ impl QmpCommandKind {
             Self::KvmClockComponentV3 => "x-crucible-kvm-clock-v3",
             #[cfg(target_os = "linux")]
             Self::KvmUserspaceExits => "x-crucible-kvm-userspace-exits",
+            #[cfg(target_os = "linux")]
+            Self::KvmInitialResponse => "x-crucible-kvm-initial-response",
             #[cfg(target_os = "linux")]
             Self::KvmOriginalWindow => "x-crucible-kvm-original-window",
             #[cfg(target_os = "linux")]

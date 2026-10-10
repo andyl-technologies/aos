@@ -195,6 +195,10 @@ pub(super) enum QmpCommand<'a> {
     #[cfg(target_os = "linux")]
     KvmUserspaceExits,
     #[cfg(target_os = "linux")]
+    KvmInitialResponse {
+        request: &'a QmpKvmInitialResponseRequest,
+    },
+    #[cfg(target_os = "linux")]
     KvmOriginalWindow {
         request: &'a QmpKvmOriginalWindowRequest,
     },
@@ -344,6 +348,8 @@ impl QmpCommand<'_> {
             #[cfg(target_os = "linux")]
             Self::KvmUserspaceExits => QmpCommandKind::KvmUserspaceExits,
             #[cfg(target_os = "linux")]
+            Self::KvmInitialResponse { .. } => QmpCommandKind::KvmInitialResponse,
+            #[cfg(target_os = "linux")]
             Self::KvmOriginalWindow { .. } => QmpCommandKind::KvmOriginalWindow,
             #[cfg(target_os = "linux")]
             Self::KvmOriginalReturn { .. } => QmpCommandKind::KvmOriginalReturn,
@@ -450,6 +456,11 @@ impl QmpCommand<'_> {
             }),
             #[cfg(target_os = "linux")]
             Self::KvmUserspaceExits => json!({"execute":"x-crucible-kvm-userspace-exits"}),
+            #[cfg(target_os = "linux")]
+            Self::KvmInitialResponse { request } => json!({
+                "execute": "x-crucible-kvm-initial-response",
+                "arguments": request,
+            }),
             #[cfg(target_os = "linux")]
             Self::KvmOriginalWindow { request } => json!({
                 "execute":"x-crucible-kvm-original-window", "arguments":request

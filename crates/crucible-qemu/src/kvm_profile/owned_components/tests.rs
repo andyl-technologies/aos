@@ -336,3 +336,25 @@ fn different_actual_owned_process_cannot_reconcile_an_original_token() {
     drop(foreign);
     reclaim(&queue);
 }
+
+#[test]
+fn actual_tcg_initial_response_refuses_without_inventing_callback_custody() {
+    let queue = RuntimeCustodyQueue::new(1).unwrap();
+    let (mut owner, _directory, _socket, _disconnect) = diagnostic_owner(&queue, 1);
+    assert!(matches!(
+        owner.submit_initial_response(1, 0),
+        Err(KvmComponentError::Exchange(QmpError::Command { .. }))
+    ));
+    owner
+        .custody
+        .control(|journal| {
+            assert!(journal.entries.is_empty());
+            assert!(journal.observations.is_empty());
+            Ok(())
+        })
+        .unwrap();
+    assert!(owner.observe_process_exit().unwrap().is_none());
+    assert_eq!(queue.reserved_worlds(), 1);
+    drop(owner);
+    reclaim(&queue);
+}

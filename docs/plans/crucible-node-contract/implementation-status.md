@@ -1199,6 +1199,28 @@ results qualify two distinct fixed Linux device mechanisms. Common readiness,
 combined execution, CPU timing, external ingress, general device parity and
 NativeArchive admission remain disabled and unqualified.
 
+## Owned KVM initial response recovery
+
+The installed owner retains the complete first pending response and its native
+inventory before sending the original Submit. A finite journal reserves receipt
+and observation capacity before dispatch, keeps conflicting callback facts
+separate from accepted facts and preserves uncertainty through same-child
+reconnection. Recovery polls the original transaction; it cannot submit a new
+operation or turn request fields into callback authority. The complete original
+result is retained before a later operation can replace the native source cache.
+
+Independent review verifies the coherent 12-file implementation and its
+comments-only format clarification. Current-source central checks pass 78 KVM
+component cases, 117 QMP cases, 37 source-hygiene cases, all-target strict checks
+and all 12 Rust formatting checks. The four source scanners bind the actual
+current worktree. Earlier predecessor-bound scanner results remain withdrawn.
+
+Positive callback and recovery cases use modeled QMP observations. A separate
+actual stopped-TCG Initial refusal uses the matching native QEMU build. This
+checkpoint supplies SDK and owning-journal credit only. Live KVM hardware,
+ordinary execution grants, common clock windows, capture and readiness remain
+unqualified.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

@@ -17,13 +17,14 @@ mod probe;
 
 pub use crate::qmp::{
     QmpKvmAccelerationState, QmpKvmClockComponentState, QmpKvmClockOperation, QmpKvmClockRequest,
-    QmpKvmClockV3ComponentState, QmpKvmOriginalAckTransaction, QmpKvmOriginalReturnIdentity,
-    QmpKvmOriginalReturnObservation, QmpKvmOriginalReturnOperation, QmpKvmOriginalReturnRequest,
-    QmpKvmOriginalReturnState, QmpKvmOriginalReturnsObservation, QmpKvmOriginalReturnsRequest,
-    QmpKvmOriginalReturnsState, QmpKvmOriginalWindowObservation, QmpKvmOriginalWindowOperation,
-    QmpKvmOriginalWindowRequest, QmpKvmOriginalWindowState, QmpKvmOriginalWindowTransaction,
-    QmpKvmUserspaceComponentState, QmpKvmUserspaceExitPhase, QmpKvmUserspaceExitRecord,
-    QmpKvmUserspaceInventory,
+    QmpKvmClockV3ComponentState, QmpKvmInitialResponseObservation, QmpKvmInitialResponseOperation,
+    QmpKvmInitialResponseRequest, QmpKvmInitialResponseState, QmpKvmInitialResponseTransaction,
+    QmpKvmOriginalAckTransaction, QmpKvmOriginalReturnIdentity, QmpKvmOriginalReturnObservation,
+    QmpKvmOriginalReturnOperation, QmpKvmOriginalReturnRequest, QmpKvmOriginalReturnState,
+    QmpKvmOriginalReturnsObservation, QmpKvmOriginalReturnsRequest, QmpKvmOriginalReturnsState,
+    QmpKvmOriginalWindowObservation, QmpKvmOriginalWindowOperation, QmpKvmOriginalWindowRequest,
+    QmpKvmOriginalWindowState, QmpKvmOriginalWindowTransaction, QmpKvmUserspaceComponentState,
+    QmpKvmUserspaceExitPhase, QmpKvmUserspaceExitRecord, QmpKvmUserspaceInventory,
 };
 pub use capture::{KvmArchitecturalCapture, KvmCaptureIdentity, KvmCapturedState};
 pub use coverage::{

@@ -7,27 +7,35 @@
 use std::rc::Rc;
 
 use crate::qmp::{
-    QmpClient, QmpError, QmpKvmOriginalAckTransaction, QmpKvmOriginalReturnOperation,
-    QmpKvmOriginalReturnRequest, QmpKvmOriginalReturnState, QmpKvmOriginalReturnsRequest,
-    QmpKvmOriginalWindowRequest, QmpKvmOriginalWindowState, QmpKvmOriginalWindowTransaction,
-    QmpTimeoutStream,
+    QmpClient, QmpError, QmpKvmInitialResponseState, QmpKvmInitialResponseTransaction,
+    QmpKvmOriginalAckTransaction, QmpKvmOriginalReturnOperation, QmpKvmOriginalReturnRequest,
+    QmpKvmOriginalReturnState, QmpKvmOriginalReturnsRequest, QmpKvmOriginalWindowRequest,
+    QmpKvmOriginalWindowState, QmpKvmOriginalWindowTransaction, QmpTimeoutStream,
 };
 
 use super::{KvmComponentError, KvmComponentToken};
 
 // Inline originals consume the finite reservation rather than allocating an
 // ACK box after the native effect has already begun.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "inlined original receipts stay inside preallocated journal credit"
-)]
 pub(super) enum Original {
     Window(QmpKvmOriginalWindowTransaction),
     Ack(QmpKvmOriginalAckTransaction),
+    Initial(QmpKvmInitialResponseTransaction),
+}
+
+#[derive(Clone, Copy)]
+enum CommandClass {
+    Window,
+    Ack,
+    Initial,
 }
 
 #[derive(Clone, Copy)]
 pub(super) enum Observation {
+    Initial {
+        state: Option<QmpKvmInitialResponseState>,
+        uncertain: bool,
+    },
     Window {
         state: Option<QmpKvmOriginalWindowState>,
         uncertain: bool,
@@ -137,7 +145,7 @@ impl<S: QmpTimeoutStream> Journal<S> {
         &mut self,
         token: &KvmComponentToken,
     ) -> Result<QmpKvmOriginalWindowState, KvmComponentError> {
-        let index = self.admit_attempt(token, true)?;
+        let index = self.admit_attempt(token, CommandClass::Window)?;
         let Original::Window(original) = &mut self.entries[index].original else {
             return Err(KvmComponentError::ForeignToken);
         };
@@ -219,7 +227,7 @@ impl<S: QmpTimeoutStream> Journal<S> {
         &mut self,
         token: &KvmComponentToken,
     ) -> Result<QmpKvmOriginalReturnState, KvmComponentError> {
-        let index = self.admit_attempt(token, false)?;
+        let index = self.admit_attempt(token, CommandClass::Ack)?;
         let Original::Ack(original) = &mut self.entries[index].original else {
             return Err(KvmComponentError::ForeignToken);
         };
@@ -232,6 +240,87 @@ impl<S: QmpTimeoutStream> Journal<S> {
             },
         ));
         Ok(result?)
+    }
+
+    pub(super) fn submit_initial(
+        &mut self,
+        generation: u64,
+        record_index: u32,
+    ) -> Result<
+        (
+            KvmComponentToken,
+            Result<QmpKvmInitialResponseState, QmpError>,
+        ),
+        KvmComponentError,
+    > {
+        self.reserve_entry()?;
+        if self.entries.iter().any(|entry| {
+            matches!(&entry.original, Original::Initial(prior)
+                if prior.original().record_index == record_index)
+        }) {
+            return Err(KvmComponentError::Transition(
+                "original first callback was already retained",
+            ));
+        }
+
+        // Only this authenticated peer supplies the actual inventory and receipt.
+        // Caller row labels cannot authorize a callback or manufacture its birth.
+        let inventory =
+            self.qmp
+                .query_native_kvm_original_returns(&QmpKvmOriginalReturnsRequest {
+                    generation,
+                    first_record: record_index,
+                    maximum_records: 1,
+                })?;
+        let identity =
+            inventory
+                .observed()
+                .entries
+                .first()
+                .ok_or(KvmComponentError::Transition(
+                    "original pending first response is absent",
+                ))?;
+        let receipt =
+            self.qmp
+                .control_native_kvm_original_return(&QmpKvmOriginalReturnRequest {
+                    operation: QmpKvmOriginalReturnOperation::Query,
+                    record_index,
+                    generation: identity.generation,
+                    expected_invocation: identity.expected_invocation,
+                })?;
+        let original = QmpKvmInitialResponseTransaction::prepare(identity, &receipt)?;
+        let token = self.retain(Original::Initial(original));
+        let Original::Initial(original) = &mut self.entries[token.index].original else {
+            return Err(KvmComponentError::ForeignToken);
+        };
+        let exchange = original.dispatch_once(&mut self.qmp);
+        self.observations.push((
+            token.index,
+            Observation::Initial {
+                state: original.latest().copied(),
+                uncertain: original.uncertain_effects(),
+            },
+        ));
+        Ok((token, exchange))
+    }
+
+    pub(super) fn reconcile_initial(
+        &mut self,
+        token: &KvmComponentToken,
+    ) -> Result<QmpKvmInitialResponseState, KvmComponentError> {
+        let index = self.admit_attempt(token, CommandClass::Initial)?;
+        let Original::Initial(original) = &mut self.entries[index].original else {
+            return Err(KvmComponentError::ForeignToken);
+        };
+        let exchange = original.reconcile(&mut self.qmp);
+        self.observations.push((
+            index,
+            Observation::Initial {
+                state: original.latest().copied(),
+                uncertain: original.uncertain_effects(),
+            },
+        ));
+        Ok(exchange?)
     }
 
     pub(super) fn history(
@@ -256,6 +345,12 @@ impl<S: QmpTimeoutStream> Journal<S> {
             .filter(|(index, _)| *index == token.index)
         {
             retained.push(match observation {
+                Observation::Initial { state, uncertain } => {
+                    super::KvmComponentObservation::Initial {
+                        state: *state,
+                        uncertain: *uncertain,
+                    }
+                }
                 Observation::Window { state, uncertain } => {
                     super::KvmComponentObservation::Window {
                         state: *state,
@@ -293,7 +388,7 @@ impl<S: QmpTimeoutStream> Journal<S> {
     fn admit_attempt(
         &mut self,
         token: &KvmComponentToken,
-        window: bool,
+        class: CommandClass,
     ) -> Result<usize, KvmComponentError> {
         if !Rc::ptr_eq(&self.identity, &token.identity) {
             return Err(KvmComponentError::ForeignToken);
@@ -302,7 +397,12 @@ impl<S: QmpTimeoutStream> Journal<S> {
             .entries
             .get_mut(token.index)
             .ok_or(KvmComponentError::ForeignToken)?;
-        if matches!(entry.original, Original::Window(_)) != window {
+        if !matches!(
+            (&entry.original, class),
+            (Original::Window(_), CommandClass::Window)
+                | (Original::Ack(_), CommandClass::Ack)
+                | (Original::Initial(_), CommandClass::Initial)
+        ) {
             return Err(KvmComponentError::ForeignToken);
         }
         if entry.attempts >= self.maximum_attempts {
@@ -325,3 +425,7 @@ pub(super) fn validate_limits(entries: usize, attempts: usize) -> Result<(), Kvm
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "initial_journal_tests.rs"]
+mod initial_response_tests;

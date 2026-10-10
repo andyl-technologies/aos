@@ -4,11 +4,17 @@
 //! its accelerator. It grants no clock, native pause, custody or capture claim.
 
 mod exchange;
+mod initial_response;
 mod original_inventory;
 mod original_return;
 mod original_window;
 mod userspace;
 mod v3;
+
+pub use initial_response::{
+    QmpKvmInitialResponseObservation, QmpKvmInitialResponseOperation, QmpKvmInitialResponseRequest,
+    QmpKvmInitialResponseState, QmpKvmInitialResponseTransaction,
+};
 
 pub use original_inventory::{
     QmpKvmOriginalReturnIdentity, QmpKvmOriginalReturnsObservation, QmpKvmOriginalReturnsRequest,
