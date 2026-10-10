@@ -368,6 +368,10 @@
             ${workspaceCargoFlags}
         ''
         else ''
+          # Admission tests measure the original source-owned device. Keep its
+          # runtime-only binding out of controller compilation and outputs.
+          export CRUCIBLE_REFERENCE_DEVICE="${crucible-reference-implementation.passthru.binaries}/bin/crucible-reference-device"
+          test -x "$CRUCIBLE_REFERENCE_DEVICE"
           # Native process-custody tests require the current source-built QEMU.
           # This shell binding survives into check; Cargo never embeds its path.
           export CRUCIBLE_NATIVE_PROBE_QEMU="${nativeQemuPath}"

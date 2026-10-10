@@ -686,6 +686,10 @@ fn artifact_type_failures(
                 "crucible-reference-lineage-device",
                 "crucible-reference-lineage-manifest",
                 "crucible-reference-lineage-provider",
+                "crucible-reference-lineage-reader-manifest",
+                "crucible-reference-lineage-reader-provider",
+                "crucible-reference-lineage-reader-typed-manifest",
+                "crucible-reference-lineage-reader-typed-provider",
                 "crucible-reference-manifest",
                 "crucible-reference-progress-device",
                 "crucible-reference-progress-manifest",
@@ -710,7 +714,7 @@ fn artifact_type_failures(
                 || layout.has_main_rs
                 || !layout.has_src_bin_dir
             {
-                failures.push(format!("{}: provider must explicitly declare its ten process tools and disable implicit binaries", spec.package));
+                failures.push(format!("{}: provider must explicitly declare its fourteen process tools and disable implicit binaries", spec.package));
             }
         }
         ExpectedArtifact::Library => {
