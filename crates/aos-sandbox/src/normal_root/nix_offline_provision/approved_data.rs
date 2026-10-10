@@ -58,7 +58,9 @@ impl<P> OriginalLabelFile<'_, P> {
 fn original_label_matches<P>(file: OriginalLabelFile<'_, P>) -> std::io::Result<bool> {
     let mut context = [0; 256];
     let length = file.xattr("security.selinux", &mut context[..])?;
-    let actual = context[..length].strip_suffix(&[0]).unwrap_or(&context[..length]);
+    let actual = context[..length]
+        .strip_suffix(&[0])
+        .unwrap_or(&context[..length]);
     if actual != b"system_u:object_r:aos_nix_offline_prepare_state_t" {
         return Ok(false);
     }

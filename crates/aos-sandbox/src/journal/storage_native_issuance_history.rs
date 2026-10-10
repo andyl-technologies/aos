@@ -724,12 +724,18 @@ impl Journal {
                     StorageHistoryObserverV1::new(self.native.limits(), witness.file().byte_len())?
                 }
                 StorageHistoryPurpose::CanaryExport | StorageHistoryPurpose::PrimaryBootstrap => {
-                    StorageHistoryObserverV1::new_for_purpose(self.native.limits(), witness.file().byte_len(), purpose)?
+                    StorageHistoryObserverV1::new_for_purpose(
+                        self.native.limits(),
+                        witness.file().byte_len(),
+                        purpose,
+                    )?
                 }
             };
             let mut reader = ReadAtCursorV1::new(self.native.file(), witness.file().byte_len());
             let replayed = replay_original_observed(
-                &mut reader, self.native.limits(), None,
+                &mut reader,
+                self.native.limits(),
+                None,
                 Some(DeploymentHistoryObserverV1::Storage(&mut observer)),
             )?;
             observer.finish(&replayed)?;

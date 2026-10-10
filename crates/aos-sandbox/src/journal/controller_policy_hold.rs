@@ -1588,12 +1588,7 @@ fn v8_settlement_capacity_transaction(
 
 fn ensure_controller(journal: &Journal) -> Result<(), JournalError> {
     journal.ensure_protected_authority()?;
-    if journal
-        .protected
-        .as_ref()
-        .map(|location| location.name())
-        != Some("controller.journal")
-    {
+    if journal.protected.as_ref().map(|location| location.name()) != Some("controller.journal") {
         return Err(JournalError::ProtectedBoundary);
     }
     Ok(())

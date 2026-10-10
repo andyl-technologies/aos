@@ -4,17 +4,14 @@
 //! policies. Native errno slots are populated before the original typed physical
 //! checks. This module cannot replay or materialize a semantic Journal.
 
-use super::{
-    MAXIMUM_PROTECTED_COMPONENT_BYTES, ProtectedFailure,
-};
+use super::{MAXIMUM_PROTECTED_COMPONENT_BYTES, ProtectedFailure};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io;
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 use rustix::fs::{
-    AtFlags, CWD, FileType, Mode, OFlags, ResolveFlags, fstat, fsync, openat2,
-    statat, unlinkat,
+    AtFlags, CWD, FileType, Mode, OFlags, ResolveFlags, fstat, fsync, openat2, statat, unlinkat,
 };
 
 /// Selects the original readable no-follow directory flags.
@@ -305,7 +302,6 @@ pub fn reject_operator_provisioning_history<E: ProtectedFailure>(length: u64) ->
     }
     Ok(())
 }
-
 
 /// Removes an original replacement name and synchronizes its directory.
 ///

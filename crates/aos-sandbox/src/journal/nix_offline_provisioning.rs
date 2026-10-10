@@ -88,7 +88,8 @@ impl NixOriginalDirectoryV5<'_> {
     fn has_original_label(&self) -> io::Result<bool> {
         match self {
             Self::Opened(file) => nix_offline_job_has_original_label_v5(file),
-            Self::Protected(location) => crate::normal_root::nix_offline_location_has_original_label_v5(location),
+            Self::Protected(location) =>
+                crate::normal_root::nix_offline_location_has_original_label_v5(location),
         }
     }
 
@@ -101,8 +102,12 @@ impl NixOriginalDirectoryV5<'_> {
 
     fn open_original(&self, name: &str, original: &mut Option<File>) -> Result<(), JournalError> {
         match self {
-            Self::Opened(file) => open_protected_file_into::<JournalError>(file, name, 0, false, false, false, original),
-            Self::Protected(location) => location.open_named_original::<JournalError>(name, 0, false, false, false, original),
+            Self::Opened(file) => open_protected_file_into::<JournalError>(
+                file, name, 0, false, false, false, original,
+            ),
+            Self::Protected(location) => location.open_named_original::<JournalError>(
+                name, 0, false, false, false, original,
+            ),
         }
     }
 }
@@ -1520,12 +1525,15 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
         let mut observer = NativeHistoryV5::new();
         let mut cursor = ReadAtCursorV1::new(journal.native.file(), before.byte_len());
         let replay = replay_original_observed(
-            &mut cursor, LIMITS, None,
+            &mut cursor,
+            LIMITS,
+            None,
             Some(DeploymentHistoryObserverV1::NixOffline(&mut observer)),
         )?;
         observer.finish(&replay)?;
         if FileIdentity::of::<crate::journal::JournalError>(journal.native.file())? != before
-            || replay.durable_end != before.byte_len() || replay.state != *journal.native.state()
+            || replay.durable_end != before.byte_len()
+            || replay.state != *journal.native.state()
             || replay.next_sequence != journal.native.next_sequence()
             || replay.committed_transactions != journal.native.committed_transactions()
             || observer.original_digest() != digest(HISTORY_DOMAIN, &self.readback_bytes)
@@ -1572,17 +1580,28 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
         self.directory = Some(File::from(rustix::fs::openat2(
             rustix::fs::CWD, DIRECTORY,
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(), ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
+            Mode::empty(),
+            ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
         )?));
         let directory = self.directory.as_ref().ok_or(Error::Rejected)?;
-        validate_protected_fd::<crate::journal::JournalError>(directory, 0, FileType::Directory, Mode::RWXU)?;
+        validate_protected_fd::<crate::journal::JournalError>(
+            directory,
+            0,
+            FileType::Directory,
+            Mode::RWXU,
+        )?;
         if !nix_offline_job_has_original_label_v5(directory)? {
             return Err(Error::Rejected);
         }
         self.directory_identity = Some(inspect_nix_offline_job_identity_v5(directory)?);
         self.directory_mount = Some(MountId::from_fd(directory.as_fd())?);
         open_protected_file_into::<crate::journal::JournalError>(
-            directory, "installation.lock", 0, false, false, false,
+            directory,
+            "installation.lock",
+            0,
+            false,
+            false,
+            false,
             &mut self.installation_lock,
         )?;
         let lock = self.installation_lock.as_ref().ok_or(Error::Rejected)?;
@@ -1637,8 +1656,12 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
         self.files[index] = Some(File::from(self.directory()?.open_child(name)?));
         let file = self.files[index].as_ref().ok_or(Error::Rejected)?;
         let identity = inspect_nix_offline_job_identity_v5(file)?;
-        if !file.metadata()?.is_file() || identity.2 != 0 || identity.3 != 0
-            || identity.4 & 0o7777 != mode || identity.5 != 1 || identity.6 != length as u64
+        if !file.metadata()?.is_file()
+            || identity.2 != 0
+            || identity.3 != 0
+            || identity.4 & 0o7777 != mode
+            || identity.5 != 1
+            || identity.6 != length as u64
             || !nix_offline_job_has_original_label_v5(file)?
             || Some(MountId::from_fd(file.as_fd())?) != self.directory_mount
         {
@@ -1657,7 +1680,13 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
         validate_limits(LIMITS)?;
         let directory = self.directory.as_ref().ok_or(Error::Rejected)?;
         open_protected_file_into::<crate::journal::JournalError>(
-            directory, LOCK_NAME, 0, initialize, initialize, false, &mut self.native_lock,
+            directory,
+            LOCK_NAME,
+            0,
+            initialize,
+            initialize,
+            false,
+            &mut self.native_lock,
         )?;
         let lock = self.native_lock.as_ref().ok_or(Error::Rejected)?;
         flock(lock, FlockOperation::NonBlockingLockExclusive)?;
@@ -1665,7 +1694,13 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
             return Err(Error::Rejected);
         }
         open_protected_file_into::<crate::journal::JournalError>(
-            directory, NAME, 0, initialize, initialize, false, &mut self.native_file,
+            directory,
+            NAME,
+            0,
+            initialize,
+            initialize,
+            false,
+            &mut self.native_file,
         )?;
         if initialize {
             fsync(directory)?;
@@ -1675,17 +1710,23 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
             return Err(Error::Rejected);
         }
         let physical = FileIdentity::of::<crate::journal::JournalError>(original)?;
-        if physical.byte_len() > LIMITS.maximum_journal_bytes || (initialize && physical.byte_len() != 0) {
+        if physical.byte_len() > LIMITS.maximum_journal_bytes
+            || (initialize && physical.byte_len() != 0)
+        {
             return Err(Error::Rejected);
         }
         self.history_bytes.resize(physical.byte_len() as usize, 0);
         read_exact_positioned_retaining_cause(original, &mut self.history_bytes)?;
         let mut cursor = ReadAtCursorV1::new(original, physical.byte_len());
         let replay = replay_original_observed(
-            &mut cursor, LIMITS, None,
+            &mut cursor,
+            LIMITS,
+            None,
             Some(DeploymentHistoryObserverV1::NixOffline(&mut self.history)),
         )?;
-        if replay.durable_end != physical.byte_len() || FileIdentity::of::<crate::journal::JournalError>(original)? != physical {
+        if replay.durable_end != physical.byte_len()
+            || FileIdentity::of::<crate::journal::JournalError>(original)? != physical
+        {
             return Err(Error::Rejected);
         }
         self.history.finish(&replay)?;
@@ -1717,10 +1758,7 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
             }
         };
         let protected = Some(ProtectedJournalLocation::from_original_parts((
-            directory,
-            name,
-            0,
-            selection,
+            directory, name, 0, selection,
         )));
         self.journal = Some(journal_from_original_replay!(
             path, file, lock, LIMITS, protected, replay, authority
@@ -1853,15 +1891,30 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
             if self.named.len() == MAXIMUM_NAMED_FILES || self.named_pending.is_some() {
                 return Err(Error::Rejected);
             }
-            let directory = self.directory.as_ref().map(NixOriginalDirectoryV5::Opened).or_else(|| {
-                self.journal.as_ref()?.protected.as_ref().map(NixOriginalDirectoryV5::Protected)
-            }).ok_or(Error::Rejected)?;
+            let directory = self
+                .directory
+                .as_ref()
+                .map(NixOriginalDirectoryV5::Opened)
+                .or_else(|| {
+                    self.journal
+                        .as_ref()?
+                        .protected
+                        .as_ref()
+                        .map(NixOriginalDirectoryV5::Protected)
+                })
+                .ok_or(Error::Rejected)?;
             directory.open_original(name, &mut self.named_pending)?;
-            self.named.push(self.named_pending.take().ok_or(Error::Rejected)?);
+            self.named
+                .push(self.named_pending.take().ok_or(Error::Rejected)?);
             let named = self.named.last().ok_or(Error::Rejected)?;
             let journal = self.journal.as_ref().ok_or(Error::Rejected)?;
-            let original = if lock { journal.native.lock_file() } else { journal.native.file() };
-            if FileIdentity::of::<crate::journal::JournalError>(named)? != FileIdentity::of::<crate::journal::JournalError>(original)?
+            let original = if lock {
+                journal.native.lock_file()
+            } else {
+                journal.native.file()
+            };
+            if FileIdentity::of::<crate::journal::JournalError>(named)?
+                != FileIdentity::of::<crate::journal::JournalError>(original)?
                 || Some(MountId::from_fd(named.as_fd())?) != self.directory_mount
                 || !nix_offline_job_has_original_label_v5(named)?
                 || (lock && named.metadata()?.len() != 0)

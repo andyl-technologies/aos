@@ -914,12 +914,7 @@ pub(super) fn v8_retirement_and_clear_transactions(
 
 pub(super) fn ensure_source_domain(journal: &Journal) -> Result<(), JournalError> {
     journal.ensure_protected_authority()?;
-    if journal
-        .protected
-        .as_ref()
-        .map(|location| location.name())
-        != Some(JOURNAL_NAME)
-    {
+    if journal.protected.as_ref().map(|location| location.name()) != Some(JOURNAL_NAME) {
         return Err(JournalError::ProtectedBoundary);
     }
     Ok(())

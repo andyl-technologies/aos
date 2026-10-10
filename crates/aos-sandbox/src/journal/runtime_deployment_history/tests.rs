@@ -252,15 +252,30 @@ fn unrun_actual_unrelated_protected_opener_captures_other_and_keeps_compaction()
     let directory = tempfile::tempdir().unwrap();
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let uid = std::fs::metadata(directory.path()).unwrap().uid();
-    let (mut journal, _) = Journal::open_protected_at_uid(
-        directory.path(), MAIN_NAME, MAIN_LIMITS, uid,
-    ).unwrap();
-    assert!(journal.protected.as_ref().unwrap().original_compaction_selection()
-        == &OriginalCompactionSelectionV1::Other);
+    let (mut journal, _) =
+        Journal::open_protected_at_uid(directory.path(), MAIN_NAME, MAIN_LIMITS, uid).unwrap();
+    assert!(
+        journal
+            .protected
+            .as_ref()
+            .unwrap()
+            .original_compaction_selection()
+            == &OriginalCompactionSelectionV1::Other
+    );
 
-    journal.commit(&JournalTransaction::new([96; 16], vec![
-        JournalRecord::put(NAMESPACE, b"unrelated-catalog".to_vec(), b"data".to_vec()),
-    ]).unwrap()).unwrap();
+    journal
+        .commit(
+            &JournalTransaction::new(
+                [96; 16],
+                vec![JournalRecord::put(
+                    NAMESPACE,
+                    b"unrelated-catalog".to_vec(),
+                    b"data".to_vec(),
+                )],
+            )
+            .unwrap(),
+        )
+        .unwrap();
     assert!(require_no_compaction(&journal).is_ok());
     assert!(journal.compact().is_ok());
 }
@@ -293,9 +308,9 @@ fn unrun_read_at_cursor_borrows_the_original_file_identity() {
 
     assert!(FileIdentity::of::<crate::journal::JournalError>(borrowed).unwrap() == original);
     assert!(fixture.audit(&mut reader, bytes.len() as u64).is_ok());
-    let after = FileIdentity::of::<crate::journal::JournalError>(
-        <ReadAtCursorV1<'_> as Borrow<File>>::borrow(&reader),
-    )
+    let after = FileIdentity::of::<crate::journal::JournalError>(<ReadAtCursorV1<'_> as Borrow<
+        File,
+    >>::borrow(&reader))
     .unwrap();
     assert!(after == original);
     assert_eq!((&file).stream_position().unwrap(), 11);
@@ -374,20 +389,29 @@ fn unrun_readonly_and_existing_openers_capture_actual_unrelated_origin() {
     )
     .unwrap();
 
-    assert!(readonly.journal.protected.as_ref().unwrap().original_compaction_selection()
-        == &OriginalCompactionSelectionV1::Other);
+    assert!(
+        readonly
+            .journal
+            .protected
+            .as_ref()
+            .unwrap()
+            .original_compaction_selection()
+            == &OriginalCompactionSelectionV1::Other
+    );
     assert!(require_no_compaction(&readonly.journal).is_ok());
     drop(readonly);
     drop(writer);
 
-    let (existing, _) = Journal::open_existing_protected_at_uid(
-        directory.path(),
-        MAIN_NAME,
-        MAIN_LIMITS,
-        uid,
-    )
-    .unwrap();
-    assert!(existing.protected.as_ref().unwrap().original_compaction_selection()
-        == &OriginalCompactionSelectionV1::Other);
+    let (existing, _) =
+        Journal::open_existing_protected_at_uid(directory.path(), MAIN_NAME, MAIN_LIMITS, uid)
+            .unwrap();
+    assert!(
+        existing
+            .protected
+            .as_ref()
+            .unwrap()
+            .original_compaction_selection()
+            == &OriginalCompactionSelectionV1::Other
+    );
     assert!(require_no_compaction(&existing).is_ok());
 }

@@ -1026,7 +1026,9 @@ pub(crate) fn require_capacity_owner(
             }
         }
         GlobalCapacityReservationPurposeV1::SourceFirstSourceSuccessorAck => {
-            let location = journal.protected.as_ref()
+            let location = journal
+                .protected
+                .as_ref()
                 .ok_or(JournalError::ProtectedBoundary)?;
             if location.expected_uid() == 0 {
                 return Err(JournalError::ProtectedBoundary);
@@ -1039,7 +1041,9 @@ pub(crate) fn require_capacity_owner(
             )
         }
         GlobalCapacityReservationPurposeV1::ControllerFirstSourceSuccessorComplete => {
-            let location = journal.protected.as_ref()
+            let location = journal
+                .protected
+                .as_ref()
                 .ok_or(JournalError::ProtectedBoundary)?;
             if location.expected_uid() == 0 {
                 return Err(JournalError::ProtectedBoundary);

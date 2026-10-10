@@ -996,9 +996,7 @@ impl Journal {
         &self,
         catalog: &'data GitCoverageCatalogV1<'data>,
     ) -> Result<GitCoverageNativePrefixLoanV1<'_>, GitCoverageNativeHistoryErrorV1> {
-        if self.protected.as_ref().map(|location| location.name())
-            != Some("bootstrap-v1.journal")
-        {
+        if self.protected.as_ref().map(|location| location.name()) != Some("bootstrap-v1.journal") {
             return Err(GitCoverageNativeHistoryErrorV1 {
                 first: JournalError::ProtectedBoundary,
                 final_bookend: None,
@@ -1097,13 +1095,17 @@ impl Journal {
             }
             let mut cursor = ReadAtCursorV1::new(self.native.file(), witness.file().byte_len());
             let replayed = replay_original_observed(
-                &mut cursor, self.native.limits(), None,
+                &mut cursor,
+                self.native.limits(),
+                None,
                 Some(DeploymentHistoryObserverV1::GitCoverage(&mut observer)),
             )?;
             require_replayed_snapshot(self, &replayed, &observer, witness.file().byte_len())?;
-            if matches!(recipe, NativePrefixRecipeV1::OwnerCoverage(
-                GitCoverageJournalProfileV1::Controller,
-            )) && observer.publisher_account_seen {
+            if matches!(
+                recipe,
+                NativePrefixRecipeV1::OwnerCoverage(GitCoverageJournalProfileV1::Controller,)
+            ) && observer.publisher_account_seen
+            {
                 crate::publisher_policy::PublisherPolicyStore::require_complete_coverage_read_state_v1(
                     self.native.state(),
                 ).map_err(|_| JournalError::ProtectedBoundary)?;

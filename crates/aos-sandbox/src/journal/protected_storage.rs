@@ -35,17 +35,15 @@ pub(crate) use opening::{
 pub(super) use opening::{ProtectedJournalOpenMode, ProtectedOwnerPolicy};
 
 pub(super) use aos_sandbox_journal::protected_storage::{
-    FileIdentity, MAXIMUM_PROTECTED_COMPONENT_BYTES,
-    MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES, ProtectedAncestry,
-    open_protected_file, open_protected_file_into,
+    FileIdentity, MAXIMUM_PROTECTED_COMPONENT_BYTES, MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES,
+    ProtectedAncestry, open_protected_file, open_protected_file_into,
     open_protected_file_into_original, open_read_only_protected_file,
-    open_read_only_protected_file_original, protected_compaction_name,
-    protected_directory_flags, protected_open_error, reject_operator_provisioning_history,
-    reject_stale_protected_compaction, remove_stale_protected_compaction,
-    require_opened_directory_identity, require_protected_file_names_current,
-    resolve_protected_directory_from_root, resolve_protected_directory_from_root_original,
-    rustix_io,
-    traverse_protected_directory, validate_basename, validate_protected_fd,
+    open_read_only_protected_file_original, protected_compaction_name, protected_directory_flags,
+    protected_open_error, reject_operator_provisioning_history, reject_stale_protected_compaction,
+    remove_stale_protected_compaction, require_opened_directory_identity,
+    require_protected_file_names_current, resolve_protected_directory_from_root,
+    resolve_protected_directory_from_root_original, rustix_io, traverse_protected_directory,
+    validate_basename, validate_protected_fd,
 };
 
 pub(crate) use aos_sandbox_journal::protected_storage::ProtectedWriterNameWitness;
@@ -97,7 +95,9 @@ impl ProtectedJournalLockCustodyV1 {
             || metadata.len() != 0
             || metadata.nlink() != 1
             || metadata.mode() & 0o7777 != 0o600
-            || fcntl_getfl(&self.lock).map_err(rustix_io::<crate::journal::JournalError>)? & OFlags::ACCMODE != OFlags::RDWR
+            || fcntl_getfl(&self.lock).map_err(rustix_io::<crate::journal::JournalError>)?
+                & OFlags::ACCMODE
+                != OFlags::RDWR
         {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -143,7 +143,9 @@ impl ReadOnlyProtectedJournal {
     /// Re-resolves the directory and both physical names independently.
     pub(crate) fn check_named_currentness(&self) -> Result<(), JournalError> {
         self.witness.check_named_currentness()?;
-        self.witness.physical.require_file_identity::<JournalError>(self.journal.native.file())?;
+        self.witness
+            .physical
+            .require_file_identity::<JournalError>(self.journal.native.file())?;
         Ok(())
     }
 
@@ -157,7 +159,9 @@ impl ReadOnlyProtectedJournal {
     /// Checks the retained name using the test fixture's exact UID.
     pub(crate) fn check_named_currentness_at_uid_for_test(&self) -> Result<(), JournalError> {
         self.witness.check_named_currentness_at_uid_for_test()?;
-        self.witness.physical.require_file_identity::<JournalError>(self.journal.native.file())?;
+        self.witness
+            .physical
+            .require_file_identity::<JournalError>(self.journal.native.file())?;
         Ok(())
     }
 
@@ -174,7 +178,8 @@ impl ReadOnlyJournalNameWitness {
 
     #[cfg(test)]
     pub(crate) fn check_named_currentness_at_uid_for_test(&self) -> Result<(), JournalError> {
-        self.physical.check_named_currentness_at_uid_for_test::<JournalError>()
+        self.physical
+            .check_named_currentness_at_uid_for_test::<JournalError>()
     }
 
     pub(super) fn check_in_directory(&self, directory: &File) -> Result<(), JournalError> {
@@ -247,8 +252,13 @@ impl Journal {
             .protected
             .as_ref()
             .ok_or(JournalError::ProtectedBoundary)?;
-        let witness = location.writer_witness::<JournalError>(self.native.file(), self.native.lock_file())?;
-        Ok(names_from_identities(witness.directory(), witness.file(), witness.lock()))
+        let witness =
+            location.writer_witness::<JournalError>(self.native.file(), self.native.lock_file())?;
+        Ok(names_from_identities(
+            witness.directory(),
+            witness.file(),
+            witness.lock(),
+        ))
     }
 
     pub(crate) fn validate_protected_writer_name_witness(
@@ -260,7 +270,11 @@ impl Journal {
             .as_ref()
             .ok_or(JournalError::ProtectedBoundary)?;
         self.require_protected_names_current()?;
-        location.require_writer_witness::<JournalError>(self.native.file(), self.native.lock_file(), witness)
+        location.require_writer_witness::<JournalError>(
+            self.native.file(),
+            self.native.lock_file(),
+            witness,
+        )
     }
 
     #[cfg(any(test, all(feature = "test-fixtures", debug_assertions)))]
@@ -282,7 +296,8 @@ impl Journal {
             return Err(JournalError::ProtectedBoundary);
         }
         // Keep this independent description through the original name bookend.
-        let _current = retained.require_directory_at_uid_for_test::<JournalError>(directory_path, expected_uid)?;
+        let _current = retained
+            .require_directory_at_uid_for_test::<JournalError>(directory_path, expected_uid)?;
         self.require_protected_names_current()
     }
 
@@ -421,23 +436,20 @@ pub(super) fn require_empty_operator_provisioning_state(
     Ok(())
 }
 
-
 pub(super) fn compact_protected(
     location: &ProtectedJournalLocation,
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     limits: JournalLimits,
 ) -> Result<(File, ReplayState), JournalError> {
-    let (temporary, mut replacement, mut cleanup) =
-        location.begin_replacement::<JournalError>()?;
+    let (temporary, mut replacement, mut cleanup) = location.begin_replacement::<JournalError>()?;
     write_compacted(&mut replacement, state, limits)?;
     replacement.sync_all()?;
     if replacement.metadata()?.len() > limits.maximum_journal_bytes {
         return Err(JournalError::JournalTooLarge);
     }
     drop(replacement);
-    let mut file = location.install_replacement::<JournalError>(
-        temporary.as_str(), &mut cleanup,
-    )?;
+    let mut file =
+        location.install_replacement::<JournalError>(temporary.as_str(), &mut cleanup)?;
     let replay = replay(&mut file, limits)?;
     if replay.durable_end != file.metadata()?.len() {
         return Err(JournalError::MalformedTransaction(

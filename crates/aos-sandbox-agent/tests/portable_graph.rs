@@ -61,12 +61,7 @@ fn portable_production_graphs_have_no_linux_or_effect_owner() -> Result<(), Box<
         ),
     ];
     for (root_name, allowed_path_packages) in roots {
-        check_production_graph(
-            root_name,
-            allowed_path_packages,
-            packages,
-            &cargo,
-        )?;
+        check_production_graph(root_name, allowed_path_packages, packages, &cargo)?;
     }
     Ok(())
 }
@@ -99,9 +94,19 @@ fn check_production_graph(
     // can unify Domain's explicitly selected physical feature into this node.
     let output = Command::new(cargo)
         .args([
-            "tree", "--package", root_name, "--edges", "normal",
-            "--target", "all", "--prefix", "none", "--format", "{p}",
-            "--locked", "--offline",
+            "tree",
+            "--package",
+            root_name,
+            "--edges",
+            "normal",
+            "--target",
+            "all",
+            "--prefix",
+            "none",
+            "--format",
+            "{p}",
+            "--locked",
+            "--offline",
         ])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()?;
@@ -113,11 +118,15 @@ fn check_production_graph(
     let graph = std::str::from_utf8(&output.stdout)?;
     let mut visited = BTreeSet::new();
     for line in graph.lines() {
-        let name = line.split_whitespace().next().ok_or("missing package name")?;
+        let name = line
+            .split_whitespace()
+            .next()
+            .ok_or("missing package name")?;
         if !visited.insert(name) {
             continue;
         }
-        let package = packages.iter()
+        let package = packages
+            .iter()
             .find(|package| package["name"].as_str() == Some(name))
             .ok_or("missing package")?;
         if package["source"].is_null() {

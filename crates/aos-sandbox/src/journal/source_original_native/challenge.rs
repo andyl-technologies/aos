@@ -66,13 +66,26 @@ impl SourceOriginalChallengeHistoryViewV5<'_> {
     /// # Errors
     ///
     /// Refuses changed held custody or an incomplete requested prefix.
-    pub fn current_prefix(&self) -> Result<((u64, u64), u64, aos_sandbox_core::ObjectDigest), JournalError> {
+    pub fn current_prefix(
+        &self,
+    ) -> Result<((u64, u64), u64, aos_sandbox_core::ObjectDigest), JournalError> {
         self.validate_current()?;
-        let identity = super::super::FileIdentity::of::<crate::journal::JournalError>(self.journal.native.file())?;
-        let sequence = self.sequence.checked_sub(1).ok_or(JournalError::SequenceExhausted)?;
-        Ok((identity.physical_pair(), sequence, challenge_prefix_digest(
-            identity.physical_pair(), sequence, &self.journal.source_challenge_history,
-        )))
+        let identity = super::super::FileIdentity::of::<crate::journal::JournalError>(
+            self.journal.native.file(),
+        )?;
+        let sequence = self
+            .sequence
+            .checked_sub(1)
+            .ok_or(JournalError::SequenceExhausted)?;
+        Ok((
+            identity.physical_pair(),
+            sequence,
+            challenge_prefix_digest(
+                identity.physical_pair(),
+                sequence,
+                &self.journal.source_challenge_history,
+            ),
+        ))
     }
 
     /// Requires an archived cut to name a real complete prefix of this actual file.

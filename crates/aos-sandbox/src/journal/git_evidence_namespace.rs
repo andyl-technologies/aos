@@ -10,7 +10,10 @@ impl Journal {
     /// Refuses foreign provenance and nonfresh empty evidence journals.
     pub(crate) fn require_fixed_git_evidence_namespace_v1(&self) -> Result<(), JournalError> {
         self.validate_held_protected_names()?;
-        let location = self.protected.as_ref().ok_or(JournalError::ProtectedBoundary)?;
+        let location = self
+            .protected
+            .as_ref()
+            .ok_or(JournalError::ProtectedBoundary)?;
         enum OriginalLabelDescriptor<'a> {
             Directory(&'a super::ProtectedJournalLocation),
             File(&'a std::fs::File),
@@ -22,8 +25,10 @@ impl Journal {
         ] {
             let mut context = [0_u8; 256];
             let length = match descriptor {
-                OriginalLabelDescriptor::Directory(location) => location.directory_xattr("security.selinux", &mut context[..]),
-                OriginalLabelDescriptor::File(file) => rustix::fs::fgetxattr(file, "security.selinux", &mut context[..]),
+                OriginalLabelDescriptor::Directory(location) =>
+                    location.directory_xattr("security.selinux", &mut context[..]),
+                OriginalLabelDescriptor::File(file) =>
+                    rustix::fs::fgetxattr(file, "security.selinux", &mut context[..]),
             }.map_err(super::rustix_io::<JournalError>)?;
             let actual = context[..length].strip_suffix(&[0]).unwrap_or(&context[..length]);
             if actual != b"system_u:object_r:aos_sandbox_policy_authority_state_t" {

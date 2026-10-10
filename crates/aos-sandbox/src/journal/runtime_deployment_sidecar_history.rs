@@ -190,7 +190,10 @@ impl Journal {
         owner.recheck().map_err(|_| JournalError::ProtectedBoundary)?;
         require_sidecar_capture_limits(self.native.limits())?;
         self.require_protected_named_location(
-            Path::new(MAIN_DIRECTORY_V1), SIDECAR_NAME, 0, self.native.limits(),
+            Path::new(MAIN_DIRECTORY_V1),
+            SIDECAR_NAME,
+            0,
+            self.native.limits(),
         )?;
         let witness = self.protected_writer_name_witness()?;
         let physical = FileIdentity::of::<crate::journal::JournalError>(self.native.file())?;
@@ -203,23 +206,27 @@ impl Journal {
         let result = (|| {
             let mut history = SidecarHistoryAuditV1::new(physical.byte_len())?;
             let mut reader = ReadAtCursorV1::new(self.native.file(), physical.byte_len());
-            let replayed = replay_sidecar_observed(&mut reader, self.native.limits(), &mut history)?;
+            let replayed =
+                replay_sidecar_observed(&mut reader, self.native.limits(), &mut history)?;
             let retained = history.finish(&replayed)?;
-            self.require_deployment_pair_replayed_snapshot_v1(
-                &replayed, physical.byte_len(),
-            )?;
+            self.require_deployment_pair_replayed_snapshot_v1(&replayed, physical.byte_len())?;
             Ok(retained)
         })();
 
         // These physical/origin bookends also run after a failed parse/copy.
         self.require_protected_named_location(
-            Path::new(MAIN_DIRECTORY_V1), SIDECAR_NAME, 0, self.native.limits(),
+            Path::new(MAIN_DIRECTORY_V1),
+            SIDECAR_NAME,
+            0,
+            self.native.limits(),
         )?;
         self.validate_protected_writer_name_witness(&witness)?;
         if FileIdentity::of::<crate::journal::JournalError>(self.native.file())? != physical {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
-        owner.recheck().map_err(|_| JournalError::ProtectedBoundary)?;
+        owner
+            .recheck()
+            .map_err(|_| JournalError::ProtectedBoundary)?;
         result
     }
 
@@ -360,7 +367,9 @@ pub(crate) fn observed_native_fixture_v1(
         let frames = u64::try_from(transaction.records().len())
             .ok().and_then(|records| records.checked_add(2))
             .ok_or(JournalError::SequenceExhausted)?;
-        sequence = sequence.checked_add(frames).ok_or(JournalError::SequenceExhausted)?;
+        sequence = sequence
+            .checked_add(frames)
+            .ok_or(JournalError::SequenceExhausted)?;
     }
     let physical = FileIdentity::of::<crate::journal::JournalError>(&file)?;
     let writer_position = file.stream_position()?;

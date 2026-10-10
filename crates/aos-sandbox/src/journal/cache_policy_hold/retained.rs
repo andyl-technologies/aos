@@ -439,8 +439,7 @@ impl RetainedCacheGateChecksV1 {
         let successor = target.protected_writer_name_witness()?;
         if successor.directory() != original.witness.directory()
             || successor.lock() != original.witness.lock()
-            || successor.file().physical_pair()
-                != original.witness.file().physical_pair()
+            || successor.file().physical_pair() != original.witness.file().physical_pair()
             || successor.file().byte_len() != length
             || target.snapshot_sequence() != sequence
             || sequence <= original.sequence

@@ -1939,7 +1939,10 @@ impl ProtectedJournalAuthority<'_> {
         if retained.expected_uid() != 0 || retained.name() != name {
             return Err(JournalError::ProtectedBoundary);
         }
-        let fixed = resolve_protected_directory_from_root::<crate::journal::JournalError>(Path::new(directory), 0)?;
+        let fixed = resolve_protected_directory_from_root::<crate::journal::JournalError>(
+            Path::new(directory),
+            0,
+        )?;
         retained.require_opened_directory::<JournalError>(&fixed)?;
         Ok(())
     }
@@ -3709,7 +3712,9 @@ impl OriginalReleaseControllerCutCaptureV1 {
             .ok_or(JournalError::ProtectedBoundary)?;
         journal.require_original_release_cut_location_v1(self.purpose)?;
         journal.require_original_release_controller_replay_v1(
-            replayed, &self.history, witness.file().byte_len(),
+            replayed,
+            &self.history,
+            witness.file().byte_len(),
         )?;
         journal.validate_protected_writer_name_witness(witness)
     }
@@ -3791,10 +3796,13 @@ impl Journal {
         // replay; allocator nodes and nested validator work remain separate
         // funding obligations, not implied by this native headroom check.
         captured.copy_bound = Some((|| {
-            let witness = captured.protection.as_ref()
+            let witness = captured
+                .protection
+                .as_ref()
                 .and_then(|returned| returned.as_ref().ok())
                 .ok_or(JournalError::ProtectedBoundary)?;
-            let bytes = self.original_release_controller_replay_copy_bytes_v1(witness.file().byte_len())?;
+            let bytes =
+                self.original_release_controller_replay_copy_bytes_v1(witness.file().byte_len())?;
             if bytes > self.native.limits().maximum_materialized_bytes {
                 return Err(JournalError::LimitExceeded("original Release replay copy"));
             }
@@ -3819,7 +3827,8 @@ impl Journal {
         if captured.first.is_none() && readback.is_none_or(Result::is_ok) {
             if let Some(Ok(witness)) = captured.protection.as_ref() {
                 let mut reader = runtime_deployment_history::ReadAtCursorV1::new(
-                    self.native.file(), witness.file().byte_len(),
+                    self.native.file(),
+                    witness.file().byte_len(),
                 );
                 // The original native Result is parked before projecting its
                 // full-map comparison, including partial-replay failure.
@@ -3840,10 +3849,15 @@ impl Journal {
                 if let Some(Ok(replayed)) = captured.native.as_ref() {
                     captured.comparison = Some(match challenges {
                         Some(challenges) => self.require_original_release_source_replay_v1(
-                            replayed, &captured.history, witness.file().byte_len(), challenges,
+                            replayed,
+                            &captured.history,
+                            witness.file().byte_len(),
+                            challenges,
                         ),
                         None => self.require_original_release_controller_replay_v1(
-                            replayed, &captured.history, witness.file().byte_len(),
+                            replayed,
+                            &captured.history,
+                            witness.file().byte_len(),
                         ),
                     });
                     if matches!(captured.comparison, Some(Err(_))) {
@@ -3911,10 +3925,13 @@ impl Journal {
                 .and_then(|returned| returned.as_ref().ok())
                 .ok_or(JournalError::ProtectedBoundary)?;
             let bytes = self.original_release_source_replay_copy_bytes_v1(
-                witness.file().byte_len(), challenges,
+                witness.file().byte_len(),
+                challenges,
             )?;
             if bytes > self.native.limits().maximum_materialized_bytes {
-                return Err(JournalError::LimitExceeded("Source original Release replay copy"));
+                return Err(JournalError::LimitExceeded(
+                    "Source original Release replay copy",
+                ));
             }
             Ok(())
         })());
@@ -4172,7 +4189,8 @@ fn replay_original_retained<R: Read + Seek + Borrow<File>>(
     let mut reached_prospective = None;
     let retained = scratch.is_some();
     let outcome: Result<(), JournalError> = (|| {
-        let source_journal_identity = FileIdentity::of::<crate::journal::JournalError>(<R as Borrow<File>>::borrow(file))?;
+        let source_journal_identity =
+            FileIdentity::of::<crate::journal::JournalError>(<R as Borrow<File>>::borrow(file))?;
 
         loop {
             let Some((frame, bytes_read)) = read_frame_retained(
@@ -4296,8 +4314,9 @@ fn replay_original_retained<R: Read + Seek + Borrow<File>>(
                                 frame.sequence,
                                 begin_offset,
                                 offset,
-                                committed_transactions.checked_add(1)
-                                    .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
+                                committed_transactions.checked_add(1).ok_or(
+                                    JournalError::LimitExceeded("committed transaction count"),
+                                )?,
                                 source_journal_identity.physical_pair(),
                             )?;
                             if !source_edge {
@@ -5494,7 +5513,9 @@ mod tests {
 
     #[test]
     fn operator_provisioning_refuses_all_physical_history() {
-        assert!(super::reject_operator_provisioning_history::<crate::journal::JournalError>(0).is_ok());
+        assert!(
+            super::reject_operator_provisioning_history::<crate::journal::JournalError>(0).is_ok()
+        );
         for length in [1, 32, 4096, u64::MAX] {
             assert!(matches!(
                 super::reject_operator_provisioning_history::<crate::journal::JournalError>(length),
@@ -5554,12 +5575,19 @@ mod tests {
         let identity = FileIdentity::of::<crate::journal::JournalError>(&opened).unwrap();
 
         assert!(
-            require_opened_directory_identity::<crate::journal::JournalError>(&opened, identity.physical_pair()).is_ok()
+            require_opened_directory_identity::<crate::journal::JournalError>(
+                &opened,
+                identity.physical_pair()
+            )
+            .is_ok()
         );
         assert!(matches!(
             require_opened_directory_identity::<crate::journal::JournalError>(
                 &opened,
-                (identity.physical_pair().0, identity.physical_pair().1.wrapping_add(1)),
+                (
+                    identity.physical_pair().0,
+                    identity.physical_pair().1.wrapping_add(1)
+                ),
             ),
             Err(JournalError::ProtectedBoundary)
         ));
@@ -6702,14 +6730,19 @@ mod tests {
         for owners in [vec![0, 0, 1000, 1000], vec![1000, 1000]] {
             let mut policy = ProtectedAncestry::new(1000);
             for uid in owners {
-                policy.admit_metadata::<crate::journal::JournalError>(uid, directory_mode).unwrap();
+                policy
+                    .admit_metadata::<crate::journal::JournalError>(uid, directory_mode)
+                    .unwrap();
             }
         }
         for owners in [vec![0, 1001], vec![0, 1000, 1001], vec![0, 1000, 0]] {
             let mut policy = ProtectedAncestry::new(1000);
             let mut rejected = false;
             for uid in owners {
-                if policy.admit_metadata::<crate::journal::JournalError>(uid, directory_mode).is_err() {
+                if policy
+                    .admit_metadata::<crate::journal::JournalError>(uid, directory_mode)
+                    .is_err()
+                {
                     rejected = true;
                     break;
                 }
@@ -6717,9 +6750,17 @@ mod tests {
             assert!(rejected);
         }
         let mut root_only = ProtectedAncestry::new(0);
-        root_only.admit_metadata::<crate::journal::JournalError>(0, directory_mode).unwrap();
-        root_only.admit_metadata::<crate::journal::JournalError>(0, directory_mode).unwrap();
-        assert!(root_only.admit_metadata::<crate::journal::JournalError>(1000, directory_mode).is_err());
+        root_only
+            .admit_metadata::<crate::journal::JournalError>(0, directory_mode)
+            .unwrap();
+        root_only
+            .admit_metadata::<crate::journal::JournalError>(0, directory_mode)
+            .unwrap();
+        assert!(
+            root_only
+                .admit_metadata::<crate::journal::JournalError>(1000, directory_mode)
+                .is_err()
+        );
     }
 
     #[test]
@@ -6729,7 +6770,10 @@ mod tests {
                 let mut policy = ProtectedAncestry::new(1000);
                 assert!(
                     policy
-                        .admit_metadata::<crate::journal::JournalError>(owner, rustix::fs::FileType::Directory.as_raw_mode() | mode)
+                        .admit_metadata::<crate::journal::JournalError>(
+                            owner,
+                            rustix::fs::FileType::Directory.as_raw_mode() | mode
+                        )
                         .is_err()
                 );
             }
@@ -7307,7 +7351,15 @@ mod tests {
         fs::write(&collision, b"stale").unwrap();
         fs::set_permissions(&collision, fs::Permissions::from_mode(0o600)).unwrap();
         assert!(
-            open_protected_file::<crate::journal::JournalError>(&directory_fd, "collision.tmp", uid, true, true, true).is_err()
+            open_protected_file::<crate::journal::JournalError>(
+                &directory_fd,
+                "collision.tmp",
+                uid,
+                true,
+                true,
+                true
+            )
+            .is_err()
         );
         assert_eq!(fs::read(&collision).unwrap(), b"stale");
 
@@ -7316,7 +7368,15 @@ mod tests {
         fs::write(&victim, b"unchanged").unwrap();
         symlink(&victim, &collision).unwrap();
         assert!(
-            open_protected_file::<crate::journal::JournalError>(&directory_fd, "collision.tmp", uid, true, true, true).is_err()
+            open_protected_file::<crate::journal::JournalError>(
+                &directory_fd,
+                "collision.tmp",
+                uid,
+                true,
+                true,
+                true
+            )
+            .is_err()
         );
         assert_eq!(fs::read(&victim).unwrap(), b"unchanged");
     }

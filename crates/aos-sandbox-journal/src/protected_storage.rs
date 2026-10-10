@@ -14,8 +14,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
 use rustix::fs::{
-    AtFlags, CWD, FileType, Mode, OFlags, ResolveFlags, fstat, fsync, openat2,
-    renameat, statat,
+    AtFlags, CWD, FileType, Mode, OFlags, ResolveFlags, fstat, fsync, openat2, renameat, statat,
 };
 
 /// Supplies only the original static physical refusal categories.
@@ -103,7 +102,6 @@ pub struct ProtectedWriterNameWitness {
     file: FileIdentity,
     lock: FileIdentity,
 }
-
 
 impl ProtectedWriterNameWitness {
     /// Returns the retained Directory observation.
@@ -197,9 +195,17 @@ impl ReadOnlyJournalNameWitness {
     /// Moves the original path/name/UID and three observations without validation.
     #[must_use]
     pub fn from_original_parts(
-        parts: (PathBuf, String, u32, FileIdentity, FileIdentity, FileIdentity),
+        parts: (
+            PathBuf,
+            String,
+            u32,
+            FileIdentity,
+            FileIdentity,
+            FileIdentity,
+        ),
     ) -> Self {
-        let (directory_path, name, expected_uid, directory_identity, file_identity, lock_identity) = parts;
+        let (directory_path, name, expected_uid, directory_identity, file_identity, lock_identity) =
+            parts;
         Self {
             directory_path,
             name,
@@ -283,7 +289,9 @@ impl<P> ProtectedJournalLocation<P> {
         let current = resolve_protected_directory_from_root::<E>(path, uid)?;
         let retained_stat = fstat(&self.directory).map_err(rustix_io::<E>)?;
         let current_stat = fstat(&current).map_err(rustix_io::<E>)?;
-        if retained_stat.st_dev != current_stat.st_dev || retained_stat.st_ino != current_stat.st_ino {
+        if retained_stat.st_dev != current_stat.st_dev
+            || retained_stat.st_ino != current_stat.st_ino
+        {
             return Err(E::BOUNDARY);
         }
         Ok(current)
@@ -296,7 +304,9 @@ impl<P> ProtectedJournalLocation<P> {
     pub fn require_opened_directory<E: ProtectedFailure>(&self, current: &File) -> Result<(), E> {
         let retained_stat = fstat(&self.directory).map_err(rustix_io::<E>)?;
         let current_stat = fstat(current).map_err(rustix_io::<E>)?;
-        if retained_stat.st_dev != current_stat.st_dev || retained_stat.st_ino != current_stat.st_ino {
+        if retained_stat.st_dev != current_stat.st_dev
+            || retained_stat.st_ino != current_stat.st_ino
+        {
             return Err(E::BOUNDARY);
         }
         Ok(())
@@ -307,14 +317,24 @@ impl<P> ProtectedJournalLocation<P> {
     /// # Errors
     /// Preserves original opening, inspection, and stale-name failures.
     pub fn require_names<E: ProtectedFailure>(&self, lock: &File, file: &File) -> Result<(), E> {
-        require_protected_file_names_current::<E>(&self.directory, &self.name, self.expected_uid, lock, file)
+        require_protected_file_names_current::<E>(
+            &self.directory,
+            &self.name,
+            self.expected_uid,
+            lock,
+            file,
+        )
     }
 
     /// Samples Directory, Journal, and Lock in the original writer order.
     ///
     /// # Errors
     /// Returns the first original metadata failure.
-    pub fn writer_witness<E: ProtectedFailure>(&self, file: &File, lock: &File) -> Result<ProtectedWriterNameWitness, E> {
+    pub fn writer_witness<E: ProtectedFailure>(
+        &self,
+        file: &File,
+        lock: &File,
+    ) -> Result<ProtectedWriterNameWitness, E> {
         Ok(ProtectedWriterNameWitness {
             directory: FileIdentity::of::<E>(&self.directory)?,
             file: FileIdentity::of::<E>(file)?,
@@ -374,34 +394,35 @@ impl<P> ProtectedJournalLocation<P> {
         temporary: &str,
         cleanup: &mut ProtectedTemporary<'_>,
     ) -> Result<File, E> {
-        renameat(&self.directory, temporary, &self.directory, self.name.as_str()).map_err(rustix_io::<E>)?;
+        renameat(
+            &self.directory,
+            temporary,
+            &self.directory,
+            self.name.as_str(),
+        )
+        .map_err(rustix_io::<E>)?;
         cleanup.disarm();
         fsync(&self.directory).map_err(rustix_io::<E>)?;
-        open_protected_file::<E>(&self.directory, &self.name, self.expected_uid, false, false, false)
+        open_protected_file::<E>(
+            &self.directory,
+            &self.name,
+            self.expected_uid,
+            false,
+            false,
+            false,
+        )
     }
 }
 
 mod opening;
 pub use opening::{
-    ProtectedAncestry,
-    ProtectedTemporary,
-    protected_directory_flags,
-    resolve_protected_directory_from_root,
-    resolve_protected_directory_from_root_original,
-    traverse_protected_directory,
-    validate_basename,
-    rustix_io,
-    protected_open_error,
-    protected_compaction_name,
-    reject_operator_provisioning_history,
-    remove_stale_protected_compaction,
-    reject_stale_protected_compaction,
-    validate_protected_fd,
-    open_protected_file,
-    open_protected_file_into,
-    open_protected_file_into_original,
-    open_read_only_protected_file,
-    require_protected_file_names_current,
+    ProtectedAncestry, ProtectedTemporary, protected_directory_flags,
+    resolve_protected_directory_from_root, resolve_protected_directory_from_root_original,
+    traverse_protected_directory, validate_basename, rustix_io, protected_open_error,
+    protected_compaction_name, reject_operator_provisioning_history,
+    remove_stale_protected_compaction, reject_stale_protected_compaction, validate_protected_fd,
+    open_protected_file, open_protected_file_into, open_protected_file_into_original,
+    open_read_only_protected_file, require_protected_file_names_current,
     open_read_only_protected_file_original,
 };
 
@@ -449,7 +470,6 @@ pub fn inspect_original_file_metadata(
     ))
 }
 
-
 impl<P> ProtectedJournalLocation<P> {
     /// Samples the original complete directory metadata recipe.
     ///
@@ -475,7 +495,11 @@ impl<P> ProtectedJournalLocation<P> {
     ///
     /// # Errors
     /// Returns the original xattr I/O error.
-    pub fn directory_xattr(&self, name: &str, bytes: &mut [u8]) -> Result<usize, rustix::io::Errno> {
+    pub fn directory_xattr(
+        &self,
+        name: &str,
+        bytes: &mut [u8],
+    ) -> Result<usize, rustix::io::Errno> {
         rustix::fs::fgetxattr(&self.directory, name, bytes)
     }
 
@@ -524,7 +548,10 @@ impl<P> ProtectedJournalLocation<P> {
     ///
     /// # Errors
     /// Returns the original openat errno.
-    pub fn open_exclusive_stage(&self, name: &str) -> Result<std::os::fd::OwnedFd, rustix::io::Errno> {
+    pub fn open_exclusive_stage(
+        &self,
+        name: &str,
+    ) -> Result<std::os::fd::OwnedFd, rustix::io::Errno> {
         rustix::fs::openat(
             &self.directory,
             name,
@@ -538,7 +565,11 @@ impl<P> ProtectedJournalLocation<P> {
     /// # Errors
     /// Returns the original rename errno.
     #[cfg(target_os = "linux")]
-    pub fn publish_exclusive_stage(&self, temporary: &str, output: &str) -> Result<(), rustix::io::Errno> {
+    pub fn publish_exclusive_stage(
+        &self,
+        temporary: &str,
+        output: &str,
+    ) -> Result<(), rustix::io::Errno> {
         rustix::fs::renameat_with(
             &self.directory,
             temporary,
@@ -570,10 +601,20 @@ impl<P> ProtectedJournalLocation<P> {
     /// # Errors
     /// Returns original physical opening, inspection, or stale-name failures.
     #[cfg(any(test, feature = "test-fixtures"))]
-    pub fn require_directory_at_uid_for_test<E: ProtectedFailure>(&self, path: &Path, uid: u32) -> Result<File, E> {
-        let current: File = openat2(CWD, path, protected_directory_flags(), Mode::empty(),
-            ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS)
-            .map_err(protected_open_error::<E>)?.into();
+    pub fn require_directory_at_uid_for_test<E: ProtectedFailure>(
+        &self,
+        path: &Path,
+        uid: u32,
+    ) -> Result<File, E> {
+        let current: File = openat2(
+            CWD,
+            path,
+            protected_directory_flags(),
+            Mode::empty(),
+            ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
+        )
+        .map_err(protected_open_error::<E>)?
+        .into();
         validate_protected_fd::<E>(&current, uid, FileType::Directory, Mode::RWXU)?;
         let held = fstat(&self.directory).map_err(rustix_io::<E>)?;
         let named = fstat(&current).map_err(rustix_io::<E>)?;
@@ -589,7 +630,13 @@ impl<P> ProtectedJournalLocation<P> {
     ///
     /// # Errors
     /// Returns the same original opening, inspection, or stale-name error.
-    pub fn require_named_files<E: ProtectedFailure>(&self, name: &str, uid: u32, lock: &File, file: &File) -> Result<(), E> {
+    pub fn require_named_files<E: ProtectedFailure>(
+        &self,
+        name: &str,
+        uid: u32,
+        lock: &File,
+        file: &File,
+    ) -> Result<(), E> {
         require_protected_file_names_current::<E>(&self.directory, name, uid, lock, file)
     }
 }

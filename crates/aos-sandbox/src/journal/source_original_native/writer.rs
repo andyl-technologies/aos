@@ -1252,10 +1252,16 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
     ) -> Result<SourceOriginalAppendSubjectV5, JournalError> {
         self.require_current()?;
         super::super::validate_transaction(transaction, self.configured_limits())?;
-        let identity = super::super::FileIdentity::of::<crate::journal::JournalError>(self.authority.journal.native.file())?;
+        let identity = super::super::FileIdentity::of::<crate::journal::JournalError>(
+            self.authority.journal.native.file(),
+        )?;
         let mutation_frames = u64::try_from(transaction.records().len())
             .map_err(|_| JournalError::SequenceExhausted)?;
-        let commit_sequence = self.authority.journal.native.next_sequence()
+        let commit_sequence = self
+            .authority
+            .journal
+            .native
+            .next_sequence()
             .checked_add(mutation_frames)
             .and_then(|sequence| sequence.checked_add(1))
             .ok_or(JournalError::SequenceExhausted)?;

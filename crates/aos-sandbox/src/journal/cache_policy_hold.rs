@@ -1371,10 +1371,7 @@ impl Journal {
             .as_ref()
             .ok_or(JournalError::ProtectedBoundary)?;
         if location.expected_uid() != uid
-            || !matches!(
-                location.name(),
-                "state.journal" | "authority.journal"
-            )
+            || !matches!(location.name(), "state.journal" | "authority.journal")
         {
             return Err(JournalError::ProtectedBoundary);
         }

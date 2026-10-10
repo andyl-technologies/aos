@@ -123,7 +123,9 @@ impl ReadOnlyJournalOpenOriginalsV1 {
         uid: u32,
         expected_directory: (u64, u64),
     ) -> Result<RecoveryReport, JournalError> {
-        self.directory = Some(resolve_protected_directory_from_root_original::<crate::journal::JournalError>(
+        self.directory = Some(resolve_protected_directory_from_root_original::<
+            crate::journal::JournalError,
+        >(
             path,
             uid,
             Some(&mut self.ancestors),
@@ -134,10 +136,9 @@ impl ReadOnlyJournalOpenOriginalsV1 {
             .as_ref()
             .and_then(|result| result.as_ref().ok())
             .ok_or(JournalError::ProtectedBoundary)?;
-        self.directory_binding = Some(require_opened_directory_identity::<crate::journal::JournalError>(
-            directory,
-            expected_directory,
-        ));
+        self.directory_binding = Some(require_opened_directory_identity::<
+            crate::journal::JournalError,
+        >(directory, expected_directory));
         require_controller_open_step(&self.directory_binding)?;
         validate_limits(limits)?;
         if name.len() > MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES {
@@ -151,11 +152,10 @@ impl ReadOnlyJournalOpenOriginalsV1 {
             .and_then(|result| result.as_ref().ok())
             .copied()
             .ok_or(JournalError::ProtectedBoundary)?;
-        self.lock_validation = Some(open_read_only_protected_file_original::<crate::journal::JournalError>(
-            directory,
-            &format!("{name}.lock"),
-            uid,
-            &mut self.lock,
+        self.lock_validation = Some(open_read_only_protected_file_original::<
+            crate::journal::JournalError,
+        >(
+            directory, &format!("{name}.lock"), uid, &mut self.lock
         ));
         require_controller_open_step(&self.lock_validation)?;
         let lock = self
@@ -170,12 +170,9 @@ impl ReadOnlyJournalOpenOriginalsV1 {
             .and_then(|result| result.as_ref().ok())
             .copied()
             .ok_or(JournalError::ProtectedBoundary)?;
-        self.file_validation = Some(open_read_only_protected_file_original::<crate::journal::JournalError>(
-            directory,
-            name,
-            uid,
-            &mut self.file,
-        ));
+        self.file_validation = Some(open_read_only_protected_file_original::<
+            crate::journal::JournalError,
+        >(directory, name, uid, &mut self.file));
         require_controller_open_step(&self.file_validation)?;
         let file = self
             .file
@@ -274,7 +271,9 @@ impl ReadOnlyJournalOpenOriginalsV1 {
         let file = self.file.as_ref()?.as_ref().ok()?;
         Some((|| {
             witness.check_named_currentness()?;
-            witness.physical.require_file_identity::<JournalError>(file)?;
+            witness
+                .physical
+                .require_file_identity::<JournalError>(file)?;
             Ok(())
         })())
     }
@@ -407,9 +406,16 @@ impl ProtectedWriterOpenOriginalsV1 {
             Protected(&'a ProtectedJournalLocation),
             Opened(&'a File),
         }
-        let directory = self.opening.protected.as_ref()
+        let directory = self
+            .opening
+            .protected
+            .as_ref()
             .map(OriginalDirectory::Protected)
-            .or(self.opening.directory.as_ref().map(OriginalDirectory::Opened))
+            .or(self
+                .opening
+                .directory
+                .as_ref()
+                .map(OriginalDirectory::Opened))
             .ok_or(JournalError::ProtectedBoundary)?;
         let current = resolve_protected_directory_from_root::<JournalError>(path, 0)?;
         match &directory {
@@ -517,14 +523,15 @@ impl ControllerJournalOpenOriginalsV1 {
         uid: u32,
         mut retention: Option<&mut WritableOpenRetentionV1>,
     ) -> Result<RecoveryReport, JournalError> {
-        let directory = resolve_protected_directory_from_root_original::<crate::journal::JournalError>(
-            path,
-            uid,
-            Some(&mut self.ancestors),
-            retention
-                .as_mut()
-                .map(|originals| &mut originals.directory_native_error),
-        );
+        let directory =
+            resolve_protected_directory_from_root_original::<crate::journal::JournalError>(
+                path,
+                uid,
+                Some(&mut self.ancestors),
+                retention
+                    .as_mut()
+                    .map(|originals| &mut originals.directory_native_error),
+            );
         self.directory = Some(match directory {
             Ok(directory) => directory,
             Err(error) => {
@@ -544,9 +551,16 @@ impl ControllerJournalOpenOriginalsV1 {
             .directory
             .as_ref()
             .ok_or(JournalError::ProtectedBoundary)?;
-        validate_protected_fd::<crate::journal::JournalError>(directory, uid, FileType::Directory, Mode::RWXU)?;
+        validate_protected_fd::<crate::journal::JournalError>(
+            directory,
+            uid,
+            FileType::Directory,
+            Mode::RWXU,
+        )?;
         let lock_name = format!("{name}.lock");
-        self.lock_open = Some(open_protected_file_into_original::<crate::journal::JournalError>(
+        self.lock_open = Some(open_protected_file_into_original::<
+            crate::journal::JournalError,
+        >(
             directory,
             &lock_name,
             uid,
@@ -573,9 +587,13 @@ impl ControllerJournalOpenOriginalsV1 {
             }),
         );
         require_controller_open_step(&self.lock_claim)?;
-        self.compaction = Some(remove_stale_protected_compaction::<crate::journal::JournalError>(directory, name));
+        self.compaction = Some(remove_stale_protected_compaction::<
+            crate::journal::JournalError,
+        >(directory, name));
         require_controller_open_step(&self.compaction)?;
-        self.file_open = Some(open_protected_file_into_original::<crate::journal::JournalError>(
+        self.file_open = Some(open_protected_file_into_original::<
+            crate::journal::JournalError,
+        >(
             directory,
             name,
             uid,
@@ -588,7 +606,8 @@ impl ControllerJournalOpenOriginalsV1 {
                 .map(|originals| &mut originals.file_native_error),
         ));
         require_controller_open_step(&self.file_open)?;
-        self.directory_sync = Some(fsync(directory).map_err(rustix_io::<crate::journal::JournalError>));
+        self.directory_sync =
+            Some(fsync(directory).map_err(rustix_io::<crate::journal::JournalError>));
         require_controller_open_step(&self.directory_sync)?;
 
         let protected_name = name.to_owned();
@@ -596,8 +615,7 @@ impl ControllerJournalOpenOriginalsV1 {
         let selection =
             runtime_deployment_history::OriginalCompactionSelectionV1::capture(path, name);
         self.protected = Some(ProtectedJournalLocation::from_original_parts((
-            self
-                .directory
+            self.directory
                 .take()
                 .ok_or(JournalError::ProtectedBoundary)?,
             protected_name,

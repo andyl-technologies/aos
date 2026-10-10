@@ -78,13 +78,20 @@ impl Journal {
             CanaryCommitMemberV2::Main => self.capture_runtime_deployment_main_history_v1(owner)?,
             CanaryCommitMemberV2::Sidecar => self.capture_runtime_deployment_sidecar_history_v1(owner)?,
         };
-        let last = history.transactions().last().ok_or(JournalError::ProtectedBoundary)?;
-        let distance = u64::try_from(transaction.records().len()).ok()
-            .and_then(|records| records.checked_add(1)).ok_or(JournalError::SequenceExhausted)?;
-        if last.transaction() != transaction || last.commit_sequence() != returned.commit_sequence
+        let last = history
+            .transactions()
+            .last()
+            .ok_or(JournalError::ProtectedBoundary)?;
+        let distance = u64::try_from(transaction.records().len())
+            .ok()
+            .and_then(|records| records.checked_add(1))
+            .ok_or(JournalError::SequenceExhausted)?;
+        if last.transaction() != transaction
+            || last.commit_sequence() != returned.commit_sequence
             || last.begin_sequence().checked_add(distance) != Some(returned.commit_sequence)
             || returned.commit_sequence.checked_add(1) != Some(last.next_sequence())
-            || last.next_sequence() != self.native.next_sequence() || returned.durable_bytes != before.byte_len()
+            || last.next_sequence() != self.native.next_sequence()
+            || returned.durable_bytes != before.byte_len()
         {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
@@ -158,14 +165,17 @@ impl Journal {
         let result = (|| {
             let mut history = if owner.canary_purpose().is_some() {
                 HistoryAuditV1::from_canary_bindings(self.native.state(), owner)?
-            } else { HistoryAuditV1::from_bindings(
-                self.native.state(),
-                owner.exact_bytes(),
-                owner.claims(),
-                owner.publisher_verifier(),
-            )? };
+            } else {
+                HistoryAuditV1::from_bindings(
+                    self.native.state(),
+                    owner.exact_bytes(),
+                    owner.claims(),
+                    owner.publisher_verifier(),
+                )?
+            };
             if matches!(observation, MainHistoryObservationV1::RetainNative) {
-                history.retained = Some(RetainedDeploymentNativeHistoryV1::new(physical.byte_len())?);
+                history.retained =
+                    Some(RetainedDeploymentNativeHistoryV1::new(physical.byte_len())?);
             }
 
             let mut reader = ReadAtCursorV1::new(self.native.file(), physical.byte_len());
@@ -176,8 +186,13 @@ impl Journal {
             match observation {
                 MainHistoryObservationV1::AuditOnly => Ok(None),
                 MainHistoryObservationV1::RetainNative => {
-                    self.require_deployment_pair_replayed_snapshot_v1(&replayed, physical.byte_len())?;
-                    let retained = history.retained.take()
+                    self.require_deployment_pair_replayed_snapshot_v1(
+                        &replayed,
+                        physical.byte_len(),
+                    )?;
+                    let retained = history
+                        .retained
+                        .take()
                         .ok_or(JournalError::ProtectedBoundary)?;
                     retained.finish(&replayed)?;
                     Ok(Some(retained))
@@ -187,14 +202,14 @@ impl Journal {
 
         // Recheck even after a failed parse/copy. No pathname is reopened, and no
         // seek on the append writer's shared open-file description occurs.
-        self.require_protected_named_location(
-            Path::new(MAIN_DIRECTORY_V1), MAIN_NAME, 0, limits,
-        )?;
+        self.require_protected_named_location(Path::new(MAIN_DIRECTORY_V1), MAIN_NAME, 0, limits)?;
         self.validate_protected_writer_name_witness(&witness)?;
         if FileIdentity::of::<crate::journal::JournalError>(self.native.file())? != physical {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
-        owner.recheck().map_err(|_| JournalError::ProtectedBoundary)?;
+        owner
+            .recheck()
+            .map_err(|_| JournalError::ProtectedBoundary)?;
         result
     }
 
