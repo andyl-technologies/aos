@@ -16,6 +16,43 @@ use serde::{Deserialize, Serialize};
 /// Bounds each diagnostic independently of provider or exception text.
 const MAX_RECORD_BYTES: usize = 2048;
 
+/// Reports a fixed read-failure category without provider or credential text.
+#[cfg(feature = "do-e2e")]
+pub(crate) fn record_read_failure(error: &anyhow::Error) {
+    use aos_hub_core::storage_work::StorageWorkError;
+
+    let category = error
+        .chain()
+        .find_map(|cause| {
+            if let Some(StorageWorkError::InvalidSnapshot) =
+                cause.downcast_ref::<StorageWorkError>()
+            {
+                return Some("binding_snapshot_invalid");
+            }
+
+            match cause.to_string().as_str() {
+                "immutable read resource window expired or unbounded" => {
+                    Some("read_window_expired")
+                }
+                "configured request original deadline elapsed" => Some("request_deadline_elapsed"),
+                "immutable read canceled" => Some("read_canceled"),
+                "direct external Native publication permission expired" => {
+                    Some("publication_permission_expired")
+                }
+                "private stage binding differs from independent publication" => {
+                    Some("binding_changed")
+                }
+                "original logical stage eligibility expired" => {
+                    Some("original_eligibility_expired")
+                }
+                _ => None,
+            }
+        })
+        .unwrap_or("unclassified");
+
+    worker::console_log!("direct_verification_read_failed {}", category);
+}
+
 /// Names the existing operation being entered, without claiming it completed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -678,6 +678,10 @@ async fn verify_with_attempt(
                 if let Some(observation) = fault_observation.as_ref() {
                     observation.finish(&result);
                 }
+                #[cfg(feature = "do-e2e")]
+                if let Err(error) = &result {
+                    super::qualification_attempt::record_read_failure(error);
+                }
                 result?
             };
             ensure!(

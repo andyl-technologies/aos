@@ -783,6 +783,8 @@ async fn dispatch(
                     "notAfter": lease.payload.not_after.get(),
                     "observedAt": object.clock().observed_at,
                     "maximumLifetime": object.timing_profile.maximum_lifetime.get(),
+                    "bindingIssuedAt": publication.snapshot.issued_at,
+                    "bindingExpiresAt": publication.snapshot.expires_at,
                 })
             );
             super::super::read_ownership::ReadWindow::from_lease(
