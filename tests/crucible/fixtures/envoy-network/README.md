@@ -67,7 +67,11 @@ acknowledge the boundary to A before their markers, and A emits last. C first
 waits until A has recorded east's acknowledgement, because a parked C would
 stop the only relay for it, and only then acknowledges, so A cannot park while
 C still depends on it. This ordering lets each VM park at its marker
-without interrupting the convergence check. West keeps sending requests while
+without interrupting the convergence check. A parked VM consumes no frames,
+and the host refuses a phase boundary while a frame is still in flight, so
+each VM also waits before its marker until no TCP socket is connecting,
+half-closed, or awaiting a peer's final FIN or ACK. Idle keep-alive and
+listening sockets stay open. West keeps sending requests while
 A receives and applies the first recovery group, then begins the 120-request
 measurement window. West commits the measurement and sends `followup-ready`
 before its marker; B, C, and east acknowledge A before their markers, C again

@@ -23,6 +23,37 @@ def guest(*arguments):
     subprocess.run(("crucible-guest", *arguments), check=True)
 
 
+# Linux TCP states that still owe this VM a connect or close-handshake frame:
+# SYN_SENT, SYN_RECV, FIN_WAIT1, FIN_WAIT2, CLOSE_WAIT, LAST_ACK, and CLOSING.
+TCP_TEARDOWN_STATES = frozenset(("02", "03", "04", "05", "08", "09", "0B"))
+TCP_TABLES = (Path("/proc/net/tcp"), Path("/proc/net/tcp6"))
+
+
+def tcp_teardown_pending():
+    for table in TCP_TABLES:
+        try:
+            rows = table.read_text().splitlines()[1:]
+        except FileNotFoundError:
+            continue
+        if any(row.split()[3] in TCP_TEARDOWN_STATES for row in rows):
+            return True
+    return False
+
+
+def phase_marker(marker):
+    """Emit a parking phase marker once no close handshake owes this VM a frame.
+
+    A parked VM consumes no frames, and the host refuses a phase boundary while
+    any frame is still in flight toward one.
+    """
+    deadline = time.monotonic() + 10
+    while tcp_teardown_pending():
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"west retained TCP teardown before {marker}")
+        time.sleep(0.01)
+    guest("event", marker)
+
+
 def request(sequence):
     try:
         with NO_PROXY.open(
@@ -72,7 +103,7 @@ def run_west():
     guest("event", "boot.route-ready")
     guest("semantic-marker", "network.converged", "instance-1")
     announce("converged")
-    guest("event", "fault.transport.ready")
+    phase_marker("fault.transport.ready")
 
     successful = 0
     lost = 0
@@ -165,7 +196,7 @@ def run_west():
                         "path:enum=a-c-east", f"sequence:u64={failover_sequence}",
                     )
                 announce("followup-ready")
-                guest("event", "fault.followup.ready")
+                phase_marker("fault.followup.ready")
             if window_requests == 240:
                 guest("semantic-marker", "campaign.complete", "instance-1")
 

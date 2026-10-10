@@ -115,6 +115,40 @@ wait_for_relayed_east_ack() {
   wait_for_control_boundary "ready/$phase/traffic-east"
 }
 
+# A parked VM consumes no frames, and the host refuses a phase boundary while
+# any frame is still in flight. A VM therefore emits its marker only after each
+# TCP close handshake that still owes it a frame has finished: no socket may be
+# connecting, half-closed, or awaiting the peer's final FIN or ACK. Established
+# keep-alive and listening sockets are idle and remain open.
+tcp_teardown_pending() {
+  for table in /proc/net/tcp /proc/net/tcp6; do
+    [ -r "$table" ] || continue
+    while read -r _slot _local _remote state _rest; do
+      case "$state" in
+        02|03|04|05|08|09|0B) return 0 ;;
+      esac
+    done < "$table"
+  done
+  return 1
+}
+
+teardown_poll_seconds=0.01
+teardown_poll_attempts=1000
+
+emit_phase_marker() {
+  marker=$1
+  attempts=0
+  while tcp_teardown_pending; do
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge "$teardown_poll_attempts" ]; then
+      echo "$role retained TCP teardown before $marker" >&2
+      return 1
+    fi
+    sleep "$teardown_poll_seconds"
+  done
+  crucible-guest event "$marker"
+}
+
 wait_for_peer_acks() {
   phase=$1
   for peer in router-b router-c traffic-east; do
@@ -231,11 +265,11 @@ run_router() {
     wait_for_control_boundary converged
     wait_for_relayed_east_ack transport
     acknowledge_control_boundary transport
-    crucible-guest event fault.transport.ready
+    emit_phase_marker fault.transport.ready
     wait_for_control_boundary followup-ready
     wait_for_relayed_east_ack followup
     acknowledge_control_boundary followup
-    crucible-guest event fault.followup.ready
+    emit_phase_marker fault.followup.ready
     wait "$envoy_pid" || :
     crucible-guest unreachable control-plane-crash-or-deadlock \
       'An Envoy router exited during the campaign'
@@ -250,13 +284,13 @@ run_router() {
   crucible-guest event boot.route-ready
   while [ ! -e /run/converged ]; do sleep 0.1; done
   wait_for_peer_acks transport
-  crucible-guest event fault.transport.ready
+  emit_phase_marker fault.transport.ready
   choose_recovery transport/one 1 transport
   touch /run/transport-applied
   crucible-guest semantic-marker fault.transport.signaled instance-1
   while [ ! -e /run/followup-ready ]; do sleep 0.1; done
   wait_for_peer_acks followup
-  crucible-guest event fault.followup.ready
+  emit_phase_marker fault.followup.ready
   choose_recovery followup/one 2 followup
   crucible-guest sometimes selection-acknowledged-once \
     'Both guest response envelopes were acknowledged' 1
@@ -273,10 +307,10 @@ run_east() {
   crucible-guest event boot.local-healthy
   wait_for_control_boundary converged
   acknowledge_control_boundary transport
-  crucible-guest event fault.transport.ready
+  emit_phase_marker fault.transport.ready
   wait_for_control_boundary followup-ready
   acknowledge_control_boundary followup
-  crucible-guest event fault.followup.ready
+  emit_phase_marker fault.followup.ready
   wait "$server_pid"
 }
 
