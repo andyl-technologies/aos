@@ -84,8 +84,9 @@ pub use scripted::InstalledScriptedSourceProfile;
 pub use seeded::InstalledSeededLinkProfile;
 pub use semantics::InstalledHostSemanticProfile;
 pub use transcript::{
-    InstalledConditionalReplay, InstalledRecordedWorld, InstalledReferenceRecording,
-    InstalledReplayRecipe,
+    InstalledConditionalReplay, InstalledOriginalLineageAuthority, InstalledOriginalLineagePlan,
+    InstalledOriginalLineagePreparation, InstalledOriginalLineageSourcePolicy,
+    InstalledRecordedWorld, InstalledReferenceRecording, InstalledReplayRecipe,
 };
 
 use std::{
@@ -475,6 +476,7 @@ pub struct InstalledNodeCatalog {
     custody: RuntimeCustodyQueue,
     artifacts: BTreeMap<String, InstalledIoArtifact>,
     behavioral_acceptance: Option<acceptance::InstalledBehavioralAcceptance>,
+    original_lineage: transcript::original_lineage::selection::Installation,
 }
 
 impl InstalledNodeCatalog {
@@ -520,6 +522,7 @@ impl InstalledNodeCatalog {
             custody,
             artifacts: BTreeMap::new(),
             behavioral_acceptance: None,
+            original_lineage: transcript::original_lineage::selection::Installation::new(),
         })
     }
 

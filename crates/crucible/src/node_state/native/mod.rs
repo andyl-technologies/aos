@@ -13,6 +13,8 @@ mod capture;
 mod driver;
 pub(crate) mod extensions;
 mod lineage_capture;
+mod lineage_inventory;
+mod lineage_roots;
 mod lineage_source;
 mod storage;
 mod typed_index;
@@ -183,6 +185,29 @@ pub trait NativeWorldFactory {
     ) -> Result<(), StateError> {
         Err(refused(
             "installed complete original-lineage capture is unsupported",
+        ))
+    }
+
+    /// Names additional known immutable roots required by the selected model capture.
+    ///
+    /// The installed policy must bind these roots to the actual accepted runtime,
+    /// scheduler and source graph. It must enforce the occurrence ceiling before
+    /// allocating the returned vector. Core authenticates their complete typed
+    /// closure and charges archive credits before any native capture callback.
+    /// An explicitly supported empty roster grants no leaf or native authority.
+    ///
+    /// # Errors
+    /// Refuses unsupported source scope, changed original journals, unknown roots
+    /// or a roster exceeding the supplied preallocation ceiling.
+    fn original_lineage_capture_immutable_roots(
+        &self,
+        _graph: &AdmittedGraph,
+        _runtime: &crate::node_contract::OriginalLineageRuntimeRecord,
+        _scheduler: &crate::node_scheduling::SchedulingSnapshot,
+        _maximum: usize,
+    ) -> Result<Vec<crucible_node_contract::ContentRef>, StateError> {
+        Err(refused(
+            "installed original-lineage immutable root codec is unsupported",
         ))
     }
 

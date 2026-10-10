@@ -3,6 +3,53 @@
 use super::*;
 
 impl NodeRuntime {
+    /// Reads the actual activated scheduler beside retained original lineage.
+    ///
+    /// This reference-only view grants no capture, restoration or scheduling
+    /// permission. It never constructs a scheduler or settles pending work.
+    /// Selected archive and native callbacks remain independent requirements.
+    ///
+    /// # Errors
+    /// Refuses foreign activation, absent lineage or scheduler, terminal/external
+    /// combinations, invalid cuts and unsupported scheduler editions.
+    pub fn original_lineage_scheduler_snapshot(
+        &self,
+        activation: &WorldActivation,
+        capture_cut: Position,
+        capture_ordinal: U64,
+    ) -> Result<crate::node_scheduling::SchedulingSnapshot, RuntimeError> {
+        self.validate_activation(activation)?;
+        if self.terminal.is_some()
+            || self.condition_stop.is_some()
+            || !self
+                .input_batches
+                .values()
+                .any(|input| input.lineage.is_some())
+            || self.input_batches.values().any(|input| {
+                input
+                    .batch
+                    .deliveries()
+                    .iter()
+                    .any(|delivery| delivery.external_root.is_some())
+            })
+        {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        let snapshot = self
+            .scheduler
+            .as_ref()
+            .ok_or(RuntimeError::NotActivated)?
+            .snapshot(capture_cut, capture_ordinal)
+            .map_err(|error| RuntimeError::SchedulerRefused(error.to_string()))?;
+        if snapshot.schema_version != 1
+            || snapshot.original_epochs.is_some()
+            || !snapshot.external_closed_prefixes.is_empty()
+        {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        Ok(snapshot)
+    }
+
     /// Reads complete Runtime7 historical ledgers after finite copy preflight.
     ///
     /// This read does not suspend native owners or qualify world capture. Legacy

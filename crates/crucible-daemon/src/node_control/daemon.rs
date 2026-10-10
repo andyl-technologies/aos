@@ -232,6 +232,14 @@ impl NodeControlDaemon {
         policy: NodeDaemonPolicy,
         transcripts: Option<crucible::node_adapters::transcript::TranscriptArchive>,
     ) -> Result<Self, NodeControlError> {
+        Self::start_inner_original(policy, transcripts, None)
+    }
+
+    pub(super) fn start_inner_original(
+        policy: NodeDaemonPolicy,
+        transcripts: Option<crucible::node_adapters::transcript::TranscriptArchive>,
+        original: Option<crate::node_observed_executor::OriginalLineageHostInstallation>,
+    ) -> Result<Self, NodeControlError> {
         policy.validate()?;
         let lock_path = policy.state_directory.join("node-daemon.lock");
         let fd = rustix::fs::open(
@@ -274,7 +282,18 @@ impl NodeControlDaemon {
             maximum_worlds: policy.maximum_worlds,
             maximum_pending_requests: policy.maximum_pending_requests,
         };
-        let service = if let Some(archive) = transcripts {
+        let service = if let Some(installation) = original {
+            let archive =
+                transcripts.ok_or_else(|| refused("original-lineage archive unavailable"))?;
+            NodeObservationService::start_with_original_lineage_authorities(
+                service_configuration,
+                archive,
+                installation,
+                repository.clone(),
+                Arc::clone(&blobs),
+                Arc::clone(&refs),
+            )
+        } else if let Some(archive) = transcripts {
             NodeObservationService::start_with_transcript_archive(
                 service_configuration,
                 archive,
@@ -465,6 +484,13 @@ impl NodeControlDaemon {
             .as_ref()
             .ok_or_else(|| refused("node actor admission stopped"))?;
         match command {
+            NodeControlCommand::OriginalLineagePrepare { request } => {
+                let execution = request.execution.clone();
+                service
+                    .prepare_original_lineage(*request)
+                    .map_err(refused)?;
+                Ok(NodeControlResult::OriginalLineagePrepared { execution })
+            }
             NodeControlCommand::PreservingDebugPrepare { request } => {
                 Ok(NodeControlResult::PreservingDebugState {
                     record: Box::new(

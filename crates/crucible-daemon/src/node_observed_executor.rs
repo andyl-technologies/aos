@@ -25,7 +25,9 @@ pub use factory::{
     InstalledHostIoProfile, InstalledHostSemanticProfile, InstalledHostStateFactory,
     InstalledIndependentNativePreservation, InstalledIndependentNativeRestore, InstalledIoArtifact,
     InstalledIoArtifactSource, InstalledNativePreservation, InstalledNodeCatalog,
-    InstalledNodeKind, InstalledNodeSelection, InstalledPreparedIndependentNativeWorld,
+    InstalledNodeKind, InstalledNodeSelection, InstalledOriginalLineageAuthority,
+    InstalledOriginalLineagePlan, InstalledOriginalLineagePreparation,
+    InstalledOriginalLineageSourcePolicy, InstalledPreparedIndependentNativeWorld,
     InstalledPreparedNativeWorld, InstalledPreparedRootWorld, InstalledPreparedWorld,
     InstalledPublicReferencePackage, InstalledRecordedIngressProfile, InstalledRecordedWorld,
     InstalledReferenceQualifier, InstalledReferenceRecording, InstalledReplayRecipe,
@@ -48,7 +50,7 @@ pub use service::{
     NodeObservationRetention, NodeObservationService, NodeObservationServiceConfig,
     NodeObservationServiceError, NodePreservingDebugAction, NodePreservingDebugCapture,
     NodePreservingDebugRecord, NodePreservingDebugRequest, NodePreservingDebugResumeRequest,
-    NodePreservingDebugState,
+    NodePreservingDebugState, OriginalLineageHostInstallation,
 };
 pub use terminal_publication::StoredTerminalResultPublisher;
 

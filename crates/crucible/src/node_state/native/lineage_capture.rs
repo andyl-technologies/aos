@@ -148,6 +148,20 @@ impl NativeArchive {
         } else {
             required_immutable_refs(graph, self.limits.state)?
         };
+        let additional_maximum = self
+            .limits
+            .state
+            .maximum_content_objects
+            .checked_sub(immutable_refs.len())
+            .ok_or_else(|| refused("lineage immutable root credit exhausted"))?;
+        let additional_roots = factory.original_lineage_capture_immutable_roots(
+            graph,
+            &source,
+            &scheduler,
+            additional_maximum,
+        )?;
+        let immutable_refs =
+            super::lineage_roots::combine(immutable_refs, additional_roots, self.limits.state)?;
         let content = verify_closure_with_edition(
             immutable_refs.clone(),
             &immutable,
@@ -164,6 +178,7 @@ impl NativeArchive {
         };
         let coordinator_object =
             self.lineage_record(&coordinator, ORIGINAL_LINEAGE_COORDINATOR_MEDIA)?;
+        let inventory_credit = super::lineage_inventory::credit(&source.inputs, self.limits.state)?;
         let body_geometry = runtime.original_lineage_capture_objects().try_fold(
             (0usize, 0usize),
             |(count, bytes), object| {
@@ -177,6 +192,16 @@ impl NativeArchive {
                 ))
             },
         )?;
+        let body_geometry = (
+            body_geometry
+                .0
+                .checked_add(inventory_credit.objects)
+                .ok_or_else(|| refused("lineage input inventory count overflow"))?,
+            body_geometry
+                .1
+                .checked_add(inventory_credit.bytes)
+                .ok_or_else(|| refused("lineage input inventory byte count overflow"))?,
+        );
         let native_limits = remaining_native(
             graph,
             &content,
@@ -185,6 +210,7 @@ impl NativeArchive {
             body_geometry,
             self.limits,
         )?;
+        let inventories = super::lineage_inventory::prepare(&source.inputs, &inventory_credit)?;
         let mut objects = Objects::new(self, ContentInventoryEdition::Typed);
         for (reference, bytes) in content.entries() {
             objects.insert(
@@ -221,6 +247,26 @@ impl NativeArchive {
                 )?,
             )?;
         }
+        for inventory in &inventories {
+            let mut dependencies = factory.original_lineage_capture_dependencies(
+                graph,
+                &inventory.body.reference,
+                &inventory.body.bytes,
+                self.limits.state.maximum_content_objects,
+            )?;
+            dependencies.sort();
+            dependencies.dedup();
+            if dependencies != inventory.dependencies {
+                return Err(refused(
+                    "installed input inventory dependency codec changed",
+                ));
+            }
+            objects.insert(
+                inventory.body.reference.clone(),
+                &inventory.body.bytes,
+                dependencies,
+            )?;
+        }
         objects.insert(
             runtime_object.reference.clone(),
             &runtime_object.bytes,
@@ -240,6 +286,9 @@ impl NativeArchive {
             ],
         )?;
 
+        // All known typed rows, including every original inventory occurrence,
+        // consume aggregate dependency credit before owning native callbacks.
+        objects.check_dependency_credit()?;
         let captures = runtime
             .capture_installed_original_lineage(
                 graph,

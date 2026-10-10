@@ -44,6 +44,66 @@ mod namespace_tests;
 #[path = "recording_tests.rs"]
 mod recording;
 
+#[path = "conditional_source.rs"]
+mod conditional_source;
+
+#[path = "conditional_observation_rows.rs"]
+mod conditional_observation_rows;
+
+#[path = "conditional_profile.rs"]
+mod conditional_profile;
+
+#[path = "conditional_policy.rs"]
+mod conditional_policy;
+
+#[path = "conditional_admission.rs"]
+mod conditional_admission;
+
+#[path = "conditional_admission_rows.rs"]
+mod conditional_admission_rows;
+
+#[path = "conditional_tests.rs"]
+mod conditional_tests;
+
+#[path = "conditional_world.rs"]
+mod conditional_world;
+
+#[path = "conditional_prefix_controls.rs"]
+mod conditional_prefix_controls;
+
+#[path = "conditional_twins.rs"]
+mod conditional_twins;
+
+#[path = "conditional_twins_verifier.rs"]
+mod conditional_twins_verifier;
+
+#[path = "conditional_twins_publication.rs"]
+mod conditional_twins_publication;
+
+#[path = "conditional_twins_suffix.rs"]
+mod conditional_twins_suffix;
+
+#[path = "conditional_capture_scope.rs"]
+mod conditional_capture_scope;
+
+#[path = "conditional_terminal_rows.rs"]
+mod conditional_terminal_rows;
+
+#[path = "conditional_installation_rows.rs"]
+mod conditional_installation_rows;
+
+#[path = "conditional_graph_rows.rs"]
+mod conditional_graph_rows;
+
+#[path = "conditional_capture_records.rs"]
+mod conditional_capture_records;
+
+#[path = "conditional_capture_factory.rs"]
+mod conditional_capture_factory;
+
+#[path = "conditional_historical_rows.rs"]
+mod conditional_historical_rows;
+
 struct Installed {
     profile: ReferenceProfile,
     bootstrap: ReferenceServiceBootstrap,

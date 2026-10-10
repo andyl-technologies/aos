@@ -26,6 +26,7 @@ pub use root_preparation::{
     RootFirstRefusal, RootGrantedOperation, RootPreparationAction, RootPreparationDiagnostic,
     RootPreparationRecord, RootPreparationRequest, RootPreparationState,
 };
+mod original_lineage;
 mod replay;
 
 #[cfg(test)]
@@ -41,6 +42,7 @@ use debug::{DebugLedger, DebugReservation, DebugWorker};
 pub use debug::{
     NodeDebugRecord, NodeDebugResumeRequest, NodeDebugStartRequest, NodeDebugState, NodeDebugStop,
 };
+pub use original_lineage::OriginalLineageHostInstallation;
 use std::{
     collections::{BTreeMap, BTreeSet},
     panic::{AssertUnwindSafe, catch_unwind},
@@ -97,6 +99,10 @@ pub use conditional_preparation::{
 type Reply = SyncSender<Result<ObservedAttemptState, NodeObservationServiceError>>;
 
 enum Command {
+    OriginalLineagePrepare {
+        request: crate::node_control::NodeOriginalLineageRequest,
+        reply: SyncSender<Result<(), NodeObservationServiceError>>,
+    },
     PreservingDebugPrepare {
         request: NodePreservingDebugRequest,
         reservation: Box<debug_preserving::Reservation>,
@@ -273,6 +279,17 @@ impl NodeObservationService {
         blobs: Arc<dyn ImmutableBlobBackend>,
         refs: Arc<dyn MutableRefBackend>,
     ) -> Result<Self, NodeObservationServiceError> {
+        Self::start_inner_original(configuration, transcripts, None, repository, blobs, refs)
+    }
+
+    fn start_inner_original(
+        configuration: NodeObservationServiceConfig,
+        transcripts: Option<crucible::node_adapters::transcript::TranscriptArchive>,
+        original: Option<OriginalLineageHostInstallation>,
+        repository: Arc<CampaignRepository>,
+        blobs: Arc<dyn ImmutableBlobBackend>,
+        refs: Arc<dyn MutableRefBackend>,
+    ) -> Result<Self, NodeObservationServiceError> {
         if configuration.maximum_pending_requests == 0
             || configuration.maximum_pending_requests > 64
             || configuration.maximum_worlds == 0
@@ -324,6 +341,11 @@ impl NodeObservationService {
                 )
                 .and_then(|mut catalog| {
                     catalog.install_artifacts(configuration.installed_artifacts)?;
+                    if let Some(original) = original {
+                        catalog
+                            .install_behavioral_acceptance(original.behavioral, original.limits)?;
+                        catalog.install_original_lineage_authority(original.source)?;
+                    }
                     Ok(catalog)
                 });
                 match catalog {
@@ -660,6 +682,9 @@ fn run_actor(
             }
         }
         if catch_unwind(AssertUnwindSafe(|| {
+            if stopping.load(Ordering::Acquire) {
+                catalog.retire_original_lineage_preparations();
+            }
             let _ = catalog.custody().poll_reclamation(&mut context);
         }))
         .is_err()
@@ -722,6 +747,31 @@ struct ActorOwners<'a> {
     root_workers: &'a mut BTreeMap<ExecutionId, RootWorker>,
 }
 
+/// Rejects operational reuse of every retained original source nonce.
+///
+/// # Errors
+/// Refuses a nonce owned by original-lineage custody, including a retired
+/// capsule whose once-only dispatch tombstone remains in the catalog.
+pub(in crate::node_observed_executor) fn require_unowned_original_lineage_execution(
+    catalog: &InstalledNodeCatalog,
+    execution: ExecutionId,
+) -> Result<(), NodeObservationServiceError> {
+    if catalog.owns_original_lineage_execution(execution) {
+        return Err(refused(
+            "execution belongs to original-lineage preparation custody",
+        ));
+    }
+    Ok(())
+}
+
+/// Reserves actor capacity for complete inactive or refused original capsules.
+pub(in crate::node_observed_executor) fn original_lineage_available_worlds(
+    catalog: &InstalledNodeCatalog,
+    maximum_worlds: usize,
+) -> usize {
+    maximum_worlds.saturating_sub(catalog.original_lineage_preparation_count())
+}
+
 fn handle_command(
     command: Command,
     owners: ActorOwners<'_>,
@@ -729,6 +779,44 @@ fn handle_command(
     maximum_worlds: usize,
     storage: &ActorStorage,
 ) {
+    let original_execution = match &command {
+        Command::DebugStart { request, .. } => {
+            crate::node_control::execution_id(&request.execution).ok()
+        }
+        Command::DebugResume { request, .. } => {
+            crate::node_control::execution_id(&request.execution).ok()
+        }
+        Command::PreservingDebugPrepare { request, .. } => {
+            crate::node_control::execution_id(&request.execution).ok()
+        }
+        Command::PreservingDebugResume { request, .. } => {
+            crate::node_control::execution_id(&request.execution).ok()
+        }
+        Command::RootPreparation { request, .. } => {
+            crate::node_control::execution_id(&request.execution).ok()
+        }
+        Command::CapabilityPreparation { request, .. } => {
+            crate::node_control::execution_id(&request.execution).ok()
+        }
+        Command::ConditionalPreparation { request, .. } => {
+            crate::node_control::execution_id(&request.execution).ok()
+        }
+        Command::OriginalLineagePrepare { request, .. } => {
+            crate::node_control::execution_id(&request.execution).ok()
+        }
+        Command::Submit { execution, .. } => Some(*execution),
+        Command::ConditionalReplay { request, .. } => Some(request.execution),
+        Command::CacheReuse { .. } | Command::Compile { .. } => None,
+    };
+    if let Some(execution) = original_execution
+        && let Err(error) = require_unowned_original_lineage_execution(catalog, execution)
+    {
+        reply_refusal(command, error);
+        return;
+    }
+    // Inactive and refused source capsules spend the same actor world credit
+    // as every ordinary route. Deduct them once before route-specific owners.
+    let maximum_worlds = original_lineage_available_worlds(catalog, maximum_worlds);
     let ActorOwners {
         workers,
         debug_workers,
@@ -805,6 +893,19 @@ fn handle_other_command(
         refs,
         ..
     } = storage;
+    let binary_execution = match &command {
+        Command::Submit { execution, .. } => Some(*execution),
+        Command::ConditionalReplay { request, .. } => Some(request.execution),
+        _ => None,
+    };
+    if binary_execution.is_some_and(|execution| catalog.owns_original_lineage_execution(execution))
+    {
+        reply_refusal(
+            command,
+            refused("execution belongs to original-lineage preparation custody"),
+        );
+        return;
+    }
     let original_execution = match &command {
         Command::CapabilityPreparation { request, .. } => Some(request.execution.clone()),
         Command::ConditionalPreparation { request, .. } => Some(request.execution.clone()),
@@ -963,6 +1064,45 @@ fn handle_other_command(
             // Failure keeps the original durable AwaitingAdmission record. No
             // replacement nonce or source request can acquire its dispatch.
             let _ = ledger.complete(&reservation, outcome);
+        }
+        Command::OriginalLineagePrepare { request, reply } => {
+            let result = (|| {
+                // Both independently installed authorities are mandatory before any archive body read.
+                catalog
+                    .require_original_lineage_authorities()
+                    .map_err(refused)?;
+                let execution =
+                    crate::node_control::execution_id(&request.execution).map_err(refused)?;
+                if workers.contains_key(&execution)
+                    || root_workers.contains_key(&execution)
+                    || repository
+                        .observed_execution_state(execution)
+                        .map_err(refused)?
+                        .is_some()
+                    || workers.len() + root_workers.len() >= maximum_worlds
+                    || storage.capabilities.owns(&request.execution)?
+                    || storage.root_preparations.owns(&request.execution)?
+                    || storage.preserving_debug.owns(&request.execution)?
+                {
+                    return Err(refused(
+                        "original-lineage nonce or complete world capacity occupied",
+                    ));
+                }
+                let archive = storage
+                    .transcripts
+                    .as_ref()
+                    .ok_or_else(|| refused("original-lineage archive not installed"))?;
+                let configuration =
+                    NodeRunConfiguration::from_json(request.configuration.as_slice())
+                        .map_err(refused)?;
+                // The global durable claim also fences pending Debug/Conditional
+                // reservations and unresolved publication across actor restart.
+                original_lineage::reserve_original_claim(&request, blobs.clone(), refs.clone())?;
+                catalog
+                    .prepare_original_lineage(archive, execution, request.sources, configuration)
+                    .map_err(refused)
+            })();
+            let _ = reply.send(result);
         }
         Command::ConditionalReplay { request, reply } => {
             let result = storage
@@ -1172,6 +1312,9 @@ fn reply_refusal(command: Command, error: NodeObservationServiceError) {
                     reason: error.to_string(),
                 },
             );
+        }
+        Command::OriginalLineagePrepare { reply, .. } => {
+            let _ = reply.send(Err(error));
         }
         Command::CacheReuse { reply, .. } => {
             let _ = reply.send(Err(error));

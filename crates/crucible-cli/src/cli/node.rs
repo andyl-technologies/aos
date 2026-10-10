@@ -14,6 +14,9 @@ mod debug_preserving;
 mod cache_reuse;
 #[path = "node_capability.rs"]
 mod capability;
+#[path = "node_original_lineage.rs"]
+mod original_lineage;
+
 #[path = "node_conditional_replay.rs"]
 mod conditional_replay;
 #[path = "node_root.rs"]
@@ -57,6 +60,8 @@ pub(super) struct NodeArgs {
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 enum NodeCommand {
+    #[command(flatten)]
+    OriginalLineage(original_lineage::NodeOriginalLineageCommand),
     #[command(flatten)]
     Debug(debug::NodeDebugCommand),
     #[command(flatten)]
@@ -154,6 +159,7 @@ pub(super) fn run_node_invocation(cli: &Cli, args: &NodeArgs) -> Result<(), CliE
         NodeCommand::Capability(command) => capability::run(command),
         NodeCommand::CacheReuse(command) => cache_reuse::run(command),
         NodeCommand::TerminalState(command) => terminal_state::run(command),
+        NodeCommand::OriginalLineage(command) => original_lineage::run(command),
         NodeCommand::ConditionalReplay(command) => conditional_replay::run(command),
         NodeCommand::ExactState(command) => host_state::run(command),
         NodeCommand::NativeState(command) => native_state::run(command),

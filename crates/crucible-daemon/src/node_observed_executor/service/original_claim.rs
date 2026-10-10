@@ -29,6 +29,7 @@ pub(super) enum Route {
     Root,
     Debug,
     DebugPreserving,
+    OriginalLineage,
 }
 
 #[derive(Deserialize, Serialize)]

@@ -802,6 +802,16 @@ impl<'a> Objects<'a> {
     pub(super) fn finish(self) -> Vec<Object> {
         self.objects.into_values().collect()
     }
+
+    pub(super) fn check_dependency_credit(&self) -> Result<(), StateError> {
+        self.objects.values().try_fold(0usize, |edges, object| {
+            edges
+                .checked_add(object.dependencies.len())
+                .filter(|total| *total <= self.archive.limits.state.maximum_dependency_edges)
+                .ok_or_else(|| limit("native typed dependency preflight"))
+        })?;
+        Ok(())
+    }
 }
 
 /// Collects exact original epoch bodies under their complete signed identities.

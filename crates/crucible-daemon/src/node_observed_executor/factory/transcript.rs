@@ -5,6 +5,13 @@
 //! selected world and run policy; it never turns a physical source into an exact
 //! native continuation or removes its original nondeterminism.
 
+pub(super) mod original_lineage;
+
+pub use original_lineage::{
+    InstalledOriginalLineageAuthority, InstalledOriginalLineagePlan,
+    InstalledOriginalLineagePreparation, InstalledOriginalLineageSourcePolicy,
+};
+
 mod context;
 mod context_fragments;
 mod recording;

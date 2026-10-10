@@ -20,6 +20,9 @@ pub use debug_preserving::decode_preserving_debug_record;
 mod capability_preparation;
 mod root_preparation;
 pub use root_preparation::{decode_root_diagnostic, decode_root_preparation};
+mod original_lineage;
+pub use original_lineage::{NodeOriginalLineageRequest, decode_original_lineage_sources};
+
 mod conditional_replay;
 #[cfg(test)]
 mod conditional_replay_tests;
@@ -92,6 +95,11 @@ pub struct NodeControlRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeControlCommand {
+    /// Prepares an inactive original-lineage world under explicit edition eleven.
+    OriginalLineagePrepare {
+        /// Retains only original source commitments and unchanged configuration.
+        request: Box<NodeOriginalLineageRequest>,
+    },
     /// Queues source capture or a fresh original stopped owner under edition ten.
     PreservingDebugPrepare {
         /// Retains the complete original recipe and source capture relation.
@@ -220,6 +228,11 @@ pub struct NodeControlReply {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeControlResult {
+    /// Reports inactive preparation; common Ready and publication remain required.
+    OriginalLineagePrepared {
+        /// Names the original operational nonce held by the owning actor.
+        execution: String,
+    },
     /// Reports preserving data without granting native restore or Resume authority.
     PreservingDebugState {
         /// Retains exact original request, source capture and custody history.
@@ -380,6 +393,7 @@ impl NodeControlRequest {
 
     fn validate(&self) -> Result<(), NodeControlError> {
         let expected_version = match self.command {
+            NodeControlCommand::OriginalLineagePrepare { .. } => 11,
             NodeControlCommand::PreservingDebugPrepare { .. }
             | NodeControlCommand::PreservingDebugResume { .. }
             | NodeControlCommand::PreservingDebugStatus { .. } => 10,
@@ -403,6 +417,7 @@ impl NodeControlRequest {
             return Err(refused("unsupported local node control edition"));
         }
         match &self.command {
+            NodeControlCommand::OriginalLineagePrepare { request } => request.validate(),
             NodeControlCommand::PreservingDebugPrepare { request } => {
                 request.validate().map_err(refused)
             }
@@ -529,6 +544,9 @@ pub fn decode_node_state(
     reply: &NodeControlReply,
 ) -> Result<ObservedAttemptState, NodeControlError> {
     match &reply.result {
+        NodeControlResult::OriginalLineagePrepared { .. } => Err(refused(
+            "inactive original-lineage preparation is not observed execution state",
+        )),
         NodeControlResult::PreservingDebugState { .. } => Err(refused(
             "preserving status is not ordinary observed execution state",
         )),
@@ -570,7 +588,7 @@ fn validate_selections(selections: &[InstalledNodeSelection]) -> Result<(), Node
     Ok(())
 }
 
-fn execution_id(value: &str) -> Result<ExecutionId, NodeControlError> {
+pub(crate) fn execution_id(value: &str) -> Result<ExecutionId, NodeControlError> {
     if value.len() != 32
         || !value
             .bytes()

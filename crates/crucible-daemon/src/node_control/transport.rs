@@ -104,6 +104,7 @@ pub(super) fn read<T: DeserializeOwned>(
     if canonical::canonical_json(&value)? != bytes {
         return Err(refused("node control frame is not canonical JSON"));
     }
+    super::original_lineage::precredit(&value)?;
     serde_json::from_value(value)
         .map_err(crucible_node_contract::ContractError::from)
         .map_err(NodeControlError::from)

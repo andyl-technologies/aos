@@ -73,6 +73,15 @@ impl PinnedOriginalLineageSource {
     pub fn original_body(&self, reference: &ContentRef) -> Option<&[u8]> {
         self.content.get(reference)
     }
+
+    /// Borrows every complete typed reference and its authenticated original bytes.
+    ///
+    /// Distinct typed aliases retain their full identities even when they share
+    /// physical bytes. Iteration neither allocates nor opens source paths, and
+    /// grants no execution, restoration or native authority.
+    pub fn original_objects(&self) -> impl Iterator<Item = (&ContentRef, &[u8])> {
+        self.content.entries()
+    }
 }
 
 /// Retains the complete supplied original body closure when pinning refuses.
