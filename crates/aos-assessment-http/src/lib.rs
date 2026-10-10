@@ -14,6 +14,8 @@ pub mod evidence;
 pub mod executor;
 pub mod remote;
 
+mod dns;
+
 #[cfg(test)]
 mod tests;
 
@@ -122,6 +124,7 @@ fn source_client_builder(connect_seconds: u32) -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .https_only(true)
         .no_proxy()
+        .dns_resolver(Arc::new(dns::PublicSourceResolver))
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(u64::from(connect_seconds)))
         .timeout(Duration::from_secs(45))
