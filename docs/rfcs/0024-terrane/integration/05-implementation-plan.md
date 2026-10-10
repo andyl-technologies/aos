@@ -134,14 +134,24 @@ seconds after six completed observations. A separate diagnostic measures about
 77 seconds before reconciliation and 11-12 seconds per initial progress
 publication. The 4,100-family fixture requires at least 33 selected events.
 Normative review distinguishes the runner limit from C/G/D and live whole-lease
-deadlines; an exact-case 900-second runner override awaits fresh qualification.
+deadlines; the exact-case 900-second runner override passes the complete
+4,100-family case in 774.409 seconds with all assertions intact and unchanged
+archived Rust executables (one passed, 1,036 skipped).
 All original timeout receipts remain unchanged. Native index loading passes all
 23 cases; lookup's first case refuses because its test wrapper omits genuine
 native projection reading. Five independent permanent-authority controls pass;
 the added-cycle recovery oracle then expects one reclaim although the original
 destination barrier and late residue are two owned duties. Separate fixture
 corrections preserve the real native lane and require exact complete reclaim.
-Their qualification and the scoped stress run remain pending. No task, exit
+The lookup correction passes all six lookup cases and four related scalar and
+protected-read controls after build, strict all-target Clippy and fresh test
+compilation. The rebuild correction passes its first verify case, then fails
+the divergent/missing-closure rebuild case with pack-identity corruption;
+the third case remains unrun. The reviewed exact two-duty recovery oracle and
+both native-reading fixtures are composed in `2a303ddb63` for fresh combined
+qualification. Independent chunking, algebra, property and six-population
+worklines are qualifying that same frozen candidate alongside the full GC suite and
+application compilation. All original faults remain preserved. No task, exit
 or freeze advances from these partial results.
 
 The earlier combined read candidate `be832963c4` failed strict native all-target
