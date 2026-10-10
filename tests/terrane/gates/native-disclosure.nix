@@ -108,6 +108,8 @@ in {
       "guard::current_history::tests::native_current_history_walks_each_authorization_independently"
       "guard::current_history::tests::native_current_purpose_refuses_changed_whole_ref_epoch"
       "guard::current_history::tests::native_current_history_refuses_missing_actual_original_association"
+      "guard::current_history::tests::native_current_reader_refuses_cached_data_after_real_token_expiry"
+      "guard::current_history::tests::native_current_read_refuses_signed_acl_revocation"
     ]}
     ${qualifySuite "terrane" "--no-default-features --features tokio,surface-sdk" "guard::history::current_reads::tests::" [
       "guard::history::current_reads::tests::ordinary_current_binding_preserves_requested_target_and_actual_scope"

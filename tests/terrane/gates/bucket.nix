@@ -184,6 +184,10 @@ in {
     run_bucket_test store::native_effect::publication::current_history_inputs::tests::current_close_preserves_public_hardlinked_data_under_read_only_holder
     run_bucket_test store::native_effect::publication::current_history_inputs::tests::current_close_refuses_equal_bytes_replaced_original_data
     run_bucket_test store::native_effect::publication::current_history_inputs::tests::current_close_keeps_original_control_protection_strict
+    run_bucket_test store::native_effect::publication::current_history_inputs::tests::current_close_refuses_equal_bytes_replaced_selected_guard_snapshot
+    run_bucket_test store::native_effect::publication::current_history_inputs::tests::current_close_refuses_equal_bytes_replaced_retained_original_control
+    run_bucket_test store::native_effect::publication::current_history_inputs::tests::current_close_refuses_changed_body_of_retained_original_control
+    run_bucket_test store::native_effect::publication::current_history_inputs::tests::current_close_preserves_captured_selected_guard_and_original_control
     run_bucket_test store::bindings::tests::native_lock_rejects_symlinks_hardlinks_and_replaced_open_inodes
     run_bucket_test store::bindings::tests::native_metadata_preserves_links_permissions_and_nofollow_attributes
     run_bucket_test store::protected_read::tests::protected_recipe_preserves_every_ordered_duplicate_parent
@@ -219,7 +223,7 @@ in {
     run_core_bucket_test bucket::records::tests::capability_publication_marker_preserves_legacy_bytes_and_rejects_unknown_versions
     run_bucket_test bucket::tests::registered_publication_marker_cannot_authorize_legacy_probe_writes
     ${builtins.concatStringsSep "\n" (map (test: "run_bucket_test bucket::${test}") ["version_tests::v1_readonly_refuses_an_empty_backend_response_after_initial_validation" "version_tests::v1_readonly_preserves_unknown_inventory_and_refuses_every_effect" "version_tests::v1_readonly_rejects_layout_transition_without_upgrading_or_writing" "tests::probe_revalidates_persisted_layout_and_profile_each_open" "tests::missing_capabilities_cache_recovers_existing_selected_state"])}
-    printf 'PASS: native probe, retained initialization/recovery and canonical publication marker conformance (42 exact cases)\n' > "$out/result"
+    printf 'PASS: native probe, retained initialization/recovery and canonical publication marker conformance (46 exact cases)\n' > "$out/result"
   '';
   store-list-not-authoritative = gate "store-list-not-authoritative" ["fault_tests::stale_directory_listing_cannot_change_content_or_ref_results"];
   store-validates-uploads = gate "store-validates-uploads" ["fault_tests::dictionary_backend_unavailability_preserves_put_and_get_failure_kinds" "requirement_tests::opaque_metadata_callback_verifies_real_chunks_before_every_dedup" "content_tests::configured_schema_validator_rejects_canonical_but_invalid_meta" "content_tests::admission_validates_identity_length_profile_and_independent_dedup_context" "content_tests::dictionaries_are_fetched_by_verified_chunk_identity_before_decode" "container_tests::whole_pack_import_verifies_members_without_admitting_them" "manifest_tests::manifest_admission_rechecks_nonfinal_context_after_inventory_only_import" "manifest_tests::manifest_references_accept_an_honest_nonfinal_boundary_and_verified_lengths"];

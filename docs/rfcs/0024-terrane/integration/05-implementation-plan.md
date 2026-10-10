@@ -155,6 +155,12 @@ two independent current-purpose lifetimes and a missing candidate-read lifetime
 bound; an unused concrete-reader re-export is also reported. Compiler-directed
 fixes are under review. Clippy, fresh test compilation and runtime checks remain
 unrun for this composition.
+The two additional current-token/current-policy cases and four captured-input
+cases pass independent source review. Their owning gate registration extends
+the new current-history population to twenty-six cases while preserving every
+earlier selector. The physical controls retain distinct exact corruption and
+unavailability refusals; none is allowed to pass on a generic error. Their
+compilation and runtime qualification remain pending.
 
 Recovery candidate `b6bf1db80f` passes native build, strict all-target Clippy
 and fresh test-target compilation. Its archived verification case passes in
