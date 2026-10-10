@@ -114,6 +114,7 @@ class PairTests(unittest.TestCase):
         after = pair.managed_native_arguments("/nix/store/hub/bin/aos-hub", coordinates, files, acceptance=True)
 
         self.assertNotIn("--direct-upload-acceptance-file", before + after)
+        self.assertEqual(before[before.index("--hybrid-upload-mode") + 1], "worker_proxy")
         self.assertNotIn("--oci-sdk-emulator-acceptance-file", before)
         self.assertEqual(after[:-6], before)
         self.assertEqual(after[-6:], ["--oci-sdk-emulator-acceptance-file", files["acceptance"],

@@ -189,6 +189,8 @@ def managed_native_arguments(hub, coordinates, files, *, acceptance=False):
     arguments = [hub, "--root", coordinates["nativeRoot"] + "/hub",
         "--database-url-file", files["database"], "serve", "--listen", "127.0.0.1:4646",
         "--topology", "hybrid", "--external-url", WORKER_ORIGIN,
+        # This pair exercises the R2 SDK without a presigning endpoint.
+        "--hybrid-upload-mode", "worker_proxy",
         "--hybrid-worker-url", WORKER_ORIGIN, "--hybrid-origin-url", NATIVE_ORIGIN,
         "--deployment-id", coordinates["deploymentId"], "--reindex-interval", "0",
         "--release-receipt-key-id", "staging-publication-v1",
