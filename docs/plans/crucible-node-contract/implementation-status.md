@@ -1135,8 +1135,18 @@ prefix acknowledgment, common readiness, capture, fork and restore remain
 unqualified. The exact committed checkpoint passes fresh hermetic compilation
 of every application unit and integration target, yielding
 `810500qqdd8naij3pmkyx0gg05ma4ibk-aos-test-targets-0.1.0`.
-Its complete controller/ABI/license qualification remains in progress; these
-results supply no later Root-operation or gem5 source credit.
+The complete combined controller/ABI/license gate also passes for this exact
+`507a429f2c` source selection, yielding
+`xfm482syk8qc2kx4ip7waha4lniyg3vw-crucible-phase2-abi-conformance-0`.
+The controller passes 6,625 cases with 251 skipped in 361.813 seconds. The
+license-boundary component passes all 18 cases in 2.16 seconds and verifies
+matching complete corresponding source and the shipped native build identity.
+The frozen input inventory contains 8,489 tracked source leaves. The realized
+Nix source also includes two existing untracked engineering drafts; both are
+retained and hashed separately, with no executable or schema-input references.
+They remain outside the committed change. Later Root operators, KVM initial
+journals, gem5 profile registrations, cold conditions and campaign extractions
+receive no borrowed complete-gate credit.
 
 ## Installed Root operations and retained restoration custody
 
