@@ -1355,6 +1355,32 @@ the current-parent join, which updates only the two owned campaign source-review
 rows and retains every other registration. These results qualify ownership and
 compatibility, without native execution, device, replay or performance credit.
 
+## Behavioral acceptance in installed admission
+
+The qualification API retains complete original reports and accepted or refused
+audit records against the full 382-requirement catalog. Independent host policy
+binds the current measured unit, binding and required classes. Whole-record
+credit is checked before authority callbacks, including worst-case diagnostic
+encoding. Decoded accepted records cannot supply admission authority.
+
+Installed catalogs can enforce this policy during ordinary preparation, before
+native reservation, and repeat authentication at actual graph admission. The
+required classes come from the regenerated guarantee and operating contract.
+The exhaustive closed-selector table preserves existing limited source scopes;
+unknown vendor selectors and substituted or widened profiles refuse. Specialized
+and combined paths refuse the installed behavioral mode until separately
+qualified. Existing native qualification remains mandatory.
+
+Current-worktree checks pass 25 qualification cases, seven factory cases, 37
+source-hygiene cases, daemon all-target strict checks and formatting of nine
+owned Rust files. All 8,619 source leaves match before and after verification.
+The current-parent join retains every registration except the owned factory
+row; the actual daemon and four worktree-bound scanner executables remain local.
+These checks qualify the audit and enforcement mechanisms. They do not provide
+a complete native provider certificate, generic vendor constructor, Ready or
+preservation capability. The owning CNP adapter's earlier wire admission needs
+its separate mandatory-acceptance integration.
+
 ## Application test-target compilation
 
 Fresh hermetic compilation passes for the application dependency closure at

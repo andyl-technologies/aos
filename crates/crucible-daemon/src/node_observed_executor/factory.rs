@@ -1,5 +1,6 @@
 //! Host-owned installed providers and native enrollment before graph sealing.
 
+mod acceptance;
 mod archive_artifacts;
 mod arm_root;
 mod cached_artifacts;
@@ -443,6 +444,7 @@ pub struct InstalledNodeCatalog {
     control_timeout: Duration,
     custody: RuntimeCustodyQueue,
     artifacts: BTreeMap<String, InstalledIoArtifact>,
+    behavioral_acceptance: Option<acceptance::InstalledBehavioralAcceptance>,
 }
 
 impl InstalledNodeCatalog {
@@ -487,6 +489,7 @@ impl InstalledNodeCatalog {
             control_timeout,
             custody,
             artifacts: BTreeMap::new(),
+            behavioral_acceptance: None,
         })
     }
 
@@ -688,6 +691,7 @@ impl InstalledNodeCatalog {
             .iter()
             .any(|selection| matches!(selection.kind, InstalledNodeKind::Gem5ArmRoot))
         {
+            self.require_behavioral_host_scope()?;
             return Ok(arm_root::public_catalog::prepare_native(
                 self, selections, scenario, execution,
             )?
@@ -701,6 +705,7 @@ impl InstalledNodeCatalog {
                     | InstalledNodeKind::Gem5ClosedEpochPreserving { .. }
             )
         }) {
+            self.require_behavioral_host_scope()?;
             return native_state::public_catalog::prepare(self, selections, scenario, execution);
         }
         let artifacts = self.artifacts.clone();
@@ -732,6 +737,7 @@ impl InstalledNodeCatalog {
         scenario: NodeScenario,
         execution: ExecutionId,
     ) -> Result<InstalledPreparedNativeWorld, NodeObservedError> {
+        self.require_behavioral_host_scope()?;
         native_state::public_catalog::prepare_native(self, selections, scenario, execution)
     }
 
@@ -749,6 +755,7 @@ impl InstalledNodeCatalog {
         scenario: NodeScenario,
         execution: ExecutionId,
     ) -> Result<InstalledPreparedRootWorld, NodeObservedError> {
+        self.require_behavioral_host_scope()?;
         arm_root::public_catalog::prepare_native(self, selections, scenario, execution)
     }
 
@@ -766,6 +773,7 @@ impl InstalledNodeCatalog {
         selections: &[InstalledNodeSelection],
         archive: crucible::node_state::NativeArchiveRecord,
     ) -> Result<InstalledRootRestore, NodeObservedError> {
+        self.require_behavioral_host_scope()?;
         arm_root::public_catalog::prepare_restore(self, selections, archive)
     }
 
@@ -862,6 +870,11 @@ impl InstalledNodeCatalog {
             label,
             capabilities,
         } = preparation;
+        if label.is_some() && self.behavioral_acceptance.is_some() {
+            return Err(refused(
+                "behavioral and metadata-label selection require a separately qualified composed policy",
+            ));
+        }
         let mut resolved = profile::build_world(
             selections,
             &self.host_identity,
@@ -905,6 +918,7 @@ impl InstalledNodeCatalog {
                 "installed implementation changed before native preparation",
             ));
         }
+        self.preflight_behavioral_acceptance(selections, &scenario)?;
         let session = Id::new(format!("session/{}", execution_text(execution)))?;
         let activation_id = Id::new(format!("activation/{}", execution_text(execution)))?;
         let host_receipt_bytes = canonical::canonical_json(&serde_json::json!({
@@ -1144,6 +1158,24 @@ impl InstalledNodeCatalog {
             maximum_total_content_bytes: 2 * 1024 * 1024 * 1024,
             ..AdmissionLimits::default()
         };
+        let selected_policy = self.behavioral_acceptance.as_ref().map(|installed| {
+            acceptance::SourceBindingPolicy::new(installed.policy.as_ref(), &scenario)
+        });
+        let behavioral = self
+            .behavioral_acceptance
+            .as_ref()
+            .zip(selected_policy.as_ref())
+            .map(|(installed, selected)| {
+                crate::node_qualification::BehavioralAdmissionEvidence::new(
+                    &evidence,
+                    selected,
+                    installed.limits,
+                )
+            });
+        let graph_evidence: &dyn crucible::node_admission::AdmissionEvidence = match &behavioral {
+            Some(behavioral) => behavioral,
+            None => &evidence,
+        };
         let graph = if let Some(label) = label {
             let profile = self.clock_label_profile()?;
             if label.labeled.canonical_bytes()? != profile.labeled.canonical_bytes()? {
@@ -1162,13 +1194,13 @@ impl InstalledNodeCatalog {
             scenario.admit(
                 &bindings,
                 &capabilities::admission::CapabilityAdmission {
-                    original: &evidence,
+                    original: graph_evidence,
                     resolved: capabilities,
                 },
                 admission_limits,
             )?
         } else {
-            scenario.admit(&bindings, &evidence, admission_limits)?
+            scenario.admit(&bindings, graph_evidence, admission_limits)?
         };
         let mut nodes: Vec<Box<dyn SimulationNode>> = Vec::new();
         for selection in selections {

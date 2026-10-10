@@ -495,3 +495,6 @@ fn release_inventory_reuses_exact_gate_without_partial_success() {
         .is_err()
     );
 }
+
+#[path = "decision_tests.rs"]
+mod decision_tests;

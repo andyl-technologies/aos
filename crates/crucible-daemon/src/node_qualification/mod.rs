@@ -8,8 +8,10 @@
 //! unit and retained evidence as admission.
 
 mod acceptance;
+mod admission;
 mod catalog;
 mod issuance;
+mod record;
 mod reference_oracle;
 mod reference_witness;
 mod schema;
@@ -35,4 +37,10 @@ pub use schema::{
     CaseEvidence, CaseKind, CaseVerdict, QualificationClaim, QualificationClass,
     QualificationError, QualificationLimits, QualificationUnit, RequirementDisposition,
     RequirementResult,
+};
+
+pub use admission::{AcceptanceScope, BehavioralAdmissionEvidence, InstalledAcceptancePolicy};
+pub use record::{
+    AcceptanceDecision, AcceptanceLimits, AcceptanceRecord, EvaluatedAcceptance,
+    evaluate_acceptance,
 };
