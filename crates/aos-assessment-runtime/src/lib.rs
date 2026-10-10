@@ -27,6 +27,7 @@ pub mod installation;
 pub mod notifications;
 pub mod ports;
 pub mod provider;
+pub mod publication;
 pub mod routes;
 pub mod scan;
 pub mod schedules;
