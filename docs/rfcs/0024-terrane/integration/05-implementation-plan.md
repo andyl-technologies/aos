@@ -467,8 +467,17 @@ order, executing each native witness independently with exactly-one-pass checks.
 Only compilation is shared across gates. Scoped formatting, source/profile
 evaluation and independent verification of all twenty-nine review packet files
 pass; no runtime acceptance follows from evaluation. The composition's native
-build and strict all-target Clippy pass; actual all-target test compilation and
-the two corrected exact witnesses precede its owning property gate qualification.
+build, strict all-target Clippy and actual all-target test compilation pass.
+Its executable-bound inventory contains 1,022 nonignored tests across three
+binaries. Both corrected exact witnesses pass in 61.784 seconds at the default
+limits with tracing unset. Independent review verifies all forty-three native
+packet files, all 6,216 source entries and all three actual executable seals.
+An observation controller initially expected repository cwd instead of the
+compiled crate cwd after successful metadata and inventory commands; the
+preserved correction validates the actual crate cwd without recompiling or
+rerunning inventory, and launches runtime once. Owning property qualification
+continues separately with private hermetic targets; no gate result is inferred
+from the native subset.
 Separate runtime qualification on unchanged frozen `3ab7fa81c9` passes all
 ninety-five selected native cases in 335.835 seconds, all twenty-nine mandatory
 read cases in 34.337 seconds, the exact attributes SDK case in 0.008 seconds
@@ -491,7 +500,21 @@ canonical owner preparation within one immutable synchronous invocation.
 Their six exact positive and negative witnesses are registered before the
 worker branches. Fresh physical and issuer checks, occurrence policy and role
 checks, independent history completion, populations and deadlines remain
-mandatory; implementation and runtime qualification are pending.
+mandatory. Reviewed owner implementation `4404a0c0ab` binds its success-only
+memo structurally to one invocation's immutable inputs and evidence. Reviewed
+candidate implementation `4a17c07f9b` retains one surviving pending row's exact
+key, using weak allocation tokens to distinguish live Guard and holder scopes
+without extending exclusion; both completed and namespace promotions invalidate
+reuse. All six registered witnesses include disabled-reuse output parity,
+real constructor counts, input and geometry changes, operation replacement and
+typed refusal controls. The reviewed algebra change `fd57751b2a` extends the
+same source-bound image reuse to merge qualification while preserving all
+thirty-two core and six native selectors and independent execution. Its final
+clean-source instantiation and all nineteen sealed preflight files verify;
+earlier mismatched identity reporting is corrected separately with its original
+observations retained. Private `4b840ade60` composes these disjoint changes for
+fresh compiler, feature and runtime qualification. Source and formatter review
+do not establish passing tests, a deadline fix or task acceptance.
 The owning `algebra-merge` gate passes separately on frozen `ea64a04697`,
 executing thirty-two core and six native cases with zero failures or ignored
 tests. Independent review verifies all twenty packet files and the actual
