@@ -368,11 +368,26 @@ impl<S: Store, C: Clock> Guard<S, C> {
         }
 
         let evidence = match &record {
-            Some(record) => Some(
-                self.verified_tree_observed(record.commit, observation)
-                    .await?
-                    .evidence,
-            ),
+            Some(record) => {
+                // The configured native factory closes the original current
+                // inputs before returning history. Its refusals propagate; only
+                // absence before dispatch preserves the generic history path.
+                #[cfg(all(feature = "std", feature = "tokio", unix))]
+                let current = self
+                    .current_history_native(reference, token, verb, record, observation)
+                    .await?;
+                #[cfg(not(all(feature = "std", feature = "tokio", unix)))]
+                let current = None;
+
+                let tree = match current {
+                    Some(tree) => tree,
+                    None => {
+                        self.verified_tree_observed(record.commit, observation)
+                            .await?
+                    }
+                };
+                Some(tree.evidence)
+            }
             None => None,
         };
         let requested_paths = if paths.is_empty() {
