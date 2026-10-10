@@ -73,8 +73,9 @@
       extraBuildDeps = [pkgs.binutils];
     };
   };
-  nativeSdkGate = name: script:
-    sourceGate name ''
+  nativeSdkGate = nativeSdkGateWithInputs {};
+  nativeSdkGateWithInputs = inputs: name: script:
+    sourceGateWithInputs inputs name ''
       python3 - ${nativeSdkTestImage}/share/identity.json "$src" <<'PY'
       import json
       import pathlib
@@ -184,10 +185,10 @@
   };
 
   localGcPrerequisites = [
-    (import ./native-local-first-ownership.nix {inherit sourceGate;})
-    (import ./native-local-deletion.nix {inherit sourceGate;})
-    (import ./native-preownership-restore.nix {inherit sourceGate;})
-    (import ./native-retirement-faults.nix {inherit sourceGate;})
+    (import ./native-local-first-ownership.nix {sourceGate = nativeSdkGate;})
+    (import ./native-local-deletion.nix {sourceGate = nativeSdkGate;})
+    (import ./native-preownership-restore.nix {sourceGate = nativeSdkGate;})
+    (import ./native-retirement-faults.nix {sourceGate = nativeSdkGate;})
     taskGates.gc-roots-complete
     taskGates.gc-mark-reachability
     taskGates.gc-grace-window
@@ -197,7 +198,7 @@
   ];
   localGcConformance = import ./native-local-gc-conformance.nix {
     prerequisites = localGcPrerequisites;
-    sourceGate = sourceGateWithInputs {extraBuildDeps = localGcPrerequisites;};
+    sourceGate = nativeSdkGateWithInputs {extraBuildDeps = localGcPrerequisites;};
   };
 
   # Every local retirement alternative belongs in T1's owning gate. All three
@@ -206,8 +207,8 @@
     inherit pkgs;
     prerequisites = [
       localGcConformance
-      (import ./native-copied-retirement-first-ownership.nix {inherit sourceGate;})
-      (import ./local-permanent-reconciliation.nix {inherit sourceGate;})
+      (import ./native-copied-retirement-first-ownership.nix {sourceGate = nativeSdkGate;})
+      (import ./local-permanent-reconciliation.nix {sourceGate = nativeSdkGate;})
     ];
   };
 
@@ -302,18 +303,18 @@ in {
   integration.algebra-format-vectors = algebraFormatVectors;
   integration.legacy-format-vectors = import ./legacy-vectors.nix {inherit sourceGate;};
   integration.local-factory-construction = import ./local-factory-construction.nix {inherit sourceGate;};
-  integration.native-preownership-restore = import ./native-preownership-restore.nix {inherit sourceGate;};
-  integration.native-retirement-faults = import ./native-retirement-faults.nix {inherit sourceGate;};
+  integration.native-preownership-restore = import ./native-preownership-restore.nix {sourceGate = nativeSdkGate;};
+  integration.native-retirement-faults = import ./native-retirement-faults.nix {sourceGate = nativeSdkGate;};
   integration.native-held-lease-renewal = import ./native-held-lease-renewal.nix {inherit sourceGate;};
   integration.native-lease-output-sync = import ./native-lease-output-sync.nix {inherit sourceGate;};
   integration.native-checked-mutation-publication = import ./native-checked-mutation-publication.nix {inherit sourceGate;};
   integration.native-written-mutation-sync = import ./native-written-mutation-sync.nix {inherit sourceGate;};
   integration.native-retained-request-checks = import ./native-retained-request-checks.nix {inherit sourceGate;};
-  integration.native-local-first-ownership = import ./native-local-first-ownership.nix {inherit sourceGate;};
-  integration.native-copied-retirement-first-ownership = import ./native-copied-retirement-first-ownership.nix {inherit sourceGate;};
+  integration.native-local-first-ownership = import ./native-local-first-ownership.nix {sourceGate = nativeSdkGate;};
+  integration.native-copied-retirement-first-ownership = import ./native-copied-retirement-first-ownership.nix {sourceGate = nativeSdkGate;};
 
-  integration.local-permanent-reconciliation = import ./local-permanent-reconciliation.nix {inherit sourceGate;};
-  integration.native-local-deletion = import ./native-local-deletion.nix {inherit sourceGate;};
+  integration.local-permanent-reconciliation = import ./local-permanent-reconciliation.nix {sourceGate = nativeSdkGate;};
+  integration.native-local-deletion = import ./native-local-deletion.nix {sourceGate = nativeSdkGate;};
   integration.native-local-gc-conformance = localGcConformance;
   integration.native-collector-clock = import ./native-collector-clock.nix {inherit sourceGate;};
   integration.native-cold-fork-source = nativeForkPrerequisites.coldSource;
