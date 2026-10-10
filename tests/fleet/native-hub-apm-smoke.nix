@@ -1098,7 +1098,7 @@ in {
       assert system_status == 0, (system_status, system_stdout, system_stderr)
       system_upgrade = system_stdout + system_stderr
       assert b"Downloading" in system_upgrade, system_upgrade
-      assert b"staged in slot" in system_upgrade, system_upgrade
+      # Verify durable selection below; the CLI no longer prints a slot summary.
       consumer.succeed(textwrap.dedent(f"""
           set -eu
           {NIX_STORE} --check-validity {UPGRADE_TOPLEVEL}
