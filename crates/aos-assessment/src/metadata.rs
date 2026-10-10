@@ -22,8 +22,10 @@ use crate::security::SecurityDeclaration;
 use crate::time::Timestamp;
 use crate::validation::{DOCUMENT_LIMITS, decode};
 
+mod publication;
 mod source;
 
+pub use publication::{PACKAGE_SCAN_PUBLICATION_V1, PackageScanPublicationV1};
 pub use source::SourcePackageBindingV1;
 
 /// Identifies a package's security sidecar without changing maintenance v1.

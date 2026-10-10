@@ -9,6 +9,7 @@ aos-ability-model = { workspace = true }
 aos-ability-plan = { workspace = true }
 aos-ability-runtime = { workspace = true }
 aos-contract = { workspace = true }
+aos-assessment = { workspace = true }
 aos-core = { workspace = true }
 aos-doc-model = { workspace = true }
 aos-cache = { workspace = true }

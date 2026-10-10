@@ -933,6 +933,7 @@ dependencies = [
  "aos-ability-model",
  "aos-ability-plan",
  "aos-ability-runtime",
+ "aos-assessment",
  "aos-boot-identity",
  "aos-cache",
  "aos-contract",
@@ -1056,6 +1057,7 @@ name = "aos-registry-surface"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-assessment",
  "aos-oci-types",
  "base64 0.22.1",
  "crc32fast",

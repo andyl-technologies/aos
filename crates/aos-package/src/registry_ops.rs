@@ -45,6 +45,7 @@
 //! cloneable.
 
 mod attestation;
+mod assessment;
 mod cache_validation;
 mod channels;
 mod config;

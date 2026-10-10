@@ -85,6 +85,39 @@ fn alias_projection_binds_exact_owner_definition_and_declared_member() -> Result
         .context("alias owner binding")?;
     assert_eq!(owner.definition_digest, definitions[0].digest()?);
     assert_eq!(owner.member_id.as_str(), "example");
+    let published = inventory.publication(
+        aos_assessment::identity::MemberId::parse("example-alias")?,
+        "example-alias".into(),
+        "9.4.0".into(),
+        "x86_64-linux".into(),
+    )?;
+    assert_eq!(published.definitions, definitions);
+    let encoded = published.to_json()?;
+    assert_eq!(
+        aos_assessment::metadata::PackageScanPublicationV1::from_slice(encoded.as_bytes())?,
+        published,
+    );
+    let mut missing_owner = published.clone();
+    missing_owner.definitions.remove(0);
+    assert!(missing_owner.validate().is_err());
+    let mut changed_owner = published.clone();
+    changed_owner.definitions[0].reason = Some("Different owner authority".into());
+    assert!(changed_owner.validate().is_err());
+    let mut duplicate_units = published.clone();
+    duplicate_units
+        .definitions
+        .push(published.definitions[1].clone());
+    assert!(duplicate_units.validate().is_err());
+    let independent = inventory.publication(
+        aos_assessment::identity::MemberId::parse("example")?,
+        "renamed-example".into(),
+        "1.2.0".into(),
+        "x86_64-linux".into(),
+    )?;
+    assert_eq!(independent.definitions, vec![definitions[0].clone()]);
+    let mut unrelated = independent;
+    unrelated.definitions.push(definitions[1].clone());
+    assert!(unrelated.validate().is_err());
     let bindings: Vec<aos_assessment::metadata::SourcePackageBindingV1> =
         serde_json::from_value(json!([
             {"member":"example", "version":"1.2.0", "platform":"x86_64-linux"},
@@ -143,6 +176,50 @@ fn alias_projection_binds_exact_owner_definition_and_declared_member() -> Result
         PackageAssessmentInventoryV1::from_slice(&serde_json::to_vec(&value)?)
             .and_then(|inventory| inventory.definitions())
             .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn published_scan_declarations_reject_ambiguous_json_and_unselected_members() -> Result<()> {
+    let inventory = PackageAssessmentInventoryV1::from_slice(&serde_json::to_vec(&metadata())?)?;
+    let declaration = inventory.publication(
+        aos_assessment::identity::MemberId::parse("example")?,
+        "example".into(),
+        "1.2.0".into(),
+        "x86_64-linux".into(),
+    )?;
+    let encoded = declaration.to_json()?;
+    let duplicate = encoded.replacen('{', "{\"schema\":\"aos.package-scan-publication/v1\",", 1);
+    assert!(
+        aos_assessment::metadata::PackageScanPublicationV1::from_slice(duplicate.as_bytes())
+            .is_err()
+    );
+    let mut value = serde_json::to_value(&declaration)?;
+    value["credentialRef"] = json!("secret");
+    assert!(
+        aos_assessment::metadata::PackageScanPublicationV1::from_slice(&serde_json::to_vec(
+            &value
+        )?)
+        .is_err()
+    );
+    let mut absent = declaration.clone();
+    absent.member_id = aos_assessment::identity::MemberId::parse("absent")?;
+    assert!(absent.validate().is_err());
+    assert!(
+        inventory
+            .publication(
+                absent.member_id,
+                "example".into(),
+                "1.2.0".into(),
+                "x86_64-linux".into(),
+            )
+            .is_err()
+    );
+    assert_eq!(
+        declaration.digest()?,
+        aos_assessment::metadata::PackageScanPublicationV1::from_slice(encoded.as_bytes())?
+            .digest()?
     );
     Ok(())
 }
