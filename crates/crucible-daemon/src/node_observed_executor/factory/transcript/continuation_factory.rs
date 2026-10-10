@@ -190,7 +190,8 @@ impl NativeWorldFactory for ReplayArchiveFactory {
         let [node] = owner.participant_ids.as_slice() else {
             return Err(state_error("replay source owner is not exclusive"));
         };
-        let actual = authenticate_replay_continuation(source, node).map_err(|error| state_error(error.reason))?;
+        let actual = authenticate_replay_continuation(source, node)
+            .map_err(|error| state_error(error.reason))?;
         let accepted = self
             .allocation
             .source_for(node)
