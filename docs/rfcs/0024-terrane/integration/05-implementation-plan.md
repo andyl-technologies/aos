@@ -158,6 +158,13 @@ Strict all-target Clippy then refuses unused duplicate purpose state and
 retained-receipt accessors. Scoped fixes preserve the genuine reference binding
 and owned descriptors through promotion. Fresh test compilation and runtime
 checks remain unrun for this composition.
+After the reviewed dead-code corrections, `78ec7e4024` passes native build.
+Strict all-target Clippy then reports three test-source faults: the path-mounted
+physical module lacks an explicit child-test path, one Original pin call names
+an absent alias, and the reader tests import an unused trait. The required
+formatter pair also stops at the missing child-test path before its second
+command runs. Three disjoint owners correct these bindings and preserve every
+test assertion. Renewed Clippy, complete formatting and runtime remain pending.
 The two additional current-token/current-policy cases and four captured-input
 cases pass independent source review. Their owning gate registration extends
 the new current-history population to twenty-six cases while preserving every
