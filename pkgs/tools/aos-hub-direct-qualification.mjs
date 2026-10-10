@@ -94,9 +94,14 @@ async function observe(kind, intent, dispatch, timeout = 30000) {
     if (cancelled) controller.abort();
     if (controller.signal.aborted) throw new Error("Cancelled before dispatch.");
     return await dispatch(controller.signal, name);
-  } catch {
+  } catch (error) {
+    // Retain only closed transport categories; exception text can contain URLs.
+    const code = error?.cause?.code ?? error?.code;
+    const transportCode = ["ECONNRESET", "ECONNREFUSED", "EPIPE", "ETIMEDOUT",
+      "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT",
+      "UND_ERR_BODY_TIMEOUT"].includes(code) ? code : "unclassified";
     await save(`${name}-unknown.json`, { ...intent, state: "unknown", cause: controller.signal.aborted
-      ? "deadline_or_cancellation" : "dispatch_or_reply_unknown" });
+      ? "deadline_or_cancellation" : "dispatch_or_reply_unknown", transportCode });
     throw new Error("Operation lacks an exact acknowledgement; evidence retained without replay.");
   } finally { clearTimeout(timer); active.delete(controller); }
 }
@@ -263,7 +268,12 @@ async function upload(source, grant) {
     const response = await fetch(grant.url, { method: "PUT", headers, body: stream,
       duplex: "half", redirect: "manual", signal });
     const responseBytes = await bounded(response, 8192), etag = response.headers.get("etag");
-    if (!response.ok || !etag || !/^"[^"\\\x00-\x1f\x7f]+"$/.test(etag)) throw new Error("Part lacks positive strong ETag.");
+    if (!response.ok || !etag || !/^"[^"\\\x00-\x1f\x7f]+"$/.test(etag)) {
+      await save(`${name}-rejected.json`, { status: response.status,
+        etagPresent: etag !== null, strongEtag: !!etag && /^"[^"\\\x00-\x1f\x7f]+"$/.test(etag),
+        responseSha256: hash(responseBytes) });
+      throw new Error("Part lacks positive strong ETag.");
+    }
     await save(`${name}-positive.json`, { objectId: source.plan.objectId, partNumber: part.partNumber,
       startedAtMillis: String(started), finishedAtMillis: String(Date.now()), status: response.status,
       responseSha256: hash(responseBytes), etag });

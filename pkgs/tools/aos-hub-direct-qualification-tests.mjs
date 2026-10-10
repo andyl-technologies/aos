@@ -192,6 +192,9 @@ const server = createServer({ cert: await readFile(cert), key: await readFile(pr
       uploadedByObject.set(object.objectId, (uploadedByObject.get(object.objectId) ?? 0) + bytes.length);
       if (number === 1) await new Promise(done => setTimeout(done, 50));
       uploaded += bytes.length; partOrder.push(number);
+      if (scenario === "part-rejected") {
+        response.writeHead(403); response.end("provider-refused"); return;
+      }
       response.writeHead(200, { etag: `"part-${number}"` }); response.end(); return;
     }
     assert.equal(request.headers["x-aos-direct-qualification-signature"], mac("aos.direct-upload.qualification-request.v1\0", bytes));
@@ -491,6 +494,15 @@ print('PASS actual driver evidence accepted; old underscore filename refused by 
 
   const wrongRuntime = await run("wrong-runtime", "wrong-runtime"); assert.notEqual(wrongRuntime.exit, 0);
   assert.equal(calls.includes("begin"), false); assert.equal(calls.includes("grant"), false);
+  const rejected = await run("part-rejected", "part-rejected");
+  assert.notEqual(rejected.exit, 0);
+  const rejectedNames = await readdir(rejected.output);
+  const rejection = JSON.parse(await readFile(join(rejected.output,
+    rejectedNames.find(name => name.endsWith("-upload-part-rejected.json")))));
+  assert.deepEqual(rejection, { status: 403, etagPresent: false, strongEtag: false,
+    responseSha256: digest(Buffer.from("provider-refused")) });
+  assert.equal(rejectedNames.some(name => name.endsWith("-upload-part-positive.json")), false);
+
   const unknown = await run("unknown", "unknown"); assert.notEqual(unknown.exit, 0);
   assert.equal(calls.filter(kind => kind === "begin").length, 1);
   assert.equal(calls.includes("grant"), false);
