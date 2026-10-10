@@ -84,7 +84,9 @@ const fn broker_method_from_code(value: i32) -> Option<BrokerMethod> {
     })
 }
 
-pub(in crate::reconciler) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, ReconcilerError> {
+pub(in crate::reconciler) fn encode_effect(
+    record: &EffectLedgerRecord,
+) -> Result<Vec<u8>, ReconcilerError> {
     encode_effect_with_q04(record, None)
 }
 
@@ -317,7 +319,9 @@ fn encode_effect_with_q04(
     Ok(bytes)
 }
 
-pub(in crate::reconciler) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, ReconcilerError> {
+pub(in crate::reconciler) fn decode_effect(
+    bytes: &[u8],
+) -> Result<EffectLedgerRecord, ReconcilerError> {
     decode_effect_with_extensions(bytes).map(|decoded| decoded.record)
 }
 

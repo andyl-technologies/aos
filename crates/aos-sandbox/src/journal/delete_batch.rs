@@ -500,9 +500,8 @@ fn validate_delete_batch_admission_records_v1(
     }
     let gate = if local_start == 5 {
         let gate_row = records.get(4).ok_or_else(invalid)?;
-        let gate = crate::reconciler::decode_delete_gate(
-            gate_row, operation_id, batch, idempotency,
-        )?;
+        let gate =
+            crate::reconciler::decode_delete_gate(gate_row, operation_id, batch, idempotency)?;
         Some(gate)
     } else {
         None
@@ -517,7 +516,13 @@ fn validate_delete_batch_admission_records_v1(
             return Err(invalid());
         }
         crate::reconciler::validate_delete_effect_record(
-            row, &gate, operation_id, step, batch, root, &mut delete_effects,
+            row,
+            &gate,
+            operation_id,
+            step,
+            batch,
+            root,
+            &mut delete_effects,
         )?;
     }
     if delete_effects != 1 {
