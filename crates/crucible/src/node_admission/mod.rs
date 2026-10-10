@@ -41,7 +41,7 @@ pub use extensions::{
     ExtensionApplication, ExtensionApplicationScope, ExtensionImpact,
     ExtensionInstallationAuthority, ExtensionQualificationAuthority, ExtensionRecordKind,
     ExtensionRecordPath, ExtensionRegistration, ExtensionRegistryLimits, ExtensionSemanticContract,
-    ExtensionSemanticHandler, InstalledExtensionRegistry,
+    ExtensionSemanticHandler, InstalledExtensionPeerPolicy, InstalledExtensionRegistry,
 };
 pub use policy::{
     ConnectionDelivery, ConnectionPolicy, CoordinatorPolicy, FlowControl, InternalDependency,

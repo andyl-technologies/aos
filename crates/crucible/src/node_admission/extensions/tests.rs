@@ -10,6 +10,9 @@
 #[path = "frozen_admission_tests.rs"]
 mod frozen_admission_tests;
 
+#[path = "negotiation_tests.rs"]
+mod negotiation_tests;
+
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;

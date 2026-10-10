@@ -24,7 +24,12 @@ use crate::{
     envelope::Nullable,
 };
 
+mod extension_contract;
+mod extension_handshake;
 mod negotiation;
+
+pub use extension_contract::*;
+pub use extension_handshake::ExtensionHandshake;
 pub use negotiation::*;
 
 fn optional_nonnull<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>

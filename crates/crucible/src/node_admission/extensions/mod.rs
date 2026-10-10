@@ -9,6 +9,7 @@ mod admission;
 mod authority;
 mod context;
 mod frozen;
+mod negotiation;
 mod registry;
 mod selected;
 
@@ -23,6 +24,7 @@ pub use context::{
     ExtensionApplication, ExtensionApplicationScope, ExtensionRecordKind, ExtensionRecordPath,
 };
 pub use frozen::AdmittedExtensionDefinition;
+pub use negotiation::InstalledExtensionPeerPolicy;
 pub use registry::{ExtensionRegistration, ExtensionRegistryLimits, InstalledExtensionRegistry};
 pub use selected::{AdmittedExtensionApplication, AdmittedExtensionSet};
 

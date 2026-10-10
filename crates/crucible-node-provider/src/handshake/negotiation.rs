@@ -166,6 +166,7 @@ pub struct ConnectionAuthority {
     limits: Limits,
     features: IdSet,
     envelope_extensions: BTreeSet<String>,
+    pub(super) extensions: Option<Arc<[ExtensionSelection]>>,
 }
 
 impl ConnectionAuthority {
@@ -244,6 +245,14 @@ impl ConnectionAuthority {
         &self.features
     }
 
+    /// Borrows the exact typed peer selection, or `None` for legacy negotiation.
+    ///
+    /// This roster records authenticated installed peer agreement. Each graph
+    /// application and dynamic body still requires its source-owned validator.
+    pub fn selected_extensions(&self) -> Option<&[ExtensionSelection]> {
+        self.extensions.as_deref()
+    }
+
     /// Returns explicitly registered and negotiated envelope extension names.
     pub fn envelope_extensions(&self) -> &BTreeSet<String> {
         &self.envelope_extensions
@@ -283,6 +292,25 @@ impl Handshake {
         connection: Id,
         verifier: &mut impl TrustedHandshakeVerifier,
     ) -> Result<ConnectionAuthority, ProviderError> {
+        self.admit_envelopes_versioned(request, response, connection, verifier, false)
+    }
+
+    pub(super) fn admit_envelopes_versioned(
+        &mut self,
+        request: &crate::envelope::Envelope,
+        response: &crate::envelope::Envelope,
+        connection: Id,
+        verifier: &mut impl TrustedHandshakeVerifier,
+        typed_extensions: bool,
+    ) -> Result<ConnectionAuthority, ProviderError> {
+        if !typed_extensions
+            && (request.extensions.contains_key(EXTENSION_NEGOTIATION_V1)
+                || response.extensions.contains_key(EXTENSION_NEGOTIATION_V1))
+        {
+            return Err(ProviderError::Correlation(
+                "typed extensions require explicit version1 admission",
+            ));
+        }
         use crate::bodies::{MethodResult, RequestBody, ResponseShape};
         use crate::envelope::{MessageKind, Method};
 
@@ -376,7 +404,11 @@ impl Handshake {
                 ));
             }
         }
-        let authority = self.admit_exchange(&hello, &result, connection, verifier)?;
+        let authority = if typed_extensions {
+            self.admit_exchange_versioned(&hello, &result, connection, verifier, true)?
+        } else {
+            self.admit_exchange(&hello, &result, connection, verifier)?
+        };
         self.hello_request_ids.insert(request_id.clone());
         Ok(authority)
     }
@@ -420,6 +452,27 @@ impl Handshake {
         connection: Id,
         verifier: &mut impl TrustedHandshakeVerifier,
     ) -> Result<ConnectionAuthority, ProviderError> {
+        self.admit_exchange_versioned(request, result, connection, verifier, false)
+    }
+
+    fn admit_exchange_versioned(
+        &mut self,
+        request: &HelloRequest,
+        result: &HelloResult,
+        connection: Id,
+        verifier: &mut impl TrustedHandshakeVerifier,
+        typed_extensions: bool,
+    ) -> Result<ConnectionAuthority, ProviderError> {
+        if !typed_extensions
+            && result
+                .selected_features
+                .iter()
+                .any(|feature| feature.as_str() == EXTENSION_NEGOTIATION_V1)
+        {
+            return Err(ProviderError::Correlation(
+                "typed feature cannot be admitted as an unversioned IdSet",
+            ));
+        }
         if self.contained {
             return Err(ProviderError::Correlation(
                 "incarnation control custody is contained",
@@ -620,6 +673,7 @@ impl Handshake {
             limits: result.limits,
             features: result.selected_features.clone(),
             envelope_extensions,
+            extensions: None,
         })
     }
 

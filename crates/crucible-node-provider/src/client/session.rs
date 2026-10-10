@@ -175,6 +175,68 @@ impl ClientSession {
         maximum_bytes: usize,
         maximum_nesting: usize,
     ) -> Result<Self, ProviderError> {
+        Self::negotiate_with_admission(
+            stream,
+            peer,
+            hello,
+            supervisor,
+            schemas,
+            budget,
+            maximum_bytes,
+            maximum_nesting,
+            |response| handshake.admit_envelopes(hello, response, connection_id, verifier),
+        )
+    }
+
+    /// Authenticates a peer and selects explicit installed extension contracts.
+    ///
+    /// Uses the same original peer credential checks, complete executable
+    /// measurement and whole exchange deadline as legacy negotiation.
+    ///
+    /// # Errors
+    /// Refuses unsupported exact versions/schemas, changed resumed selections,
+    /// missing installed policy, or any ordinary peer/transport authentication failure.
+    // crucible-lint: allow rust-allow -- The opt-in route retains the same explicit original peer, verifier and transport dependencies as legacy Hello.
+    #[allow(clippy::too_many_arguments)]
+    pub fn negotiate_extensions(
+        stream: std::os::unix::net::UnixStream,
+        peer: &ClientPeer,
+        hello: &Envelope,
+        connection_id: Id,
+        handshake: &mut crate::handshake::ExtensionHandshake,
+        verifier: &mut impl TrustedHandshakeVerifier,
+        supervisor: Rc<dyn ConnectionSupervisor>,
+        schemas: Rc<dyn BodySchemaVerifier>,
+        budget: Duration,
+        maximum_bytes: usize,
+        maximum_nesting: usize,
+    ) -> Result<Self, ProviderError> {
+        Self::negotiate_with_admission(
+            stream,
+            peer,
+            hello,
+            supervisor,
+            schemas,
+            budget,
+            maximum_bytes,
+            maximum_nesting,
+            |response| handshake.admit_envelopes(hello, response, connection_id, verifier),
+        )
+    }
+
+    // crucible-lint: allow rust-allow -- The shared transport path preserves independent peer identity, custody and whole-exchange ceilings.
+    #[allow(clippy::too_many_arguments)]
+    fn negotiate_with_admission(
+        stream: std::os::unix::net::UnixStream,
+        peer: &ClientPeer,
+        hello: &Envelope,
+        supervisor: Rc<dyn ConnectionSupervisor>,
+        schemas: Rc<dyn BodySchemaVerifier>,
+        budget: Duration,
+        maximum_bytes: usize,
+        maximum_nesting: usize,
+        admit: impl FnOnce(&Envelope) -> Result<ConnectionAuthority, ProviderError>,
+    ) -> Result<Self, ProviderError> {
         let credentials =
             rustix::net::sockopt::socket_peercred(&stream).map_err(std::io::Error::from)?;
         let expected_pid = i32::try_from(peer.pid)
@@ -209,7 +271,7 @@ impl ClientSession {
             .read()?
             .ok_or(ProviderError::Correlation("CNP hello response unavailable"))?;
         let response = Envelope::decode(&canonical::canonical_json(&value)?, maximum_bytes)?;
-        let authority = handshake.admit_envelopes(hello, &response, connection_id, verifier)?;
+        let authority = admit(&response)?;
         let connection = Connection::new(
             writer,
             authority.clone(),

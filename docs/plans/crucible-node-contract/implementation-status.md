@@ -1561,6 +1561,40 @@ wall-clock timing, mixed emulator execution, operator capture or a later-cut
 recapture after suffix execution. Broader preservation remains separately
 qualified.
 
+## Exact typed peer extension negotiation
+
+The opt-in `cnp.extension-negotiation/1` Hello extension selects format1 and
+retains complete declaration ContentRefs, identifiers, exact SemVer and schema
+identities. Source-installed definitions, handlers and all eight semantic axes
+remain independently authenticated. Required tuples must match; optional
+selection is deterministic and ambiguous versions refuse. Resume preserves the
+original selected roster before registration, fencing or secret rotation.
+Legacy Hello serialization and entrypoints retain their previous behavior.
+
+A borrowed envelope preflight checks the one-mebibyte encoded ceiling and the
+aggregate256-entry roster before serde retains tuple strings/references.
+Required and optional arrays share one credit; selected responses have their
+own bounded roster. Positional object substitutes refuse before decoding.
+This corrects the separately retained predecessor's gap, where valid257-entry
+JSON could allocate before its typed validation refused.
+
+Current-worktree checks pass31 installed registry cases, ten pre-retention
+and framed-peer controls, and all244 provider unit cases with13 existing ignored
+cases. One deliberate nested subprocess independently passes; the initial
+runner counted it as another primary unit and refused its own result guard.
+The original successful program output is retained and correctly scoped without
+rerunning those tests. Source hygiene passes37, core/provider all-target strict
+checks pass in72 seconds and all12 selected Rust files pass formatting.
+All8,666 source leaves are checked before and after verification. Actual
+executables, scanners, exact commands, logs and two small legacy wire goldens
+remain retained; raw evidence stays outside Git and release artifacts.
+
+Generic negotiation supplies no installed provider class, native issuer,
+readiness, execution, dynamic Input handler or preservation authority. Existing
+measured providers continue to refuse the new opt-in. A separately measured
+source/bootstrap/profile, ordinary graph consumer and source-owned semantic
+policy are required before a native provider may use it.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
