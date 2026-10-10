@@ -44,11 +44,31 @@ impl<'a> OriginalContext<'a> {
 
 pub(super) struct OriginalSender<'a> {
     guard: &'a mut LineageSourceGuard,
+    collecting: Option<(
+        &'a dyn super::LineageReferenceQualification,
+        &'a crate::node_admission::InstalledConformancePlan,
+    )>,
 }
 
 impl<'a> OriginalSender<'a> {
-    pub(super) fn new(guard: &'a mut LineageSourceGuard) -> Self {
-        Self { guard }
+    pub(super) fn new(
+        guard: &'a mut LineageSourceGuard,
+        collecting: Option<(
+            &'a dyn super::LineageReferenceQualification,
+            &'a crate::node_admission::InstalledConformancePlan,
+        )>,
+    ) -> Self {
+        Self { guard, collecting }
+    }
+
+    fn current(&self) -> Result<(), ProviderError> {
+        if let Some((qualification, plan)) = self.collecting {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                qualification.authenticate_collection_dispatch(plan)
+            }))
+            .map_err(|_| ProviderError::Correlation("terminal collection source read unwound"))??;
+        }
+        Ok(())
     }
 
     pub(super) fn upload(
@@ -56,6 +76,7 @@ impl<'a> OriginalSender<'a> {
         reference: &ContentRef,
         bytes: &[u8],
     ) -> Result<(), ProviderError> {
+        self.current()?;
         self.guard.upload(reference, bytes)
     }
 
@@ -67,6 +88,7 @@ impl<'a> OriginalSender<'a> {
         owned: bool,
         body: impl serde::Serialize,
     ) -> Result<ResponseBody, ProviderError> {
+        self.current()?;
         self.guard.call(id, operation, method, owned, body)
     }
 }

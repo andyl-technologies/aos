@@ -163,6 +163,16 @@ impl InstalledExtensionRegistry {
         extensions: &Extensions,
         admitted: &mut AdmittedExtensionSet,
     ) -> Result<(), AdmissionError> {
+        self.admit_map_for_purpose(application, extensions, admitted, None)
+    }
+
+    pub(super) fn admit_map_for_purpose(
+        &self,
+        application: &ExtensionApplication<'_>,
+        extensions: &Extensions,
+        admitted: &mut AdmittedExtensionSet,
+        collection: Option<&crate::node_admission::InstalledConformancePlan>,
+    ) -> Result<(), AdmissionError> {
         if extensions.is_empty() {
             return Ok(());
         }
@@ -350,39 +360,60 @@ impl InstalledExtensionRegistry {
         }
 
         for (installed, selected, dependencies) in &pending {
+            if let Some(plan) = collection {
+                plan.authenticate_extension_scope(application)
+                    .map_err(|error| with_subject(application, trust_error(error)))?;
+            }
             for (dependent, prerequisite) in dependencies {
                 ensure_handler_unchanged(prerequisite)
                     .map_err(|error| with_subject(application, error))?;
                 self.check_features(application, prerequisite)?;
-                prerequisite
-                    .qualification
-                    .qualify_dependency(
+                match collection {
+                    Some(plan) => plan.authenticate_extension_dependency(
                         application,
                         selected,
                         &dependent.declaration,
                         &prerequisite.declaration,
                         &prerequisite.semantics,
-                    )
-                    .map_err(|error| with_subject(application, trust_error(error)))?;
+                    ),
+                    None => prerequisite.qualification.qualify_dependency(
+                        application,
+                        selected,
+                        &dependent.declaration,
+                        &prerequisite.declaration,
+                        &prerequisite.semantics,
+                    ),
+                }
+                .map_err(|error| with_subject(application, trust_error(error)))?;
                 ensure_handler_unchanged(prerequisite)
                     .map_err(|error| with_subject(application, error))?;
             }
             self.check_features(application, installed)?;
             ensure_handler_unchanged(installed)
                 .map_err(|error| with_subject(application, error))?;
+            if let Some(plan) = collection {
+                plan.authenticate_extension_scope(application)
+                    .map_err(|error| with_subject(application, trust_error(error)))?;
+            }
             installed
                 .handler
                 .validate_application(application, &installed.declaration, selected)
                 .map_err(|error| with_subject(application, trust_error(error)))?;
-            installed
-                .qualification
-                .qualify_application(
+            match collection {
+                Some(plan) => plan.authenticate_extension_application(
                     application,
                     &installed.declaration,
                     selected,
                     &installed.semantics,
-                )
-                .map_err(|error| with_subject(application, trust_error(error)))?;
+                ),
+                None => installed.qualification.qualify_application(
+                    application,
+                    &installed.declaration,
+                    selected,
+                    &installed.semantics,
+                ),
+            }
+            .map_err(|error| with_subject(application, trust_error(error)))?;
             ensure_handler_unchanged(installed)
                 .map_err(|error| with_subject(application, error))?;
         }
@@ -405,6 +436,10 @@ impl InstalledExtensionRegistry {
                 .map_err(|error| with_subject(application, error))?;
         }
 
+        if let Some(plan) = collection {
+            plan.authenticate_extension_scope(application)
+                .map_err(|error| with_subject(application, trust_error(error)))?;
+        }
         for reference in &definitions {
             let installed = self.definitions.get(reference).ok_or_else(|| {
                 failure(

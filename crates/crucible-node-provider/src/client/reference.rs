@@ -16,6 +16,10 @@ use super::{ClientCustody, ClientSession};
 #[path = "reference/evidence.rs"]
 mod evidence;
 
+#[path = "reference/controller_preparation.rs"]
+mod controller_preparation;
+pub use controller_preparation::ReferenceControllerPreparationFailure;
+
 pub use evidence::{
     ObservationHandle, ObservationLimits, ObservationScope, ObservedContent, ObservedRequest,
     ObservedRequestKey, RecordedReferenceObservation, ReferenceObservationSnapshot,
@@ -42,9 +46,7 @@ pub(crate) mod transmissions;
 pub use conflict_transmissions::{
     OriginalConflictLimits, OriginalConflictObservation, OriginalConflictObservationHandle,
 };
-pub use transmissions::{
-    TransmissionLimits, TransmissionObservation, TransmissionObservationHandle,
-};
+pub use transmissions::{TransmissionLimits, TransmissionObservation, TransmissionObservationHandle};
 
 /// Owns original public control and receipt bytes beneath a separately retained native peer.
 ///
@@ -78,6 +80,14 @@ impl ReferenceController {
         self.session.authority().selected_extensions()
     }
 
+    /// Borrows the original selected feature inventory as transport data.
+    ///
+    /// This historical roster supplies neither registrar liveness nor source
+    /// qualification; the retaining source capsule checks those separately.
+    pub fn selected_features(&self) -> &crucible_node_contract::IdSet {
+        self.session.authority().selected_features()
+    }
+
     /// Checks this actual session against its original retained typed registrar.
     ///
     /// # Errors
@@ -87,6 +97,14 @@ impl ReferenceController {
         registrar: &crate::handshake::ExtensionHandshake,
     ) -> Result<(), ProviderError> {
         registrar.verify_authority(self.session.authority())
+    }
+
+    pub(crate) fn original_registration_read(
+        &self,
+        registrar: &crate::handshake::ExtensionHandshake,
+    ) -> Result<crate::handshake::RegistrationRead, ProviderError> {
+        self.verify_extension_registrar(registrar)?;
+        self.session.authority().original_registration_read()
     }
 
     /// Returns the measured public endpoint executable without conferring authority.

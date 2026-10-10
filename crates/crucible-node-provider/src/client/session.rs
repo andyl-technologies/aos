@@ -150,6 +150,23 @@ pub struct ClientSession {
         Option<super::reference::original_response_loss::OriginalResponseLossRecorder>,
 }
 
+enum InitialDeadline {
+    Fresh(Duration),
+    Original(ExchangeDeadline),
+}
+
+impl From<Duration> for InitialDeadline {
+    fn from(budget: Duration) -> Self {
+        Self::Fresh(budget)
+    }
+}
+
+impl From<ExchangeDeadline> for InitialDeadline {
+    fn from(deadline: ExchangeDeadline) -> Self {
+        Self::Original(deadline)
+    }
+}
+
 impl ClientSession {
     /// Authenticates actual peer identity and admits a complete original hello exchange.
     ///
@@ -224,6 +241,44 @@ impl ClientSession {
         )
     }
 
+    /// Authenticates typed Hello under a previously fixed whole physical deadline.
+    ///
+    /// Socket availability, actual peer measurement and every Hello byte share
+    /// the same original cut. No host coordinate is exported or renewed.
+    /// Legacy duration-based negotiation retains its existing deadline behavior.
+    ///
+    /// # Errors
+    /// Refuses an expired deadline, foreign peer, unsupported typed selection,
+    /// changed source/registration, or any original authentication/I/O failure.
+    // crucible-lint: allow rust-allow -- Original peer, host verifiers, incident custody and physical cut are separate explicit dependencies.
+    #[allow(clippy::too_many_arguments)]
+    pub fn negotiate_extensions_before(
+        stream: std::os::unix::net::UnixStream,
+        peer: &ClientPeer,
+        hello: &Envelope,
+        connection_id: Id,
+        handshake: &mut crate::handshake::ExtensionHandshake,
+        verifier: &mut impl TrustedHandshakeVerifier,
+        supervisor: Rc<dyn ConnectionSupervisor>,
+        schemas: Rc<dyn BodySchemaVerifier>,
+        deadline: ExchangeDeadline,
+        maximum_bytes: usize,
+        maximum_nesting: usize,
+    ) -> Result<Self, ProviderError> {
+        deadline.remaining()?;
+        Self::negotiate_with_admission(
+            stream,
+            peer,
+            hello,
+            supervisor,
+            schemas,
+            deadline,
+            maximum_bytes,
+            maximum_nesting,
+            |response| handshake.admit_envelopes(hello, response, connection_id, verifier),
+        )
+    }
+
     // crucible-lint: allow rust-allow -- The shared transport path preserves independent peer identity, custody and whole-exchange ceilings.
     #[allow(clippy::too_many_arguments)]
     fn negotiate_with_admission(
@@ -232,7 +287,7 @@ impl ClientSession {
         hello: &Envelope,
         supervisor: Rc<dyn ConnectionSupervisor>,
         schemas: Rc<dyn BodySchemaVerifier>,
-        budget: Duration,
+        budget: impl Into<InitialDeadline>,
         maximum_bytes: usize,
         maximum_nesting: usize,
         admit: impl FnOnce(&Envelope) -> Result<ConnectionAuthority, ProviderError>,
@@ -258,7 +313,13 @@ impl ClientSession {
                 "CNP peer executable differs from installation",
             ));
         }
-        let (mut writer, deadline) = DeadlineStream::new(stream, budget)?;
+        let (mut writer, deadline) = match budget.into() {
+            InitialDeadline::Fresh(budget) => DeadlineStream::new(stream, budget)?,
+            InitialDeadline::Original(deadline) => (
+                DeadlineStream::with_deadline(stream, deadline.clone())?,
+                deadline,
+            ),
+        };
         let mut reader =
             FrameReader::with_limits(writer.try_clone()?, maximum_bytes, maximum_nesting)?;
         write_frame_with_limits(

@@ -214,6 +214,24 @@ impl ControlledReference for ReaderState {
         self.validate_public_boundary_evidence(activation, references, objects)
     }
 
+    fn read_original_input_evidence(
+        &self,
+        original: &OperationAdmission,
+        staged: &crate::node_contract::OriginalStagedInput<'_>,
+        limits: crate::node_contract::OriginalInputLineageLimits,
+    ) -> Result<crate::node_contract::OriginalInputEvidence, OperationFailure> {
+        self.read_staged_evidence(original, staged, limits)
+    }
+
+    fn validate_original_input_evidence(
+        &self,
+        original: &OperationAdmission,
+        staged: &crate::node_contract::OriginalStagedInput<'_>,
+        evidence: &crate::node_contract::OriginalInputEvidence,
+    ) -> Result<(), OperationFailure> {
+        self.validate_staged_evidence(original, staged, evidence)
+    }
+
     fn input_provenance_dependencies(
         &self,
         activation: &crate::node_contract::WorldActivation,

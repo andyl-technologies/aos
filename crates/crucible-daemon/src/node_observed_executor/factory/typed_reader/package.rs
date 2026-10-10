@@ -271,6 +271,26 @@ impl InstalledTypedReaderPackage {
         Ok(&self.artifact(role)?.content)
     }
 
+    /// Borrows one exact original public source artifact path and full identity.
+    ///
+    /// The closed package loader has already measured this named table. The
+    /// borrowing projection lets a configured caller compare independently
+    /// selected source pins; it issues no source, launch or class authority.
+    ///
+    /// # Errors
+    /// Refuses a role absent from the package's closed source artifact table.
+    pub(super) fn source_artifact(
+        &self,
+        role: &str,
+    ) -> Result<(&Path, &ContentRef), NodeObservedError> {
+        let artifact = self
+            .manifest
+            .source_artifacts
+            .get(role)
+            .ok_or_else(|| refused("typed reader declared source artifact absent"))?;
+        Ok((&artifact.path, &artifact.content))
+    }
+
     /// Borrows the exact regenerated typed extension definition as measured data.
     pub fn definition(&self) -> &crucible_node_provider::reference_lineage::InputLineageDefinition {
         self.definition.regenerated()

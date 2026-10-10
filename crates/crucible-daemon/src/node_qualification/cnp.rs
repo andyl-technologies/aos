@@ -57,6 +57,14 @@ pub fn project_cnp_qualification(
             "changed actual CNP profile roster",
         ));
     }
+    project_source(profile, &manifest.owners, resources)
+}
+
+fn project_source(
+    profile: &ReferenceProfile,
+    owners: &[crucible_node_contract::OwnerRef],
+    resources: &ResourceLimits,
+) -> Result<CnpQualificationProjection, QualificationError> {
     resources.validate()?;
     profile.guarantees.validate()?;
     let mut classes = BTreeSet::from([
@@ -103,10 +111,10 @@ pub fn project_cnp_qualification(
         realization: object(&(
             &profile.configuration_ref,
             &profile.node_manifest.profile_id,
-            &manifest.owners,
+            owners,
             resources,
         ))?,
-        descriptors: object(&manifest.descriptors)?,
+        descriptors: object(&std::slice::from_ref(&profile.descriptor))?,
         contracts: object(&(
             &profile.operating_contract,
             &profile.capabilities,
@@ -139,6 +147,77 @@ impl<'a> CnpBehavioralAcceptance<'a> {
     /// Borrows finite installed policy for actual pre-Admit and construction checks.
     pub fn new(policy: &'a dyn InstalledAcceptancePolicy, limits: AcceptanceLimits) -> Self {
         Self { policy, limits }
+    }
+
+    /// Reauthenticates complete source-derived acceptance before native allocation.
+    ///
+    /// The installed authority supplies the original accepted binding, full
+    /// applicability map and evidence. This method derives classes from the
+    /// actual source profile; it cannot mint an acceptance record or live owner.
+    ///
+    /// # Errors
+    /// Refuses missing/stale acceptance, substituted source projections or any
+    /// incomplete obligation. The caller has not allocated a native child yet.
+    pub fn authenticate_prelaunch(
+        &self,
+        profile: &ReferenceProfile,
+        resources: &ResourceLimits,
+    ) -> Result<(), QualificationError> {
+        let scope = self.policy.scope_for_node(&profile.descriptor.id)?;
+        let binding = scope.binding;
+        let projection = project_source(profile, std::slice::from_ref(&profile.owner), resources)?;
+        if binding.node_id != profile.descriptor.id
+            || binding.implementation != profile.implementation
+            || binding.configuration_ref != profile.configuration_ref
+            || binding.operating_contract != profile.operating_contract
+            || scope.current_unit.implementation != projection.implementation
+            || scope.current_unit.realization != projection.realization
+            || scope.current_unit.descriptors != projection.descriptors
+            || scope.current_unit.contracts != projection.contracts
+            || scope.current_unit.port_profiles != projection.port_profiles
+            || scope.required_classes != projection.required_classes
+        {
+            return Err(QualificationError::Refused(
+                "outside prelaunch CNP source/class projection",
+            ));
+        }
+        super::admission::authenticate_scope(
+            scope,
+            self.policy,
+            self.limits,
+            binding,
+            &binding.identity()?,
+            &binding.qualification_refs,
+        )
+    }
+
+    /// Rechecks complete acceptance against the borrowed original realization.
+    ///
+    /// This method does not authenticate native custody or a closed gate. An
+    /// owning source caller separately validates those original handles before
+    /// invoking it; matching DTO fields cannot create execution authority.
+    ///
+    /// # Errors
+    /// Refuses changed complete binding/owner geometry or stale, incomplete
+    /// source-derived class evidence under the current installed authority.
+    pub fn authenticate_original_realization(
+        &self,
+        profile: &ReferenceProfile,
+        realization: &RealizeResult,
+        resources: &ResourceLimits,
+    ) -> Result<(), QualificationError> {
+        let manifest = &realization.realization_manifest;
+        let [binding] = manifest.bindings.as_slice() else {
+            return Err(QualificationError::Refused(
+                "original CNP binding roster differs",
+            ));
+        };
+        let [owner] = manifest.owner_bindings.as_slice() else {
+            return Err(QualificationError::Refused(
+                "original CNP owner roster differs",
+            ));
+        };
+        self.check(profile, realization, binding, owner, resources)
     }
 
     pub(super) fn check(

@@ -158,6 +158,9 @@ impl<C: ControlledReference> ControlledReferenceNode<C> {
         authenticate: &impl Fn(&C, &NodeDescriptor, &NodeBinding) -> Result<(), OperationFailure>,
         maximum_operations: usize,
     ) -> Result<Self, OperationFailure> {
+        if graph.collecting != child.collection_scope().is_some() {
+            return Err(no_effect("controlled source and graph purposes differ"));
+        }
         let descriptor = graph
             .descriptor(node)
             .ok_or_else(|| no_effect("external node absent from sealed graph"))?;

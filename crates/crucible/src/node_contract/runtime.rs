@@ -17,6 +17,11 @@ use super::{
     validation::{valid_outcome, validate_request, validate_roster},
 };
 
+#[path = "runtime/conformance_dispatch.rs"]
+mod conformance_dispatch;
+
+use conformance_dispatch::final_collection_scope;
+
 struct OwnerCustody {
     identity: OwnerIdentity,
     lifecycle: Lifecycle,
@@ -71,8 +76,10 @@ fn prepare_node_for_activation(
     snapshot: &NodeSnapshot,
     record: &ActivationRecord,
     bindings: &BTreeMap<Id, Vec<crucible_node_contract::HashRef>>,
+    collecting: Option<&crate::node_admission::ConformanceGraph>,
 ) -> Result<ValidatedNodePreparation, RuntimeError> {
     snapshot.validate_current(node)?;
+    final_collection_scope(collecting)?;
     let readiness = node.arm(record).map_err(|_| RuntimeError::InvalidReceipt)?;
     snapshot.validate_current(node)?;
     if readiness.owners != snapshot.route.owners
@@ -97,6 +104,7 @@ fn prepare_node_for_activation(
         prepared_owners: owners,
     };
     super::activation_preparation::validate_owner_mapping(&preparation, bindings)?;
+    final_collection_scope(collecting)?;
     Ok(preparation)
 }
 
@@ -122,9 +130,33 @@ pub struct NodeRuntime {
     custody_slot: Option<Box<dyn RuntimeCustodySlot>>,
     terminal: Option<super::terminal::TerminalState>,
     condition_stop: Option<super::condition_debug::ConditionStopState>,
+    collecting: Option<Rc<crate::node_admission::ConformanceGraph>>,
 }
 
 impl NodeRuntime {
+    pub(super) fn collection_admission(
+        &self,
+        token: &OperationToken,
+    ) -> Result<&OperationAdmission, RuntimeError> {
+        self.validate_token(token)?;
+        self.operations
+            .get(token.operation())
+            .map(|entry| &entry.admission)
+            .ok_or(RuntimeError::ForeignAuthority)
+    }
+
+    pub(super) fn validate_collection_custody(
+        &mut self,
+        plan: &crate::node_admission::InstalledConformancePlan,
+    ) -> Result<(), RuntimeError> {
+        self.validate_all_declarations()?;
+        for node in self.nodes.values() {
+            node.validate_collection_scope(plan)
+                .map_err(|_| RuntimeError::ForeignAuthority)?;
+        }
+        Ok(())
+    }
+
     /// Constructs an inactive runtime from the complete admitted realized graph.
     ///
     /// All descriptors and bindings must equal the graph's admission snapshot.
@@ -140,6 +172,33 @@ impl NodeRuntime {
         limits: RuntimeLimits,
         custody_slot: Box<dyn RuntimeCustodySlot>,
     ) -> Result<Self, Box<RuntimePreparationFailure>> {
+        Self::new_for_purpose(graph, nodes, activation, limits, custody_slot, None)
+    }
+
+    pub(super) fn new_for_purpose(
+        graph: &crate::node_admission::AdmittedGraph,
+        nodes: Vec<Box<dyn SimulationNode>>,
+        activation: ActivationRecord,
+        limits: RuntimeLimits,
+        custody_slot: Box<dyn RuntimeCustodySlot>,
+        collecting: Option<Rc<crate::node_admission::ConformanceGraph>>,
+    ) -> Result<Self, Box<RuntimePreparationFailure>> {
+        if graph.collecting != collecting.is_some()
+            || collecting
+                .as_ref()
+                .is_some_and(|scope| !std::ptr::eq(&scope.graph, graph))
+            || nodes
+                .iter()
+                .any(|node| node.collection_scope().is_some() != collecting.is_some())
+        {
+            return Err(RuntimePreparationFailure::retain(
+                RuntimeError::ForeignAuthority,
+                nodes,
+                activation,
+                limits,
+                custody_slot,
+            ));
+        }
         if let Err(error) = custody_slot.validate_world(&activation, limits) {
             return Err(RuntimePreparationFailure::retain(
                 error,
@@ -236,6 +295,7 @@ impl NodeRuntime {
             custody_slot: Some(custody_slot),
             terminal: None,
             condition_stop: None,
+            collecting,
         })
     }
 
@@ -284,13 +344,20 @@ impl NodeRuntime {
             });
             hashes.dedup();
         }
+        let collecting = self.collecting.as_deref();
         for (node_id, node) in &mut self.nodes {
             let Some(snapshot) = self.snapshots.get(node_id) else {
                 self.barrier.abandon(ready);
                 return Err(RuntimeError::UnknownNode);
             };
             let original_route = snapshot.route.clone();
-            match prepare_node_for_activation(node.as_mut(), snapshot, &record, &bindings) {
+            match prepare_node_for_activation(
+                node.as_mut(),
+                snapshot,
+                &record,
+                &bindings,
+                collecting,
+            ) {
                 Ok(preparation) => ready.push(preparation),
                 Err(error) => {
                     self.barrier.abandon(ready);
@@ -313,6 +380,12 @@ impl NodeRuntime {
             return Err(RuntimeError::InvalidReceipt);
         }
         self.barrier.ready(ready)
+    }
+
+    // This borrowed record stays inside the opaque collecting owner. It avoids
+    // copying owner scope merely to publish the same authentic initial body.
+    pub(super) fn original_preparation_record(&self) -> &ActivationRecord {
+        self.barrier.record()
     }
 
     /// Borrows complete original readiness for preparing durable coordinator state.
@@ -458,6 +531,9 @@ impl NodeRuntime {
         }
         let admission = entry.admission.clone();
         let close_requested = entry.close_submission.is_some();
+        if let Err(error) = final_collection_scope(self.collecting.as_deref()) {
+            return Poll::Ready(Err(RuntimePollFailure::Admission(error)));
+        }
         let result = match self.nodes.get_mut(&token.route.node) {
             Some(handle) => handle.poll_operation(token, context),
             None => {
@@ -523,6 +599,8 @@ impl NodeRuntime {
             return Ok(CancelStatus::Terminal);
         }
 
+        final_collection_scope(self.collecting.as_deref())
+            .map_err(RuntimePollFailure::Admission)?;
         self.nodes
             .get_mut(&token.route.node)
             .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?
@@ -553,6 +631,7 @@ impl NodeRuntime {
         }
 
         let admission = entry.admission.clone();
+        final_collection_scope(self.collecting.as_deref())?;
         let result = self
             .nodes
             .get_mut(&token.route.node)
@@ -606,6 +685,8 @@ impl NodeRuntime {
             return Ok(());
         }
 
+        final_collection_scope(self.collecting.as_deref())
+            .map_err(RuntimePollFailure::Admission)?;
         self.nodes
             .get_mut(&token.route.node)
             .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?
@@ -1144,6 +1225,8 @@ pub use input_provenance::{InputProvenanceClosure, InputProvenanceLimits, SavedI
 
 mod initial;
 
+mod conformance_activation;
+
 #[path = "runtime_evidence.rs"]
 mod evidence;
 
@@ -1151,6 +1234,19 @@ mod evidence;
 mod original_completion;
 
 pub use original_completion::OriginalCompletedOperation;
+
+#[path = "runtime_original_witness.rs"]
+mod original_witness;
+pub use original_witness::OriginalRuntimeWitness;
+
+#[path = "runtime_original_input_observation.rs"]
+mod original_input_observation;
+
+pub use original_input_observation::OriginalStagedInput;
+
+#[path = "runtime_original_input_evidence.rs"]
+mod original_input_evidence;
+pub use original_input_evidence::OriginalInputEvidence;
 
 #[path = "runtime_boundary_evidence.rs"]
 mod boundary_evidence;

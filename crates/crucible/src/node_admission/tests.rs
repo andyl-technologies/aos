@@ -1455,3 +1455,6 @@ fn owner_conflict_derivation_has_a_finite_host_work_ceiling() {
         AdmissionCode::BoundMismatch
     );
 }
+
+#[path = "tests/conformance.rs"]
+mod conformance;

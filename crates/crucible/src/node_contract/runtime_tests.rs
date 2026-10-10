@@ -856,6 +856,7 @@ fn runtime(mode: OperatingMode) -> (NodeRuntime, Vec<Rc<RefCell<NativeState>>>) 
         custody_slot: Some(crate::node_contract::test_custody_slot()),
         terminal: None,
         condition_stop: None,
+        collecting: None,
     };
     (runtime, vec![a_state, b_state])
 }

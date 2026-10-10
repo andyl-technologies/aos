@@ -16,6 +16,7 @@ pub struct OriginalCompletedOperation<'a> {
     admission: &'a OperationAdmission,
     outcome: &'a OperationOutcome,
     acknowledged: bool,
+    staged_inputs: Result<Option<OriginalStagedInput<'a>>, RuntimeError>,
 }
 
 impl OriginalCompletedOperation<'_> {
@@ -34,6 +35,22 @@ impl OriginalCompletedOperation<'_> {
     /// This cached status grants no permission to acknowledge another output.
     pub fn acknowledged(&self) -> bool {
         self.acknowledged
+    }
+
+    /// Borrows complete original staging, producer lineage and ACK custody.
+    ///
+    /// The projection supplies historical data rather than execution permission.
+    /// Existing completion accessors remain usable when this stronger witness is
+    /// unavailable, including for adapters without original producer lineage.
+    ///
+    /// # Errors
+    /// Refuses changed staging scope, unavailable native ACKs, retained failures
+    /// or nonempty inputs without complete original provenance and lineage.
+    pub fn staged_inputs(&self) -> Result<Option<&OriginalStagedInput<'_>>, RuntimeError> {
+        self.staged_inputs
+            .as_ref()
+            .map(Option::as_ref)
+            .map_err(Clone::clone)
     }
 }
 
@@ -70,6 +87,7 @@ impl NodeRuntime {
             admission: &original.admission,
             outcome,
             acknowledged,
+            staged_inputs: self.observe_original_staged_input(&original.admission),
         })
     }
 }

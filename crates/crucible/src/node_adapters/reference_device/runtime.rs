@@ -3,6 +3,17 @@
 use super::*;
 
 impl<C: ControlledReference> SimulationNode for ControlledReferenceNode<C> {
+    fn collection_scope(&self) -> Option<&crate::node_admission::InstalledConformancePlan> {
+        self.child.collection_scope()
+    }
+
+    fn validate_collection_scope(
+        &self,
+        plan: &crate::node_admission::InstalledConformancePlan,
+    ) -> Result<(), OperationFailure> {
+        self.child.validate_collection_scope(plan)
+    }
+
     fn descriptor(&self) -> &NodeDescriptor {
         &self.descriptor
     }
@@ -565,6 +576,38 @@ impl<C: ControlledReference> SimulationNode for ControlledReferenceNode<C> {
             return Err(no_effect("original native evidence bodies changed"));
         }
         Ok(())
+    }
+
+    fn read_original_input_evidence(
+        &self,
+        original: &OperationAdmission,
+        staged: &crate::node_contract::OriginalStagedInput<'_>,
+        limits: crate::node_contract::OriginalInputLineageLimits,
+    ) -> Result<crate::node_contract::OriginalInputEvidence, OperationFailure> {
+        let window = self.original(original.token())?;
+        let outcome = window
+            .outcome
+            .as_ref()
+            .ok_or_else(|| no_effect("original input evidence requires completion"))?;
+        self.validate_outcome(original, outcome)?;
+        self.child
+            .read_original_input_evidence(original, staged, limits)
+    }
+
+    fn validate_original_input_evidence(
+        &self,
+        original: &OperationAdmission,
+        staged: &crate::node_contract::OriginalStagedInput<'_>,
+        evidence: &crate::node_contract::OriginalInputEvidence,
+    ) -> Result<(), OperationFailure> {
+        let window = self.original(original.token())?;
+        let outcome = window
+            .outcome
+            .as_ref()
+            .ok_or_else(|| no_effect("original input evidence requires completion"))?;
+        self.validate_outcome(original, outcome)?;
+        self.child
+            .validate_original_input_evidence(original, staged, evidence)
     }
 
     fn request_cancel(&mut self, token: &OperationToken) -> Result<CancelStatus, OperationFailure> {

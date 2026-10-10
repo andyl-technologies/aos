@@ -14,7 +14,7 @@ impl ReaderState {
         let bootstrap = self.controller()?.bootstrap.clone();
         if self.active.is_none() {
             let request_id = original_id("abort", &bootstrap.transaction_id)?;
-            let response = self.controller_mut()?.call(
+            let response = self.cleanup_controller_mut()?.call(
                 request_id.clone(),
                 None,
                 Method::Abort,
@@ -48,7 +48,7 @@ impl ReaderState {
             .cloned()
             .ok_or(ProviderError::Frame("shutdown arguments are not an object"))?;
             let binding_hash = self.owner_binding.identity()?;
-            let response = self.controller_mut()?.call(
+            let response = self.cleanup_controller_mut()?.call(
                 request_id.clone(),
                 Some(operation.clone()),
                 Method::Begin,
@@ -79,7 +79,7 @@ impl ReaderState {
         // independent complete native-group census remains mandatory before it
         // can contain/reap the original provider; absent paths are not proof.
         let request_id = original_id("release", &bootstrap.authority.realization_id)?;
-        let response = self.controller_mut()?.call(
+        let response = self.cleanup_controller_mut()?.call(
             request_id.clone(),
             None,
             Method::Release,

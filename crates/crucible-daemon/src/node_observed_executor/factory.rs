@@ -31,8 +31,29 @@ mod typed_reader;
 
 pub use typed_reader::{
     InstalledTypedReaderCatalog, InstalledTypedReaderCatalogPolicy,
-    InstalledTypedReaderConfiguration, InstalledTypedReaderPackage,
-    InstalledTypedReaderPreparation, InstalledTypedReaderPreparedParts,
+    InstalledTypedReaderConfiguration, InstalledTypedReaderFixtureAuthority,
+    InstalledTypedReaderHostInvocation, InstalledTypedReaderOwningPolicy,
+    InstalledTypedReaderPackage, InstalledTypedReaderPreparation,
+    InstalledTypedReaderPreparedParts, InstalledTypedReaderSourceFixture,
+    LaunchedTypedReaderProvider, LaunchedTypedReaderSession, OriginalTypedWindowSeal,
+    PreparedTypedReaderCohort, PreparedTypedReaderHostCollection,
+    PreparedTypedReaderHostInvocation, PreparedTypedReaderHostSources, PreparedTypedReaderSession,
+    ReclaimedTypedReaderHostCollection, ReclaimedTypedReaderHostSources,
+    SelectedTypedReaderHostSource, SelectedTypedReaderPublicRole, StoredTypedReaderResultPublisher,
+    TypedReaderAdoptionFailure, TypedReaderCohortReservation, TypedReaderCollectingDriver,
+    TypedReaderCollectingExtensionPolicy, TypedReaderCollectionWorld, TypedReaderCustodyPair,
+    TypedReaderCustodySupervisor, TypedReaderDrivingError, TypedReaderFixtureAudit,
+    TypedReaderFixtureLaunchRequest, TypedReaderFixtureLaunches, TypedReaderHostCollection,
+    TypedReaderHostExecution, TypedReaderHostIncidents, TypedReaderHostInvocationFailure,
+    TypedReaderHostInvocationRequest, TypedReaderHostPreparationRequest, TypedReaderHostReport,
+    TypedReaderHostSchemas, TypedReaderHostServices, TypedReaderHostSessionScope,
+    TypedReaderHostSourceFailure, TypedReaderHostSourcesExecution, TypedReaderHostSourcesRequest,
+    TypedReaderHostStartFailure, TypedReaderLaunchError, TypedReaderLaunchFailure,
+    TypedReaderNativeOracles, TypedReaderOriginalRow, TypedReaderPrivateAuthorization,
+    TypedReaderProgramme, TypedReaderProgrammePeer, TypedReaderProgrammeWindow,
+    TypedReaderSessionFailure, TypedReaderSessionLaunchFailure,
+    TypedReaderSessionPreparationFailure, TypedReaderSessionRequest, TypedReaderSourceHandshake,
+    TypedReaderWindowDisposition, TypedReaderWindowTicket, TypedReaderWitnessAuthority,
 };
 
 #[cfg(test)]
@@ -1350,6 +1371,7 @@ pub(super) fn measure_executable(path: &Path) -> Result<ContentRef, NodeObserved
 fn native(error: impl std::fmt::Debug) -> NodeObservedError {
     NodeObservedError::Native(format!("{error:?}"))
 }
+
 fn refused(reason: &str) -> NodeObservedError {
     NodeObservedError::Native(reason.to_owned())
 }

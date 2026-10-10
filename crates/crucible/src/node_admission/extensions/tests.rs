@@ -7,6 +7,9 @@
 // crucible-lint: allow panic-shortcut -- These extensions tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "collection_tests.rs"]
+mod collection_tests;
+
 #[path = "frozen_admission_tests.rs"]
 mod frozen_admission_tests;
 

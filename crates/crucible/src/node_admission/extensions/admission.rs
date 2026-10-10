@@ -3,7 +3,9 @@
 use crucible_node_contract::{Extensions, HashRef};
 use serde::Serialize;
 
-use crate::node_admission::{AdmissionError, AdmissionLimits, AdmissionRequest};
+use crate::node_admission::{
+    AdmissionError, AdmissionLimits, AdmissionRequest, InstalledConformancePlan,
+};
 
 use super::context::{ExtensionApplication, RecordPlacement};
 use super::{AdmittedExtensionSet, InstalledExtensionRegistry};
@@ -13,6 +15,7 @@ pub(in crate::node_admission) struct ExtensionAdmission<'a> {
     request: AdmissionRequest<'a>,
     world_hash: HashRef,
     selected: AdmittedExtensionSet,
+    collection: Option<&'a InstalledConformancePlan>,
 }
 
 impl<'a> ExtensionAdmission<'a> {
@@ -20,12 +23,14 @@ impl<'a> ExtensionAdmission<'a> {
         registry: &'a InstalledExtensionRegistry,
         request: AdmissionRequest<'a>,
         world_hash: HashRef,
+        collection: Option<&'a InstalledConformancePlan>,
     ) -> Self {
         Self {
             registry,
             request,
             world_hash,
             selected: AdmittedExtensionSet::default(),
+            collection,
         }
     }
 
@@ -51,8 +56,17 @@ impl<'a> ExtensionAdmission<'a> {
             placement,
             limits,
         )?;
-        self.registry
-            .admit_map(&application, extensions, &mut self.selected)
+        match self.collection {
+            Some(plan) => self.registry.admit_map_for_purpose(
+                &application,
+                extensions,
+                &mut self.selected,
+                Some(plan),
+            ),
+            None => self
+                .registry
+                .admit_map(&application, extensions, &mut self.selected),
+        }
     }
 
     pub fn into_selected(self) -> AdmittedExtensionSet {

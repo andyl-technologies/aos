@@ -39,6 +39,21 @@ impl ReaderState {
         {
             return Err(refused("original runtime input lineage scope changed"));
         }
+        if self.guard.selected_extensions().is_some() {
+            self.guard.verify_extension_registrar().map_err(unknown)?;
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.qualification.authenticate_original_inputs(
+                    &self.guard,
+                    original,
+                    provenance,
+                    lineage,
+                )
+            }))
+            .map_err(|_| refused("installed typed original input callback unwound"))?
+            .map_err(unknown)?;
+            self.guard.verify_extension_registrar().map_err(unknown)?;
+        }
+
         if self.input_lineages.len() >= self.maximum_operations
             && !self.input_lineages.contains_key(original.stage_operation())
         {

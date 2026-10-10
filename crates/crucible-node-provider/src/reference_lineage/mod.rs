@@ -31,7 +31,7 @@ pub use protocol::{
 };
 pub use source_custody::{
     LineageSourceCustody, LineageSourceCustodySlot, LineageSourceExtensionFailure,
-    LineageSourceFailure, LineageSourceGuard,
+    LineageSourceFailure, LineageSourceGuard, LineageSourceLaunchFailure, LineageSourceReadHandle,
 };
 
 pub use relation::{ConsumptionEvidence, ConsumptionRelationCredit, NativeConsumptionRelation};

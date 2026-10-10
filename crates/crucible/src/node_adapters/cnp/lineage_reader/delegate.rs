@@ -15,6 +15,29 @@ use crucible_node_provider::{
 impl sealed::Sealed for LineageControlledReference {}
 
 impl ControlledReference for LineageControlledReference {
+    fn collection_scope(&self) -> Option<&crate::node_admission::InstalledConformancePlan> {
+        self.state
+            .as_ref()
+            .and_then(|state| state.collection.as_ref())
+    }
+
+    fn validate_collection_scope(
+        &self,
+        plan: &crate::node_admission::InstalledConformancePlan,
+    ) -> Result<(), OperationFailure> {
+        let state = self.state().map_err(super::readiness::unknown)?;
+        if !state
+            .collection
+            .as_ref()
+            .is_some_and(|retained| retained.same_original(plan))
+        {
+            return Err(super::readiness::refused(
+                "original collection capsule differs",
+            ));
+        }
+        super::collection::authenticate(state, plan)
+    }
+
     fn quantized_facet(&self) -> &str {
         "reference-device/quantized-lineage-reader-v1"
     }
@@ -200,6 +223,34 @@ impl ControlledReference for LineageControlledReference {
             activation,
             references,
             objects,
+        )
+    }
+
+    fn read_original_input_evidence(
+        &self,
+        original: &OperationAdmission,
+        staged: &crate::node_contract::OriginalStagedInput<'_>,
+        limits: crate::node_contract::OriginalInputLineageLimits,
+    ) -> Result<crate::node_contract::OriginalInputEvidence, OperationFailure> {
+        ControlledReference::read_original_input_evidence(
+            self.state().map_err(super::readiness::unknown)?,
+            original,
+            staged,
+            limits,
+        )
+    }
+
+    fn validate_original_input_evidence(
+        &self,
+        original: &OperationAdmission,
+        staged: &crate::node_contract::OriginalStagedInput<'_>,
+        evidence: &crate::node_contract::OriginalInputEvidence,
+    ) -> Result<(), OperationFailure> {
+        ControlledReference::validate_original_input_evidence(
+            self.state().map_err(super::readiness::unknown)?,
+            original,
+            staged,
+            evidence,
         )
     }
 

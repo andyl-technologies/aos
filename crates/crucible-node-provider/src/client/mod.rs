@@ -20,7 +20,7 @@ pub use reference::{
     OriginalLineageObject, OriginalLineageRealization, OriginalLineageWindow,
     OriginalResponseLossObservation, OriginalResponseLossObservationHandle,
     OriginalResponseLossQualification, RecordedReferenceObservation, ReferenceController,
-    ReferenceObservationSnapshot, TransmissionLimits, TransmissionObservation,
-    TransmissionObservationHandle,
+    ReferenceControllerPreparationFailure, ReferenceObservationSnapshot, TransmissionLimits,
+    TransmissionObservation, TransmissionObservationHandle,
 };
 pub use session::{ClientCustody, ClientOriginal, ClientPeer, ClientSession};

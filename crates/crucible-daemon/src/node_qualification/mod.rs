@@ -12,6 +12,7 @@ mod admission;
 mod catalog;
 mod cnp;
 mod issuance;
+mod production_conformance;
 mod record;
 mod reference_oracle;
 mod reference_witness;
@@ -41,6 +42,13 @@ pub use schema::{
 };
 
 pub use admission::{AcceptanceScope, BehavioralAdmissionEvidence, InstalledAcceptancePolicy};
+pub use production_conformance::{
+    CollectedConformance, ExactCompletionCase, ExactCompletionObservation,
+    InstalledConformanceAuthority, InstalledRuntimeWitnessOracle, OriginalCollectionAttempts,
+    OriginalCompletionObservation, OriginalCompletionWitness, OriginalProtocolWitness,
+    OriginalRuntimeReportStore, PlannedFixtureAudit, ProductionConformanceRunner, ProtocolCase,
+    ProtocolObservation, QuantizedCompletionCase, QuantizedCompletionObservation,
+};
 pub use record::{
     AcceptanceDecision, AcceptanceLimits, AcceptanceRecord, EvaluatedAcceptance,
     evaluate_acceptance,

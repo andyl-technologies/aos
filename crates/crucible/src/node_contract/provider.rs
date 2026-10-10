@@ -22,10 +22,10 @@ pub struct RealizationRequest<'a> {
 /// Retains prepared native handles with ordinary semantic execution withheld.
 #[must_use = "admit inactive handles or retain their supervised cleanup custody"]
 pub struct PreparedRealization {
-    nodes: Vec<Box<dyn SimulationNode>>,
-    activation: ActivationRecord,
-    limits: RuntimeLimits,
-    custody_slot: Option<Box<dyn RuntimeCustodySlot>>,
+    pub(super) nodes: Vec<Box<dyn SimulationNode>>,
+    pub(super) activation: ActivationRecord,
+    pub(super) limits: RuntimeLimits,
+    pub(super) custody_slot: Option<Box<dyn RuntimeCustodySlot>>,
 }
 
 impl PreparedRealization {

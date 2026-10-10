@@ -246,6 +246,102 @@ fn batch(
     }
 }
 
+fn observed_admission(runtime: &NodeRuntime, original: &RuntimeInputBatch) -> OperationAdmission {
+    OperationAdmission {
+        token: OperationToken {
+            authority: Rc::clone(&runtime.authority),
+            operation: Id::new("observed-completion").unwrap(),
+            route: runtime.nodes[original.node()].route().clone(),
+        },
+        activation: original.activation().clone(),
+        request: OperationRequest::BoundarySettle {
+            start: original.cutoff(),
+            limit: Position::new(1.into(), 0.into(), Phase::Reaction),
+        },
+        inputs: Some(Rc::new(original.retained_copy())),
+    }
+}
+
+#[test]
+fn original_stage_projection_borrows_native_ack_without_restage_or_commit() {
+    let (mut runtime, activation, buffer) = fixture(Behavior::Accept);
+    let original = batch(&runtime, &activation, "stage/a", "batch/a");
+    let admission = observed_admission(&runtime, &original);
+    runtime.stage_inputs(original).unwrap();
+
+    let view = runtime
+        .observe_original_staged_input(&admission)
+        .unwrap()
+        .unwrap();
+    let retained = &runtime.input_batches[&Id::new("stage/a").unwrap()];
+    assert!(std::ptr::eq(view.batch(), &retained.batch));
+    assert!(std::ptr::eq(
+        view.acknowledgement(),
+        retained.acknowledgement.as_ref().unwrap()
+    ));
+    assert!(view.provenance().is_none());
+    assert!(view.lineage().is_none());
+    assert!(view.coordinator_commit().is_none());
+    assert!(!view.committed());
+    assert_eq!(buffer.borrow().calls, 1);
+    assert!(!retained.committed);
+}
+
+#[test]
+fn original_stage_projection_refuses_changed_scope_and_missing_ack() {
+    let (mut runtime, activation, buffer) = fixture(Behavior::Accept);
+    let original = batch(&runtime, &activation, "stage/a", "batch/a");
+    let mut admission = observed_admission(&runtime, &original);
+    runtime.stage_inputs(original).unwrap();
+    let before = buffer.borrow().acknowledgement.clone();
+
+    let mut changed = admission.inputs().unwrap().retained_copy();
+    changed.inventory = canonical::content_ref(b"foreign", "application/json").unwrap();
+    admission.inputs = Some(Rc::new(changed));
+    assert!(matches!(
+        runtime.observe_original_staged_input(&admission),
+        Err(RuntimeError::ForeignAuthority)
+    ));
+    admission.inputs = Some(Rc::new(
+        runtime.input_batches[&Id::new("stage/a").unwrap()]
+            .batch
+            .retained_copy(),
+    ));
+    runtime
+        .input_batches
+        .get_mut(&Id::new("stage/a").unwrap())
+        .unwrap()
+        .acknowledgement = None;
+    assert!(matches!(
+        runtime.observe_original_staged_input(&admission),
+        Err(RuntimeError::OutstandingObligations)
+    ));
+
+    assert_eq!(buffer.borrow().calls, 1);
+    assert_eq!(buffer.borrow().acknowledgement, before);
+}
+
+#[test]
+fn original_stage_projection_preserves_refused_failure_custody() {
+    let (mut runtime, activation, buffer) = fixture(Behavior::Uncertain);
+    let original = batch(&runtime, &activation, "stage/a", "batch/a");
+    let admission = observed_admission(&runtime, &original);
+    assert!(runtime.stage_inputs(original).is_err());
+    let before = runtime.input_batches[&Id::new("stage/a").unwrap()]
+        .failure
+        .clone();
+
+    assert!(matches!(
+        runtime.observe_original_staged_input(&admission),
+        Err(RuntimeError::OutstandingObligations)
+    ));
+    assert_eq!(
+        runtime.input_batches[&Id::new("stage/a").unwrap()].failure,
+        before
+    );
+    assert_eq!(buffer.borrow().calls, 1);
+}
+
 #[test]
 fn original_native_ack_and_lost_response_recovery_do_not_restage_inputs() {
     let (mut runtime, activation, buffer) = fixture(Behavior::Accept);

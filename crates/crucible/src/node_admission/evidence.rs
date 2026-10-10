@@ -250,9 +250,10 @@ impl<'a> VerifiedContent<'a> {
         &mut self,
         request: super::AdmissionRequest<'a>,
         world_hash: HashRef,
+        collection: Option<&'a super::InstalledConformancePlan>,
     ) {
         self.extensions = self.source.extension_registry().map(|registry| {
-            super::extensions::ExtensionAdmission::new(registry, request, world_hash)
+            super::extensions::ExtensionAdmission::new(registry, request, world_hash, collection)
         });
     }
 

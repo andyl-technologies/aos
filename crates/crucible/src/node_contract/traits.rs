@@ -29,6 +29,29 @@ pub struct ReadyAttestation {
 /// descriptions do not provide alternate mutation paths. Implementations need
 /// not be `Send` or `Sync`; a worker requires explicit custody transfer.
 pub trait SimulationNode {
+    /// Borrows the retained original collection-only scope when explicitly installed.
+    ///
+    /// Ordinary nodes return None. A collection node cannot enter an ordinary
+    /// runtime; the opaque collecting constructor checks the same original plan.
+    fn collection_scope(&self) -> Option<&crate::node_admission::InstalledConformancePlan> {
+        None
+    }
+
+    /// Authenticates current original native custody for the same installed plan.
+    ///
+    /// # Errors
+    /// Defaults to refusal; collection adapters must check actual native/source
+    /// ownership and the retained original fixture authority, not scope strings.
+    fn validate_collection_scope(
+        &self,
+        _plan: &crate::node_admission::InstalledConformancePlan,
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "current original collection custody is unsupported".into(),
+        })
+    }
+
     /// Returns the immutable admitted public descriptor.
     fn descriptor(&self) -> &NodeDescriptor;
 
@@ -783,6 +806,47 @@ pub trait SimulationNode {
         Err(OperationFailure {
             effects: super::EffectKnowledge::None,
             reason: "original native operation evidence authentication is unsupported".into(),
+        })
+    }
+
+    /// Reads complete original staged-input receipt bodies and direct codec rows.
+    ///
+    /// The original completion and opaque staged view select the retained native
+    /// ACK. Implementations must check actual native custody and reserve the
+    /// complete declared geometry before copying any body. A root alone is not
+    /// a complete receipt, and an unknown selected codec must refuse.
+    ///
+    /// # Errors
+    /// Refuses unsupported codecs, changed staging custody or exceeded credits.
+    fn read_original_input_evidence(
+        &self,
+        _original: &OperationAdmission,
+        _staged: &super::OriginalStagedInput<'_>,
+        _limits: super::OriginalInputLineageLimits,
+    ) -> Result<super::OriginalInputEvidence, OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "original native input evidence is unsupported".into(),
+        })
+    }
+
+    /// Authenticates every staged receipt body and edge against its native owner.
+    ///
+    /// Content hashes and generic graph closure are checked independently. The
+    /// installed source must establish complete codec-specific direct rows and
+    /// their original native registration, including after publication ACK.
+    ///
+    /// # Errors
+    /// Refuses unsupported validation, incomplete rows or changed native custody.
+    fn validate_original_input_evidence(
+        &self,
+        _original: &OperationAdmission,
+        _staged: &super::OriginalStagedInput<'_>,
+        _evidence: &super::OriginalInputEvidence,
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "original native input evidence validation is unsupported".into(),
         })
     }
 

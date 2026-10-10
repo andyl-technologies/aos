@@ -174,16 +174,94 @@ fn original_completion_borrows_actual_permission_and_retained_ack_without_effect
         assert_eq!(original.admission().token().operation(), token.operation());
         assert_eq!(original.outcome(), &cached);
         assert!(!original.acknowledged());
+        assert!(original.staged_inputs().unwrap().is_none());
     }
 
     runtime.acknowledge(&token, &[]).unwrap();
     let original = runtime.original_completed_operation(&token).unwrap();
     assert_eq!(original.outcome(), &cached);
     assert!(original.acknowledged());
+    assert!(original.staged_inputs().unwrap().is_none());
     assert_eq!(state.borrow().evidence_reads, 0);
     assert_eq!(state.borrow().begin_calls, 1);
     assert_eq!(state.borrow().close_calls, 1);
     assert_eq!(state.borrow().ack_calls, 1);
+}
+
+#[test]
+fn original_input_evidence_requires_source_reader_beyond_matching_ack_root() {
+    let (mut runtime, state, token, reference) = completed_evidence();
+    assert!(
+        runtime
+            .original_input_evidence(&token, OriginalInputLineageLimits::default())
+            .unwrap()
+            .is_none()
+    );
+    let admission = &runtime.operations[token.operation()].admission;
+    // The completion token is runtime-issued; this empty staging journal is a
+    // synthetic model fixture, not a source-installed native input certificate.
+    let batch = crate::node_scheduling::RuntimeInputBatch {
+        activation: admission.activation().clone(),
+        node: token.route().node.clone(),
+        stage_operation: id("original-stage"),
+        batch: id("original-input"),
+        owners: token.route().owners.clone(),
+        cutoff: position(0),
+        inventory: reference.clone(),
+        deliveries: vec![],
+        payloads: vec![],
+    };
+    let acknowledgement = crate::node_scheduling::NativeInputAcknowledgement {
+        stage_operation: batch.stage_operation().clone(),
+        batch: batch.batch().clone(),
+        node: batch.node().clone(),
+        owners: batch.owners().to_vec(),
+        cutoff: batch.cutoff(),
+        inventory: batch.inventory().clone(),
+        proof_ref: reference,
+    };
+    runtime
+        .operations
+        .get_mut(token.operation())
+        .unwrap()
+        .admission
+        .inputs = Some(Rc::new(batch.retained_copy()));
+    runtime.input_batches.insert(
+        batch.stage_operation().clone(),
+        super::inputs::RetainedInput {
+            batch,
+            acknowledgement: Some(acknowledgement),
+            provenance: None,
+            lineage: None,
+            failure: None,
+            committed: false,
+            commit: None,
+        },
+    );
+
+    assert!(matches!(
+        runtime.original_input_evidence(&token, OriginalInputLineageLimits::default()),
+        Err(RuntimePollFailure::Native(OperationFailure {
+            effects: EffectKnowledge::None,
+            ..
+        }))
+    ));
+    assert!(matches!(
+        runtime.original_input_evidence(
+            &token,
+            OriginalInputLineageLimits {
+                maximum_bytes: 1,
+                ..OriginalInputLineageLimits::default()
+            }
+        ),
+        Err(RuntimePollFailure::Admission(RuntimeError::ResourceLimit))
+    ));
+    let original = runtime.original_completed_operation(&token).unwrap();
+    assert!(original.staged_inputs().unwrap().is_some());
+    assert_eq!(state.borrow().evidence_reads, 0);
+    assert_eq!(state.borrow().begin_calls, 1);
+    assert_eq!(state.borrow().close_calls, 1);
+    assert_eq!(state.borrow().quarantine_calls, 0);
 }
 
 #[test]
@@ -208,4 +286,54 @@ fn original_completion_refuses_foreign_and_pending_tokens_without_native_reads()
     assert_eq!(states[0].borrow().evidence_reads, 0);
     assert_eq!(states[0].borrow().close_calls, 0);
     assert_eq!(states[0].borrow().ack_calls, 0);
+}
+
+#[test]
+fn restricted_original_witness_keeps_native_custody_and_refusal_boundaries() {
+    let (mut runtime, state, token, reference) = completed_evidence();
+    let unrelated = crucible_node_contract::canonical::content_ref(
+        b"foreign witness",
+        "application/octet-stream",
+    )
+    .unwrap();
+
+    {
+        let mut witness = runtime.original_witness();
+        assert!(
+            !witness
+                .original_completed_operation(&token)
+                .unwrap()
+                .acknowledged()
+        );
+        assert!(
+            witness
+                .operation_evidence(&token, &[unrelated], 4096.into())
+                .is_err()
+        );
+        assert_eq!(state.borrow().evidence_reads, 0);
+        assert!(
+            witness
+                .original_input_evidence(&token, OriginalInputLineageLimits::default())
+                .unwrap()
+                .is_none()
+        );
+        let bodies = witness
+            .operation_evidence(&token, std::slice::from_ref(&reference), 4096.into())
+            .unwrap();
+        assert_eq!(bodies, state.borrow().evidence_objects);
+        assert_eq!(state.borrow().ack_calls, 0);
+    }
+
+    runtime.acknowledge(&token, &[]).unwrap();
+    let mut witness = runtime.original_witness();
+    assert!(
+        witness
+            .original_completed_operation(&token)
+            .unwrap()
+            .acknowledged()
+    );
+    assert_eq!(state.borrow().begin_calls, 1);
+    assert_eq!(state.borrow().close_calls, 1);
+    assert_eq!(state.borrow().ack_calls, 1);
+    assert_eq!(state.borrow().evidence_reads, 1);
 }

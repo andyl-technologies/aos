@@ -17,10 +17,12 @@ use std::collections::BTreeMap;
 
 mod activation;
 mod boundary;
+mod collection;
 mod control;
 mod delegate;
 mod implementation;
 mod input;
+mod input_evidence;
 mod inventory;
 mod lifecycle;
 mod negotiation;
@@ -37,6 +39,49 @@ mod windows;
 /// closure, kernel ancestry, original profile and exact negotiated selection.
 /// Parsed rows, handler hashes and matching labels cannot implement that policy.
 pub trait LineageReferenceQualification {
+    /// Borrows the complete fixture plan identity, or None for ordinary policy.
+    ///
+    /// This marks a collection-only preparation. It grants no graph or native
+    /// authority; ordinary selected constructors refuse such a policy.
+    fn collection_plan(&self) -> Option<&ContentRef> {
+        None
+    }
+
+    /// Authenticates actual selected custody under the opaque installed plan.
+    ///
+    /// # Errors
+    /// Defaults to refusal. Independent fixture policy must compare the complete
+    /// original plan, current source/kernel realization and retained authority.
+    fn authenticate_collection_scope(
+        &self,
+        _guard: &LineageSourceGuard,
+        _original: &OriginalLineageRealization<'_>,
+        _plan: &crate::node_admission::InstalledConformancePlan,
+    ) -> Result<(), ProviderError> {
+        Err(ProviderError::Correlation(
+            "installed collection source policy unavailable",
+        ))
+    }
+
+    /// Performs the final installed source read before a collecting native send.
+    ///
+    /// The selected adapter invokes this after its internal policy callbacks,
+    /// immediately before the original guarded call or upload. The installed
+    /// implementation must finish with direct original owner/registrar reads;
+    /// serialized source labels cannot satisfy this callback.
+    ///
+    /// # Errors
+    /// Refuses unavailable terminal authority, changed plan or revoked original
+    /// source ownership. Ordinary source controls do not invoke this hook.
+    fn authenticate_collection_dispatch(
+        &self,
+        _plan: &crate::node_admission::InstalledConformancePlan,
+    ) -> Result<(), ProviderError> {
+        Err(ProviderError::Correlation(
+            "installed collection terminal source read unavailable",
+        ))
+    }
+
     /// Authenticates original initialized realization before common world readiness.
     ///
     /// # Errors
@@ -68,6 +113,26 @@ pub trait LineageReferenceQualification {
     ) -> Result<(), ProviderError> {
         Err(ProviderError::Correlation(
             "installed typed lineage source policy unavailable",
+        ))
+    }
+
+    /// Authenticates original producers before a distinct typed native Stage.
+    ///
+    /// The opaque runtime lineage remains conjunctive with independent installed
+    /// source enrollment and original publication witnesses. Metadata alone
+    /// cannot authorize this callback or replace a producer's original custody.
+    ///
+    /// # Errors
+    /// Refuses by default, before selected native input effects or retention.
+    fn authenticate_original_inputs(
+        &self,
+        _guard: &LineageSourceGuard,
+        _original: &crate::node_scheduling::RuntimeInputBatch,
+        _provenance: &crate::node_contract::InputProvenanceClosure,
+        _lineage: &crate::node_contract::OriginalInputLineage,
+    ) -> Result<(), ProviderError> {
+        Err(ProviderError::Correlation(
+            "installed typed original input policy unavailable",
         ))
     }
 
@@ -271,6 +336,7 @@ impl LineageControlledReference {
                 supervision,
                 input_lineages: BTreeMap::new(),
                 transport,
+                collection: None,
             })),
             slot: Some(slot),
             owner,
@@ -319,6 +385,7 @@ impl LineageControlledReference {
 impl Drop for LineageControlledReference {
     fn drop(&mut self) {
         if let (Some(state), Some(slot)) = (self.state.take(), self.slot.take()) {
+            state.guard.revoke_read_handles();
             slot.retain(LineageRuntimeCustody { state });
         }
     }

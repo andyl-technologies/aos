@@ -168,6 +168,13 @@ impl LineageControlledReference {
         OperationFailure,
     > {
         let state = self.state().map_err(readiness::unknown)?;
+        if graph.collecting != state.collection.is_some()
+            || state.qualification.collection_plan().is_some() != graph.collecting
+        {
+            return Err(readiness::refused(
+                "selected reader and graph purposes differ",
+            ));
+        }
         let facets = &state.binding.compatibility.operating_contract.facets;
         if state.transport != transport
             || facets.len() != 1

@@ -85,6 +85,9 @@ enum ProfileSelection {
     PublicProgress { closed_ingress: bool },
 }
 
+#[path = "profile/retention.rs"]
+mod retention;
+
 impl ReferenceProfile {
     /// Builds a separate qualification-only positive-work latch profile.
     ///

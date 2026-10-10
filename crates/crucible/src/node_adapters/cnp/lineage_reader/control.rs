@@ -27,6 +27,7 @@ pub(super) struct ReaderState {
     pub(super) bootstrap: ReferenceServiceBootstrap,
     pub(super) realization: Id,
     pub(super) qualification: Box<dyn LineageReferenceQualification>,
+    pub(super) collection: Option<crate::node_admission::InstalledConformancePlan>,
     pub(super) supervision: U64,
     pub(super) transport: super::negotiation::ReaderTransport,
     pub(super) input_lineages:
@@ -70,10 +71,21 @@ impl ReaderState {
     }
 
     pub(super) fn controller_mut(&mut self) -> Result<OriginalSender<'_>, ProviderError> {
-        Ok(OriginalSender::new(&mut self.guard))
+        let collecting = self
+            .collection
+            .as_ref()
+            .map(|plan| (self.qualification.as_ref(), plan));
+        Ok(OriginalSender::new(&mut self.guard, collecting))
+    }
+
+    // Cleanup remains original custody supervision after execution authority is
+    // revoked. It cannot enter the normal collecting dispatch path or resume work.
+    pub(super) fn cleanup_controller_mut(&mut self) -> Result<OriginalSender<'_>, ProviderError> {
+        Ok(OriginalSender::new(&mut self.guard, None))
     }
 
     pub(super) fn quarantine_public(&mut self) -> Result<bool, ProviderError> {
+        self.guard.revoke_read_handles();
         if self.runtime.status == crucible_node_provider::reference_device::DeviceStatus::Reaped {
             return Ok(true);
         }

@@ -8,6 +8,7 @@
 //! publication, and execution grants remain separate host transactions.
 
 mod capabilities;
+mod conformance;
 mod error;
 mod evidence;
 mod extensions;
@@ -32,6 +33,11 @@ pub use capabilities::{
     CAPABILITY_SELECTION_MEDIA_TYPE, CapabilityBinding, CapabilityRequirements,
     CapabilitySelection, ComputeRequirement, GuaranteeRequirement, MAX_CAPABILITY_REQUIREMENTS,
     NodeCapabilityRequirement, OperationRequirement, TimingRequirement,
+};
+
+pub use conformance::{
+    ConformanceAdmissionAuthority, ConformanceGraph, ConformancePlanEvidence,
+    InstalledConformancePlan, admit_conformance_graph,
 };
 
 pub use error::{AdmissionCode, AdmissionError, AdmissionStage, AdmissionSubject, EffectCertainty};
@@ -71,6 +77,7 @@ pub struct AdmissionRequest<'a> {
 /// were verified; a changed realization must undergo fresh admission.
 #[derive(Debug)]
 pub struct AdmittedGraph {
+    pub(crate) collecting: bool,
     world: WorldBinding,
     world_hash: HashRef,
     descriptors: BTreeMap<Id, NodeDescriptor>,
@@ -216,10 +223,21 @@ pub fn admit_graph(
     evidence: &dyn AdmissionEvidence,
     limits: AdmissionLimits,
 ) -> Result<AdmittedGraph, AdmissionError> {
+    admit_graph_for_purpose(request, evidence, limits, None)
+}
+
+// Only the opaque collecting constructor may supply the retained collection
+// plan. Ordinary public admission cannot select or inherit this strategy.
+fn admit_graph_for_purpose<'a>(
+    request: AdmissionRequest<'a>,
+    evidence: &'a dyn AdmissionEvidence,
+    limits: AdmissionLimits,
+    collection: Option<&'a InstalledConformancePlan>,
+) -> Result<AdmittedGraph, AdmissionError> {
     let mut content = evidence::VerifiedContent::new(evidence, limits);
     nodes::check_core(&request, limits)?;
     let world_hash = request.world.identity().map_err(nodes::schema_error)?;
-    content.configure_extensions(request, world_hash.clone());
+    content.configure_extensions(request, world_hash.clone(), collection);
     evidence::bounded_core(request.requirements, limits.maximum_core_object_bytes)?;
     let requirements_hash = crucible_node_contract::canonical::json_hash(
         "cnp.admission-requirements.v1",
@@ -280,7 +298,14 @@ pub fn admit_graph(
         &mut content,
     )?;
 
+    // Seal only after every delegated qualification and capability callback.
+    // Ordinary admission retains its original path without collection authority.
+    if let Some(plan) = collection {
+        conformance::authenticate_original_scope(request, plan)?;
+    }
+
     Ok(AdmittedGraph {
+        collecting: false,
         world: request.world.clone(),
         world_hash,
         descriptors: request

@@ -150,6 +150,10 @@ pub trait TrustedHandshakeVerifier {
     fn fence_connection(&mut self, connection: &Id) -> Result<(), ProviderError>;
 }
 
+#[path = "registration_read.rs"]
+mod registration_read;
+pub(crate) use registration_read::RegistrationRead;
+
 /// Authorizes control-stream registration while its host epoch remains current.
 ///
 /// This opaque lease cannot be decoded from wire data. It grants neither native

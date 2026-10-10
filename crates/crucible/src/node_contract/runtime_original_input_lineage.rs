@@ -137,6 +137,16 @@ mod assembly;
 #[path = "runtime_original_input_lineage/geometry.rs"]
 mod geometry;
 
+// Native Stage evidence shares the same bounded direct-row graph invariant;
+// codec-specific source authentication remains with its separate owning hook.
+pub(super) fn validate_original_input_evidence_rows(
+    rows: &[OriginalLineageRow],
+    root: &ContentRef,
+    limits: OriginalInputLineageLimits,
+) -> Result<(), RuntimeError> {
+    geometry::validate_reference_rows(rows, [root; 4], limits).map(|_| ())
+}
+
 #[path = "runtime_original_input_lineage/preservation.rs"]
 mod preservation;
 pub use preservation::{

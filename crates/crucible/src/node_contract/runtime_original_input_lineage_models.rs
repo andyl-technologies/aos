@@ -910,3 +910,6 @@ fn conditional_lineage_foreign_current_inventory_refuses_before_source_read() {
         assert_eq!(states[1].borrow().begin_calls, 0);
     }
 }
+
+#[path = "runtime_original_input_observation_models.rs"]
+mod stage_projection;

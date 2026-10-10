@@ -11,11 +11,35 @@ use crate::operational_time::OperationalDeadline;
 
 use crate::connection::ProviderStream;
 
+#[cfg(test)]
+#[path = "original_deadline_tests.rs"]
+mod original_deadline_tests;
+
 /// Bounds a whole exchange instead of renewing its budget on every byte.
 #[derive(Clone)]
 pub struct ExchangeDeadline(Rc<Cell<OperationalDeadline>>);
 
 impl ExchangeDeadline {
+    /// Starts an original whole-exchange budget without exposing host coordinates.
+    ///
+    /// This budget covers physical preparation and transport only; it is never
+    /// a simulation Position, qualification, or permission for native work.
+    ///
+    /// # Errors
+    /// Refuses zero or an unrepresentable original operational deadline.
+    pub fn start(budget: Duration) -> io::Result<Self> {
+        if budget.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zero exchange budget",
+            ));
+        }
+        let deadline = OperationalDeadline::after(budget).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "exchange deadline overflow")
+        })?;
+        Ok(Self(Rc::new(Cell::new(deadline))))
+    }
+
     /// Installs a positive finite budget for the next complete exchange.
     ///
     /// # Errors
@@ -53,7 +77,11 @@ impl ExchangeDeadline {
         Ok(())
     }
 
-    fn remaining(&self) -> io::Result<Duration> {
+    /// Returns only the remaining allowance under the same original physical cut.
+    ///
+    /// # Errors
+    /// Refuses expiration without renewing the original budget.
+    pub fn remaining(&self) -> io::Result<Duration> {
         self.0
             .get()
             .remaining()
@@ -69,6 +97,15 @@ pub struct DeadlineStream {
 }
 
 impl DeadlineStream {
+    /// Retains a previously started original exchange cut without renewing it.
+    ///
+    /// # Errors
+    /// Refuses an expired deadline before exposing any stream I/O.
+    pub fn with_deadline(stream: UnixStream, deadline: ExchangeDeadline) -> io::Result<Self> {
+        deadline.remaining()?;
+        Ok(Self { stream, deadline })
+    }
+
     /// Installs the first bounded exchange and returns its independent budget handle.
     ///
     /// # Errors

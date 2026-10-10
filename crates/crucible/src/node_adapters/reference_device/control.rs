@@ -13,6 +13,28 @@ pub(crate) mod sealed {
 /// native resources. Implementing a wire DTO or supplying a receipt reference
 /// cannot implement this contract or issue host execution authority.
 pub trait ControlledReference: sealed::Sealed {
+    /// Borrows the original collection plan when this control is fixture-only.
+    ///
+    /// Ordinary controls return None. The marker remains in the owning native
+    /// capsule and cannot be erased by selecting an ordinary runtime.
+    fn collection_scope(&self) -> Option<&crate::node_admission::InstalledConformancePlan> {
+        None
+    }
+
+    /// Reauthenticates native custody against the same opaque collection plan.
+    ///
+    /// # Errors
+    /// Defaults to refusal. Selected controls must check original source/kernel
+    /// custody and independently installed fixture authority on every call.
+    fn validate_collection_scope(
+        &self,
+        _plan: &crate::node_admission::InstalledConformancePlan,
+    ) -> Result<(), OperationFailure> {
+        Err(super::no_effect(
+            "controlled collection custody is unsupported",
+        ))
+    }
+
     /// Returns the exact source-installed quantized facet interpretation.
     ///
     /// The graph's independent installation authenticator still checks this
@@ -203,6 +225,36 @@ pub trait ControlledReference: sealed::Sealed {
     ) -> Result<(), OperationFailure> {
         Err(super::no_effect(
             "controlled boundary evidence validation is unsupported",
+        ))
+    }
+
+    /// Reads complete original Stage ACK bodies through retained native custody.
+    ///
+    /// # Errors
+    /// Refuses unsupported codecs, changed original staging or exhausted credits.
+    fn read_original_input_evidence(
+        &self,
+        _original: &OperationAdmission,
+        _staged: &crate::node_contract::OriginalStagedInput<'_>,
+        _limits: crate::node_contract::OriginalInputLineageLimits,
+    ) -> Result<crate::node_contract::OriginalInputEvidence, OperationFailure> {
+        Err(super::no_effect(
+            "controlled original input evidence is unsupported",
+        ))
+    }
+
+    /// Authenticates exact original Stage ACK bodies and direct codec rows.
+    ///
+    /// # Errors
+    /// Refuses unsupported validation or changed original native custody.
+    fn validate_original_input_evidence(
+        &self,
+        _original: &OperationAdmission,
+        _staged: &crate::node_contract::OriginalStagedInput<'_>,
+        _evidence: &crate::node_contract::OriginalInputEvidence,
+    ) -> Result<(), OperationFailure> {
+        Err(super::no_effect(
+            "controlled original input evidence validation is unsupported",
         ))
     }
 

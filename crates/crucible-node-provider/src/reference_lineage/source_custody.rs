@@ -21,6 +21,15 @@ use crate::handshake::{ExtensionHandshake, Handshake};
 #[path = "source_kernel.rs"]
 mod kernel;
 
+#[path = "source_launch.rs"]
+mod launch;
+pub use launch::LineageSourceLaunchFailure;
+
+#[path = "source_read.rs"]
+mod source_read;
+pub use source_read::LineageSourceReadHandle;
+use source_read::{SourceReadCall, SourceReadOwner};
+
 /// Reserves an owning host capsule for both groups before provider spawn.
 ///
 /// The installed actor keeps this reservation across transport loss and shutdown.
@@ -40,7 +49,10 @@ pub trait LineageSourceCustodySlot {
 /// This holder cannot be serialized or constructed from a native relation DTO.
 /// Its controller remains retained even after actual group reclamation.
 pub struct LineageSourceCustody {
-    child: Child,
+    // None exists only in the private pre-spawn holder. Published guards always
+    // retain the actual Child; missing custody never proves group reclamation.
+    child: Option<Child>,
+    child_pid: u32,
     directory: PathBuf,
     provider: Option<kernel::Identity>,
     expected_provider: ContentRef,
@@ -48,6 +60,7 @@ pub struct LineageSourceCustody {
     controller: Option<ReferenceController>,
     handshake: Option<Handshake>,
     extension_handshake: Option<ExtensionHandshake>,
+    refused_extensions: Option<(Box<ReferenceController>, Box<ExtensionHandshake>)>,
     native: NativeCustody,
     provider_signalled: bool,
     reaped: Option<ExitStatus>,
@@ -81,8 +94,32 @@ pub struct LineageSourceExtensionFailure {
     pub handshake: Box<ExtensionHandshake>,
 }
 
+impl LineageSourceExtensionFailure {
+    /// Retains the rejected original journals in the same source cleanup capsule.
+    ///
+    /// This consumes no new slot and supplies no attachment or native permission.
+    /// Rejected handles remain inaccessible to control calls; their registrars
+    /// are contained only after authentic native-parent reclamation. Dropping the
+    /// returned guard transfers all of them to its prior owning supervisor.
+    ///
+    /// # Errors
+    /// Returns the identical failure if its original capsule is unavailable or
+    /// already holds rejected journals. No handle is released on this path.
+    pub fn into_containment(mut self) -> Result<LineageSourceGuard, Box<Self>> {
+        let Some(custody) = self.guard.custody.as_mut() else {
+            return Err(Box::new(self));
+        };
+        if custody.refused_extensions.is_some() {
+            return Err(Box::new(self));
+        }
+        custody.refused_extensions = Some((self.controller, self.handshake));
+        Ok(self.guard)
+    }
+}
+
 /// Keeps a complete two-group source capsule beneath a pre-spawn reservation.
 pub struct LineageSourceGuard {
+    read_owner: std::rc::Rc<SourceReadOwner>,
     custody: Option<Box<LineageSourceCustody>>,
     slot: Option<Box<dyn LineageSourceCustodySlot>>,
 }
@@ -106,8 +143,10 @@ impl LineageSourceGuard {
         slot: Box<dyn LineageSourceCustodySlot>,
     ) -> Result<Self, LineageSourceFailure> {
         let mut guard = Self {
+            read_owner: std::rc::Rc::new(SourceReadOwner::new(slot.identity())),
             custody: Some(Box::new(LineageSourceCustody {
-                child,
+                child_pid: child.id(),
+                child: Some(child),
                 directory,
                 provider: None,
                 expected_provider,
@@ -115,6 +154,7 @@ impl LineageSourceGuard {
                 controller: None,
                 handshake: None,
                 extension_handshake: None,
+                refused_extensions: None,
                 native: NativeCustody::NotStarted,
                 provider_signalled: false,
                 reaped: None,
@@ -127,7 +167,7 @@ impl LineageSourceGuard {
             let custody = guard.custody_mut()?;
             custody.expected_provider.validate()?;
             custody.expected_native.validate()?;
-            let original = kernel::identity(custody.child.id())?;
+            let original = kernel::identity(custody.child_pid)?;
             custody.provider = Some(original);
             kernel::verify_executable(original.pid, &custody.expected_provider)
         })();
@@ -168,7 +208,7 @@ impl LineageSourceGuard {
                 .ok_or(ProviderError::Correlation(
                     "lineage source controller omitted",
                 ))?;
-            if controller.peer_pid() != custody.child.id()
+            if controller.peer_pid() != custody.child_pid
                 || controller.peer_executable() != &custody.expected_provider
                 || !controller.profile.is_lineage()
                 || controller
@@ -218,6 +258,7 @@ impl LineageSourceGuard {
                 if custody.controller.is_some()
                     || custody.handshake.is_some()
                     || custody.extension_handshake.is_some()
+                    || custody.refused_extensions.is_some()
                 {
                     return Err(ProviderError::Correlation(
                         "lineage source already attached",
@@ -227,7 +268,7 @@ impl LineageSourceGuard {
                 let definition = controller.profile.input_lineage_definition().ok_or(
                     ProviderError::Correlation("typed lineage reader definition absent"),
                 )?;
-                if controller.peer_pid() != custody.child.id()
+                if controller.peer_pid() != custody.child_pid
                     || controller.peer_executable() != &custody.expected_provider
                     || !controller.profile.is_lineage()
                     || !definition
@@ -276,6 +317,37 @@ impl LineageSourceGuard {
             .controller
             .as_ref()?
             .selected_extensions()
+    }
+
+    /// Copies the actual original selected features beneath surviving typed custody.
+    ///
+    /// The finite count is checked before retaining strings. The same original
+    /// registrar is checked on both sides; offered metadata cannot supply this
+    /// inventory. No graph or class qualification is issued.
+    ///
+    /// # Errors
+    /// Refuses absent/transferred custody, stale registrar or excessive features.
+    pub fn negotiated_features(
+        &self,
+        maximum_features: usize,
+    ) -> Result<crucible_node_contract::IdSet, ProviderError> {
+        self.verify_extension_registrar()?;
+        let controller = self
+            .custody
+            .as_ref()
+            .and_then(|custody| custody.controller.as_ref())
+            .ok_or(ProviderError::Correlation(
+                "original controller unavailable",
+            ))?;
+        let features = controller.selected_features();
+        if features.len() > maximum_features {
+            return Err(ProviderError::Correlation(
+                "original feature credit exhausted",
+            ));
+        }
+        let features = features.clone();
+        self.verify_extension_registrar()?;
+        Ok(features)
     }
 
     /// Checks the surviving exact typed registrar and original provider identity.
@@ -327,6 +399,10 @@ impl LineageSourceGuard {
         custody.native = NativeCustody::Unresolved;
         let mut stdin = custody
             .child
+            .as_mut()
+            .ok_or(ProviderError::Correlation(
+                "original source Child unavailable",
+            ))?
             .stdin
             .take()
             .ok_or(ProviderError::Correlation(
@@ -341,6 +417,47 @@ impl LineageSourceGuard {
         stdin.write_all(&length.to_be_bytes())?;
         stdin.write_all(original)?;
         stdin.flush()?;
+        Ok(())
+    }
+
+    /// Writes original private launch bytes through a previously bounded transport.
+    ///
+    /// The launcher connects the other endpoint to this actual Child's stdin
+    /// before spawn. Complete original bytes enter custody before any write;
+    /// timeout/truncation remains unresolved original native custody. This
+    /// primitive grants no installed source or behavioral permission.
+    ///
+    /// # Errors
+    /// Refuses duplicate/empty/over-16-MiB bytes, changed provider identity,
+    /// expired original transport or any actual write/flush failure.
+    pub fn write_private_bootstrap_stream(
+        &mut self,
+        bytes: Vec<u8>,
+        mut stream: crate::client::DeadlineStream,
+    ) -> Result<(), ProviderError> {
+        use std::io::Write;
+
+        let custody = self.custody_mut()?;
+        custody.verify_provider()?;
+        if custody.bootstrap.is_some() || bytes.is_empty() || bytes.len() > 16 * 1024 * 1024 {
+            return Err(ProviderError::ResourceExhausted(
+                "lineage source bootstrap custody",
+            ));
+        }
+        let length = u32::try_from(bytes.len())
+            .map_err(|_| ProviderError::ResourceExhausted("lineage source bootstrap extent"))?;
+        custody.bootstrap = Some(bytes);
+        custody.native = NativeCustody::Unresolved;
+        let original = custody
+            .bootstrap
+            .as_deref()
+            .ok_or(ProviderError::Correlation(
+                "lineage source bootstrap omitted",
+            ))?;
+
+        stream.write_all(&length.to_be_bytes())?;
+        stream.write_all(original)?;
+        stream.flush()?;
         Ok(())
     }
 
@@ -376,6 +493,11 @@ impl LineageSourceGuard {
         owned: bool,
         body: impl serde::Serialize,
     ) -> Result<ResponseBody, ProviderError> {
+        let owner = std::rc::Rc::clone(&self.read_owner);
+        // Retire acknowledges publication/request custody; the same peer can
+        // serve its next window. Only actual owner release or uncertainty
+        // permanently revokes the read handle.
+        let read_call = SourceReadCall::new(&owner);
         let custody = self.custody_mut()?;
         custody.verify_provider()?;
         if let Some(handshake) = &custody.extension_handshake {
@@ -419,6 +541,7 @@ impl LineageSourceGuard {
         if method == Method::Realize && result.is_ok() {
             custody.pin_native(&request_id)?;
         }
+        read_call.finish(result.is_ok());
         result
     }
 
@@ -427,14 +550,18 @@ impl LineageSourceGuard {
     /// # Errors
     /// Refuses transferred/foreign custody or an original SDK content failure.
     pub fn upload(&mut self, reference: &ContentRef, bytes: &[u8]) -> Result<(), ProviderError> {
+        let owner = std::rc::Rc::clone(&self.read_owner);
+        let read_call = SourceReadCall::new(&owner);
         let custody = self.custody_mut()?;
         custody.verify_provider()?;
-        custody.controller_mut()?.upload(reference, bytes)
+        let result = custody.controller_mut()?.upload(reference, bytes);
+        read_call.finish(result.is_ok());
+        result
     }
 
     /// Returns the retained original provider PID without asserting current readiness.
     pub fn provider_pid(&self) -> Option<u32> {
-        self.custody.as_ref().map(|custody| custody.child.id())
+        self.custody.as_ref().map(|custody| custody.child_pid)
     }
 
     /// Borrows original initialized readiness inside the installed read-only adopter.
@@ -522,6 +649,14 @@ impl LineageSourceGuard {
         adopt(window)
     }
 
+    /// Permanently revokes read handles before containment or owning transfer.
+    ///
+    /// This operation grants no control or reclamation permission and cannot
+    /// revive an original handle. The complete native capsule remains owned.
+    pub fn revoke_read_handles(&self) {
+        self.read_owner.revoke();
+    }
+
     /// Returns the original reserved capsule identity without servicing native work.
     pub fn supervision_id(&self) -> Option<U64> {
         self.slot.as_ref().map(|slot| slot.identity())
@@ -539,6 +674,7 @@ impl LineageSourceGuard {
     /// Retains custody on unresolved native preparation, a nonempty native
     /// group, changed original kernel identity or operational probe failure.
     pub fn poll_reclamation(&mut self) -> Result<bool, ProviderError> {
+        self.read_owner.revoke();
         self.custody_mut()?.poll_reclamation()
     }
 
@@ -553,6 +689,7 @@ impl LineageSourceGuard {
 
 impl Drop for LineageSourceGuard {
     fn drop(&mut self) {
+        self.read_owner.revoke();
         if let (Some(slot), Some(custody)) = (self.slot.take(), self.custody.take()) {
             slot.retain(*custody);
         }
@@ -562,7 +699,7 @@ impl Drop for LineageSourceGuard {
 impl LineageSourceCustody {
     /// Returns the original provider PID even after Child reaping.
     pub fn provider_pid(&self) -> u32 {
-        self.child.id()
+        self.child_pid
     }
 
     /// Returns the exact independently retained native group identity when known.
@@ -629,6 +766,10 @@ impl LineageSourceCustody {
         if let Some(handshake) = &mut self.extension_handshake {
             handshake.contain();
         }
+        if let Some((controller, handshake)) = &mut self.refused_extensions {
+            controller.fence();
+            handshake.contain();
+        }
         if !self.provider_signalled && self.reaped.is_none() {
             // NOWAIT protects the original PID even when the leader has exited.
             waitid(
@@ -642,7 +783,13 @@ impl LineageSourceCustody {
             self.provider_signalled = true;
         }
         if self.reaped.is_none() {
-            self.reaped = self.child.try_wait()?;
+            self.reaped = self
+                .child
+                .as_mut()
+                .ok_or(ProviderError::Correlation(
+                    "original source Child unavailable",
+                ))?
+                .try_wait()?;
         }
         Ok(self.reaped.is_some()
             && kernel::group_empty(provider.pid)?
@@ -672,10 +819,10 @@ impl LineageSourceCustody {
         let pid = u32::try_from(view.native_pid().get())
             .map_err(|_| ProviderError::Correlation("lineage source native PID extent"))?;
         let native = kernel::identity(pid)?;
-        if native.parent != self.child.id()
+        if native.parent != self.child_pid
             || native.start_ticks != view.native_start_ticks().get()
             || view.native_executable() != &self.expected_native
-            || pid == self.child.id()
+            || pid == self.child_pid
         {
             return Err(ProviderError::Correlation(
                 "lineage source original native scope differs",

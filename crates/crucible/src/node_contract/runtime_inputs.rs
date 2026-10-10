@@ -80,6 +80,8 @@ impl NodeRuntime {
             if lineage.is_some() && provenance.is_none() {
                 return Err(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt));
             }
+            super::final_collection_scope(self.collecting.as_deref())
+                .map_err(RuntimePollFailure::Admission)?;
             Ok((route, token, provenance, lineage))
         })();
         let (route, token, provenance, lineage) = match checked {

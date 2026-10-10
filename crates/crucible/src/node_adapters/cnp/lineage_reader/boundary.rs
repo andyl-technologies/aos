@@ -131,7 +131,7 @@ impl ReaderState {
         Ok(())
     }
 
-    fn validate_evidence_world(
+    pub(super) fn validate_evidence_world(
         &self,
         activation: &WorldActivation,
     ) -> Result<(), OperationFailure> {

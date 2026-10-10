@@ -58,6 +58,7 @@ impl NodeRuntime {
             let _ = self.facet(node, kind)?;
         }
 
+        super::final_collection_scope(self.collecting.as_deref())?;
         let token = OperationToken {
             authority: Rc::clone(&self.authority),
             operation: operation.clone(),

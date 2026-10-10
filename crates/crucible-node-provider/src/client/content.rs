@@ -7,6 +7,10 @@ use crucible_node_contract::{ContentRef, Id, U64, Validate};
 
 use crate::{ProviderError, bodies::*};
 
+#[cfg(test)]
+#[path = "content_installation_tests.rs"]
+mod installation_tests;
+
 struct Transfer {
     reference: ContentRef,
     bytes: Rc<Vec<u8>>,
@@ -96,6 +100,80 @@ impl ClientContent {
         self.objects
             .insert(reference.hash.digest.clone(), (reference, Rc::new(bytes)));
         Ok(())
+    }
+
+    /// Installs a complete borrowed roster after checking its aggregate credit.
+    ///
+    /// Full references and duplicate bodies are checked before the first owned
+    /// copy. Installation changes byte custody only; it authenticates no role.
+    ///
+    /// # Errors
+    /// Refuses invalid or conflicting content and exhausted aggregate limits
+    /// before copying any supplied body. Allocation failures retain byte custody.
+    pub fn install_borrowed<'a>(
+        &mut self,
+        objects: impl IntoIterator<Item = (&'a ContentRef, &'a [u8])>,
+    ) -> Result<(), ProviderError> {
+        let prospective = self.preflight_installed(objects)?;
+        for (reference, bytes) in prospective {
+            let mut owned = Vec::new();
+            owned.try_reserve_exact(bytes.len()).map_err(|_| {
+                ProviderError::ResourceExhausted("client installed body allocation")
+            })?;
+            owned.extend_from_slice(bytes);
+            self.install(reference.clone(), owned)?;
+        }
+        Ok(())
+    }
+
+    /// Credits a complete borrowed installation before the first owned body copy.
+    pub(super) fn preflight_installed<'a>(
+        &self,
+        objects: impl IntoIterator<Item = (&'a ContentRef, &'a [u8])>,
+    ) -> Result<Vec<(&'a ContentRef, &'a [u8])>, ProviderError> {
+        let mut prospective: Vec<(&ContentRef, &[u8])> = Vec::new();
+        prospective
+            .try_reserve_exact(self.maximum_objects)
+            .map_err(|_| ProviderError::ResourceExhausted("client prospective installation"))?;
+        let mut total = self.reserved;
+        let mut occurrences = 0usize;
+        for (reference, bytes) in objects {
+            occurrences = occurrences
+                .checked_add(1)
+                .filter(|count| *count <= 8192)
+                .ok_or(ProviderError::ResourceExhausted(
+                    "client installation occurrences",
+                ))?;
+            reference.verify(bytes)?;
+            if let Some((old, old_bytes)) = self.objects.get(&reference.hash.digest) {
+                if old != reference || old_bytes.as_slice() != bytes {
+                    return Err(ProviderError::Conflict("installed content changed"));
+                }
+                continue;
+            }
+            if let Some((old, old_bytes)) = prospective
+                .iter()
+                .find(|(old, _)| old.hash.digest == reference.hash.digest)
+            {
+                if *old != reference || *old_bytes != bytes {
+                    return Err(ProviderError::Conflict("prospective content changed"));
+                }
+                continue;
+            }
+            if self.objects.len() + prospective.len() >= self.maximum_objects {
+                return Err(ProviderError::ResourceExhausted(
+                    "client installation objects",
+                ));
+            }
+            total = total
+                .checked_add(bytes.len())
+                .filter(|size| *size <= self.maximum_bytes)
+                .ok_or(ProviderError::ResourceExhausted(
+                    "client complete installation bytes",
+                ))?;
+            prospective.push((reference, bytes));
+        }
+        Ok(prospective)
     }
 
     pub(super) fn begin(
