@@ -8,7 +8,7 @@ fn registered(property: u64, attribute: u64) -> ConfiguredRegistryInputs {
     ConfiguredRegistryInputs {
         property_revision: property,
         behavioral_properties: revision_properties(property)
-            .expect("registered test revision")
+            .unwrap_or_else(|error| panic!("registered test revision: {error:?}"))
             .into_iter()
             .map(str::to_owned)
             .collect(),

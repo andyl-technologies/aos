@@ -17,9 +17,9 @@ fn binding(byte: u8) -> alloc::vec::Vec<u8> {
     crate::cbor::write_text(&mut value, "uid");
     crate::cbor::write_text(&mut value, &alloc::format!("{byte:02x}").repeat(32));
     IndexRoots::decode_value(&value)
-        .unwrap()
+        .unwrap_or_else(|error| panic!("canonical fixture index value: {error:?}"))
         .encode_binding()
-        .unwrap()
+        .unwrap_or_else(|error| panic!("canonical fixture index binding: {error:?}"))
 }
 
 #[test]
@@ -44,7 +44,9 @@ fn selected_active_binding_is_owner_local_and_ordinary_overrides_remain_effectiv
             overrides: &[],
         },
     ];
-    let effective = Selection::Active.resolve(&layers, defaults()).unwrap();
+    let effective = Selection::Active
+        .resolve(&layers, defaults())
+        .unwrap_or_else(|error| panic!("active inherited fixture policy: {error:?}"));
     assert!(effective.active_index_roots().is_none());
     let ordinary_override = [Property {
         name: "domain",
@@ -54,10 +56,17 @@ fn selected_active_binding_is_owner_local_and_ordinary_overrides_remain_effectiv
         properties: &own,
         overrides: &ordinary_override,
     }];
-    let effective = Selection::Active.resolve(&layers, defaults()).unwrap();
+    let effective = Selection::Active
+        .resolve(&layers, defaults())
+        .unwrap_or_else(|error| panic!("active owner fixture policy: {error:?}"));
     assert_eq!(
-        effective.active_index_roots().unwrap().get("uid"),
-        IndexRoots::decode_binding(&b).unwrap().get("uid")
+        effective
+            .active_index_roots()
+            .unwrap_or_else(|| panic!("active owner fixture retains its index binding"))
+            .get("uid"),
+        IndexRoots::decode_binding(&b)
+            .unwrap_or_else(|error| panic!("canonical expected index binding: {error:?}"))
+            .get("uid")
     );
     assert_eq!(
         effective.get(PropertyName::Domain),
@@ -79,7 +88,10 @@ fn selected_active_namespace_rejects_gap_and_inherited_or_malformed_pointer() {
     let value = binding(1);
     let mut inherited = value.clone();
     assert_eq!(inherited.last(), Some(&0xf4));
-    *inherited.last_mut().unwrap() = 0xf5;
+    let inherit_flag = inherited
+        .last_mut()
+        .unwrap_or_else(|| panic!("canonical fixture binding contains its inherit flag"));
+    *inherit_flag = 0xf5;
     for (name, value) in [
         ("index-gaps", value.as_slice()),
         ("index-roots", inherited.as_slice()),
