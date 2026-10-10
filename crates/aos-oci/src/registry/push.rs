@@ -13,6 +13,7 @@ use aos_oci_types::{
     RepositoryName, Sha256Digest, to_canonical_json,
 };
 use bytes::Bytes;
+use futures_util::{StreamExt as _, TryStreamExt as _};
 use reqwest::header::{CONTENT_LENGTH, HeaderMap, HeaderValue, RANGE};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -147,18 +148,16 @@ pub(super) async fn run_with_mounts(
             mount_sources,
         )
         .await?;
-        for layer in &verified.layers {
-            upload_blob(
-                client,
-                reference,
-                layer,
-                &scope,
-                &state_directory,
-                options,
-                mount_sources,
-            )
-            .await?;
-        }
+        upload_blobs(
+            client,
+            reference,
+            &verified.layers,
+            &scope,
+            &state_directory,
+            options,
+            mount_sources,
+        )
+        .await?;
     }
 
     let manifest_bytes = read_verified_blob(&options.source, &verified.manifest)?;
@@ -266,18 +265,16 @@ pub(super) async fn run_release_graph(
     #[cfg(not(unix))]
     let legacy = !direct;
     if legacy {
-        for descriptor in &graph.blobs {
-            upload_blob(
-                client,
-                reference,
-                descriptor,
-                &scope,
-                &state_directory,
-                options,
-                mount_sources,
-            )
-            .await?;
-        }
+        upload_blobs(
+            client,
+            reference,
+            &graph.blobs,
+            &scope,
+            &state_directory,
+            options,
+            mount_sources,
+        )
+        .await?;
     }
     for document in &graph.documents {
         ensure_not_cancelled(&options.cancellation)?;
@@ -457,6 +454,44 @@ impl ReleaseGraphCollector<'_> {
     fn read_document(&self, descriptor: &Descriptor) -> Result<Vec<u8>> {
         read_verified_blob(self.root, descriptor)
     }
+}
+
+/// Uploads independent blobs with a bounded number of legacy transfer slots.
+async fn upload_blobs(
+    client: &RegistryClient,
+    reference: &RegistryReference,
+    descriptors: &[Descriptor],
+    scope: &str,
+    state_directory: &File,
+    options: &PushOptions,
+    mount_sources: &[RepositoryName],
+) -> Result<()> {
+    // Each slot retains at most one upload chunk. Individual checkpoints remain
+    // independent, and callers wait for every blob before publishing manifests.
+    const CONCURRENT_BLOB_UPLOADS: usize = 4;
+    // An image may reference the same layer more than once. Its single
+    // checkpoint must have one owner even when other blobs run concurrently.
+    let mut seen = BTreeSet::new();
+    let mut uploads = Vec::new();
+    for descriptor in descriptors {
+        if seen.insert(descriptor.digest.clone()) {
+            uploads.push(upload_blob(
+                client,
+                reference,
+                descriptor,
+                scope,
+                state_directory,
+                options,
+                mount_sources,
+            ));
+        }
+    }
+
+    futures_util::stream::iter(uploads)
+        .buffer_unordered(CONCURRENT_BLOB_UPLOADS)
+        .try_collect::<Vec<_>>()
+        .await?;
+    Ok(())
 }
 
 async fn upload_blob(
