@@ -211,6 +211,22 @@ pub trait HostModelQualification {
         ))
     }
 
+    /// Qualifies the separately selected stopped-condition native continuation.
+    ///
+    /// # Errors
+    /// Refuses by default. Implementations must regenerate the installed whole
+    /// condition world, model artifacts, finite limits and native-six grammar.
+    fn authenticate_condition_preservation(
+        &self,
+        _model: &HostModel,
+        _descriptor: &NodeDescriptor,
+        _binding: &NodeBinding,
+    ) -> Result<(), OperationFailure> {
+        Err(failure(
+            "condition continuation preservation is not qualified",
+        ))
+    }
+
     /// Authenticates complete native capture and isolated original custody lineage.
     ///
     /// # Errors
@@ -308,6 +324,7 @@ pub struct HostModelNode {
     public_preparation: Option<HostPublicPreparation>,
     public_continuation: bool,
     recorded_ingress: Option<super::host_ingress::RecordedIngressCustody>,
+    condition_preservation: bool,
 }
 
 impl HostModelNode {
@@ -364,7 +381,9 @@ impl HostModelNode {
             .implementation
             .formats
             .contains(&public_continuation::host_public_clock_epoch_continuation_schema()?);
-        let preservation = Id::new(if epoch_preservation {
+        let preservation = Id::new(if state::condition::selected(binding) {
+            state::condition::PRESERVATION_PROFILE
+        } else if epoch_preservation {
             public_continuation::HOST_PUBLIC_CLOCK_EPOCH_CONTINUATION_PROFILE
         } else if public_preservation {
             public_continuation::HOST_PUBLIC_CLOCK_CONTINUATION_PROFILE
@@ -485,7 +504,48 @@ impl HostModelNode {
             public_preparation: None,
             public_continuation: false,
             recorded_ingress: None,
+            condition_preservation: false,
         })
+    }
+
+    /// Selects independently qualified original stopped-condition preservation.
+    ///
+    /// This attachment is accepted only while the actual model remains fresh.
+    /// Live condition inventory edition four remains unchanged; complete signed
+    /// capture uses the distinct native-six wrapper and source-qualified factory.
+    ///
+    /// # Errors
+    /// Refuses late attachment, unsupported model/format, mixed recorded custody,
+    /// absent preservation facets or default-refusing installed qualification.
+    pub fn with_preservable_condition(
+        mut self,
+        qualification: &dyn HostModelQualification,
+    ) -> Result<Self, OperationFailure> {
+        if self.condition_preservation
+            || self.readiness.is_some()
+            || self.preparation_origin != HostPreparationOrigin::Original
+            || !self.completed.is_empty()
+            || !self.failed.is_empty()
+            || self.recorded_ingress.is_some()
+            || !self.facets.contains(&FacetKind::Preservation)
+            || !condition_state::selected(&self)
+            || !state::condition::selected(&self.binding)
+        {
+            return Err(failure(
+                "condition preservation requires original inactive custody",
+            ));
+        }
+        let model = self
+            .model
+            .as_ref()
+            .ok_or_else(|| failure("condition model missing"))?;
+        qualification.authenticate_condition_preservation(
+            model,
+            &self.descriptor,
+            &self.binding,
+        )?;
+        self.condition_preservation = true;
+        Ok(self)
     }
 
     /// Takes the complete qualified recorded-input FIFO before arming this owner.

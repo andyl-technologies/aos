@@ -337,6 +337,30 @@ impl ConditionDebugModel {
         Ok((reference, store))
     }
 
+    pub(crate) fn preserved_stop_history(
+        &self,
+    ) -> Result<
+        (
+            crate::node_contract::ConditionStopRecord,
+            crate::node_scheduling::InputPayload,
+        ),
+        OperationFailure,
+    > {
+        let journal = self
+            .journal
+            .as_ref()
+            .ok_or_else(|| refuse("condition native journal absent"))?;
+        if self.resumed
+            || journal.resume.is_some()
+            || !self.awaiting_control()
+            || self.position() != journal.stop.cut
+            || self.candidate.as_ref() != Some(&journal.stop.hit)
+        {
+            return Err(refuse("condition native original stopped history changed"));
+        }
+        Ok((*journal.stop.clone(), journal.report.clone()))
+    }
+
     pub(crate) fn original_dependencies(bytes: &[u8]) -> Result<Vec<ContentRef>, OperationFailure> {
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
             return Ok(Vec::new());

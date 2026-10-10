@@ -90,6 +90,55 @@ impl CausalScheduler {
         Ok((cut, Bytes::new(bytes)))
     }
 
+    pub(crate) fn condition_capture_snapshot(
+        &self,
+        saved: &crate::node_contract::SavedConditionStop,
+        ordinal: U64,
+        maximum_bytes: usize,
+    ) -> Result<crate::node_scheduling::SchedulingSnapshot, RuntimeError> {
+        self.condition_scope_credit(maximum_bytes)?;
+        if saved.record.scheduler.as_slice().len() > maximum_bytes
+            || !saved.acknowledged
+            || saved.resumed
+            || saved.resume_operation.is_some()
+            || !self.operations.is_empty()
+            || self.restored_epochs.is_some()
+            || !self.external_roots.is_empty()
+            || self
+                .owners
+                .values()
+                .any(|owner| owner.reserved.is_some() || owner.cursor != saved.record.cut)
+        {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        let mut snapshot = self
+            .snapshot(saved.record.cut, ordinal)
+            .map_err(|error| RuntimeError::SchedulerRefused(error.to_string()))?;
+        if snapshot.schema_version != 1 {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+
+        // The original Stop retained this exact coordinator marker after its
+        // identity was consumed. Comparing canonical bodies preserves every
+        // queued payload and sequence instead of trusting a decoded cut label.
+        let mut value =
+            serde_json::to_value(&snapshot).map_err(|_| RuntimeError::InvalidReceipt)?;
+        let object = value.as_object_mut().ok_or(RuntimeError::InvalidReceipt)?;
+        object.remove("capture_ordinal");
+        object.remove("schema_version");
+        object.insert(
+            "format".into(),
+            "crucible.condition-stop-coordinator".into(),
+        );
+        object.insert("version".into(), 1.into());
+        let bytes = canonical::canonical_json(&value).map_err(|_| RuntimeError::InvalidReceipt)?;
+        if bytes.len() > maximum_bytes || bytes != saved.record.scheduler.as_slice() {
+            return Err(RuntimeError::InvalidReceipt);
+        }
+        snapshot.schema_version = 4;
+        Ok(snapshot)
+    }
+
     fn condition_scope_credit(&self, maximum_bytes: usize) -> Result<(), RuntimeError> {
         let rows = self
             .owners

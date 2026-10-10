@@ -164,6 +164,44 @@ impl NodeRuntime {
         self.condition_stop.as_ref().map(|state| &state.saved)
     }
 
+    /// Reads an acknowledged original Stop's complete scheduler at its unchanged cut.
+    ///
+    /// The returned edition-four snapshot retains future deliveries, exact
+    /// payload bodies, producer/native sequences and original input/ACK custody.
+    /// It creates no execution or resume permission. Installed native archive
+    /// verification remains mandatory before fresh reconstruction.
+    ///
+    /// # Errors
+    /// Refuses foreign activation, an incomplete or resumed Stop, a changed cut,
+    /// unsupported pending control, exhausted credit or changed original queues.
+    pub fn condition_scheduler_snapshot(
+        &self,
+        activation: &WorldActivation,
+        cut: crucible_node_contract::Position,
+        ordinal: crucible_node_contract::U64,
+        maximum_bytes: usize,
+    ) -> Result<crate::node_scheduling::SchedulingSnapshot, RuntimeError> {
+        self.validate_activation(activation)?;
+        let saved = &self
+            .condition_stop
+            .as_ref()
+            .ok_or(RuntimeError::UnsupportedFacet)?
+            .saved;
+        if !saved.submitted
+            || !saved.acknowledged
+            || saved.resumed
+            || saved.resume_operation.is_some()
+            || saved.record.cut != cut
+            || saved.record.source != SavedRuntimeActivation::from(activation.record())
+        {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        self.scheduler
+            .as_ref()
+            .ok_or(RuntimeError::NotActivated)?
+            .condition_capture_snapshot(saved, ordinal, maximum_bytes)
+    }
+
     pub(super) fn condition_fenced(&self) -> bool {
         self.condition_stop
             .as_ref()

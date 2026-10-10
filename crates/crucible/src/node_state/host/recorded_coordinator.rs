@@ -42,7 +42,9 @@ struct Portable {
 
 impl Serialize for Coordinator {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if self.schema_version == 5 {
+        if self.schema_version == 6 {
+            super::condition_coordinator::serialize(self, serializer)
+        } else if self.schema_version == 5 {
             Portable::serialize(self, serializer)
         } else {
             Legacy::serialize(self, serializer)

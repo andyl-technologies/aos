@@ -3,6 +3,16 @@
 use super::*;
 
 impl HostWorldFactory for InstalledHostStateFactory {
+    fn authenticate_condition_custody(
+        &self,
+        graph: &AdmittedGraph,
+        runtime: &RuntimeSnapshot,
+        scheduler: &SchedulingSnapshot,
+        content: Option<&VerifiedStateContent>,
+    ) -> Result<crucible::node_contract::SavedConditionStop, StateError> {
+        self.authenticate_condition_scope(graph, runtime, scheduler, content)
+    }
+
     fn authenticate_fault_custody(
         &self,
         graph: &AdmittedGraph,
@@ -123,6 +133,9 @@ impl HostWorldFactory for InstalledHostStateFactory {
             InstalledNodeKind::HostControlledFaultLink { profile } => profile.program.length.get(),
             InstalledNodeKind::HostClock | InstalledNodeKind::HostPacketReceiver { .. } => 0,
             InstalledNodeKind::HostSemantics { profile } => profile.program.length.get(),
+            InstalledNodeKind::HostConditionDebugPreserving { profile } => {
+                profile.program.length.get()
+            }
             _ => return Err(refusal("unsupported installed native reservation family")),
         };
         let memory_bytes = (native.len() as u64)
@@ -149,6 +162,7 @@ impl HostWorldFactory for InstalledHostStateFactory {
             .find(|schema| {
                 ((schema.id.as_str() == "host/native-continuation-v1"
                     || schema.id.as_str() == "host/native-recorded-block-v1"
+                    || schema.id.as_str() == "host/native-condition-continuation-v1"
                     || schema.id.as_str() == "host/native-seeded-link-v1"
                     || schema.id.as_str() == "host/native-faulted-link-v1"
                     || schema.id.as_str() == "host/native-controlled-fault-link-v1"
@@ -171,10 +185,13 @@ impl HostWorldFactory for InstalledHostStateFactory {
         self.check_graph(graph)?;
         let policy = graph.ownership_policy();
         if !(matches!(runtime.schema_version, 1 | 3 | 4)
-            || (runtime.schema_version == 2 && self.recorded_world()))
+            || (runtime.schema_version == 2 && self.recorded_world())
+            || (runtime.schema_version == 6 && self.condition_world()))
             || (self.recorded_world() && runtime.schema_version != 2)
-            || !matches!(scheduler.schema_version, 1 | 3)
+            || !matches!(scheduler.schema_version, 1 | 3 | 4)
             || (scheduler.schema_version == 3 && runtime.schema_version != 4)
+            || (scheduler.schema_version == 4) != (runtime.schema_version == 6)
+            || (self.condition_world() && runtime.schema_version != 6)
             || runtime.source_activation.world_binding_hash != *graph.world_binding_hash()
             || scheduler.world_binding_hash != *graph.world_binding_hash()
             || runtime.capture_cut != scheduler.capture_cut
@@ -200,6 +217,9 @@ impl HostWorldFactory for InstalledHostStateFactory {
         // input staging/consumption and reservation state against that exact
         // immutable graph; native validators below check both endpoint ledgers.
         crucible::node_scheduling::validate_saved_source(graph, scheduler).map_err(state_error)?;
+        if self.condition_world() {
+            self.authenticate_condition_scope(graph, runtime, scheduler, Some(content))?;
+        }
         if self.recorded_world() {
             self.authenticate_recorded_coordinator(graph, runtime, scheduler)?;
         }
@@ -338,6 +358,10 @@ impl HostWorldFactory for InstalledHostStateFactory {
         scheduler: &SchedulingSnapshot,
         content: &VerifiedStateContent,
     ) -> Result<(), StateError> {
+        if self.condition_world() && runtime.schema_version == 6 {
+            self.authenticate_condition_scope(graph, runtime, scheduler, Some(content))?;
+            return self.authenticate_condition_inputs(graph, runtime, scheduler, content);
+        }
         if !self.recorded_world() || runtime.schema_version != 2 {
             return Err(refusal(
                 "installed original input provenance codec is unsupported",
@@ -536,6 +560,25 @@ impl HostWorldFactory for InstalledHostStateFactory {
                     _ => {}
                 }
             }
+            InstalledNodeKind::HostConditionDebugPreserving { .. } => {
+                let definition = serde_json::from_slice(
+                    self.immutable_input(node, content)?
+                        .ok_or_else(|| refusal("condition original program absent"))?,
+                )
+                .map_err(state_error)?;
+                let model = crucible::node_adapters::ConditionDebugModel::restore(
+                    definition,
+                    &inventory.native_model.bytes,
+                    super::super::condition_debug::MAXIMUM_STATE_BYTES,
+                    super::super::condition_debug::MAXIMUM_EVENTS,
+                )
+                .map_err(|error| refusal(error.reason))?;
+                if model.position() != source.capture_cut || !model.awaiting_control() {
+                    return Err(refusal(
+                        "condition original native model is not at its stopped cut",
+                    ));
+                }
+            }
             _ => return Err(refusal("unsupported installed native source family")),
         }
         for definition in &binding.compatibility.implementation.model_definitions {
@@ -592,6 +635,11 @@ impl HostWorldFactory for InstalledHostStateFactory {
             .map_err(state_error)?;
             actual = actual
                 .with_preservable_recorded_ingress(graph, definition, &qualification)
+                .map_err(|error| refusal(error.reason))?;
+        }
+        if self.condition_world() {
+            actual = actual
+                .with_preservable_condition(&qualification)
                 .map_err(|error| refusal(error.reason))?;
         }
         let proof = actual

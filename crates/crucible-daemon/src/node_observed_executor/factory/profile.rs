@@ -4,6 +4,7 @@
 mod direct_recording_pair;
 
 mod condition_debug;
+mod condition_preservation;
 mod controlled;
 mod faulted;
 mod io;
@@ -143,6 +144,7 @@ fn build_world_once(
     let mut accepted_nondeterministic = Vec::new();
     let mut accepted_limited = Vec::new();
     let condition_scope = condition_debug::selected(selections)?;
+    let condition_preserving = condition_preservation::selected(selections);
     for selection in selections {
         let (descriptor, mut binding, mut owner, mut complete) = match &selection.kind {
             InstalledNodeKind::ReferenceDevice {
@@ -313,15 +315,18 @@ fn build_world_once(
             InstalledNodeKind::HostClock => {
                 clock_profile(selection, host, &qualification, &mut contents)?
             }
-            InstalledNodeKind::HostConditionDebug { profile } => condition_debug::profile(
-                selection,
-                selections,
-                profile,
-                artifacts,
-                host,
-                &qualification,
-                &mut contents,
-            )?,
+            InstalledNodeKind::HostConditionDebug { profile }
+            | InstalledNodeKind::HostConditionDebugPreserving { profile } => {
+                condition_debug::profile(
+                    selection,
+                    selections,
+                    profile,
+                    artifacts,
+                    host,
+                    &qualification,
+                    &mut contents,
+                )?
+            }
             InstalledNodeKind::HostSemantics { profile } => semantics::semantic_profile(
                 selection,
                 selections,
@@ -337,9 +342,18 @@ fn build_world_once(
                 &descriptor,
                 &mut binding,
                 &mut contents,
-                matches!(selection.kind, InstalledNodeKind::HostConditionDebug { .. }),
+                matches!(
+                    selection.kind,
+                    InstalledNodeKind::HostConditionDebug { .. }
+                        | InstalledNodeKind::HostConditionDebugPreserving { .. }
+                ),
             )?;
-            complete = false;
+            if condition_preserving {
+                condition_preservation::install_scope(&descriptor, &mut binding, &mut contents)?;
+                complete = true;
+            } else {
+                complete = false;
+            }
             accepted_limited.push(selection.node.clone());
         }
         if terminal {
@@ -376,19 +390,20 @@ fn build_world_once(
             complete_model: complete,
             unchanged_cut: complete,
             exact_continuation: complete,
-            durable_restart: !condition_scope
-                && matches!(
-                    selection.kind,
-                    InstalledNodeKind::HostClock
-                        | InstalledNodeKind::HostRecordedBlockPreserving { .. }
-                        | InstalledNodeKind::HostIo { .. }
-                        | InstalledNodeKind::HostScripted { .. }
-                        | InstalledNodeKind::HostSeededLink { .. }
-                        | InstalledNodeKind::HostFaultedLink { .. }
-                        | InstalledNodeKind::HostControlledFaultLink { .. }
-                        | InstalledNodeKind::HostPacketReceiver { .. }
-                        | InstalledNodeKind::HostSemantics { .. }
-                ),
+            durable_restart: condition_preserving
+                || (!condition_scope
+                    && matches!(
+                        selection.kind,
+                        InstalledNodeKind::HostClock
+                            | InstalledNodeKind::HostRecordedBlockPreserving { .. }
+                            | InstalledNodeKind::HostIo { .. }
+                            | InstalledNodeKind::HostScripted { .. }
+                            | InstalledNodeKind::HostSeededLink { .. }
+                            | InstalledNodeKind::HostFaultedLink { .. }
+                            | InstalledNodeKind::HostControlledFaultLink { .. }
+                            | InstalledNodeKind::HostPacketReceiver { .. }
+                            | InstalledNodeKind::HostSemantics { .. }
+                    )),
             isolated_fork: false,
             dependencies: Vec::new(),
             cut_procedure_ref: qualification.clone(),
@@ -423,7 +438,7 @@ fn build_world_once(
         &mut contents,
         &qualification,
     )?);
-    if condition_scope {
+    if condition_scope && !condition_preserving {
         for capture in &mut captures {
             capture.complete_model = false;
             capture.unchanged_cut = false;
@@ -435,6 +450,11 @@ fn build_world_once(
         // Two independently constructed transfer families share this actual
         // ownership roster. Canonicalize the selected new union, leaving every
         // preexisting profile's original artifact ordering unchanged.
+        objects.sort_by(|left, right| left.id.cmp(&right.id));
+    }
+    if condition_preserving {
+        accepted_limited.sort();
+        accepted_limited.dedup();
         objects.sort_by(|left, right| left.id.cmp(&right.id));
     }
     #[cfg(test)]

@@ -10,7 +10,13 @@ use crucible_node_contract::{Direction, LaneDescriptor, PortDescriptor, SchemaRe
 pub(super) fn selected(selections: &[InstalledNodeSelection]) -> Result<bool, NodeObservedError> {
     let count = selections
         .iter()
-        .filter(|selected| matches!(selected.kind, InstalledNodeKind::HostConditionDebug { .. }))
+        .filter(|selected| {
+            matches!(
+                selected.kind,
+                InstalledNodeKind::HostConditionDebug { .. }
+                    | InstalledNodeKind::HostConditionDebugPreserving { .. }
+            )
+        })
         .count();
     if count == 0 {
         return Ok(false);
@@ -21,6 +27,7 @@ pub(super) fn selected(selections: &[InstalledNodeSelection]) -> Result<bool, No
                 selected.kind,
                 InstalledNodeKind::HostClock
                     | InstalledNodeKind::HostConditionDebug { .. }
+                    | InstalledNodeKind::HostConditionDebugPreserving { .. }
                     | InstalledNodeKind::HostScripted { .. }
                     | InstalledNodeKind::HostIo {
                         profile: super::super::io::InstalledHostIoProfile::Block { .. }

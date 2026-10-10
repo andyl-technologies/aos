@@ -31,6 +31,7 @@ enum CoordinatorEdition {
     Terminal,
     Fault,
     Recorded,
+    Condition,
 }
 
 impl CoordinatorEdition {
@@ -40,6 +41,7 @@ impl CoordinatorEdition {
             Self::Terminal => 2,
             Self::Fault => 3,
             Self::Recorded => 5,
+            Self::Condition => 6,
         }
     }
 }
@@ -196,6 +198,44 @@ impl HostArchive {
         )
     }
 
+    /// Captures a qualified acknowledged original Stop with complete future custody.
+    ///
+    /// Native/coordinator six and scheduler four are explicitly selected. The
+    /// installed whole-world factory authenticates the original condition
+    /// program, immutable native inputs and complete Stop bodies before capture.
+    /// Existing live control and legacy archive editions remain unsupported.
+    ///
+    /// # Errors
+    /// Refuses incomplete or resumed Stop custody, unsupported installed native
+    /// state, changed future queues, foreign authority or finite credit deficits.
+    // crucible-lint: allow rust-allow -- The selected whole-world transaction retains all original native, source and factory authorities explicitly.
+    #[allow(clippy::too_many_arguments)]
+    pub fn capture_condition_world(
+        &self,
+        graph: &AdmittedGraph,
+        runtime: &mut NodeRuntime,
+        activation: &WorldActivation,
+        cut: Position,
+        ordinal: U64,
+        capture_id: Id,
+        requirements: StateRequirements,
+        immutable: &dyn CaptureEvidence,
+        factory: &dyn HostWorldFactory,
+    ) -> Result<HostArchiveRecord, StateError> {
+        self.capture_world_selected(
+            graph,
+            runtime,
+            activation,
+            cut,
+            ordinal,
+            capture_id,
+            requirements,
+            immutable,
+            factory,
+            CoordinatorEdition::Condition,
+        )
+    }
+
     // crucible-lint: allow rust-allow -- Both capture editions share one preflight and native ownership transaction; the selected terminal flag never substitutes authority.
     #[allow(clippy::too_many_arguments)]
     fn capture_world_selected(
@@ -217,7 +257,16 @@ impl HostArchive {
                 "host signed archive selects durable reconstruction explicitly",
             ));
         }
-        let scheduler = if edition == CoordinatorEdition::Terminal {
+        let scheduler = if edition == CoordinatorEdition::Condition {
+            runtime
+                .condition_scheduler_snapshot(
+                    activation,
+                    cut,
+                    ordinal,
+                    self.limits.maximum_record_bytes,
+                )
+                .map_err(schema)?
+        } else if edition == CoordinatorEdition::Terminal {
             runtime
                 .terminal_scheduler_snapshot(activation, cut, ordinal)
                 .map_err(schema)?
@@ -230,12 +279,17 @@ impl HostArchive {
         };
         if scheduler.schema_version != 1
             && !(edition == CoordinatorEdition::Fault && scheduler.schema_version == 3)
+            && !(edition == CoordinatorEdition::Condition && scheduler.schema_version == 4)
         {
             return Err(refusal(
                 "selected Host archive does not preserve scheduling epoch lineage",
             ));
         }
-        let source = if edition == CoordinatorEdition::Terminal {
+        let source = if edition == CoordinatorEdition::Condition {
+            runtime
+                .condition_runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
+                .map_err(schema)?
+        } else if edition == CoordinatorEdition::Terminal {
             runtime
                 .terminal_runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
                 .map_err(schema)?
@@ -253,7 +307,9 @@ impl HostArchive {
                 "recorded capture requires original input provenance runtime two",
             ));
         }
-        if edition == CoordinatorEdition::Terminal {
+        if edition == CoordinatorEdition::Condition {
+            factory.authenticate_condition_custody(graph, &source, &scheduler, None)?;
+        } else if edition == CoordinatorEdition::Terminal {
             factory.authenticate_terminal_custody(graph, &source, &scheduler, None)?;
         } else if edition == CoordinatorEdition::Fault {
             factory.authenticate_fault_custody(graph, &source, &scheduler, None)?;
@@ -270,7 +326,10 @@ impl HostArchive {
                 self.limits.maximum_content_objects,
             )
             .map_err(schema)?;
-        if edition == CoordinatorEdition::Fault {
+        if matches!(
+            edition,
+            CoordinatorEdition::Fault | CoordinatorEdition::Condition
+        ) {
             // The owning runtime authenticated these original native receipt
             // objects. Expose their exact bytes to installed source validation;
             // this does not make a raw content object native authority.
@@ -286,7 +345,16 @@ impl HostArchive {
         }
         let mut objects = Objects::new(self.limits);
         for (reference, bytes) in immutable_content.entries() {
-            let dependencies = if edition == CoordinatorEdition::Fault {
+            let dependencies = if edition == CoordinatorEdition::Condition {
+                if immutable_refs.contains(reference) {
+                    // Independently installed artifacts keep their own codec;
+                    // an executable or program never becomes a native receipt.
+                    immutable.dependencies(reference, bytes, self.limits.maximum_content_objects)?
+                } else {
+                    crate::node_adapters::condition_evidence_dependencies(bytes)
+                        .map_err(native_failure)?
+                }
+            } else if edition == CoordinatorEdition::Fault {
                 if let Some(dependencies) = fault_receipt_dependencies(bytes) {
                     dependencies
                 } else if immutable_refs.contains(reference) {
@@ -490,7 +558,11 @@ impl HostArchive {
             provenance_ref,
             extensions: Default::default(),
         };
-        let runtime_after = if edition == CoordinatorEdition::Terminal {
+        let runtime_after = if edition == CoordinatorEdition::Condition {
+            runtime
+                .condition_runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
+                .map_err(schema)?
+        } else if edition == CoordinatorEdition::Terminal {
             runtime
                 .terminal_runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
                 .map_err(schema)?
@@ -503,7 +575,16 @@ impl HostArchive {
                 .runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
                 .map_err(schema)?
         };
-        let scheduler_after = if edition == CoordinatorEdition::Terminal {
+        let scheduler_after = if edition == CoordinatorEdition::Condition {
+            runtime
+                .condition_scheduler_snapshot(
+                    activation,
+                    cut,
+                    ordinal,
+                    self.limits.maximum_record_bytes,
+                )
+                .map_err(schema)?
+        } else if edition == CoordinatorEdition::Terminal {
             runtime
                 .terminal_scheduler_snapshot(activation, cut, ordinal)
                 .map_err(schema)?
@@ -553,8 +634,14 @@ impl HostArchiveRecord {
         if object.bytes.len() > maximum_record_bytes {
             return Err(limit("authenticated source activation record"));
         }
-        let coordinator = super::recorded_coordinator::decode(&object.bytes)?;
-        if !matches!(coordinator.schema_version, 1..=3 | 5)
+        let coordinator =
+            super::condition_coordinator::decode_selected(&object.bytes, &self.manifest)?;
+        if !matches!(coordinator.schema_version, 1..=3 | 5 | 6)
+            || (coordinator.schema_version == 6
+                && (coordinator.runtime.schema_version != 6
+                    || coordinator.scheduler.schema_version != 4))
+            || (coordinator.schema_version == 6)
+                != super::condition_coordinator::selected_manifest(&self.manifest)
             || (coordinator.schema_version == 5 && coordinator.runtime.schema_version != 2)
             || (coordinator.schema_version == 5) != recorded_manifest(&self.manifest)
             || (coordinator.schema_version == 2) != (coordinator.runtime.schema_version == 3)
@@ -714,7 +801,12 @@ impl CaptureEvidence for ArchiveEvidence<'_> {
             return Err(refusal("signed coordinator manifest differs"));
         }
         let coordinator = self.coordinator(content)?;
-        if !matches!(coordinator.schema_version, 1..=3 | 5)
+        if !matches!(coordinator.schema_version, 1..=3 | 5 | 6)
+            || (coordinator.schema_version == 6
+                && (coordinator.runtime.schema_version != 6
+                    || coordinator.scheduler.schema_version != 4))
+            || (coordinator.schema_version == 6)
+                != super::condition_coordinator::selected_manifest(manifest)
             || (coordinator.schema_version == 5 && coordinator.runtime.schema_version != 2)
             || (coordinator.schema_version == 5) != recorded_manifest(manifest)
             || (coordinator.schema_version == 2) != (coordinator.runtime.schema_version == 3)
@@ -722,6 +814,14 @@ impl CaptureEvidence for ArchiveEvidence<'_> {
             || coordinator.world_repeatability != graph.world_repeatability()
         {
             return Err(refusal("signed coordinator edition or guarantee differs"));
+        }
+        if coordinator.schema_version == 6 {
+            self.factory.authenticate_condition_custody(
+                graph,
+                &coordinator.runtime,
+                &coordinator.scheduler,
+                Some(content),
+            )?;
         }
         if coordinator.schema_version == 2 {
             self.factory.authenticate_terminal_custody(
@@ -758,10 +858,11 @@ impl CaptureEvidence for ArchiveEvidence<'_> {
 impl ArchiveEvidence<'_> {
     fn coordinator(&self, content: &VerifiedStateContent) -> Result<Coordinator, StateError> {
         let reference = &self.record.manifest.coordinator_state_ref;
-        super::recorded_coordinator::decode(
+        super::condition_coordinator::decode_selected(
             content
                 .get(reference)
                 .ok_or_else(|| refusal("signed coordinator bytes absent"))?,
+            &self.record.manifest,
         )
     }
 }

@@ -286,6 +286,45 @@ impl AdmissionEvidence for InstalledEvidence {
                 "condition grammar has no exact actually enrolled native validator",
             ));
         }
+        if schema.id.as_str() == "host/native-condition-continuation-v1" {
+            let whole_native_scope = self.enrollments.values().all(|enrollment| {
+                enrollment.model_bytes.is_some()
+                    && enrollment
+                        .binding
+                        .compatibility
+                        .implementation
+                        .formats
+                        .contains(schema)
+                    && enrollment
+                        .binding
+                        .compatibility
+                        .operating_contract
+                        .facets
+                        .iter()
+                        .any(|facet| {
+                            facet.id.as_str() == "host/condition-preservation-v1"
+                                && facet.version == 1
+                        })
+            });
+            if !whole_native_scope
+                || self
+                    .enrollments
+                    .values()
+                    .filter(|enrollment| enrollment.condition_native)
+                    .count()
+                    != 1
+                || self.content.get(&schema.definition.hash.digest).is_none_or(
+                    |(reference, bytes)| {
+                        reference != &schema.definition
+                            || bytes.as_slice() != super::condition_debug::PRESERVATION_SCHEMA
+                    },
+                )
+            {
+                return Err(evidence(
+                    "condition native codec lacks exact whole installed scope and bounded source validator",
+                ));
+            }
+        }
         if !(schema.version == 1 || semantic_v2)
             || !matches!(
                 schema.id.as_str(),
@@ -295,6 +334,7 @@ impl AdmissionEvidence for InstalledEvidence {
                     | "crucible/octet-stream-v1"
                     | "host/native-continuation-v1"
                     | "host/native-recorded-block-v1"
+                    | "host/native-condition-continuation-v1"
                     | "host/native-seeded-link-v1"
                     | "host/native-faulted-link-v1"
                     | "host/native-controlled-fault-link-v1"
@@ -490,6 +530,48 @@ impl ReferenceDeviceQualification for InstalledEvidence {
 }
 
 impl HostModelQualification for InstalledEvidence {
+    fn authenticate_condition_preservation(
+        &self,
+        model: &HostModel,
+        descriptor: &NodeDescriptor,
+        binding: &NodeBinding,
+    ) -> Result<(), OperationFailure> {
+        self.authenticate_model(model, descriptor, binding)?;
+        if !binding
+            .compatibility
+            .implementation
+            .formats
+            .iter()
+            .any(|schema| {
+                schema.id.as_str() == "host/native-condition-continuation-v1" && schema.version == 1
+            })
+            || !self.enrollments.values().all(|enrollment| {
+                enrollment.model_bytes.is_some()
+                    && enrollment
+                        .binding
+                        .compatibility
+                        .operating_contract
+                        .facets
+                        .iter()
+                        .any(|facet| {
+                            facet.id.as_str() == "host/condition-preservation-v1"
+                                && facet.version == 1
+                        })
+            })
+            || self
+                .enrollments
+                .values()
+                .filter(|entry| entry.condition_native)
+                .count()
+                != 1
+        {
+            return Err(no_effect(evidence(
+                "condition preservation lacks complete original installed world custody",
+            )));
+        }
+        Ok(())
+    }
+
     fn authenticate_recorded_preservation(
         &self,
         definition: &crucible::node_adapters::RecordedIngressDefinition,

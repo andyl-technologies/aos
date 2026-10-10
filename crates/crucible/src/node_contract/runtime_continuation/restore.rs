@@ -95,7 +95,13 @@ impl PreparedRuntimeRestore {
                 target,
                 maximum_record_bytes,
             )?;
-            condition::validate_reopened(&snapshot, &saved, limits, maximum_record_bytes)?;
+            condition::validate_reopened(&snapshot, &saved, limits, maximum_record_bytes).map_err(
+                |error| {
+                    RuntimeError::SchedulerRefused(format!(
+                        "condition reopened original closure: {error}"
+                    ))
+                },
+            )?;
             for operation in &mut snapshot.operations {
                 if let OperationRequest::DebugConditionV1(request) = &mut operation.request
                     && let crate::node_contract::ConditionControlRequest::Stop { barrier, .. } =
@@ -161,7 +167,16 @@ impl PreparedRuntimeRestore {
             target,
             &snapshot,
             &evidence.input_acknowledgements,
-        )?;
+        )
+        .map_err(|error| {
+            if snapshot.schema_version == 6 {
+                RuntimeError::SchedulerRefused(format!(
+                    "condition fresh input acknowledgements: {error}"
+                ))
+            } else {
+                error
+            }
+        })?;
         let input_acknowledgements = scheduling
             .input_batches
             .iter()

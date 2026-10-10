@@ -27,6 +27,9 @@ pub struct InstalledConditionDebugProfile {
     pub program: ContentRef,
 }
 
+/// Pins the source-owned bounded codec policy independently of a schema label.
+pub(super) const PRESERVATION_SCHEMA: &[u8] = b"Selected stopped condition native6: exact original live4 byte-bearing DAG; complete original native model, stop/report/control ACK, operation/request/outcome, staged and consumed input, payload/sequence/provenance custody; signed Runtime6 and exact Scheduler4 marker; source-regenerated whole installed Block/Script/Clock/observer world; fresh isolated construction and current durable root reconciliation before resume; acknowledged unresumed common cut only; live4 unchanged, no guest mutation, external controller, replay or fork";
+
 pub(super) const MAXIMUM_PROGRAM_BYTES: usize = 4 * 1024 * 1024;
 pub(super) const MAXIMUM_STATE_BYTES: usize = 16 * 1024 * 1024;
 pub(super) const MAXIMUM_EVENTS: usize = 4096;

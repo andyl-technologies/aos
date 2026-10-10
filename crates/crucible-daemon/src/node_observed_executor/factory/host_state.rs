@@ -115,6 +115,7 @@ impl InstalledNodeCatalog {
                     | InstalledNodeKind::HostControlledFaultLink { .. }
                     | InstalledNodeKind::HostPacketReceiver { .. }
                     | InstalledNodeKind::HostSemantics { .. }
+                    | InstalledNodeKind::HostConditionDebugPreserving { .. }
             )
         }) {
             return Err(refused(
@@ -143,6 +144,7 @@ impl InstalledNodeCatalog {
                 .filter(|schema| {
                     ((schema.id.as_str() == "host/native-continuation-v1"
                         || schema.id.as_str() == "host/native-recorded-block-v1"
+                        || schema.id.as_str() == "host/native-condition-continuation-v1"
                         || schema.id.as_str() == "host/native-seeded-link-v1"
                         || schema.id.as_str() == "host/native-faulted-link-v1"
                         || schema.id.as_str() == "host/native-controlled-fault-link-v1"
@@ -181,6 +183,9 @@ impl InstalledNodeCatalog {
         }))
     }
 }
+
+#[path = "host_state_condition.rs"]
+mod condition;
 
 #[path = "host_state_recorded.rs"]
 mod recorded;
@@ -330,6 +335,16 @@ impl InstalledHostStateFactory {
                     .verify(&actual.script_bytes()?)
                     .map_err(no_effect)?;
             }
+            (
+                InstalledNodeKind::HostConditionDebugPreserving { profile },
+                HostModel::ConditionObserver(actual),
+            ) => {
+                let definition = canonical::canonical_json(
+                    &serde_json::to_value(actual.definition()).map_err(no_effect)?,
+                )
+                .map_err(no_effect)?;
+                profile.program.verify(&definition).map_err(no_effect)?;
+            }
             (InstalledNodeKind::HostSemantics { profile }, HostModel::Semantics(actual)) => {
                 let definition = canonical::canonical_json(
                     &serde_json::to_value(actual.definition()).map_err(no_effect)?,
@@ -366,6 +381,7 @@ impl InstalledHostStateFactory {
             }
             InstalledNodeKind::HostScripted { profile } => &profile.script,
             InstalledNodeKind::HostSemantics { profile } => &profile.program,
+            InstalledNodeKind::HostConditionDebugPreserving { profile } => &profile.program,
             _ => return Err(refusal("unsupported installed native archive family")),
         };
         let bytes = content.get(reference).ok_or_else(|| {
@@ -455,6 +471,20 @@ impl InstalledHostStateFactory {
                 )
                 .map_err(|error| refusal(error.reason))?,
             ))),
+            InstalledNodeKind::HostConditionDebugPreserving { .. } => {
+                let definition = serde_json::from_slice(
+                    self.immutable_input(node, content)?
+                        .ok_or_else(|| refusal("condition immutable program absent"))?,
+                )
+                .map_err(state_error)?;
+                let model = crucible::node_adapters::ConditionDebugModel::new(
+                    definition,
+                    super::condition_debug::MAXIMUM_STATE_BYTES,
+                    super::condition_debug::MAXIMUM_EVENTS,
+                )
+                .map_err(|error| refusal(error.reason))?;
+                Ok(HostModel::ConditionObserver(Box::new(model)))
+            }
             InstalledNodeKind::HostSemantics { .. } => {
                 let definition = serde_json::from_slice(
                     self.immutable_input(node, content)?
@@ -512,6 +542,31 @@ struct SourceQualification<'a> {
 }
 
 impl HostModelQualification for SourceQualification<'_> {
+    fn authenticate_condition_preservation(
+        &self,
+        model: &HostModel,
+        descriptor: &NodeDescriptor,
+        binding: &NodeBinding,
+    ) -> Result<(), OperationFailure> {
+        self.installed.check_model(model, descriptor, binding)?;
+        if !self.installed.condition_world()
+            || !binding
+                .compatibility
+                .implementation
+                .formats
+                .iter()
+                .any(|schema| {
+                    schema.id.as_str() == "host/native-condition-continuation-v1"
+                        && schema.version == 1
+                })
+        {
+            return Err(no_effect(
+                "condition native continuation has no independent installed policy",
+            ));
+        }
+        Ok(())
+    }
+
     fn authenticate_recorded_preservation(
         &self,
         definition: &crucible::node_adapters::RecordedIngressDefinition,

@@ -145,6 +145,20 @@ impl<'de> Deserialize<'de> for RuntimeSnapshot {
     }
 }
 
+impl RuntimeSnapshot {
+    /// Decodes the explicit complete condition grammar without a legacy Content buffer.
+    ///
+    /// # Errors
+    /// Refuses malformed edition-six indexes, incomplete original bodies or limits.
+    pub(crate) fn deserialize_condition<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Self, D::Error> {
+        Selected::deserialize(deserializer)?
+            .reopen()
+            .map_err(D::Error::custom)
+    }
+}
+
 impl Selected {
     fn capture(source: &RuntimeSnapshot) -> Result<Self, RuntimeError> {
         condition::validate(source)?;

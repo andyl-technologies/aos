@@ -728,7 +728,7 @@ pub(crate) fn validate_structure(snapshot: &SchedulingSnapshot) -> Result<(), Sc
             SavedPermission::FaultInjectionV1 { .. }
         )
     });
-    if !matches!(snapshot.schema_version, 1..=3)
+    if !matches!(snapshot.schema_version, 1..=4)
         || (snapshot.schema_version == 2) != snapshot.original_epochs.is_some()
         || (snapshot.schema_version == 3) != fault_permission
         || snapshot.ordering_profile != "superdense-v1"

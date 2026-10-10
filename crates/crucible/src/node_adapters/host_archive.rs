@@ -76,8 +76,7 @@ pub fn validate_host_continuation(
         ));
     }
     SourceScope::checked(source, node, limits)?;
-    let captured: Captured =
-        serde_json::from_slice(bytes).map_err(|error| failure(&error.to_string()))?;
+    let captured = decode_captured(bytes, source, descriptor, binding, limits)?;
     let terminal_semantic = binding
         .compatibility
         .implementation
@@ -95,8 +94,11 @@ pub fn validate_host_continuation(
             schema.id.as_str() == "host/native-controlled-fault-link-v1" && schema.version == 1
         });
     let recorded = super::recorded::selected(binding);
+    let condition = super::condition::selected(binding);
     if captured.schema_version
-        != if recorded {
+        != if condition {
+            6
+        } else if recorded {
             5
         } else if controlled_fault {
             3
@@ -105,6 +107,7 @@ pub fn validate_host_continuation(
         } else {
             1
         }
+        || (condition && source.schema_version != 6)
         || (controlled_fault && source.schema_version != 4)
         || (recorded && source.schema_version != 2)
         || captured.profile != HOST_EXACT_PROFILE
@@ -167,14 +170,24 @@ pub fn validate_host_continuation(
         let (saved, outcome) = expected
             .get(&operation.operation)
             .ok_or_else(|| failure("host archive contains a foreign original operation"))?;
-        if previous.is_some_and(|id| id >= &operation.operation)
-            || saved.request != operation.request
-            || **outcome != operation.outcome
-            || operation.acknowledged != matches!(saved.result, SavedRuntimeResult::Acknowledged(_))
-        {
-            return Err(failure(
-                "host archive original request, outcome or ACK knowledge changed",
-            ));
+        if previous.is_some_and(|id| id >= &operation.operation) {
+            return Err(failure("host archive original operation order changed"));
+        }
+        if if condition {
+            !super::condition::same_request(&saved.request, &operation.request)?
+        } else {
+            saved.request != operation.request
+        } {
+            return Err(failure("host archive original request changed"));
+        }
+        if **outcome != operation.outcome {
+            return Err(failure(&format!(
+                "host archive original outcome changed for {}",
+                operation.operation
+            )));
+        }
+        if operation.acknowledged != matches!(saved.result, SavedRuntimeResult::Acknowledged(_)) {
+            return Err(failure("host archive original ACK knowledge changed"));
         }
         previous = Some(&operation.operation);
         let maximum_objects = operation.outcome.scheduling.as_ref().map_or_else(
@@ -188,6 +201,7 @@ pub fn validate_host_continuation(
             captured.recorded_ingress.as_ref(),
             &operation.evidence,
         )? > maximum_objects
+            && !condition
         {
             return Err(failure(
                 "host archive original receipt object ceiling exceeded",
@@ -195,7 +209,7 @@ pub fn validate_host_continuation(
         }
         let mut references = std::collections::BTreeSet::new();
         for object in &operation.evidence {
-            if !references.insert(&object.reference)
+            if (!references.insert(&object.reference) && !condition)
                 || canonical::content_ref(&object.bytes, &object.reference.media_type)
                     .map_err(|error| failure(&error.to_string()))?
                     != object.reference

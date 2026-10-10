@@ -20,6 +20,9 @@ pub(super) mod archive;
 #[path = "host_recorded_state.rs"]
 pub(crate) mod recorded;
 
+#[path = "host_condition_continuation.rs"]
+pub(crate) mod condition;
+
 #[derive(Serialize)]
 struct Wire<'a> {
     schema_version: u16,
@@ -417,7 +420,11 @@ pub(super) fn capture_live(
         ));
     }
     let maximum = maximum.min(node.limits.maximum_capture_bytes);
-    let bytes = encode_with_limit(node, maximum)?;
+    let bytes = if node.condition_preservation {
+        condition::encode(node, source, maximum)?
+    } else {
+        encode_with_limit(node, maximum)?
+    };
     // Count immutable evidence before copying any receipt registry. Canonical
     // key ordering changes no serialized length for this closed inventory.
     let mut total = bytes.len();
@@ -637,10 +644,12 @@ impl HostModelNode {
             self.limits,
         )?;
         let source_scope = SourceScope::checked(source, &self.route.node, self.limits)?;
-        let captured: Captured =
-            serde_json::from_slice(bytes).map_err(|error| failure(&error.to_string()))?;
+        let captured =
+            decode_captured(bytes, source, &self.descriptor, &self.binding, self.limits)?;
         if captured.schema_version
-            != if self
+            != if self.condition_preservation {
+                6
+            } else if self
                 .recorded_ingress
                 .as_ref()
                 .is_some_and(|ingress| ingress.preserved)
@@ -718,7 +727,11 @@ impl HostModelNode {
             if previous
                 .as_ref()
                 .is_some_and(|id| id >= &operation.operation)
-                || saved.request != operation.request
+                || if captured.schema_version == 6 {
+                    !condition::same_request(&saved.request, &operation.request)?
+                } else {
+                    saved.request != operation.request
+                }
                 || **outcome != operation.outcome
                 || operation.acknowledged
                     != matches!(saved.result, SavedRuntimeResult::Acknowledged(_))
@@ -738,6 +751,7 @@ impl HostModelNode {
                 captured.recorded_ingress.as_ref(),
                 &operation.evidence,
             )? > maximum_objects
+                && captured.schema_version != 6
             {
                 return Err(failure(
                     "captured host receipt registry exceeds original object inventory",
@@ -745,7 +759,7 @@ impl HostModelNode {
             }
             let mut references = std::collections::BTreeSet::new();
             for object in &operation.evidence {
-                if !references.insert(&object.reference)
+                if (!references.insert(&object.reference) && captured.schema_version != 6)
                     || canonical::content_ref(&object.bytes, &object.reference.media_type)
                         .map_err(|error| failure(&error.to_string()))?
                         != object.reference
@@ -1025,6 +1039,50 @@ impl HostModelNode {
         Ok(evidence)
     }
 
+    pub(crate) fn reopen_condition_history(
+        &self,
+        source: &RuntimeSnapshot,
+        target: &ActivationRecord,
+    ) -> Result<crate::node_contract::SavedConditionStop, OperationFailure> {
+        let prepared = self
+            .prepared_continuation
+            .as_ref()
+            .ok_or_else(|| failure("condition original native preparation absent"))?;
+        if !self.condition_preservation
+            || &prepared.target != target
+            || prepared.source != SourceScope::checked(source, &self.route.node, self.limits)?
+        {
+            return Err(failure(
+                "condition original native source preparation differs",
+            ));
+        }
+        let saved = source
+            .condition_stop
+            .as_ref()
+            .ok_or_else(|| failure("condition original source Stop absent"))?;
+        if saved.record.node != self.route.node {
+            return Err(failure("condition original native observer differs"));
+        }
+        let Some(HostModel::ConditionObserver(model)) = self.model.as_ref() else {
+            return Err(failure("condition original native observer unavailable"));
+        };
+        let (record, report) = model.preserved_stop_history()?;
+        let canonical_record = canonical::canonical_json(
+            &serde_json::to_value(&record).map_err(|error| failure(&error.to_string()))?,
+        )
+        .map_err(|error| failure(&error.to_string()))?;
+        saved
+            .reference
+            .verify(&canonical_record)
+            .map_err(|error| failure(&error.to_string()))?;
+        if saved.report.as_ref() != Some(&report) {
+            return Err(failure("condition original native report body changed"));
+        }
+        let mut reopened = saved.clone();
+        reopened.record = record;
+        Ok(reopened)
+    }
+
     pub(super) fn install_native_custody(
         &mut self,
         activation: &WorldActivation,
@@ -1127,6 +1185,12 @@ impl HostModelNode {
         for captured in &prepared.captured.input_history {
             input_history.insert(captured.stage_operation.clone(), install_input(captured)?);
         }
+        if self.condition_preservation && self.pooled_condition_objects() {
+            for (operation, retained) in &mut completed {
+                let objects = std::mem::take(&mut retained.evidence);
+                retained.evidence = self.retain_condition_objects(operation, objects)?;
+            }
+        }
         self.completed = completed;
         self.staged = staged;
         self.input_history = input_history;
@@ -1214,5 +1278,19 @@ fn restore_model(
                 .advance_to(ticks)
                 .map_err(|error| failure(&error.to_string()))
         }
+    }
+}
+
+fn decode_captured(
+    bytes: &[u8],
+    source: &RuntimeSnapshot,
+    descriptor: &NodeDescriptor,
+    binding: &NodeBinding,
+    limits: HostModelResources,
+) -> Result<Captured, OperationFailure> {
+    if condition::selected(binding) {
+        condition::decode(bytes, source, descriptor, binding, limits)
+    } else {
+        serde_json::from_slice(bytes).map_err(|error| failure(&error.to_string()))
     }
 }

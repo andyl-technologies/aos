@@ -146,6 +146,18 @@ impl PreparedNativeCustody {
 }
 
 impl NativeRuntimeContinuationVerifier for PreparedNativeCustody {
+    fn reopen_condition_continuation(
+        &mut self,
+        snapshot: &RuntimeSnapshot,
+        scheduling: &SchedulingSnapshot,
+        target: &ActivationRecord,
+        maximum_record_bytes: usize,
+    ) -> Result<crate::node_contract::SavedConditionStop, RuntimeError> {
+        self.native_mut()
+            .map_err(|_| RuntimeError::ForeignAuthority)?
+            .reopen_condition_continuation(snapshot, scheduling, target, maximum_record_bytes)
+    }
+
     fn preserve_scheduling_epochs(
         &mut self,
         snapshot: &RuntimeSnapshot,

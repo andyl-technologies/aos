@@ -230,8 +230,20 @@ pub(crate) fn admit_capture_with_selected_graph(
             .map_err(schema)?;
     }
     if proof.world_repeatability != graph.world_repeatability()
-        || !matches!(proof.scheduler.schema_version, 1..=3)
+        || !matches!(proof.scheduler.schema_version, 1..=4)
         || (proof.scheduler.schema_version == 3 && proof.runtime.schema_version != 4)
+        || ((proof.scheduler.schema_version == 4) != (proof.runtime.schema_version == 6))
+        || (proof.scheduler.schema_version == 4
+            && (proof.runtime.condition_stop.as_ref().is_none_or(|saved| {
+                !saved.acknowledged
+                    || saved.resumed
+                    || saved.resume_operation.is_some()
+                    || saved.record.cut != manifest.cut
+                    || saved.record.source != proof.runtime.source_activation
+            }) || manifest.owners.iter().any(|owner| {
+                owner.state_schema.id.as_str() != "host/native-condition-continuation-v1"
+                    || owner.state_schema.version != 1
+            })))
         || proof.scheduler.ordering_profile != manifest.ordering_profile
         || proof.scheduler.source_generation.get() == 0
         || proof.scheduler.world_binding_hash != manifest.world_binding_hash

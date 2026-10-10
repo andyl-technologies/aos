@@ -155,6 +155,15 @@ impl WorldRestoreDriver for HostWorldRestoreDriver {
                 Some(capture.content()),
             )?;
         }
+        let condition_authenticated = capture.runtime.schema_version == 6;
+        if condition_authenticated {
+            self.factory.authenticate_condition_custody(
+                graph,
+                &capture.runtime,
+                &capture.scheduler,
+                Some(capture.content()),
+            )?;
+        }
         let input_provenance_authenticated = capture
             .runtime
             .inputs
@@ -183,6 +192,7 @@ impl WorldRestoreDriver for HostWorldRestoreDriver {
             terminal_authenticated,
             fault_authenticated,
             input_provenance_authenticated,
+            condition_authenticated,
         };
         // Install the owning empty native capsule before actual model allocation.
         // All later prepare callbacks mutate that capsule under reserved custody.
@@ -205,16 +215,78 @@ struct HostStaging {
     terminal_authenticated: bool,
     fault_authenticated: bool,
     input_provenance_authenticated: bool,
+    condition_authenticated: bool,
 }
 
 impl NativeRuntimeContinuationVerifier for HostStaging {
+    fn preserve_scheduling_epochs(
+        &mut self,
+        snapshot: &RuntimeSnapshot,
+        scheduling: &SchedulingSnapshot,
+        target: &ActivationRecord,
+    ) -> Result<Option<crate::node_scheduling::SchedulingEpochEvidence>, RuntimeError> {
+        if scheduling.schema_version == 4
+            && snapshot.schema_version == 6
+            && self.condition_authenticated
+        {
+            self.verify_runtime_continuation(snapshot, scheduling, target)?;
+            Ok(None)
+        } else if scheduling.schema_version == 1 {
+            Ok(None)
+        } else {
+            Err(RuntimeError::UnsupportedFacet)
+        }
+    }
+
+    fn reopen_condition_continuation(
+        &mut self,
+        snapshot: &RuntimeSnapshot,
+        scheduling: &SchedulingSnapshot,
+        target: &ActivationRecord,
+        maximum_record_bytes: usize,
+    ) -> Result<crate::node_contract::SavedConditionStop, RuntimeError> {
+        if !self.condition_authenticated
+            || snapshot.schema_version != 6
+            || scheduling.schema_version != 4
+            || self.quarantined
+        {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        self.verify_runtime_continuation(snapshot, scheduling, target)?;
+        let saved = snapshot
+            .condition_stop
+            .as_ref()
+            .ok_or(RuntimeError::InvalidReceipt)?;
+        let node = self
+            .nodes
+            .get(&saved.record.node)
+            .ok_or(RuntimeError::UnknownNode)?;
+        let reopened = node
+            .reopen_condition_history(snapshot, target)
+            .map_err(|error| RuntimeError::SchedulerRefused(error.reason))?;
+        let bytes = reopened
+            .record
+            .dependency_objects()
+            .try_fold(0usize, |sum, body| {
+                sum.checked_add(body.bytes.len())
+                    .ok_or(RuntimeError::ResourceLimit)
+            })?;
+        if bytes > maximum_record_bytes {
+            return Err(RuntimeError::ResourceLimit);
+        }
+        Ok(reopened)
+    }
+
     fn verify_input_provenance(
         &mut self,
         snapshot: &RuntimeSnapshot,
         scheduling: &SchedulingSnapshot,
         target: &ActivationRecord,
     ) -> Result<(), RuntimeError> {
-        if !self.input_provenance_authenticated || snapshot.schema_version != 2 {
+        if !self.input_provenance_authenticated
+            || !(snapshot.schema_version == 2
+                || (snapshot.schema_version == 6 && self.condition_authenticated))
+        {
             return Err(RuntimeError::InvalidReceipt);
         }
         self.verify_runtime_continuation(snapshot, scheduling, target)
@@ -266,7 +338,7 @@ impl NativeRuntimeContinuationVerifier for HostStaging {
             .object(&self.archive.manifest.coordinator_state_ref)
             .map_err(|error| RuntimeError::SchedulerRefused(error.to_string()))?
             .bytes;
-        let saved = super::recorded_coordinator::decode(bytes)
+        let saved = super::condition_coordinator::decode_selected(bytes, self.archive.manifest())
             .map_err(|error| RuntimeError::SchedulerRefused(error.to_string()))?;
         if self.quarantined
             || target != &self.target

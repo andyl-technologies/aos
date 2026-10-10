@@ -1221,6 +1221,37 @@ checkpoint supplies SDK and owning-journal credit only. Live KVM hardware,
 ordinary execution grants, common clock windows, capture and readiness remain
 unqualified.
 
+## Cold preservation of original condition Stops
+
+The selected installed Source/Block/condition world captures an acknowledged,
+unresumed original Stop with its complete input, operation, publication and ACK
+histories. Native/coordinator edition 6 retains Runtime 6 and Scheduler 4;
+legacy codecs and ordinary defaults keep their previous bytes and refusals.
+Restoration authenticates the complete signed source closure, prepares fresh
+native owners and retains the stopped journal. Future work requires the original
+Resume and current durable report reconciliation under the actual fresh owner.
+
+The current-branch native cohort passes all three cases in 104.88 seconds.
+Two positive cases compare the genuine original suffix with two simultaneous
+fresh branches after source namespace deletion. They preserve a pending write's
+payload, once-only completion, future read bytes and original FIFO/causal
+identities. The larger case preserves the unchanged Stop through insufficient
+runtime credit and the existing native capture ceiling, then reclaims its
+resources. Declared per-scenario record credits are selected before preparation;
+default 8 MiB, native 16 MiB and hard runtime 64 MiB limits remain unchanged.
+
+Central checks pass 35 distinct archive/wire/model/geometry/domain cases,
+37 current-source hygiene cases, all five consumer crates' all-target strict
+checks and 39 Rust formatting checks. All 8,554 current source leaves agree
+before and after execution. Complete local evidence and the actual test/scanner
+executables are retained outside Git; independent review of the exact 40-file
+source join preserves the current Root, Clock and initial-owner APIs.
+
+These results qualify the closed Block condition preservation mechanism.
+Public operator capture/restore/Resume integration, initial or already-resumed
+Stops, physical ingress, 9p, replay, fork, general Compute and broader readiness
+remain separately unqualified.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

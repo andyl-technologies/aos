@@ -218,7 +218,9 @@ pub(super) fn validate_reopened(
         .as_ref()
         .ok_or(RuntimeError::InvalidReceipt)?;
     if encode(encoded)? != encode(saved)? {
-        return Err(RuntimeError::InvalidReceipt);
+        return Err(RuntimeError::SchedulerRefused(
+            "condition reopened original body association changed".into(),
+        ));
     }
     validate_saved(snapshot, saved)?;
     let maximum_objects = limits
@@ -231,12 +233,16 @@ pub(super) fn validate_reopened(
     let mut remaining = maximum_bytes;
     for object in saved.record.dependency_objects() {
         if object.bytes.is_empty() || object.reference.verify(&object.bytes).is_err() {
-            return Err(RuntimeError::InvalidReceipt);
+            return Err(RuntimeError::SchedulerRefused(
+                "condition reopened original body association changed".into(),
+            ));
         }
         match objects.entry(object.reference.hash.clone()) {
             std::collections::btree_map::Entry::Occupied(previous) => {
                 if *previous.get() != object {
-                    return Err(RuntimeError::InvalidReceipt);
+                    return Err(RuntimeError::SchedulerRefused(
+                        "condition reopened original body association changed".into(),
+                    ));
                 }
             }
             std::collections::btree_map::Entry::Vacant(entry) => {
@@ -257,7 +263,12 @@ pub(super) fn validate_reopened(
             maximum_objects,
             maximum_bytes,
         )
-        .map_err(|_| RuntimeError::InvalidReceipt)?;
+        .map_err(|error| {
+            RuntimeError::SchedulerRefused(format!(
+                "condition reopened original dependency closure: {}",
+                error.reason
+            ))
+        })?;
     Ok(())
 }
 

@@ -24,6 +24,7 @@ use crate::node_execution::{ExactOperationNames, ExactOperationRequest, plan_exa
 /// cannot issue replacement work through this instance.
 pub struct ConditionExecution {
     sequence: u64,
+    restored_activation: Option<WorldActivation>,
     publications: Vec<crucible::node_scheduling::NativePublication>,
     maximum_publications: usize,
     pending: Option<crucible::node_contract::OperationToken>,
@@ -47,11 +48,49 @@ impl ConditionExecution {
             .map_err(|_| refused("condition publication retention unavailable"))?;
         Ok(Self {
             sequence: 0,
+            restored_activation: None,
             publications,
             maximum_publications,
             pending: None,
             failed: false,
         })
+    }
+
+    /// Reserves new future dispatch names under an authentically resumed fresh world.
+    ///
+    /// Original operations, acknowledgements and native cursors remain in the
+    /// runtime. This driver names only newly admitted suffix work; it cannot
+    /// replace an inherited operation or repeat the original Resume.
+    ///
+    /// # Errors
+    /// Refuses foreign activation or graph custody, an original live world, an
+    /// unacknowledged Resume, or unavailable finite publication retention.
+    pub fn for_restored_resume(
+        runtime: &mut NodeRuntime,
+        graph: &AdmittedGraph,
+        activation: &WorldActivation,
+        maximum_publications: usize,
+    ) -> Result<Self, NodeObservedError> {
+        let stop = runtime
+            .condition_stop_checkpoint()
+            .ok_or_else(|| refused("restored suffix has no original Stop custody"))?;
+        if !stop.acknowledged
+            || !stop.resumed
+            || stop.resume_operation.is_none()
+            || stop.resume_receipt.is_none()
+            || stop.record.source.activation_id == activation.record().activation_id
+            || stop.record.source.world_binding_hash != activation.record().world_binding_hash
+        {
+            return Err(refused(
+                "restored suffix requires acknowledged fresh-world Resume",
+            ));
+        }
+        // The opaque current activation must belong to this actual runtime.
+        // Historical labels and another restored world's token cannot select it.
+        runtime.scheduler(graph, activation)?;
+        let mut driver = Self::new(maximum_publications)?;
+        driver.restored_activation = Some(activation.clone());
+        Ok(driver)
     }
 
     /// Borrows the exact original token retained across an unresolved native effect.
@@ -141,6 +180,12 @@ impl ConditionExecution {
     ) -> Result<Option<AuthenticatedConditionStop>, NodeObservedError> {
         if self.failed || self.pending.is_some() {
             return Err(refused("condition driver retains failed original custody"));
+        }
+        if let Some(original) = &self.restored_activation {
+            if stop_on_hit || !original.same_authority(activation) {
+                return Err(refused("restored suffix activation or action changed"));
+            }
+            runtime.scheduler(graph, activation)?;
         }
         let order = causal_order(graph)?;
         for _ in 0..4096 {
@@ -387,7 +432,14 @@ impl ConditionExecution {
         self.sequence = original
             .checked_add(1)
             .ok_or_else(|| refused("condition sequence overflow"))?;
-        Ok(Id::new(format!("condition/{original}/{kind}/{node}"))?)
+        let name = match &self.restored_activation {
+            Some(activation) => format!(
+                "condition/restored/{}/{original}/{kind}/{node}",
+                activation.record().activation_id
+            ),
+            None => format!("condition/{original}/{kind}/{node}"),
+        };
+        Ok(Id::new(name)?)
     }
 }
 

@@ -193,7 +193,7 @@ pub struct SavedInputBatch {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SchedulingSnapshot {
-    /// Selects legacy continuation, inherited epochs, or pending fault custody.
+    /// Selects legacy, inherited epochs, pending fault, or stopped condition custody.
     #[serde(deserialize_with = "crucible_node_contract::deserialize_version")]
     pub schema_version: u16,
     /// Retains original pending-permission ancestry only in edition two.

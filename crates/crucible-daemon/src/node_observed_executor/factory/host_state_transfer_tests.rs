@@ -19,6 +19,9 @@ mod seeded;
 #[path = "condition_debug_tests.rs"]
 mod condition_debug;
 
+#[path = "host_state_condition_tests.rs"]
+mod condition_cold;
+
 use std::{
     rc::Rc,
     sync::Arc,

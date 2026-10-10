@@ -307,3 +307,23 @@ fn legacy_native_verifier_refuses_epoch_two_without_invoking_native_continuation
     );
     assert_eq!(legacy.native_calls, 0);
 }
+
+#[test]
+fn continuation_hash_preserves_old_domains_and_separates_condition_four() {
+    let mut source = snapshot();
+    let mut identities = std::collections::BTreeSet::new();
+    for (edition, domain) in [
+        (1, "cnp.scheduler-continuation.v1"),
+        (2, "cnp.scheduler-continuation.v2"),
+        (3, "cnp.scheduler-continuation.v3"),
+        (4, "cnp.scheduler-continuation.v4"),
+    ] {
+        source.schema_version = edition;
+        let original = canonical::canonical_json(&serde_json::to_value(&source).unwrap()).unwrap();
+        let expected = canonical::hash(domain, &original).unwrap();
+        assert_eq!(source.continuation_hash().unwrap(), expected);
+        assert!(identities.insert(expected));
+    }
+    source.schema_version = 5;
+    assert!(source.continuation_hash().is_err());
+}

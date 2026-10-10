@@ -6,6 +6,7 @@
 
 mod archive;
 mod capture;
+mod condition_coordinator;
 mod driver;
 mod recorded_coordinator;
 mod runtime_header;
@@ -70,6 +71,26 @@ pub trait HostWorldFactory {
     ) -> Result<(), StateError> {
         Err(archive::refusal(
             "installed fault-controller archive codec is unsupported",
+        ))
+    }
+
+    /// Authenticates and reopens complete original stopped-condition source bodies.
+    ///
+    /// The installed policy regenerates the exact whole world and native-six
+    /// codec independently. Returned historical facts establish no fresh native
+    /// owner, live fence or current durable publication permission.
+    ///
+    /// # Errors
+    /// The default refuses unsupported scope, missing bodies or changed custody.
+    fn authenticate_condition_custody(
+        &self,
+        _graph: &AdmittedGraph,
+        _runtime: &RuntimeSnapshot,
+        _scheduler: &crate::node_scheduling::SchedulingSnapshot,
+        _content: Option<&VerifiedStateContent>,
+    ) -> Result<crate::node_contract::SavedConditionStop, StateError> {
+        Err(archive::refusal(
+            "installed condition archive codec is unsupported",
         ))
     }
 

@@ -125,6 +125,11 @@ pub enum InstalledNodeKind {
         /// Binds the independently enrolled compact condition and native route.
         profile: InstalledConditionDebugProfile,
     },
+    /// Selects separately qualified whole-world original stopped-condition custody.
+    HostConditionDebugPreserving {
+        /// Binds the independently installed condition program and exact native route.
+        profile: InstalledConditionDebugProfile,
+    },
     /// Runs the installed closed gem5 model with original live public readiness.
     /// Preservation remains unsupported in this distinct initial edition.
     Gem5Closed {
@@ -221,6 +226,9 @@ impl<'de> Deserialize<'de> for InstalledNodeKind {
             InstalledNodeKindWire::HostClock {} => Self::HostClock,
             InstalledNodeKindWire::HostSemantics { profile } => Self::HostSemantics { profile },
             InstalledNodeKindWire::Gem5ArmRoot {} => Self::Gem5ArmRoot,
+            InstalledNodeKindWire::HostConditionDebugPreserving { profile } => {
+                Self::HostConditionDebugPreserving { profile }
+            }
             InstalledNodeKindWire::HostConditionDebug { profile } => {
                 Self::HostConditionDebug { profile }
             }
@@ -294,6 +302,9 @@ enum InstalledNodeKindWire {
     },
     Gem5ArmRoot {},
     HostConditionDebug {
+        profile: InstalledConditionDebugProfile,
+    },
+    HostConditionDebugPreserving {
         profile: InstalledConditionDebugProfile,
     },
     Gem5Closed {
@@ -786,6 +797,7 @@ impl InstalledNodeCatalog {
                     | InstalledNodeKind::HostControlledFaultLink { .. }
                     | InstalledNodeKind::HostPacketReceiver { .. }
                     | InstalledNodeKind::HostSemantics { .. }
+                    | InstalledNodeKind::HostConditionDebugPreserving { .. }
             )
         }) || record.manifest().world_binding_hash != scenario.world.identity()?
             || record.manifest().scenario_ref != scenario.world.scenario_ref
@@ -1067,7 +1079,8 @@ impl InstalledNodeCatalog {
                         HostModel::Clock(VirtualClock::new()),
                     );
                 }
-                InstalledNodeKind::HostConditionDebug { profile } => {
+                InstalledNodeKind::HostConditionDebug { profile }
+                | InstalledNodeKind::HostConditionDebugPreserving { profile } => {
                     models.insert(
                         selection.node.clone(),
                         HostModel::ConditionObserver(Box::new(condition_debug::build_model(
@@ -1195,6 +1208,7 @@ impl InstalledNodeCatalog {
                 InstalledNodeKind::HostClock
                 | InstalledNodeKind::HostSemantics { .. }
                 | InstalledNodeKind::HostConditionDebug { .. }
+                | InstalledNodeKind::HostConditionDebugPreserving { .. }
                 | InstalledNodeKind::HostNetLink { .. }
                 | InstalledNodeKind::HostIo { .. }
                 | InstalledNodeKind::HostScripted { .. }
@@ -1205,16 +1219,27 @@ impl InstalledNodeCatalog {
                     let model = models
                         .remove(&selection.node)
                         .ok_or_else(|| refused("enrolled host model custody disappeared"))?;
-                    nodes.push(Box::new(
-                        HostModelNode::new(
-                            &graph,
-                            &selection.node,
-                            model,
-                            &evidence,
-                            HostModelResources::default(),
+                    let actual = HostModelNode::new(
+                        &graph,
+                        &selection.node,
+                        model,
+                        &evidence,
+                        HostModelResources::default(),
+                    )
+                    .map_err(native)?;
+                    let actual = if selections.iter().any(|selected| {
+                        matches!(
+                            selected.kind,
+                            InstalledNodeKind::HostConditionDebugPreserving { .. }
                         )
-                        .map_err(native)?,
-                    ));
+                    }) {
+                        actual
+                            .with_preservable_condition(&evidence)
+                            .map_err(native)?
+                    } else {
+                        actual
+                    };
+                    nodes.push(Box::new(actual));
                 }
                 InstalledNodeKind::ReferenceDevice { .. }
                 | InstalledNodeKind::ReferenceNativeLinked { .. } => {

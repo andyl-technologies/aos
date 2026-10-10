@@ -27,7 +27,10 @@ pub(super) fn connections(
     for selected in selections {
         let (program_ref, condition) = match &selected.kind {
             InstalledNodeKind::HostSemantics { profile } => (&profile.program, false),
-            InstalledNodeKind::HostConditionDebug { profile } => (&profile.program, true),
+            InstalledNodeKind::HostConditionDebug { profile }
+            | InstalledNodeKind::HostConditionDebugPreserving { profile } => {
+                (&profile.program, true)
+            }
             _ => continue,
         };
         // Profile construction already measured the independently enrolled
@@ -173,7 +176,10 @@ pub(super) fn connections(
             capture.complete_model = true;
             capture.unchanged_cut = true;
             capture.exact_continuation = true;
-            capture.durable_restart = false;
+            capture.durable_restart = matches!(
+                selected.kind,
+                InstalledNodeKind::HostConditionDebugPreserving { .. }
+            );
             capture.cut_procedure_ref = qualification.clone();
         }
     }
