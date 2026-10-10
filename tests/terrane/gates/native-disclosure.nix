@@ -70,7 +70,13 @@ in {
   dom-reference-order = sourceGate "dom-reference-order" ''
     cd crates
     ${domainCore}
+    ${qualifySuite "terrane" "--no-default-features --features tokio,surface-sdk" "domain::tests::dom_reference_order" [
+      "domain::tests::dom_reference_order_checks_every_kind_and_incomparable_name"
+      "domain::tests::dom_reference_order_rejects_empty_domain_names_before_admission"
+      "domain::tests::dom_reference_order_requires_fresh_records_after_closing"
+    ]}
     ${qualifySuite "terrane" "--no-default-features --features tokio,surface-sdk" "domain::native_deletion_tests::" [
+      "domain::native_deletion_tests::audit_intent::domain_deletion_native_failed_audit_intent_preserves_source_and_active_route"
       "domain::native_deletion_tests::domain_deletion_native_erases_generations_and_disables_surviving_and_reopened_routes"
       "domain::native_deletion_tests::domain_deletion_native_rejects_denied_roots_and_whole_inventory_races"
       "domain::native_deletion_tests::domain_deletion_native_erases_empty_registered_namespace_and_retains_pending_on_parent_sync_failure"
