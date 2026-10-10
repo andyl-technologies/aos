@@ -592,6 +592,16 @@ index selectors for the same existing source-bound test image. Shared factory
 exposure lands first; core and native-std Cargo paths, selector ordering and
 the DRV-29 qualification blocker remain fixed. Compilation reuse cannot certify
 the unqualified growing-population witnesses.
+Reviewed gate follow-up `135a6d7a84` preserves all sixty-one core, sixteen
+native-std and eighty native-Tokio selectors. The rendered core/std prefix is
+byte-identical; one group-local checker still requires unique nonignored
+inventory and exactly one passing execution per native selector. The actual
+expanded builder argument contains 123,756 UTF-8 bytes. Its source-bound image,
+formatting, syntax and eleven sealed packet payloads verify; runtime remains
+unrun. Private composition `912feb3b11` contains exactly five reviewed changed
+files relative to `1a12676434`. Frozen qualification `178824f9a1` starts a fresh
+native build with 6,224 tracked entries and unchanged profiles, limits and
+tracing settings. Its tests and owning gates remain pending.
 The frozen GC observation qualification `9a16f49c8a` stops at its first
 auxiliary case after genuine compilation and an inventory of 1,016 tests.
 Baseline fixture publication returns `Unsupported` before observation or
