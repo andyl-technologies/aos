@@ -362,7 +362,7 @@ pub enum HubAssessmentCmd {
         /// Select one exact subscription
         #[arg(long, conflicts_with = "after_subscription")]
         subscription_id: Option<String>,
-        /// Continue after a public subscription identity from the preceding page
+        /// Continue with the opaque subscription handle from the preceding page
         #[arg(long, requires = "resource_scope")]
         after_subscription: Option<String>,
         /// Pin the non-reusable registry scope from the preceding page

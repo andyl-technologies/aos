@@ -24,6 +24,7 @@ mod provider_state;
 mod publication;
 mod reconcile;
 mod read_snapshot;
+mod subscription_snapshot;
 mod reviews;
 mod scans;
 mod schedules;

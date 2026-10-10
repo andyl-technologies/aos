@@ -6,6 +6,7 @@
   source = pkgs.aos.passthru.testTargets.src;
   vendor = builtins.elemAt native.passthru.evidenceSources 1;
   selector = "db::assessment::read_snapshot_tests::actual_cli_retains_scan_pages_across_database_reopen";
+  subscriptionSelector = "db::assessment::subscription_snapshot::tests::actual_cli_retains_subscription_pages_across_database_reopen";
 in
   assert builtins.pathExists (source + "/crates/aos-hub-worker/src/oci_manifest_ingress.rs");
     pkgs.mkCargoPackage {
@@ -42,7 +43,10 @@ in
         install -m 755 "$executable" "$out/bin/aos-assessment-retained-pages-fixture"
         "$out/bin/aos-assessment-retained-pages-fixture" --list --ignored --exact '${selector}' > "$out/nix-support/test-registration.txt"
         grep -Fx '${selector}: test' "$out/nix-support/test-registration.txt"
+        "$out/bin/aos-assessment-retained-pages-fixture" --list --ignored --exact '${subscriptionSelector}' > "$out/nix-support/subscription-test-registration.txt"
+        grep -Fx '${subscriptionSelector}: test' "$out/nix-support/subscription-test-registration.txt"
       '';
       passthru.testSelector = selector;
-      meta.description = "Retained assessment scan-list database and CLI acceptance fixture";
+      passthru.subscriptionTestSelector = subscriptionSelector;
+      meta.description = "Retained assessment scan and subscription database and CLI acceptance fixture";
     }

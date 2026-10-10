@@ -58,7 +58,7 @@ pub struct SubscriptionQueryV1 {
     /// Exact public subscription identity for a detail read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscription_id: Option<String>,
-    /// Exclusive public identity from a prior page in the same resource.
+    /// Opaque retained-page handle returned by a prior page in the same resource.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after_subscription: Option<String>,
     /// Maximum rows, from one through ten.
@@ -119,7 +119,7 @@ pub struct SubscriptionPageV1 {
     pub as_of: Timestamp,
     /// At most ten public subscription reviews in public identity order.
     pub subscriptions: Vec<SubscriptionV1>,
-    /// Exclusive public identity for another page in this exact resource.
+    /// Opaque retained-page handle for another page in this exact resource.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_subscription: Option<String>,
 }
@@ -152,7 +152,9 @@ impl SubscriptionPageV1 {
             ensure!(
                 self.subscriptions
                     .last()
-                    .is_some_and(|last| last.subscription_id == *next),
+                    .is_some_and(|last| last.subscription_id == *next
+                        || crate::read_snapshot::subscriptions::parse_subscription_cursor(next)
+                            .is_ok()),
                 "subscription page cursor does not match its last public identity"
             );
         }

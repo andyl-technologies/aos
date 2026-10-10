@@ -107,6 +107,10 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
                 for subscription in page.subscriptions {
                     render(printer, &subscription);
                 }
+                if let Some(next) = page.next_subscription {
+                    printer.kv("Next subscription", &next);
+                    printer.kv("Resource scope", &page.resource_scope);
+                }
             }
             Ok(())
         }

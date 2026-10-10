@@ -145,46 +145,34 @@ impl RpcService {
                 "assessment notification resource was replaced",
             ));
         }
-        let (subscriptions, next_subscription) = if let Some(identity) = &query.subscription_id {
+        let page = if let Some(identity) = &query.subscription_id {
             let subscription = self
                 .db
                 .assessment_subscription(registry.id, identity)
                 .await
                 .map_err(RpcError::internal)?
                 .ok_or_else(|| RpcError::not_found("assessment subscription"))?;
-            (vec![subscription], None)
+            SubscriptionPageV1 {
+                schema: "aos.assessment-subscription-page/v1".into(),
+                resource_scope: registry.scope_key.clone(),
+                as_of: self
+                    .db
+                    .assessment_database_time()
+                    .await
+                    .map_err(RpcError::internal)?,
+                subscriptions: vec![subscription],
+                next_subscription: None,
+            }
         } else {
-            let subscriptions = self
-                .db
-                .assessment_subscription_page(
+            self.db
+                .assessment_retained_subscription_page(
                     registry.id,
-                    query.after_subscription.as_deref().unwrap_or(""),
+                    &registry.scope_key,
                     query.limit,
+                    query.after_subscription.as_deref(),
                 )
                 .await
-                .map_err(RpcError::internal)?;
-            let next = if let Some(last) = subscriptions.last() {
-                let more = self
-                    .db
-                    .assessment_subscription_page(registry.id, &last.subscription_id, 1)
-                    .await
-                    .map_err(RpcError::internal)?;
-                (!more.is_empty()).then(|| last.subscription_id.clone())
-            } else {
-                None
-            };
-            (subscriptions, next)
-        };
-        let page = SubscriptionPageV1 {
-            schema: "aos.assessment-subscription-page/v1".into(),
-            resource_scope: registry.scope_key.clone(),
-            as_of: self
-                .db
-                .assessment_database_time()
-                .await
-                .map_err(RpcError::internal)?,
-            subscriptions,
-            next_subscription,
+                .map_err(subscription_page_error)?
         };
         let document_json = page.to_bytes().map_err(RpcError::internal)?;
         self.recheck_assessment(&claims, &registry, "assessment.read")
@@ -241,5 +229,18 @@ impl RpcService {
         self.recheck_assessment(&claims, &registry, "assessment.read")
             .await?;
         Ok(pb::AssessmentDocumentResponse { document_json })
+    }
+}
+
+fn subscription_page_error(error: anyhow::Error) -> RpcError {
+    use aos_assessment_runtime::read_snapshot::ScanPageError;
+
+    match error.downcast_ref::<ScanPageError>() {
+        Some(ScanPageError::InvalidCursor) => RpcError::invalid(error.to_string()),
+        Some(ScanPageError::CursorExpired | ScanPageError::SelectorChanged) => {
+            RpcError::FailedPrecondition(error.to_string())
+        }
+        Some(ScanPageError::CapacityExceeded) => RpcError::ResourceExhausted(error.to_string()),
+        None => RpcError::internal(error),
     }
 }

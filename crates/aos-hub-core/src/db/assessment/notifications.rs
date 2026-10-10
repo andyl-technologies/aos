@@ -500,7 +500,7 @@ fn decode_record(row: crate::value::Row) -> Result<SubscriptionRecord> {
     Ok(record)
 }
 
-fn project(resource: &str, record: &SubscriptionRecord) -> Result<SubscriptionV1> {
+pub(super) fn project(resource: &str, record: &SubscriptionRecord) -> Result<SubscriptionV1> {
     ensure!(
         subscription_key(resource, &record.review.subscription_id)? == record.key,
         "retained notification subscription belongs to another incarnation"

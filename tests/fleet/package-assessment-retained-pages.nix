@@ -27,5 +27,12 @@ in {
         timeout=240,
     )
     assert "PASS: actual CLI retained scan pages survive scan mutation and database reopen" in output, output
+    output = hub.succeed(
+        "AOS_ASSESSMENT_CLI=${pkgs.aos}/bin/aos TOKIO_WORKER_THREADS=2 "
+        "${fixture}/bin/aos-assessment-retained-pages-fixture "
+        "--ignored --exact ${fixture.passthru.subscriptionTestSelector} --nocapture --test-threads=1",
+        timeout=240,
+    )
+    assert "PASS: actual CLI retained subscription pages survive review replacement and database reopen" in output, output
   '';
 }

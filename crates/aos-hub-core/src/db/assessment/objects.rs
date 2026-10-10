@@ -71,6 +71,8 @@ pub enum AssessmentObjectKind {
     NotificationReceipt,
     /// Immutable, expiring scan-list state and opaque continuation handles.
     ScanReadSnapshot,
+    /// Immutable, expiring public subscription reviews and opaque page handles.
+    SubscriptionReadSnapshot,
 }
 
 impl AssessmentObjectKind {
@@ -100,11 +102,17 @@ impl AssessmentObjectKind {
             Self::NotificationWork => "aos.assessment-notification-work/v1",
             Self::NotificationReceipt => "aos.assessment-notification-receipt/v1",
             Self::ScanReadSnapshot => aos_assessment_runtime::read_snapshot::SCAN_READ_SNAPSHOT_V1,
+            Self::SubscriptionReadSnapshot => {
+                aos_assessment_runtime::read_snapshot::subscriptions::SUBSCRIPTION_READ_SNAPSHOT_V1
+            }
         }
     }
 
     fn normalize(self, bytes: &[u8]) -> Result<Vec<u8>> {
         match self {
+            Self::SubscriptionReadSnapshot => {
+                aos_assessment_runtime::read_snapshot::subscriptions::SubscriptionReadSnapshotV1::from_slice(bytes)?.to_bytes()
+            }
             Self::ScanReadSnapshot => {
                 aos_assessment_runtime::read_snapshot::ScanReadSnapshotV1::from_slice(bytes)?
                     .to_bytes()
@@ -192,6 +200,13 @@ impl AssessmentObjectKind {
             )
         }
     }
+
+    fn is_read_snapshot(self) -> bool {
+        matches!(
+            self,
+            Self::ScanReadSnapshot | Self::SubscriptionReadSnapshot
+        )
+    }
 }
 
 impl Database {
@@ -229,7 +244,7 @@ impl Database {
             return Ok(());
         }
         let digest = expected_digest.to_string();
-        let insert = if kind == AssessmentObjectKind::ScanReadSnapshot {
+        let insert = if kind.is_read_snapshot() {
             // The quota assertion shares the insertion transaction. Concurrent
             // first-page reads cannot both consume the last retained slot.
             "INSERT INTO assessment_objects
@@ -242,7 +257,7 @@ impl Database {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
         };
         let mut statements = Vec::new();
-        if kind == AssessmentObjectKind::ScanReadSnapshot {
+        if kind.is_read_snapshot() {
             statements.push(Statement::new(
                 "UPDATE assessment_resources SET updated_at = updated_at WHERE partition_key = ?1",
                 vals![partition],

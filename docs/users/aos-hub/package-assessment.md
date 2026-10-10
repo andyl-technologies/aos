@@ -439,6 +439,16 @@ do not duplicate the event. `aos hub maintain subscriptions` reads
 its public projection. The web console exposes these same controls. Generic
 webhook wildcards do not subscribe to assessment events.
 
+Subscription listings retain their original public review revisions and
+observation time for fifteen minutes, including across review replacement and
+service restart. Continue with the returned `nextSubscription` as
+`--after-subscription`, the same `--limit`, and `--resource-scope` from the page.
+Each page requires current read access. Invalid handles, changed selectors or
+expired custody require restarting the list. Each resource retains at most
+sixteen active subscription captures, with at most sixty-four public reviews and
+8 MiB per capture. Reads do not renew review authority or dispatch callbacks;
+an old enabled review in a retained page does not authorize current delivery.
+
 A subscription chooses explicit event kinds, issue families, all attention or
 confirmed attention, and immediate delivery or a UTC digest window of 60 through
 86,400 seconds. It binds the exact destination revision and digest. The effective

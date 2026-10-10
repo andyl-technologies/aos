@@ -23,6 +23,8 @@ use serde::{Deserialize, Serialize};
 use crate::control::{ScanListV1, ScanSummary};
 use crate::validation::{reject_null, text};
 
+pub mod subscriptions;
+
 /// Identifies immutable retained scan-list snapshots.
 pub const SCAN_READ_SNAPSHOT_V1: &str = "aos.assessment-scan-read-snapshot/v1";
 
@@ -49,12 +51,12 @@ pub enum ScanPageError {
 impl std::fmt::Display for ScanPageError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
-            Self::InvalidCursor => "invalid retained scan cursor",
+            Self::InvalidCursor => "invalid retained read cursor",
             Self::CursorExpired => {
-                "cursor-expired: scan snapshot is unavailable; restart pagination"
+                "cursor-expired: read snapshot is unavailable; restart pagination"
             }
-            Self::SelectorChanged => "scan snapshot selector changed; restart pagination",
-            Self::CapacityExceeded => "retained scan snapshot capacity exceeded",
+            Self::SelectorChanged => "read snapshot selector changed; restart pagination",
+            Self::CapacityExceeded => "retained read snapshot capacity exceeded",
         })
     }
 }
@@ -209,11 +211,15 @@ impl ScanReadSnapshotV1 {
 /// # Errors
 /// Returns an error for noncanonical or excessive token data.
 pub fn parse_scan_cursor(token: &str) -> Result<(Sha256Digest, &str)> {
+    parse_cursor(token, "s1")
+}
+
+fn parse_cursor<'a>(token: &'a str, prefix: &str) -> Result<(Sha256Digest, &'a str)> {
     if token.len() != 100 {
         return Err(ScanPageError::InvalidCursor.into());
     }
     let mut parts = token.split(':');
-    if parts.next() != Some("s1") {
+    if parts.next() != Some(prefix) {
         return Err(ScanPageError::InvalidCursor.into());
     }
     let digest = parts

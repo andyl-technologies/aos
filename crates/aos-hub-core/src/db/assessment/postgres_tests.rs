@@ -167,3 +167,21 @@ async fn retained_scan_pages_and_concurrent_snapshot_limits_on_postgresql() -> R
     let (db, registry_id, mut request) = super::scans_tests::setup_database(db).await?;
     super::read_snapshot_tests::storage_bounds(&db, registry_id, &mut request).await
 }
+
+#[tokio::test]
+#[ignore = "Requires AOS_ASSESSMENT_PG_URL_FILE pointing to a disposable PostgreSQL database"]
+async fn retained_public_subscription_pages_on_postgresql() -> Result<()> {
+    let path = std::env::var_os("AOS_ASSESSMENT_PG_URL_FILE")
+        .context("disposable PostgreSQL URL file required")?;
+    let url = std::fs::read_to_string(path)?;
+    let backend = SqlxBackend::connect_postgres(url.trim()).await?;
+    let db = Database::with_backend(Box::new(backend)).await?;
+    let (db, registry, request, identity, fences) =
+        super::notifications_tests::fixture_database(db).await?;
+    super::subscription_snapshot::tests::retained_reviews(db, registry, request, identity, fences)
+        .await?;
+
+    let backend = SqlxBackend::connect_postgres(url.trim()).await?;
+    let db = Database::with_backend(Box::new(backend)).await?;
+    super::subscription_snapshot::tests::storage_bounds(db).await
+}
