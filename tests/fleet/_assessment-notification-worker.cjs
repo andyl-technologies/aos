@@ -84,9 +84,9 @@ function plan() {
   };
 }
 
-async function dispatch(runtime, plan, supplied) {
+async function dispatch(runtime, plan, supplied, suffix = '') {
   const body = canonical(plan);
-  return runtime.dispatchFetch(`https://assessment-fleet.invalid${WORK}`, {
+  return runtime.dispatchFetch(`https://assessment-fleet.invalid${WORK}${suffix}`, {
     method: 'POST', body, headers: {
       'content-type': 'application/json',
       [HEADER]: supplied ?? signature('aos-assessment-notification-plan-v1', WORK, body),
@@ -152,6 +152,7 @@ async function main() {
       assert.equal(query.resourceScope, SCOPE);
       assert.equal(query.claimToken, plan.claimToken);
       assert.ok(!body.includes('events') && !body.includes(CALLBACK_KEY));
+      if (disposition === 'redirect') return new Response(null, { status: 302, headers: { location: 'https://uninstalled.example/confirmation' } });
       const count = (planConfirmations.get(query.planDigest) ?? 0) + 1;
       planConfirmations.set(query.planDigest, count);
       if (disposition === 'revoked' || (disposition === 'revoked-after-sign' && count > 1)) {
@@ -243,6 +244,7 @@ async function main() {
     const first = install(plan());
     for (const response of await Promise.all([
       dispatch(runtime, first, '0'.repeat(64)),
+      dispatch(runtime, first, undefined, '?altered=1'),
       dispatch(runtime, { ...first, audience: 'wrong' }),
       dispatch(runtime, { ...first, unexpected: true }),
       dispatch(runtime, { ...first, destinationDigest: digest('uninstalled') }),
@@ -265,7 +267,7 @@ async function main() {
     assert.equal(gatewayCalls, 1);
     assert.equal(confirmations, 2);
 
-    for (const failure of ['revoked', 'revoked-after-sign', 'stale', 'nonce']) {
+    for (const failure of ['revoked', 'revoked-after-sign', 'stale', 'nonce', 'redirect']) {
       const value = install(plan()); disposition = failure;
       assert.equal((await dispatch(runtime, value)).status, 409);
       disposition = 'allowed';

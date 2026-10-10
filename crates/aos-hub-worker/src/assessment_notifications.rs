@@ -131,7 +131,9 @@ async fn authenticated(
     state: Option<&State>,
 ) -> Result<RetainedReceipt> {
     ensure!(
-        request.method() == Method::Post && request.url()?.path() == NOTIFICATION_WORK_PATH,
+        request.method() == Method::Post
+            && request.url()?.path() == NOTIFICATION_WORK_PATH
+            && request.url()?.query().is_none(),
         "notification work requires its exact POST route"
     );
     ensure!(
@@ -284,7 +286,9 @@ pub(crate) fn work_request(url: &str, bytes: &[u8], signature: &str) -> Result<R
     headers.set(SIGNATURE_HEADER, signature)?;
     let mut init = RequestInit::new();
     init.with_method(Method::Post)
-        .with_redirect(RequestRedirect::Error)
+        // workerd supports manual/follow modes. Callers reject every redirect
+        // response before admitting an authenticated result.
+        .with_redirect(RequestRedirect::Manual)
         .with_headers(headers)
         .with_body(Some(js_sys::Uint8Array::from(bytes).into()));
     Ok(Request::new_with_init(url, &init)?)

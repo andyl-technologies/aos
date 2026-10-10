@@ -138,7 +138,7 @@ impl WorkerEgressClient {
         }
         let mut init = RequestInit::new();
         init.with_method(Method::Post)
-            .with_redirect(RequestRedirect::Error)
+            .with_redirect(RequestRedirect::Manual)
             .with_headers(headers)
             .with_body(Some(js_sys::Uint8Array::from(body).into()));
         let request = Request::new_with_init(gateway_url, &init)?;

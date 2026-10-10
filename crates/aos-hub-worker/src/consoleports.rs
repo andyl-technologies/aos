@@ -883,7 +883,7 @@ impl WorkerEgressClient {
         }
         let mut init = RequestInit::new();
         init.with_method(Method::Post)
-            .with_redirect(RequestRedirect::Error)
+            .with_redirect(RequestRedirect::Manual)
             .with_headers(headers);
         if !body.is_empty() {
             let body: JsValue = js_sys::Uint8Array::from(body.as_slice()).into();
