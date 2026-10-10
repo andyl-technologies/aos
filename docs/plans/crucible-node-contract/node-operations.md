@@ -125,3 +125,49 @@ gem5/clock profile uses `node native-capture`, `node native-restore`, and
 `node native-status`; its owning actor retains original pending operations and
 authenticates signed state before constructing fresh native owners. Ordinary
 storage execution does not authorize exact storage restoration.
+
+## Live condition debugging
+
+`debug-start` queues a complete installed world with one condition observer.
+Its JSON request has format `crucible.live-debug-start`, version `1`, the
+original `execution` nonce, the complete node-ordered `selections` array, the
+`observer` node ID and a positive `maximum_physical_cut` encoded as a decimal
+string. The installed scope admits host clocks, scripted sources, Block storage
+and that condition observer. The policy must enroll their immutable base,
+script and condition program through independently expected content references.
+The complete start request is bounded to 1 MiB and 64 selections.
+
+```text
+crucible node debug-start --socket /absolute/private/node-state/node.sock \
+  --request debug-start.json
+crucible node debug-status --socket /absolute/private/node-state/node.sock \
+  --execution 29292929292929292929292929292929
+```
+
+Each command returns the retained original debug record as JSON. Admission is
+asynchronous: `awaiting_admission` precedes an acknowledged `stopped` result.
+The stopped result retains the complete-world cut, original barrier and durable
+condition report. A physical work budget bounds this operation; it does not
+declare scenario EOF or complete scenario-wide assertion evaluation.
+
+Resume uses a separate closed request with format `crucible.live-debug-resume`,
+version `1`, the unchanged `execution`, an original `operation` ID and positive
+`horizon_ps` encoded as a decimal string. The request is bounded to 4 KiB.
+
+```text
+crucible node debug-resume --socket /absolute/private/node-state/node.sock \
+  --request debug-resume.json
+crucible node debug-status --socket /absolute/private/node-state/node.sock \
+  --execution 29292929292929292929292929292929
+```
+
+The owning worker reconciles the original report against current trusted roots
+before native resume. `awaiting_resume` retains the immutable original request;
+`resumed` roots its acknowledged receipt and complete output publication bytes.
+Preserve identical requests for retries. Changed requests refuse, and `unknown`
+retains uncertain custody for reconciliation. A paused world continues to count
+against installed capacity until authenticated native reclamation.
+
+After daemon restart, status reads the same durable history. A historical record
+does not recreate a missing live owner or permit native resume. Cold debug
+restoration requires a separately qualified preservation interface.
