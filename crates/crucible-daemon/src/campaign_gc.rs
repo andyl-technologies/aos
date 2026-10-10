@@ -30,7 +30,12 @@
 mod apply;
 mod journal;
 mod manifest;
+#[cfg(test)]
+pub(crate) mod native_storage;
+mod operation;
+mod physical_inventory;
 mod planner;
+mod reachability;
 mod roots;
 
 #[cfg(target_os = "linux")]
@@ -49,6 +54,8 @@ pub use manifest::{
     CampaignGcCandidate, CampaignGcCandidateManifest, CampaignGcCandidateReason,
     CampaignGcManifestError, CampaignGcRootManifest, MAX_CAMPAIGN_GC_MANIFEST_ENTRIES,
 };
+pub use operation::{CampaignGcMaintenance, CampaignGcOperationContext};
+
 use planner::CampaignGcPhysicalStore;
 #[cfg(test)]
 use planner::CampaignGcRawPhysicalStore;
@@ -70,8 +77,9 @@ use crucible_campaign::{
 };
 use crucible_cas::content_store::{
     BlobInventorySummary, InventoryGeneration, PhysicalStorageIdentity, RefInventoryGeneration,
-    RefInventorySummary,
+    RefInventorySummary, StoreError,
 };
+use std::sync::Arc;
 use thiserror::Error;
 
 #[cfg(target_os = "linux")]
@@ -398,7 +406,8 @@ pub struct CampaignGcPlan {
     observation_roots: u64,
     checkpoint_roots: u64,
     candidates: CampaignGcCandidateSetSummary,
-    physical: Vec<CampaignGcBlobInventoryBasis>,
+    physical: Arc<Vec<CampaignGcBlobInventoryBasis>>,
+    _credit: manifest::OptionalMetadataCredit,
 }
 
 impl CampaignGcPlan {
@@ -458,9 +467,10 @@ impl CampaignGcPlan {
             observation_roots: ledger.observation_roots(),
             checkpoint_roots: ledger.checkpoint_roots(),
             candidates,
-            physical,
+            physical: Arc::new(physical),
+            _credit: manifest::OptionalMetadataCredit::default(),
         };
-        if plan.canonical_bytes_unchecked()?.len() > MAX_CAMPAIGN_GC_PLAN_BYTES {
+        if plan.canonical_length()? > MAX_CAMPAIGN_GC_PLAN_BYTES {
             return Err(CampaignGcPlanError::PlanTooLarge);
         }
         Ok(plan)
@@ -472,7 +482,10 @@ impl CampaignGcPlan {
     ///
     /// Returns [`CampaignGcPlanError`] for an oversized, truncated,
     /// noncanonical, unsupported, or internally inconsistent header.
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignGcPlanError> {
+    pub fn from_canonical_bytes(
+        bytes: &[u8],
+        operation: &CampaignGcOperationContext<'_>,
+    ) -> Result<Self, CampaignGcPlanError> {
         if bytes.len() > MAX_CAMPAIGN_GC_PLAN_BYTES {
             return Err(CampaignGcPlanError::PlanTooLarge);
         }
@@ -494,12 +507,52 @@ impl CampaignGcPlan {
         if physical_count == 0 || physical_count > MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES {
             return Err(CampaignGcPlanError::InvalidPhysicalInventoryCount);
         }
-        let mut physical = Vec::with_capacity(physical_count);
+        let array_bytes = physical_count
+            .checked_mul(std::mem::size_of::<CampaignGcBlobInventoryBasis>())
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    std::mem::size_of::<Vec<CampaignGcBlobInventoryBasis>>()
+                        + 2 * std::mem::size_of::<usize>(),
+                )
+            })
+            .ok_or(CampaignGcPlanError::CountOverflow)?;
+        let label_bytes = physical_count
+            .checked_mul(MAX_CAMPAIGN_GC_BACKEND_ID_BYTES)
+            .ok_or(CampaignGcPlanError::CountOverflow)?;
+        let credit = operation
+            .reserve_bytes(
+                u64::try_from(
+                    array_bytes
+                        .checked_add(label_bytes)
+                        .ok_or(CampaignGcPlanError::CountOverflow)?,
+                )
+                .map_err(|_| CampaignGcPlanError::CountOverflow)?,
+            )
+            .map_err(|source| CampaignGcPlanError::Resources(Arc::new(source)))?;
+        let mut physical = Vec::new();
+        physical
+            .try_reserve_exact(physical_count)
+            .map_err(|source| {
+                CampaignGcPlanError::Resources(Arc::new(StoreError::Supervision {
+                    source: Box::new(source),
+                }))
+            })?;
         for _ in 0..physical_count {
             let backend_length = usize::from(cursor.u16()?);
-            let backend = std::str::from_utf8(cursor.take(backend_length)?)
-                .map_err(|_| CampaignGcPlanError::InvalidBackendId)?
-                .to_owned();
+            if backend_length == 0 || backend_length > MAX_CAMPAIGN_GC_BACKEND_ID_BYTES {
+                return Err(CampaignGcPlanError::InvalidBackendId);
+            }
+            let encoded_backend = std::str::from_utf8(cursor.take(backend_length)?)
+                .map_err(|_| CampaignGcPlanError::InvalidBackendId)?;
+            let mut backend = String::new();
+            backend
+                .try_reserve_exact(backend_length)
+                .map_err(|source| {
+                    CampaignGcPlanError::Resources(Arc::new(StoreError::Supervision {
+                        source: Box::new(source),
+                    }))
+                })?;
+            backend.push_str(encoded_backend);
             let basis = CampaignGcBlobInventoryBasis::new(
                 backend,
                 PhysicalStorageIdentity::from_bytes(cursor.fixed()?),
@@ -525,10 +578,9 @@ impl CampaignGcPlan {
             CampaignGcCandidateSetSummary::new(candidate_id, candidate_count, candidate_bytes),
             physical,
         )?;
-        if plan.canonical_bytes()? != bytes {
-            return Err(CampaignGcPlanError::Noncanonical);
-        }
-        Ok(plan)
+        // The closed cursor, exact scalar widths and validated sorted backend
+        // roster admit a single encoding; no second heap encoding is needed.
+        Ok(plan.with_credit(manifest::MetadataCredit::new(credit)))
     }
 
     /// Encodes this plan's exact canonical header.
@@ -537,8 +589,22 @@ impl CampaignGcPlan {
     ///
     /// Returns [`CampaignGcPlanError::PlanTooLarge`] if an internal length
     /// cannot be represented within the canonical format bounds.
-    pub fn canonical_bytes(&self) -> Result<Vec<u8>, CampaignGcPlanError> {
-        self.canonical_bytes_unchecked()
+    pub fn canonical_bytes(
+        &self,
+        operation: &CampaignGcOperationContext<'_>,
+    ) -> Result<CampaignGcPlanBytes, CampaignGcPlanError> {
+        let length = self.canonical_length()?;
+        if length > MAX_CAMPAIGN_GC_PLAN_BYTES {
+            return Err(CampaignGcPlanError::PlanTooLarge);
+        }
+        let credit = operation
+            .reserve_array::<u8>(length)
+            .map_err(|source| CampaignGcPlanError::Resources(Arc::new(source)))?;
+        let bytes = self.canonical_bytes_unchecked()?;
+        Ok(CampaignGcPlanBytes {
+            bytes,
+            _credit: manifest::MetadataCredit::new(credit),
+        })
     }
 
     /// Returns the content-derived canonical plan identity.
@@ -548,9 +614,18 @@ impl CampaignGcPlan {
     /// Returns [`CampaignGcPlanError::PlanTooLarge`] if encoding unexpectedly
     /// exceeds the canonical format bounds.
     pub fn id(&self) -> Result<CampaignGcPlanId, CampaignGcPlanError> {
-        Ok(CampaignGcPlanId(CampaignHash::derive(
-            GC_PLAN_ID_DOMAIN,
-            &self.canonical_bytes()?,
+        let mut hasher = blake3::Hasher::new();
+        const IDENTITY_DOMAIN: &[u8] = b"crucible.campaign.identity.v1";
+        hasher.update(&(IDENTITY_DOMAIN.len() as u64).to_be_bytes());
+        hasher.update(IDENTITY_DOMAIN);
+        hasher.update(&(GC_PLAN_ID_DOMAIN.len() as u64).to_be_bytes());
+        hasher.update(GC_PLAN_ID_DOMAIN.as_bytes());
+        hasher.update(&(self.canonical_length()? as u64).to_be_bytes());
+        self.visit_canonical(&mut |bytes| {
+            hasher.update(bytes);
+        })?;
+        Ok(CampaignGcPlanId(CampaignHash::from_bytes(
+            *hasher.finalize().as_bytes(),
         )))
     }
 
@@ -614,43 +689,92 @@ impl CampaignGcPlan {
         &self.physical
     }
 
-    fn canonical_bytes_unchecked(&self) -> Result<Vec<u8>, CampaignGcPlanError> {
-        let mut bytes = Vec::with_capacity(MAX_CAMPAIGN_GC_PLAN_BYTES.min(1024));
-        bytes.extend_from_slice(GC_PLAN_MAGIC);
-        bytes.extend_from_slice(&self.store_graph.as_bytes());
-        bytes.extend_from_slice(&self.root_set.as_hash().as_bytes());
-        bytes.extend_from_slice(&self.ref_generation.as_bytes());
-        bytes.extend_from_slice(&self.refs.to_be_bytes());
-        bytes.extend_from_slice(&self.ledger_generation.as_bytes());
-        bytes.extend_from_slice(&self.attempt_records.to_be_bytes());
-        bytes.extend_from_slice(&self.observation_roots.to_be_bytes());
-        bytes.extend_from_slice(&self.checkpoint_roots.to_be_bytes());
-        bytes.extend_from_slice(&self.candidates.id().as_hash().as_bytes());
-        bytes.extend_from_slice(&self.candidates.candidates().to_be_bytes());
-        bytes.extend_from_slice(&self.candidates.logical_bytes().to_be_bytes());
+    fn with_credit(mut self, credit: manifest::MetadataCredit) -> Self {
+        self._credit = manifest::OptionalMetadataCredit::new(credit);
+        self
+    }
+
+    fn canonical_length(&self) -> Result<usize, CampaignGcPlanError> {
+        let mut length = 0_usize;
+        self.visit_canonical(&mut |bytes| {
+            length = length.saturating_add(bytes.len());
+        })?;
+        Ok(length)
+    }
+
+    fn visit_canonical(&self, visit: &mut dyn FnMut(&[u8])) -> Result<(), CampaignGcPlanError> {
+        visit(GC_PLAN_MAGIC);
+        visit(&self.store_graph.as_bytes());
+        visit(&self.root_set.as_hash().as_bytes());
+        visit(&self.ref_generation.as_bytes());
+        visit(&self.refs.to_be_bytes());
+        visit(&self.ledger_generation.as_bytes());
+        visit(&self.attempt_records.to_be_bytes());
+        visit(&self.observation_roots.to_be_bytes());
+        visit(&self.checkpoint_roots.to_be_bytes());
+        visit(&self.candidates.id().as_hash().as_bytes());
+        visit(&self.candidates.candidates().to_be_bytes());
+        visit(&self.candidates.logical_bytes().to_be_bytes());
         let physical_count =
             u16::try_from(self.physical.len()).map_err(|_| CampaignGcPlanError::PlanTooLarge)?;
-        bytes.extend_from_slice(&physical_count.to_be_bytes());
-        for basis in &self.physical {
+        visit(&physical_count.to_be_bytes());
+        for basis in self.physical.iter() {
             let backend_length = u16::try_from(basis.backend().len())
                 .map_err(|_| CampaignGcPlanError::PlanTooLarge)?;
-            bytes.extend_from_slice(&backend_length.to_be_bytes());
-            bytes.extend_from_slice(basis.backend().as_bytes());
-            bytes.extend_from_slice(&basis.storage_identity().as_bytes());
-            bytes.extend_from_slice(&basis.generation().as_bytes());
-            bytes.extend_from_slice(&basis.objects().to_be_bytes());
-            bytes.extend_from_slice(&basis.logical_bytes().to_be_bytes());
+            visit(&backend_length.to_be_bytes());
+            visit(basis.backend().as_bytes());
+            visit(&basis.storage_identity().as_bytes());
+            visit(&basis.generation().as_bytes());
+            visit(&basis.objects().to_be_bytes());
+            visit(&basis.logical_bytes().to_be_bytes());
         }
-        if bytes.len() > MAX_CAMPAIGN_GC_PLAN_BYTES {
+        Ok(())
+    }
+
+    fn canonical_bytes_unchecked(&self) -> Result<Vec<u8>, CampaignGcPlanError> {
+        let length = self.canonical_length()?;
+        if length > MAX_CAMPAIGN_GC_PLAN_BYTES {
             return Err(CampaignGcPlanError::PlanTooLarge);
         }
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(length).map_err(|source| {
+            CampaignGcPlanError::Resources(Arc::new(StoreError::Supervision {
+                source: Box::new(source),
+            }))
+        })?;
+        self.visit_canonical(&mut |part| bytes.extend_from_slice(part))?;
         Ok(bytes)
     }
 }
 
+/// Canonical GC header bytes retained with their original metadata credit.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CampaignGcPlanBytes {
+    bytes: Vec<u8>,
+    _credit: manifest::MetadataCredit,
+}
+
+impl CampaignGcPlanBytes {
+    /// Borrows the exact canonical header without detaching its credit.
+    #[must_use]
+    pub fn as_slice(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl std::ops::Deref for CampaignGcPlanBytes {
+    type Target = [u8];
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
 /// Failure to construct or decode one canonical generation-bound GC plan.
-#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+#[derive(Clone, Debug, Error)]
 pub enum CampaignGcPlanError {
+    /// Original metadata admission or a checked allocation failed.
+    #[error("campaign GC plan resource admission failed")]
+    Resources(#[source] Arc<StoreError>),
     /// A backend identifier violates the canonical grammar or bound.
     #[error("campaign GC plan backend identifier is invalid")]
     InvalidBackendId,
@@ -679,6 +803,18 @@ pub enum CampaignGcPlanError {
     #[error("campaign GC plan encoding is noncanonical")]
     Noncanonical,
 }
+
+impl PartialEq for CampaignGcPlanError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Resources(left), Self::Resources(right)) => Arc::ptr_eq(left, right),
+            (Self::Resources(_), _) | (_, Self::Resources(_)) => false,
+            _ => std::mem::discriminant(self) == std::mem::discriminant(other),
+        }
+    }
+}
+
+impl Eq for CampaignGcPlanError {}
 
 fn validate_backend_id(value: &str) -> Result<(), CampaignGcPlanError> {
     let valid = !value.is_empty()
@@ -771,3 +907,6 @@ pub(crate) fn publish_retained_finding_fixture(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) use tests::operation::ComponentGcOperation;

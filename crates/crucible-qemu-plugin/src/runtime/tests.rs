@@ -37,6 +37,7 @@ fn eventfd_identity_token_accepts_kernel_zero_and_rejects_overflow() -> std::io:
 }
 
 mod coverage_cases;
+mod parent_park_cases;
 mod reservation_cases;
 
 struct PanickingPostRegistrationFatalPolicy;
@@ -142,7 +143,7 @@ fn run_control_worker_rejects_unsolicited_run_frame_with_fail_loud_shutdown() {
     CONTROL_WORKER_SHUTDOWN_CALLS.store(0, Ordering::SeqCst);
     CONTROL_WORKER_DONE_BEFORE_SHUTDOWN.store(false, Ordering::SeqCst);
     host.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
-        proto_version: 3,
+        proto_version: crucible_protocol::CONTROL_PROTOCOL_VERSION,
         abi_version: 25,
         slot_index: 0,
         node_count: 1,
@@ -414,7 +415,7 @@ fn running_plugin_control_pair() -> (UnixStream, ControlLifecycleStream<UnixStre
     let mut plugin = ControlLifecycleStream::connected_unix_stream(plugin_socket)
         .unwrap_or_else(|error| panic!("plugin lifecycle should connect: {error}"));
     host.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
-        proto_version: 3,
+        proto_version: crucible_protocol::CONTROL_PROTOCOL_VERSION,
         abi_version: 25,
         slot_index: 0,
         node_count: 1,
@@ -422,7 +423,7 @@ fn running_plugin_control_pair() -> (UnixStream, ControlLifecycleStream<UnixStre
     .unwrap_or_else(|error| panic!("HelloAck should write: {error}"));
     plugin
         .plugin_start_handshake(PluginHandshakeConfig {
-            proto_version: 3,
+            proto_version: crucible_protocol::CONTROL_PROTOCOL_VERSION,
             abi_version: 25,
         })
         .unwrap_or_else(|error| panic!("plugin handshake should complete: {error}"));
@@ -436,6 +437,8 @@ fn running_plugin_control_pair() -> (UnixStream, ControlLifecycleStream<UnixStre
         host.as_raw_fd(),
         4096,
         SetupDescriptorFds {
+            process_generation: 1,
+            device_digest_workspace: None,
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
             plugin_setup_plan_fd: shmem.as_raw_fd(),
@@ -506,6 +509,8 @@ fn install_expecting_post_registration_fatal<R>(
 where
     R: OwnedCallbackRegistrar,
 {
+    reservation.startup_source_model =
+        Some(crate::startup_source::test_support::InstallerStartupSourceModel::ready());
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         install_live_runtime_with_fatal_policy(
             plugin_id,
@@ -967,6 +972,78 @@ impl OwnedCallbackRegistrar for PartiallyPanickingCallbackRegistrar {
     }
 }
 
+fn assert_source_refusal_before_registration(
+    model: Option<crate::startup_source::test_support::InstallerStartupSourceModel>,
+    expected: crate::StartupSourceError,
+) {
+    let _runtime_state = isolate_runtime_state_for_test();
+    reset_capability_call_counts();
+    let fixture = LiveInstallFixture::new();
+    let host = fixture.spawn_host_until_setup();
+    let registrar = RecordingSuccessfulCallbackRegistrar::new();
+    let mut reservation = reserve_runtime()
+        .unwrap_or_else(|error| panic!("fixture runtime reservation failed: {error:?}"));
+    reservation.startup_source_model = model;
+
+    let error = install_live_runtime(
+        73,
+        fixture.args(),
+        test_capabilities(),
+        &registrar,
+        &mut reservation,
+    )
+    .err()
+    .unwrap_or_else(|| panic!("Source refusal must prevent installation"));
+    join_host(host);
+
+    assert!(matches!(
+        error,
+        PluginRuntimeInstallError::StartupSource { source } if source == expected
+    ));
+    assert_eq!(registrar.state_address.get(), 0);
+    assert_eq!(wake_registration_count(), 0);
+    assert!(reservation.startup_source_model.is_none());
+    let original = reservation
+        .startup_source
+        .as_ref()
+        .unwrap_or_else(|| panic!("Source refusal must retain the received plan owner"));
+    assert!(original.acquire_was_attempted_for_test());
+    let descriptor = original
+        .plan_fd()
+        .unwrap_or_else(|error| panic!("Source refusal lost the retained plan: {error:?}"))
+        .as_raw_fd();
+    // SAFETY: this inspects the exact retained fixture plan owner after refusal.
+    assert!(unsafe { libc::fcntl(descriptor, libc::F_GETFD) } >= 0);
+    fixture.assert_control_silent();
+
+    drop(reservation);
+    // SAFETY: these explicit fixture paths have no native borrower. The same
+    // retained descriptor was not closed by failed-owner containment.
+    assert!(unsafe { libc::fcntl(descriptor, libc::F_GETFD) } >= 0);
+    // SAFETY: the preceding inspection proved this fixture retained the unique fd; no native borrower exists.
+    assert_eq!(unsafe { libc::close(descriptor) }, 0);
+}
+
+#[test]
+fn modeled_source_refusal_precedes_wake_and_callback_registration() {
+    assert_source_refusal_before_registration(
+        Some(
+            crate::startup_source::test_support::InstallerStartupSourceModel::refused_acquisition(),
+        ),
+        crate::StartupSourceError::NativeStatus { status: -229 },
+    );
+}
+
+#[test]
+fn unmodeled_install_keeps_unavailable_native_source_refusal() {
+    assert_source_refusal_before_registration(
+        None,
+        crate::StartupSourceError::Unavailable {
+            symbol: "qemu_plugin_crucible_startup_source_acquire_v1",
+        },
+    );
+}
+
 #[test]
 fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     let _runtime_state = isolate_runtime_state_for_test();
@@ -975,6 +1052,9 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     let host = fixture.spawn_host(SETUP_ACK_STATUS_READY);
     let mut reservation =
         reserve_runtime().unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
+    reservation.startup_source_model =
+        Some(crate::startup_source::test_support::InstallerStartupSourceModel::ready());
+
     let runtime = install_live_runtime(
         41,
         fixture.args(),
@@ -1121,11 +1201,11 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     );
     assert_eq!(
         std::mem::size_of::<crate::QemuPluginHotForkChildPlan>(),
-        152
+        200
     );
     assert_eq!(
         std::mem::size_of::<crate::QemuPluginHotForkChildStatus>(),
-        136
+        184
     );
     assert_eq!(
         std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, parent_process_generation),
@@ -1278,6 +1358,9 @@ fn live_install_seals_the_optional_fingerprint_worker() {
     let host = fixture.spawn_host(SETUP_ACK_STATUS_READY);
     let mut reservation =
         reserve_runtime().unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
+    reservation.startup_source_model =
+        Some(crate::startup_source::test_support::InstallerStartupSourceModel::ready());
+
     let runtime = install_live_runtime(
         42,
         fixture.fingerprint_args(),
@@ -1352,10 +1435,16 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
                 fault_commands: crate::fault_command::QemuFaultCommandApis::test_stub(),
                 request_shutdown: test_request_shutdown,
             },
-        ),
+        )
+        // This fixture observes I/O callback registration without native RAM.
+        // The RAM capture tests supply their own complete native page stream.
+        .with_test_ram_observer_installer(|| Ok(())),
     };
     let mut reservation =
         reserve_runtime().unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
+    reservation.startup_source_model =
+        Some(crate::startup_source::test_support::InstallerStartupSourceModel::ready());
+
     let runtime = install_live_runtime(
         51,
         fixture.args(),
@@ -1649,14 +1738,21 @@ fn production_registrar_installs_default_block_ninep_and_network_families() {
     capabilities.register_block = Some(capture_block_registration);
     capabilities.register_block_wait = Some(capture_block_wait_registration);
     capabilities.register_ninep = Some(capture_ninep_registration);
-    let callback_registrar = FailClosedOwnedCallbackRegistrar::production(
+    let mut callback_registrar = FailClosedOwnedCallbackRegistrar::production(
         54,
         execution_model,
         crate::QemuPluginTargetArchitecture::X86_64,
         &capabilities,
     );
+    // This I/O registration fixture has no native guest RAM image.
+    callback_registrar.live_vcpu_time = callback_registrar
+        .live_vcpu_time
+        .with_test_ram_observer_installer(|| Ok(()));
     let mut reservation =
         reserve_runtime().unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
+
+    reservation.startup_source_model =
+        Some(crate::startup_source::test_support::InstallerStartupSourceModel::ready());
 
     let runtime = install_live_runtime(
         54,
@@ -1838,4 +1934,83 @@ fn handshake_failure_marks_the_singleton_failed_before_second_install_attempt() 
         Err(PluginRuntimeInstallError::RuntimeAlreadyReserved)
     ));
     join_host(host);
+}
+
+#[test]
+fn device_workspace_private_layout_preserves_prefix_and_appends_fixed_fields() {
+    println!(
+        "QemuPluginHotForkChildPlan={}",
+        std::mem::size_of::<crate::QemuPluginHotForkChildPlan>()
+    );
+    assert_eq!(
+        std::mem::size_of::<crate::QemuPluginHotForkChildPlan>(),
+        200
+    );
+
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, account_generation),
+        152
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, workspace_generation),
+        160
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, workspace_device),
+        168
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, workspace_inode),
+        176
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, workspace_length),
+        184
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, workspace_fd),
+        192
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, workspace_reserved),
+        196
+    );
+
+    println!(
+        "QemuPluginHotForkChildStatus={}",
+        std::mem::size_of::<crate::QemuPluginHotForkChildStatus>()
+    );
+    assert_eq!(
+        std::mem::size_of::<crate::QemuPluginHotForkChildStatus>(),
+        184
+    );
+
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, account_generation),
+        136
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, workspace_generation),
+        144
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, workspace_device),
+        152
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, workspace_inode),
+        160
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, workspace_length),
+        168
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, workspace_fd),
+        176
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, workspace_reserved),
+        180
+    );
 }

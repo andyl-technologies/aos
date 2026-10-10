@@ -80,6 +80,12 @@ pub struct FaultObservation {
 }
 
 impl FaultObservation {
+    /// Borrows stable observation material without intermediate owned strings.
+    #[must_use]
+    pub fn canonical_display(&self) -> impl std::fmt::Display + '_ {
+        ObservationDisplay(self)
+    }
+
     /// Returns the stable material authenticated by event-log entries.
     #[must_use]
     pub fn canonical_material(&self) -> String {
@@ -114,5 +120,50 @@ impl FaultObservation {
             format!("evidence={}", self.evidence.to_hex()),
         ]
         .join("\n")
+    }
+}
+
+struct ObservationDisplay<'a>(&'a FaultObservation);
+
+impl std::fmt::Display for ObservationDisplay<'_> {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let observation = self.0;
+        write!(
+            output,
+            "semantic_version={}\nkind={}\ncoordinate.virtual_ticks={}\ncoordinate.retired_instructions=",
+            observation.semantic_version,
+            observation.kind.as_str(),
+            observation.coordinate.virtual_ticks
+        )?;
+        match observation.coordinate.retired_instructions {
+            Some(value) => write!(output, "{value}"),
+            None => output.write_str("none"),
+        }?;
+        write!(
+            output,
+            "\nbinding={}\ntarget=",
+            observation
+                .binding
+                .as_ref()
+                .map_or("none", |value| value.as_str())
+        )?;
+        match &observation.target {
+            Some(value) => write!(output, "{}", value.canonical_display()),
+            None => output.write_str("none"),
+        }?;
+        output.write_str("\nopportunity=")?;
+        match observation.opportunity {
+            Some(value) => {
+                for byte in value.bytes {
+                    write!(output, "{byte:02x}")?;
+                }
+            }
+            None => output.write_str("none")?,
+        }
+        output.write_str("\nevidence=")?;
+        for byte in observation.evidence.bytes {
+            write!(output, "{byte:02x}")?;
+        }
+        Ok(())
     }
 }

@@ -15,9 +15,8 @@ use super::materialization::{
     PreparedRootOverlayMaterialization,
 };
 use super::{
-    AttemptResourceBinding, QemuChildCredentials, QemuChildProcessContract,
-    QemuGuardedExactRamInput, QemuSpawnError, invalid_input, validate_guarded_launch_requirements,
-    validate_guarded_launch_resources,
+    AttemptResourceBinding, QemuChildCredentials, QemuChildProcessContract, QemuSpawnError,
+    invalid_input, validate_guarded_launch_requirements, validate_guarded_launch_resources,
 };
 use crate::QemuLaunchCommand;
 use crate::launch::{
@@ -68,7 +67,7 @@ pub struct QemuPreparedRunDirectory {
     pub(super) exact_checkpoint_materialization: PreparedExactCheckpointMaterialization,
     pub(super) exact_checkpoint_target:
         Option<crucible::exact_checkpoint::ExactCheckpointVerifiedNode>,
-    pub(super) exact_ram_inputs: Vec<QemuGuardedExactRamInput>,
+    ram_launch_custody: Option<crate::QemuRamLaunchCustody>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,6 +98,30 @@ impl PinnedFileIdentity {
 }
 
 impl QemuPreparedRunDirectory {
+    /// Retains launch admission until this directory's physical handles close.
+    ///
+    /// The capability shares custody with the target and staged transports; it
+    /// does not change storage identity, capacity, or guest state.
+    ///
+    /// # Errors
+    /// Refuses replacement with a different launch while physical handles live.
+    pub fn retain_ram_launch_custody(
+        &mut self,
+        custody: crate::QemuRamLaunchCustody,
+    ) -> Result<(), QemuSpawnError> {
+        if self
+            .ram_launch_custody
+            .as_ref()
+            .is_some_and(|existing| !existing.same_launch(&custody))
+        {
+            return Err(invalid_input(
+                "retain RAM launch custody",
+                "prepared directory belongs to another RAM launch",
+            ));
+        }
+        self.ram_launch_custody = Some(custody);
+        Ok(())
+    }
     /// Opens a prepared directory from an explicit resource profile for tests.
     ///
     /// This constructor exercises the same descriptor pinning and resource
@@ -218,7 +241,7 @@ impl QemuPreparedRunDirectory {
             exact_device_state_materialization: PreparedDeviceStateMaterialization::Provisioned,
             exact_checkpoint_materialization: PreparedExactCheckpointMaterialization::Absent,
             exact_checkpoint_target: None,
-            exact_ram_inputs: Vec::new(),
+            ram_launch_custody: None,
         })
     }
 

@@ -70,8 +70,9 @@ pkgs.mkDerivation {
         require_present 'source=two-running-one-permanently-failed' "$atomic"
         require_present 'io=block,ninep' "$atomic"
         require_present 'native_resource_isolation=memfd,eventfd,writable-qcow2-root,serial' "$atomic"
-        require_present 'native_negative_isolation_matrix=private-ring-omitted,qmp-control-aliased,console-diagnostics-aliased,writable-disk-backing-aliased,network-omitted,ninep-aliased,host-continuation-identity-aliased' "$atomic"
-        require_present 'native_negative_isolation_rejected_before=child-readiness,resume,world-publication' "$atomic"
+        require_present 'native_negative_isolation_matrix=private-ring-source-aliased,plugin-control-source-aliased,plugin-wake-source-aliased,console-diagnostic-source-aliased,writable-vmstate-source-aliased,network-reader-ring-scope-aliased,ninep-reader-ring-scope-aliased' "$atomic"
+        require_present 'native_negative_isolation_rejected_before=native-fork,child-readiness,resume,world-publication' "$atomic"
+        require_present 'native_negative_isolation_mechanisms=authenticated-pidfd-getfd,native-stage-query,monitor-closefd,host-reader-guard' "$atomic"
         require_present 'native_real_resource_alias_rejected_before=child-readiness,world-publication' "$atomic"
         require_present 'final_resource_audit=process,descriptors,memory,attempt-storage,content-store' "$atomic"
         # The unregistered and unbound mapping checks reject invented proofs;

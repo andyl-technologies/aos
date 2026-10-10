@@ -14,6 +14,9 @@ fn install_coverage_on_owns_callback_model_registration() {
     let mut reservation =
         reserve_runtime().unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
 
+    reservation.startup_source_model =
+        Some(crate::startup_source::test_support::InstallerStartupSourceModel::ready());
+
     let runtime = install_live_runtime(
         0xC0E0,
         fixture.coverage_args(),

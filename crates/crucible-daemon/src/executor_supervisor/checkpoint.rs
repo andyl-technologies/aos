@@ -7,6 +7,34 @@ where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
+    /// Selects an exact root only after its durable paused promotion reconciled.
+    ///
+    /// This read issues storage custody without admitting another execution.
+    /// A pending promotion basis cannot be treated as a reconciled source.
+    ///
+    /// # Errors
+    /// Returns the typed ledger error when the paused state cannot be read.
+    pub(crate) fn select_reconciled_paused_checkpoint_root(
+        &self,
+        key: AttemptExecutionKey,
+        expected: ExactCheckpointId,
+    ) -> Result<Option<SelectedExactCheckpointRoot>, LocalExecutorError<L::Error>> {
+        let state = self
+            .ledger
+            .load_attempt(key)
+            .map_err(LocalExecutorError::Ledger)?;
+        match state {
+            Some(AttemptRuntimeState::Paused {
+                checkpoint,
+                promotion_basis: None,
+                ..
+            }) if checkpoint == expected => Ok(Some(
+                SelectedExactCheckpointRoot::after_durable_checkpoint(checkpoint),
+            )),
+            _ => Ok(None),
+        }
+    }
+
     /// Durably requests one exact checkpoint before signaling the worker.
     ///
     /// The operational state transition is committed first. A crash after the

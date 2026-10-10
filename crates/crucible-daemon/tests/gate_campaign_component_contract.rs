@@ -45,7 +45,7 @@ use crucible_cas::content_store::{
 };
 
 use crucible_daemon::{
-    AssignmentLedgerError, AttemptExecutionProduct, AttemptResultStageOutcome, AttemptWorkResult,
+    AssignmentLedgerError, AttemptExecutionProduct, AttemptResultStageOutcome,
     CampaignLoopbackServer, CampaignLoopbackServerConfig, CrucibleCampaignArtifactStore,
     DirectoryAssignmentLedger, ExactCheckpointStore, ExecutorCapacity,
     LocalExecutorCapabilityService, LocalExecutorError, LocalExecutorSupervisor,

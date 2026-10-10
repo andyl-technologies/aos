@@ -123,12 +123,12 @@ fn assert_spsc_ring_exhaustive_ordering_model(required: &[SpscProperty]) {
     let failures = model_check_publish_before_read(rfc_orderings);
     assert!(
         failures.is_empty(),
-        "RFC 13.6 publish/acquire ordering admitted failures: {failures:?}"
+        "release-publication/acquire-consumption ordering admitted failures: {failures:?}"
     );
     let failures = model_check_free_before_overwrite(rfc_orderings);
     assert!(
         failures.is_empty(),
-        "RFC 13.6 free/acquire ordering admitted failures: {failures:?}"
+        "release-free/acquire-reuse ordering admitted failures: {failures:?}"
     );
 
     let relaxed_everywhere = RingOrderings::relaxed_everywhere();

@@ -499,7 +499,30 @@ fn executor_capability_service(
         BTreeSet::from([String::from("deterministic-tcg")]),
         BTreeSet::from([ExecutorMaterializationCapability::ThinReplay]),
         2,
-        resources,
+        crucible_campaign::ExecutorResourceBounds::new(
+            crucible_campaign::ExecutorHostResources {
+                resident_peak_bytes: 4194304,
+                backing_peak_bytes: 2097152,
+                metadata_bytes: 256,
+                staging_bytes: 256,
+                paging_io_slots: 2,
+                cpu_slots: 8,
+                task_slots: 130,
+                file_descriptors: 256,
+            },
+            crucible_campaign::ExecutorHostResources {
+                resident_peak_bytes: 2097152,
+                backing_peak_bytes: 1048576,
+                metadata_bytes: 128,
+                staging_bytes: 128,
+                paging_io_slots: 1,
+                cpu_slots: 4,
+                task_slots: 65,
+                file_descriptors: 128,
+            },
+            resources,
+        )
+        .expect("authored complete fixture resource bounds"),
         BTreeSet::from([CampaignHash::derive("test", store_label)]),
     )
     .expect("executor capabilities");
@@ -509,9 +532,15 @@ fn executor_capability_service(
         MemoryAssignmentLedger::default(),
         AllowAllAttemptAdmission,
         epoch,
-        ExecutorCapacity::new(2, 4, 1024 * 1024, 1024 * 1024, 10_000).expect("executor capacity"),
+        ExecutorCapacity::new(2, 8, 4 * 1024 * 1024, 2 * 1024 * 1024, 10_000)
+            .expect("executor capacity"),
     );
-    LocalExecutorCapabilityService::new(supervisor, description).expect("capability service")
+    crate::executor_capability::test_support::capability_service(
+        supervisor,
+        description,
+        1024 * 1024,
+    )
+    .expect("capability service")
 }
 
 fn executor_pair(lineage: &CampaignLineage) -> (UnixStream, thread::JoinHandle<()>) {
@@ -603,7 +632,10 @@ impl ExecutorCapabilityService for BlockingDescribeExecutorService {
 fn runtime_attachment_requires_writable_component_authority_before_executor_io() {
     let (_directory, config) = fixture();
     let prepared = config
-        .prepare()
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
         .expect("prepare service without authorities");
     let (executor, mut peer) = UnixStream::pair().expect("executor stream pair");
     assert!(matches!(
@@ -623,7 +655,12 @@ fn runtime_attachment_requires_writable_component_authority_before_executor_io()
         config.server(),
     )
     .expect("read-only service configuration");
-    let prepared = read_only.prepare().expect("prepare read-only service");
+    let prepared = read_only
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare read-only service");
     let (executor, mut peer) = UnixStream::pair().expect("executor stream pair");
     assert!(matches!(
         prepared.prepare_runtime(executor, &runtime_config()),
@@ -637,7 +674,12 @@ fn runtime_attachment_requires_writable_component_authority_before_executor_io()
 fn multi_runtime_bind_rejects_an_empty_set_before_endpoint_mutation() {
     let (_directory, config) = fixture();
     let socket = config.endpoint().path().to_owned();
-    let prepared = config.prepare().expect("prepare service");
+    let prepared = config
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare service");
 
     assert!(matches!(
         prepared.bind_with_runtimes(Vec::new()),
@@ -655,7 +697,12 @@ fn multi_runtime_bind_sorts_unique_campaigns_and_joins_every_runtime() {
         .with_component_authority_path(&authority)
         .expect("component authority path");
     let socket = config.endpoint().path().to_owned();
-    let prepared = config.prepare().expect("prepare service");
+    let prepared = config
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare service");
     let lineage = create_runtime_campaign(&prepared.repository, "alpha");
     assert_eq!(
         create_runtime_campaign(&prepared.repository, "beta"),
@@ -694,7 +741,12 @@ fn multi_runtime_bind_sorts_unique_campaigns_and_joins_every_runtime() {
 #[test]
 fn packaged_runtime_discovery_authenticates_and_orders_the_complete_catalog() {
     let (_directory, config) = fixture();
-    let prepared = config.prepare().expect("prepare service");
+    let prepared = config
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare service");
     assert!(matches!(
         prepared.discover_packaged_campaigns(),
         Err(CampaignLocalServiceError::InvalidRuntimeCount)
@@ -722,7 +774,12 @@ fn packaged_executor_pool_serves_and_joins_two_campaign_runtimes() {
         .with_component_authority_path(&authority)
         .expect("component authority path");
     let campaign_socket = config.endpoint().path().to_owned();
-    let prepared = config.prepare().expect("prepare service");
+    let prepared = config
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare service");
     let alpha_lineage = create_runtime_campaign_for_scenario(
         &prepared.repository,
         "alpha",
@@ -755,6 +812,11 @@ fn packaged_executor_pool_serves_and_joins_two_campaign_runtimes() {
         metadata.uid().checked_add(1).expect("child user ID"),
         metadata.gid().checked_add(1).expect("child group ID"),
         32,
+        TEST_HOST_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_TASKS,
+        TEST_HOST_SERVICE_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_RESIDENT_BYTES,
+        TEST_WATCHER_SERVICE_RESIDENT_BYTES,
         1024,
         Duration::from_secs(1),
     )
@@ -769,8 +831,9 @@ fn packaged_executor_pool_serves_and_joins_two_campaign_runtimes() {
         directory.path().join("executor-ledger"),
         1024 * 1024,
         DaemonEpoch::from_bytes([0x61; 16]).expect("daemon epoch"),
-        ExecutorCapacity::new(2, 2, 512 * 1024 * 1024, 1024 * 1024 * 1024, 50_000)
+        ExecutorCapacity::new(2, 10, 2560 * 1024 * 1024, 5 * 1024 * 1024 * 1024, 250_000)
             .expect("executor capacity"),
+        fixture_host_operational_capacity(),
         2,
         "x86_64",
         "deterministic-tcg-v1",
@@ -778,7 +841,54 @@ fn packaged_executor_pool_serves_and_joins_two_campaign_runtimes() {
         ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state"),
         host,
     )
-    .expect("packaged executor configuration");
+    .expect("packaged executor configuration")
+    .with_host_operation_budgets(crucible_api::host_operational::HostOperationBudgets {
+        classes: [crucible_api::host_operational::HostOperationBudget::finite(Duration::from_secs(
+            300,
+        )); crucible_api::host_operational::HostOperationClass::ALL.len()],
+    })
+    .expect("explicit finite bootstrap fixture roster for every host operation")
+    .with_ram_catalog(fixture_ram_catalog_config(&directory))
+    .expect("authored retained RAM catalog policy")
+    .with_operational_registry_resources(crucible_api::host_operational::HostResourceVector {
+        resident_peak_bytes: 128 * 1024 * 1024,
+        backing_peak_bytes: 16 * 1024 * 1024,
+        metadata_bytes: 64 * 1024 * 1024,
+        staging_bytes: 8 * 1024 * 1024,
+        paging_io_slots: 1,
+        cpu_slots: 1,
+        task_slots: 1,
+        file_descriptors: 128,
+    })
+    .expect("explicit independently charged operator registry service")
+    .with_operational_registry_quota(31000, 65536)
+    .expect("explicit distinct component registry project and inode entitlement")
+    .with_assignment_resources(
+        crucible_api::host_operational::HostResourceVector {
+            resident_peak_bytes: 513 * 1024 * 1024,
+            backing_peak_bytes: 1024 * 1024 * 1024,
+            metadata_bytes: 128 * 1024 * 1024,
+            staging_bytes: 16 * 1024 * 1024,
+            paging_io_slots: 1,
+            cpu_slots: 2,
+            task_slots: 37,
+            file_descriptors: 1056,
+        },
+        AttemptResourceLimits::new(2, 512 * 1024 * 1024, 1024 * 1024 * 1024, 50_000)
+            .expect("original assignment request limits"),
+    )
+    .expect("authored assignment resource ceiling")
+    .with_retained_template_resources(crucible_api::host_operational::HostResourceVector {
+        resident_peak_bytes: 513 * 1024 * 1024,
+        backing_peak_bytes: 1024 * 1024 * 1024,
+        metadata_bytes: 128 * 1024 * 1024,
+        staging_bytes: 16 * 1024 * 1024,
+        paging_io_slots: 1,
+        cpu_slots: 2,
+        task_slots: 37,
+        file_descriptors: 1056,
+    })
+    .expect("independent full-world replay Service ceiling");
     let packaged = crate::packaged_qemu_executor::compose_packaged_qemu_executor_for_scenarios(
         crate::packaged_qemu_executor::PackagedQemuExecutorStorage::new(
             Arc::clone(&prepared.repository),
@@ -843,7 +953,12 @@ fn multi_runtime_bind_rejects_duplicate_campaigns_before_endpoint_mutation() {
         .with_component_authority_path(&authority)
         .expect("component authority path");
     let socket = config.endpoint().path().to_owned();
-    let prepared = config.prepare().expect("prepare service");
+    let prepared = config
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare service");
     let lineage = create_runtime_campaign(&prepared.repository, "attached");
 
     let (first_executor, first_server) = executor_pair(&lineage);
@@ -873,7 +988,12 @@ fn authenticated_post_bind_attachment_replays_without_executor_io() {
         .with_component_authority_path(&authority)
         .expect("component authority path");
     let socket = config.endpoint().path().to_owned();
-    let prepared = config.prepare().expect("prepare service");
+    let prepared = config
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare service");
     let lineage = create_runtime_campaign(&prepared.repository, "dynamic");
     let prepared = prepared
         .with_runtime_control(named_runtime_config("dynamic").planner_process().clone())
@@ -964,7 +1084,12 @@ fn service_shutdown_waits_for_reserved_attachment_and_rejects_its_late_install()
     let config = config
         .with_component_authority_path(&authority)
         .expect("component authority path");
-    let prepared = config.prepare().expect("prepare service");
+    let prepared = config
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare service");
     let lineage = create_runtime_campaign(&prepared.repository, "closing");
     let service = prepared.bind().expect("bind service without runtimes");
     let attachments = service.runtime_attachment_handle();
@@ -1130,7 +1255,12 @@ fn finding_export_authorizer_admits_only_ledger_reads() {
 #[test]
 fn stopped_owner_finding_read_rejects_an_ungranted_operation() {
     let (_directory, config) = fixture();
-    let prepared = config.prepare().expect("prepare service");
+    let prepared = config
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare service");
     let principal = prepared
         .campaign_export_principal()
         .expect("resolve effective Unix identity");
@@ -1173,7 +1303,12 @@ campaign = "*"
     );
     fs::write(config.policy_path(), policy).expect("grant finding query");
 
-    let prepared = config.prepare().expect("prepare service");
+    let prepared = config
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare service");
     let principal = prepared
         .campaign_export_principal()
         .expect("resolve effective Unix identity");
@@ -1206,7 +1341,12 @@ fn absent_finding_snapshot_id() -> CampaignSnapshotId {
 #[test]
 fn durable_service_bootstrap_authenticates_policy_and_restarts_cleanly() {
     let (_directory, config) = fixture();
-    let service = config.open().expect("open local service");
+    let service = config
+        .open(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("open local service");
     let shutdown = service.shutdown_handle();
     let socket = config.endpoint().path().to_owned();
     let server = thread::spawn(move || service.serve().expect("serve local campaign service"));
@@ -1231,7 +1371,12 @@ fn durable_service_bootstrap_authenticates_policy_and_restarts_cleanly() {
     assert_eq!(report.listener().accepted_connections(), 1);
     assert!(!socket.exists());
 
-    let restarted = config.open().expect("restart local service");
+    let restarted = config
+        .open(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("restart local service");
     restarted.shutdown_handle().shutdown();
     restarted.serve().expect("serve pre-stopped restart");
 }
@@ -1247,7 +1392,12 @@ fn repository_lock_excludes_a_second_socket_incarnation() {
     fs::set_permissions(&inventory_path, fs::Permissions::from_mode(0o600))
         .expect("secure debug-session inventory");
 
-    let first = config.open().expect("first local service");
+    let first = config
+        .open(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("first local service");
     let metadata = fs::metadata(directory.path()).expect("directory metadata");
     let second_endpoint = CampaignLoopbackEndpointConfig::new(
         directory.path().join("campaign-second.sock"),
@@ -1265,7 +1415,10 @@ fn repository_lock_excludes_a_second_socket_incarnation() {
     )
     .expect("second config");
     assert!(matches!(
-        second.open(),
+        second.open(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process")
+        ),
         Err(CampaignLocalServiceError::StateInUse)
     ));
     assert!(!second.endpoint().path().exists());
@@ -1374,6 +1527,7 @@ fn external_graph_store(
 ) -> (CampaignLocalRepositoryStore, Arc<StoreGraph>) {
     let root = StoreNodeId::new("campaign-external").expect("external graph node");
     let (graph, maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
+        gc_mark_root: None,
         root: root.clone(),
         admitted_kinds: BTreeSet::from([
             ObjectKind::Scenario,
@@ -1497,6 +1651,9 @@ fn read_only_owner_denies_store_maintenance_with_graph_authority() {
 
 #[test]
 fn prepared_store_gc_authority_plans_journals_and_applies_under_one_owner() {
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+
     let (directory, config) = fixture();
     let (store, graph) = external_graph_store(&directory);
     let orphan_bytes = b"unreachable imported scenario bytes";
@@ -1513,7 +1670,7 @@ fn prepared_store_gc_authority_plans_journals_and_applies_under_one_owner() {
     let mut ledger = MemoryAssignmentLedger::default();
 
     let planned = authority
-        .plan(&mut ledger, None)
+        .plan(&mut ledger, None, &gc_operation)
         .expect("plan stopped-owner GC");
     assert_eq!(planned.roots().len(), 0);
     assert_eq!(planned.candidates().len(), 1);
@@ -1529,6 +1686,7 @@ fn prepared_store_gc_authority_plans_journals_and_applies_under_one_owner() {
     let (mut journal, disposition) = crate::DirectoryCampaignGcJournal::create(
         directory.path().join("owner-gc-journal"),
         &planned,
+        &gc_operation,
     )
     .expect("persist owner GC journal");
     assert_eq!(
@@ -1537,7 +1695,7 @@ fn prepared_store_gc_authority_plans_journals_and_applies_under_one_owner() {
     );
 
     let report = authority
-        .apply(&mut journal, &mut ledger, None)
+        .apply(&mut journal, &mut ledger, None, &gc_operation)
         .expect("apply exact owner GC journal");
     assert_eq!(report.status(), crate::CampaignGcApplyStatus::Applied);
     assert_eq!(journal.phase(), crate::CampaignGcJournalPhase::Complete);
@@ -1546,11 +1704,22 @@ fn prepared_store_gc_authority_plans_journals_and_applies_under_one_owner() {
 
 #[test]
 fn prepared_store_gc_automatically_inventories_registered_transfer_journal() {
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+
     let (_source_directory, source_config) = fixture();
     let (_destination_directory, destination_config) = fixture();
-    let mut source = source_config.prepare().expect("prepare source service");
+    let mut source = source_config
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare source service");
     let mut destination = destination_config
-        .prepare()
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
         .expect("prepare destination service");
     create_runtime_campaign(&source.repository, "source");
     let source_head = source.repository.head("source").expect("source head");
@@ -1596,7 +1765,7 @@ fn prepared_store_gc_automatically_inventories_registered_transfer_journal() {
     let source_gc = source
         .store_gc_authority()
         .expect("source GC authority")
-        .plan(&mut source_ledger, None)
+        .plan(&mut source_ledger, None, &gc_operation)
         .expect("plan source GC with transfer roots");
     for id in &transfer_objects {
         assert!(
@@ -1609,7 +1778,7 @@ fn prepared_store_gc_automatically_inventories_registered_transfer_journal() {
     let destination_gc = destination
         .store_gc_authority()
         .expect("destination GC authority")
-        .plan(&mut destination_ledger, None)
+        .plan(&mut destination_ledger, None, &gc_operation)
         .expect("plan destination GC with transfer roots");
     for id in transfer_objects {
         assert!(
@@ -1621,6 +1790,9 @@ fn prepared_store_gc_automatically_inventories_registered_transfer_journal() {
 
 #[test]
 fn prepared_store_gc_automatically_retains_durable_hot_fallbacks_across_restart() {
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+
     let (directory, config) = fixture();
     let (store, graph) = external_graph_store(&directory);
     let prepared = config
@@ -1670,7 +1842,7 @@ fn prepared_store_gc_automatically_retains_durable_hot_fallbacks_across_restart(
     let planned = restarted
         .store_gc_authority()
         .expect("borrow restarted GC authority")
-        .plan(&mut ledger, None)
+        .plan(&mut ledger, None, &gc_operation)
         .expect("plan restarted GC with fallback");
     assert!(
         planned
@@ -1687,6 +1859,7 @@ fn prepared_store_gc_automatically_retains_durable_hot_fallbacks_across_restart(
     let (mut journal, disposition) = crate::DirectoryCampaignGcJournal::create(
         directory.path().join("hot-fallback-restart-gc-journal"),
         &planned,
+        &gc_operation,
     )
     .expect("persist restarted hot-fallback GC journal");
     assert_eq!(
@@ -1697,7 +1870,7 @@ fn prepared_store_gc_automatically_retains_durable_hot_fallbacks_across_restart(
     let report = restarted
         .store_gc_authority()
         .expect("borrow restarted GC authority for apply")
-        .apply(&mut journal, &mut ledger, None)
+        .apply(&mut journal, &mut ledger, None, &gc_operation)
         .expect("apply restarted GC with hot fallback");
     assert_eq!(report.status(), crate::CampaignGcApplyStatus::Applied);
     assert!(
@@ -1740,12 +1913,14 @@ fn external_store_rejects_foreign_graph_maintenance_authority() {
     let directory = tempdir().expect("external store directory");
     let node = StoreNodeId::new("campaign-memory").expect("memory graph node");
     let config = StoreGraphConfig {
+        gc_mark_root: None,
         root: node.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
         nodes: BTreeMap::from([(
             node,
             StoreNodeSpec::Memory {
                 max_logical_bytes: 1024,
+                max_objects: 16,
             },
         )]),
     };
@@ -1776,6 +1951,7 @@ fn managed_service_retains_ref_maintenance_authority_for_its_lifetime() {
     let (directory, config) = fixture();
     let root = StoreNodeId::new("campaign-maintained").expect("maintained graph node");
     let (graph, maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
+        gc_mark_root: None,
         root: root.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
         nodes: BTreeMap::from([(
@@ -1817,6 +1993,7 @@ fn managed_store_maintenance_flushes_write_back_and_stops_promptly() {
     let destination = StoreNodeId::new("maintained-destination").expect("destination node");
     let destination_root = directory.path().join("maintained-destination");
     let (graph, maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
+        gc_mark_root: None,
         root: write_back.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
         nodes: BTreeMap::from([
@@ -1912,6 +2089,7 @@ fn managed_store_maintenance_failure_stops_the_service_with_exact_operation() {
     let root = StoreNodeId::new("failing-maintenance-s3").expect("S3 node");
     let (graph, maintenance) = StoreGraph::build_with_admin_and_all_capabilities(
         StoreGraphConfig {
+            gc_mark_root: None,
             root: root.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
             nodes: BTreeMap::from([(
@@ -1930,6 +2108,7 @@ fn managed_store_maintenance_failure_stops_the_service_with_exact_operation() {
         &StoreGraphObjectProfilers::new(),
         &StoreGraphPhysicalQuotaBinders::new(),
         &clients,
+        None,
     )
     .expect("failing maintained S3 graph");
     let refs = Arc::new(DirectoryRefBackend::new(
@@ -1978,6 +2157,7 @@ fn managed_store_maintenance_round_robins_and_resumes_exact_s3_cursors() {
     let second = StoreNodeId::new("paged-s3-b").expect("second S3 node");
     let (graph, maintenance) = StoreGraph::build_with_admin_and_all_capabilities(
         StoreGraphConfig {
+            gc_mark_root: None,
             root: root.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
             nodes: BTreeMap::from([
@@ -2014,6 +2194,7 @@ fn managed_store_maintenance_round_robins_and_resumes_exact_s3_cursors() {
         &StoreGraphObjectProfilers::new(),
         &StoreGraphPhysicalQuotaBinders::new(),
         &clients,
+        None,
     )
     .expect("paged maintained S3 graph");
     let refs = Arc::new(DirectoryRefBackend::new(
@@ -2052,3 +2233,57 @@ fn managed_store_maintenance_round_robins_and_resumes_exact_s3_cursors() {
 }
 
 mod deployment_contracts;
+
+// These are explicit operational test entitlements, independent of guest vCPUs
+// and per-cgroup task limits; production deployments must supply their own.
+fn fixture_host_operational_capacity() -> crate::HostOperationalCapacity {
+    const PAGING_IO_SLOTS: u64 = 16;
+    const HOST_TASK_SLOTS: u64 = 1024;
+    const HOST_FILE_DESCRIPTORS: u64 = 16_384;
+    const HOST_METADATA_BYTES: u64 = 768 * 1024 * 1024;
+    const HOST_STAGING_BYTES: u64 = 128 * 1024 * 1024;
+    crate::HostOperationalCapacity::new(
+        PAGING_IO_SLOTS,
+        HOST_TASK_SLOTS,
+        HOST_FILE_DESCRIPTORS,
+        HOST_METADATA_BYTES,
+        HOST_STAGING_BYTES,
+    )
+    .expect("explicit finite operational fixture capacity")
+}
+
+// Fixture policy reserves an explicit finite descriptor ceiling independently of vCPU count.
+#[cfg(test)]
+const TEST_HOST_FILE_DESCRIPTORS: u64 = 1_024;
+
+// Host-side pager workers and sockets have independent finite fixture entitlements.
+#[cfg(test)]
+const TEST_HOST_SERVICE_TASKS: u64 = 4;
+#[cfg(test)]
+const TEST_HOST_SERVICE_FILE_DESCRIPTORS: u64 = 32;
+
+// Operational services retain their own authored memory budgets outside QEMU.
+#[cfg(test)]
+const TEST_HOST_SERVICE_RESIDENT_BYTES: u64 = 8 * 1024 * 1024;
+#[cfg(test)]
+const TEST_WATCHER_SERVICE_RESIDENT_BYTES: u64 = 1024 * 1024;
+
+fn fixture_ram_catalog_config(directory: &tempfile::TempDir) -> crate::PackagedRamCatalogConfig {
+    crate::PackagedRamCatalogConfig::new(
+        directory.path().join("ram-catalogs"),
+        40000,
+        262144,
+        crucible_api::host_operational::HostResourceVector {
+            resident_peak_bytes: 128 * 1024 * 1024,
+            backing_peak_bytes: 512 * 1024 * 1024,
+            metadata_bytes: 64 * 1024 * 1024,
+            staging_bytes: 8 * 1024 * 1024,
+            paging_io_slots: 1,
+            cpu_slots: 1,
+            task_slots: 1,
+            file_descriptors: 128,
+        },
+        8 * 1024 * 1024,
+    )
+    .expect("explicit component catalog service and independent physical quota")
+}

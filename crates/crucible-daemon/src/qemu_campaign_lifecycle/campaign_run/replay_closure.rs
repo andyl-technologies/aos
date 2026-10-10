@@ -24,6 +24,9 @@ use crucible_campaign::{
 };
 use thiserror::Error;
 
+mod prefix_failure;
+pub use prefix_failure::SchedulePrefixFailure;
+
 const REPLAY_CLOSURE_MAGIC: &[u8; 8] = b"CCRC\0\0\0\x01";
 const MAX_REPLAY_CLOSURE_SELECTIONS: usize = 65_536;
 const MAX_REPLAY_CLOSURE_BYTES: usize = 128 * 1024 * 1024;
@@ -207,15 +210,20 @@ impl GuardedCampaignReplayClosure {
             record.validate_references()?;
             charge_selection_record(&mut encoded_bytes, &record)?;
             let selection = record.selection.id()?;
+            crucible::owned_decode::charge_btree_entry::<
+                SelectionId,
+                GuardedCampaignReplaySelection,
+            >()?;
             if by_selection.insert(selection, record).is_some() {
                 return Err(GuardedCampaignReplayClosureError::Invalid {
                     reason: "replay closure contains a duplicate selection",
                 });
             }
         }
-        Ok(Self {
-            selections: by_selection.into_values().collect(),
-        })
+        let mut selections = Vec::new();
+        crucible::owned_decode::reserve_vec(&mut selections, by_selection.len())?;
+        selections.extend(by_selection.into_values());
+        Ok(Self { selections })
     }
 
     #[cfg(test)]
@@ -259,7 +267,10 @@ impl GuardedCampaignReplayClosure {
                 reason: "selection count cannot be represented",
             }
         })?;
-        let mut bytes = Vec::from(REPLAY_CLOSURE_MAGIC.as_slice());
+        let length = self.canonical_encoded_len()?;
+        let mut bytes = Vec::new();
+        crucible::owned_decode::reserve_vec(&mut bytes, length)?;
+        append_bytes(&mut bytes, REPLAY_CLOSURE_MAGIC)?;
         append_bytes(&mut bytes, &count.to_le_bytes())?;
         for record in &self.selections {
             append_record(&mut bytes, &record.domain.canonical_bytes())?;
@@ -268,6 +279,49 @@ impl GuardedCampaignReplayClosure {
             append_record(&mut bytes, &record.selection.canonical_bytes())?;
         }
         Ok(bytes)
+    }
+
+    /// Encodes the exact closure under the caller's original metadata account.
+    ///
+    /// The returned custody retains aggregate and temporary body loans. Its
+    /// owner keeps that custody alongside the bytes until their final drop.
+    /// Admission uses actual canonical lengths, never the format's maximum.
+    ///
+    /// # Errors
+    /// Refuses absent or exhausted original authority, allocation failure,
+    /// malformed records, or a closure exceeding its canonical format bound.
+    pub fn to_canonical_bytes_admitted(
+        &self,
+    ) -> Result<(Vec<u8>, crucible::owned_decode::DecodeCustody), GuardedCampaignReplayClosureError>
+    {
+        let custody = crucible::owned_decode::require_current_custody()?;
+        let bytes = self.to_canonical_bytes()?;
+        Ok((bytes, custody))
+    }
+
+    /// Returns the exact canonical closure length without allocating its body.
+    ///
+    /// # Errors
+    /// Refuses record-size overflow or an encoded closure exceeding its bound.
+    pub fn canonical_encoded_len(&self) -> Result<usize, GuardedCampaignReplayClosureError> {
+        let mut length = REPLAY_CLOSURE_MAGIC.len() + std::mem::size_of::<u32>();
+        for record in &self.selections {
+            for body in [
+                record.domain.canonical_encoded_len()?,
+                record.declaration.canonical_encoded_len()?,
+                record.opportunity.canonical_encoded_len()?,
+                record.selection.canonical_encoded_len()?,
+            ] {
+                length = length
+                    .checked_add(std::mem::size_of::<u32>())
+                    .and_then(|length| length.checked_add(body))
+                    .filter(|length| *length <= MAX_REPLAY_CLOSURE_BYTES)
+                    .ok_or(GuardedCampaignReplayClosureError::Invalid {
+                        reason: "replay closure exceeds its encoded byte bound",
+                    })?;
+            }
+        }
+        Ok(length)
     }
 
     /// Decodes and authenticates one canonical replay closure.
@@ -294,9 +348,7 @@ impl GuardedCampaignReplayClosure {
             });
         }
         let mut records = Vec::new();
-        records
-            .try_reserve(count)
-            .map_err(GuardedCampaignReplayClosureError::Allocation)?;
+        crucible::owned_decode::reserve_vec(&mut records, count)?;
         for _ in 0..count {
             records.push(GuardedCampaignReplaySelection {
                 domain: ChoiceDomain::from_canonical_bytes(decoder.read_record()?)?,
@@ -340,11 +392,15 @@ impl GuardedCampaignReplayClosure {
         let scenario_id = crucible_campaign::ScenarioDefId::from_hash(CampaignHash::from_bytes(
             scenario.id().bytes,
         ));
-        let records = self
-            .selections
-            .iter()
-            .map(|record| Ok((record.selection.id()?, record)))
-            .collect::<Result<BTreeMap<_, _>, GuardedCampaignReplayClosureError>>()?;
+        let mut records = BTreeMap::new();
+        for record in &self.selections {
+            let identity = record.selection.id()?;
+            crucible::owned_decode::charge_btree_entry::<
+                SelectionId,
+                &GuardedCampaignReplaySelection,
+            >()?;
+            records.insert(identity, record);
+        }
         let mut used = BTreeSet::new();
 
         for (index, decision) in schedule.decisions().iter().enumerate() {
@@ -385,7 +441,15 @@ impl GuardedCampaignReplayClosure {
                     selection.validate_replay(&record.opportunity, &record.domain)?;
                 }
                 SelectionOrigin::CampaignBranch { .. } => {
-                    let prefix = schedule.prefix(index)?;
+                    let failure = SchedulePrefixFailure::prepare()?;
+                    let prefix = schedule.prefix_admitted(index).map_err(|error| {
+                        if let crucible::EngineError::ArtifactDecodeAdmission { source } = &error
+                            && let Some(original) = crucible::owned_decode::current_budget()
+                        {
+                            original.record_failure(source.clone());
+                        }
+                        GuardedCampaignReplayClosureError::Model(failure.retain(error))
+                    })?;
                     let parent = Configuration {
                         def: scenario.scenario_def(),
                         schedule: prefix,
@@ -413,7 +477,10 @@ impl GuardedCampaignReplayClosure {
                     })?;
                 }
             }
-            used.insert(selection_id);
+            if !used.contains(&selection_id) {
+                crucible::owned_decode::charge_btree_set_entry::<SelectionId>()?;
+                used.insert(selection_id);
+            }
         }
         if used.len() != records.len() {
             return Err(GuardedCampaignReplayClosureError::Invalid {
@@ -487,10 +554,16 @@ fn charge_resolved_selection(
     encoded_bytes: &mut usize,
     resolved: &ResolvedSelection,
 ) -> Result<(), GuardedCampaignReplayClosureError> {
-    charge_canonical_record(encoded_bytes, resolved.domain().canonical_bytes())?;
-    charge_canonical_record(encoded_bytes, resolved.declaration().canonical_bytes())?;
-    charge_canonical_record(encoded_bytes, resolved.opportunity().canonical_bytes())?;
-    charge_canonical_record(encoded_bytes, resolved.selection().canonical_bytes())?;
+    charge_canonical_record(encoded_bytes, resolved.domain().canonical_encoded_len()?)?;
+    charge_canonical_record(
+        encoded_bytes,
+        resolved.declaration().canonical_encoded_len()?,
+    )?;
+    charge_canonical_record(
+        encoded_bytes,
+        resolved.opportunity().canonical_encoded_len()?,
+    )?;
+    charge_canonical_record(encoded_bytes, resolved.selection().canonical_encoded_len()?)?;
     Ok(())
 }
 
@@ -498,20 +571,20 @@ fn charge_selection_record(
     encoded_bytes: &mut usize,
     record: &GuardedCampaignReplaySelection,
 ) -> Result<(), GuardedCampaignReplayClosureError> {
-    charge_canonical_record(encoded_bytes, record.domain.canonical_bytes())?;
-    charge_canonical_record(encoded_bytes, record.declaration.canonical_bytes())?;
-    charge_canonical_record(encoded_bytes, record.opportunity.canonical_bytes())?;
-    charge_canonical_record(encoded_bytes, record.selection.canonical_bytes())?;
+    charge_canonical_record(encoded_bytes, record.domain.canonical_encoded_len()?)?;
+    charge_canonical_record(encoded_bytes, record.declaration.canonical_encoded_len()?)?;
+    charge_canonical_record(encoded_bytes, record.opportunity.canonical_encoded_len()?)?;
+    charge_canonical_record(encoded_bytes, record.selection.canonical_encoded_len()?)?;
     Ok(())
 }
 
 fn charge_canonical_record(
     encoded_bytes: &mut usize,
-    record: Vec<u8>,
+    record_bytes: usize,
 ) -> Result<(), GuardedCampaignReplayClosureError> {
     *encoded_bytes = encoded_bytes
         .checked_add(std::mem::size_of::<u32>())
-        .and_then(|bytes| bytes.checked_add(record.len()))
+        .and_then(|bytes| bytes.checked_add(record_bytes))
         .ok_or(GuardedCampaignReplayClosureError::Invalid {
             reason: "replay closure encoded size overflowed",
         })?;
@@ -568,6 +641,9 @@ impl GuardedCampaignReplaySelection {
 /// Failure while encoding, decoding, or authenticating a replay closure.
 #[derive(Debug, Error)]
 pub enum GuardedCampaignReplayClosureError {
+    /// The original metadata account refused an owned replay encoding.
+    #[error("campaign replay closure metadata admission failed: {0}")]
+    Metadata(#[from] crucible::owned_decode::DecodeAdmissionError),
     /// The remote envelope uses a closure schema this daemon does not understand.
     #[error("unsupported campaign replay closure schema version {actual}; expected {expected}")]
     UnsupportedSchema {
@@ -585,6 +661,9 @@ pub enum GuardedCampaignReplayClosureError {
     /// A schedule prefix could not be reconstructed canonically.
     #[error("campaign replay closure schedule is invalid: {0}")]
     Schedule(#[from] crucible::ScheduleError),
+    /// Admitting a complete schedule prefix failed before its allocation.
+    #[error("campaign replay closure modeled prefix is invalid: {0}")]
+    Model(#[source] SchedulePrefixFailure),
     /// Publishing or resolving a closure record failed.
     #[error("campaign replay closure repository operation failed: {0}")]
     Repository(#[from] CampaignRepositoryError),
@@ -620,6 +699,9 @@ fn append_record(
     output: &mut Vec<u8>,
     record: &[u8],
 ) -> Result<(), GuardedCampaignReplayClosureError> {
+    if let Some(budget) = crucible::owned_decode::current_budget() {
+        budget.check()?;
+    }
     let length =
         u32::try_from(record.len()).map_err(|_| GuardedCampaignReplayClosureError::Invalid {
             reason: "replay closure record length cannot be represented",
@@ -719,12 +801,62 @@ impl<'a> ReplayClosureDecoder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crucible::owned_decode::{DecodeAdmissionError, DecodeBudget, DecodeResourceAuthority};
+    use crucible_linux_resource::host_services::HostServiceAllocator;
+    use std::sync::Arc;
+
+    struct FixtureAuthority(HostServiceAllocator);
+
+    impl DecodeResourceAuthority for FixtureAuthority {
+        fn verify_live(&self) -> Result<(), DecodeAdmissionError> {
+            self.0.verify_live().map_err(DecodeAdmissionError::new)
+        }
+
+        fn reserve(
+            &self,
+            bytes: u64,
+        ) -> Result<crucible_cas::owned_decode::ResourceLoan, DecodeAdmissionError> {
+            self.0
+                .reserve_resources(0, 0, bytes)
+                .map(crucible_cas::owned_decode::ResourceLoan::new)
+                .map_err(DecodeAdmissionError::new)
+        }
+    }
+
+    #[test]
+    fn admitted_encoding_refuses_absent_original_authority() {
+        assert!(matches!(
+            GuardedCampaignReplayClosure::empty().to_canonical_bytes_admitted(),
+            Err(GuardedCampaignReplayClosureError::Metadata(_))
+        ));
+    }
+
+    #[test]
+    fn returned_encoding_retains_its_exact_original_account_after_scope_close()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let allocator = HostServiceAllocator::new(1, 1, 4096)?;
+        let budget = DecodeBudget::new(Arc::new(FixtureAuthority(allocator.clone())), 4096)?;
+        let scope = budget.enter();
+        let closure = GuardedCampaignReplayClosure::empty();
+        let (bytes, custody) = closure.to_canonical_bytes_admitted()?;
+        assert_eq!(bytes.len(), closure.canonical_encoded_len()?);
+        assert_eq!(&bytes[..8], REPLAY_CLOSURE_MAGIC);
+
+        drop(scope);
+        drop(budget);
+        assert!(allocator.reserve_resources(0, 0, 4096).is_err());
+
+        drop(bytes);
+        drop(custody);
+        assert!(allocator.reserve_resources(0, 0, 4096).is_ok());
+        Ok(())
+    }
 
     #[test]
     fn collection_charge_includes_record_framing_before_retention() {
         let mut encoded_bytes = MAX_REPLAY_CLOSURE_BYTES - std::mem::size_of::<u32>();
         assert!(matches!(
-            charge_canonical_record(&mut encoded_bytes, vec![0]),
+            charge_canonical_record(&mut encoded_bytes, 1),
             Err(GuardedCampaignReplayClosureError::Invalid {
                 reason: "replay closure exceeds its encoded byte bound"
             })

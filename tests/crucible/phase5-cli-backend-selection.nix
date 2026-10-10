@@ -425,7 +425,7 @@ in
     ];
 
     meta = {
-      description = "RFC-0010 phase 5 CLI backend-selection gate for ${taskList}";
+      description = "Crucible CLI backend-selection gate for ${taskList}";
       passthru = {
         inherit attrPath taskIds openTaskIds dependencies;
         failureText = failureText;

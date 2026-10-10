@@ -188,10 +188,26 @@ fn classify_repository_failure(error: &CampaignRepositoryError) -> PromotionFail
     }
 }
 
+fn classify_event_identity_failure(error: &crucible::EngineError) -> PromotionFailureClass {
+    match error {
+        crucible::EngineError::ArtifactDecodeAdmission { .. } => PromotionFailureClass::Retryable,
+        _ => PromotionFailureClass::Terminal,
+    }
+}
+
 fn classify_preparation_failure(
     error: &PausedCheckpointPromotionPreparationError,
 ) -> PromotionFailureClass {
     match error {
+        PausedCheckpointPromotionPreparationError::EventIdentity(error) => {
+            classify_event_identity_failure(error)
+        }
+        PausedCheckpointPromotionPreparationError::ReplayProof(error) => match error {
+            crate::QemuFreshModeledDriverError::Configuration(error) => {
+                classify_event_identity_failure(error)
+            }
+            _ => PromotionFailureClass::Terminal,
+        },
         PausedCheckpointPromotionPreparationError::ProductionRestore(error) => {
             classify_restore_failure(error)
         }
@@ -234,7 +250,8 @@ fn classify_restore_failure(
 
 fn classify_realization_failure(error: &QemuVmRealizationError) -> PromotionFailureClass {
     match error {
-        QemuVmRealizationError::ExecutorUnavailable { .. } => PromotionFailureClass::Retryable,
+        QemuVmRealizationError::ExecutorUnavailable { .. }
+        | QemuVmRealizationError::ModelCopy { .. } => PromotionFailureClass::Retryable,
         QemuVmRealizationError::Canceled { .. } => PromotionFailureClass::Canceled,
         QemuVmRealizationError::ReapQuarantined { .. }
         | QemuVmRealizationError::Store { .. }
@@ -384,6 +401,26 @@ impl PromotionQueue {
         };
         state.active.remove(&key);
         self.space.notify_all();
+    }
+
+    /// Commits stopping while the real promotion queue remains drained.
+    ///
+    /// # Errors
+    /// Refuses queued or active work, an occupied or poisoned queue lock, or
+    /// the supplied same-owner commit without releasing any work resource.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(super) fn try_stop_quiescent(
+        &self,
+        commit: impl FnOnce() -> Result<(), ()>,
+    ) -> Result<(), ()> {
+        let state = self.state.try_lock().map_err(|_| ())?;
+        if !state.pending.is_empty() || !state.active.is_empty() {
+            return Err(());
+        }
+        commit()?;
+        self.ready.notify_all();
+        self.space.notify_all();
+        Ok(())
     }
 
     pub(super) fn shutdown(&self) {
@@ -779,16 +816,7 @@ fn retire_prepared_native_source<L, V>(
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
-    loop {
-        match prepared.retire_native_source() {
-            Ok(()) => return,
-            Err(error) if error.is_retryable() => {
-                increment(&shared.counters.promotion_retries);
-                thread::sleep(WORKER_RETRY_INTERVAL);
-            }
-            Err(_) => retain_forever(shared, prepared),
-        }
-    }
+    retire_promotion_native_source(shared, prepared.into_native_retirement());
 }
 
 fn retire_staged_native_source<L, V>(
@@ -798,14 +826,27 @@ fn retire_staged_native_source<L, V>(
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
+    retire_promotion_native_source(shared, staged.into_native_retirement());
+}
+
+fn retire_promotion_native_source<L, V>(
+    shared: &SharedExecutor<L, V>,
+    retirement: Option<crucible_api::ProductionExactCheckpointRetirement>,
+) where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    let Some(retirement) = retirement else {
+        return;
+    };
     loop {
-        match staged.retire_native_source() {
-            Ok(()) => return,
+        match crucible_api::retire_production_exact_checkpoint_catalog(&retirement) {
+            Ok(_) => return,
             Err(error) if error.is_retryable() => {
                 increment(&shared.counters.promotion_retries);
                 thread::sleep(WORKER_RETRY_INTERVAL);
             }
-            Err(_) => retain_forever(shared, staged),
+            Err(_) => retain_forever(shared, retirement),
         }
     }
 }

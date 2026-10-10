@@ -91,7 +91,7 @@ impl PluginCallbackCapabilities {
 ///
 /// The recorder accepts only the canonical [`PluginRegistrationStep`] order. A
 /// failed current step records a diagnostic and permanently blocks every later
-/// step, matching the fail-loud registration contract from RFC-0010.
+/// step, preserving fail-closed registration and typed failure reporting.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct PluginRegistrationSequence {
     completed_steps: Vec<PluginRegistrationStep>,
@@ -276,6 +276,32 @@ impl PluginRegistrationSequence {
         self.ensure_next_step(PluginRegistrationStep::MapSharedMemory)?;
         let completion = plugin_prepare_setup_completion(writer, setup, handshake)
             .map_err(|source| self.fail_setup_preparation(source))?;
+        self.record_step_unchecked(PluginRegistrationStep::MapSharedMemory)?;
+        self.record_step_unchecked(PluginRegistrationStep::ArmWakeFd)?;
+        Ok(completion)
+    }
+
+    /// Prepares the received resources while the installer retains the original plan.
+    #[cfg(unix)]
+    pub(crate) fn prepare_setup_completion_under_original<W: Write>(
+        &mut self,
+        writer: &mut W,
+        input: crate::setup::SetupPreparationInput,
+        original: &crate::startup_source::InstallerStartupSource,
+        handshake: PluginControlHandshake,
+    ) -> Result<PluginSetupCompletion, PluginRegistrationSequenceError> {
+        self.ensure_next_step(PluginRegistrationStep::MapSharedMemory)?;
+        let plan = original.plan_fd().map_err(|source| {
+            self.fail_setup_preparation(PluginSetupError::StartupSource { source })
+        })?;
+        let completion = crate::setup::prepare_setup_completion_borrowing_plan(
+            writer,
+            input,
+            plan,
+            Some(original),
+            handshake,
+        )
+        .map_err(|source| self.fail_setup_preparation(source))?;
         self.record_step_unchecked(PluginRegistrationStep::MapSharedMemory)?;
         self.record_step_unchecked(PluginRegistrationStep::ArmWakeFd)?;
         Ok(completion)
@@ -703,8 +729,11 @@ impl PluginRegistrationSequence {
 #[cfg(unix)]
 const fn setup_error_registration_step(source: &PluginSetupError) -> PluginRegistrationStep {
     match source {
-        PluginSetupError::ReceiveSetup { .. } => PluginRegistrationStep::ReceiveSetup,
-        PluginSetupError::InspectSharedMemory { .. }
+        PluginSetupError::ReceiveSetup { .. } | PluginSetupError::DeviceDigestWorkspacePresence => {
+            PluginRegistrationStep::ReceiveSetup
+        }
+        PluginSetupError::StartupSource { .. }
+        | PluginSetupError::InspectSharedMemory { .. }
         | PluginSetupError::MapRegion { .. }
         | PluginSetupError::ValidateRegion { .. }
         | PluginSetupError::ValidatePluginSetupPlan { .. }

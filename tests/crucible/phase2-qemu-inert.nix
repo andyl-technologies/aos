@@ -858,6 +858,15 @@
         ' \
           "$TMPDIR/qmp-terminal-lifecycle-sim-off.json" >/dev/null \
           || fail "terminal lifecycle control command returned an unexpected sim-off error"
+        qmp_cmd_expect_error "$socket" \
+          '{"execute":"query-crucible-paused-cpu","arguments":{"vcpu-index":0}}' \
+          "$TMPDIR/qmp-paused-cpu-sim-off.json" \
+          || fail "patched paused CPU observation sim-off probe failed"
+        jq -e -s '
+          [.[] | select(has("error"))][-1].error.desc
+            == "Paused CPU observation requires an admitted paused SIM boundary"
+        ' "$TMPDIR/qmp-paused-cpu-sim-off.json" >/dev/null \
+          || fail "paused CPU observation returned an unexpected sim-off error"
         qmp_cmd "$socket" '{"execute":"query-status"}' \
           "$TMPDIR/qmp-terminal-lifecycle-sim-off-status-after.json" \
           || fail "patched query-status after terminal lifecycle probe failed"
@@ -867,7 +876,7 @@
         cmp -s \
           "$TMPDIR/qmp-terminal-lifecycle-sim-off-status-before.normalized.json" \
           "$TMPDIR/qmp-terminal-lifecycle-sim-off-status-after.normalized.json" \
-          || fail "terminal lifecycle sim-off probe changed VM run state"
+          || fail "Crucible control sim-off probes changed VM run state"
       else
         if grep -F -x -q -f "$TMPDIR/qmp-patched-only-expected.txt" \
             "$TMPDIR/qmp-command-names-$label.txt"; then
@@ -962,6 +971,7 @@
     crucible-checkpoint-abort
     crucible-checkpoint-capture
     crucible-checkpoint-commit
+    crucible-checkpoint-prepare-topology
     crucible-checkpoint-restore
     crucible-complete-selectable-reply
     crucible-complete-terminal-lifecycle
@@ -975,6 +985,7 @@
     crucible-hot-fork-child-process
     crucible-hot-fork-child-process-contract
     crucible-hot-fork-child-qmp
+    crucible-hot-fork-child-ram
     crucible-hot-fork-cold-stop
     crucible-hot-fork-plugin-barrier
     crucible-hot-fork-plugin-endpoints
@@ -988,6 +999,7 @@
     query-crucible-hot-fork-child-runtime
     query-crucible-hot-fork-cold-stop
     query-crucible-hot-fork-plugin-resource-inventory
+    query-crucible-paused-cpu
     query-crucible-selectable-reply-boundary
     x-crucible-adopt-launch-fdsets
     QMP_PATCHED_ONLY_EXPECTED

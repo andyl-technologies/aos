@@ -21,13 +21,7 @@ fn requested_control_callback_captures_and_acknowledges_each_exact_request() {
         test_fingerprint_capture,
     );
     let state = test_live_state(80, 1, 0, &node_slot)
-        .and_then(|state| {
-            state.attach_fingerprint(
-                sampling,
-                &fingerprint_slot,
-                LiveWorkerQuiescence::new(crate::runtime::worker_quiescence::WORKER_ALL),
-            )
-        })
+        .and_then(|state| attach_test_fingerprint(state, sampling, &fingerprint_slot))
         .unwrap_or_else(|error| panic!("live fingerprint state should build: {error}"));
 
     TEST_FINGERPRINT_CAPTURE_COUNT.set(0);
@@ -132,13 +126,7 @@ fn fingerprint_projection_rejects_an_in_flight_device_before_capture() {
         test_fingerprint_capture,
     );
     let state = test_live_state(81, 1, 0, &node_slot)
-        .and_then(|state| {
-            state.attach_fingerprint(
-                sampling,
-                &fingerprint_slot,
-                LiveWorkerQuiescence::new(crate::runtime::worker_quiescence::WORKER_ALL),
-            )
-        })
+        .and_then(|state| attach_test_fingerprint(state, sampling, &fingerprint_slot))
         .unwrap_or_else(|error| panic!("live fingerprint state should build: {error}"));
 
     TEST_FINGERPRINT_CAPTURE_COUNT.set(0);

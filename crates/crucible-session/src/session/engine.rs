@@ -52,7 +52,7 @@ pub struct Engine<L> {
     pub(super) event_log_len: usize,
     pub(super) quanta: u64,
     pub(super) pending_control: Vec<ControlOperation>,
-    pub(super) pending_event_log_entries: Vec<SchedulerEventLogEntry>,
+    pub(super) pending_event_log_entries: AdmittedEventEntries,
     pub(super) debug_attach: Option<DebugAttachReport>,
     pub(super) debug_coordinator: DebugCoordinator,
     pub(super) debug_branch_required: bool,
@@ -91,7 +91,7 @@ impl<L> Engine<L> {
             event_log_len: 0,
             quanta: 0,
             pending_control: Vec::new(),
-            pending_event_log_entries: Vec::new(),
+            pending_event_log_entries: AdmittedEventEntries::default(),
             debug_attach: None,
             debug_coordinator: DebugCoordinator::new(),
             debug_branch_required: false,
@@ -157,7 +157,7 @@ impl<L> Engine<L> {
             event_log_len: u64_to_usize(runtime.event_log.events),
             quanta: 0,
             pending_control: Vec::new(),
-            pending_event_log_entries: Vec::new(),
+            pending_event_log_entries: AdmittedEventEntries::default(),
             debug_attach: None,
             debug_coordinator: DebugCoordinator::new(),
             debug_branch_required: false,
@@ -540,10 +540,10 @@ impl<L> Engine<L> {
         self.quantum_loop
     }
 
-    pub(super) fn invalid_transition(&self, command: SessionCommand) -> SessionError {
+    pub(super) fn invalid_transition(&self, command: &SessionCommand) -> SessionError {
         SessionError::InvalidTransition {
-            state: Box::new(self.state.clone()),
-            command: Box::new(command),
+            state: LifecycleStateKind::from(&self.state),
+            command: SessionCommandKind::from(command),
         }
     }
 
@@ -771,8 +771,8 @@ impl<L> Engine<L> {
                 });
             }
         }
+        self.pending_event_log_entries.append_copies(&entries)?;
         self.event_log_len = u64_to_usize(expected_event_log_len);
-        self.pending_event_log_entries.extend(entries);
         Ok(())
     }
 
@@ -910,6 +910,7 @@ impl<L> Engine<L> {
                     &prefix,
                     self.breakpoint_host_metadata.oracle_at(self.frontier),
                 )
+                .map_err(SchedulerError::from)?
                 .with_once_latches(self.breakpoints.once_latches(id))
                 .with_white_box_policies(self.white_box_policies.clone())
                 .with_resolved_code_points(self.breakpoint_host_metadata.resolved_code_points())
@@ -917,16 +918,18 @@ impl<L> Engine<L> {
                 if let Some(quiescence) = self.scheduler_quiescence.clone() {
                     pass = pass.with_scheduler_quiescence(quiescence);
                 }
-                let is_true = pass.evaluate_assertion_condition(&spec.predicate);
-                (
+                let is_true = pass
+                    .evaluate_assertion_condition(&spec.predicate)
+                    .map_err(SchedulerError::from)?;
+                Ok::<_, SchedulerError>((
                     id,
                     spec.clone(),
                     was_true,
                     is_true,
                     pass.once_latches().to_vec(),
-                )
+                ))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
 
         for (id, spec, was_true, is_true, once_latches) in evaluations {
             if is_true && !was_true {
@@ -1054,7 +1057,7 @@ impl<L> Engine<L> {
         self.pending_control.len()
     }
 
-    pub(super) fn drain_event_log_entries(&mut self) -> Vec<SchedulerEventLogEntry> {
+    pub(super) fn drain_event_log_entries(&mut self) -> AdmittedEventEntries {
         std::mem::take(&mut self.pending_event_log_entries)
     }
 
@@ -1601,9 +1604,21 @@ impl<L: QuantumLoop> Engine<L> {
     where
         L: QuantumLoop,
     {
-        match &command {
+        self.apply_borrowed_command_with_event_log(&command, event_log)
+    }
+
+    /// Borrows actor-owned requests through their synchronous dispatch.
+    pub(super) fn apply_borrowed_command_with_event_log(
+        &mut self,
+        command: &SessionCommand,
+        event_log: &[SchedulerEventLogEntry],
+    ) -> Result<EngineSnapshot, SessionError>
+    where
+        L: QuantumLoop,
+    {
+        match command {
             SessionCommand::Acknowledge { command, reply } => {
-                let result = self.apply_command_with_event_log((**command).clone(), event_log);
+                let result = self.apply_borrowed_command_with_event_log(command, event_log);
                 match &result {
                     Ok(_) => reply.complete(Ok(())),
                     Err(error) => reply.complete(Err(error.clone())),
@@ -1614,26 +1629,26 @@ impl<L: QuantumLoop> Engine<L> {
                 if matches!(self.state, EngineState::Loaded) {
                     self.instantiate_runtime()
                 } else {
-                    Err(self.invalid_transition(command.clone()))
+                    Err(self.invalid_transition(command))
                 }
             }
             SessionCommand::Continue => {
                 if matches!(self.state, EngineState::Paused { .. }) {
-                    self.reject_debug_forward_without_branch(&command)?;
+                    self.reject_debug_forward_without_branch(command)?;
                     if self.quanta > 0 {
-                        self.record_boundary_control(&command, None);
+                        self.record_boundary_control(command, None);
                     }
                     self.active_step = None;
                     self.state = EngineState::Running;
                     Ok(self.snapshot())
                 } else {
-                    Err(self.invalid_transition(command.clone()))
+                    Err(self.invalid_transition(command))
                 }
             }
             SessionCommand::Pause => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
                     if matches!(self.state, EngineState::Running) {
-                        self.record_boundary_control(&command, None);
+                        self.record_boundary_control(command, None);
                     }
                     self.active_step = None;
                     self.state = EngineState::Paused {
@@ -1642,26 +1657,26 @@ impl<L: QuantumLoop> Engine<L> {
                     Ok(self.snapshot())
                 }
                 EngineState::Loaded | EngineState::Stopped { .. } => {
-                    Err(self.invalid_transition(command.clone()))
+                    Err(self.invalid_transition(command))
                 }
             },
             SessionCommand::Step { mode } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
-                    self.reject_debug_forward_without_branch(&command)?;
-                    self.record_boundary_control(&command, None);
+                    self.reject_debug_forward_without_branch(command)?;
+                    self.record_boundary_control(command, None);
                     self.active_step = Some(ActiveStep::new(*mode, self.frontier));
                     self.state = EngineState::Running;
                     Ok(self.snapshot())
                 }
                 EngineState::Loaded | EngineState::Stopped { .. } => {
-                    Err(self.invalid_transition(command.clone()))
+                    Err(self.invalid_transition(command))
                 }
             },
             SessionCommand::Fork { from, reply } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } | EngineState::Stopped { .. } => {
                     let checkpoint = self.resolve_fork_checkpoint(*from)?;
                     if matches!(self.state, EngineState::Running) {
-                        self.record_boundary_control(&command, None);
+                        self.record_boundary_control(command, None);
                         self.active_step = None;
                         self.state = EngineState::Paused {
                             reason: PauseReason::UserRequested,
@@ -1671,23 +1686,23 @@ impl<L: QuantumLoop> Engine<L> {
                     reply.complete(Ok(handle));
                     Ok(self.snapshot())
                 }
-                EngineState::Loaded => Err(self.invalid_transition(command.clone())),
+                EngineState::Loaded => Err(self.invalid_transition(command)),
             },
             SessionCommand::SetBreakpoint { spec, reply } => match self.state {
                 EngineState::Loaded | EngineState::Running | EngineState::Paused { .. } => {
-                    self.reject_debug_forward_without_branch(&command)?;
+                    self.reject_debug_forward_without_branch(command)?;
                     if matches!(self.state, EngineState::Running) {
-                        self.record_boundary_control(&command, None);
+                        self.record_boundary_control(command, None);
                     }
                     let id = self.breakpoints.insert(spec.clone());
                     reply.complete(Ok(id));
                     Ok(self.snapshot())
                 }
-                EngineState::Stopped { .. } => Err(self.invalid_transition(command.clone())),
+                EngineState::Stopped { .. } => Err(self.invalid_transition(command)),
             },
             SessionCommand::RemoveBreakpoint { id, reply } => match self.state {
                 EngineState::Loaded | EngineState::Running | EngineState::Paused { .. } => {
-                    self.reject_debug_forward_without_branch(&command)?;
+                    self.reject_debug_forward_without_branch(command)?;
                     let removed = self.breakpoints.remove(*id);
                     if !removed {
                         let error = SessionError::BreakpointNotFound { id: *id };
@@ -1695,18 +1710,18 @@ impl<L: QuantumLoop> Engine<L> {
                         return Err(error);
                     }
                     if matches!(self.state, EngineState::Running) {
-                        self.record_boundary_control(&command, None);
+                        self.record_boundary_control(command, None);
                     }
                     reply.complete(Ok(true));
                     Ok(self.snapshot())
                 }
-                EngineState::Stopped { .. } => Err(self.invalid_transition(command.clone())),
+                EngineState::Stopped { .. } => Err(self.invalid_transition(command)),
             },
             SessionCommand::CreateSavepoint { label, reply } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
                     let checkpoint = self.save_current_checkpoint()?;
                     if matches!(self.state, EngineState::Running) {
-                        self.record_boundary_control(&command, None);
+                        self.record_boundary_control(command, None);
                     }
                     reply.complete(Ok(SavepointInfo {
                         label: label.clone(),
@@ -1716,14 +1731,14 @@ impl<L: QuantumLoop> Engine<L> {
                     Ok(self.snapshot())
                 }
                 EngineState::Loaded | EngineState::Stopped { .. } => {
-                    Err(self.invalid_transition(command.clone()))
+                    Err(self.invalid_transition(command))
                 }
             },
             SessionCommand::Stop => {
                 if matches!(self.state, EngineState::Stopped { .. }) {
-                    Err(self.invalid_transition(command.clone()))
+                    Err(self.invalid_transition(command))
                 } else {
-                    self.record_boundary_control(&command, None);
+                    self.record_boundary_control(command, None);
                     self.pending_control.clear();
                     self.active_step = None;
                     self.debug_branch_required = false;
@@ -1735,9 +1750,9 @@ impl<L: QuantumLoop> Engine<L> {
             }
             SessionCommand::ExhaustBudget => {
                 if matches!(self.state, EngineState::Stopped { .. }) {
-                    Err(self.invalid_transition(command.clone()))
+                    Err(self.invalid_transition(command))
                 } else {
-                    self.record_boundary_control(&command, None);
+                    self.record_boundary_control(command, None);
                     self.debug_branch_required = false;
                     self.stop_after_budget_exhaustion()?;
                     Ok(self.snapshot())
@@ -1746,7 +1761,7 @@ impl<L: QuantumLoop> Engine<L> {
             SessionCommand::Query { kind, reply } => {
                 if matches!(self.state, EngineState::Running) {
                     self.admit_control_operation(ControlOperationKind::Query);
-                    self.record_boundary_control(&command, Some(ControlOperationKind::Query));
+                    self.record_boundary_control(command, Some(ControlOperationKind::Query));
                 }
                 let snapshot = self.snapshot();
                 let result = match kind {
@@ -1834,7 +1849,7 @@ impl<L: QuantumLoop> Engine<L> {
                     Ok(self.snapshot())
                 }
                 EngineState::Loaded | EngineState::Stopped { .. } => {
-                    Err(self.invalid_transition(command.clone()))
+                    Err(self.invalid_transition(command))
                 }
             },
             SessionCommand::DebugGoto { request, reply } => match self.state {
@@ -1848,7 +1863,7 @@ impl<L: QuantumLoop> Engine<L> {
                     Ok(self.snapshot())
                 }
                 EngineState::Loaded | EngineState::Stopped { .. } => {
-                    Err(self.invalid_transition(command.clone()))
+                    Err(self.invalid_transition(command))
                 }
             },
             SessionCommand::DebugReverseStep { request, reply } => match self.state {
@@ -1862,7 +1877,7 @@ impl<L: QuantumLoop> Engine<L> {
                     Ok(self.snapshot())
                 }
                 EngineState::Loaded | EngineState::Stopped { .. } => {
-                    Err(self.invalid_transition(command.clone()))
+                    Err(self.invalid_transition(command))
                 }
             },
             SessionCommand::DebugReverseContinue { request, reply } => match self.state {
@@ -1889,7 +1904,7 @@ impl<L: QuantumLoop> Engine<L> {
                     Ok(self.snapshot())
                 }
                 EngineState::Loaded | EngineState::Stopped { .. } => {
-                    Err(self.invalid_transition(command.clone()))
+                    Err(self.invalid_transition(command))
                 }
             },
             SessionCommand::DebugForkNonCanonical { request, reply } => {
@@ -1956,7 +1971,7 @@ impl<L: QuantumLoop> Engine<L> {
                         Ok(self.snapshot())
                     }
                     EngineState::Loaded | EngineState::Stopped { .. } => {
-                        Err(self.invalid_transition(command.clone()))
+                        Err(self.invalid_transition(command))
                     }
                 }
             }
@@ -1976,7 +1991,7 @@ impl<L: QuantumLoop> Engine<L> {
                     Ok(self.snapshot())
                 }
                 EngineState::Loaded | EngineState::Stopped { .. } => {
-                    Err(self.invalid_transition(command.clone()))
+                    Err(self.invalid_transition(command))
                 }
             },
         }
@@ -2002,6 +2017,7 @@ impl<L: QuantumLoop> Engine<L> {
             configuration: self.configuration.clone(),
             control: std::mem::take(&mut self.pending_control),
         })?;
+        let _original = outcome.event_log_custody.enter_decode_scope();
         let current_event_log_len = usize_to_u64(self.event_log_len);
         let emitted_event_log_entries = usize_to_u64(outcome.event_log_entries.len());
         let expected_event_log_len = current_event_log_len
@@ -2027,10 +2043,7 @@ impl<L: QuantumLoop> Engine<L> {
         let step_completion = if let Some(step) = self.active_step.as_ref() {
             Some((
                 step.mode,
-                step.is_complete(&outcome, current_event_log_len)
-                    .map_err(|error| SessionError::BreakpointConditionPrefix {
-                        reason: error.to_string(),
-                    })?,
+                step.is_complete(&outcome, current_event_log_len)?,
             ))
         } else {
             None
@@ -2040,6 +2053,9 @@ impl<L: QuantumLoop> Engine<L> {
             .quantum_loop
             .bind_debug_runtime_evidence(&outcome.configuration, &attached_runtime.runtime)?;
         let runtime = attached_runtime.runtime.clone();
+
+        self.pending_event_log_entries
+            .append_copies(&outcome.event_log_entries)?;
 
         self.configuration = outcome.configuration.clone();
         self.runtime = Some(runtime.clone());
@@ -2055,8 +2071,7 @@ impl<L: QuantumLoop> Engine<L> {
             attach.runtime = attached_runtime;
             attach.reduced_state = runtime.id;
         }
-        self.pending_event_log_entries
-            .extend(outcome.event_log_entries.iter().cloned());
+
         if let Some((mode, true)) = step_completion {
             self.state = EngineState::Paused {
                 reason: PauseReason::StepComplete { mode },

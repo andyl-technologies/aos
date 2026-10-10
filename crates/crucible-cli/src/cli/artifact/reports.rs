@@ -13,6 +13,7 @@ pub(crate) struct ReplayArtifactReport {
     pub(crate) to_savepoint: Option<ReplayToSavepointReport>,
     pub(crate) check: Option<ReplayCheckReport>,
     pub(crate) bisect: Option<ReplayBisectionReport>,
+    pub(crate) _input_custody: Option<crucible_session::engine::owned_decode::DecodeCustody>,
 }
 
 #[derive(Debug)]

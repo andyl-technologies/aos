@@ -2,6 +2,50 @@
 
 use super::*;
 
+// Component fixtures use a local namespace; production uses the admitted owner.
+pub(super) fn open_transient_checkpoint_store(
+    backend: Arc<dyn ImmutableBlobBackend>,
+    maximum_object_bytes: u64,
+    root: &Path,
+) -> Result<ExactCheckpointStore, crucible_daemon::ExactCheckpointStoreError> {
+    let refs = Arc::new(DirectoryRefBackend::new(root.join("refs")));
+    let repository = CampaignRepository::new(
+        backend.clone(),
+        refs,
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
+    let resources = crucible_daemon::component_ram_root_resources()?;
+    Ok(ExactCheckpointStore::new(
+        backend,
+        maximum_object_bytes,
+        repository.ram_retention_authority(),
+    )?
+    .with_ram_root_resources(resources))
+}
+
+pub(super) fn complete_transient_checkpoint_workflow<T>(
+    checkpoints: Arc<ExactCheckpointStore>,
+    checkpoint_directory: tempfile::TempDir,
+    checkpoint_root: &Path,
+    result: Result<T, CliError>,
+) -> Result<T, CliError> {
+    drop(checkpoints);
+    let cleanup = checkpoint_directory.close().map_err(|error| {
+        campaign_run_error(
+            &format!(
+                "remove transient exact checkpoint store {}",
+                checkpoint_root.display()
+            ),
+            error,
+        )
+    });
+    match (result, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+    }
+}
+
 pub(super) fn default_run_plan() -> RunInvocationPlan {
     let cli = Cli::parse_from(["crucible", "run", "builtin:happy-path.scn"]);
     let Commands::Run(args) = &cli.command else {
@@ -24,12 +68,17 @@ fn determinism_policy_request() -> GuardedDefaultCampaignRunRequest {
         65_529,
         65_529,
         16,
+        TEST_HOST_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_TASKS,
+        TEST_HOST_SERVICE_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_RESIDENT_BYTES,
+        TEST_WATCHER_SERVICE_RESIDENT_BYTES,
         1_024,
         Duration::from_secs(1),
     )
     .or_panic("campaign policy fixture host configuration");
 
-    GuardedDefaultCampaignRunRequest::new(
+    GuardedDefaultCampaignRunRequest::new_component(
         scenario.clone(),
         scenario.scenario_def().seed(),
         "campaign-policy-test-engine",
@@ -232,8 +281,12 @@ pub(super) fn try_resume_campaign_fixture(
         checkpoint_root.clone(),
     ));
     let checkpoints = Arc::new(
-        ExactCheckpointStore::new(exact_backend, resources.maximum_disk_bytes())
-            .or_panic("exact checkpoint store"),
+        open_transient_checkpoint_store(
+            exact_backend,
+            resources.maximum_disk_bytes(),
+            &checkpoint_root,
+        )
+        .or_panic("exact checkpoint store"),
     );
     let host = LinuxQemuAttemptHostConfig::new(
         "/sys/fs/cgroup/crucible-campaign-resume-projection-test",
@@ -244,11 +297,16 @@ pub(super) fn try_resume_campaign_fixture(
         65_529,
         65_529,
         16,
+        TEST_HOST_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_TASKS,
+        TEST_HOST_SERVICE_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_RESIDENT_BYTES,
+        TEST_WATCHER_SERVICE_RESIDENT_BYTES,
         1_024,
         Duration::from_secs(1),
     )
     .or_panic("fixture host configuration");
-    let request = GuardedDefaultCampaignRunRequest::new(
+    let request = GuardedDefaultCampaignRunRequest::new_component(
         evidence.scenario_form.clone(),
         evidence.scenario.seed(),
         "campaign-resume-projection-test-engine",
@@ -360,11 +418,16 @@ pub(super) fn capture_only_remote_observation_factory(
             checkpoint_directory.path().to_path_buf(),
         ));
         let checkpoints = Arc::new(
-            ExactCheckpointStore::new(exact_backend, resources.maximum_disk_bytes()).map_err(
-                |error| crucible_api::LifecycleApiError::ResumeObservationSource {
+            open_transient_checkpoint_store(
+                exact_backend,
+                resources.maximum_disk_bytes(),
+                checkpoint_directory.path(),
+            )
+            .map_err(|error| {
+                crucible_api::LifecycleApiError::ResumeObservationSource {
                     message: format!("open test remote checkpoint store: {error}"),
-                },
-            )?,
+                }
+            })?,
         );
         let host = LinuxQemuAttemptHostConfig::new(
             "/sys/fs/cgroup/crucible-remote-observation-test",
@@ -375,6 +438,11 @@ pub(super) fn capture_only_remote_observation_factory(
             65_528,
             65_528,
             16,
+            TEST_HOST_FILE_DESCRIPTORS,
+            TEST_HOST_SERVICE_TASKS,
+            TEST_HOST_SERVICE_FILE_DESCRIPTORS,
+            TEST_HOST_SERVICE_RESIDENT_BYTES,
+            TEST_WATCHER_SERVICE_RESIDENT_BYTES,
             1_024,
             Duration::from_secs(1),
         )
@@ -383,7 +451,7 @@ pub(super) fn capture_only_remote_observation_factory(
                 message: format!("configure test remote host: {error}"),
             },
         )?;
-        let campaign_request = GuardedDefaultCampaignRunRequest::new(
+        let campaign_request = GuardedDefaultCampaignRunRequest::new_component(
             request.scenario.clone(),
             request.seed,
             "remote-observation-test-engine",
@@ -452,3 +520,14 @@ pub(super) fn capture_only_remote_observation_factory(
         })
     }
 }
+
+// Fixture policy reserves an explicit finite descriptor ceiling independently of vCPU count.
+const TEST_HOST_FILE_DESCRIPTORS: u64 = 1_024;
+
+// Host-side pager workers and sockets have independent finite fixture entitlements.
+const TEST_HOST_SERVICE_TASKS: u64 = 4;
+const TEST_HOST_SERVICE_FILE_DESCRIPTORS: u64 = 32;
+
+// Operational services retain their own authored memory budgets outside QEMU.
+const TEST_HOST_SERVICE_RESIDENT_BYTES: u64 = 8 * 1024 * 1024;
+const TEST_WATCHER_SERVICE_RESIDENT_BYTES: u64 = 1024 * 1024;

@@ -342,6 +342,12 @@
       safeWrapperContract = [];
     }
     {
+      package = "crucible-ram";
+      root = "src/lib.rs";
+      unsafeBoundary = false;
+      safeWrapperContract = [];
+    }
+    {
       package = "crucible-qemu";
       root = "src/lib.rs";
       unsafeBoundary = true;
@@ -427,6 +433,17 @@
         "Unsafe boundary discipline:"
         "public callers use safe quota capability types"
         "validate pinned filesystem and syscall invariants"
+      ];
+    }
+    {
+      package = "crucible-sqlite-heap";
+      root = "src/lib.rs";
+      unsafeBoundary = true;
+      safeWrapperContract = [
+        "Unsafe boundary discipline:"
+        "safe integer-only controls"
+        "validate positive representable limits"
+        "no pointers, callbacks, configuration or shutdown"
       ];
     }
     {
@@ -630,10 +647,10 @@ in
             check=checks.crucible.phase1.crateUnsafeFence
             gate=gate:harness-lint
             tasks=T-CRATE-2,T-STD-7
-            runtime_safe_crates=9
-            runtime_unsafe_boundary_crates=5
+            runtime_safe_crates=${toString (builtins.length (builtins.filter (spec: !spec.unsafeBoundary && spec.package != "crucible-harness") specs))}
+            runtime_unsafe_boundary_crates=${toString (builtins.length (builtins.filter (spec: spec.unsafeBoundary) specs))}
             test_only_safe_crates=1
-            unsafe_policy=root-fences,no-fifth-unsafe-crate,immediate-safety-invariants,no-unsafe-callable-items,no-public-unsafe-api,safe-wrapper-contracts
+            unsafe_policy=root-fences,enumerated-unsafe-boundaries,immediate-safety-invariants,no-unsafe-callable-items,no-public-unsafe-api,safe-wrapper-contracts
             RESULT
           '';
         }

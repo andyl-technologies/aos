@@ -1,30 +1,23 @@
 //! Private canonical choice execution from an authenticated executable finding bundle.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
-use std::sync::Arc;
-use std::time::Duration;
 
 use crucible_campaign::{
     Attempt, AttemptStart, BranchBudget, BranchPath, BranchPathSegment, BranchRequest,
-    BranchRequestCause, BudgetGrant, CampaignArchiveInspection, CampaignArchivePolicy,
-    CampaignCommandId, CampaignControlAction, CampaignHash, CampaignPrincipal, CampaignRepository,
-    CampaignRepositoryError, CampaignService, CampaignState, CandidateSource, ChoiceDomain,
-    ChoiceValue, ControlRequest, DebugSessionId, DebuggerAuthorityKey, DebuggerSubmission,
-    ExplainCampaignAttemptRequest, PlannerAuthorityKey, Proposal, RepositoryCampaignService,
-    RepositoryCampaignServiceError, Selection, SelectionOrigin, StopCondition,
+    BranchRequestCause, BudgetGrant, CampaignArchivePolicy, CampaignCommandId,
+    CampaignControlAction, CampaignHash, CampaignPrincipal, CampaignService, CampaignState,
+    CandidateSource, ChoiceDomain, ChoiceValue, ControlRequest, DebugSessionId,
+    ExplainCampaignAttemptRequest, Proposal, RepositoryCampaignService, Selection, SelectionOrigin,
+    StopCondition,
 };
 use crucible_daemon::UnixPeerCampaignPolicy;
-use crucible_daemon::campaign_store_composition::{
-    DirectoryBlobBackend, DirectoryRefBackend, ImmutableBlobBackend,
-};
 use serde::Serialize;
 
 use super::*;
 
-const SOURCE_NAME: &str = "imported-finding-source";
 const BRANCH_NAME: &str = "imported-finding-branch";
 const PRINCIPAL: &str = "private-branch";
 const MAX_BRANCH_TIMEOUT_SECONDS: u64 = 3600;
@@ -64,26 +57,46 @@ pub(crate) fn run_finding_bundle_branch(
             "branch timeout must be between 1 and 3600 seconds",
         ));
     }
-    let bundle = load_authenticated_bundle(&args.input)?;
+    let supervision = ArchiveBundleAdmission::open(
+        args.archive_policy.as_deref(),
+        crucible_api::host_operational::HostOperationClass::Transfer,
+        Some(
+            args.host_transfer_timeout_ms
+                .min(args.timeout_seconds * 1000),
+        ),
+        Some(&args.input),
+        Some(&args.output),
+    )?;
+    let mut boundary = || supervision.boundary();
+    let FindingSourceAuthentication {
+        owner,
+        deployment: guarded,
+        qemu,
+        plugin,
+        workspace,
+        decoding,
+        ..
+    } = FindingSourceAuthentication::open(cli, supervision.input_path(&args.input))?;
+    let _decoding_scope = decoding.enter();
+    let _archive_scope = supervision.input_scope()?;
+    let bundle = load_authenticated_bundle_in_workspace(
+        supervision.input_path(&args.input),
+        &workspace,
+        &supervision,
+        &mut boundary,
+    )?;
     let finding =
         bundle.evidence.finding.id().map_err(|error| {
             backend_error(format!("verified finding identity is invalid: {error}"))
         })?;
     let inspection = bundle
         .archive
-        .inspect_campaign_archive(bundle.archive_id)
+        .inspect_campaign_archive_with_boundary(bundle.archive_id, &mut boundary)
         .map_err(|error| backend_error(format!("finding archive is invalid: {error}")))?;
     if inspection.manifest().policy() != CampaignArchivePolicy::Executable {
         return Err(usage_error("branch requires an executable finding archive"));
     }
     let source_snapshot = inspection.manifest().source_snapshot();
-    let (qemu, plugin, _) = exact::resolve_immutable_qemu(cli)?;
-    let deployment = cli
-        .campaign_deployment
-        .as_ref()
-        .ok_or_else(|| usage_error("branch requires --campaign-deployment PATH"))?;
-    let guarded = crate::cli_verify_serve::load_guarded_campaign_deployment(Some(deployment))?;
-
     let output_parent = args
         .output
         .parent()
@@ -104,33 +117,63 @@ pub(crate) fn run_finding_bundle_branch(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(CliError::Io(error)),
     }
+    supervision.publication_boundary()?;
     let private = tempfile::Builder::new()
         .prefix(".crucible-finding-branch-")
         .tempdir_in(&output_parent)?;
+    supervision.prepare_output_directory(private.path())?;
     fs::set_permissions(private.path(), fs::Permissions::from_mode(0o700))?;
-    let state = private.path().join("state");
-    secure_directory(&state)?;
-    transfer_archive_objects(
-        &args.input.join("archive/objects"),
-        &state.join("objects"),
-        &inspection,
-    )?;
-    secure_directory(&state.join("refs"))?;
-
-    let authority = private.path().join("component-authority.bin");
-    let (planner_key, debugger_key, session) = write_private_authority(&authority)?;
-    let imported = CampaignRepository::with_component_authorities(
-        Arc::new(DirectoryBlobBackend::new(
-            "private-finding-branch",
-            state.join("objects"),
-        )),
-        Arc::new(DirectoryRefBackend::new(state.join("refs"))),
-        planner_key,
-        debugger_key.clone(),
+    let capture = crucible_daemon::load_archived_finding_production_capture(
+        &bundle.archive,
+        bundle.archive_id,
+        finding,
+        crucible_campaign::CampaignFindingTriageReplayRole::VerificationOriginal,
     )
-    .map_err(branch_error)?;
+    .map_err(|error| backend_error(format!("archived QEMU capture is invalid: {error}")))?;
+    if guarded.resources.maximum_execution_quanta() < capture.recipe().lifecycle_quantum_budget {
+        return Err(backend_error(
+            "local host cannot admit captured branch budget",
+        ));
+    }
+    let guests = retain_materialized_guest_assets(
+        crucible_daemon::materialize_finding_replay_guest_assets(
+            capture.deployment(),
+            &qemu,
+            &plugin,
+            &workspace,
+        )
+        .map_err(|error| backend_error(format!("finding guest assets are invalid: {error}")))?,
+    )?;
+    let lifecycle = exact::lifecycle_config(
+        &qemu,
+        &plugin,
+        &guests,
+        &workspace.join("branch"),
+        capture.recipe(),
+        exact::load_lifecycle_objects(&capture)?,
+    )?;
+    let model = crucible::ReproductionArtifact::from_compact_binary(capture.model_reproduction())
+        .map_err(|error| backend_error(format!("finding model is invalid: {error}")))?;
+    let owner = owner
+        .with_imported_lifecycle(lifecycle)
+        .and_then(|owner| owner.with_imported_guest_assets(Arc::clone(&guests)))
+        .map_err(branch_error)?;
+    let published = owner
+        .import_finding_midpoint(
+            &bundle.archive,
+            bundle.archive_id,
+            finding,
+            model.scenario_form(),
+        )
+        .map_err(branch_error)?;
+    let imported = published.repository();
+    let source_name = published.campaign().as_str();
+    let session = DebugSessionId::from_hash(CampaignHash::derive(
+        "crucible.finding-bundle-private-branch-session.v1",
+        output.as_os_str().as_encoded_bytes(),
+    ));
     let imported_inspection = imported
-        .inspect_campaign_archive(bundle.archive_id)
+        .inspect_campaign_archive_with_boundary(bundle.archive_id, &mut boundary)
         .map_err(branch_error)?;
     if imported_inspection != inspection {
         return Err(backend_error(
@@ -138,16 +181,13 @@ pub(crate) fn run_finding_bundle_branch(
         ));
     }
     let retained_finding = imported
-        .inspect_archived_exact_finding(bundle.archive_id, finding)
+        .inspect_archived_finding_with_boundary(bundle.archive_id, finding, &mut boundary)
         .map_err(branch_error)?;
-    if retained_finding != bundle.evidence.finding {
+    if retained_finding != bundle.evidence.finding || retained_finding.exact_pins().is_empty() {
         return Err(backend_error(
-            "private archive finding differs from verified ledger",
+            "receiver finding or retained exact pins differ",
         ));
     }
-    imported
-        .publish_transferred_campaign(SOURCE_NAME, None, bundle.archive_id)
-        .map_err(branch_error)?;
 
     let reproduction = imported
         .load_reproduction_artifact(retained_finding.reproduction())
@@ -187,13 +227,13 @@ pub(crate) fn run_finding_bundle_branch(
         ));
     }
 
-    let imported_head = imported.head(SOURCE_NAME).map_err(branch_error)?;
+    let imported_head = imported.head(source_name).map_err(branch_error)?;
     let lineage = imported
         .load_lineage(imported_head.snapshot().lineage())
         .map_err(branch_error)?;
     let branch_point = opportunity.branch_point_id(lineage.genesis());
     let derived = imported
-        .derive_campaign(SOURCE_NAME, source_snapshot, BRANCH_NAME, None)
+        .derive_campaign(source_name, source_snapshot, BRANCH_NAME, None)
         .map_err(branch_error)?;
     let mut branch_snapshot = derived.new_snapshot;
     if imported.state(BRANCH_NAME).map_err(branch_error)? == CampaignState::Sealed {
@@ -228,7 +268,7 @@ pub(crate) fn run_finding_bundle_branch(
     let needed_proposals = u64::from(budget.remaining_proposals() == 0);
     let needed_attempts = u64::from(budget.remaining_attempts() == 0);
     if needed_proposals != 0 || needed_attempts != 0 {
-        branch_snapshot = imported
+        imported
             .apply_control(
                 BRANCH_NAME,
                 &ControlRequest {
@@ -240,8 +280,7 @@ pub(crate) fn run_finding_bundle_branch(
                     ),
                 },
             )
-            .map_err(branch_error)?
-            .new_snapshot;
+            .map_err(branch_error)?;
     }
 
     let request = BranchRequest::new(
@@ -251,17 +290,18 @@ pub(crate) fn run_finding_bundle_branch(
             opportunity.id().map_err(branch_error)?,
             domain.id().map_err(branch_error)?,
         ),
-        CandidateSource::finite(BTreeSet::from([alternate.clone()])).map_err(branch_error)?,
+        CandidateSource::finite(BTreeSet::from([alternate
+            .clone_admitted()
+            .map_err(branch_error)?]))
+        .map_err(branch_error)?,
         BranchRequestCause::Debugger(session),
         BranchBudget::new(1, 1).map_err(branch_error)?,
         StopCondition::NextChoice,
     )
     .map_err(branch_error)?;
-    let submission =
-        DebuggerSubmission::authorize(&debugger_key, branch_snapshot, session, request.clone())
-            .map_err(branch_error)?;
-    let accepted = imported
-        .submit_debugger_branch_request(BRANCH_NAME, &submission)
+    let campaign = CampaignName::new(BRANCH_NAME).map_err(branch_error)?;
+    let accepted = owner
+        .authorize_branch_request(&campaign, session, request.clone())
         .map_err(branch_error)?;
     let (_, policy) = imported
         .head_with_policy(BRANCH_NAME)
@@ -270,7 +310,7 @@ pub(crate) fn run_finding_bundle_branch(
         request.branch_point(),
         request.id().map_err(branch_error)?,
         request.domain(),
-        alternate.clone(),
+        alternate.clone_admitted().map_err(branch_error)?,
         policy.id().map_err(branch_error)?,
         None,
         1,
@@ -285,9 +325,13 @@ pub(crate) fn run_finding_bundle_branch(
     let proposed = imported
         .issue_proposal(BRANCH_NAME, accepted.new_snapshot, &proposal)
         .map_err(branch_error)?;
-    let selection =
-        Selection::new_campaign_branch(&opportunity, &domain, alternate.clone(), branch_point)
-            .map_err(branch_error)?;
+    let selection = Selection::new_campaign_branch(
+        &opportunity,
+        &domain,
+        alternate.clone_admitted().map_err(branch_error)?,
+        branch_point,
+    )
+    .map_err(branch_error)?;
     let SelectionOrigin::CampaignBranch { edge, .. } = selection.origin() else {
         return Err(backend_error(
             "alternate choice did not produce a canonical edge",
@@ -302,7 +346,7 @@ pub(crate) fn run_finding_bundle_branch(
             selection: selection.id().map_err(branch_error)?,
         },
         path.id().map_err(branch_error)?,
-        request.stop().clone(),
+        request.stop().clone_admitted().map_err(branch_error)?,
     )
     .map_err(branch_error)?;
     let admitted = imported
@@ -321,7 +365,7 @@ pub(crate) fn run_finding_bundle_branch(
         ));
     }
     if imported
-        .head(SOURCE_NAME)
+        .head(source_name)
         .map_err(branch_error)?
         .snapshot_id()
         != source_snapshot
@@ -331,94 +375,20 @@ pub(crate) fn run_finding_bundle_branch(
         ));
     }
 
-    let capture = crucible_daemon::load_archived_finding_production_capture(
-        &imported,
-        bundle.archive_id,
-        finding,
-        crucible_campaign::CampaignFindingTriageReplayRole::VerificationOriginal,
-    )
-    .map_err(|error| backend_error(format!("archived QEMU capture is invalid: {error}")))?;
-    if guarded.resources.maximum_execution_quanta() < capture.recipe().lifecycle_quantum_budget {
-        return Err(backend_error(
-            "local host cannot admit captured branch budget",
-        ));
-    }
-    let guests = crucible_daemon::materialize_finding_replay_guest_assets(
-        capture.deployment(),
-        &qemu,
-        &plugin,
-        private.path(),
-    )
-    .map_err(|error| backend_error(format!("finding guest assets are invalid: {error}")))?;
-    let lifecycle = exact::lifecycle_config(
-        &qemu,
-        &plugin,
-        &guests,
-        &private.path().join("qemu-run-state"),
-        capture.recipe(),
-        exact::load_lifecycle_objects(&capture)?,
-    )?;
-    let policy_path = private.path().join("peer-policy.toml");
-    write_private_policy(&policy_path)?;
-    let private_policy = UnixPeerCampaignPolicy::from_toml_bytes(&fs::read(&policy_path)?)
-        .map_err(|error| backend_error(format!("private branch policy is invalid: {error}")))?;
-    let principal = CampaignPrincipal::new(PRINCIPAL)
-        .map_err(|error| backend_error(format!("private branch principal is invalid: {error}")))?;
-    let campaign = CampaignName::new(BRANCH_NAME)
-        .map_err(|error| backend_error(format!("private branch name is invalid: {error}")))?;
+    let private_policy = private_policy()?;
+    let principal = CampaignPrincipal::new(PRINCIPAL).map_err(branch_error)?;
     let attempt_id = attempt.id().map_err(branch_error)?;
-    let mut completion = None;
-    let service = RepositoryCampaignService::new(&imported, private_policy);
-    crate::cli_verify_serve::run_private_packaged_campaign_until(
-        crate::cli_verify_serve::PrivatePackagedCampaignRun {
-            state: &state,
-            policy: &policy_path,
-            authority: &authority,
-            campaign_socket: &private.path().join("campaign.sock"),
-            executor_socket: &private.path().join("executor.sock"),
-            deployment,
-            campaign: BRANCH_NAME,
-            target_attempt: attempt_id,
-            lifecycle: &lifecycle,
-            timeout: Duration::from_secs(args.timeout_seconds),
-        },
-        || {
-            let head = imported.head(BRANCH_NAME).map_err(branch_error)?;
-            let query = ExplainCampaignAttemptRequest::new(
-                principal.clone(),
-                campaign.clone(),
-                head.snapshot_id(),
-                attempt_id,
-            )
-            .map_err(branch_error)?;
-            let explained = match service.explain_campaign_attempt(&query) {
-                Ok(explained) => explained,
-                Err(RepositoryCampaignServiceError::Repository(
-                    CampaignRepositoryError::Stale { .. },
-                )) => return Ok(false),
-                Err(error) => return Err(branch_error(error)),
-            };
-            explained.validate_for(&query).map_err(branch_error)?;
-            if explained.selection() != Some(&selection) || explained.proposal() != Some(&proposal)
-            {
-                return Err(backend_error(
-                    "executed branch provenance differs from admitted choice",
-                ));
-            }
-            if let Some(observation) = explained.observation() {
-                if observation.attempt() != attempt_id {
-                    return Err(backend_error(
-                        "executed branch observation names another attempt",
-                    ));
-                }
-                completion = Some(observation.clone());
-                return Ok(true);
-            }
-            Ok(false)
-        },
-    )?;
-    let observation = completion
-        .ok_or_else(|| backend_error("private branch has no authenticated observation"))?;
+    let service = RepositoryCampaignService::new(imported.as_ref(), private_policy);
+    let mut execution_boundary = || boundary().map_err(std::io::Error::other);
+    let observation = owner
+        .run_admitted_branch(
+            &campaign,
+            attempt_id,
+            crucible_daemon::ExecutionCancellation::default(),
+            supervision.original_operation()?.supervisor(),
+            &mut execution_boundary,
+        )
+        .map_err(branch_error)?;
     let branch_snapshot = imported
         .head(BRANCH_NAME)
         .map_err(branch_error)?
@@ -441,22 +411,22 @@ pub(crate) fn run_finding_bundle_branch(
         ));
     }
     if imported
-        .head(SOURCE_NAME)
+        .head(source_name)
         .map_err(branch_error)?
         .snapshot_id()
         != source_snapshot
         || imported
-            .inspect_archived_exact_finding(bundle.archive_id, finding)
+            .inspect_archived_finding_with_boundary(bundle.archive_id, finding, &mut boundary)
             .map_err(branch_error)?
             != retained_finding
         || bundle
             .archive
-            .inspect_archived_exact_finding(bundle.archive_id, finding)
+            .inspect_archived_finding_with_boundary(bundle.archive_id, finding, &mut boundary)
             .map_err(branch_error)?
             != retained_finding
         || bundle
             .archive
-            .inspect_campaign_archive(bundle.archive_id)
+            .inspect_campaign_archive_with_boundary(bundle.archive_id, &mut boundary)
             .map_err(branch_error)?
             != inspection
     {
@@ -482,7 +452,9 @@ pub(crate) fn run_finding_bundle_branch(
     };
     let json = serde_json::to_string_pretty(&report)
         .map_err(|error| backend_error(format!("branch report encoding failed: {error}")))?;
+    supervision.publication_boundary()?;
     write_private_file(&private.path().join("branch-report.json"), json.as_bytes())?;
+    supervision.publication_boundary()?;
     rustix::fs::renameat_with(
         rustix::fs::CWD,
         private.path(),
@@ -492,6 +464,7 @@ pub(crate) fn run_finding_bundle_branch(
     )
     .map_err(std::io::Error::from)?;
     File::open(&output_parent)?.sync_all()?;
+    supervision.complete()?;
     render_branch_report(&report, format)
 }
 
@@ -499,69 +472,13 @@ fn branch_error(error: impl std::fmt::Display) -> CliError {
     backend_error(format!("private finding branch failed: {error}"))
 }
 
-fn secure_directory(path: &Path) -> Result<(), CliError> {
-    fs::create_dir(path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    Ok(())
-}
-
-fn transfer_archive_objects(
-    source: &Path,
-    destination: &Path,
-    inspection: &CampaignArchiveInspection,
-) -> Result<(), CliError> {
-    secure_directory(destination)?;
-    let source = DirectoryBlobBackend::new("finding-bundle-branch-source", source);
-    let destination = DirectoryBlobBackend::new("finding-bundle-branch-private", destination);
-    for id in inspection.retained_objects() {
-        let blob = source.read(*id, None).map_err(branch_error)?;
-        let receipt = destination
-            .put_if_absent(*id, &blob)
-            .map_err(branch_error)?;
-        if receipt.id != *id || !receipt.is_durable() {
-            return Err(backend_error(
-                "private archive object lacks a durable placement",
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn write_private_authority(
-    path: &Path,
-) -> Result<(PlannerAuthorityKey, DebuggerAuthorityKey, DebugSessionId), CliError> {
-    let mut material = [0_u8; 96];
-    File::open("/dev/urandom")?.read_exact(&mut material)?;
-    let planner: [u8; 32] = material[..32].try_into().map_err(branch_error)?;
-    let debugger: [u8; 32] = material[32..64].try_into().map_err(branch_error)?;
-    if planner == debugger {
-        return Err(backend_error(
-            "private component authority keys are identical",
-        ));
-    }
-    let planner_key = PlannerAuthorityKey::from_bytes(planner).map_err(branch_error)?;
-    let debugger_key = DebuggerAuthorityKey::from_bytes(debugger).map_err(branch_error)?;
-    let session = DebugSessionId::from_hash(CampaignHash::derive(
-        "crucible.finding-bundle-private-branch-session.v1",
-        &material[64..],
-    ));
-    let mut record = b"CRUCCA01".to_vec();
-    record.extend_from_slice(&material[..64]);
-    write_private_file(path, &record)?;
-    Ok((planner_key, debugger_key, session))
-}
-
-fn write_private_policy(path: &Path) -> Result<(), CliError> {
-    let owner = fs::metadata(
-        path.parent()
-            .ok_or_else(|| backend_error("policy has no parent"))?,
-    )?;
+fn private_policy() -> Result<UnixPeerCampaignPolicy, CliError> {
     let policy = format!(
         "schema = \"crucible.campaign-local-policy\"\nversion = 1\n\n[[bindings]]\nuser_id = {}\ngroup_id = {}\nprincipal = \"{PRINCIPAL}\"\n\n[[grants]]\nprincipal = \"{PRINCIPAL}\"\noperation = \"explain-campaign-attempt\"\ncampaign = \"{BRANCH_NAME}\"\n",
-        owner.uid(),
-        owner.gid(),
+        rustix::process::geteuid().as_raw(),
+        rustix::process::getegid().as_raw(),
     );
-    write_private_file(path, policy.as_bytes())
+    UnixPeerCampaignPolicy::from_toml_bytes(policy.as_bytes()).map_err(branch_error)
 }
 
 fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), CliError> {

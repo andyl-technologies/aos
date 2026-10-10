@@ -2,7 +2,12 @@
 
 use super::*;
 
+mod admitted;
 mod operations;
+pub(crate) use admitted::{
+    AdmittedPreparedResultFailure, SemanticReplayCaptureBindingError,
+    bind_admitted_semantic_replay_captures, stage_admitted_prepared_result,
+};
 
 pub use operations::*;
 
@@ -66,6 +71,9 @@ pub struct PreparedAttemptResult {
     result: PreparedAttemptResultOwner,
     observation: ObservationId,
     finding_candidate: Option<crucible_campaign::FindingCandidateBundleId>,
+    // Recovery's original metadata account survives every result phase and
+    // closes after the decoded journal body.
+    recovery_metadata: crucible::owned_decode::DecodeCustody,
 }
 
 #[derive(Debug)]
@@ -91,6 +99,17 @@ impl PreparedAttemptResultOwner {
 }
 
 impl PreparedAttemptResult {
+    pub(crate) fn retain_recovery_metadata(
+        &mut self,
+        metadata: crucible::owned_decode::DecodeCustody,
+    ) {
+        self.recovery_metadata = metadata;
+    }
+
+    pub(crate) fn enter_recovery_metadata(&self) -> Option<crucible::owned_decode::DecodeScope> {
+        self.recovery_metadata.enter()
+    }
+
     /// Returns the exact execution token.
     #[must_use]
     pub const fn queued(&self) -> &QueuedAttempt {
@@ -155,6 +174,7 @@ impl PreparedAttemptResult {
             result,
             observation,
             finding_candidate,
+            recovery_metadata,
         } = self;
         match result {
             PreparedAttemptResultOwner::Volatile(_) => Ok(queued),
@@ -163,6 +183,7 @@ impl PreparedAttemptResult {
                 result: PreparedAttemptResultOwner::Journal(journal),
                 observation,
                 finding_candidate,
+                recovery_metadata,
             })),
         }
     }
@@ -625,6 +646,12 @@ pub struct AttemptResultPublicationError {
 /// Failure while publishing a verified prepared-result closure.
 #[derive(Debug, thiserror::Error)]
 pub enum AttemptResultPublicationFailure {
+    /// The original assignment publication authority could not be borrowed.
+    #[error(transparent)]
+    HostAuthority(#[from] crucible_api::host_operational::HostOperationalError),
+    /// Original-start supervision canceled or expired before publication completed.
+    #[error(transparent)]
+    Supervision(#[from] crucible_linux_resource::host_supervision::HostSupervisionError),
     /// Immutable repository publication failed.
     #[error(transparent)]
     Repository(#[from] CampaignRepositoryError),
@@ -640,6 +667,7 @@ impl AttemptResultPublicationFailure {
         match self {
             Self::Repository(error) => error.executor_rejection(),
             Self::Measurement(_) => ExecutorRejection::Incompatible,
+            Self::HostAuthority(_) | Self::Supervision(_) => ExecutorRejection::UnavailableInput,
         }
     }
 

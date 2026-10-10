@@ -149,6 +149,7 @@ fn profile_opaque(kind: ObjectKind, logical_length: u64) -> Result<ObjectProfile
     let (sensitivity, reconstructibility, retention) = match kind {
         ObjectKind::ExactManifest
         | ObjectKind::RamExtent
+        | ObjectKind::RamTree
         | ObjectKind::DiskExtent
         | ObjectKind::DeviceState => (
             SensitivityClass::GuestState,

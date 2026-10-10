@@ -226,8 +226,16 @@
         needle = "timer_fires: BTreeMap<TimerId, VirtualTime>";
       }
       {
-        label = "condition runtime fact extraction";
-        needle = "fn push_condition_runtime_facts";
+        label = "admitted condition runtime fact staging";
+        needle = "fn prepare_runtime_updates";
+      }
+      {
+        label = "event firing fact commits after admission";
+        needle = "self.event_firings.insert(event, at);";
+      }
+      {
+        label = "timer schedule fact commits after admission";
+        needle = "self.timer_fires.insert(timer, at);";
       }
       {
         label = "runtime facts enter condition pass";

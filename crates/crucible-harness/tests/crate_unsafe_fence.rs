@@ -1,6 +1,6 @@
 //! Checks the Crucible crate-root safe/unsafe fence.
 //!
-//! The crate table in RFC-0010 file 27 is the source of truth for which runtime
+//! The crate ownership table is the source of truth for which runtime
 //! crates forbid `unsafe` entirely and which crates are explicit unsafe
 //! boundaries. This test is the first `gate:harness-lint` shape check: adding a
 //! new `crucible-*` package or changing a crate root fence must update this
@@ -36,6 +36,12 @@ const FENCE_SPECS: &[FenceSpec] = &[
         safe_wrapper_contract: &[],
     },
     FenceSpec {
+        package: "crucible-ram",
+        root: "src/lib.rs",
+        unsafe_boundary: false,
+        safe_wrapper_contract: &[],
+    },
+    FenceSpec {
         package: "crucible-sim",
         root: "src/lib.rs",
         unsafe_boundary: false,
@@ -65,7 +71,8 @@ const FENCE_SPECS: &[FenceSpec] = &[
         safe_wrapper_contract: &[
             "Unsafe boundary discipline:",
             "public callers use safe setup descriptor handover wrappers",
-            "validate the fixed three-fd order and descriptor count",
+            "validate the fixed descriptor order and exact count",
+            "the digest workspace is fourth exactly when the setup frame declares it",
         ],
     },
     FenceSpec {
@@ -130,6 +137,17 @@ const FENCE_SPECS: &[FenceSpec] = &[
             "Unsafe boundary discipline:",
             "public callers use safe quota capability types",
             "wrappers validate pinned filesystem and syscall invariants",
+        ],
+    },
+    FenceSpec {
+        package: "crucible-sqlite-heap",
+        root: "src/lib.rs",
+        unsafe_boundary: true,
+        safe_wrapper_contract: &[
+            "Unsafe boundary discipline:",
+            "safe integer-only controls",
+            "validate positive representable limits",
+            "no pointers, callbacks, configuration or shutdown",
         ],
     },
     FenceSpec {

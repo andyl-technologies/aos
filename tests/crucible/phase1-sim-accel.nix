@@ -156,6 +156,7 @@
           -monitor none \
           -machine q35 \
           -accel sim,thread=single \
+          -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
           -icount shift=0,sleep=off,align=off \
           -cpu qemu64,-rdrand,-rdseed \
           -m 128 \

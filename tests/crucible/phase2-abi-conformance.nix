@@ -241,7 +241,7 @@
     ++ failuresFor "crates/crucible-api/src/rpc_abi module tree" (apiRpcAbi + apiRpcGolden) [
       {
         label = "explicit major version";
-        needle = "pub const RPC_PROTOCOL_MAJOR: u16 = 8;";
+        needle = "pub const RPC_PROTOCOL_MAJOR: u16 = 9;";
       }
       {
         label = "explicit minor version";
@@ -253,7 +253,7 @@
       }
       {
         label = "build identifier";
-        needle = "pub const RPC_PROTOCOL_BUILD: &str = \"crucible-rpc-abi-v8\";";
+        needle = "pub const RPC_PROTOCOL_BUILD: &str = \"crucible-rpc-abi-v9\";";
       }
       {
         label = "golden vector protocol version";
@@ -545,7 +545,7 @@ in
                 -p crucible-qemu-plugin \
                 --lib io_wire_fuzz \
                 -- --test-threads=1
-              require_test_set 54 plugin-doorbell \
+              require_test_set 60 plugin-doorbell \
                 whitebox_doorbell::tests::whitebox_registration_off_mode_installs_no_trap_and_preserves_black_box \
                 -p crucible-qemu-plugin --lib whitebox_doorbell
               cargo test \

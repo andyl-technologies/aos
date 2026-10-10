@@ -4,6 +4,18 @@
 //! separately protected key material. Unknown fields, unsupported versions,
 //! duplicate identifiers, volatile roots, and insecure files or directories
 //! fail before the campaign repository or endpoint is opened.
+//!
+//! A physical-quota service supplies an outer lifetime, a full resource vector,
+//! and all fourteen operation classes. The following fragment illustrates one
+//! class; the remaining classes use the same explicit budget fields:
+//!
+//! ```toml
+//! [physical_quota_service]
+//! lifetime_ms = 2700000
+//! [physical_quota_service.host_operation_budgets.preparation]
+//! poll_interval_ms = 10
+//! total_timeout_ms = 300000
+//! ```
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -39,7 +51,7 @@ use s3::{
 };
 
 const CAMPAIGN_STORE_SCHEMA: &str = "crucible.campaign-repository-store";
-const CAMPAIGN_STORE_VERSION_2: u32 = 2;
+const CAMPAIGN_STORE_VERSION_3: u32 = 3;
 const MAX_CAMPAIGN_STORE_DEPLOYMENT_BYTES: usize = 256 * 1024;
 const MAX_CAMPAIGN_STORE_KEY_BYTES: usize = 32;
 pub(super) const MAX_STORE_VERIFY_PLACEMENTS: u64 = MAX_STORE_GRAPH_VERIFY_PLACEMENTS;
@@ -67,6 +79,8 @@ struct CampaignStoreDeployment {
     schema: String,
     version: u32,
     root: String,
+    #[serde(default)]
+    gc_mark_root: Option<String>,
     admitted_kinds: Vec<String>,
     #[serde(default)]
     ref_directory: Option<PathBuf>,
@@ -80,7 +94,17 @@ struct CampaignStoreDeployment {
     namespaces: Vec<AuthoredNamespacePolicy>,
     #[serde(default)]
     physical_quota_policies: Vec<String>,
+    #[serde(default)]
+    physical_quota_service: Option<AuthoredQuotaService>,
     nodes: Vec<AuthoredStoreNode>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthoredQuotaService {
+    lifetime_ms: u64,
+    resources: crate::cli_verify_serve::HostOwnerResourcesDeployment,
+    host_operation_budgets: BTreeMap<String, crate::cli_verify_serve::OperationBudgetDeployment>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,6 +140,10 @@ struct AuthoredStoreNode {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 enum AuthoredStoreNodeSpec {
+    Memory {
+        max_logical_bytes: u64,
+        max_objects: u64,
+    },
     Directory {
         root: PathBuf,
     },
@@ -399,8 +427,22 @@ fn verify_loaded_campaign_store_inventory(
     })
 }
 
+pub(crate) fn load_campaign_repository_store_with_heap(
+    deployment_path: &Path,
+    process_heap: Option<&crucible_daemon::campaign_store_composition::SqliteProcessHeap>,
+) -> Result<crucible_daemon::CampaignLocalRepositoryStore, CliError> {
+    load_campaign_repository_graph_with_heap(deployment_path, process_heap)?.into_store()
+}
+
 fn load_campaign_repository_graph(
     deployment_path: &Path,
+) -> Result<LoadedCampaignRepositoryStore, CliError> {
+    load_campaign_repository_graph_with_heap(deployment_path, None)
+}
+
+fn load_campaign_repository_graph_with_heap(
+    deployment_path: &Path,
+    process_heap: Option<&crucible_daemon::campaign_store_composition::SqliteProcessHeap>,
 ) -> Result<LoadedCampaignRepositoryStore, CliError> {
     let bytes = read_secure_file(
         deployment_path,
@@ -411,7 +453,7 @@ fn load_campaign_repository_graph(
         .map_err(|error| campaign_store_error(format!("deployment is not UTF-8: {error}")))?;
     let mut deployment: CampaignStoreDeployment = toml::from_str(text)
         .map_err(|error| campaign_store_error(format!("invalid deployment: {error}")))?;
-    if deployment.schema != CAMPAIGN_STORE_SCHEMA || deployment.version != CAMPAIGN_STORE_VERSION_2
+    if deployment.schema != CAMPAIGN_STORE_SCHEMA || deployment.version != CAMPAIGN_STORE_VERSION_3
     {
         return Err(campaign_store_error("unsupported schema or version"));
     }
@@ -597,12 +639,40 @@ fn load_campaign_repository_graph(
         ));
     }
     let mut physical_quotas = StoreGraphPhysicalQuotaBinders::new();
-    for policy in configured_physical_quotas {
-        physical_quotas
-            .insert(policy, Arc::new(LinuxProjectQuotaBinder::new()))
+    let uses_memory = nodes
+        .values()
+        .any(|node| matches!(node, StoreNodeSpec::Memory { .. }));
+    let mut memory_namespaces = None;
+    match (
+        configured_physical_quotas.is_empty() && !uses_memory,
+        deployment.physical_quota_service,
+    ) {
+        (true, None) => {}
+        (false, Some(service)) => {
+            let binder = LinuxProjectQuotaBinder::new_for_graph(
+                crate::cli_verify_serve::deployed_budgets(&service.host_operation_budgets)?,
+                Some(std::time::Duration::from_millis(service.lifetime_ms)),
+                service.resources.resources(),
+            )
             .map_err(|error| {
-                campaign_store_error(format!("duplicate physical-quota policy: {error}"))
+                campaign_store_error(format!("physical-quota service admission failed: {error}"))
             })?;
+            for policy in configured_physical_quotas {
+                physical_quotas
+                    .insert(policy, binder.clone())
+                    .map_err(|error| {
+                        campaign_store_error(format!("duplicate physical-quota policy: {error}"))
+                    })?;
+            }
+            if uses_memory {
+                memory_namespaces = Some(binder);
+            }
+        }
+        _ => {
+            return Err(campaign_store_error(
+                "quota service must be authored exactly when physical policies or Memory namespaces are configured",
+            ));
+        }
     }
 
     let uses_campaign_profile = nodes
@@ -643,9 +713,15 @@ fn load_campaign_repository_graph(
 
     let root = StoreNodeId::new(deployment.root)
         .map_err(|error| campaign_store_error(format!("invalid root node ID: {error}")))?;
+    let gc_mark_root = deployment
+        .gc_mark_root
+        .map(StoreNodeId::new)
+        .transpose()
+        .map_err(|error| campaign_store_error(format!("invalid GC mark root ID: {error}")))?;
     let (graph, maintenance) = StoreGraph::build_with_admin_and_all_capabilities(
         StoreGraphConfig {
             root,
+            gc_mark_root,
             admitted_kinds,
             nodes,
         },
@@ -654,6 +730,10 @@ fn load_campaign_repository_graph(
         &profilers,
         &physical_quotas,
         &s3_capabilities.graph,
+        crucible_daemon::campaign_store_composition::StoreGraphOriginalResources {
+            memory_namespaces: memory_namespaces.as_ref(),
+            sqlite_heap: process_heap,
+        },
     )
     .map_err(|error| campaign_store_error(format!("graph admission failed: {error}")))?;
     let refs = match ref_backend {
@@ -678,7 +758,7 @@ fn resolve_ref_backend(
         (Some(path), None) => Ok(ResolvedRefBackend::Directory(path)),
         (None, Some(refs)) => Ok(ResolvedRefBackend::S3(refs.resolve()?)),
         _ => Err(campaign_store_error(
-            "version-two deployment requires exactly one of ref_directory or s3_ref",
+            "version-three deployment requires exactly one of ref_directory or s3_ref",
         )),
     }
 }
@@ -686,6 +766,13 @@ fn resolve_ref_backend(
 impl AuthoredStoreNodeSpec {
     fn into_store(self, user_id: u32, group_id: u32) -> Result<StoreNodeSpec, CliError> {
         match self {
+            Self::Memory {
+                max_logical_bytes,
+                max_objects,
+            } => Ok(StoreNodeSpec::Memory {
+                max_logical_bytes,
+                max_objects,
+            }),
             Self::Directory { root } => {
                 validate_secure_directory(&root, user_id, group_id, "directory leaf")?;
                 Ok(StoreNodeSpec::Directory { root })
@@ -1073,6 +1160,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn current_store_schema_rejects_predecessor_and_unguarded_gc_root() {
+        let fixture = StoreDeploymentFixture::new();
+        let deployment = fixture.write_deployment("");
+        let current = fs::read_to_string(&deployment).expect("read current deployment");
+        fs::write(
+            &deployment,
+            current.replacen("version = 3", "version = 2", 1),
+        )
+        .expect("write predecessor deployment");
+        let error = match load_campaign_repository_graph(&deployment) {
+            Err(error) => error,
+            Ok(_) => panic!("predecessor schema must be refused"),
+        };
+        assert!(error.to_string().contains("unsupported schema or version"));
+
+        let deployment = fixture.write_deployment("gc_mark_root = \"encrypted\"");
+        let error = match load_campaign_repository_graph(&deployment) {
+            Err(error) => error,
+            Ok(_) => panic!("GC role must require an independently guarded directory"),
+        };
+        assert!(error.to_string().contains("GC mark root"));
+    }
+
+    #[test]
     fn strict_composed_store_loads_and_reauthenticates_encryption_on_restart() {
         let fixture = StoreDeploymentFixture::new();
         let deployment = fixture.write_deployment("");
@@ -1138,7 +1249,7 @@ mod tests {
             &deployment,
             format!(
                 r#"schema = "crucible.campaign-repository-store"
-version = 2
+version = 3
 root = "sqlite"
 admitted_kinds = {}
 ref_directory = {:?}
@@ -1158,7 +1269,10 @@ root = {:?}
         fs::set_permissions(&deployment, fs::Permissions::from_mode(0o600))
             .expect("secure deployment mode");
 
-        let loaded = load_campaign_repository_graph(&deployment).expect("strict SQLite graph");
+        let process_heap = crucible_cas::content_store::fixture_sqlite_heap()
+            .expect("original SQLite fixture process");
+        let loaded = load_campaign_repository_graph_with_heap(&deployment, Some(&process_heap))
+            .expect("strict SQLite graph");
         assert_eq!(loaded.graph.describe()[0].kind, StoreNodeKind::Sqlite);
         assert_eq!(loaded.maintenance.physical().len(), 1);
         let bytes = b"authored SQLite campaign object";
@@ -1169,7 +1283,8 @@ root = {:?}
             .expect("durable authored store put");
         drop(loaded);
 
-        let reopened = load_campaign_repository_graph(&deployment).expect("reopened SQLite graph");
+        let reopened = load_campaign_repository_graph_with_heap(&deployment, Some(&process_heap))
+            .expect("reopened SQLite graph");
         assert!(
             reopened
                 .graph
@@ -1557,7 +1672,7 @@ campaign = "*"
                 &deployment,
                 format!(
                     r#"schema = "crucible.campaign-repository-store"
-version = 2
+version = 3
 root = "profile"
 admitted_kinds = {kinds}
 ref_directory = {refs:?}
@@ -1639,7 +1754,7 @@ session_token = "campaign-session-token"
                 &deployment,
                 format!(
                     r#"schema = "crucible.campaign-repository-store"
-version = 2
+version = 3
 root = "profile"
 admitted_kinds = {kinds}
 
@@ -1693,5 +1808,168 @@ policy = "crucible.campaign.object-profile.v1"
             .collect::<Vec<_>>()
             .join(", ");
         format!("[{kinds}]")
+    }
+
+    fn write_memory_deployment(
+        fixture: &StoreDeploymentFixture,
+        max_objects: Option<u64>,
+        authored_service: Option<&str>,
+    ) -> PathBuf {
+        let capacity = max_objects
+            .map(|maximum| format!("max_objects = {maximum}\n"))
+            .unwrap_or_default();
+        let service = authored_service
+            .map(|authored| {
+                format!(
+                    "\n[physical_quota_service]\n{}",
+                    authored.replace("\n[", "\n[physical_quota_service.")
+                )
+            })
+            .unwrap_or_default();
+        let deployment = fixture.root.join("memory-store.toml");
+        fs::write(
+            &deployment,
+            format!(
+                r#"schema = "crucible.campaign-repository-store"
+version = 3
+root = "memory"
+admitted_kinds = {}
+ref_directory = {:?}
+{service}
+[[nodes]]
+id = "memory"
+[nodes.spec]
+kind = "memory"
+max_logical_bytes = 0
+{capacity}"#,
+                all_object_kinds_toml(),
+                fixture.refs,
+            ),
+        )
+        .expect("write finite Memory deployment");
+        fs::set_permissions(&deployment, fs::Permissions::from_mode(0o600))
+            .expect("secure finite Memory deployment");
+        deployment
+    }
+
+    #[test]
+    fn authored_memory_requires_finite_objects_and_a_genuine_service() {
+        let fixture = StoreDeploymentFixture::new();
+        let deployment = write_memory_deployment(&fixture, None, None);
+        let error = load_campaign_repository_graph(&deployment).err().unwrap();
+        assert!(error.to_string().contains("max_objects"));
+
+        let deployment = write_memory_deployment(&fixture, Some(1), None);
+        let error = load_campaign_repository_graph(&deployment).err().unwrap();
+        assert!(error.to_string().contains("quota service must be authored"));
+    }
+
+    #[test]
+    fn authored_memory_refuses_global_4096_before_namespace_effects() {
+        let fixture = StoreDeploymentFixture::new();
+        let original_service = authored_quota_service();
+        for maximum in [1, 64] {
+            let deployment =
+                write_memory_deployment(&fixture, Some(maximum), Some(&original_service));
+            let error = load_campaign_repository_graph(&deployment).err().unwrap();
+            // Global4096 cannot cover the existing service bootstrap/constructor,
+            // before either namespace reaches its own fixed map admission.
+            assert!(error.to_string().contains("service admission failed"));
+        }
+    }
+
+    #[test]
+    fn authored_memory_uses_an_existing_finite_service_profile() {
+        let fixture = StoreDeploymentFixture::new();
+        // Reuse the exact authored GC inspection resource vector. This is a
+        // separate original service; the global4096 refusal fixture stays fixed.
+        let original_service = authored_quota_service()
+            .replace(
+                "resident_peak_bytes = 1048576",
+                "resident_peak_bytes = 134217728",
+            )
+            .replace(
+                "backing_peak_bytes = 1048576",
+                "backing_peak_bytes = 2147483648",
+            )
+            .replace("metadata_bytes = 4096", "metadata_bytes = 67108864")
+            .replace("staging_bytes = 131072", "staging_bytes = 8388608")
+            .replace("file_descriptors = 36", "file_descriptors = 256");
+        let deployment = write_memory_deployment(&fixture, Some(1), Some(&original_service));
+        let loaded = load_campaign_repository_graph(&deployment)
+            .expect("one object under the existing finite inspection profile");
+        assert_eq!(loaded.graph.describe()[0].kind, StoreNodeKind::Memory);
+        assert!(
+            loaded
+                .graph
+                .checked_publication_metadata(ObjectKind::Trace)
+                .is_ok()
+        );
+        assert_eq!(loaded.maintenance.physical_count(), 1);
+        drop(loaded);
+
+        for maximum in [0, i64::MAX as u64] {
+            let deployment =
+                write_memory_deployment(&fixture, Some(maximum), Some(&original_service));
+            let error = load_campaign_repository_graph(&deployment).err().unwrap();
+            assert!(error.to_string().contains("graph admission failed"));
+        }
+        let deployment = write_memory_deployment(&fixture, Some(u64::MAX), Some(&original_service));
+        let error = load_campaign_repository_graph(&deployment).err().unwrap();
+        assert!(error.to_string().contains("invalid deployment"));
+    }
+
+    fn authored_quota_service() -> String {
+        let authored = r#"lifetime_ms = 60000
+[resources]
+resident_peak_bytes = 1048576
+backing_peak_bytes = 1048576
+metadata_bytes = 4096
+staging_bytes = 131072
+paging_io_slots = 1
+cpu_slots = 1
+task_slots = 1
+file_descriptors = 36
+"#;
+        let mut authored = String::from(authored);
+        for name in [
+            "setup",
+            "quantum",
+            "page_in",
+            "writeback",
+            "fingerprint_initialization",
+            "fingerprint_update",
+            "quiescence",
+            "checkpoint_capture",
+            "checkpoint_publication",
+            "restore",
+            "fork_rearm",
+            "transfer",
+            "preparation",
+            "cleanup",
+        ] {
+            authored.push_str(&format!("\n[host_operation_budgets.{name}]\npoll_interval_ms = 10\ntotal_timeout_ms = 60000\n"));
+        }
+        authored
+    }
+
+    #[test]
+    fn standalone_quota_service_requires_the_complete_authored_resource_contract() {
+        let authored = authored_quota_service();
+        let parsed = toml::from_str::<AuthoredQuotaService>(&authored)
+            .unwrap_or_else(|error| panic!("parse explicit standalone service: {error}"));
+        assert_eq!(parsed.lifetime_ms, 60000);
+        assert_eq!(parsed.resources.resources().file_descriptors, 36);
+        assert!(
+            toml::from_str::<AuthoredQuotaService>(&authored.replace("cpu_slots = 1\n", ""))
+                .is_err()
+        );
+        assert!(
+            toml::from_str::<AuthoredQuotaService>(&authored.replace(
+                "lifetime_ms = 60000",
+                "lifetime_ms = 60000\nclock_origin = 1"
+            ))
+            .is_err()
+        );
     }
 }

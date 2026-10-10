@@ -1,6 +1,6 @@
 //! QEMU child shutdown escalation.
 //!
-//! This module owns the host-side ladder fixed by RFC-0010 protocol shutdown:
+//! This module owns the bounded host-side protocol shutdown ladder:
 //! send the plugin `Quit`, issue QMP `quit`, send `SIGTERM`, send `SIGKILL`,
 //! then reap the child. The runner is target-agnostic so unit tests can model
 //! unresponsive guests without spawning QEMU, while [`UnixQemuChildShutdownTarget`]

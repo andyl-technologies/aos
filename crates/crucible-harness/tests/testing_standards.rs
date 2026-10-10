@@ -1,4 +1,4 @@
-//! Checks the RFC-0010 per-layer testing standards.
+//! Checks the per-layer testing standards.
 
 #![forbid(unsafe_code)]
 
@@ -86,7 +86,7 @@ struct CrateTestingOwnership {
     gates: &'static [&'static str],
 }
 
-// Library-exact campaign gates are absent from the RFC-0010 integration-target
+// Library-exact campaign gates are absent from the core integration-target
 // table. Keep them in the same layer, backend, and ownership checks without
 // claiming that the selector is an integration-test target.
 const CAMPAIGN_LIBRARY_EXACT_TESTING_TARGETS: &[GateTargetSpec] = &[
@@ -621,12 +621,15 @@ fn world_fork_atomicity_standard_requires_production_transaction_proofs()
     let source = [
         "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance.rs",
         "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/failures.rs",
+        "crates/crucible-daemon/src/packaged_qemu_executor/tests/paging_native/equivalence/atomic.rs",
+        "crates/crucible-daemon/src/packaged_qemu_executor/tests/paging_native/equivalence/failures.rs",
     ]
     .into_iter()
     .map(|path| fs::read_to_string(root.join(path)))
     .collect::<Result<Vec<_>, _>>()?
     .join("\n");
-    assert!(source_shape_failures(target, standard, &source).is_empty());
+    let failures = source_shape_failures(target, standard, &source);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
     assert!(backend_failures(target, standard).is_empty());
 
     for proof in [
@@ -636,6 +639,11 @@ fn world_fork_atomicity_standard_requires_production_transaction_proofs()
         "production_factory_exposes_no_world_when_second_real_adoption_fails",
         "production_factory_keeps_source_private_until_target_cleanup_retries",
         "production_factory_keeps_source_private_across_repository_publication_retry",
+        "run_atomic_failure_native",
+        "assert_eq!(restored.faults, self.boundary.faults);",
+        "assert_eq!(restored.fingerprints, self.boundary.fingerprints);",
+        "assert!(factory.recover(child).is_ok());",
+        "assert_eq!(available_resources(self.prepared), before);",
     ] {
         let without_proof = source.replace(proof, "missing_world_fork_atomicity_proof");
         assert!(
@@ -672,7 +680,7 @@ fn gate_targets_follow_per_layer_testing_standards() -> Result<(), Box<dyn Error
 fn gate_target_sources_treat_flaky_as_failing() -> Result<(), Box<dyn Error>> {
     let root = workspace_root();
     let baseline = TestingStandardsBaseline::load(&root)?;
-    let mut failures = Vec::new();
+    let mut failures = checked_ram_read_failures(&root)?;
 
     for source in crucible_test_sources(&root)? {
         let content = fs::read_to_string(&source.path)?;

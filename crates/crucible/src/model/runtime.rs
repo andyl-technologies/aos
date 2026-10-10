@@ -186,10 +186,11 @@ pub struct RuntimeState {
 ///
 /// Returns [`EngineError::AppRandomDrawCapExceeded`] when appending `decision`
 /// would put the configuration above its per-scenario app-random draw cap.
+/// Returns resource admission or allocation errors before copying the schedule.
 pub fn try_step(config: &Configuration, decision: Decision) -> Result<Configuration, EngineError> {
     let next = Configuration {
         def: config.def.clone(),
-        schedule: config.schedule.appended(decision),
+        schedule: config.schedule.appended_admitted(decision)?,
     };
     validate_app_random_draw_cap(&next.def, &next.schedule)?;
     Ok(next)

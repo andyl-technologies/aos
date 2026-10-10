@@ -6,11 +6,13 @@
 //! admission barrier. Sequentially consistent operations make either close
 //! versus enter race explicit and keep the proof independent of host time.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const TEARDOWN_CLOSED: u64 = 1_u64 << 63;
 const HOT_FORK_HELD: u64 = 1_u64 << 62;
-const CLOSED_MASK: u64 = TEARDOWN_CLOSED | HOT_FORK_HELD;
+const PARENT_PARK_OWNED: u64 = 1_u64 << 61;
+const CLOSED_MASK: u64 = TEARDOWN_CLOSED | HOT_FORK_HELD | PARENT_PARK_OWNED;
 const IN_FLIGHT_MASK: u64 = !CLOSED_MASK;
 
 /// One instantaneous view of callback admission and in-flight work.
@@ -69,8 +71,53 @@ impl LiveCallbackQuiescence {
 
     /// Releases only the reversible hot-fork admission barrier.
     pub(crate) fn release_hot_fork(&self) -> LiveCallbackQuiescenceSnapshot {
-        self.state.fetch_and(!HOT_FORK_HELD, Ordering::SeqCst);
+        let mut observed = self.state.load(Ordering::SeqCst);
+        while observed & PARENT_PARK_OWNED == 0 {
+            match self.state.compare_exchange(
+                observed,
+                observed & !HOT_FORK_HELD,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(actual) => observed = actual,
+            }
+        }
         self.snapshot()
+    }
+
+    /// Reserves an exclusive callback hold for the retained parent owner.
+    ///
+    /// The token has no release-on-drop behavior. Losing it preserves the closed
+    /// admission gate; only the same owner can explicitly relinquish it.
+    pub(super) fn reserve_parent_hold(self: &Arc<Self>) -> Option<ParentCallbackHold> {
+        self.reserve_parent_hold_after_snapshot(|| {})
+    }
+
+    fn reserve_parent_hold_after_snapshot(
+        self: &Arc<Self>,
+        after_snapshot: impl FnOnce(),
+    ) -> Option<ParentCallbackHold> {
+        let observed = self.state.load(Ordering::SeqCst);
+        after_snapshot();
+        if observed & (PARENT_PARK_OWNED | TEARDOWN_CLOSED) != 0 {
+            return None;
+        }
+        self.state
+            .compare_exchange(
+                observed,
+                observed | PARENT_PARK_OWNED | HOT_FORK_HELD,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .ok()?;
+        Some(ParentCallbackHold {
+            gate: Arc::clone(self),
+        })
+    }
+
+    pub(super) fn parent_hold_owned(&self) -> bool {
+        self.state.load(Ordering::SeqCst) & PARENT_PARK_OWNED != 0
     }
 
     /// Returns one instantaneous callback-admission view.
@@ -141,6 +188,24 @@ impl LiveCallbackQuiescence {
     }
 }
 
+/// Noncopying exclusive admission hold retained by the parent park owner.
+pub(super) struct ParentCallbackHold {
+    gate: Arc<LiveCallbackQuiescence>,
+}
+
+impl ParentCallbackHold {
+    pub(super) fn snapshot(&self) -> LiveCallbackQuiescenceSnapshot {
+        self.gate.snapshot()
+    }
+
+    /// Relinquishes this hold after the owning runtime has closed its drain scope.
+    pub(super) fn relinquish(self) {
+        self.gate
+            .state
+            .fetch_and(!(PARENT_PARK_OWNED | HOT_FORK_HELD), Ordering::SeqCst);
+    }
+}
+
 /// RAII proof that one callback is included in teardown's drain count.
 ///
 /// The callback's existing owner keeps the gate alive until this borrow ends.
@@ -163,6 +228,55 @@ mod tests {
     use std::sync::{Arc, Barrier};
 
     use super::*;
+
+    #[test]
+    fn parent_hold_single_attempt_refuses_actual_callback_admission_race() {
+        let gate = Arc::new(LiveCallbackQuiescence::new());
+        let mut callback = None;
+        let held = gate.reserve_parent_hold_after_snapshot(|| {
+            callback = gate.enter();
+        });
+        assert!(held.is_none());
+        assert!(!gate.parent_hold_owned());
+        assert!(!gate.snapshot().hot_fork_held);
+        assert_eq!(gate.snapshot().in_flight, 1);
+        drop(callback);
+        assert_eq!(gate.snapshot().in_flight, 0);
+    }
+
+    #[test]
+    fn parent_hold_blocks_legacy_release_and_second_owner() {
+        let gate = Arc::new(LiveCallbackQuiescence::new());
+        let hold = gate
+            .reserve_parent_hold()
+            .unwrap_or_else(|| panic!("exclusive hold"));
+
+        assert!(gate.release_hot_fork().hot_fork_held);
+        assert!(gate.enter().is_none());
+        assert!(gate.reserve_parent_hold().is_none());
+        assert_eq!(hold.snapshot().in_flight, 0);
+
+        hold.relinquish();
+        assert!(!gate.parent_hold_owned());
+        assert!(gate.enter().is_some());
+    }
+
+    #[test]
+    fn lost_parent_hold_keeps_gate_closed_and_prior_callback_counted() {
+        let gate = Arc::new(LiveCallbackQuiescence::new());
+        let callback = gate.enter().unwrap_or_else(|| panic!("open callback"));
+        let hold = gate
+            .reserve_parent_hold()
+            .unwrap_or_else(|| panic!("exclusive hold"));
+        assert_eq!(hold.snapshot().in_flight, 1);
+
+        drop(hold);
+        drop(callback);
+
+        assert_eq!(gate.snapshot().in_flight, 0);
+        assert!(gate.release_hot_fork().hot_fork_held);
+        assert!(gate.enter().is_none());
+    }
 
     #[test]
     fn close_rejects_new_callbacks_and_drain_waits_for_prior_guard() {

@@ -128,6 +128,19 @@ pub(crate) trait ProductionPausedCheckpointReplayFactory {
     /// Attempt resource owner retained until comparison cleanup.
     type Guard: QemuAttemptProcessResourceGuard;
 
+    /// Binds authenticated durable semantic facts before any physical replay.
+    fn configure_execution(
+        &mut self,
+        _basis: crate::qemu_baked_genesis::ProductionCheckpointReplayBasis,
+    ) -> Result<(), QemuVmRealizationError> {
+        Ok(())
+    }
+
+    /// Records one completely authenticated and physically cleaned node comparison.
+    fn target_completed(&mut self, _guard: &mut Self::Guard) -> Result<(), QemuVmRealizationError> {
+        Ok(())
+    }
+
     /// Installs the single aggregate guard for one complete root comparison.
     ///
     /// # Errors
@@ -251,8 +264,12 @@ impl PreparedPausedCheckpointPromotion {
         self.promotion.promoted()
     }
 
-    pub(crate) fn retire_native_source(&self) -> Result<(), ExactCheckpointStoreError> {
-        self.promotion.replacement().retire_native_source()
+    pub(crate) fn into_native_retirement(
+        self,
+    ) -> Option<crucible_api::ProductionExactCheckpointRetirement> {
+        let retirement = self.promotion.replacement().native_retirement();
+        drop(self);
+        retirement
     }
 }
 
@@ -263,8 +280,10 @@ pub(crate) struct StagedPausedCheckpointPromotion {
 }
 
 impl StagedPausedCheckpointPromotion {
-    pub(crate) fn retire_native_source(&self) -> Result<(), ExactCheckpointStoreError> {
-        self.prepared.retire_native_source()
+    pub(crate) fn into_native_retirement(
+        self,
+    ) -> Option<crucible_api::ProductionExactCheckpointRetirement> {
+        self.prepared.into_native_retirement()
     }
 }
 
@@ -321,6 +340,12 @@ pub(crate) enum PausedCheckpointPromotionPreparationError {
     /// Fat/thin realization, comparison, or mandatory cleanup failed.
     #[error(transparent)]
     Realization(#[from] QemuVmRealizationError),
+    /// Canonical event evidence could not be authenticated under its original metadata authority.
+    #[error("checkpoint event identity failed: {0}")]
+    EventIdentity(#[source] crucible::EngineError),
+    /// The independent replay proof could not be constructed.
+    #[error("checkpoint replay proof failed: {0}")]
+    ReplayProof(#[source] crate::QemuFreshModeledDriverError),
     /// Independent execution did not reproduce the captured checkpoint boundary.
     #[error("checkpoint does not match an independent full-world replay")]
     SavepointReplayMismatch,
@@ -569,6 +594,27 @@ where
                 let basis = promotion_basis.ok_or(
                     PausedCheckpointPromotionRecoveryResolutionError::ExecutionBasisMismatch,
                 )?;
+                let _decode_scope = execution.enter_decode_scope();
+                factory
+                    .configure_execution(
+                        crate::qemu_baked_genesis::ProductionCheckpointReplayBasis::new(
+                            execution.scenario(),
+                            basis.resources(),
+                            crate::AttemptExecutionRuntimeBasis::new(
+                                recovery.key(),
+                                recovery.execution(),
+                            ),
+                            basis.start_mode(),
+                            recovery.source(),
+                        )
+                        .map_err(|source| QemuVmRealizationError::ModelCopy {
+                            source: Box::new(source),
+                        })
+                        .map_err(PausedCheckpointPromotionPreparationError::from)
+                        .map_err(Box::new)?,
+                    )
+                    .map_err(PausedCheckpointPromotionPreparationError::from)
+                    .map_err(Box::new)?;
                 let replay = match basis.start_mode() {
                     AttemptStartMode::SavepointCapture { .. } => factory
                         .replay_savepoint_capture(
@@ -694,6 +740,19 @@ pub(crate) fn validate_and_prepare_production_paused_checkpoint_promotion<F>(
 where
     F: ProductionPausedCheckpointReplayFactory,
 {
+    let _decode_scope = target.attempt.enter_decode_scope();
+    factory.configure_execution(
+        crate::qemu_baked_genesis::ProductionCheckpointReplayBasis::new(
+            target.source,
+            target.resources,
+            crate::AttemptExecutionRuntimeBasis::new(target.key, target.execution),
+            target.start_mode,
+            target.raw,
+        )
+        .map_err(|source| QemuVmRealizationError::ModelCopy {
+            source: Box::new(source),
+        })?,
+    )?;
     let mut installed = install_attempt_production_exact_checkpoint(
         checkpoints,
         target.raw,
@@ -901,8 +960,10 @@ where
                 None => Err(error),
             };
         }
+        if let Err(error) = factory.target_completed(&mut guard) {
+            return Err(finish_replay_guard(&mut guard).unwrap_or(error).into());
+        }
     }
-
     guard.finish()?;
     let mut boundary = || {
         if target.cancellation.is_canceled() {
@@ -942,7 +1003,10 @@ fn validate_savepoint_replay_boundary(
     configuration: &Configuration,
     scheduler: &crucible::SingleSchedulerCheckpoint,
 ) -> Result<(), PausedCheckpointPromotionPreparationError> {
-    if replay.matches_checkpoint(configuration, scheduler) {
+    if replay
+        .matches_checkpoint(configuration, scheduler)
+        .map_err(PausedCheckpointPromotionPreparationError::EventIdentity)?
+    {
         Ok(())
     } else {
         Err(PausedCheckpointPromotionPreparationError::SavepointReplayMismatch)
@@ -964,8 +1028,11 @@ fn replay_checkpoint_causal_boundary<F: ProductionPausedCheckpointReplayFactory>
         scheduler.frontier(),
         scheduler.retained_event_log_entries(),
     )
-    .map_err(|_| PausedCheckpointPromotionPreparationError::SavepointReplayMismatch)?;
-    if !source.matches_checkpoint(configuration, scheduler) {
+    .map_err(PausedCheckpointPromotionPreparationError::ReplayProof)?;
+    if !source
+        .matches_checkpoint(configuration, scheduler)
+        .map_err(PausedCheckpointPromotionPreparationError::EventIdentity)?
+    {
         return Err(PausedCheckpointPromotionPreparationError::SavepointReplayMismatch);
     }
     let target =
@@ -1044,7 +1111,7 @@ where
 /// when any durable immutable placement fails.
 pub(crate) fn publish_staged_paused_checkpoint_promotion(
     checkpoints: &ExactCheckpointStore,
-    staged: StagedPausedCheckpointPromotion,
+    mut staged: StagedPausedCheckpointPromotion,
 ) -> Result<PublishedPausedCheckpointPromotion, PausedCheckpointPromotionPublicationError> {
     let Some(evidence) = staged
         .prepared
@@ -1083,8 +1150,8 @@ pub(crate) fn publish_staged_paused_checkpoint_promotion(
     if let Err(source) = staged
         .prepared
         .promotion
-        .replacement()
-        .retire_native_source()
+        .replacement_mut()
+        .retire_native_source(checkpoints)
     {
         return Err(PausedCheckpointPromotionPublicationError {
             staged: Box::new(staged),
@@ -1284,7 +1351,4 @@ where
 mod tests;
 
 #[cfg(test)]
-pub(crate) use tests::{
-    RepositoryPromotionFixture, prepare_repository_promotion_fixture,
-    promote_test_checkpoint_for_resume,
-};
+pub(crate) use tests::{RepositoryPromotionFixture, prepare_repository_promotion_fixture};

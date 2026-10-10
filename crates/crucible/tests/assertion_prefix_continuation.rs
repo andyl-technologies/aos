@@ -24,6 +24,7 @@ fn append_boundaries(log: &mut EventLog, count: u64) -> TestResult {
                 time(sequence + 1),
                 SchedulerEvaluationBoundaryKind::Quantum,
             )
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
         })
         .collect();
     log.append_entries(entries)?;
@@ -32,12 +33,16 @@ fn append_boundaries(log: &mut EventLog, count: u64) -> TestResult {
 
 #[test]
 fn growing_authenticated_history_preserves_empty_continuation() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = Properties::empty();
 
     for initial_entries in [512, 2048, 10958] {
         let mut log = EventLog::new();
         append_boundaries(&mut log, initial_entries)?;
-        let mut evaluator = HostAssertionEvaluator::new(&properties);
+        let mut evaluator = HostAssertionEvaluator::new(&properties)
+            .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
         let mut oracle = crucible::BlackBoxHostOracle;
 
         for _ in 0..64 {
@@ -45,19 +50,34 @@ fn growing_authenticated_history_preserves_empty_continuation() -> TestResult {
             assert!(
                 evaluator
                     .observe_prefix(log.condition_prefix(), &mut oracle)
+                    .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"))
                     .is_empty()
             );
         }
-        let encoded = evaluator.checkpoint().canonical_bytes()?;
+        let encoded = evaluator
+            .checkpoint()
+            .unwrap_or_else(|error| panic!("finite component assertion checkpoint: {error}"))
+            .canonical_bytes()?;
         let checkpoint = HostAssertionEvaluatorCheckpoint::from_canonical_bytes(&encoded)?;
-        let mut restored = HostAssertionEvaluator::new(&properties);
+        let mut restored = HostAssertionEvaluator::new(&properties)
+            .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
         checkpoint.restore_into(&mut restored, log.condition_prefix())?;
 
-        assert_eq!(restored.checkpoint().canonical_bytes()?, encoded);
+        assert_eq!(
+            restored
+                .checkpoint()
+                .unwrap_or_else(|error| panic!("finite component assertion checkpoint: {error}"))
+                .canonical_bytes()?,
+            encoded
+        );
         append_boundaries(&mut log, 1)?;
         assert_eq!(
-            restored.finalize_prefix(log.condition_prefix(), &mut oracle),
-            evaluator.finalize_prefix(log.condition_prefix(), &mut oracle)
+            restored
+                .finalize_prefix(log.condition_prefix(), &mut oracle)
+                .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}")),
+            evaluator
+                .finalize_prefix(log.condition_prefix(), &mut oracle)
+                .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"))
         );
         println!(
             "live_assertion_continuation initial_entries={initial_entries} observations=64 checkpoint_hash={}",
@@ -69,6 +89,9 @@ fn growing_authenticated_history_preserves_empty_continuation() -> TestResult {
 
 #[test]
 fn restored_deadline_crossing_preserves_equal_and_earlier_points() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_nodes(Vec::new())?;
     let properties = Properties::from_assertions_for_world(
         &world,
@@ -86,7 +109,8 @@ fn restored_deadline_crossing_preserves_equal_and_earlier_points() -> TestResult
         3,
         Vec::<ObservableEvent>::new(),
     )?;
-    let mut evaluator = HostAssertionEvaluator::new(&properties);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle = crucible::test_support::unchecked_host_assertion_oracle_for_test(
         |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
             ConditionLeaf::Named { name, .. } => match name {
@@ -97,10 +121,16 @@ fn restored_deadline_crossing_preserves_equal_and_earlier_points() -> TestResult
             ConditionLeaf::GuestMarker { .. } => false,
         },
     );
-    evaluator.observe_prefix(&first, &mut oracle);
-    let encoded = evaluator.checkpoint().canonical_bytes()?;
+    evaluator
+        .observe_prefix(&first, &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    let encoded = evaluator
+        .checkpoint()
+        .unwrap_or_else(|error| panic!("finite component assertion checkpoint: {error}"))
+        .canonical_bytes()?;
     let checkpoint = HostAssertionEvaluatorCheckpoint::from_canonical_bytes(&encoded)?;
-    let mut restored = HostAssertionEvaluator::new(&properties);
+    let mut restored = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     checkpoint.restore_into(&mut restored, &first)?;
 
     for ticks in [3, 1, 10] {
@@ -109,19 +139,36 @@ fn restored_deadline_crossing_preserves_equal_and_earlier_points() -> TestResult
             Vec::new(),
         )?;
         assert_eq!(
-            restored.observe_prefix(&prefix, &mut oracle),
-            evaluator.observe_prefix(&prefix, &mut oracle)
+            restored
+                .observe_prefix(&prefix, &mut oracle)
+                .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}")),
+            evaluator
+                .observe_prefix(&prefix, &mut oracle)
+                .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"))
         );
         assert_eq!(
-            restored.checkpoint().canonical_bytes()?,
-            evaluator.checkpoint().canonical_bytes()?
+            restored
+                .checkpoint()
+                .unwrap_or_else(|error| panic!("finite component assertion checkpoint: {error}"))
+                .canonical_bytes()?,
+            evaluator
+                .checkpoint()
+                .unwrap_or_else(|error| panic!("finite component assertion checkpoint: {error}"))
+                .canonical_bytes()?
         );
     }
     let terminal =
         crucible::test_support::condition_prefix_from_observable_events_for_test(10, Vec::new())?;
-    let report = evaluator.finalize_prefix(&terminal, &mut oracle);
+    let report = evaluator
+        .finalize_prefix(&terminal, &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
-    assert_eq!(report, restored.finalize_prefix(&terminal, &mut oracle));
+    assert_eq!(
+        report,
+        restored
+            .finalize_prefix(&terminal, &mut oracle)
+            .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"))
+    );
     assert_eq!(report.verdict(), &AssertionRunVerdict::Passed);
     assert_eq!(report.outcomes().len(), 1);
     assert_eq!(
@@ -138,22 +185,42 @@ fn restored_deadline_crossing_preserves_equal_and_earlier_points() -> TestResult
 
 #[test]
 fn mismatched_prefix_restore_preserves_original_continuation() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = Properties::empty();
     let mut log = EventLog::new();
     append_boundaries(&mut log, 128)?;
-    let mut evaluator = HostAssertionEvaluator::new(&properties);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle = crucible::BlackBoxHostOracle;
-    evaluator.observe_prefix(log.condition_prefix(), &mut oracle);
-    let checkpoint = evaluator.checkpoint();
+    evaluator
+        .observe_prefix(log.condition_prefix(), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    let checkpoint = evaluator
+        .checkpoint()
+        .unwrap_or_else(|error| panic!("finite component assertion checkpoint: {error}"));
     append_boundaries(&mut log, 1)?;
-    let mut target = HostAssertionEvaluator::new(&properties);
-    target.observe_prefix(log.condition_prefix(), &mut oracle);
-    let before = target.checkpoint().canonical_bytes()?;
+    let mut target = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
+    target
+        .observe_prefix(log.condition_prefix(), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    let before = target
+        .checkpoint()
+        .unwrap_or_else(|error| panic!("finite component assertion checkpoint: {error}"))
+        .canonical_bytes()?;
 
     assert_eq!(
         checkpoint.restore_into(&mut target, log.condition_prefix()),
         Err(HostAssertionCheckpointError::Binding)
     );
-    assert_eq!(target.checkpoint().canonical_bytes()?, before);
+    assert_eq!(
+        target
+            .checkpoint()
+            .unwrap_or_else(|error| panic!("finite component assertion checkpoint: {error}"))
+            .canonical_bytes()?,
+        before
+    );
     Ok(())
 }

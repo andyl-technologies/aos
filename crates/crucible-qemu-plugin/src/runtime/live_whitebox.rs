@@ -567,6 +567,9 @@ impl LiveWhiteboxState {
                 Ordering::Acquire,
             )
             .map_err(|_existing| LiveWhiteboxError::StateAlreadyPublished)?;
+        if let Some(selectable) = self.selectable.as_mut() {
+            selectable.register_reset_owner(plugin_id)?;
+        }
         if let Some(app_random) = self.app_random.as_mut() {
             LIVE_APP_RANDOM_STATE.store(std::ptr::from_mut(app_random), Ordering::Release);
         }

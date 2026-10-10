@@ -190,6 +190,9 @@ pub(in crate::scheduler) fn observation(
 
 #[test]
 fn repeated_actual_queue_observation_preserves_the_single_canonical_key() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, queue, pipeline) = fixture();
     let device = SchedulerNodeId {
         node: id("disk"),
@@ -217,6 +220,9 @@ fn repeated_actual_queue_observation_preserves_the_single_canonical_key() {
 
 #[test]
 fn missing_foreign_and_changed_queue_observations_leave_actor_state_unchanged() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, queue, pipeline) = fixture();
     let inventory = observation(&scheduler, &queue, &pipeline);
     ok(scheduler.import_initial_io_inventory(inventory.clone()));
@@ -236,6 +242,9 @@ fn missing_foreign_and_changed_queue_observations_leave_actor_state_unchanged() 
 
 #[test]
 fn actual_queue_removal_without_acknowledged_publication_is_refused() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, mut queue, pipeline) = fixture();
     ok(scheduler.import_initial_io_inventory(observation(&scheduler, &queue, &pipeline)));
     let before = scheduler.pending_events.clone();
@@ -252,6 +261,9 @@ fn actual_queue_removal_without_acknowledged_publication_is_refused() {
 
 #[test]
 fn pending_origin_ledger_survives_repeated_restore_and_rejects_prior_schema() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, queue, pipeline) = fixture();
     ok(scheduler.import_initial_io_inventory(observation(&scheduler, &queue, &pipeline)));
     let bytes = ok(ok(scheduler.checkpoint()).canonical_bytes());
@@ -276,6 +288,9 @@ fn pending_origin_ledger_survives_repeated_restore_and_rejects_prior_schema() {
 
 #[test]
 fn unknown_native_caps_refuse_before_actor_import_or_pick() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, queue, pipeline) = fixture();
     let before = ok(ok(scheduler.checkpoint()).canonical_bytes());
     let original = observation(&scheduler, &queue, &pipeline);
@@ -296,6 +311,9 @@ fn unknown_native_caps_refuse_before_actor_import_or_pick() {
 
 #[test]
 fn native_caps_use_actual_ready_mapping_and_bound_semantic_authorization() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, queue, pipeline) = fixture_at(100, 130);
     let mut facts = observation(&scheduler, &queue, &pipeline);
     facts.native_caps = BackendIoNativeCaps {
@@ -319,6 +337,9 @@ fn native_caps_use_actual_ready_mapping_and_bound_semantic_authorization() {
 
 #[test]
 fn armed_zero_is_a_real_due_bound_and_past_native_cap_is_stale() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, queue, pipeline) = fixture();
     let mut facts = observation(&scheduler, &queue, &pipeline);
     facts.native_caps.timer = BackendIoNativeCap::Armed(NodeCounter { ticks: 0 });
@@ -340,6 +361,9 @@ fn armed_zero_is_a_real_due_bound_and_past_native_cap_is_stale() {
 
 #[test]
 fn native_cap_knowledge_is_mandatory_and_preserved_by_continuation() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, queue, pipeline) = fixture();
     let mut facts = observation(&scheduler, &queue, &pipeline);
     facts.native_caps.timer = BackendIoNativeCap::Armed(NodeCounter { ticks: 20 });
@@ -370,6 +394,9 @@ fn native_cap_knowledge_is_mandatory_and_preserved_by_continuation() {
 
 #[test]
 fn restored_physical_tick_uses_the_retained_ready_mapping_instead_of_shared_time() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, queue, pipeline) = fixture_at(100, 120);
     ok(scheduler.import_initial_io_inventory(observation(&scheduler, &queue, &pipeline)));
     assert_eq!(scheduler.pending_events[0].key.virtual_time().ticks, 20);
@@ -486,6 +513,9 @@ fn fixed_actor(
 
 #[test]
 fn fixed_current_input_keeps_the_original_owner_and_batch_through_partial_reseal() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     use crate::BackendFixedInputState::{Partial, Pending, Published, Resealed};
     let mut actor = fixed_actor(&[(0, Pending), (1, Partial), (2, Resealed), (2, Published)]);
     let configuration = actor.loop_impl().configuration.clone();
@@ -540,6 +570,9 @@ fn fixed_current_input_keeps_the_original_owner_and_batch_through_partial_reseal
 
 #[test]
 fn partial_fixed_input_failure_preserves_the_entire_batch_cleanup_only() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     use crate::BackendFixedInputState::Partial;
     let mut actor = fixed_actor(&[(1, Partial)]);
     assert!(ok(actor.settle_current_fixed_input()).is_some());
@@ -557,6 +590,9 @@ fn partial_fixed_input_failure_preserves_the_entire_batch_cleanup_only() {
 
 #[test]
 fn incomplete_published_and_regressing_fixed_input_results_cannot_retire_events() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     use crate::BackendFixedInputState::{Partial, Published};
     for outcomes in [vec![(1, Published)], vec![(1, Partial), (0, Partial)]] {
         let mut actor = fixed_actor(&outcomes);
@@ -572,6 +608,9 @@ fn incomplete_published_and_regressing_fixed_input_results_cannot_retire_events(
 
 #[test]
 fn fixed_input_generation_exhaustion_refuses_before_backend_effects() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     use crate::BackendFixedInputState::Published;
     let mut actor = fixed_actor(&[(2, Published)]);
     actor.loop_impl_mut().fixed_input_generation = u64::MAX;
@@ -584,6 +623,9 @@ fn fixed_input_generation_exhaustion_refuses_before_backend_effects() {
 
 #[test]
 fn changed_actor_source_refuses_before_a_second_fixed_input_backend_call() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     use crate::BackendFixedInputState::{Partial, Published};
     let mut actor = fixed_actor(&[(1, Partial), (2, Published)]);
     assert!(ok(actor.settle_current_fixed_input()).is_some());
@@ -598,6 +640,9 @@ fn changed_actor_source_refuses_before_a_second_fixed_input_backend_call() {
 
 #[test]
 fn a_partial_fixed_consumer_cannot_be_overwritten_by_checkpoint_restore() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     use crate::BackendFixedInputState::Partial;
     let mut actor = fixed_actor(&[(1, Partial)]);
     let initial = ok(actor.loop_impl().checkpoint());
@@ -611,6 +656,9 @@ fn a_partial_fixed_consumer_cannot_be_overwritten_by_checkpoint_restore() {
 
 #[test]
 fn repeated_inventory_cannot_recreate_a_missing_original_actor_event() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, queue, pipeline) = fixture();
     let observed = observation(&scheduler, &queue, &pipeline);
     ok(scheduler.import_initial_io_inventory(observed.clone()));
@@ -622,6 +670,9 @@ fn repeated_inventory_cannot_recreate_a_missing_original_actor_event() {
 
 #[test]
 fn published_fixed_input_history_is_committed_once_by_the_later_semantic_run() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     use crate::BackendFixedInputState::Published;
     let mut actor = fixed_actor(&[(2, Published)]);
     assert_eq!(
@@ -649,6 +700,9 @@ fn published_fixed_input_history_is_committed_once_by_the_later_semantic_run() {
 
 #[test]
 fn independent_block_pipeline_revision_exposes_deadline_without_queue_mutation() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, queue, mut pipeline) = fixture();
     let original = observation(&scheduler, &queue, &pipeline);
     ok(scheduler.import_initial_io_inventory(original.clone()));
@@ -687,6 +741,9 @@ fn independent_block_pipeline_revision_exposes_deadline_without_queue_mutation()
 
 #[test]
 fn block_pipeline_revision_is_mandatory_and_cannot_regress() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, queue, mut pipeline) = fixture();
     ok(pipeline.require_directives(true));
     let current = observation(&scheduler, &queue, &pipeline);
@@ -704,6 +761,9 @@ fn block_pipeline_revision_is_mandatory_and_cannot_regress() {
 
 #[test]
 fn restored_queue_requires_an_explicit_pipeline_revision_field() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, queue, pipeline) = fixture();
     ok(scheduler.import_initial_io_inventory(observation(&scheduler, &queue, &pipeline)));
     let retained = scheduler
@@ -733,6 +793,9 @@ fn restored_queue_requires_an_explicit_pipeline_revision_field() {
 
 #[test]
 fn restored_current_reply_cannot_replace_its_actor_projected_time() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, queue, pipeline) = fixture_at(100, 120);
     ok(scheduler.import_initial_io_inventory(observation(&scheduler, &queue, &pipeline)));
     let imported = scheduler
@@ -751,6 +814,9 @@ fn restored_current_reply_cannot_replace_its_actor_projected_time() {
 
 #[test]
 fn native_caps_bound_idle_wake_without_fabricating_quiescent_completion() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, queue, pipeline) = fixture_at(100, 130);
     scheduler.nodes[0].activity = SchedulerNodeActivity::Idle;
     for vcpu in &mut scheduler.nodes[0].vcpu_idle_states {
@@ -781,6 +847,9 @@ mod fixed_consumers;
 
 #[test]
 fn live_world_attachment_retains_the_exact_physical_queue_owner() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, queue, pipeline) = fixture();
     let world = scheduler
         .inventory_world
@@ -807,6 +876,9 @@ fn live_world_attachment_retains_the_exact_physical_queue_owner() {
 
 #[test]
 fn mismatched_vm_topology_and_rebinding_world_preserve_the_original_owner() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, _queue, _pipeline) = fixture();
     let world = scheduler
         .inventory_world

@@ -190,7 +190,7 @@ fn first_item_line_after_attributes(lines: &[&str], start: usize) -> Option<usiz
     None
 }
 
-fn scrub_source_comments_and_literals(content: &str) -> String {
+pub(super) fn scrub_source_comments_and_literals(content: &str) -> String {
     let chars = content.chars().collect::<Vec<_>>();
     let mut output = String::with_capacity(content.len());
     let mut index = 0usize;

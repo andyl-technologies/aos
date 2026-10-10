@@ -131,9 +131,16 @@ impl QemuQmpChannelConfig {
     }
 
     /// Returns the QEMU `-qmp` endpoint string.
+    ///
+    /// Received descriptors retain their original open-file-description flags.
+    /// The matched native socket backend must support this explicit option;
+    /// an older backend refuses startup rather than changing shared events.
     #[must_use]
     pub fn qemu_endpoint(&self) -> String {
-        format!("unix:{},server=on,wait=off", self.socket_file_name)
+        format!(
+            "unix:{},server=on,wait=off,fd-preserve-blocking=on",
+            self.socket_file_name
+        )
     }
 
     /// Returns whether QMP is outside the scheduler hot path.
@@ -196,6 +203,12 @@ fn validate_pre_spawn_qmp_control_endpoint(
             "QMP channel that can block deterministic launch",
         ));
     }
+    if unique_comma_value(&lower, "-qmp", "fd-preserve-blocking")? != Some("on") {
+        return Err(qmp_endpoint_error(
+            qmp,
+            "QMP channel without imported descriptor flag preservation",
+        ));
+    }
     Ok(())
 }
 
@@ -203,7 +216,7 @@ fn validate_qmp_suboption_keys(qmp: &str) -> Result<(), QemuPreSpawnLaunchValida
     for suboption in qmp.split(',').skip(1) {
         let key = suboption.split_once('=').map(|(key, _value)| key.trim());
         match key {
-            Some("server" | "wait") => {}
+            Some("server" | "wait" | "fd-preserve-blocking") => {}
             _ => {
                 return Err(qmp_endpoint_error(
                     qmp,

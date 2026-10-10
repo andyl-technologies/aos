@@ -16,19 +16,28 @@ use crucible_api::{
 };
 use crucible_qemu::{
     QemuChildProcessContract, QemuLiveNodeIdentity, QemuNode, QemuPreparedRunDirectory,
-    QemuProductionFreshLaunchAdmission, launch_qemu_production_fresh_node,
+    QemuProductionFreshLaunchAdmission,
 };
+
+#[cfg(not(feature = "private-measurement-domain"))]
+use crucible_qemu::launch_qemu_production_fresh_node;
 
 use crate::{
     ExactCheckpointStore, ExecutionCancellation, QemuAttemptGenerationLease,
     QemuAttemptGenerationResourceOwner, QemuAttemptProcessResourceGuard,
 };
 
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+mod parent_park_drain;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub(crate) use parent_park_drain::OriginalParkDrainDisposition;
+
 struct TerminalCheckpointImport {
     checkpoints: Arc<ExactCheckpointStore>,
     source: crucible::ScenarioDefForm,
     cancellation: ExecutionCancellation,
     published_root: Option<crucible::ContentHash>,
+    _decode_custody: Option<crucible::owned_decode::DecodeCustody>,
 }
 
 /// Guarded production lifecycle launcher for one admitted QEMU attempt.
@@ -37,6 +46,13 @@ pub(crate) struct QemuAttemptProductionVmNodeLauncher<G>
 where
     G: QemuAttemptProcessResourceGuard,
 {
+    // Retire this issuer alias before the actual containing generation owner.
+    pub(crate) park_drain_registration:
+        Option<crate::qemu_campaign_lifecycle::ConfiguredParkDrainRegistration>,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    parent_park_phase: Option<parent_park_drain::OriginalParkDrainPhase>,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    parent_park_disposition: Option<OriginalParkDrainDisposition>,
     owner: QemuAttemptGenerationResourceOwner<G>,
     run_directories: Arc<Mutex<BTreeMap<ProductionVmNodeGeneration, QemuPreparedRunDirectory>>>,
     image_helpers: Arc<Mutex<ImageHelperCleanupDebt>>,
@@ -50,11 +66,26 @@ where
     /// Wraps one attempt-wide resource owner as a lifecycle generation launcher.
     pub(crate) fn new(owner: QemuAttemptGenerationResourceOwner<G>) -> Self {
         Self {
+            park_drain_registration: None,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            parent_park_phase: None,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            parent_park_disposition: None,
             owner,
             run_directories: Arc::new(Mutex::new(BTreeMap::new())),
             image_helpers: Arc::new(Mutex::new(ImageHelperCleanupDebt::default())),
             terminal_checkpoint: None,
         }
+    }
+
+    /// Binds the same configured family before the launcher enters its lifecycle.
+    pub(crate) fn new_registered(
+        owner: QemuAttemptGenerationResourceOwner<G>,
+        park_drain_registration: crate::qemu_campaign_lifecycle::ConfiguredParkDrainRegistration,
+    ) -> Self {
+        let mut launcher = Self::new(owner);
+        launcher.park_drain_registration = Some(park_drain_registration);
+        launcher
     }
 
     /// Installs the selected campaign store for a recoverable terminal restart.
@@ -69,6 +100,7 @@ where
             source,
             cancellation,
             published_root: None,
+            _decode_custody: crucible::owned_decode::current_custody(),
         });
         self
     }
@@ -255,12 +287,37 @@ where
                 process_contract,
                 identity,
             )
-            .and_then(|admission| launch_qemu_production_fresh_node(&launch, admission));
+            .and_then(|admission| {
+                #[cfg(feature = "private-measurement-domain")]
+                {
+                    self.owner.launch_fresh_node(&launch, admission)
+                }
+                #[cfg(not(feature = "private-measurement-domain"))]
+                {
+                    launch_qemu_production_fresh_node(&launch, admission)
+                }
+            });
             (launched, retained_contract)
         };
         let node = match launched {
             Ok(node) => node,
             Err(mut error) => {
+                #[cfg(feature = "private-measurement-domain")]
+                if let crucible_qemu::QemuLiveNodeStepGateError::OriginalNativeLaunch { source } =
+                    error
+                {
+                    // The original slot already owns this exact prepaid Arc,
+                    // including any node created before the independent postcut.
+                    // No ordinary error formatting or second shared allocation
+                    // may replace that first cause or release its native credit.
+                    self.owner.quarantine_original_launch();
+                    drop(lease);
+                    return Err(LifecycleApiError::BackendConstruction {
+                        source: crucible_api::LifecycleBackendConstructionError::from_shared(
+                            source,
+                        ),
+                    });
+                }
                 let message = launch_error_chain(&error);
                 if let Some(child) = error.take_unreaped_child() {
                     self.owner.retain_failed_launch_child(child);
@@ -337,6 +394,13 @@ where
     fn drop(&mut self) {
         // Transfer the original wait handles before the aggregate owner's Drop
         // starts quarantine. Its worker keeps retrying reap before quota release.
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        if let Some(phase) = self.parent_park_phase.take() {
+            // No explicit native disposition exists. Keep both originals,
+            // imported descriptors and their credits while the actual owner
+            // below enters its existing physical quarantine.
+            std::mem::forget(phase);
+        }
         self.transfer_image_helper_debt();
     }
 }
@@ -345,7 +409,53 @@ impl<G> ProductionVmNodeLauncher for QemuAttemptProductionVmNodeLauncher<G>
 where
     G: QemuAttemptProcessResourceGuard + Send,
 {
+    fn parent_park_drain_is_owned(&self) -> bool {
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        {
+            self.parent_park_phase.is_some()
+        }
+        #[cfg(not(all(target_os = "linux", feature = "private-measurement-domain")))]
+        {
+            false
+        }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_drain(
+        &mut self,
+        source: &mut crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        request: crucible_api::ProductionVmParentParkDrainRequest<'_>,
+    ) -> Result<
+        crucible_qemu::QmpParentParkDrainReceipt,
+        crucible_api::ProductionVmParentParkDrainRefusal,
+    > {
+        self.invoke_parent_park_drain(source, request)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn contain_parent_park_drain(
+        &mut self,
+    ) -> Result<(), crucible_api::ProductionVmParentParkDrainRefusal> {
+        // Use the actual containing guard's existing kill/reap quarantine.
+        // Its owner stays inside the complete lifecycle; phase custody below
+        // is not refunded by this transfer or by a scalar successful return.
+        self.transfer_image_helper_debt();
+        self.owner.quarantine_original_launch();
+        Ok(())
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_drain_failure(
+        &self,
+    ) -> Option<crucible_api::ProductionVmParentParkDrainFailure<'_>> {
+        self.parent_park_phase.as_ref().map(|phase| phase.failure())
+    }
+
     fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        if self.parent_park_phase.is_some() {
+            return Err(LifecycleApiError::ParentParkHeld);
+        }
         self.owner.charge_execution_quantum()
     }
 
@@ -357,6 +467,10 @@ where
         &mut self,
         closure: ProductionExactCheckpointClosure,
     ) -> Result<DecodedProductionExactCheckpoint, LifecycleApiError> {
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        if self.parent_park_phase.is_some() {
+            return Err(LifecycleApiError::ParentParkHeld);
+        }
         self.owner.check_operational_boundary()?;
         let terminal = self.terminal_checkpoint.as_mut().ok_or_else(|| {
             launcher_message("terminal exact checkpoint has no selected campaign store")
@@ -376,8 +490,9 @@ where
             .load_production_closure_with_cancellation(publication.root(), &terminal.cancellation)
             .map(Arc::new)
             .map_err(|error| launcher_message(format!("load terminal checkpoint: {error}")))?;
-        let decoded = loaded
-            .decode_semantic_checkpoint(&terminal.source, &terminal.cancellation)
+        let decoded = terminal
+            .checkpoints
+            .decode_semantic_checkpoint(&loaded, &terminal.source, &terminal.cancellation)
             .map_err(|error| launcher_message(format!("decode terminal checkpoint: {error}")))?;
         self.owner.check_operational_boundary()?;
         terminal.published_root = Some(crucible::ContentHash {
@@ -392,6 +507,10 @@ where
         qemu_executable: &std::path::Path,
         root_image: &std::path::Path,
     ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        if self.parent_park_phase.is_some() {
+            return Err(LifecycleApiError::ParentParkHeld);
+        }
         let identity =
             ProductionVmNodeGeneration::new(request.node().clone(), request.generation())?;
         let lease = self.owner.register_generation(identity.clone())?;
@@ -426,6 +545,10 @@ where
         request: ProductionVmNodeLaunchRequest<'_>,
         admission: ProductionVmExactNodeRestoreAdmission,
     ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        if self.parent_park_phase.is_some() {
+            return Err(LifecycleApiError::ParentParkHeld);
+        }
         let identity =
             ProductionVmNodeGeneration::new(request.node().clone(), request.generation())?;
         let lease = self.owner.register_generation(identity.clone())?;
@@ -455,7 +578,7 @@ where
             let _ = (admission, run_directories);
             Err(abort_unspawned_generation(
                 lease,
-                launcher_message("exact restore requires descriptor-backed v9 state on Linux"),
+                launcher_message("exact restore requires descriptor-backed paged state on Linux"),
             ))
         }
     }
@@ -467,6 +590,10 @@ where
     }
 
     fn finish(&mut self) -> Result<(), LifecycleApiError> {
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        if self.parent_park_phase.is_some() {
+            return Err(LifecycleApiError::ParentParkHeld);
+        }
         self.transfer_image_helper_debt();
         self.owner.finish()
     }

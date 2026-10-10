@@ -15,6 +15,9 @@ use crucible::{
 
 #[test]
 fn topology_change_recomputes_lowered_lookahead_before_pick() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let producer = scheduler_node("producer");
     let consumer = scheduler_node("consumer");
     let scenario = base_scenario(
@@ -64,6 +67,9 @@ fn topology_change_recomputes_lowered_lookahead_before_pick() {
 
 #[test]
 fn runtime_topology_change_queue_recomputes_before_next_pick() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let producer = scheduler_node("producer");
     let consumer = scheduler_node("consumer");
     let scenario = base_scenario(
@@ -98,6 +104,9 @@ fn runtime_topology_change_queue_recomputes_before_next_pick() {
 
 #[test]
 fn netlink_latency_recompute_signal_queues_boundary_recompute() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let producer = scheduler_node("producer");
     let consumer = scheduler_node("consumer");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
@@ -173,6 +182,9 @@ fn netlink_latency_recompute_signal_queues_boundary_recompute() {
 
 #[test]
 fn netlink_recompute_validation_failure_keeps_signal_pending() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let producer = scheduler_node("producer");
     let consumer = scheduler_node("consumer");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
@@ -212,6 +224,9 @@ fn netlink_recompute_validation_failure_keeps_signal_pending() {
 
 #[test]
 fn netlink_latency_update_does_not_restore_pending_partition_edge() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let producer = scheduler_node("producer");
     let consumer = scheduler_node("consumer");
     let endpoint = edge(&producer, &consumer, 20).endpoint();
@@ -266,6 +281,9 @@ fn netlink_latency_update_does_not_restore_pending_partition_edge() {
 
 #[test]
 fn netlink_latency_after_partition_is_recoverable_by_heal_with_current_latency() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let producer = scheduler_node("producer");
     let consumer = scheduler_node("consumer");
     let endpoint = edge(&producer, &consumer, 20).endpoint();
@@ -344,6 +362,9 @@ fn netlink_latency_after_partition_is_recoverable_by_heal_with_current_latency()
 
 #[test]
 fn multiple_netlink_latency_updates_preserve_unrelated_edges() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let producer_a = scheduler_node("producer-a");
     let producer_b = scheduler_node("producer-b");
     let consumer_a = scheduler_node("consumer-a");
@@ -432,6 +453,9 @@ fn multiple_netlink_latency_updates_preserve_unrelated_edges() {
 
 #[test]
 fn pending_topology_change_freezes_cross_node_sends_until_boundary() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let producer = scheduler_node("producer");
     let consumer = scheduler_node("consumer");
     let scenario = base_scenario(
@@ -471,6 +495,9 @@ fn pending_topology_change_freezes_cross_node_sends_until_boundary() {
 
 #[test]
 fn lowered_lookahead_prevents_inflight_frame_delivery_under_stale_horizon() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let producer = scheduler_node("producer");
     let consumer = scheduler_node("consumer");
     let inflight = backend_event(12, &consumer, &producer, 0, b"in-flight");
@@ -501,6 +528,9 @@ fn lowered_lookahead_prevents_inflight_frame_delivery_under_stale_horizon() {
 
 #[test]
 fn topology_only_boundary_progress_does_not_deadlock_liveness() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let producer = scheduler_node("producer");
     let done = scheduler_node("done");
     let scenario = base_scenario(
@@ -529,8 +559,11 @@ fn topology_only_boundary_progress_does_not_deadlock_liveness() {
 
 #[test]
 fn network_bounded_nodes_climb_to_time_limit_without_freezing() {
-    // Regression for the topology/horizon freeze deadlock (RFC-0010
-    // [SCHED-7]/[SCHED-8]). A node bound by the conservative network-lookahead
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
+    // Regression for the topology/horizon freeze deadlock. A node bound by the
+    // conservative network-lookahead
     // term derived from a live effective topology is held at a *moving* cap
     // (`vt(n) + lookahead(n)`), not a genuine local quiescence point. A 2-node
     // ring with bidirectional latency-4 links and all-halted (no vCPU) nodes must
@@ -594,6 +627,9 @@ fn network_bounded_nodes_climb_to_time_limit_without_freezing() {
 
 #[test]
 fn topology_change_armed_in_the_past_is_rejected_at_enqueue() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     // The fallible arming porcelain rejects an activation time the run has already
     // passed at enqueue time, rather than wedging the run with a repeating
     // boundary error at apply time.

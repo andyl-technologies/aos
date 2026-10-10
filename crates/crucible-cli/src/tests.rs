@@ -53,6 +53,50 @@ impl Error for JoinedCampaignFailure {
     }
 }
 
+thread_local! {
+    static COMPONENT_INPUT_RESOURCES: std::cell::RefCell<Option<crate::cli_input_resources::StandaloneInputResources>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) struct ComponentDecodeScope {
+    _scope: crucible_session::engine::owned_decode::DecodeScope,
+    previous: Option<crate::cli_input_resources::StandaloneInputResources>,
+}
+
+impl Drop for ComponentDecodeScope {
+    fn drop(&mut self) {
+        COMPONENT_INPUT_RESOURCES.with(|resources| resources.replace(self.previous.take()));
+    }
+}
+
+pub(crate) fn component_input_resources()
+-> Option<crate::cli_input_resources::StandaloneInputResources> {
+    COMPONENT_INPUT_RESOURCES.with(|resources| resources.borrow().clone())
+}
+
+pub(crate) fn component_decode_budget() -> crucible_session::engine::owned_decode::DecodeBudget {
+    let authority = crucible_daemon::component_ram_root_resources()
+        .unwrap_or_else(|error| panic!("component metadata authority: {error}"));
+    crucible_session::engine::owned_decode::DecodeBudget::for_store(authority)
+        .unwrap_or_else(|error| panic!("component metadata budget: {error}"))
+}
+
+pub(crate) fn component_decode_scope() -> ComponentDecodeScope {
+    let authority = crucible_daemon::component_ram_root_resources()
+        .unwrap_or_else(|error| panic!("component metadata authority: {error}"));
+    let budget = crucible_session::engine::owned_decode::DecodeBudget::for_store(authority.clone())
+        .unwrap_or_else(|error| panic!("component metadata budget: {error}"));
+    let resources = crate::cli_input_resources::StandaloneInputResources::from_component_scope(
+        authority,
+        budget.clone(),
+    );
+    let previous = COMPONENT_INPUT_RESOURCES.with(|current| current.replace(Some(resources)));
+    ComponentDecodeScope {
+        _scope: budget.enter(),
+        previous,
+    }
+}
+
 fn coverage_event_frame(
     sequence: u64,
     kind: &str,
@@ -60,36 +104,41 @@ fn coverage_event_frame(
 ) -> crucible_api::StreamingEventFrame {
     use std::collections::BTreeMap;
 
-    crucible_api::StreamingEventFrame {
-        generation: 0,
-        cursor: crucible_api::EventLogCursor::new(sequence),
-        next_cursor: crucible_api::EventLogCursor::new(sequence + 1),
-        event: crucible_api::OpenSetEventEnvelope {
-            sequence,
-            at: crucible_api::OpenSetEventTime {
-                virtual_time_ticks: sequence,
-                stamp_tick: sequence,
-                stamp_retired: Some(sequence),
-                stamp_node: Some(String::from("vm-0")),
-            },
-            source: crucible_api::OpenSetEventSource::Node {
-                node: String::from("vm-0"),
-            },
-            level: crucible::EventLevel::Trace,
-            observational: true,
-            payload: crucible_api::OpenSetPayload::new(
-                kind,
-                attributes
-                    .into_iter()
-                    .map(|(name, value)| (String::from(name), value))
-                    .collect::<BTreeMap<_, _>>(),
-            ),
+    let _scope = component_decode_scope();
+    let event = crucible_api::OpenSetEventEnvelope {
+        sequence,
+        at: crucible_api::OpenSetEventTime {
+            virtual_time_ticks: sequence,
+            stamp_tick: sequence,
+            stamp_retired: Some(sequence),
+            stamp_node: Some(String::from("vm-0")),
         },
-    }
+        source: crucible_api::OpenSetEventSource::Node {
+            node: String::from("vm-0"),
+        },
+        level: crucible::EventLevel::Trace,
+        observational: true,
+        payload: crucible_api::OpenSetPayload::new(
+            kind,
+            attributes
+                .into_iter()
+                .map(|(name, value)| (String::from(name), value))
+                .collect::<BTreeMap<_, _>>(),
+        ),
+    };
+
+    crucible_api::StreamingEventFrame::from_owned_fields(
+        0,
+        crucible_api::EventLogCursor::new(sequence),
+        crucible_api::EventLogCursor::new(sequence + 1),
+        event,
+    )
+    .unwrap_or_else(|error| panic!("component event frame: {error}"))
 }
 
 #[test]
 fn streamed_basic_block_coverage_rebuilds_canonical_feedback() {
+    let _component_scope = component_decode_scope();
     use crucible_api::OpenSetAttributeValue::{String as Text, Uint};
 
     let frame = coverage_event_frame(

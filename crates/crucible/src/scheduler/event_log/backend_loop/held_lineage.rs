@@ -261,6 +261,9 @@ mod tests {
 
     #[test]
     fn canonical_peer_extension_preserves_original_owner_and_rejects_replayed_tip() {
+        let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
         let (mut scheduler, mut run, lineage, controller) = prepared_peer_commit();
         assert!(
             lineage
@@ -304,6 +307,9 @@ mod tests {
 
     #[test]
     fn unrelated_prefix_configuration_topology_command_and_mapping_refuse_extension_readmission() {
+        let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
         for change in 0..5 {
             let (mut scheduler, mut run, lineage, controller) = prepared_peer_commit();
             run.canonical_lineage = Some(lineage.clone());

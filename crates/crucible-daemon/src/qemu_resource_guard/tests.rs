@@ -172,6 +172,37 @@ struct FakeHostOwner {
 impl QemuAttemptHostResourceOwner for FakeHostOwner {
     type CancellationSignal = FakeCancellationSignal;
 
+    #[cfg(feature = "private-measurement-domain")]
+    fn finish_with_original_registry(
+        &mut self,
+        _registry: &crate::HostOperationalRegistry,
+    ) -> Result<(), QemuVmRealizationError> {
+        if !self.finish_error {
+            return self.finish();
+        }
+        self.counters.finishes.fetch_add(1, Ordering::SeqCst);
+        use crucible_linux_resource::host_supervision::{
+            HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+        };
+        let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)
+            .expect("finite mechanism supervisor");
+        let original = supervisor
+            .begin(HostOperationClass::Preparation)
+            .expect("same mechanism original");
+        supervisor
+            .cancel()
+            .expect("actual independent post refusal");
+        let post = original.wait_slice().expect_err("same original canceled");
+        Err(QemuVmRealizationError::ModelCopy {
+            source: Box::new(
+                crucible_qemu::OriginalActorAccountError::NativeControlBoundary {
+                    source: crucible_qemu::LinuxQemuNativeResourceError::Retired,
+                    original: Some(post),
+                },
+            ),
+        })
+    }
+
     fn resource_limits(&self) -> AttemptResourceLimits {
         self.installed
     }
@@ -268,7 +299,7 @@ fn resources(quanta: u64) -> AttemptResourceLimits {
 
 fn selected_checkpoint(label: &[u8]) -> (ExactCheckpointId, SelectedExactCheckpointRoot) {
     let checkpoint =
-        ExactCheckpointId::try_from(ContentId::for_bytes(ObjectKind::ExactManifest, 5, label))
+        ExactCheckpointId::try_from(ContentId::for_bytes(ObjectKind::ExactManifest, 6, label))
             .expect("build selected exact checkpoint ID");
     let selected = SelectedExactCheckpointRoot::from_test_checkpoint(checkpoint);
     (checkpoint, selected)
@@ -867,4 +898,152 @@ fn active_generation_prevents_aggregate_release_without_losing_lease_authority()
     assert!(owner.finish().is_err());
     assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
     assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
+}
+
+#[cfg(feature = "private-measurement-domain")]
+#[test]
+fn original_composed_retirement_returns_first_control_and_post_original_unchanged() {
+    use crucible_linux_resource::host_supervision::{HostOperationState, HostSupervisionError};
+    let limits = resources(1);
+    let counters = Arc::new(HostCounters::default());
+    let mut host = factory(limits, Arc::clone(&counters));
+    host.host.finish_error = true;
+    let mut guard = host
+        .begin(limits, ExecutionCancellation::default(), None)
+        .expect("actual composed guard mechanism");
+    guard
+        .retain_original_native_registry(crate::HostOperationalRegistry::default())
+        .expect("actual composed registry forwarding");
+
+    let first = guard.finish().expect_err("actual host control refused");
+
+    let QemuVmRealizationError::ModelCopy { source } = &first else {
+        panic!("actual first error must not be converted to string quarantine");
+    };
+    let actual = source
+        .downcast_ref::<crucible_qemu::OriginalActorAccountError>()
+        .expect("typed original control error remains accessible");
+    assert!(matches!(
+        actual,
+        crucible_qemu::OriginalActorAccountError::NativeControlBoundary {
+            source: crucible_qemu::LinuxQemuNativeResourceError::Retired,
+            original: Some(HostSupervisionError::Terminal {
+                state: HostOperationState::Canceled
+            }),
+        }
+    ));
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
+    drop(guard);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
+    drop(first);
+}
+
+#[cfg(feature = "private-measurement-domain")]
+#[test]
+fn original_composed_retirement_cannot_retry_or_attest_terminal_containment() {
+    let limits = resources(1);
+    let counters = Arc::new(HostCounters::default());
+    let mut host = factory(limits, Arc::clone(&counters));
+    host.host.finish_error = true;
+    let mut guard = host
+        .begin(limits, ExecutionCancellation::default(), None)
+        .expect("actual composed guard mechanism");
+    guard
+        .retain_original_native_registry(crate::HostOperationalRegistry::default())
+        .expect("actual registry forwarding");
+    let first = guard.finish().expect_err("first real finish refusal");
+
+    assert!(matches!(
+        guard.finish(),
+        Err(QemuVmRealizationError::Canceled {
+            operation: "repeat quarantined original native retirement"
+        })
+    ));
+    guard.quarantine();
+
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
+    drop(first);
+}
+
+#[cfg(feature = "private-measurement-domain")]
+#[test]
+fn original_composed_retirement_keeps_healthy_finish_idempotent() {
+    let limits = resources(1);
+    let counters = Arc::new(HostCounters::default());
+    let mut host = factory(limits, Arc::clone(&counters));
+    let mut guard = host
+        .begin(limits, ExecutionCancellation::default(), None)
+        .expect("actual composed healthy guard");
+    guard
+        .retain_original_native_registry(crate::HostOperationalRegistry::default())
+        .expect("actual registry forwarding");
+
+    guard.finish().expect("actual healthy host finish");
+    guard
+        .finish()
+        .expect("same completed facade remains idempotent");
+
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn process_stage_contract_refuses_foreign_cancellation_before_callback() {
+    let resources = resources(4);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = factory(resources, Arc::clone(&counters));
+    let cancellation = ExecutionCancellation::default();
+    let guard = factory
+        .begin(resources, cancellation.clone(), None)
+        .expect("resource guard");
+    let mut owner = QemuAttemptGenerationResourceOwner::new(guard, 1).expect("generation owner");
+    let mut called = false;
+    let checks = counters.checks.load(Ordering::SeqCst);
+
+    let refused = owner.with_process_stage_contract(&ExecutionCancellation::default(), |_| {
+        called = true;
+    });
+
+    assert!(matches!(
+        refused,
+        Err(ProcessStageContractRefusal::NotCurrent)
+    ));
+    assert!(!called);
+    assert_eq!(counters.checks.load(Ordering::SeqCst), checks);
+    owner.finish().expect("finish unused generation owner");
+}
+
+#[test]
+fn process_stage_contract_borrows_same_owner_and_refuses_later_cancellation() {
+    let resources = resources(4);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = factory(resources, Arc::clone(&counters));
+    let cancellation = ExecutionCancellation::default();
+    let guard = factory
+        .begin(resources, cancellation.clone(), None)
+        .expect("resource guard");
+    let mut owner = QemuAttemptGenerationResourceOwner::new(guard, 1).expect("generation owner");
+    let checks = counters.checks.load(Ordering::SeqCst);
+
+    let observed = owner
+        .with_process_stage_contract(&cancellation, |_| 73)
+        .expect("same owner contract");
+
+    assert_eq!(observed, 73);
+    assert_eq!(counters.checks.load(Ordering::SeqCst), checks + 1);
+    cancellation.cancel();
+    let mut called = false;
+    let refused = owner.with_process_stage_contract(&cancellation, |_| {
+        called = true;
+    });
+    assert!(matches!(
+        refused,
+        Err(ProcessStageContractRefusal::Owner(
+            QemuVmRealizationError::Canceled { .. }
+        ))
+    ));
+    assert!(!called);
+    owner.finish().expect("finish cancelled generation owner");
 }

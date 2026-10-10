@@ -55,6 +55,7 @@ mod preemption;
 mod restore;
 pub use error::QemuMappedQuantumShmemHotPathError;
 pub(crate) use fingerprint::black_box_execution_fingerprint;
+pub(crate) use fingerprint::validate_black_box_fingerprint_sample;
 
 /// An owned, mapped shared-memory hot-path channel for one QEMU node.
 pub struct QemuMappedQuantumShmemHotPath {
@@ -996,6 +997,66 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
                 QemuNodeChannelError::new("enqueue selectable reply ring", error.to_string())
             })?;
         self.queued_selectable_reply = Some(reply.clone());
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    fn validate_selectable_reset(
+        &mut self,
+        pending: &SelectablePlanPendingRequest,
+    ) -> Result<(), QemuNodeChannelError> {
+        if self.queued_selectable_reply.is_some() {
+            return Err(QemuNodeChannelError::new(
+                "validate selectable reset",
+                "a guest reply is already queued",
+            ));
+        }
+        let plan = self.selectable_catalog_plan.as_ref().ok_or_else(|| {
+            QemuNodeChannelError::new(
+                "validate selectable reset",
+                "no mirrored selectable catalog",
+            )
+        })?;
+        plan.validate_reset_abandonment(pending).map_err(|error| {
+            QemuNodeChannelError::new("validate selectable reset", error.to_string())
+        })?;
+        let stopped_tick = pending
+            .trap_tick_ps()
+            .checked_add(SELECTABLE_NATIVE_HANDOFF_TICKS_PS)
+            .ok_or_else(|| {
+                QemuNodeChannelError::new("validate selectable reset", "stopped tick overflow")
+            })?;
+        let current = self.with_hot_path("validate selectable reset", |hot_path| {
+            Ok(hot_path.node_snapshot().current_icount)
+        })?;
+        if current != stopped_tick {
+            return Err(QemuNodeChannelError::new(
+                "validate selectable reset",
+                "pending token differs from current stopped boundary",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    fn abandon_selectable_after_reset(
+        &mut self,
+        pending: &SelectablePlanPendingRequest,
+    ) -> Result<(), QemuNodeChannelError> {
+        if self.queued_selectable_reply.is_some() {
+            return Err(QemuNodeChannelError::new(
+                "abandon selectable reset",
+                "a guest reply is already queued",
+            ));
+        }
+        let plan = self.selectable_catalog_plan.as_mut().ok_or_else(|| {
+            QemuNodeChannelError::new("abandon selectable reset", "no mirrored selectable catalog")
+        })?;
+        plan.apply_reset_abandonment(pending).map_err(|error| {
+            QemuNodeChannelError::new("abandon selectable reset", error.to_string())
+        })?;
+        self.pending_selectable_requests
+            .retain(|request| request != pending);
         Ok(())
     }
 

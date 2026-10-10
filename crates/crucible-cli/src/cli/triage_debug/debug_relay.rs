@@ -140,7 +140,7 @@ pub(crate) fn plan_debug_invocation(
         verb,
         session_commands,
         engine_operations,
-        surface_contract: crucible::DebugCliSurfaceContract::rfc0010(),
+        surface_contract: crucible::DebugCliSurfaceContract::standard(),
         owns_debug_state: false,
         raw_gdb_single_step_allowed: false,
         non_canonical_branch_label: (explicit_fork || guest_shell)
@@ -148,7 +148,7 @@ pub(crate) fn plan_debug_invocation(
     };
     if !plan.proves_t_dbg_8() {
         return Err(CliError::Backend(
-            "debug planner does not satisfy the RFC-0010 debug surface contract".to_string(),
+            "debug planner does not satisfy the validated debug surface contract".to_string(),
         ));
     }
     Ok(plan)
@@ -270,52 +270,56 @@ async fn run_remote_debug_reposition(
     verb: &DebugInteractiveVerbPlan,
 ) -> Result<(), CliError> {
     let client = remote_rpc_client(daemon, backend_plan)?;
-    let acquisition = crucible_api::DebugControllerAcquisition::new();
-    let lease = client
-        .acquire_debug_controller(session, &acquisition)
-        .await
-        .map_err(control_client_error)?;
-    let reposition_result: Result<Option<crucible_api::DebugRepositionResult>, CliError> = async {
-        client
-            .attach_debugger(session, &lease, &node)
+    admit_rpc_future(&client, async {
+        let acquisition = crucible_api::DebugControllerAcquisition::new();
+        let lease = client
+            .acquire_debug_controller(session, &acquisition)
             .await
             .map_err(control_client_error)?;
-        match verb {
-            DebugInteractiveVerbPlan::Goto(target) => client
-                .debug_goto(session, &lease, target)
-                .await
-                .map(Some)
-                .map_err(control_client_error),
-            DebugInteractiveVerbPlan::ReverseStep { grain } => client
-                .debug_reverse_step(session, &lease, *grain)
-                .await
-                .map(Some)
-                .map_err(control_client_error),
-            DebugInteractiveVerbPlan::ReverseContinue { condition } => {
-                let condition = parse_debug_reverse_condition(condition)?;
+        let reposition_result: Result<Option<crucible_api::DebugRepositionResult>, CliError> =
+            async {
                 client
-                    .debug_reverse_continue(session, &lease, &condition)
+                    .attach_debugger(session, &lease, &node)
                     .await
-                    .map_err(control_client_error)
+                    .map_err(control_client_error)?;
+                match verb {
+                    DebugInteractiveVerbPlan::Goto(target) => client
+                        .debug_goto(session, &lease, target)
+                        .await
+                        .map(Some)
+                        .map_err(control_client_error),
+                    DebugInteractiveVerbPlan::ReverseStep { grain } => client
+                        .debug_reverse_step(session, &lease, *grain)
+                        .await
+                        .map(Some)
+                        .map_err(control_client_error),
+                    DebugInteractiveVerbPlan::ReverseContinue { condition } => {
+                        let condition = parse_debug_reverse_condition(condition)?;
+                        client
+                            .debug_reverse_continue(session, &lease, &condition)
+                            .await
+                            .map_err(control_client_error)
+                    }
+                    DebugInteractiveVerbPlan::AttachGdb
+                    | DebugInteractiveVerbPlan::ForkDebug
+                    | DebugInteractiveVerbPlan::Exec { .. }
+                    | DebugInteractiveVerbPlan::Pty { .. }
+                    | DebugInteractiveVerbPlan::Ssh => Err(backend_error(
+                        "non-reposition debug verb reached reposition dispatcher",
+                    )),
+                }
             }
-            DebugInteractiveVerbPlan::AttachGdb
-            | DebugInteractiveVerbPlan::ForkDebug
-            | DebugInteractiveVerbPlan::Exec { .. }
-            | DebugInteractiveVerbPlan::Pty { .. }
-            | DebugInteractiveVerbPlan::Ssh => Err(backend_error(
-                "non-reposition debug verb reached reposition dispatcher",
-            )),
+            .await;
+        let release_result = client.release_debug_controller(session, &lease).await;
+        let target = reposition_result?;
+        release_result.map_err(control_client_error)?;
+        match target {
+            Some(target) => print_debug_landed_runtime(&target),
+            None => println!("crucible: reverse-continue found no matching prior condition"),
         }
-    }
-    .await;
-    let release_result = client.release_debug_controller(session, &lease).await;
-    let target = reposition_result?;
-    release_result.map_err(control_client_error)?;
-    match target {
-        Some(target) => print_debug_landed_runtime(&target),
-        None => println!("crucible: reverse-continue found no matching prior condition"),
-    }
-    Ok(())
+        Ok(())
+    })?
+    .await
 }
 
 fn print_debug_landed_runtime(result: &crucible_api::DebugRepositionResult) {

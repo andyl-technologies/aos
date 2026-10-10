@@ -12,11 +12,14 @@ use std::sync::Arc;
 mod authenticated_restore;
 mod decode;
 pub use authenticated_restore::{
-    DecodedProductionExactCheckpoint, ProductionVmExactNodeRestoreAdmissions,
-    decode_authenticated_production_exact_checkpoint,
+    DecodedProductionExactCheckpoint, OriginalCheckpointDecodeError,
+    OriginalDecodedProductionExactCheckpoint, ProductionExactCheckpointReadSources,
+    ProductionVmExactNodeRestoreAdmissions, decode_authenticated_production_exact_checkpoint,
+    decode_authenticated_production_exact_checkpoint_under_original,
 };
 mod io;
 use io::{BoundedReadError, read_bounded_file_with_boundary};
+pub(super) mod paged;
 mod paths;
 use paths::{closure_parent, object_parent};
 mod publication;
@@ -50,8 +53,8 @@ use sparse::{
     validate_sparse_artifact_manifest_with_lifecycle_boundary,
     validate_sparse_artifact_manifest_with_scheduler_boundary, validate_sparse_artifact_shape,
 };
-#[cfg(feature = "test-support")]
-mod test_support;
+#[cfg(any(test, feature = "test-support"))]
+pub(in crate::vm_lifecycle) mod test_support;
 #[cfg(feature = "test-support")]
 pub use test_support::{
     AuthenticatedProductionCheckpointCodecFixture, AuthenticatedProductionExactRamCodecFixture,
@@ -60,7 +63,7 @@ pub use test_support::{
     build_streaming_production_checkpoint_codec_fixture,
 };
 
-const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v9\0";
+const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v10\0";
 const MANIFEST_VERSION: u8 = PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION;
 const MANIFEST_FILE: &str = "manifest.cbor";
 const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
@@ -143,7 +146,7 @@ pub(super) fn hash_exact_checkpoint_open_file_sha256_with_boundary(
     Ok(ContentHash { bytes })
 }
 
-fn validate_exact_ram_content_sha256_with_boundary(
+fn validate_exact_device_content_sha256_with_boundary(
     checkpoint: &mut ProductionExactRamCheckpoint,
     boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
 ) -> Result<(), LifecycleApiError> {
@@ -165,21 +168,12 @@ fn validate_exact_ram_content_sha256_with_boundary(
         boundary,
     )?;
 
-    for layer in &mut checkpoint.layers {
-        let lease = begin_lifecycle_artifact_authentication(&layer.artifact, boundary)?;
-        let observed = hash_exact_checkpoint_artifact_sha256_with_boundary(
-            &layer.artifact,
-            "RAM checkpoint layer",
-            boundary,
-        )?;
-        if observed != layer.content_sha256 {
-            return Err(loop_factory_error(
-                "exact RAM checkpoint layer failed SHA-256 authentication",
-            ));
-        }
-        finish_lifecycle_artifact_authentication(&mut layer.artifact, lease, boundary)?;
-    }
-    boundary()?;
+    paged::with_ram_boundary(
+        boundary,
+        |ram_boundary| checkpoint.catalog.verify(&checkpoint.ram, ram_boundary),
+        |error| loop_factory_error(format!("authenticate complete RAM catalog: {error}")),
+    )?;
+
     Ok(())
 }
 
@@ -246,58 +240,8 @@ mod replay;
 pub use replay::{
     PreparedProductionReplayOraclePromotion, ProductionBakedSnapshotCatalog,
     ProductionBakedSnapshotSet, ProductionExactCheckpointClosure, ProductionExactCheckpointObject,
+    ProductionPagedRamSource,
 };
-
-#[cfg(all(test, feature = "test-support"))]
-pub(super) fn load_exact_ram_checkpoint_parent(
-    run_state_root: &Path,
-    source: &ScenarioDefForm,
-    node: &NodeId,
-    closure: ContentHash,
-    identity: QmpCheckpointIdentity,
-) -> Result<ProductionExactRamCheckpoint, LifecycleApiError> {
-    load_exact_ram_checkpoint_parent_with_boundary(
-        run_state_root,
-        source,
-        node,
-        closure,
-        identity,
-        &mut || Ok(()),
-    )
-}
-
-#[cfg(all(test, feature = "test-support"))]
-pub(super) fn load_exact_ram_checkpoint_parent_with_boundary(
-    run_state_root: &Path,
-    source: &ScenarioDefForm,
-    node: &NodeId,
-    closure: ContentHash,
-    identity: QmpCheckpointIdentity,
-    boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
-) -> Result<ProductionExactRamCheckpoint, LifecycleApiError> {
-    let scenario = source.scenario_def();
-    let expected = ProductionExactCheckpointIdentity::from(identity);
-    let checkpoint = load_exact_checkpoint_set_with_boundary(
-        run_state_root,
-        &scenario,
-        source,
-        closure,
-        boundary,
-    )?;
-    let exact_ram = checkpoint
-        .targets
-        .get(node)
-        .and_then(ProductionVmExactCheckpointTarget::native_exact_ram)
-        .ok_or_else(|| {
-            loop_factory_error("authoritative parent closure has no exact RAM target for the node")
-        })?;
-    if exact_ram.identity != expected {
-        return Err(loop_factory_error(
-            "authoritative parent closure differs from QEMU's committed checkpoint identity",
-        ));
-    }
-    Ok(exact_ram.clone())
-}
 
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -358,26 +302,19 @@ struct TargetManifest {
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExactRamManifest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    parent_closure: Option<ContentHash>,
     device_content_sha256: ContentHash,
     device: ArtifactManifest,
-    #[serde(deserialize_with = "decode::deserialize_vec")]
-    layers: Vec<ExactRamLayerManifest>,
+    paged: PagedRamManifest,
 }
 
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ExactRamLayerManifest {
-    kind: ProductionExactRamKind,
+struct PagedRamManifest {
+    root_object: decode::FallibleString,
+    logical_root: ContentHash,
+    #[serde(deserialize_with = "decode::deserialize_vec")]
+    root_record: Vec<u8>,
     identity: ProductionExactCheckpointIdentity,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    parent: Option<ProductionExactCheckpointIdentity>,
-    topology: ContentHash,
-    ram_regions: u64,
-    ram_records: u64,
-    content_sha256: ContentHash,
-    artifact: ArtifactManifest,
 }
 
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -414,27 +351,39 @@ fn production_artifact_from_manifest(
 fn production_exact_ram_from_manifest(
     manifest: ExactRamManifest,
     object_directory: PathBuf,
-) -> Result<ProductionExactRamCheckpoint, SchedulerError> {
-    let layers = manifest
-        .layers
-        .into_iter()
-        .map(|layer| ProductionExactRamLayer {
-            kind: layer.kind,
-            identity: layer.identity,
-            parent: layer.parent,
-            topology: layer.topology,
-            ram_regions: layer.ram_regions,
-            ram_records: layer.ram_records,
-            content_sha256: layer.content_sha256,
-            artifact: production_artifact_from_manifest(layer.artifact, object_directory.clone()),
-        })
-        .collect();
-    ProductionExactRamCheckpoint::new(
-        manifest.parent_closure,
+    run_state_root: &Path,
+    scenario: ContentHash,
+    limits: FaultResourceLimits,
+    provider: Option<&Arc<dyn ProductionRamCatalogProvider>>,
+    boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+) -> Result<ProductionExactRamCheckpoint, LifecycleApiError> {
+    let root_object =
+        crucible_cas::content_store::ContentId::parse(manifest.paged.root_object.as_str())
+            .map_err(|error| loop_factory_error(format!("decode RAM object identity: {error}")))?;
+    let catalog = paged::PagedRamCatalog::open(run_state_root, scenario, limits, provider)
+        .map_err(|error| loop_factory_error(error.to_string()))?;
+    let _record_credit = catalog
+        .reserve_record_decode()
+        .map_err(|error| loop_factory_error(format!("admit RAM root decode: {error}")))?;
+    let record = crucible_ram::RootRecord::decode(
+        &manifest.paged.root_record,
+        crucible_ram::Limits::default(),
+    )
+    .map_err(|error| loop_factory_error(format!("decode RAM root record: {error}")))?;
+    validate_decoded_ram_record(&manifest, &record)?;
+    let ram = paged::with_ram_boundary(
+        boundary,
+        |ram_boundary| catalog.open_root(root_object, &record, ram_boundary),
+        |error| loop_factory_error(format!("authenticate RAM descendants: {error}")),
+    )?;
+    ProductionExactRamCheckpoint::from_paged_capture(
+        manifest.paged.identity,
         manifest.device_content_sha256,
         production_artifact_from_manifest(manifest.device, object_directory),
-        layers,
+        catalog,
+        ram,
     )
+    .map_err(|error| loop_factory_error(error.to_string()))
 }
 
 const fn is_false(value: &bool) -> bool {
@@ -447,7 +396,7 @@ struct ClosureObjects {
     event_log_segments: BTreeMap<ContentHash, Vec<u8>>,
     signal_artifacts: BTreeMap<ContentHash, Vec<u8>>,
     trigger_state: Vec<u8>,
-    assertion_state: Vec<u8>,
+    assertion_state: crucible::HostAssertionCheckpointBytes,
     lifecycle_state: Vec<u8>,
     fault_checkpoint: Vec<u8>,
     snapshots: BTreeMap<NodeId, Vec<u8>>,
@@ -733,40 +682,15 @@ pub(super) fn prepare_exact_checkpoint_set_with_boundary(
     })
 }
 
-/// Streams one paused checkpoint artifact into a private content-addressed
-/// chunk directory without first duplicating the complete file.
+/// Streams one stopped non-RAM descriptor into bounded immutable chunks.
 ///
-/// The returned artifact owns only the directory path and compact chunk
-/// sequence. The caller must keep that directory alive until durable closure
-/// publication has copied or reused every chunk. Source length is admitted
-/// before the private object directory is created.
-#[cfg(any(test, feature = "test-support"))]
-pub(super) fn stage_checkpoint_artifact_chunks_with_boundary(
-    source: &Path,
-    object_directory: &Path,
-    role: &str,
-    current_artifact_bytes: u64,
-    resource_limits: FaultResourceLimits,
-    boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
-) -> Result<ProductionCheckpointArtifact, SchedulerError> {
-    boundary()?;
-    let mut source_file = File::open(source).map_err(|error| {
-        store_error(format!(
-            "open stopped exact-checkpoint {role} {}: {error}",
-            source.display()
-        ))
-    })?;
-    stage_open_checkpoint_artifact_chunks_with_boundary(
-        &mut source_file,
-        source,
-        object_directory,
-        role,
-        current_artifact_bytes,
-        resource_limits,
-        boundary,
-    )
-}
-
+/// The caller retains the source descriptor and destination directory until
+/// publication installs durable successor ownership.
+///
+/// # Errors
+///
+/// Returns an error for cancellation, an inadmissible length, allocation
+/// failure, unavailable source bytes, or failure to persist a chunk.
 pub(super) fn stage_open_checkpoint_artifact_chunks_with_boundary(
     source_file: &mut File,
     diagnostic_path: &Path,
@@ -890,10 +814,16 @@ pub(super) fn load_exact_checkpoint_set(
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
     identity: ContentHash,
+    provider: Option<&Arc<dyn ProductionRamCatalogProvider>>,
 ) -> Result<ProductionVmExactCheckpointSet, LifecycleApiError> {
-    load_exact_checkpoint_set_with_boundary(run_state_root, scenario, source, identity, &mut || {
-        Ok(())
-    })
+    load_exact_checkpoint_set_with_boundary(
+        run_state_root,
+        scenario,
+        source,
+        identity,
+        provider,
+        &mut || Ok(()),
+    )
 }
 
 fn load_exact_checkpoint_set_with_boundary(
@@ -901,6 +831,7 @@ fn load_exact_checkpoint_set_with_boundary(
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
     identity: ContentHash,
+    provider: Option<&Arc<dyn ProductionRamCatalogProvider>>,
     boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
 ) -> Result<ProductionVmExactCheckpointSet, LifecycleApiError> {
     boundary()?;
@@ -1095,12 +1026,19 @@ fn load_exact_checkpoint_set_with_boundary(
         })?;
         let mut overlay_artifact =
             production_artifact_from_manifest(target.overlay, object_directory.clone());
-        let mut exact_ram =
-            production_exact_ram_from_manifest(target.exact_ram, object_directory.clone())
-                .map_err(|error| loop_factory_error(error.to_string()))?;
+        let mut exact_ram = production_exact_ram_from_manifest(
+            target.exact_ram,
+            object_directory.clone(),
+            run_state_root,
+            scenario.id(),
+            limits,
+            provider,
+            boundary,
+        )?;
+        budget.reserve_logical_ram(exact_ram.ram.record().topology().total_logical_bytes())?;
         authenticate_loaded_artifact_with_boundary(&mut overlay_artifact, boundary)?;
         budget.reserve_identity_once(overlay_artifact.identity, overlay_artifact.length)?;
-        validate_exact_ram_content_sha256_with_boundary(&mut exact_ram, boundary)?;
+        validate_exact_device_content_sha256_with_boundary(&mut exact_ram, boundary)?;
 
         let restored = ProductionVmExactCheckpointTarget {
             configuration: Arc::new(configuration.clone()),
@@ -1237,19 +1175,29 @@ fn load_exact_checkpoint_set_with_boundary(
 /// bytes without loading large objects into memory. Publication consumers use
 /// length-pinned object descriptors and authenticate every complete stream;
 /// baked replay consumers use the boundary-aware modeled snapshot catalog.
+/// The caller supplies the catalog's retained physical-quota provider; this
+/// authority remains attached during subsequent complete validation.
 ///
 /// # Errors
 ///
 /// Returns [`LifecycleApiError`] when the closure manifest is unavailable,
 /// malformed, noncanonical, over its scenario-authored bounds, names another
 /// scenario or identity, or any required object is absent or not a regular
-/// file.
+/// file, or the physical-quota provider is absent or cannot authenticate the
+/// retained native RAM catalog.
 pub fn open_exact_checkpoint_closure(
     run_state_root: &Path,
     source: &ScenarioDefForm,
     identity: ContentHash,
+    provider: Option<&Arc<dyn ProductionRamCatalogProvider>>,
 ) -> Result<ProductionExactCheckpointClosure, LifecycleApiError> {
-    open_exact_checkpoint_closure_with_boundary(run_state_root, source, identity, &mut || Ok(()))
+    open_exact_checkpoint_closure_with_boundary(
+        run_state_root,
+        source,
+        identity,
+        provider,
+        &mut || Ok(()),
+    )
 }
 
 /// Opens one portable closure while observing an operational boundary.
@@ -1262,6 +1210,7 @@ pub(super) fn open_exact_checkpoint_closure_with_boundary(
     run_state_root: &Path,
     source: &ScenarioDefForm,
     identity: ContentHash,
+    provider: Option<&Arc<dyn ProductionRamCatalogProvider>>,
     boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
 ) -> Result<ProductionExactCheckpointClosure, LifecycleApiError> {
     boundary()?;
@@ -1322,6 +1271,21 @@ pub(super) fn open_exact_checkpoint_closure_with_boundary(
             length,
         });
     }
+    let catalog = paged::PagedRamCatalog::open(run_state_root, scenario, limits, provider)
+        .map_err(|error| loop_factory_error(error.to_string()))?;
+    for target in &decoded.targets {
+        let _record_credit = catalog
+            .reserve_record_decode()
+            .map_err(|error| loop_factory_error(format!("admit exact RAM root decode: {error}")))?;
+        let record = crucible_ram::RootRecord::decode(
+            &target.exact_ram.paged.root_record,
+            crucible_ram::Limits::default(),
+        )
+        .map_err(|error| loop_factory_error(format!("admit portable RAM geometry: {error}")))?;
+        validate_decoded_ram_record(&target.exact_ram, &record)?;
+        total = add_checkpoint_bytes(total, record.topology().total_logical_bytes())
+            .map_err(|error| loop_factory_error(error.to_string()))?;
+    }
     limits
         .reserve("fat_checkpoint_bytes", 0, total)
         .map_err(|error| match error {
@@ -1349,6 +1313,41 @@ pub(super) fn open_exact_checkpoint_closure_with_boundary(
         })?;
     boundary()?;
 
+    let mut ram_sources = Vec::new();
+    ram_sources
+        .try_reserve_exact(decoded.targets.len())
+        .map_err(|_| loop_factory_error("reserve checkpoint RAM root catalog"))?;
+    for target in &decoded.targets {
+        boundary()?;
+        let root_object = crucible_cas::content_store::ContentId::parse(
+            target.exact_ram.paged.root_object.as_str(),
+        )
+        .map_err(|error| loop_factory_error(format!("decode RAM root identity: {error}")))?;
+        let _record_credit = catalog
+            .reserve_record_decode()
+            .map_err(|error| loop_factory_error(format!("admit exact RAM root decode: {error}")))?;
+        let record = crucible_ram::RootRecord::decode(
+            &target.exact_ram.paged.root_record,
+            crucible_ram::Limits::default(),
+        )
+        .map_err(|error| loop_factory_error(format!("decode exact RAM root: {error}")))?;
+        validate_decoded_ram_record(&target.exact_ram, &record)?;
+        let ram = paged::with_ram_boundary(
+            boundary,
+            |ram_boundary| catalog.open_root(root_object, &record, ram_boundary),
+            |error| loop_factory_error(format!("authenticate checkpoint RAM tree: {error}")),
+        )?;
+        ram_sources.push(ProductionPagedRamSource {
+            node: Arc::new(NodeId {
+                name: target.node.to_string(),
+            }),
+            store: catalog.store().clone(),
+            original: catalog.original().clone(),
+            object_id: Arc::new(ram.object_id().encode()),
+            root: ram,
+        });
+    }
+
     Ok(ProductionExactCheckpointClosure {
         identity,
         scenario,
@@ -1358,6 +1357,8 @@ pub(super) fn open_exact_checkpoint_closure_with_boundary(
         source: source.clone(),
         object_directory,
         objects,
+        ram_sources,
+        ram_catalog_provider: provider.cloned(),
     })
 }
 
@@ -1392,7 +1393,6 @@ fn target_machine_state_manifest_artifacts(
     target: &TargetManifest,
 ) -> impl Iterator<Item = &ArtifactManifest> {
     std::iter::once(&target.exact_ram.device)
-        .chain(target.exact_ram.layers.iter().map(|layer| &layer.artifact))
 }
 
 fn artifact_object_identities(
@@ -1503,9 +1503,8 @@ fn validate_checkpoint_set(
         .iter()
         .filter_map(|(node, state)| {
             (*state == ProductionNodeServiceState::PermanentlyFailed).then_some(node)
-        })
-        .collect::<BTreeSet<_>>();
-    if checkpoint.failed_host_io.keys().collect::<BTreeSet<_>>() != failed_nodes {
+        });
+    if checkpoint.failed_host_io.keys().ne(failed_nodes) {
         return Err(store_error(
             "exact checkpoint failed-node host-I/O owner partition is incomplete",
         ));
@@ -1631,31 +1630,16 @@ fn validate_restored_node_sets(
     generations: &BTreeMap<NodeId, u64>,
     service_states: &BTreeMap<NodeId, ProductionNodeServiceState>,
 ) -> Result<(), LifecycleApiError> {
-    let expected = source
-        .world()
-        .vm_nodes()
-        .iter()
-        .map(|node| node.id.clone())
-        .collect::<std::collections::BTreeSet<_>>();
-    let generation_nodes = generations
-        .keys()
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-    let service_nodes = service_states
-        .keys()
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-    let expected_targets = expected
-        .iter()
-        .filter(|node| {
+    let expected = authenticated_restore::admission::node_set(
+        source.world().vm_nodes().iter().map(|node| &node.id),
+    )?;
+    let generation_nodes = authenticated_restore::admission::node_set(generations.keys())?;
+    let service_nodes = authenticated_restore::admission::node_set(service_states.keys())?;
+    let expected_targets =
+        authenticated_restore::admission::node_set(expected.iter().filter(|node| {
             service_states.get(*node) != Some(&ProductionNodeServiceState::PermanentlyFailed)
-        })
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-    let target_nodes = targets
-        .keys()
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
+        }))?;
+    let target_nodes = authenticated_restore::admission::node_set(targets.keys())?;
     if generation_nodes != expected
         || service_nodes != expected
         || target_nodes != expected_targets
@@ -1757,11 +1741,15 @@ fn enforce_persist_limits(
             .targets
             .get(&node)
             .ok_or_else(|| store_error("closure target disappeared"))?;
-        let Some((overlay_artifact, _, _)) = source.native_materialization() else {
+        let Some((overlay_artifact, exact_ram, _)) = source.native_materialization() else {
             return Err(store_error(
                 "repository checkpoint target cannot be republished as native",
             ));
         };
+        bytes = add_checkpoint_bytes(
+            bytes,
+            exact_ram.ram.record().topology().total_logical_bytes(),
+        )?;
         for (identity, size) in std::iter::once((target.overlay.identity, overlay_artifact.length))
             .chain(
                 target_machine_state_manifest_artifacts(target)
@@ -1801,14 +1789,11 @@ fn persist_target_machine_state_with_boundary(
         &exact_ram.device_artifact,
         boundary,
     )?;
-    for (manifest, source) in manifest.exact_ram.layers.iter().zip(&exact_ram.layers) {
-        persist_chunked_artifact_with_boundary(
-            object_directory,
-            &manifest.artifact,
-            &source.artifact,
-            boundary,
-        )?;
-    }
+    paged::with_ram_boundary(
+        boundary,
+        |ram_boundary| exact_ram.catalog.verify(&exact_ram.ram, ram_boundary),
+        |error| store_error(format!("persist complete RAM graph: {error}")),
+    )?;
     Ok(())
 }
 
@@ -2306,7 +2291,7 @@ fn manifest_and_objects_with_boundary(
     let assertion_state = checkpoint
         .assertion_state
         .canonical_bytes()
-        .map_err(|error| store_error(format!("encode assertion continuation: {error}")))?;
+        .map_err(SchedulerError::from)?;
     let lifecycle_state = encode_lifecycle(checkpoint)?;
     let fault_checkpoint = checkpoint
         .fault_checkpoint
@@ -2428,29 +2413,19 @@ fn exact_ram_manifest_with_boundary(
     checkpoint: &ProductionExactRamCheckpoint,
     boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
 ) -> Result<ExactRamManifest, SchedulerError> {
-    let mut layers = Vec::new();
-    layers
-        .try_reserve_exact(checkpoint.layers.len())
-        .map_err(|error| store_error(format!("reserve exact RAM layer manifest: {error}")))?;
-    for layer in &checkpoint.layers {
-        boundary()?;
-        layers.push(ExactRamLayerManifest {
-            kind: layer.kind,
-            identity: layer.identity,
-            parent: layer.parent,
-            topology: layer.topology,
-            ram_regions: layer.ram_regions,
-            ram_records: layer.ram_records,
-            content_sha256: layer.content_sha256,
-            artifact: artifact_manifest_with_boundary(&layer.artifact, boundary)?,
-        });
-    }
-
+    boundary()?;
+    checkpoint.validate()?;
     Ok(ExactRamManifest {
-        parent_closure: checkpoint.parent_closure,
         device_content_sha256: checkpoint.device_content_sha256,
         device: artifact_manifest_with_boundary(&checkpoint.device_artifact, boundary)?,
-        layers,
+        paged: PagedRamManifest {
+            root_object: decode::FallibleString::new(checkpoint.ram.object_id().encode()),
+            logical_root: ContentHash {
+                bytes: *checkpoint.ram.logical_digest().as_bytes(),
+            },
+            root_record: checkpoint.ram.record().encode(),
+            identity: checkpoint.identity,
+        },
     })
 }
 
@@ -2491,7 +2466,7 @@ fn closure_identity(manifest: &ClosureManifest) -> Result<ContentHash, Scheduler
     if manifest.format_version != MANIFEST_VERSION {
         return Err(store_error("unsupported exact checkpoint manifest version"));
     }
-    let domain = "crucible.production-exact-closure.v9";
+    let domain = "crucible.production-exact-closure.v10";
     Ok(ContentHash::from_canonical_material(
         domain,
         &hex_bytes(&bytes),
@@ -2597,7 +2572,7 @@ fn validate_manifest_shape(manifest: &ClosureManifest) -> Result<(), String> {
     for target in &manifest.targets {
         if !target.overlay.sparse {
             return Err(String::from(
-                "v9 closure manifest has an invalid overlay layout",
+                "paged closure manifest has an invalid overlay layout",
             ));
         }
         validate_sparse_artifact_shape(&target.overlay)?;
@@ -2616,30 +2591,30 @@ fn validate_manifest_shape(manifest: &ClosureManifest) -> Result<(), String> {
 }
 
 fn validate_exact_ram_manifest(checkpoint: &ExactRamManifest) -> Result<(), String> {
-    if checkpoint.layers.is_empty()
-        || checkpoint.layers.len() > crucible::exact_checkpoint::MAX_EXACT_CHECKPOINT_RAM_LAYERS
-        || checkpoint.layers[0].kind != ProductionExactRamKind::Direct
-        || checkpoint.layers[0].parent.is_some()
-        || (checkpoint.layers.len() > 1) != checkpoint.parent_closure.is_some()
-    {
-        return Err(String::from(
-            "v9 exact RAM chain has an invalid base or depth",
-        ));
-    }
     validate_dense_artifact_shape(&checkpoint.device)?;
-    let topology = checkpoint.layers[0].topology;
-    for (index, layer) in checkpoint.layers.iter().enumerate() {
-        validate_dense_artifact_shape(&layer.artifact)?;
-        if layer.ram_regions == 0 || layer.artifact.length == 0 || layer.topology != topology {
-            return Err(String::from("v9 exact RAM layer has invalid QEMU metadata"));
-        }
-        if index > 0 {
-            let parent = &checkpoint.layers[index - 1];
-            if layer.kind != ProductionExactRamKind::Delta || layer.parent != Some(parent.identity)
-            {
-                return Err(String::from("v9 exact RAM delta chain is not contiguous"));
-            }
-        }
+    let identity =
+        crucible_cas::content_store::ContentId::parse(checkpoint.paged.root_object.as_str())
+            .map_err(|error| format!("invalid RAM catalog identity: {error}"))?;
+    if identity.encode() != checkpoint.paged.root_object.as_str() {
+        return Err(String::from("noncanonical RAM catalog identity"));
+    }
+    if checkpoint.paged.root_record.is_empty() {
+        return Err(String::from("exact RAM root record is empty"));
+    }
+    Ok(())
+}
+
+/// Checks manifest semantics after the caller reserves decoded-root memory.
+fn validate_decoded_ram_record(
+    manifest: &ExactRamManifest,
+    record: &crucible_ram::RootRecord,
+) -> Result<(), LifecycleApiError> {
+    if record.scope() != crucible_ram::Scope::Exact
+        || record.digest().as_bytes() != &manifest.paged.logical_root.bytes
+    {
+        return Err(loop_factory_error(
+            "exact RAM root scope or logical digest mismatch",
+        ));
     }
     Ok(())
 }

@@ -233,6 +233,7 @@ fn complete_production_checkpoint_round_trips_canonically() {
         .unwrap_or_else(|error| panic!("checkpoint should decode: {error}"));
 
     assert_eq!(restored.id(), checkpoint.id());
+    assert_eq!(restored, checkpoint);
     assert_eq!(
         restored
             .to_canonical_bytes()
@@ -720,4 +721,142 @@ fn aggregate_codec_rejects_the_prior_nanosecond_version() {
         ProductionFaultRuntimeCheckpoint::from_canonical_bytes(&bytes, &plan, seed),
         Err(ProductionFaultRuntimeCheckpointCodecError::Version)
     ));
+}
+
+#[test]
+fn borrowed_fault_comparison_does_not_shortcut_on_aggregate_identity() {
+    use std::sync::Arc;
+    let plan = FaultSignalPlan::empty();
+    let baseline = empty_checkpoint(&plan, Some(empty_network(b"adapter".to_vec())));
+    let node = NodeId {
+        name: String::from("node"),
+    };
+    let marker = ContentHash::from_bytes(b"different continuation material");
+    assert_eq!(
+        baseline,
+        baseline.try_clone().expect("independent fault owner")
+    );
+
+    macro_rules! rejects {
+        ($role:literal, $mutate:expr) => {{
+            let mut candidate = baseline.try_clone().expect("fault mutation owner");
+            ($mutate)(&mut candidate);
+            assert_ne!(baseline, candidate, "fault comparison omitted {}", $role);
+        }};
+    }
+
+    rejects!(
+        "QEMU fingerprint",
+        |candidate: &mut ProductionFaultRuntimeCheckpoint| {
+            {
+                candidate.qemu_fingerprints = Arc::new(QemuNodeMap::new());
+                Arc::get_mut(&mut candidate.qemu_fingerprints)
+            }
+            .expect("private fingerprint map")
+            .try_insert(node.clone(), marker)
+            .expect("admit fingerprint entry");
+        }
+    );
+    rejects!(
+        "command sequence",
+        |candidate: &mut ProductionFaultRuntimeCheckpoint| {
+            {
+                candidate.qemu_fault_sequences = Arc::new(QemuNodeMap::new());
+                Arc::get_mut(&mut candidate.qemu_fault_sequences)
+            }
+            .expect("private command map")
+            .try_insert(node.clone(), 1)
+            .expect("admit command entry");
+        }
+    );
+    rejects!(
+        "event sequence",
+        |candidate: &mut ProductionFaultRuntimeCheckpoint| {
+            {
+                candidate.qemu_fault_event_sequences = Arc::new(QemuNodeMap::new());
+                Arc::get_mut(&mut candidate.qemu_fault_event_sequences)
+            }
+            .expect("private event map")
+            .try_insert(node.clone(), 1)
+            .expect("admit event entry");
+        }
+    );
+    rejects!(
+        "active rules",
+        |candidate: &mut ProductionFaultRuntimeCheckpoint| {
+            candidate
+                .qemu_active_rule_ids
+                .try_insert(marker)
+                .expect("admit active rule");
+        }
+    );
+    rejects!(
+        "pending QEMU events",
+        |candidate: &mut ProductionFaultRuntimeCheckpoint| {
+            candidate
+                .pending_qemu_events
+                .try_insert(node.clone(), vec![authenticated_qemu_event(vec![1])])
+                .expect("admit pending event");
+        }
+    );
+    rejects!(
+        "network identity",
+        |candidate: &mut ProductionFaultRuntimeCheckpoint| {
+            candidate
+                .network_state
+                .as_mut()
+                .expect("network fixture")
+                .identity = marker;
+        }
+    );
+    rejects!(
+        "network frontier",
+        |candidate: &mut ProductionFaultRuntimeCheckpoint| {
+            candidate
+                .network_state
+                .as_mut()
+                .expect("network fixture")
+                .committed_frontier
+                .ticks += 1;
+        }
+    );
+    rejects!(
+        "scheduler wakeup",
+        |candidate: &mut ProductionFaultRuntimeCheckpoint| {
+            candidate
+                .network_state
+                .as_mut()
+                .expect("network fixture")
+                .scheduler
+                .signal_fault_wakeup_ticks = Some(1);
+        }
+    );
+    rejects!(
+        "network pending outputs",
+        |candidate: &mut ProductionFaultRuntimeCheckpoint| {
+            candidate
+                .network_state
+                .as_mut()
+                .expect("network fixture")
+                .pending_outputs
+                .push(pending_network_output(vec![1]));
+        }
+    );
+    rejects!(
+        "network adapter",
+        |candidate: &mut ProductionFaultRuntimeCheckpoint| {
+            candidate
+                .network_state
+                .as_mut()
+                .expect("network fixture")
+                .adapter_state
+                .push(1);
+        }
+    );
+    rejects!(
+        "aggregate identity",
+        |candidate: &mut ProductionFaultRuntimeCheckpoint| {
+            candidate.identity = marker;
+        }
+    );
 }

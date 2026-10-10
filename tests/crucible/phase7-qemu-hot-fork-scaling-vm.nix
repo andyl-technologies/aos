@@ -6,10 +6,12 @@
   lib,
   attrPath ? "checks.crucible.phase7.gates.hotForkScaling.rawGate",
   taskIds ? [],
+  testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   guest = import ./_nginx-curl-http-200-guest.nix {inherit pkgs;};
+  idleGuest = import ./phase2-qemu-live-plugin-quantum-guest.nix {inherit pkgs;};
   scenario = pkgs.writeTextFile {
     name = "crucible-e2e-determinism-scenario";
     destination = "/scenario.toml";
@@ -71,16 +73,51 @@
       }
     ];
   };
-  testing = import ../../lib/testing {inherit pkgs lib;};
+  rootImage = import ./_ram-native-root-image.nix {inherit pkgs;};
+  pagingKernelSetupScript = import ./_ram-native-kernel-setup.nix {
+    inherit pkgs lib rootImage;
+    nativeQemu = pkgs.qemu-crucible;
+    nativePlugin = pkgs.crucible-qemu-plugin;
+    guest = idleGuest;
+    lanes = [
+      "equivalence-ready-1"
+      "equivalence-depth-1"
+      "equivalence-depth-2"
+      "equivalence-depth-3"
+      "equivalence-memory64-1"
+      "equivalence-memory256-1"
+      "equivalence-memory512-1"
+      "equivalence-siblings-1"
+      "equivalence-stress-1"
+      "equivalence-performance-1"
+      "equivalence-performance-2"
+      "equivalence-performance-3"
+    ];
+    storageImageBytes = 103079215104;
+    buildGraph = builtins.hashString "sha256" (builtins.concatStringsSep "\n" [
+      pkgs.linux.drvPath
+      pkgs.qemu-crucible.drvPath
+      pkgs.crucible-qemu-plugin.drvPath
+      flight.drvPath
+      rootImage.drvPath
+    ]);
+  };
 in
   testing.mkVMTest {
     name = "crucible-qemu-hot-fork-scaling";
-    memory = 6144;
+    # The sibling matrix admits seventeen single-vCPU worlds and two host
+    # services. Its complete backing envelope is independent of the lower
+    # two-world and four-world traffic profiles executed in this same VM.
+    headlessVcpuCount = 19;
+    memory = 36864;
+    extraWritableMiB = 114688;
     hostCpuPin = true;
     hostCpuPinIndex = 0;
     rootfsDeps = [
+      rootImage
       flight
       guest
+      idleGuest
       scenario
       pkgs.crucible
       pkgs.qemu-crucible
@@ -96,14 +133,13 @@ in
       set -euo pipefail
       cleanup_attempt_mount() {
         ${pkgs.util-linux}/bin/umount /tmp/attempts > /dev/null 2>&1 || true
+        ${pkgs.util-linux}/bin/umount /var/paging-storage > /dev/null 2>&1 || true
       }
       trap cleanup_attempt_mount EXIT HUP INT TERM
 
-      for option in CFS_BANDWIDTH QUOTA QFMT_V2 QUOTACTL; do
-        ${pkgs.grep}/bin/grep -Fxq "CONFIG_$option=y" ${pkgs.linux}/boot/config-*
-      done
+      ${pagingKernelSetupScript}
+
       mkdir -p /sys/fs/cgroup
-      ${pkgs.util-linux}/bin/mount -t cgroup2 none /sys/fs/cgroup
       echo '+cpu +memory +pids' > /sys/fs/cgroup/cgroup.subtree_control
       mkdir /sys/fs/cgroup/crucible
       echo '+cpu +memory +pids' > /sys/fs/cgroup/crucible/cgroup.subtree_control
@@ -147,9 +183,8 @@ in
         setup_lane "ram-$memory_mib-reference" 1073741824
       done
       setup_lane simultaneous-source 1073741824
-      # The 6-GiB VM holds at most sixteen paused 512-MiB COW children. Each
-      # child has a measured 160-MiB private-RSS ceiling, and the source lane
-      # has a 1-GiB cgroup ceiling, leaving 2.5 GiB for the VM and host state.
+      # The sibling pressure fixture retains its explicit per-child ceiling;
+      # the outer allocation also covers the accepted driver's host services.
       for sibling_count in 1 2 4 8 16; do
         sibling_index=0
         while [ "$sibling_index" -lt "$sibling_count" ]; do
@@ -435,7 +470,7 @@ in
       require_exact_test_marker \
         simultaneous_sibling_counts=1,2,4,8,16 /tmp/simultaneous-siblings-result
       require_exact_test_marker \
-        simultaneous_source_boundary=authenticated-canonical-genesis \
+        simultaneous_source_boundary=authenticated-promoted-exact \
         /tmp/simultaneous-siblings-result
       require_exact_test_marker \
         simultaneous_child_boundary_equivalence=1,2,4,8,16 \
@@ -589,7 +624,7 @@ in
         require_exact_test_marker "$evidence" /tmp/final-resource-audit-result
       done
       require_exact_test_marker \
-        final_store_verified_objects=2 /tmp/final-resource-audit-result
+        final_fixture_verified_objects=2 /tmp/final-resource-audit-result
 
       cat /tmp/host-clone-cost-result \
         /tmp/fault-clone-cost-result \
@@ -626,6 +661,7 @@ in
         >> /tmp/hot-fork-scaling-measurements
       cat /tmp/hot-fork-scaling-measurements
       ${pkgs.util-linux}/bin/umount /tmp/attempts
+      ${pkgs.util-linux}/bin/umount /var/paging-storage
       trap - EXIT HUP INT TERM
     '';
   }

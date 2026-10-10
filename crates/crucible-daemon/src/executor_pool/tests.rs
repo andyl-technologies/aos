@@ -73,12 +73,13 @@ use crucible_campaign::{
     SubmitAttemptResponse, WorkerSlotId,
 };
 use crucible_cas::content_store::{
-    BackendCapabilities, BlobHandle, ByteRange, ContentId, ImmutableBlobBackend, MemoryBlobBackend,
-    MemoryRefBackend, ObjectKind, PlacementReceipt, PutReceipt, StoreError,
+    BackendCapabilities, BlobHandle, ByteRange, ContentId, DirectoryBlobBackend,
+    ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend, ObjectKind, PutReceipt, StoreError,
 };
 
 struct TestDurableBackend {
-    memory: MemoryBlobBackend,
+    directory: DirectoryBlobBackend,
+    _root: TempDir,
 }
 
 struct RejectingPromotionBackend {
@@ -89,6 +90,7 @@ struct RejectingPromotionBackend {
 struct TransientExecutorReadBackend {
     memory: MemoryBlobBackend,
     fail_executor_read: AtomicBool,
+    retain_executor_read_failure: AtomicBool,
     fail_content_read: Mutex<Option<ContentId>>,
     injected_failures: AtomicUsize,
 }
@@ -98,6 +100,7 @@ impl TransientExecutorReadBackend {
         Self {
             memory: MemoryBlobBackend::new(name, maximum_bytes),
             fail_executor_read: AtomicBool::new(false),
+            retain_executor_read_failure: AtomicBool::new(false),
             fail_content_read: Mutex::new(None),
             injected_failures: AtomicUsize::new(0),
         }
@@ -127,7 +130,10 @@ impl TransientExecutorReadBackend {
         let executor_thread = current
             .name()
             .is_some_and(|name| name.starts_with("crucible-executor-"));
-        if executor_thread && self.fail_executor_read.swap(false, Ordering::AcqRel) {
+        if executor_thread
+            && (self.retain_executor_read_failure.load(Ordering::Acquire)
+                || self.fail_executor_read.swap(false, Ordering::AcqRel))
+        {
             self.injected_failures.fetch_add(1, Ordering::AcqRel);
             true
         } else {
@@ -166,8 +172,10 @@ impl ImmutableBlobBackend for TransientExecutorReadBackend {
 
 impl TestDurableBackend {
     fn new() -> Self {
+        let root = TempDir::new().expect("durable executor checkpoint directory");
         Self {
-            memory: MemoryBlobBackend::new("executor-pool-checkpoints", 8 * 1024 * 1024),
+            directory: DirectoryBlobBackend::new("executor-pool-checkpoints", root.path()),
+            _root: root,
         }
     }
 }
@@ -186,6 +194,39 @@ impl RejectingPromotionBackend {
 }
 
 impl ImmutableBlobBackend for RejectingPromotionBackend {
+    fn checked_publication_metadata(
+        &self,
+        kind: ObjectKind,
+    ) -> Result<crucible_cas::content_store::CheckedPublicationMetadata, StoreError> {
+        self.memory.checked_publication_metadata(kind)
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        original: &crucible::owned_decode::DecodeBudget,
+        objects: &[(crucible_cas::content_store::ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<crucible_cas::content_store::PutBatchReceipt, StoreError> {
+        original
+            .verify_live()
+            .map_err(|source| StoreError::DecodeAdmission {
+                source,
+                custody: Some(original.custody()),
+            })?;
+        boundary()?;
+        original
+            .verify_live()
+            .map_err(|source| StoreError::DecodeAdmission {
+                source,
+                custody: Some(original.custody()),
+            })?;
+        if self.reject_put.load(Ordering::Acquire) {
+            return Err(StoreError::Unauthorized);
+        }
+        self.memory
+            .put_many_if_absent_with_boundary(original, objects, boundary)
+    }
+
     fn name(&self) -> &str {
         "rejecting-promotion-backend"
     }
@@ -194,12 +235,27 @@ impl ImmutableBlobBackend for RejectingPromotionBackend {
         self.memory.capabilities()
     }
 
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        self.memory.admit_object_graph(objects)
+    }
+
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
         self.memory.contains(id)
     }
 
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
         self.memory.read(id, range)
+    }
+
+    fn read_with_boundary(
+        &self,
+        original: &crucible::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        self.memory
+            .read_with_boundary(original, id, range, boundary)
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
@@ -262,6 +318,23 @@ impl LocalCheckpointPromotionWorker for PreparedPromotionWorker {
 }
 
 impl ImmutableBlobBackend for TestDurableBackend {
+    fn checked_publication_metadata(
+        &self,
+        kind: ObjectKind,
+    ) -> Result<crucible_cas::content_store::CheckedPublicationMetadata, StoreError> {
+        self.directory.checked_publication_metadata(kind)
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        original: &crucible::owned_decode::DecodeBudget,
+        objects: &[(crucible_cas::content_store::ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<crucible_cas::content_store::PutBatchReceipt, StoreError> {
+        self.directory
+            .put_many_if_absent_with_boundary(original, objects, boundary)
+    }
+
     fn name(&self) -> &str {
         "executor-pool-checkpoints"
     }
@@ -279,24 +352,31 @@ impl ImmutableBlobBackend for TestDurableBackend {
         }
     }
 
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        self.directory.admit_object_graph(objects)
+    }
+
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
-        self.memory.contains(id)
+        self.directory.contains(id)
     }
 
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
-        self.memory.read(id, range)
+        self.directory.read(id, range)
+    }
+
+    fn read_with_boundary(
+        &self,
+        original: &crucible::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        self.directory
+            .read_with_boundary(original, id, range, boundary)
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
-        let receipt = self.memory.put_if_absent(id, source)?;
-        Ok(PutReceipt {
-            id: receipt.id,
-            placements: vec![PlacementReceipt {
-                backend: String::from(self.name()),
-                durable: true,
-                logical_length: source.logical_length(),
-            }],
-        })
+        self.directory.put_if_absent(id, source)
     }
 }
 
@@ -749,217 +829,6 @@ fn operational_snapshots_are_read_only_and_revision_overflow_is_unavailable() {
 }
 
 #[test]
-fn promotion_report_records_terminal_preparation_from_real_process_path() {
-    let checkpoints = checkpoint_store();
-    let (shared, mut work, prepared, _) = promotion_process_fixture(Arc::clone(&checkpoints));
-    let mut worker = TerminalPromotionWorker;
-
-    promotion::process_promotion_work(
-        &shared,
-        &mut worker,
-        &mut work,
-        ExecutionCancellation::default(),
-    );
-    drop(prepared);
-
-    let executor = shared.executor.lock().expect("executor report lock");
-    let report = shared.report(executor.supervisor());
-    assert_eq!(report.promotion_failures(), 1);
-    assert_eq!(report.promotion_failure_phases().preparation_terminal(), 1);
-    assert_eq!(
-        report
-            .promotion_failure_phases()
-            .publication_terminal_reverted(),
-        0
-    );
-    let failure = report
-        .last_promotion_failure()
-        .expect("terminal preparation retains its typed failure");
-    assert_eq!(failure.phase(), LocalExecutorPromotionPhase::Preparation);
-    assert_eq!(failure.detail(), "\"terminal preparation\"");
-    assert!(!failure.detail_truncated());
-    assert_eq!(
-        report.last_promotion_activity().map(|(_, phase)| phase),
-        Some(LocalExecutorPromotionPhase::Preparation)
-    );
-}
-
-#[test]
-fn stale_raw_promotion_is_discarded_before_worker_preparation() {
-    let checkpoints = checkpoint_store();
-    let fixture = crate::prepare_repository_promotion_fixture(&checkpoints);
-    let crate::RepositoryPromotionFixture {
-        prepared,
-        key,
-        state,
-        daemon_epoch,
-        capacity,
-        ..
-    } = fixture;
-    let mut recovery_ledger = MemoryAssignmentLedger::default();
-    assert_eq!(
-        recovery_ledger
-            .compare_exchange_attempt(key, None, Some(state))
-            .expect("seed raw promotion recovery"),
-        AttemptStateCas::Advanced
-    );
-    let recovery_supervisor = LocalExecutorSupervisor::new(
-        recovery_ledger,
-        AllowAllAttemptAdmission,
-        daemon_epoch,
-        capacity,
-    );
-    let recovery = recovery_supervisor
-        .paused_checkpoint_promotion_recovery(key)
-        .expect("load raw promotion recovery")
-        .expect("raw promotion recovery");
-
-    let stale_state = AttemptRuntimeState::Canceled {
-        execution_basis: state.execution_basis(),
-        origin: state.origin(),
-        daemon_epoch: state.daemon_epoch(),
-        execution: state.execution(),
-    };
-    let mut ledger = MemoryAssignmentLedger::default();
-    assert_eq!(
-        ledger
-            .compare_exchange_attempt(key, None, Some(stale_state))
-            .expect("seed superseding terminal state"),
-        AttemptStateCas::Advanced
-    );
-    let supervisor =
-        LocalExecutorSupervisor::new(ledger, AllowAllAttemptAdmission, daemon_epoch, capacity);
-    let resources = AttemptResourceLimits::new(1, 64 * 1024 * 1024, 0, 1_000)
-        .expect("promotion fixture resource ceiling");
-    let executor = LocalExecutorCapabilityService::new(
-        supervisor,
-        description_with_limits(daemon_epoch, 1, resources),
-    )
-    .expect("promotion fixture capability");
-    let shared = SharedExecutor::new(executor, checkpoints, 1, 1, Vec::new(), None, None);
-    let calls = Arc::new(AtomicUsize::new(0));
-    let mut worker = CountingTerminalPromotionWorker {
-        calls: Arc::clone(&calls),
-    };
-    let mut work = CheckpointPromotionRestartWork::Paused(recovery);
-
-    promotion::process_promotion_work(
-        &shared,
-        &mut worker,
-        &mut work,
-        ExecutionCancellation::default(),
-    );
-    drop(prepared);
-
-    assert_eq!(calls.load(Ordering::Acquire), 0);
-    let executor = shared.executor.lock().expect("executor report lock");
-    let report = shared.report(executor.supervisor());
-    assert_eq!(report.promotions_discarded(), 1);
-    assert_eq!(report.promotion_failures(), 0);
-    assert_eq!(report.promotion_failure_phases().preparation_terminal(), 0);
-    assert!(report.last_promotion_failure().is_none());
-    assert_eq!(
-        report.last_promotion_activity().map(|(_, phase)| phase),
-        Some(LocalExecutorPromotionPhase::Preflight)
-    );
-}
-
-#[test]
-fn promotion_report_records_terminal_publication_and_raw_reversion() {
-    let backend = Arc::new(RejectingPromotionBackend::new());
-    let checkpoints = Arc::new(
-        ExactCheckpointStore::new(backend.clone(), 64 * 1024 * 1024)
-            .expect("promotion checkpoint store"),
-    );
-    let (shared, mut work, prepared, raw) = promotion_process_fixture(Arc::clone(&checkpoints));
-    backend.reject_publication();
-    let mut worker = PreparedPromotionWorker {
-        prepared: Some(prepared),
-    };
-
-    promotion::process_promotion_work(
-        &shared,
-        &mut worker,
-        &mut work,
-        ExecutionCancellation::default(),
-    );
-
-    let executor = shared.executor.lock().expect("executor report lock");
-    let report = shared.report(executor.supervisor());
-    assert_eq!(report.promotion_failures(), 1);
-    assert_eq!(report.promotions_discarded(), 1);
-    assert_eq!(report.promotion_failure_phases().preparation_terminal(), 0);
-    assert_eq!(
-        report
-            .promotion_failure_phases()
-            .publication_terminal_reverted(),
-        1
-    );
-    let key = match work {
-        CheckpointPromotionRestartWork::Paused(recovery) => recovery.key(),
-        CheckpointPromotionRestartWork::Staged(_) => panic!("fixture began as a raw pause"),
-    };
-    let failure = report
-        .last_promotion_failure()
-        .expect("terminal publication retains its typed failure");
-    assert_eq!(failure.key(), key);
-    assert_eq!(failure.phase(), LocalExecutorPromotionPhase::Publication);
-    assert!(!failure.detail().is_empty());
-    assert_eq!(
-        report.last_promotion_activity(),
-        Some((key, LocalExecutorPromotionPhase::Publication))
-    );
-    assert_eq!(
-        executor
-            .supervisor()
-            .paused_checkpoint_promotion_recovery(key)
-            .expect("load reverted promotion")
-            .expect("raw promotion remains eligible")
-            .source(),
-        raw
-    );
-}
-
-#[test]
-fn completed_promotion_worker_reclaims_its_live_claim() {
-    let checkpoints = Arc::new(
-        ExactCheckpointStore::new(Arc::new(TestDurableBackend::new()), 64 * 1024 * 1024)
-            .expect("promotion checkpoint store"),
-    );
-    let (shared, mut work, prepared, _) = promotion_process_fixture(checkpoints);
-    assert_eq!(
-        promotion::reclaim_inactive_promotion_claims(&shared, &work),
-        None,
-        "a raw paused execution can still stage its promotion"
-    );
-
-    let mut worker = PreparedPromotionWorker {
-        prepared: Some(prepared),
-    };
-    promotion::process_promotion_work(
-        &shared,
-        &mut worker,
-        &mut work,
-        ExecutionCancellation::default(),
-    );
-    let executor = shared.executor.lock().expect("completed promotion ledger");
-    let report = shared.report(executor.supervisor());
-    assert_eq!(report.promotions_reconciled(), 1);
-    drop(executor);
-
-    assert_eq!(
-        promotion::reclaim_inactive_promotion_claims(&shared, &work),
-        Some(1),
-        "completed promotion releases its process-local claim"
-    );
-    assert_eq!(
-        promotion::reclaim_inactive_promotion_claims(&shared, &work),
-        Some(0),
-        "reclamation is idempotent"
-    );
-}
-
-#[test]
 fn blocking_worker_does_not_block_service_and_shutdown_cancels_it() {
     let epoch = DaemonEpoch::from_bytes([0x32; 16]).expect("epoch");
     let entered = Arc::new(AtomicUsize::new(0));
@@ -1004,15 +873,19 @@ fn shutdown_drains_accepted_work_that_never_started() {
         MemoryAssignmentLedger::default(),
         AllowAllAttemptAdmission,
         epoch,
-        ExecutorCapacity::new(2, 2, 4096, 8192, 64).expect("two-slot capacity"),
+        ExecutorCapacity::new(2, 4, 4 * 1024 * 1024, 16384, 64).expect("two-slot capacity"),
     );
-    let capability =
-        LocalExecutorCapabilityService::new(supervisor, description_with_slots(epoch, 2))
-            .expect("two-slot capability");
+    let capability = crate::executor_capability::test_support::capability_service(
+        supervisor,
+        description_with_slots(epoch, 2),
+        1024 * 1024,
+    )
+    .expect("two-slot capability");
+    let store = store();
     let pool = LocalExecutorWorkerPool::start(
         capability,
-        store(),
-        checkpoint_store(),
+        store.clone(),
+        checkpoint_store(store.ram_retention_authority()),
         vec![BlockingWorker {
             entered: Arc::clone(&entered),
         }],
@@ -1337,7 +1210,7 @@ fn worker_count_is_bounded_by_static_and_supervisor_capacity() {
         >(
             capability(epoch),
             store.clone(),
-            checkpoint_store(),
+            checkpoint_store(store.ram_retention_authority()),
             Vec::new(),
         ),
         Err(LocalExecutorPoolConfigError::ZeroWorkers)
@@ -1348,7 +1221,12 @@ fn worker_count_is_bounded_by_static_and_supervisor_capacity() {
         })
         .collect();
     assert!(matches!(
-        LocalExecutorWorkerPool::start(capability(epoch), store, checkpoint_store(), workers),
+        LocalExecutorWorkerPool::start(
+            capability(epoch),
+            store.clone(),
+            checkpoint_store(store.ram_retention_authority()),
+            workers
+        ),
         Err(LocalExecutorPoolConfigError::WorkerCountExceedsSlots)
     ));
 }
@@ -1413,6 +1291,7 @@ fn campaign_controls_remain_responsive_while_every_executor_slot_is_busy() {
     let repository = Arc::new(CampaignRepository::new(
         blobs,
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let campaign = "busy-campaign-control";
     let (lineage, _, _, admitted, _) = campaign_attempt_fixture(&repository, campaign);
@@ -1435,22 +1314,46 @@ fn campaign_controls_remain_responsive_while_every_executor_slot_is_busy() {
         MemoryAssignmentLedger::default(),
         AllowAllAttemptAdmission,
         epoch,
-        ExecutorCapacity::new(3, 3, 3072, 6144, 96).expect("three-slot capacity"),
+        ExecutorCapacity::new(3, 9, 6 * 1024 * 1024, 18432, 96).expect("three-slot capacity"),
     );
-    let capability = LocalExecutorCapabilityService::new(
+    let capability = crate::executor_capability::test_support::capability_service(
         supervisor,
         description_with_limits(
             epoch,
             3,
-            AttemptResourceLimits::new(3, 3072, 6144, 96).expect("three-slot resource ceiling"),
+            crucible_campaign::ExecutorResourceBounds::new(
+                crucible_campaign::ExecutorHostResources {
+                    resident_peak_bytes: 6291456,
+                    backing_peak_bytes: 18432,
+                    metadata_bytes: 384,
+                    staging_bytes: 384,
+                    paging_io_slots: 3,
+                    cpu_slots: 9,
+                    task_slots: 195,
+                    file_descriptors: 384,
+                },
+                crucible_campaign::ExecutorHostResources {
+                    resident_peak_bytes: 2097152,
+                    backing_peak_bytes: 6144,
+                    metadata_bytes: 128,
+                    staging_bytes: 128,
+                    paging_io_slots: 1,
+                    cpu_slots: 3,
+                    task_slots: 65,
+                    file_descriptors: 128,
+                },
+                AttemptResourceLimits::new(3, 3072, 6144, 96).expect("three-slot resource ceiling"),
+            )
+            .expect("authored complete fixture resource bounds"),
         ),
+        1024 * 1024,
     )
     .expect("three-slot capability");
     let worker_state = Arc::new((Mutex::new(BusyWorkerState::default()), Condvar::new()));
     let pool = LocalExecutorWorkerPool::start(
         capability,
         CampaignExecutorStore::new(Arc::clone(&repository)),
-        checkpoint_store(),
+        checkpoint_store(repository.ram_retention_authority()),
         (0..2)
             .map(|_| CountingBlockingWorker {
                 state: Arc::clone(&worker_state),
@@ -1644,12 +1547,17 @@ fn repository_admission_does_not_hold_supervisor_actor_ownership() {
         epoch,
         capacity(),
     );
-    let capability =
-        LocalExecutorCapabilityService::new(supervisor, description(epoch)).expect("capability");
+    let capability = crate::executor_capability::test_support::capability_service(
+        supervisor,
+        description(epoch),
+        1024 * 1024,
+    )
+    .expect("capability");
+    let store = store();
     let pool = LocalExecutorWorkerPool::start(
         capability,
-        store(),
-        checkpoint_store(),
+        store.clone(),
+        checkpoint_store(store.ram_retention_authority()),
         vec![SequencedFailureWorker {
             calls: Arc::new(AtomicUsize::new(0)),
         }],
@@ -1687,7 +1595,11 @@ fn repository_admission_does_not_hold_supervisor_actor_ownership() {
 fn campaign_driver_pool_flight_incorporates_one_execution_without_submit_polling() {
     let blobs = Arc::new(MemoryBlobBackend::new("executor-flight", 64 * 1024 * 1024));
     let refs = Arc::new(MemoryRefBackend::new());
-    let repository = Arc::new(CampaignRepository::new(blobs.clone(), refs.clone()));
+    let repository = Arc::new(CampaignRepository::new(
+        blobs.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    ));
     let (lineage, _policy, request, admitted, candidate) =
         campaign_attempt_fixture(&repository, "executor-flight");
     let resume = ControlRequest {
@@ -1709,7 +1621,7 @@ fn campaign_driver_pool_flight_incorporates_one_execution_without_submit_polling
         MemoryAssignmentLedger::default(),
         RepositoryAttemptAdmission::new(Arc::clone(&repository), profile.clone()),
         epoch,
-        ExecutorCapacity::new(1, 2, 512 * 1024 * 1024, 0, 50_000).expect("capacity"),
+        ExecutorCapacity::new(1, 2, 513 * 1024 * 1024, 128, 50_000).expect("capacity"),
     );
     let capabilities = ExecutorCapabilitySet::new(
         profile,
@@ -1717,7 +1629,30 @@ fn campaign_driver_pool_flight_incorporates_one_execution_without_submit_polling
         BTreeSet::from([String::from("deterministic-tcg-v1")]),
         BTreeSet::from([ExecutorMaterializationCapability::ThinReplay]),
         1,
-        resources,
+        crucible_campaign::ExecutorResourceBounds::new(
+            crucible_campaign::ExecutorHostResources {
+                resident_peak_bytes: 537919488,
+                backing_peak_bytes: 128,
+                metadata_bytes: 128,
+                staging_bytes: 128,
+                paging_io_slots: 1,
+                cpu_slots: 2,
+                task_slots: 65,
+                file_descriptors: 128,
+            },
+            crucible_campaign::ExecutorHostResources {
+                resident_peak_bytes: 537919488,
+                backing_peak_bytes: 128,
+                metadata_bytes: 128,
+                staging_bytes: 128,
+                paging_io_slots: 1,
+                cpu_slots: 2,
+                task_slots: 65,
+                file_descriptors: 128,
+            },
+            resources,
+        )
+        .expect("authored complete fixture resource bounds"),
         BTreeSet::from([CampaignHash::derive(
             "crucible.test.executor-flight.namespace.v1",
             b"local",
@@ -1725,15 +1660,19 @@ fn campaign_driver_pool_flight_incorporates_one_execution_without_submit_polling
     )
     .expect("capabilities");
     let description = ExecutorDescription::new(epoch, capabilities).expect("description");
-    let capability =
-        LocalExecutorCapabilityService::new(supervisor, description).expect("capability service");
+    let capability = crate::executor_capability::test_support::capability_service(
+        supervisor,
+        description,
+        1024 * 1024,
+    )
+    .expect("capability service");
     let calls = Arc::new(AtomicUsize::new(0));
     let runtime_bases = Arc::new(Mutex::new(Vec::new()));
     let reconciliations = Arc::new(Mutex::new(Vec::new()));
     let pool = LocalExecutorWorkerPool::start(
         capability,
         CampaignExecutorStore::new(Arc::clone(&repository)),
-        checkpoint_store(),
+        checkpoint_store(repository.ram_retention_authority()),
         vec![RepositoryAttemptWorker::new(
             CampaignExecutorStore::new(Arc::clone(&repository)),
             CandidateModel {
@@ -1831,7 +1770,11 @@ fn campaign_driver_pool_flight_incorporates_one_execution_without_submit_polling
     assert_eq!(report.reconciled(), 1);
     assert_eq!(report.active(), 0);
 
-    let restarted = CampaignRepository::new(blobs, refs);
+    let restarted = CampaignRepository::new(
+        blobs,
+        refs,
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let head = restarted.head("executor-flight").expect("restart head");
     assert_eq!(head.snapshot_id(), incorporated.final_snapshot());
     assert_eq!(request.stop(), &StopCondition::NextChoice);
@@ -1839,13 +1782,19 @@ fn campaign_driver_pool_flight_incorporates_one_execution_without_submit_polling
 
 #[test]
 fn complete_prepared_journal_recovers_without_rerunning_guest_work() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     for prepublish_trace_leaf in [false, true] {
-        recover_complete_prepared_journal(prepublish_trace_leaf, false, false);
+        recover_complete_prepared_journal(prepublish_trace_leaf, false, false, false);
     }
 }
 
 #[test]
 fn retained_measurement_trace_publishes_the_named_beam_objective() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let blobs = Arc::new(TransientExecutorReadBackend::new(
         "beam-objective-publication",
         64 * 1024 * 1024,
@@ -1853,6 +1802,7 @@ fn retained_measurement_trace_publishes_the_named_beam_objective() {
     let repository = Arc::new(CampaignRepository::new(
         blobs.clone(),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let scenario = beam_objective_scenario();
     let metric = "beam-window.scheduler-events";
@@ -2062,25 +2012,53 @@ fn retained_measurement_trace_publishes_the_named_beam_objective() {
 
 #[test]
 fn transient_recovery_input_unavailability_retries_without_guest_work() {
-    recover_complete_prepared_journal(false, true, false);
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
+    recover_complete_prepared_journal(false, true, false, false);
 }
 
 #[test]
 fn hidden_journal_recovery_commits_only_the_ledger_authorized_publication() {
-    recover_complete_prepared_journal(false, false, true);
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
+    recover_complete_prepared_journal(false, false, true, false);
+}
+
+#[test]
+fn repeated_recovery_refusal_expires_under_the_original_preparation_budget() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
+    recover_complete_prepared_journal(false, false, false, true);
 }
 
 fn recover_complete_prepared_journal(
     prepublish_trace_leaf: bool,
     transient_recovery_input: bool,
     seed_hidden_journal: bool,
+    expire_recovery: bool,
 ) {
     let blobs = Arc::new(TransientExecutorReadBackend::new(
         "prepared-recovery",
         64 * 1024 * 1024,
     ));
     let refs = Arc::new(MemoryRefBackend::new());
-    let repository = Arc::new(CampaignRepository::new(blobs.clone(), refs));
+    let metadata = crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+        .expect("authored recovery metadata resources");
+    let original_metadata = crucible::owned_decode::DecodeBudget::for_store(Arc::clone(&metadata))
+        .expect("original recovery namespace account");
+    let _metadata_scope = original_metadata.enter();
+    let backend = crate::exact_checkpoint_store::test_support::fixture_metadata_backend(
+        blobs.clone(),
+        metadata,
+    );
+    let repository = Arc::new(CampaignRepository::new(
+        backend,
+        refs,
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    ));
     let (lineage, _, _, admitted, candidate) =
         campaign_attempt_fixture(&repository, "prepared-recovery");
     let scenario = minimal_campaign_scenario();
@@ -2215,7 +2193,30 @@ fn recover_complete_prepared_journal(
         BTreeSet::from([String::from("deterministic-tcg-v1")]),
         BTreeSet::from([ExecutorMaterializationCapability::ThinReplay]),
         1,
-        AttemptResourceLimits::new(2, 4096, 8192, 64).expect("resource ceiling"),
+        crucible_campaign::ExecutorResourceBounds::new(
+            crucible_campaign::ExecutorHostResources {
+                resident_peak_bytes: 2097152,
+                backing_peak_bytes: 8192,
+                metadata_bytes: 128,
+                staging_bytes: 128,
+                paging_io_slots: 1,
+                cpu_slots: 2,
+                task_slots: 65,
+                file_descriptors: 128,
+            },
+            crucible_campaign::ExecutorHostResources {
+                resident_peak_bytes: 2097152,
+                backing_peak_bytes: 8192,
+                metadata_bytes: 128,
+                staging_bytes: 128,
+                paging_io_slots: 1,
+                cpu_slots: 2,
+                task_slots: 65,
+                file_descriptors: 128,
+            },
+            AttemptResourceLimits::new(2, 4096, 8192, 64).expect("resource ceiling"),
+        )
+        .expect("authored complete fixture resource bounds"),
         BTreeSet::from([CampaignHash::derive(
             "crucible.test.prepared-recovery-namespace.v1",
             b"local",
@@ -2223,12 +2224,26 @@ fn recover_complete_prepared_journal(
     )
     .expect("capabilities");
     let description = ExecutorDescription::new(epoch, capabilities).expect("description");
-    let capability =
-        LocalExecutorCapabilityService::new(supervisor, description).expect("capability service");
+    let mut budgets = crucible_api::host_operational::HostOperationBudgets {
+        classes: [crucible_api::host_operational::HostOperationBudget::finite(Duration::from_secs(
+            300,
+        )); crucible_api::host_operational::HostOperationClass::ALL.len()],
+    };
+    if expire_recovery {
+        budgets.classes[crucible_api::host_operational::HostOperationClass::Preparation as usize] =
+            crucible_api::host_operational::HostOperationBudget::finite(Duration::from_millis(80));
+    }
+    let capability = crate::executor_capability::test_support::capability_service_with_budgets(
+        supervisor,
+        description,
+        1024 * 1024,
+        budgets,
+    )
+    .expect("capability service");
     let pool = LocalExecutorWorkerPool::start_with_checkpoint_observer(
         capability,
-        store,
-        checkpoint_store(),
+        store.clone(),
+        checkpoint_store(store.ram_retention_authority()),
         vec![PanickingWorker],
         observer,
         Some(PreparedResultJournalConfig::new(
@@ -2241,12 +2256,48 @@ fn recover_complete_prepared_journal(
     if transient_recovery_input {
         blobs.fail_next_executor_read();
     }
+    if expire_recovery {
+        blobs
+            .retain_executor_read_failure
+            .store(true, Ordering::Release);
+    }
     let accepted = service.submit_attempt(&request).expect("submit recovery");
     let SubmitAttemptDisposition::Accepted { execution } = accepted.disposition() else {
         panic!("recovery should receive a fresh supervisor execution")
     };
     assert_ne!(execution, producer_execution);
     let status_request = GetAttemptExecutionRequest::new(&request, execution).expect("status");
+    if expire_recovery {
+        wait_until(Duration::from_secs(2), || {
+            service
+                .get_attempt_execution(&status_request)
+                .is_ok_and(|status| {
+                    // The watcher may latch cancellation before the recovery
+                    // thread observes the same original operation's expiry.
+                    matches!(
+                        status.disposition(),
+                        GetAttemptExecutionDisposition::TerminalFailure
+                            | GetAttemptExecutionDisposition::Canceled
+                    )
+                })
+        });
+        let report = service.report().expect("expired recovery report");
+        assert_eq!(report.executions(), 0);
+        assert_eq!(report.reconciled(), 0);
+        assert_eq!(report.terminal_stops() + report.discarded(), 1);
+        assert!(report.publication_retries() > 1);
+        assert!(blobs.injected_failures.load(Ordering::Acquire) > 1);
+        assert!(
+            journal_root.exists(),
+            "unpublished durable result remains retained"
+        );
+        pool.request_shutdown();
+        assert_eq!(
+            pool.shutdown_and_join().expect("expired recovery shutdown"),
+            report
+        );
+        return;
+    }
     wait_until(Duration::from_secs(2), || {
         let completed = service
             .get_attempt_execution(&status_request)
@@ -2287,6 +2338,7 @@ fn stable_completed_journal_requires_matching_authenticated_roots_before_cleanup
             64 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let (lineage, _, _, admitted, candidate) =
         campaign_attempt_fixture(&repository, "completed-prepared-cleanup");
@@ -2382,6 +2434,7 @@ fn incomplete_prepared_journal_fails_closed_without_guest_execution() {
             64 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let (lineage, _, _, admitted, candidate) =
         campaign_attempt_fixture(&repository, "incomplete-prepared-recovery");
@@ -2425,8 +2478,8 @@ fn incomplete_prepared_journal_fails_closed_without_guest_execution() {
         Arc::new(RecordingPausedCheckpointObserver::default());
     let pool = LocalExecutorWorkerPool::start_with_checkpoint_observer(
         capability(epoch),
-        CampaignExecutorStore::new(repository),
-        checkpoint_store(),
+        CampaignExecutorStore::new(Arc::clone(&repository)),
+        checkpoint_store(repository.ram_retention_authority()),
         vec![PanickingWorker],
         observer,
         Some(PreparedResultJournalConfig::new(
@@ -2460,12 +2513,22 @@ fn incomplete_prepared_journal_fails_closed_without_guest_execution() {
 
 #[test]
 fn stable_journal_creation_failure_is_terminal_not_canceled() {
-    let repository = Arc::new(CampaignRepository::new(
+    let resources = crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+        .expect("finite original journal fixture metadata");
+    let metadata = crucible::owned_decode::DecodeBudget::for_store(Arc::clone(&resources))
+        .expect("original journal fixture account");
+    let _metadata_scope = metadata.enter();
+    let backend = crate::exact_checkpoint_store::test_support::fixture_metadata_backend(
         Arc::new(MemoryBlobBackend::new(
             "stable-prepared-journal-failure",
             64 * 1024 * 1024,
         )),
+        resources,
+    );
+    let repository = Arc::new(CampaignRepository::new(
+        backend,
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let (lineage, _, _, admitted, candidate) =
         campaign_attempt_fixture(&repository, "stable-prepared-journal-failure");
@@ -2493,7 +2556,30 @@ fn stable_journal_creation_failure_is_terminal_not_canceled() {
         BTreeSet::from([String::from("deterministic-tcg-v1")]),
         BTreeSet::from([ExecutorMaterializationCapability::ThinReplay]),
         1,
-        AttemptResourceLimits::new(2, 4096, 8192, 64).expect("resource ceiling"),
+        crucible_campaign::ExecutorResourceBounds::new(
+            crucible_campaign::ExecutorHostResources {
+                resident_peak_bytes: 2097152,
+                backing_peak_bytes: 8192,
+                metadata_bytes: 128,
+                staging_bytes: 128,
+                paging_io_slots: 1,
+                cpu_slots: 2,
+                task_slots: 65,
+                file_descriptors: 128,
+            },
+            crucible_campaign::ExecutorHostResources {
+                resident_peak_bytes: 2097152,
+                backing_peak_bytes: 8192,
+                metadata_bytes: 128,
+                staging_bytes: 128,
+                paging_io_slots: 1,
+                cpu_slots: 2,
+                task_slots: 65,
+                file_descriptors: 128,
+            },
+            AttemptResourceLimits::new(2, 4096, 8192, 64).expect("resource ceiling"),
+        )
+        .expect("authored complete fixture resource bounds"),
         BTreeSet::from([CampaignHash::derive(
             "crucible.test.stable-journal-failure-namespace.v1",
             b"local",
@@ -2501,8 +2587,12 @@ fn stable_journal_creation_failure_is_terminal_not_canceled() {
     )
     .expect("capabilities");
     let description = ExecutorDescription::new(epoch, capabilities).expect("description");
-    let capability =
-        LocalExecutorCapabilityService::new(supervisor, description).expect("capability service");
+    let capability = crate::executor_capability::test_support::capability_service(
+        supervisor,
+        description,
+        1024 * 1024,
+    )
+    .expect("capability service");
     let store = CampaignExecutorStore::new(Arc::clone(&repository));
     let calls = Arc::new(AtomicUsize::new(0));
     let reconciliations = Arc::new(Mutex::new(Vec::new()));
@@ -2514,7 +2604,7 @@ fn stable_journal_creation_failure_is_terminal_not_canceled() {
     let pool = LocalExecutorWorkerPool::start_with_checkpoint_observer(
         capability,
         store.clone(),
-        checkpoint_store(),
+        checkpoint_store(store.ram_retention_authority()),
         vec![RepositoryAttemptWorker::new(
             store,
             CandidateModel {
@@ -2570,6 +2660,7 @@ fn repository_worker_rejects_branch_capture_before_model_execution() {
             64 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let (lineage, _policy, branch, admitted, candidate) =
         campaign_attempt_fixture(&repository, "branch-materialized-start-capture");
@@ -2591,7 +2682,7 @@ fn repository_worker_rejects_branch_capture_before_model_execution() {
         MemoryAssignmentLedger::default(),
         AllowAllAttemptAdmission,
         epoch,
-        ExecutorCapacity::new(1, 1, 64 * 1024 * 1024, 0, 1_000).expect("capacity"),
+        ExecutorCapacity::new(1, 1, 64 * 1024 * 1024, 128, 1_000).expect("capacity"),
     );
     supervisor
         .submit_attempt(&request)
@@ -2630,6 +2721,7 @@ fn raw_pause_restart_resolves_exact_materialized_start_capture() {
             64 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let (lineage, attempt, configuration) =
         crucible_discovery_attempt_fixture(&repository, "capture-promotion-recovery");
@@ -2667,6 +2759,7 @@ fn raw_pause_restart_rejects_capture_for_another_configuration() {
             64 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let (lineage, attempt, _configuration) =
         crucible_discovery_attempt_fixture(&repository, "capture-promotion-wrong-configuration");
@@ -2716,6 +2809,7 @@ fn raw_pause_restart_rejects_capture_for_a_branch_attempt() {
             64 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let (lineage, _policy, branch, admitted, _candidate) =
         campaign_attempt_fixture(&repository, "capture-promotion-branch");
@@ -2753,6 +2847,7 @@ fn raw_pause_restart_rejects_an_inconsistent_execution_basis_before_repository_r
             64 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let (lineage, _policy, _branch, admitted, _candidate) =
         campaign_attempt_fixture(&repository, "raw-pause-recovery");
@@ -2772,7 +2867,7 @@ fn raw_pause_restart_rejects_an_inconsistent_execution_basis_before_repository_r
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
     let execution = ExecutionId::from_bytes([0xa3; 16]).expect("execution");
     let checkpoint = ExactCheckpointId::parse(&format!(
-        "crucible.executor.exact-checkpoint-root@exact-manifest.5.{}",
+        "crucible.executor.exact-checkpoint-root@exact-manifest.6.{}",
         "a4".repeat(32)
     ))
     .expect("checkpoint");
@@ -2802,7 +2897,7 @@ fn raw_pause_restart_rejects_an_inconsistent_execution_basis_before_repository_r
         ledger,
         AllowAllAttemptAdmission,
         epoch,
-        ExecutorCapacity::new(1, 1, 64 * 1024 * 1024, 0, 1_000).expect("capacity"),
+        ExecutorCapacity::new(1, 1, 64 * 1024 * 1024, 128, 1_000).expect("capacity"),
     );
     let mut work = Vec::new();
     supervisor
@@ -2825,6 +2920,9 @@ fn raw_pause_restart_rejects_an_inconsistent_execution_basis_before_repository_r
 
 #[test]
 fn production_restart_dispatch_replays_raw_roots_and_rejects_invalid_sources() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let temporary = tempfile::tempdir().expect("production promotion fixture root");
     let run_state_root = temporary.path().join("native-checkpoint");
     let raw_fixture = build_authenticated_production_checkpoint_codec_fixture(&run_state_root)
@@ -2835,6 +2933,7 @@ fn production_restart_dispatch_replays_raw_roots_and_rejects_invalid_sources() {
             128 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let (lineage, attempt) = production_discovery_attempt_fixture(
         &repository,
@@ -2853,16 +2952,17 @@ fn production_restart_dispatch_replays_raw_roots_and_rejects_invalid_sources() {
         crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .expect("submit request");
-    let checkpoints = checkpoint_store();
-    let prepared = checkpoints
+    let checkpoints = checkpoint_store(repository.ram_retention_authority());
+    let mut prepared = checkpoints
         .prepare_production_closure(raw_fixture.closure().clone())
         .expect("prepare raw production checkpoint");
     let raw = checkpoints
         .publish_production_closure(&prepared)
         .expect("publish raw production checkpoint")
         .root();
+    drop(raw_fixture);
     prepared
-        .retire_native_source()
+        .retire_native_source(&checkpoints)
         .expect("retire redundant native checkpoint source");
     let store = CampaignExecutorStore::new(repository);
     let calls = Arc::new(AtomicUsize::new(0));
@@ -2903,7 +3003,7 @@ fn production_restart_dispatch_replays_raw_roots_and_rejects_invalid_sources() {
     assert_eq!(calls.load(Ordering::Acquire), 1);
 
     let missing = ExactCheckpointId::parse(&format!(
-        "crucible.executor.exact-checkpoint-root@exact-manifest.5.{}",
+        "crucible.executor.exact-checkpoint-root@exact-manifest.6.{}",
         "c5".repeat(32)
     ))
     .expect("missing checkpoint");
@@ -2932,6 +3032,7 @@ fn production_restart_dispatch_replays_raw_roots_and_rejects_invalid_sources() {
             64 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let (foreign_lineage, foreign_attempt, _) =
         crucible_discovery_attempt_fixture(&foreign_repository, "foreign-production-restart");
@@ -3224,7 +3325,7 @@ fn raw_pause_recovery_for_request(
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
     let execution = ExecutionId::from_bytes([identity_byte; 16]).expect("execution");
     let checkpoint = ExactCheckpointId::parse(&format!(
-        "crucible.executor.exact-checkpoint-root@exact-manifest.5.{}",
+        "crucible.executor.exact-checkpoint-root@exact-manifest.6.{}",
         format!("{identity_byte:02x}").repeat(32)
     ))
     .expect("checkpoint");
@@ -3252,7 +3353,7 @@ fn raw_pause_recovery_for_request(
         ledger,
         AllowAllAttemptAdmission,
         request.daemon_epoch(),
-        ExecutorCapacity::new(1, 1, 64 * 1024 * 1024, 0, 1_000).expect("capacity"),
+        ExecutorCapacity::new(1, 1, 64 * 1024 * 1024, 128, 1_000).expect("capacity"),
     );
     let mut work = Vec::new();
     supervisor
@@ -3625,8 +3726,14 @@ fn pool<W>(
 where
     W: LocalAttemptWorker + Send + 'static,
 {
-    LocalExecutorWorkerPool::start(capability(epoch), store(), checkpoint_store(), workers)
-        .expect("worker pool")
+    let store = store();
+    LocalExecutorWorkerPool::start(
+        capability(epoch),
+        store.clone(),
+        checkpoint_store(store.ram_retention_authority()),
+        workers,
+    )
+    .expect("worker pool")
 }
 
 fn managed_executor_endpoint(
@@ -3674,10 +3781,24 @@ fn wait_for_delayed_worker(
     }
 }
 
-fn checkpoint_store() -> Arc<ExactCheckpointStore> {
+fn standalone_ram_retention() -> crucible_cas::ram::RamRetentionAuthority {
+    crucible_cas::ram::RamRetentionAuthority::new(Arc::new(MemoryRefBackend::new()))
+}
+
+fn checkpoint_store(
+    ram_retention: crucible_cas::ram::RamRetentionAuthority,
+) -> Arc<ExactCheckpointStore> {
     Arc::new(
-        ExactCheckpointStore::new(Arc::new(TestDurableBackend::new()), 1024 * 1024)
-            .expect("durable exact-checkpoint store"),
+        ExactCheckpointStore::new(
+            Arc::new(TestDurableBackend::new()),
+            1024 * 1024,
+            ram_retention,
+        )
+        .expect("durable exact-checkpoint store")
+        .with_ram_root_resources(
+            crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+                .expect("finite component RAM-root credit"),
+        ),
     )
 }
 
@@ -3698,6 +3819,17 @@ fn promotion_process_fixture(
         capacity,
         ..
     } = fixture;
+    // The watcher belongs to the physical peak while the paused attempt's
+    // original 64 MiB request and zero modeled disk allowance remain unchanged.
+    // The component independently authors 128 bytes of physical backing.
+    let capacity = ExecutorCapacity::new(
+        capacity.maximum_concurrent_executions(),
+        capacity.maximum_vcpus(),
+        65 * 1024 * 1024,
+        128,
+        capacity.maximum_execution_quanta(),
+    )
+    .expect("promotion physical peak includes its watcher");
     let raw = prepared.source();
     let mut ledger = MemoryAssignmentLedger::default();
     assert_eq!(
@@ -3714,9 +3846,37 @@ fn promotion_process_fixture(
         .expect("raw promotion process fixture");
     let resources = AttemptResourceLimits::new(1, 64 * 1024 * 1024, 0, 1_000)
         .expect("promotion fixture resource ceiling");
-    let executor = LocalExecutorCapabilityService::new(
+    let executor = crate::executor_capability::test_support::capability_service(
         supervisor,
-        description_with_limits(daemon_epoch, 1, resources),
+        description_with_limits(
+            daemon_epoch,
+            1,
+            crucible_campaign::ExecutorResourceBounds::new(
+                crucible_campaign::ExecutorHostResources {
+                    resident_peak_bytes: 68157440,
+                    backing_peak_bytes: 128,
+                    metadata_bytes: 128,
+                    staging_bytes: 128,
+                    paging_io_slots: 1,
+                    cpu_slots: 1,
+                    task_slots: 65,
+                    file_descriptors: 128,
+                },
+                crucible_campaign::ExecutorHostResources {
+                    resident_peak_bytes: 68157440,
+                    backing_peak_bytes: 128,
+                    metadata_bytes: 128,
+                    staging_bytes: 128,
+                    paging_io_slots: 1,
+                    cpu_slots: 1,
+                    task_slots: 65,
+                    file_descriptors: 128,
+                },
+                resources,
+            )
+            .expect("authored complete fixture resource bounds"),
+        ),
+        1024 * 1024,
     )
     .expect("promotion fixture capability");
     let shared = SharedExecutor::new(executor, checkpoints, 1, 1, Vec::new(), None, None);
@@ -3738,19 +3898,24 @@ fn capability(
         epoch,
         capacity(),
     );
-    LocalExecutorCapabilityService::new(supervisor, description(epoch))
-        .expect("matching capability service")
+    crate::executor_capability::test_support::capability_service(
+        supervisor,
+        description(epoch),
+        1024 * 1024,
+    )
+    .expect("matching capability service")
 }
 
 fn store() -> CampaignExecutorStore {
     CampaignExecutorStore::new(Arc::new(CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new("executor-pool", u64::MAX)),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     )))
 }
 
 fn capacity() -> ExecutorCapacity {
-    ExecutorCapacity::new(1, 2, 4096, 8192, 64).expect("capacity")
+    ExecutorCapacity::new(1, 2, 2 * 1024 * 1024, 8192, 64).expect("capacity")
 }
 
 fn description(epoch: DaemonEpoch) -> ExecutorDescription {
@@ -3758,17 +3923,49 @@ fn description(epoch: DaemonEpoch) -> ExecutorDescription {
 }
 
 fn description_with_slots(epoch: DaemonEpoch, maximum_slots: u32) -> ExecutorDescription {
-    description_with_limits(
-        epoch,
-        maximum_slots,
-        AttemptResourceLimits::new(2, 4096, 8192, 64).expect("resource ceiling"),
-    )
+    let aggregate = if maximum_slots == 2 {
+        crucible_campaign::ExecutorHostResources {
+            resident_peak_bytes: 4 * 1024 * 1024,
+            backing_peak_bytes: 16384,
+            metadata_bytes: 256,
+            staging_bytes: 256,
+            paging_io_slots: 2,
+            cpu_slots: 4,
+            task_slots: 130,
+            file_descriptors: 256,
+        }
+    } else {
+        crucible_campaign::ExecutorHostResources {
+            resident_peak_bytes: 2 * 1024 * 1024,
+            backing_peak_bytes: 8192,
+            metadata_bytes: 128,
+            staging_bytes: 128,
+            paging_io_slots: 1,
+            cpu_slots: 2,
+            task_slots: 65,
+            file_descriptors: 128,
+        }
+    };
+    let assignment = crucible_campaign::ExecutorHostResources {
+        resident_peak_bytes: 2 * 1024 * 1024,
+        backing_peak_bytes: 8192,
+        metadata_bytes: 128,
+        staging_bytes: 128,
+        paging_io_slots: 1,
+        cpu_slots: 2,
+        task_slots: 65,
+        file_descriptors: 128,
+    };
+    let original = AttemptResourceLimits::new(2, 4096, 8192, 64).expect("original request ceiling");
+    let bounds = crucible_campaign::ExecutorResourceBounds::new(aggregate, assignment, original)
+        .expect("explicit one- or two-owner fixture bounds");
+    description_with_limits(epoch, maximum_slots, bounds)
 }
 
 fn description_with_limits(
     epoch: DaemonEpoch,
     maximum_slots: u32,
-    resource_ceiling: AttemptResourceLimits,
+    resource_bounds: crucible_campaign::ExecutorResourceBounds,
 ) -> ExecutorDescription {
     let compatibility = ExecutorCompatibilityProfile::new(
         "crucible-v1",
@@ -3784,7 +3981,7 @@ fn description_with_limits(
         BTreeSet::from([String::from("deterministic-tcg-v1")]),
         BTreeSet::from([ExecutorMaterializationCapability::ThinReplay]),
         maximum_slots,
-        resource_ceiling,
+        resource_bounds,
         BTreeSet::from([CampaignHash::derive(
             "crucible.test.executor-pool-namespace.v1",
             b"local",
@@ -3833,3 +4030,11 @@ fn wait_until(timeout: Duration, mut condition: impl FnMut() -> bool) {
         thread::sleep(Duration::from_millis(1));
     }
 }
+
+#[cfg(feature = "private-measurement-domain")]
+mod original_ingress;
+#[cfg(feature = "private-measurement-domain")]
+mod original_retirement;
+mod preparation;
+
+mod promotion_cases;

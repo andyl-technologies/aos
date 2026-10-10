@@ -1,6 +1,6 @@
 //! The `gate:perf-bench` cost-model substrate.
 //!
-//! This module owns the performance-benchmark gate of RFC-0010 file 25
+//! This module owns the deterministic execution performance-benchmark gate
 //! ([`25-performance-targets.md`]). It is the *measurement and assertion*
 //! substrate: it models the SS25.1 cost model
 //!

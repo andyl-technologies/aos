@@ -488,7 +488,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("lifecycle stream should connect: {error}"));
 
         peer.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
-            proto_version: 3,
+            proto_version: crucible_protocol::CONTROL_PROTOCOL_VERSION,
             abi_version: 25,
             slot_index: 0,
             node_count: 1,
@@ -496,7 +496,7 @@ mod tests {
         .unwrap_or_else(|error| panic!("HelloAck should write: {error}"));
         plugin
             .plugin_start_handshake(PluginHandshakeConfig {
-                proto_version: 3,
+                proto_version: crucible_protocol::CONTROL_PROTOCOL_VERSION,
                 abi_version: 25,
             })
             .unwrap_or_else(|error| panic!("plugin handshake should complete: {error}"));
@@ -511,6 +511,8 @@ mod tests {
             peer.as_raw_fd(),
             4096,
             SetupDescriptorFds {
+                process_generation: 1,
+                device_digest_workspace: None,
                 shmem_fd: shmem.as_raw_fd(),
                 wake_fd: wake.as_raw_fd(),
                 plugin_setup_plan_fd: shmem.as_raw_fd(),

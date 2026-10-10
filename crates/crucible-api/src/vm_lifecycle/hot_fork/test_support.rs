@@ -462,8 +462,9 @@ fn lifecycle_without_backends(
         trigger_graph,
         trigger_state: EventGraphState::default(),
         trigger_world: source.world().clone(),
-        assertion_evaluator: HostAssertionEvaluator::new(source.properties())
-            .with_world_white_box_policies(source.world()),
+        assertion_evaluator: crate::vm_lifecycle::admitted_clone::component_assertion_evaluator(
+            source,
+        ),
         assertion_oracle: BlackBoxHostOracle,
         terminal_verdict: None,
         checkpoint_terminal_cause: None,
@@ -512,7 +513,7 @@ fn lifecycle_without_backends(
         },
         scenario,
         source: source.clone(),
-        config,
+        config: Arc::new(config),
         checkpoint_targets: BTreeMap::new(),
         exact_ram_parents: BTreeMap::new(),
         repository_exact_ram_rebase: None,
@@ -528,6 +529,7 @@ fn lifecycle_without_backends(
         _run_directory: run_directory,
         retained_hot_fork_disk_owners: Vec::new(),
         retained_resource_owners: Vec::new(),
+        input_decode_custody: crucible::owned_decode::current_custody(),
         hot_fork_backing_files: BTreeMap::new(),
     };
     lifecycle

@@ -301,6 +301,7 @@ where
     /// guard's storage cleanup, so the pinned descriptors never outlive the
     /// attempt storage they authenticate.
     run_directory: Option<crucible_qemu::QemuPreparedRunDirectory>,
+    ram_custody: Option<crucible_qemu::QemuRamLaunchCustody>,
 }
 
 pub(super) struct LinuxQemuHotForkWorldLaunchSource {
@@ -349,6 +350,7 @@ where
         let (_parent, process, child_qmp, diagnostics_consumer, host_continuation) =
             launch.into_parts();
         let basis = process.basis();
+        let ram_custody = host_continuation.ram_launch_custody();
         let process_owner = Arc::new(LinuxQemuHotForkProcessOwner {
             source: LinuxQemuHotForkSourceOwner {
                 source_world: source.source_world,
@@ -375,6 +377,7 @@ where
             source_release: LinuxSourceReleasePhase::CloseChildChannel,
             diagnostics: None,
             run_directory: Some(run_directory),
+            ram_custody,
         }
     }
 
@@ -427,6 +430,7 @@ where
         shutdown_policy: QemuShutdownPolicy,
         async_policy: QemuAsyncDriverPolicy,
         crash_detector: QemuCrashDetector,
+        supervisor: Option<crucible_linux_resource::host_supervision::HostOperationSupervisor>,
     ) -> Result<(), LinuxQemuHotForkReconciliationError> {
         if self.installed_node.is_some() {
             return Err(LinuxQemuHotForkReconciliationError::BasisMismatch);
@@ -442,7 +446,14 @@ where
             async_policy,
             crash_detector,
         ) {
-            Ok(installed_node) => {
+            Ok(mut installed_node) => {
+                if let Some(supervisor) = supervisor
+                    && let Err(source) = installed_node.attach_host_operation_supervisor(supervisor)
+                {
+                    self.installed_node = Some(installed_node);
+                    self.installed_node_id = Some(node);
+                    return Err(LinuxQemuHotForkReconciliationError::Source(source));
+                }
                 self.installed_node = Some(installed_node);
                 self.installed_node_id = Some(node);
                 Ok(())
@@ -818,6 +829,7 @@ where
         shutdown_policy: QemuShutdownPolicy,
         async_policy: QemuAsyncDriverPolicy,
         crash_detector: QemuCrashDetector,
+        supervisor: Option<crucible_linux_resource::host_supervision::HostOperationSupervisor>,
     ) -> Result<(), Box<QemuHotForkAttemptReconciliationError<LinuxQemuHotForkReconciliationError>>>
     {
         self.require_phase(
@@ -827,7 +839,13 @@ where
         .map_err(Box::new)?;
         self.backend_mut()
             .map_err(Box::new)?
-            .install_scheduler_node(node, shutdown_policy, async_policy, crash_detector)
+            .install_scheduler_node(
+                node,
+                shutdown_policy,
+                async_policy,
+                crash_detector,
+                supervisor,
+            )
             .map_err(|source| {
                 Box::new(QemuHotForkAttemptReconciliationError::Operation {
                     operation: "install hot-fork scheduler node",

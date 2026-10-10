@@ -237,6 +237,8 @@ where
             acknowledged_commands,
             reproduction_commands: Vec::new(),
             watch_statuses: Vec::new(),
+            input_custody: crucible_session::engine::owned_decode::current_custody(),
+            output_custody: Vec::new(),
         },
         oracle,
         boundary_evidence: SaveBoundaryEvidence {

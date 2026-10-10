@@ -1,6 +1,6 @@
 //! The block device sub-node: base + CoW overlay, wire ABI, completion model.
 //!
-//! This module assembles the block I/O sub-node of RFC-0010 §15.2 from three
+//! This module assembles the scheduled block I/O sub-node from three
 //! focused submodules and re-exports their public surface:
 //!
 //! - [`codec`]: the versioned, little-endian, bounds-checked block wire ABI

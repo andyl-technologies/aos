@@ -4,8 +4,7 @@ use super::*;
 use thiserror::Error;
 
 /// Error returned by a host-I/O runtime adapter.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-#[error("{operation} failed: {message}")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuAsyncDriverRuntimeError {
     /// Operation being attempted.
     pub operation: &'static str,
@@ -14,8 +13,24 @@ pub struct QemuAsyncDriverRuntimeError {
     detail: QemuAsyncDriverRuntimeErrorDetail,
 }
 
+impl std::fmt::Display for QemuAsyncDriverRuntimeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{} failed: {}", self.operation, self.message)
+    }
+}
+
+impl std::error::Error for QemuAsyncDriverRuntimeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.detail {
+            QemuAsyncDriverRuntimeErrorDetail::HostSupervision(source) => Some(source),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum QemuAsyncDriverRuntimeErrorDetail {
+    HostSupervision(crucible_linux_resource::host_supervision::HostSupervisionError),
     #[default]
     Message,
     FaultResultStorage(u32, u32),
@@ -24,6 +39,30 @@ enum QemuAsyncDriverRuntimeErrorDetail {
 }
 
 impl QemuAsyncDriverRuntimeError {
+    /// Retains a typed host operational deadline, cancellation, or ownership failure.
+    #[must_use]
+    pub fn operational_supervision(
+        operation: &'static str,
+        source: crucible_linux_resource::host_supervision::HostSupervisionError,
+    ) -> Self {
+        Self {
+            operation,
+            message: source.to_string(),
+            detail: QemuAsyncDriverRuntimeErrorDetail::HostSupervision(source),
+        }
+    }
+
+    /// Returns the host operational failure independently of guest verdicts.
+    #[must_use]
+    pub const fn operational_supervision_source(
+        &self,
+    ) -> Option<crucible_linux_resource::host_supervision::HostSupervisionError> {
+        match self.detail {
+            QemuAsyncDriverRuntimeErrorDetail::HostSupervision(source) => Some(source),
+            _ => None,
+        }
+    }
+
     /// Creates a runtime adapter error.
     #[must_use]
     pub fn new(operation: &'static str, message: impl Into<String>) -> Self {
@@ -146,6 +185,9 @@ impl QemuAsyncDriverTargetError {
 /// Error returned by the bounded async driver.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QemuAsyncDriverError {
+    /// A retained host service failed before a guest result could be committed.
+    #[error("QEMU operational service failed: {0}")]
+    OperationalHealth(#[source] QemuAsyncDriverHealthError),
     /// A host-I/O await timeout was zero.
     #[error("QEMU async driver wait {wait:?} has a zero timeout")]
     UnboundedAwait {

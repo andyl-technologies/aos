@@ -291,6 +291,19 @@ pub(crate) struct LinuxQemuAttemptStorageOwner {
 }
 
 impl LinuxQemuAttemptStorageOwner {
+    pub(crate) fn quota_controller(
+        &mut self,
+    ) -> Result<crucible_linux_resource::LinuxProjectQuotaController, LinuxQemuAttemptStorageError>
+    {
+        self.quota
+            .as_mut()
+            .ok_or_else(|| LinuxQemuAttemptStorageError::MissingAuthority {
+                path: self.path.clone(),
+            })?
+            .controller()
+            .map_err(LinuxQemuAttemptStorageError::ProjectQuota)
+    }
+
     /// Returns the diagnostic path of the exact pinned run directory.
     #[must_use]
     pub(crate) fn path(&self) -> &Path {
@@ -905,6 +918,8 @@ impl Drop for ProjectIdLease {
 }
 
 mod filesystem;
+#[cfg(feature = "private-measurement-domain")]
+mod original_cleanup;
 use filesystem::*;
 
 #[cfg(test)]
@@ -1208,6 +1223,109 @@ mod tests {
             must_succeed(std::fs::read_dir(root.path()), "read cleaned root").count(),
             0
         );
+    }
+
+    #[cfg(feature = "private-measurement-domain")]
+    #[test]
+    fn parent_partial_storage_error_keeps_actual_directory_and_lease_after_unwind() {
+        let root = must_succeed(tempfile::tempdir(), "Parent partial storage fixture");
+        let path = root.path().join("partial");
+        must_succeed(std::fs::create_dir(&path), "create owned partial directory");
+        let pool = Arc::new(ProjectIdPool::new(20_000, 1));
+        let project_id = pool
+            .allocate()
+            .expect("one test-authority project lease")
+            .commit();
+        let parent_directory = must_succeed(
+            open(
+                root.path(),
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                Mode::empty(),
+            ),
+            "pin Parent partial parent",
+        );
+        let directory = must_succeed(
+            open(
+                &path,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                Mode::empty(),
+            ),
+            "pin Parent partial directory",
+        );
+        let missing = must_fail(
+            openat(&directory, "missing-control", OFlags::RDONLY, Mode::empty()),
+            "actual missing-file source",
+        );
+        let owner = LinuxQemuAttemptStorageOwner {
+            path: path.clone(),
+            name: String::from("partial"),
+            parent_directory: Some(parent_directory),
+            directory: Some(directory),
+            project_id,
+            quota: None,
+            child_user_id: 65_533,
+            child_group_id: 65_532,
+            maximum_inodes: 16,
+            next_generation: Some(1),
+            removed: false,
+            released: false,
+        };
+        let error = LinuxQemuAttemptStorageCreateError::with_owner(
+            io_error("read missing Parent partial control", &path, missing),
+            owner,
+        );
+        let mut saved = crate::linux_attempt_host::OriginalParentSetup::empty();
+        saved.retain_storage_failure(error);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                panic!("original storage postcheck uncertainty");
+            }))
+            .is_err()
+        );
+
+        let retained = must_exist(saved.storage_failure.as_ref(), "same full creation error");
+        let owner = must_exist(retained.owner.as_ref(), "same partial owner");
+        assert!(owner.directory.is_some());
+        assert!(owner.parent_directory.is_some());
+        assert!(
+            pool.allocate().is_none(),
+            "partial owner must not recycle the project lease"
+        );
+        // No project quota or physical backing credit was created by this
+        // ordinary-file fixture. Its own known-empty partial directory can close.
+        let owner = must_exist(
+            must_exist(saved.storage_failure.take(), "retained error").into_owner(),
+            "actual partial owner",
+        );
+        let renamed = root.path().join("retained-partial");
+        must_succeed(
+            std::fs::rename(&path, &renamed),
+            "move actual pinned directory",
+        );
+        must_succeed(std::fs::create_dir(&path), "substitute unrelated directory");
+        let failed = must_fail(
+            owner.cleanup_and_release(),
+            "identity-mismatched cleanup must refuse",
+        );
+        assert!(failed.owner.directory.is_some());
+        assert!(
+            pool.allocate().is_none(),
+            "failed close retains actual project lease"
+        );
+        must_succeed(
+            std::fs::remove_dir(&path),
+            "remove unrelated test directory",
+        );
+        must_succeed(
+            std::fs::rename(&renamed, &path),
+            "restore actual pinned identity",
+        );
+        must_succeed(
+            failed.into_owner().cleanup_and_release(),
+            "close restored owned partial directory",
+        );
+        assert!(!path.exists());
+        assert!(pool.allocate().is_some());
     }
 
     #[test]

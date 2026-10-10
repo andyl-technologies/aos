@@ -41,6 +41,18 @@ impl CampaignServiceFailureSource for CampaignRepositoryError {
     }
 }
 
+impl CampaignRepositoryError {
+    /// Classifies a borrowed storage failure for the campaign service boundary.
+    ///
+    /// Retained RAM and backend diagnostic carriers are followed without cloning
+    /// or discarding their original causes. Capacity, backend authorization, and
+    /// supervision remain distinct from authenticated content failures.
+    #[must_use]
+    pub fn classify_store_failure(error: &StoreError) -> CampaignServiceFailure {
+        store_service_failure(error)
+    }
+}
+
 pub(super) fn repository_service_failure(
     error: &CampaignRepositoryError,
 ) -> CampaignServiceFailure {
@@ -50,6 +62,7 @@ pub(super) fn repository_service_failure(
             CampaignServiceFailure::ResourceExhausted
         }
         CampaignRepositoryError::Store(error) => store_service_failure(error),
+        CampaignRepositoryError::Ram(error) => ram_service_failure(error),
         CampaignRepositoryError::Codec(_) => CampaignServiceFailure::IntegrityFailure,
         CampaignRepositoryError::Merkle(crate::CampaignStoreError::Store(error)) => {
             store_service_failure(error)
@@ -72,14 +85,95 @@ pub(super) fn repository_service_failure(
     }
 }
 
-pub(super) fn store_service_failure(error: &StoreError) -> CampaignServiceFailure {
+fn ram_service_failure(error: &crucible_cas::ram::RamStoreError) -> CampaignServiceFailure {
+    use crucible_cas::ram::RamStoreError;
     match error {
+        RamStoreError::Boundary(cause) => ram_service_failure(
+            cause
+                .first_boundary()
+                .unwrap_or_else(|| cause.storage_failure()),
+        ),
+        RamStoreError::Store(error) => store_service_failure(error),
+        RamStoreError::Limit(_) => CampaignServiceFailure::ResourceExhausted,
+        RamStoreError::Canceled => CampaignServiceFailure::Unavailable,
+        RamStoreError::Transfer(crucible_cas::ram::RamTransferCodecError::Io(_)) => {
+            CampaignServiceFailure::Unavailable
+        }
+        RamStoreError::Transfer(crucible_cas::ram::RamTransferCodecError::Limit(_)) => {
+            CampaignServiceFailure::ResourceExhausted
+        }
+        RamStoreError::Transfer(crucible_cas::ram::RamTransferCodecError::Invalid) => {
+            CampaignServiceFailure::ProtocolViolation
+        }
+        RamStoreError::Invalid(_)
+        | RamStoreError::Logical(_)
+        | RamStoreError::LogicalValidation(_)
+        | RamStoreError::Envelope(_)
+        | RamStoreError::Retention(_) => CampaignServiceFailure::IntegrityFailure,
+    }
+}
+
+#[cfg(test)]
+mod typed_validation_tests {
+    use super::*;
+
+    #[test]
+    fn owned_logical_validation_preserves_integrity_classification() {
+        use crucible_cas::ram::RamStoreError;
+
+        let previous = RamStoreError::Logical(crucible_ram::RamError::OutOfRange.to_string());
+        let retained = RamStoreError::LogicalValidation(crucible_ram::RamError::OutOfRange);
+
+        assert_eq!(
+            ram_service_failure(&previous),
+            ram_service_failure(&retained)
+        );
+        assert_eq!(
+            ram_service_failure(&retained),
+            CampaignServiceFailure::IntegrityFailure
+        );
+    }
+}
+
+pub(super) fn store_service_failure(error: &StoreError) -> CampaignServiceFailure {
+    match error.original_failure() {
+        StoreError::RamValidation { source } => ram_service_failure(source.storage_failure()),
+        StoreError::RamReadBoundary { source } => ram_service_failure(
+            source
+                .first_boundary()
+                .unwrap_or_else(|| source.storage_failure()),
+        ),
+        StoreError::RamReadValidation { source } => ram_service_failure(source.first_validation()),
+        StoreError::RamReadContinuation { source } => ram_service_failure(source.first_failure()),
+        StoreError::RamBoundary { .. } | StoreError::CompositeBoundary { .. } => {
+            CampaignServiceFailure::IntegrityFailure
+        }
         StoreError::Unauthorized => CampaignServiceFailure::BackendUnauthorized,
         StoreError::Quota => CampaignServiceFailure::ResourceExhausted,
+        StoreError::ProviderDiagnostic { source } => match source.kind() {
+            crucible_cas::content_store::ProviderFailureKind::Resources => {
+                CampaignServiceFailure::ResourceExhausted
+            }
+            crucible_cas::content_store::ProviderFailureKind::Supervision
+            | crucible_cas::content_store::ProviderFailureKind::PhysicalQuota => {
+                CampaignServiceFailure::Unavailable
+            }
+        },
         StoreError::NotFound { .. }
         | StoreError::Unavailable
         | StoreError::Io { .. }
-        | StoreError::StreamIo { .. } => CampaignServiceFailure::Unavailable,
+        | StoreError::Supervision { .. }
+        | StoreError::StreamIo { .. }
+        | StoreError::DecodeAdmission { .. }
+        | StoreError::Allocation { .. }
+        | StoreError::SqliteDiagnostic { .. }
+        | StoreError::DirectoryScope { .. }
+        | StoreError::PackedScope { .. }
+        | StoreError::MemoryScope { .. }
+        | StoreError::AdministrativeScope { .. }
+        | StoreError::CompositeScope { .. }
+        | StoreError::SqliteHeap { .. }
+        | StoreError::SqliteScope { .. } => CampaignServiceFailure::Unavailable,
         StoreError::Corrupt { .. }
         | StoreError::InvalidId
         | StoreError::InvalidRefName { .. }

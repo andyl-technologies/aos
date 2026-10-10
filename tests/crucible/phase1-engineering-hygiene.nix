@@ -18,12 +18,16 @@
     "crucible-assert"
     "crucible-shmem"
     "crucible-protocol"
+    "crucible-ram"
     "crucible-device"
     "crucible-qemu"
     "crucible-qemu-plugin"
+    "crucible-debug-gateway"
     "crucible-guest"
     "crucible-cas"
     "crucible-campaign"
+    "crucible-linux-resource"
+    "crucible-s3-store"
     "crucible"
     "crucible-session"
     "crucible-api"
@@ -209,20 +213,15 @@
         if itemLine || state.itemStarted
         then state.braces + countCharacter "{" line - countCharacter "}" line
         else 0;
-      sawBracedBody =
-        (itemLine || state.itemStarted)
-        && (state.sawBracedBody || countCharacter "{" line > 0);
       itemStarted = state.itemStarted || itemLine;
       delimitersClosed = parentheses == 0 && brackets == 0 && braces == 0;
-      unbracedTerminator =
+      statementTerminator =
         delimitersClosed
         && (hasInfix ";" line || lib.hasSuffix "," trimmed);
-      itemComplete =
-        itemStarted
-        && (
-          (sawBracedBody && delimitersClosed)
-          || (!sawBracedBody && unbracedTerminator)
-        );
+      # A nested struct pattern may close before the actual expression body.
+      # Require its body or statement terminator before ending the test range.
+      bracedTerminator = delimitersClosed && lib.hasSuffix "}" trimmed;
+      itemComplete = itemStarted && (bracedTerminator || statementTerminator);
     in
       if itemComplete
       then {
@@ -232,11 +231,10 @@
         parentheses = 0;
         brackets = 0;
         braces = 0;
-        sawBracedBody = false;
         mask = state.mask ++ [active];
       }
       else {
-        inherit active itemStarted attributeBrackets parentheses brackets braces sawBracedBody;
+        inherit active itemStarted attributeBrackets parentheses brackets braces;
         mask = state.mask ++ [active];
       };
   in
@@ -247,7 +245,6 @@
       parentheses = 0;
       brackets = 0;
       braces = 0;
-      sawBracedBody = false;
       mask = [];
     } (sourceLines scrubbed))
     .mask;
@@ -632,6 +629,21 @@
       fn production() {}
     '';
     cfgExpressionCounts = sourceRoleLineCounts syntheticPath cfgExpression;
+    cfgNestedExpression = ''
+      //! synthetic
+      #[cfg(test)]
+      if matches!(
+          input,
+          Some(Value {
+              field: 1,
+          })
+      ) && let Some(output) = input
+      {
+          consume(output);
+      }
+      fn production() {}
+    '';
+    cfgNestedExpressionCounts = sourceRoleLineCounts syntheticPath cfgNestedExpression;
     fakeCrateCfg = ''
       //! synthetic
       const TEXT: &str = r###"
@@ -686,6 +698,9 @@
     ]
     ++ lib.optionals (cfgExpressionCounts.implementation != 2 || cfgExpressionCounts.tests != 6) [
       "line-count regression: an else block truncated a cfg(test) expression"
+    ]
+    ++ lib.optionals (cfgNestedExpressionCounts.implementation != 2 || cfgNestedExpressionCounts.tests != 10) [
+      "line-count regression: a nested struct pattern truncated a cfg(test) expression"
     ]
     ++ lib.optionals (isTestSupportOnly fakeCrateCfg) [
       "line-count regression: a raw-string or comment payload impersonated a test-only crate attribute"

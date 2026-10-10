@@ -8,10 +8,15 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+native-conformance = []
+kernel-swap-measurement = []
+
 [lints]
 workspace = true
 
 [dependencies]
+crucible-ram = { workspace = true }
 blake3 = { workspace = true }
 crucible-protocol = { path = "../crucible-protocol" }
 crucible-shmem = { path = "../crucible-shmem" }

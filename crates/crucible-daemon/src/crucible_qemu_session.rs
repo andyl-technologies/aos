@@ -116,12 +116,109 @@ pub trait QemuAttemptResourceGuard: QemuAttemptOperationalBoundary {
     fn quarantine(&mut self);
 }
 
-/// Resource guard that can lend one sealed child-process launch contract.
+/// Resource guard that lends launch and monotonic kernel-control capabilities.
 ///
-/// The returned capability is read-only and cannot release cgroup, quota,
-/// cancellation, quantum, watcher, or quarantine ownership. It remains valid
-/// only while the attempt guard is live.
+/// The launch contract is read-only. Native resource control can only tighten
+/// the same pinned physical reservation; neither capability releases cgroup,
+/// quota, watcher or quarantine ownership. Retirement closes their authority.
 pub trait QemuAttemptProcessResourceGuard: QemuAttemptResourceGuard {
+    /// Checks actual Node, host and Preparation custody before publication.
+    ///
+    /// # Errors
+    /// Refuses absent or different original physical custody without effects.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn verify_parent_park_binding(
+        &self,
+        _source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        original: &std::sync::Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        _decoder: &crucible_qemu::OriginalActorParkCaller,
+    ) -> Result<(), crucible_qemu::OriginalActorParkQuiescenceError> {
+        Err(crucible_qemu::OriginalActorParkQuiescenceError::Binding {
+            first: crucible_qemu::OriginalActorAccountError::Unavailable,
+            original_after: original.wait_slice().err(),
+        })
+    }
+
+    /// Enters the fixed actor phase through the actual containing host owner.
+    ///
+    /// # Errors
+    /// Refuses missing original slot, actor or concrete physical host custody.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn enter_parent_park_quiescence(
+        &self,
+        _source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        original: &std::sync::Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        _decoder: &crucible_qemu::OriginalActorParkCaller,
+    ) -> Result<
+        crucible_qemu::OriginalActorParkQuiescence,
+        crucible_qemu::OriginalActorParkQuiescenceError,
+    > {
+        Err(crucible_qemu::OriginalActorParkQuiescenceError::Binding {
+            first: crucible_qemu::OriginalActorAccountError::Unavailable,
+            original_after: original.wait_slice().err(),
+        })
+    }
+
+    /// Constructs the fixed pair imports through the actual retained host.
+    ///
+    /// # Errors
+    /// Refuses missing original physical custody or actual import admission.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn prepare_parent_park_imports(
+        &self,
+        _source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        _original: &std::sync::Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        _decoder: &crucible_qemu::OriginalActorParkCaller,
+        _actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        _family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crucible_qemu::OriginalActorParkImports, crucible_qemu::OriginalActorParkImportError>
+    {
+        Err(crucible_qemu::OriginalActorAccountError::Unavailable.into())
+    }
+
+    /// Retains the existing registry through private original control retirement.
+    ///
+    /// This is a custody binding, not a resource grant or retirement assertion.
+    ///
+    /// # Errors
+    /// Refuses replacing a previously retained registry binding.
+    #[cfg(feature = "private-measurement-domain")]
+    fn retain_original_native_registry(
+        &mut self,
+        _registry: crate::HostOperationalRegistry,
+    ) -> Result<(), QemuVmRealizationError> {
+        Ok(())
+    }
+
+    /// Lends monotonic kernel control tied to this physical owner's retirement.
+    ///
+    /// # Errors
+    /// Returns an operational error when live pinned authority cannot be lent.
+    /// Non-native fixture guards return `None`; production admission requires
+    /// the actual controller before granting realized RAM resources.
+    fn native_resource_controller(
+        &mut self,
+    ) -> Result<Option<crucible_qemu::LinuxQemuNativeResourceController>, QemuVmRealizationError>
+    {
+        Ok(None)
+    }
+
+    /// Launches a fresh node through the same retained physical owner.
+    ///
+    /// Original owners preserve their closed generation witness and typed
+    /// refusal custody. Other owners use the ordinary admitted fresh route.
+    ///
+    /// # Errors
+    /// Returns the actual fresh admission or launch refusal.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn launch_fresh_node(
+        &self,
+        config: &crucible_qemu::QemuLiveNodeStepGateConfig,
+        admission: crucible_qemu::QemuProductionFreshLaunchAdmission<'_>,
+    ) -> Result<crucible_qemu::QemuNode, crucible_qemu::QemuLiveNodeStepGateError> {
+        crucible_qemu::launch_qemu_production_fresh_node(config, admission)
+    }
+
     /// Returns the exact child-process containment contract for this attempt.
     ///
     /// # Errors

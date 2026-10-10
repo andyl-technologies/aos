@@ -21,6 +21,9 @@ pub enum ManagedQemuHotForkSourceWorldPoolConstructionError {
 /// Provider checkout failure before source ownership changes.
 #[derive(Debug, Error)]
 pub enum ManagedQemuHotForkSourceWorldCheckoutError {
+    /// The retained source cannot provide its complete continuation.
+    #[error("authenticate retained source continuation before checkout")]
+    Continuation(#[source] crucible_api::vm_lifecycle::ProductionVmHotForkContinuationUnavailable),
     /// A prior source remains owned by an execution or quarantine path.
     #[error("managed source-world provider still has a prior checkout")]
     PriorCheckoutPending,

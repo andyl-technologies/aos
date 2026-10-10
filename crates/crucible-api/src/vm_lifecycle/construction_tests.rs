@@ -57,6 +57,9 @@ fn exact_restore_defers_network_fault_replay_to_checkpoint_identity()
 
 #[test]
 fn resumed_capture_reads_authenticated_event_log_segments_from_new_run_store() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let scenario = ScenarioDef::from_canonical_material(
         "crucible.test.production-event-log-restore",
         "resumed-capture",
@@ -133,6 +136,9 @@ fn resumed_capture_reads_authenticated_event_log_segments_from_new_run_store() {
 
 #[test]
 fn event_log_hydration_rejects_changed_bytes_before_writing() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let runtime = SchedulerLivenessScenario::from_canonical_material(
         "changed-event-log-runtime",
         8,

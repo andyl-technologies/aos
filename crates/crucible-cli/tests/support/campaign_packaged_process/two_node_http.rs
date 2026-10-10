@@ -454,6 +454,10 @@ fn http_measurement_publication_accepts_only_the_declared_client_marker()
         verify_crucible_measurement_publication,
     };
 
+    let authority = crucible_daemon::component_ram_root_resources()?;
+    let budget = crucible_core::owned_decode::DecodeBudget::for_store(authority)?;
+    let _scope = budget.enter();
+
     let client = NodeId {
         name: "curl".into(),
     };
@@ -499,14 +503,17 @@ fn http_measurement_publication_accepts_only_the_declared_client_marker()
             scenario,
             configuration,
             definitions,
-            vec![SchedulerEventLogEntry::guest_semantic_marker_observation(
-                0,
-                Icount { retired: 5 },
-                node,
-                HTTP_MARKER.into(),
-                instance.into(),
-                Vec::new(),
-            )],
+            vec![
+                SchedulerEventLogEntry::guest_semantic_marker_observation(
+                    0,
+                    Icount { retired: 5 },
+                    node,
+                    HTTP_MARKER.into(),
+                    instance.into(),
+                    Vec::new(),
+                )
+                .unwrap_or_else(|error| panic!("declared fixture marker: {error}")),
+            ],
             MeasurementTerminalState {
                 scenario_ready_at: ready,
                 at: VirtualTime { ticks: 10 },
@@ -524,7 +531,7 @@ fn http_measurement_publication_accepts_only_the_declared_client_marker()
         None,
     );
     assert!(
-        matches!(undeclared, Err(CrucibleMeasurementError::GuestMeasurementProtocol { sequence: 0, reason }) if reason == "semantic marker `http.request-response` instance `instance-1` is not declared")
+        matches!(undeclared, Err(CrucibleMeasurementError::GuestMeasurementProtocol { sequence: 0, reason, .. }) if reason == "semantic marker `http.request-response` instance `instance-1` is not declared")
     );
     let mut needs_ready = definitions.definitions().to_vec();
     needs_ready[0].begin = BoundarySelector::ScenarioReady;

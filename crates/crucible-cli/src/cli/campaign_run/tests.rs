@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use crucible_api::ProductionVmLifecycleConfig;
+use crucible_campaign::CampaignRepository;
 use crucible_campaign::{
     AssertionViolationWitness, BooleanDomain, CampaignHash, ChoiceClassContext, ChoiceCoordinate,
     ChoiceDomain, ChoiceOpportunity, ChoiceSource, ChoiceValue, ObservationEventLogProof,
@@ -16,6 +17,9 @@ use crucible_campaign::{
     SelectionOrigin,
 };
 use crucible_daemon::LinuxQemuAttemptHostConfig;
+use crucible_daemon::campaign_store_composition::{
+    DirectoryBlobBackend, DirectoryRefBackend, ImmutableBlobBackend,
+};
 use crucible_daemon::qemu_campaign_lifecycle::{
     run_guarded_default_campaign_test_fixture_with_choice_offer,
     run_guarded_default_campaign_test_fixture_with_trace_and_choice_offer,
@@ -25,6 +29,7 @@ use tempfile::TempDir;
 #[test]
 fn native_resume_loads_the_explicit_guarded_deployment_before_backend_execution()
 -> Result<(), Box<dyn std::error::Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let temporary = TempDir::new()?;
     let deployment = temporary.path().join("executor.toml");
     write_resume_deployment(&deployment)?;
@@ -50,6 +55,7 @@ fn native_resume_loads_the_explicit_guarded_deployment_before_backend_execution(
 #[test]
 fn native_resume_refuses_missing_malformed_and_mutable_explicit_deployments()
 -> Result<(), Box<dyn std::error::Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     use std::os::unix::fs::PermissionsExt;
 
     let temporary = TempDir::new()?;
@@ -96,26 +102,146 @@ fn write_resume_deployment(path: &Path) -> Result<(), Box<dyn std::error::Error>
 
     let deployment = format!(
         r#"schema = "crucible.campaign-packaged-executor"
-version = 2
+version = 3
 cgroup_root = "/sys/fs/cgroup/crucible"
 run_root = "/var/lib/crucible/attempts"
 attempt_namespace = "resume-explicit-deployment"
 first_project_id = 10000
-project_id_count = 2
+project_id_count = 4
 child_user_id = 2000
 child_group_id = 2000
 maximum_tasks = 64
+maximum_file_descriptors = 1024
+maximum_locked_bytes = 0
+maximum_node_host_service_tasks = 4
+maximum_node_host_service_file_descriptors = 32
+maximum_node_host_service_resident_bytes = 8388608
+watcher_service_resident_bytes = 1048576
+ram_catalog_root = "/var/lib/crucible/ram-catalogs"
+operational_registry_root = "/var/lib/crucible/executor-ledger"
+operational_registry_project_id = 31000
+operational_registry_maximum_inodes = 65536
+ram_catalog_project_id = 40000
+maximum_ram_catalog_inodes = 262144
+maximum_ram_catalog_sqlite_heap_bytes = 8388608
+maximum_paging_io_slots = 16
+maximum_host_task_slots = 1024
+maximum_host_file_descriptors = 16384
+maximum_host_metadata_bytes = 805306368
+maximum_host_staging_bytes = 100663296
 maximum_inodes = 4096
 finish_timeout_ms = 30000
 maximum_slots = 2
-maximum_vcpus = 4
-maximum_resident_bytes = 1073741824
-maximum_disk_bytes = 2147483648
-maximum_execution_quanta = 100000
+maximum_vcpus = 14
+maximum_resident_bytes = 4294967296
+maximum_disk_bytes = 9663676416
+maximum_execution_quanta = 300000
 maximum_checkpoint_bytes = 1073741824
 worker_count = 2
 host_architecture = "{}"
 qemu_profile = "deterministic-tcg-v1"
+
+[host_operation_budgets.setup]
+poll_interval_ms = 10
+total_timeout_ms = 2700000
+
+[host_operation_budgets.quantum]
+poll_interval_ms = 10
+total_timeout_ms = 2700000
+
+[host_operation_budgets.page_in]
+poll_interval_ms = 10
+total_timeout_ms = 2700000
+
+[host_operation_budgets.writeback]
+poll_interval_ms = 10
+total_timeout_ms = 2700000
+
+[host_operation_budgets.fingerprint_initialization]
+poll_interval_ms = 10
+total_timeout_ms = 2700000
+
+[host_operation_budgets.fingerprint_update]
+poll_interval_ms = 10
+total_timeout_ms = 2700000
+
+[host_operation_budgets.quiescence]
+poll_interval_ms = 10
+total_timeout_ms = 2700000
+
+[host_operation_budgets.checkpoint_capture]
+poll_interval_ms = 10
+total_timeout_ms = 2700000
+
+[host_operation_budgets.checkpoint_publication]
+poll_interval_ms = 10
+total_timeout_ms = 2700000
+
+[host_operation_budgets.restore]
+poll_interval_ms = 10
+total_timeout_ms = 2700000
+
+[host_operation_budgets.fork_rearm]
+poll_interval_ms = 10
+total_timeout_ms = 2700000
+
+[host_operation_budgets.transfer]
+poll_interval_ms = 10
+total_timeout_ms = 2700000
+
+[host_operation_budgets.preparation]
+poll_interval_ms = 10
+total_timeout_ms = 2700000
+
+[host_operation_budgets.cleanup]
+poll_interval_ms = 10
+total_timeout_ms = 2700000
+
+[operational_registry_resources]
+resident_peak_bytes = 134217728
+backing_peak_bytes = 16777216
+metadata_bytes = 67108864
+staging_bytes = 8388608
+paging_io_slots = 1
+cpu_slots = 1
+task_slots = 1
+file_descriptors = 128
+
+[ram_catalog_resources]
+resident_peak_bytes = 134217728
+backing_peak_bytes = 2147483648
+metadata_bytes = 67108864
+staging_bytes = 8388608
+paging_io_slots = 1
+cpu_slots = 1
+task_slots = 1
+file_descriptors = 128
+
+[retained_template_resources]
+resident_peak_bytes = 1074790400
+backing_peak_bytes = 2147483648
+metadata_bytes = 134217728
+staging_bytes = 16777216
+paging_io_slots = 1
+cpu_slots = 4
+task_slots = 69
+file_descriptors = 1056
+
+[assignment_limits]
+vcpus = 4
+resident_bytes = 1073741824
+disk_bytes = 2147483648
+execution_quanta = 100000
+
+[assignment_resources]
+resident_peak_bytes = 1074790400
+backing_peak_bytes = 2147483648
+metadata_bytes = 134217728
+staging_bytes = 16777216
+paging_io_slots = 1
+cpu_slots = 4
+task_slots = 69
+file_descriptors = 1056
 
 [operations]
 listener_workers = 2

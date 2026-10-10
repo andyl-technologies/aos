@@ -141,8 +141,11 @@ fn campaign_hashes_are_domain_separated_and_text_is_canonical() {
 
 #[test]
 fn exact_checkpoint_identity_admits_only_the_current_schema() {
-    let current = ContentId::for_bytes(ObjectKind::ExactManifest, 5, b"current exact root");
+    let current = ContentId::for_bytes(ObjectKind::ExactManifest, 6, b"current exact root");
     assert!(ExactCheckpointId::try_from(current).is_ok());
+
+    let predecessor = ContentId::for_bytes(ObjectKind::ExactManifest, 5, b"pre-paged root");
+    assert!(ExactCheckpointId::try_from(predecessor).is_err());
 
     let pre_choice_root = ContentId::for_bytes(ObjectKind::ExactManifest, 4, b"pre-choice root");
     assert!(ExactCheckpointId::try_from(pre_choice_root).is_err());
@@ -177,6 +180,13 @@ fn content_identities_admit_only_current_registry_versions() {
     assert_current_version!(FindingTriageReplayEvidenceId, ObjectKind::Finding, 2);
     assert_current_version!(ReproductionArtifactId, ObjectKind::Finding, 2);
     assert_current_version!(PlannerBeamCandidateId, ObjectKind::Projection, 2);
+    assert_current_version!(CampaignArchiveManifestId, ObjectKind::Projection, 2);
+    assert_current_version!(CampaignArchiveInventoryPageId, ObjectKind::Projection, 2);
+
+    let predecessor_archive =
+        ContentId::for_bytes(ObjectKind::Projection, 1, b"pre-paged archive");
+    assert!(CampaignArchiveManifestId::from_content_id(predecessor_archive).is_err());
+    assert!(CampaignArchiveInventoryPageId::from_content_id(predecessor_archive).is_err());
 }
 
 #[test]
@@ -3015,7 +3025,7 @@ fn current_finding_retains_minimization_trace_and_role_tagged_exact_pins() {
     assert_eq!(decoded_minimization.policy(), current_policy);
 
     let checkpoint = |name: &[u8]| {
-        ExactCheckpointId::from_content_id(ContentId::for_bytes(ObjectKind::ExactManifest, 5, name))
+        ExactCheckpointId::from_content_id(ContentId::for_bytes(ObjectKind::ExactManifest, 6, name))
             .expect("exact checkpoint id")
     };
     let pre = checkpoint(b"pre-failure");

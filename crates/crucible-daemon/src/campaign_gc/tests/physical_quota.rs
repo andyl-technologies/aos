@@ -14,14 +14,23 @@ use crucible_cas::content_store::{
 
 use super::*;
 
+mod packed_volume;
+
 struct ToggleQuotaGuard {
     allowed: AtomicBool,
+    resources: crucible_linux_resource::host_services::HostServiceAllocator,
 }
 
 impl ToggleQuotaGuard {
     fn new() -> Self {
         Self {
             allowed: AtomicBool::new(true),
+            resources: crucible_linux_resource::host_services::HostServiceAllocator::new(
+                1,
+                128,
+                256 * 1024 * 1024,
+            )
+            .expect("independently authored finite GC fixture resource account"),
         }
     }
 
@@ -31,6 +40,22 @@ impl ToggleQuotaGuard {
 }
 
 impl StorePhysicalQuotaGuard for ToggleQuotaGuard {
+    fn decoded_metadata_limit(&self) -> Result<u64, StoreError> {
+        Ok(self.resources.maximum_resident_bytes())
+    }
+
+    fn reserve_resources(
+        &self,
+        descriptors: u64,
+        resident_bytes: u64,
+    ) -> Result<crucible_cas::owned_decode::ResourceLoan, StoreError> {
+        self.verify()?;
+        self.resources
+            .reserve_resources(0, descriptors, resident_bytes)
+            .map(crucible_cas::owned_decode::ResourceLoan::new)
+            .map_err(|_| StoreError::Quota)
+    }
+
     fn verify(&self) -> Result<(), StoreError> {
         if self.allowed.load(Ordering::Acquire) {
             Ok(())
@@ -58,6 +83,9 @@ impl StorePhysicalQuotaBinder for ToggleQuotaBinder {
 
 #[test]
 fn physical_quota_drift_stops_global_gc_before_deletion() {
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+
     let temp = tempfile::TempDir::new().expect("temporary physical-quota GC root");
     let physical = StoreNodeId::new("quota-primary").expect("physical-quota node");
     let directory = StoreNodeId::new("directory-child").expect("directory child");
@@ -67,13 +95,14 @@ fn physical_quota_drift_stops_global_gc_before_deletion() {
     binders
         .insert(
             policy.clone(),
-            Arc::new(ToggleQuotaBinder {
+            crucible_cas::content_store::StorePhysicalQuotaBinderHandle::new(ToggleQuotaBinder {
                 guard: guard.clone(),
             }),
         )
         .expect("quota binder");
     let (graph, admin) = StoreGraph::build_with_admin_and_all_capabilities(
         StoreGraphConfig {
+            gc_mark_root: None,
             root: physical.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
             nodes: BTreeMap::from([
@@ -100,11 +129,16 @@ fn physical_quota_drift_stops_global_gc_before_deletion() {
         &StoreGraphObjectProfilers::new(),
         &binders,
         &StoreGraphS3Clients::new(),
+        None,
     )
     .expect("physical-quota graph");
     let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(temp.path().join("refs")));
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
 
     let orphan_bytes = b"physical quota orphan";
     let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, orphan_bytes);
@@ -118,7 +152,7 @@ fn physical_quota_drift_stops_global_gc_before_deletion() {
         &mut ledger,
         None,
         None,
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("plan physical-quota GC");
     assert_eq!(prepared.candidates().len(), 1);
@@ -127,7 +161,7 @@ fn physical_quota_drift_stops_global_gc_before_deletion() {
         orphan
     );
     let (mut journal, _) =
-        DirectoryCampaignGcJournal::create(temp.path().join("journal"), &prepared)
+        DirectoryCampaignGcJournal::create(temp.path().join("journal"), &prepared, &gc_operation)
             .expect("create physical-quota GC journal");
 
     guard.set_allowed(false);
@@ -138,7 +172,7 @@ fn physical_quota_drift_stops_global_gc_before_deletion() {
         &mut ledger,
         None,
         None,
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect_err("physical-quota drift must stop GC");
     assert!(
@@ -160,7 +194,7 @@ fn physical_quota_drift_stops_global_gc_before_deletion() {
         &mut ledger,
         None,
         None,
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("apply physical-quota GC after restoring quota");
     assert_eq!(report.status(), CampaignGcApplyStatus::Applied);

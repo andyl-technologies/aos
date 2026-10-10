@@ -144,11 +144,11 @@ fn compressed_directory_rejects_oversized_sources_and_corrupt_physical_records()
     let oversized_bytes = Arc::<[u8]>::from(vec![0x44; 65]);
     let oversized_id = ContentId::for_bytes(ObjectKind::Trace, 1, &oversized_bytes);
     let opens = Arc::new(AtomicUsize::new(0));
-    let oversized = BlobHandle::new(Arc::new(CountingSource {
+    let oversized = BlobHandle::new(CountingSource {
         bytes: Arc::clone(&oversized_bytes),
         opens: Arc::clone(&opens),
         bytes_read: Arc::new(AtomicUsize::new(0)),
-    }));
+    });
     assert!(matches!(
         store.put_if_absent(oversized_id, &oversized),
         Err(StoreError::Quota)
@@ -339,7 +339,10 @@ fn encrypted_directory_authenticates_ranges_and_inventory_across_restart() {
     assert_eq!(summary.objects(), expected.len() as u64);
     assert_eq!(
         summary.logical_bytes(),
-        expected.values().map(|bytes| bytes.len() as u64).sum()
+        expected
+            .values()
+            .map(|bytes| bytes.len() as u64)
+            .sum::<u64>()
     );
     assert_eq!(
         fence
@@ -447,7 +450,10 @@ fn compressed_encrypted_directory_streams_round_trip_and_restart() {
     assert_eq!(summary.objects(), expected.len() as u64);
     assert_eq!(
         summary.logical_bytes(),
-        expected.values().map(|bytes| bytes.len() as u64).sum()
+        expected
+            .values()
+            .map(|bytes| bytes.len() as u64)
+            .sum::<u64>()
     );
 }
 
@@ -535,11 +541,11 @@ fn encrypted_directory_fails_closed_on_limits_wrong_keys_and_corruption() {
     let oversized_bytes = Arc::<[u8]>::from(vec![0x44; 128 * 1024 + 1]);
     let oversized_id = ContentId::for_bytes(ObjectKind::Trace, 1, &oversized_bytes);
     let opens = Arc::new(AtomicUsize::new(0));
-    let oversized = BlobHandle::new(Arc::new(CountingSource {
+    let oversized = BlobHandle::new(CountingSource {
         bytes: Arc::clone(&oversized_bytes),
         opens: Arc::clone(&opens),
         bytes_read: Arc::new(AtomicUsize::new(0)),
-    }));
+    });
     assert!(matches!(
         store.put_if_absent(oversized_id, &oversized),
         Err(StoreError::Quota)

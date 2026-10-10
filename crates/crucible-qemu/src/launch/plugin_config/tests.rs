@@ -192,3 +192,30 @@ fn selectable_catalog_requires_whitebox_mode() -> Result<(), Box<dyn std::error:
     );
     Ok(())
 }
+
+#[test]
+fn independent_pager_launch_binds_fixed_descriptor_and_exact_owner() {
+    let target = crucible_protocol::ram_control::RamControlTarget {
+        daemon_epoch: [1; 32],
+        owner_id: [2; 32],
+        node_id: [3; 32],
+        owner_generation: 42,
+        arena_generation: 7,
+        retained_template: false,
+    };
+    let config = QemuLaunchPluginConfig::new("plugin.so", 0)
+        .with_process_generation(42)
+        .with_ram_control(QemuRamControlLaunch {
+            session: [4; 32],
+            target,
+        });
+    let arguments = config.plugin_args_raw();
+    assert!(arguments.contains("ram_control_fd=9"));
+    assert!(arguments.contains("ram_control_owner_generation=42"));
+    assert!(arguments.contains("ram_control_arena_generation=7"));
+    assert!(arguments.contains("ram_control_template=0"));
+    assert_eq!(
+        config.ram_control().map(|control| control.target),
+        Some(target)
+    );
+}

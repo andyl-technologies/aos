@@ -1,6 +1,6 @@
 //! Pure reconstruction of repository-authenticated lifecycle state.
 //!
-//! The lower exact-checkpoint verifier owns the v9 manifest and object
+//! The lower exact-checkpoint verifier owns the paged manifest and object
 //! relation. This module decodes each authenticated semantic object once into
 //! the API-owned lifecycle types without installing a native closure or
 //! exposing artifact identities and readers.
@@ -15,6 +15,16 @@ use crucible::exact_checkpoint::{
 use crucible::{ContentHash, DagStore, MemoryDagStore, NodeId};
 
 use super::*;
+
+pub(super) mod admission;
+use admission::{admit_array, admit_entry, admit_shared, copy_node, node_set};
+
+mod modeled_comparison;
+mod original_decode;
+pub use original_decode::{
+    OriginalCheckpointDecodeError, OriginalDecodedProductionExactCheckpoint,
+    decode_authenticated_production_exact_checkpoint_under_original,
+};
 
 /// Decoded lifecycle state paired with one-shot repository target claims.
 #[must_use = "authenticated checkpoint state must be consumed by lifecycle construction"]
@@ -209,6 +219,14 @@ struct AuthenticatedTarget {
     snapshot: ExactSnapshotHandle,
 }
 
+/// Owns retained non-RAM object readers and authenticated RAM roots for decoding.
+pub struct ProductionExactCheckpointReadSources {
+    /// Opens an immutable non-RAM object by its authenticated manifest identity.
+    pub open: Arc<dyn Fn(ContentHash) -> io::Result<Box<dyn Read + Send>> + Send + Sync>,
+    /// Retains the exact leased paged RAM source for every live manifest node.
+    pub ram_sources: Vec<ProductionPagedRamSource>,
+}
+
 /// Decodes one repository-authenticated closure without filesystem staging.
 ///
 /// The closure proof is consumed. Every semantic object is opened, bounded,
@@ -227,8 +245,43 @@ pub fn decode_authenticated_production_exact_checkpoint(
     source: &ScenarioDefForm,
     byte_limit: u64,
     mut boundary: impl FnMut() -> io::Result<()>,
-    open: Arc<dyn Fn(ContentHash) -> io::Result<Box<dyn Read + Send>> + Send + Sync>,
+    sources: ProductionExactCheckpointReadSources,
 ) -> Result<DecodedProductionExactCheckpoint, LifecycleApiError> {
+    let ProductionExactCheckpointReadSources { open, ram_sources } = sources;
+    let mut retained_ram = BTreeMap::new();
+    for source in ram_sources {
+        let node = copy_node(&source.node().name)?;
+        admit_entry::<NodeId, ProductionPagedRamSource>()?;
+        if retained_ram.insert(node, source).is_some() {
+            return Err(loop_factory_error("duplicate retained RAM source node"));
+        }
+    }
+    let mut ram_nodes = 0_usize;
+    closure
+        .visit_paged_ram_roots(|node, binding| {
+            boundary().map_err(|_| {
+                crucible::exact_checkpoint::ExactCheckpointRelationError::InvalidStructure
+            })?;
+            let node = copy_node(node).map_err(|_| {
+                crucible::exact_checkpoint::ExactCheckpointRelationError::ResourceExhausted
+            })?;
+            let source = retained_ram.get(&node).ok_or(
+                crucible::exact_checkpoint::ExactCheckpointRelationError::InvalidStructure,
+            )?;
+            binding.authenticate_source(source.root())?;
+            ram_nodes = ram_nodes.checked_add(1).ok_or(
+                crucible::exact_checkpoint::ExactCheckpointRelationError::InvalidStructure,
+            )?;
+            Ok(())
+        })
+        .map_err(|error| {
+            loop_factory_error(format!("authenticate retained exact RAM sources: {error}"))
+        })?;
+    if ram_nodes != retained_ram.len() {
+        return Err(loop_factory_error(
+            "retained RAM source inventory differs from exact targets",
+        ));
+    }
     let mut objects = SemanticObjects::default();
     let semantic_open = Arc::clone(&open);
     let targets = closure
@@ -244,18 +297,38 @@ pub fn decode_authenticated_production_exact_checkpoint(
             ))
         })?;
 
-    let expected_snapshots = objects
-        .targets
-        .iter()
-        .map(|(node, target)| (node.clone(), target.snapshot_object))
-        .collect();
-    let mut checkpoint = decode_semantic_checkpoint(identity, scenario, source, objects)?;
+    let mut decoded = reconstruct_semantic_checkpoint(identity, scenario, source, objects)?;
+    let checkpoint = &mut decoded.checkpoint;
+    let configuration = checkpoint
+        .configuration
+        .try_clone_admitted()
+        .map_err(admission::model_failure)?;
+    admit_shared::<Configuration>()?;
     checkpoint.repository_restore = Some(RepositoryExactRestoreAuthority {
         targets,
-        configuration: Arc::new(checkpoint.configuration.clone()),
+        configuration: Arc::new(configuration),
         scheduler: Arc::clone(&checkpoint.scheduler),
         open,
+        ram_sources: retained_ram,
+        #[cfg(any(test, feature = "test-support"))]
+        ram_source_decorator: None,
     });
+    Ok(decoded)
+}
+
+fn reconstruct_semantic_checkpoint(
+    identity: ContentHash,
+    scenario: &ScenarioDef,
+    source: &ScenarioDefForm,
+    objects: SemanticObjects,
+) -> Result<DecodedProductionExactCheckpoint, LifecycleApiError> {
+    let mut expected_snapshots = BTreeMap::new();
+    for (node, target) in &objects.targets {
+        let node = copy_node(&node.name)?;
+        admit_entry::<NodeId, ContentHash>()?;
+        expected_snapshots.insert(node, target.snapshot_object);
+    }
+    let checkpoint = decode_semantic_checkpoint(identity, scenario, source, objects)?;
     Ok(DecodedProductionExactCheckpoint {
         checkpoint,
         expected_snapshots,
@@ -291,6 +364,7 @@ fn collect_semantic_object(
         }
         ExactCheckpointSemanticObjectRole::EventLogSegment { index, identity } => {
             let value = fallible_copy(bytes, "event-log object")?;
+            admit_entry::<usize, (ContentHash, Vec<u8>)>().map_err(io::Error::other)?;
             if objects
                 .event_log_objects
                 .insert(index, (identity, value))
@@ -301,6 +375,7 @@ fn collect_semantic_object(
         }
         ExactCheckpointSemanticObjectRole::SignalArtifact { identity, .. } => {
             let value = fallible_copy(bytes, "signal artifact")?;
+            admit_entry::<ContentHash, Vec<u8>>().map_err(io::Error::other)?;
             if objects
                 .signal_artifact_objects
                 .insert(identity, value)
@@ -356,12 +431,12 @@ fn collect_semantic_object(
                 limits.fat_checkpoint_bytes,
             )
             .map_err(|error| io::Error::other(format!("decode QEMU snapshot: {error}")))?;
+            let node = copy_node(node).map_err(io::Error::other)?;
+            admit_entry::<NodeId, AuthenticatedTarget>().map_err(io::Error::other)?;
             if objects
                 .targets
                 .insert(
-                    NodeId {
-                        name: node.to_owned(),
-                    },
+                    node,
                     AuthenticatedTarget {
                         configuration,
                         immutable_backing,
@@ -379,16 +454,9 @@ fn collect_semantic_object(
             }
         }
         ExactCheckpointSemanticObjectRole::NodeGeneration(node, generation) => {
-            if objects
-                .node_generations
-                .insert(
-                    NodeId {
-                        name: node.to_owned(),
-                    },
-                    generation,
-                )
-                .is_some()
-            {
+            let node = copy_node(node).map_err(io::Error::other)?;
+            admit_entry::<NodeId, u64>().map_err(io::Error::other)?;
+            if objects.node_generations.insert(node, generation).is_some() {
                 return Err(duplicate("node generation"));
             }
         }
@@ -399,16 +467,9 @@ fn collect_semantic_object(
                 3 => ProductionNodeServiceState::PermanentlyFailed,
                 _ => return Err(io::Error::other("invalid checkpoint node service state")),
             };
-            if objects
-                .node_service_states
-                .insert(
-                    NodeId {
-                        name: node.to_owned(),
-                    },
-                    state,
-                )
-                .is_some()
-            {
+            let node = copy_node(node).map_err(io::Error::other)?;
+            admit_entry::<NodeId, ProductionNodeServiceState>().map_err(io::Error::other)?;
+            if objects.node_service_states.insert(node, state).is_some() {
                 return Err(duplicate("node service state"));
             }
         }
@@ -418,9 +479,7 @@ fn collect_semantic_object(
             fingerprint_at,
             fingerprint,
         } => {
-            let node = NodeId {
-                name: node.to_owned(),
-            };
+            let node = copy_node(node).map_err(io::Error::other)?;
             let host_io = QemuHostIoCheckpoint::from_canonical_bytes_with_limit(
                 bytes,
                 execution_binding,
@@ -431,7 +490,7 @@ fn collect_semantic_object(
                 &node,
                 host_io,
                 FingerprintSample {
-                    node: node.clone(),
+                    node: copy_node(&node.name).map_err(io::Error::other)?,
                     at: VirtualTime {
                         ticks: fingerprint_at,
                     },
@@ -439,6 +498,7 @@ fn collect_semantic_object(
                 },
             )
             .map_err(|error| io::Error::other(error.to_string()))?;
+            admit_entry::<NodeId, ProductionFailedNodeState>().map_err(io::Error::other)?;
             if objects.failed_host_io.insert(node, failed_state).is_some() {
                 return Err(duplicate("failed-node host I/O"));
             }
@@ -459,6 +519,7 @@ fn collect_semantic_object(
 }
 
 fn fallible_copy(bytes: &[u8], role: &str) -> io::Result<Vec<u8>> {
+    admit_array::<u8>(bytes.len()).map_err(io::Error::other)?;
     let mut owned = Vec::new();
     owned
         .try_reserve_exact(bytes.len())
@@ -489,13 +550,20 @@ fn decode_semantic_checkpoint(
     }
     let mut event_log_objects = BTreeMap::new();
     let mut ordered_event_log_identities = Vec::new();
+    admit_array::<ContentHash>(objects.event_log_objects.len())?;
     ordered_event_log_identities
         .try_reserve_exact(objects.event_log_objects.len())
         .map_err(|_| loop_factory_error("allocate ordered event-log identity validation"))?;
     for (expected_index, (index, (object_identity, bytes))) in
         objects.event_log_objects.into_iter().enumerate()
     {
-        if index != expected_index || event_log_objects.insert(object_identity, bytes).is_some() {
+        if index != expected_index {
+            return Err(loop_factory_error(
+                "exact checkpoint event-log indices are duplicated or noncontiguous",
+            ));
+        }
+        admit_entry::<ContentHash, Vec<u8>>()?;
+        if event_log_objects.insert(object_identity, bytes).is_some() {
             return Err(loop_factory_error(
                 "exact checkpoint event-log indices are duplicated or noncontiguous",
             ));
@@ -513,6 +581,8 @@ fn decode_semantic_checkpoint(
         .iter()
         .chain(objects.signal_artifact_objects.iter())
     {
+        admit_array::<u8>(bytes.len())?;
+        admit_entry::<ContentHash, Vec<u8>>()?;
         let stored = signal_store.put(bytes).map_err(|error| {
             loop_factory_error(format!("reconstruct in-memory checkpoint DAG: {error}"))
         })?;
@@ -522,8 +592,13 @@ fn decode_semantic_checkpoint(
             ));
         }
     }
+    let signal_reads = admission::SemanticDagReads {
+        store: &signal_store,
+        events: &event_log_objects,
+        signals: &objects.signal_artifact_objects,
+    };
     let expected_signal_artifacts =
-        collect_signal_artifact_objects(source.plan().fault_signals(), &signal_store)?;
+        collect_signal_artifact_objects(source.plan().fault_signals(), &signal_reads)?;
     if expected_signal_artifacts != objects.signal_artifact_objects {
         return Err(loop_factory_error(
             "exact checkpoint signal-artifact closure is incomplete or contains unreferenced objects",
@@ -535,6 +610,7 @@ fn decode_semantic_checkpoint(
     let lifecycle = take_role(&mut objects.lifecycle_state, "lifecycle state")?;
     let fault_checkpoint = take_role(&mut objects.fault_checkpoint, "fault checkpoint")?;
 
+    admit_shared::<Configuration>()?;
     let configuration = Arc::new(configuration);
     let mut targets = BTreeMap::new();
     for (node, target) in objects.targets {
@@ -544,7 +620,7 @@ fn decode_semantic_checkpoint(
             counter: target.counter,
             scheduler_time: target.scheduler_time,
             snapshot: target.snapshot,
-            materialization: ProductionVmExactCheckpointMaterialization::Repository,
+            materialization: ProductionVmExactCheckpointMaterialization::Unmaterialized,
         };
         if target.configuration != configuration.id() {
             return Err(loop_factory_error(format!(
@@ -552,6 +628,7 @@ fn decode_semantic_checkpoint(
                 node.name
             )));
         }
+        admit_entry::<NodeId, ProductionVmExactCheckpointTarget>()?;
         if targets.insert(node, restored).is_some() {
             return Err(loop_factory_error(
                 "exact checkpoint contains duplicate node targets",
@@ -568,36 +645,37 @@ fn decode_semantic_checkpoint(
         &objects.node_service_states,
     )?;
     validate_failed_host_io_topology(source, &objects.node_service_states, &failed_host_io)?;
-    let expected_selectable_nodes = source
-        .world()
-        .vm_nodes()
-        .iter()
-        .filter(|node| {
-            objects.node_service_states.get(&node.id)
-                != Some(&ProductionNodeServiceState::PermanentlyFailed)
-                && source
-                    .selectables()
-                    .guest_declarations(&node.id)
-                    .next()
-                    .is_some()
-        })
-        .map(|node| node.id.clone())
-        .collect::<BTreeSet<_>>();
-    if lifecycle
-        .selectable_catalog_plans
-        .keys()
-        .cloned()
-        .collect::<BTreeSet<_>>()
-        != expected_selectable_nodes
-    {
+    let expected_selectable_nodes = node_set(
+        source
+            .world()
+            .vm_nodes()
+            .iter()
+            .filter(|node| {
+                objects.node_service_states.get(&node.id)
+                    != Some(&ProductionNodeServiceState::PermanentlyFailed)
+                    && source
+                        .selectables()
+                        .guest_declarations(&node.id)
+                        .next()
+                        .is_some()
+            })
+            .map(|node| &node.id),
+    )?;
+    if node_set(lifecycle.selectable_catalog_plans.keys())? != expected_selectable_nodes {
         return Err(loop_factory_error(
             "exact checkpoint selectable catalog node set differs from the live scenario",
         ));
     }
 
+    let owned_configuration = configuration
+        .try_clone_admitted()
+        .map_err(admission::model_failure)?;
+    admit_shared::<SingleSchedulerCheckpoint>()?;
+    admit_shared::<BTreeMap<ContentHash, Vec<u8>>>()?;
+    admit_shared::<BTreeMap<ContentHash, Vec<u8>>>()?;
     let checkpoint = ProductionVmExactCheckpointSet {
         identity,
-        configuration: configuration.as_ref().clone(),
+        configuration: owned_configuration,
         scheduler: Arc::new(scheduler),
         event_log_objects: Arc::new(event_log_objects),
         signal_artifact_objects: Arc::new(objects.signal_artifact_objects),

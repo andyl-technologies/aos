@@ -61,7 +61,7 @@ where
             )
             .map_err(Into::into);
         }
-        if !self.capacity.supports(request.resources()) {
+        if !self.supports_assignment(request.resources()) {
             return ResumeAttemptExecutionResponse::new(
                 request,
                 ResumeAttemptExecutionDisposition::Rejected {
@@ -377,7 +377,7 @@ where
         request: &SubmitAttemptRequest,
         admission: ValidatedSubmitAdmission,
     ) -> Result<SubmitAttemptResponse, LocalExecutorError<L::Error>> {
-        if !self.capacity.supports(request.resources()) {
+        if !self.supports_assignment(request.resources()) {
             return self.persist_response(
                 request,
                 SubmitAttemptDisposition::Rejected {

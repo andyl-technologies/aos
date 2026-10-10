@@ -1,4 +1,4 @@
-//! Checks that the RFC-0010 phase-gate plan is executable ordering data.
+//! Checks that the phase-gate plan is executable ordering data.
 
 #![forbid(unsafe_code)]
 

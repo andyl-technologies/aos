@@ -10,6 +10,22 @@ The atomic integration patch creates these QEMU source files:
 
 | Created file | License | Basis |
 | --- | --- | --- |
+| `include/qemu/crucible-device-workspace.h` | GPL-2.0-or-later | Explicit SPDX identifier; fixed workspace and original startup wire declarations |
+| `plugins/crucible-device-workspace.c` | GPL-2.0-or-later | Explicit SPDX identifier; bounded wire and sealed descriptor decoding |
+| `plugins/crucible-startup-source.c` | GPL-2.0-or-later | Explicit SPDX identifier; original installer deadline, cancellation, and retained custody |
+| `plugins/crucible-startup-source.h` | GPL-2.0-or-later | Explicit SPDX identifier; private native startup control declarations |
+| `tests/unit/extract-crucible-startup-source-controls.py` | GPL-2.0-or-later | Explicit SPDX identifier; literal production-body control extraction |
+| `tests/unit/extract-crucible-x86-table-projection.py` | GPL-2.0-or-later | Explicit SPDX identifier; literal descriptor-table projection extraction |
+| `tests/unit/test-crucible-device-workspace.c` | GPL-2.0-or-later | Explicit SPDX identifier; wire, sealed descriptor, and private ABI controls |
+| `tests/unit/test-crucible-startup-source-layout.c` | GPL-2.0-or-later | Explicit SPDX identifier; native startup control layout measurement |
+| `tests/unit/test-crucible-startup-source.c` | GPL-2.0-or-later | Explicit SPDX identifier; original startup custody and refusal controls |
+| `tests/unit/test-crucible-x86-table-projection.c` | GPL-2.0-or-later | Explicit SPDX identifier; descriptor-table identity and projection purity controls |
+| `include/system/crucible-kernel-swap-observation.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-kernel-swap-observation.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-ram-owner-diagnostic.c` | GPL-2.0-or-later | Explicit SPDX identifier; original native report implementation retained |
+| `plugins/crucible-ram-owner-diagnostic.h` | GPL-2.0-or-later | Explicit SPDX identifier; private native report contract |
+| `replay/replay-mutex.c` | GPL-2.0-or-later | Preserved GNU GPL version 2 or later notice from the extracted replay implementation |
+| `tests/unit/test-crucible-replay-owner.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `accel/tcg/tcg-accel-ops-sim.c` | GPL-2.0-or-later | QEMU default |
 | `include/system/crucible-plugin-wake.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `block/crucible-shmem.c` | GPL-2.0-or-later | Explicit file notice |
@@ -19,6 +35,12 @@ The atomic integration patch creates these QEMU source files:
 | `include/system/crucible-sim-ipi.h` | GPL-2.0-or-later | QEMU default |
 | `accel/tcg/tcg-accel-ops-preemption.c` | GPL-2.0-or-later | QEMU default |
 | `include/system/crucible-sim-preemption.h` | GPL-2.0-or-later | QEMU default |
+| `include/qemu/crucible-paged-ram.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-paged-ram.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/system/crucible-ram-quiescence.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-ram-quiescence.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/system/crucible-ram-fork.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-ram-fork.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/qemu/crucible-fault.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/qemu/crucible-process.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/qemu/crucible-hot-fork-child.h` | GPL-2.0-or-later | Explicit SPDX identifier |
@@ -56,6 +78,12 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-child-file-refusal.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-aio-fork-custody.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-procfd-flags.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-ram-arena.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-ram-worker-inventory.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-placement-registration.py` | GPL-2.0-or-later | Explicit SPDX identifier; post-grant placement/write registrar production-body component checks |
+| `tests/unit/test-crucible-aio-retirement.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-dirty-iterator.c` | GPL-2.0-or-later | Explicit SPDX identifier; extracted bitmap and capture component fixture |
+| `tests/unit/test-crucible-dirty-iterator.py` | GPL-2.0-or-later | Explicit SPDX identifier; production-body extraction and differential proof |
 | `tests/unit/test-crucible-net-output-stop.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-net-stop-chain.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-stop-context.py` | GPL-2.0-or-later | Explicit SPDX identifier |
@@ -150,6 +178,11 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-serial-kbd-timer-wide-clock.c` | MIT | Explicit SPDX identifier; literal UART and keyboard timer fixtures preserve their MIT scope |
 | `tests/unit/test-crucible-acpi-pm-wide-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-ich9-aux-wide-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/tcg/plugins/crucible-resident-ram.h` | GPL-2.0-or-later | Explicit SPDX identifier; bounded resident logical-RAM component fixture authority |
+| `tests/unit/test-crucible-child-memory-limit.py` | GPL-2.0-or-later | Explicit SPDX identifier; real kernel child limit and cancellation component checks |
+| `tests/tcg/plugins/crucible-resident-ram-observer.c` | GPL-2.0-or-later | Explicit SPDX identifier; resident logical-RAM startup fixture without paging qualification |
+| `tests/unit/test-crucible-memory-service-ticket.py` | GPL-2.0-or-later | Explicit SPDX identifier; actual CPU continuation state-machine and matched predecessor controls |
+| `tests/unit/test-crucible-legacy-ram-load.py` | GPL-2.0-or-later | Explicit SPDX identifier; actual full-load refusal and device-only state parser controls |
 
 The separately built Rust `crucible-qemu-plugin` and C
 `crucible-qemu-trace-plugin` carry explicit GPL-2.0-only notices. The generated

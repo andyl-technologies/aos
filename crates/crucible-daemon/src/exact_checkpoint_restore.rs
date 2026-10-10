@@ -3,7 +3,7 @@
 //! This module joins three independently owned authorities without granting
 //! any of them broader mutation capability: a semantic exact pin or durable
 //! attempt-resume root, the operational owner that retained it, and the
-//! immutable exact-checkpoint store. Runtime restore accepts only version-nine
+//! immutable exact-checkpoint store. Runtime restore accepts only authenticated paged
 //! production closures and consumes sealed RAM and device-state descriptors
 //! through the production lifecycle.
 
@@ -99,6 +99,10 @@ impl PreparedProductionAttemptReplayOraclePromotion {
     pub(crate) const fn replacement(&self) -> &PreparedProductionExactCheckpoint {
         &self.replacement
     }
+
+    pub(crate) fn replacement_mut(&mut self) -> &mut PreparedProductionExactCheckpoint {
+        &mut self.replacement
+    }
 }
 
 impl InstalledProductionAttemptCheckpoint {
@@ -141,7 +145,7 @@ pub(crate) use guarded_replay::{
     GuardedReplayAdmission, QemuGuardedReplayOracleSession, replay_quarantine_with_cause,
 };
 
-/// Installs and binds one version-nine production checkpoint for attempt resume.
+/// Installs and binds one authenticated paged production checkpoint for attempt resume.
 ///
 /// `initial` is the authenticated pre-selection configuration. A branch
 /// attempt supplies `post_selection`, which becomes its effective modeled
@@ -179,7 +183,7 @@ pub(crate) fn install_attempt_production_exact_checkpoint(
     })
 }
 
-/// Installs one resume-eligible version-nine production checkpoint.
+/// Installs one resume-eligible authenticated paged production checkpoint.
 ///
 /// This applies the complete attempt-prefix and scenario checks from
 /// [`install_attempt_production_exact_checkpoint`] and additionally requires
@@ -278,8 +282,8 @@ fn authenticate_attempt_production_resume_checkpoint_inner(
         );
     }
     authenticate_loaded_replay_oracle_promotion(checkpoints, &loaded, cancellation)?;
-    let decoded = loaded
-        .decode_semantic_checkpoint(source, cancellation)
+    let decoded = checkpoints
+        .decode_semantic_checkpoint(&loaded, source, cancellation)
         .map_err(map_production_store_error)?;
     if decoded.configuration().id() != loaded.configuration() {
         return Err(
@@ -375,8 +379,8 @@ fn install_attempt_production_exact_checkpoint_inner(
     }
     check_production_cancellation(cancellation)?;
 
-    let decoded = loaded
-        .decode_semantic_checkpoint(source, cancellation)
+    let decoded = checkpoints
+        .decode_semantic_checkpoint(&loaded, source, cancellation)
         .map_err(map_production_store_error)?;
     if decoded.configuration().id() != loaded.configuration() {
         return Err(
@@ -541,7 +545,7 @@ pub(crate) enum ProductionAttemptCheckpointRestoreError {
     /// The supplied branch post-selection boundary is not the exact next edge.
     #[error("production exact-checkpoint post-selection boundary is not one branch edge")]
     AttemptSelectionMismatch,
-    /// The version-nine root names another scenario.
+    /// The authenticated paged root names another scenario.
     #[error("production exact checkpoint {checkpoint} names foreign scenario {scenario:?}")]
     CheckpointScenarioMismatch {
         /// Exact campaign-CAS root being installed.
@@ -589,7 +593,7 @@ pub(crate) enum ProductionAttemptCheckpointRestoreError {
         /// Exact raw or partially promoted campaign-CAS root.
         checkpoint: ExactCheckpointId,
     },
-    /// Immutable version-nine root authentication failed.
+    /// Immutable authenticated paged root authentication failed.
     #[error(transparent)]
     Checkpoint(#[from] ExactCheckpointStoreError),
     /// Complete scenario-aware native installation failed.
@@ -705,7 +709,7 @@ mod captured_source_tests {
         };
         let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
             ObjectKind::ExactManifest,
-            5,
+            6,
             b"production attempt continuation",
         ))
         .unwrap_or_else(|error| panic!("build production exact root: {error}"));

@@ -104,5 +104,6 @@ fn persistent_repository(root: &Path) -> CampaignRepository {
             root.join("objects"),
         )),
         Arc::new(DirectoryRefBackend::new(root.join("authority"))),
+        crate::CampaignRamAdmission::Unavailable,
     )
 }

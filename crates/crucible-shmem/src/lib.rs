@@ -1,7 +1,7 @@
 //! SPDX-License-Identifier: MIT OR Apache-2.0
 //! `crucible-shmem` implements the public shared-memory process ABI.
 //!
-//! Spec index: RFC-0010 files 13.
+//! Implementation contract: Versioned shared-memory layouts, checked offsets, and process ownership.
 //!
 //! This permissively dual-licensed L1 crate is the Rust implementation of the
 //! versioned, independently implementable process ABI declared by
@@ -22,8 +22,8 @@
 //!
 //! Module map: the crate root owns the initial frame-entry layout, the
 //! delivery-icount contract, the Lamport SPSC frame queue, and the per-node
-//! advance-ceiling slot. Future modules will split region headers and status
-//! words.
+//! advance-ceiling slot. Private modules own region headers, status words,
+//! bounded fault evidence, fingerprint records, and ring accessors.
 //!
 //! Unsafe boundary discipline: mmap, pointer, and atomic details stay private;
 //! public callers use safe typed region accessors and safe SPSC push/pop
@@ -206,7 +206,7 @@ pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// publication. Version 30 binds selectable marker and reply coordinates to
 /// picosecond ticks; raw retirement remains in the versioned pending payload.
 /// The generated C view and golden vectors pin every offset.
-pub const ABI_VERSION: u32 = 30;
+pub const ABI_VERSION: u32 = 31;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of simulation ticks in one QEMU virtual nanosecond.
 pub const TICKS_PER_NS: u64 = 1_000;

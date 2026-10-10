@@ -19,19 +19,11 @@ use std::io::Write as _;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::executor_worker::ResolvedAttemptOrigins;
 use crate::{
     AttemptExecutionContext, AttemptExecutionDisposition, AttemptExecutionInput,
     AttemptExecutionModel, AttemptExecutionProduct, AttemptExecutionReconciliationStep,
     AttemptWorkerFailure, CrucibleArtifactError, ResolvedAttemptStart,
     decode_crucible_scenario_artifact,
-};
-
-mod decode_budget;
-
-use decode_budget::{
-    MAX_SELECTED_ORIGIN_DECODE_BYTES, SelectedOriginDecodeBudget,
-    decode_selected_origin_configuration,
 };
 
 /// Authenticated Crucible discovery or typed branch start.
@@ -63,7 +55,56 @@ pub enum CrucibleResolvedAttemptStart {
     },
 }
 
+fn owned_model_clone_error(source: crucible::EngineError) -> CrucibleArtifactError {
+    CrucibleArtifactError::InvalidPayload {
+        artifact: "owned model copy",
+        source: Box::new(source),
+    }
+}
+
 impl CrucibleResolvedAttemptStart {
+    pub(crate) fn clone_admitted(&self) -> Result<Self, CrucibleArtifactError> {
+        match self {
+            Self::Discover { configuration } => Ok(Self::Discover {
+                configuration: configuration
+                    .try_clone_admitted()
+                    .map_err(owned_model_clone_error)?,
+            }),
+            Self::Branch {
+                parent,
+                selection,
+                selected,
+            } => {
+                crucible::owned_decode::charge_array::<ResolvedSelection>(1)
+                    .map_err(CampaignCodecError::from)?;
+                Ok(Self::Branch {
+                    parent: parent
+                        .try_clone_admitted()
+                        .map_err(owned_model_clone_error)?,
+                    selection: Box::new(selection.clone_admitted()?),
+                    selected: selected
+                        .try_clone_admitted()
+                        .map_err(owned_model_clone_error)?,
+                })
+            }
+            Self::AfterAttempt {
+                base,
+                base_signal_fault_replay,
+                origins,
+            } => {
+                crucible::owned_decode::charge_array::<Self>(1)
+                    .map_err(CampaignCodecError::from)?;
+                crucible::owned_decode::charge_array::<CrucibleAttemptOrigins>(1)
+                    .map_err(CampaignCodecError::from)?;
+                Ok(Self::AfterAttempt {
+                    base: Box::new(base.clone_admitted()?),
+                    base_signal_fault_replay: base_signal_fault_replay.try_clone_admitted()?,
+                    origins: Box::new(origins.clone_admitted()?),
+                })
+            }
+        }
+    }
+
     /// Returns the decoded configuration at the semantic execution boundary.
     #[must_use]
     pub fn configuration(&self) -> &Configuration {
@@ -112,6 +153,19 @@ pub struct CrucibleAttemptOrigins {
 }
 
 impl CrucibleAttemptOrigins {
+    fn clone_admitted(&self) -> Result<Self, CrucibleArtifactError> {
+        crucible::owned_decode::charge_array::<CrucibleAttemptOrigin>(self.rest.len())
+            .map_err(CampaignCodecError::from)?;
+        let mut rest = Vec::with_capacity(self.rest.len());
+        for origin in &self.rest {
+            rest.push(origin.clone_admitted()?);
+        }
+        Ok(Self {
+            first: self.first.clone_admitted()?,
+            rest,
+        })
+    }
+
     /// Binds one required origin and any later descendants.
     #[must_use]
     pub fn new(first: CrucibleAttemptOrigin, rest: Vec<CrucibleAttemptOrigin>) -> Self {
@@ -143,6 +197,22 @@ impl CrucibleAttemptOrigins {
 }
 
 impl CrucibleAttemptOrigin {
+    fn clone_admitted(&self) -> Result<Self, CrucibleArtifactError> {
+        Ok(Self {
+            attempt: self.attempt.clone_admitted()?,
+            reached: self
+                .reached
+                .try_clone_admitted()
+                .map_err(owned_model_clone_error)?,
+            signal_fault_replay: self.signal_fault_replay.try_clone_admitted()?,
+            source_stop: self
+                .source_stop
+                .as_ref()
+                .map(StopOutcome::clone_admitted)
+                .transpose()?,
+        })
+    }
+
     /// Binds one immutable origin attempt to its authenticated reached boundary.
     #[must_use]
     pub fn new(
@@ -345,9 +415,62 @@ pub struct CrucibleAttemptExecution {
         Box<CrucibleAttemptOrigins>,
         Option<AttemptContinuationInput>,
     )>,
+    _decode_custody: crucible::owned_decode::DecodeCustody,
 }
 
 impl CrucibleAttemptExecution {
+    pub(crate) fn enter_decode_scope(&self) -> Option<crucible::owned_decode::DecodeScope> {
+        self._decode_custody.enter()
+    }
+
+    /// Copies retained execution metadata under its original admitted account.
+    ///
+    /// Immutable shared definitions retain their original ownership; every
+    /// copied scenario, schedule, selection and ancestry field is admitted
+    /// before allocating. The returned owner retains the same account.
+    ///
+    /// # Errors
+    /// Refuses exhausted original metadata authority or noncanonical fields.
+    pub fn try_clone_admitted(&self) -> Result<Self, CrucibleArtifactError> {
+        let _original = self.enter_decode_scope();
+        let budget =
+            crucible::owned_decode::current_child_budget().map_err(CampaignCodecError::from)?;
+        let _scope = budget
+            .as_ref()
+            .map(crucible::owned_decode::DecodeBudget::enter);
+        let replay_continuation_basis = self
+            .replay_continuation_basis
+            .as_ref()
+            .map(|(origins, terminal)| {
+                crucible::owned_decode::charge_array::<CrucibleAttemptOrigins>(1)
+                    .map_err(CampaignCodecError::from)?;
+                Ok::<_, CrucibleArtifactError>((
+                    Box::new(origins.clone_admitted()?),
+                    terminal
+                        .as_ref()
+                        .map(AttemptContinuationInput::clone_admitted)
+                        .transpose()?,
+                ))
+            })
+            .transpose()?;
+        Ok(Self {
+            lineage: self.lineage.clone_admitted()?,
+            scenario: self
+                .scenario
+                .try_clone_admitted()
+                .map_err(owned_model_clone_error)?,
+            attempt: self.attempt.clone_admitted()?,
+            path: self.path.clone_admitted()?,
+            start: self.start.clone_admitted()?,
+            signal_fault_replay: self.signal_fault_replay.try_clone_admitted()?,
+            replay_continuation_basis,
+            _decode_custody: budget
+                .as_ref()
+                .map(crucible::owned_decode::DecodeBudget::custody)
+                .unwrap_or_default(),
+        })
+    }
+
     /// Reconstructs a private fresh replay from a self-contained finding candidate.
     ///
     /// The candidate retains the complete scenario and schedule. Its attempt
@@ -359,27 +482,38 @@ impl CrucibleAttemptExecution {
         configuration_artifact: ConfigurationArtifactId,
         configuration: Configuration,
         signal_fault_replay: SignalFaultCampaignReplayPlan,
-    ) -> Result<Self, CampaignCodecError> {
+    ) -> Result<Self, CrucibleArtifactError> {
+        let _original = self.enter_decode_scope();
+        let budget =
+            crucible::owned_decode::current_child_budget().map_err(CampaignCodecError::from)?;
+        let _scope = budget
+            .as_ref()
+            .map(crucible::owned_decode::DecodeBudget::enter);
         if scenario.scenario_def().id() != configuration.def.id()
             || signal_fault_replay.target() != &configuration
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "finding replay scenario or signal-fault plan differs from candidate",
-            });
+            }
+            .into());
         }
         if let Some((origins, _terminal)) = self.continuation_replay_basis() {
             for origin in origins.iter() {
                 let reached = origin.reached();
+                if configuration.schedule.len() < reached.schedule.len() {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "finding replay candidate ends before a controlled source boundary",
+                    }
+                    .into());
+                }
                 let prefix = configuration
                     .schedule
-                    .prefix(reached.schedule.len())
-                    .map_err(|_| CampaignCodecError::InvalidValue {
-                        reason: "finding replay candidate ends before a controlled source boundary",
-                    })?;
+                    .prefix_admitted(reached.schedule.len())
+                    .map_err(owned_model_clone_error)?;
                 if prefix != reached.schedule {
                     return Err(CampaignCodecError::InvalidValue {
                         reason: "finding replay candidate diverges before a controlled source boundary",
-                    });
+                    }.into());
                 }
             }
         }
@@ -388,18 +522,22 @@ impl CrucibleAttemptExecution {
                 configuration: configuration_artifact,
             },
             self.path.id()?,
-            self.attempt.stop().clone(),
+            self.attempt.stop().clone_admitted()?,
         )?;
         let replay = Self {
-            lineage: self.lineage.clone(),
+            lineage: self.lineage.clone_admitted()?,
             scenario,
             attempt,
-            path: self.path.clone(),
+            path: self.path.clone_admitted()?,
             start: CrucibleResolvedAttemptStart::Discover { configuration },
             signal_fault_replay,
             replay_continuation_basis: None,
+            _decode_custody: budget
+                .as_ref()
+                .map(crucible::owned_decode::DecodeBudget::custody)
+                .unwrap_or_default(),
         };
-        Ok(replay.with_replay_continuation_basis_from(self))
+        replay.with_replay_continuation_basis_from(self)
     }
 
     pub(crate) fn for_origin_replay(
@@ -407,16 +545,29 @@ impl CrucibleAttemptExecution {
         attempt: Attempt,
         start: CrucibleResolvedAttemptStart,
         signal_fault_replay: SignalFaultCampaignReplayPlan,
-    ) -> Self {
-        Self {
-            lineage: self.lineage.clone(),
-            scenario: self.scenario.clone(),
+    ) -> Result<Self, CrucibleArtifactError> {
+        let _original = self.enter_decode_scope();
+        let budget =
+            crucible::owned_decode::current_child_budget().map_err(CampaignCodecError::from)?;
+        let _scope = budget
+            .as_ref()
+            .map(crucible::owned_decode::DecodeBudget::enter);
+        Ok(Self {
+            lineage: self.lineage.clone_admitted()?,
+            scenario: self
+                .scenario
+                .try_clone_admitted()
+                .map_err(owned_model_clone_error)?,
             attempt,
-            path: self.path.clone(),
+            path: self.path.clone_admitted()?,
             start,
             signal_fault_replay,
             replay_continuation_basis: None,
-        }
+            _decode_custody: budget
+                .as_ref()
+                .map(crucible::owned_decode::DecodeBudget::custody)
+                .unwrap_or_default(),
+        })
     }
 
     #[cfg(test)]
@@ -442,15 +593,30 @@ impl CrucibleAttemptExecution {
             start,
             signal_fault_replay: SignalFaultCampaignReplayPlan::empty(target),
             replay_continuation_basis: None,
+            _decode_custody: crucible::owned_decode::current_custody().unwrap_or_default(),
         }
     }
 
     /// Preserves controlled source boundaries while a private replay uses a fresh start.
-    pub(crate) fn with_replay_continuation_basis_from(mut self, source: &Self) -> Self {
+    pub(crate) fn with_replay_continuation_basis_from(
+        mut self,
+        source: &Self,
+    ) -> Result<Self, CrucibleArtifactError> {
+        let _scope = self.enter_decode_scope();
         self.replay_continuation_basis = source
             .continuation_replay_basis()
-            .map(|(origins, terminal)| (Box::new(origins.clone()), terminal.cloned()));
-        self
+            .map(|(origins, terminal)| {
+                crucible::owned_decode::charge_array::<CrucibleAttemptOrigins>(1)
+                    .map_err(CampaignCodecError::from)?;
+                Ok::<_, CrucibleArtifactError>((
+                    Box::new(origins.clone_admitted()?),
+                    terminal
+                        .map(AttemptContinuationInput::clone_admitted)
+                        .transpose()?,
+                ))
+            })
+            .transpose()?;
+        Ok(self)
     }
 
     pub(crate) fn continuation_replay_basis(
@@ -535,81 +701,79 @@ pub fn decode_crucible_attempt_execution(
     store: &CampaignExecutorStore,
     input: &AttemptExecutionInput,
 ) -> Result<CrucibleAttemptExecution, CrucibleArtifactError> {
-    decode_crucible_attempt_execution_with_origin_limit(
-        store,
-        input,
-        MAX_SELECTED_ORIGIN_DECODE_BYTES,
-    )
+    decode_admitted_attempt_execution(store, input)
 }
 
-/// Strictly decodes one input within its selected-continuation memory ceiling.
+/// Decodes one input under its original artifact metadata authority.
 ///
 /// # Errors
 ///
-/// Returns the same errors as [`decode_crucible_attempt_execution`] and rejects
-/// an ancestry whose encoded artifacts, decoded schedules, or replay-plan
-/// prefixes exceed the admitted logical resident-byte budget.
+/// Returns the same errors as [`decode_crucible_attempt_execution`]. Modeled
+/// attempt limits remain execution policy; independently admitted storage
+/// metadata authority bounds actual decoding and retained copies.
 pub fn decode_crucible_attempt_execution_with_resources(
     store: &CampaignExecutorStore,
     input: &AttemptExecutionInput,
-    resources: AttemptResourceLimits,
+    _resources: AttemptResourceLimits,
 ) -> Result<CrucibleAttemptExecution, CrucibleArtifactError> {
-    decode_crucible_attempt_execution_with_origin_limit(
-        store,
-        input,
-        resources.maximum_resident_bytes(),
-    )
+    decode_admitted_attempt_execution(store, input)
 }
 
-fn decode_crucible_attempt_execution_with_origin_limit(
+fn decode_admitted_attempt_execution(
     store: &CampaignExecutorStore,
     input: &AttemptExecutionInput,
-    maximum_resident_bytes: u64,
 ) -> Result<CrucibleAttemptExecution, CrucibleArtifactError> {
-    let mut origin_budget = match input.start() {
-        ResolvedAttemptStart::AfterAttempt { base, origins } => {
-            Some(SelectedOriginDecodeBudget::new(
-                input,
-                base,
-                origins,
-                maximum_resident_bytes.min(MAX_SELECTED_ORIGIN_DECODE_BYTES),
-            )?)
-        }
-        ResolvedAttemptStart::Discover { .. } | ResolvedAttemptStart::Branch { .. } => None,
-    };
+    let _original_scope = input.enter_decode_scope();
+    let budget =
+        crucible::owned_decode::current_child_budget().map_err(CampaignCodecError::from)?;
+    let _decode_scope = budget
+        .as_ref()
+        .map(crucible::owned_decode::DecodeBudget::enter);
+    let result = decode_owned_attempt_execution(store, input);
+    if let Some(account) = crucible::owned_decode::current_budget() {
+        account
+            .check()
+            .map_err(|source| CrucibleArtifactError::InvalidPayload {
+                artifact: "owned execution metadata",
+                source: Box::new(crucible::EngineError::ArtifactDecodeAdmission { source }),
+            })?;
+    }
+    result
+}
+
+fn decode_owned_attempt_execution(
+    store: &CampaignExecutorStore,
+    input: &AttemptExecutionInput,
+) -> Result<CrucibleAttemptExecution, CrucibleArtifactError> {
     let scenario = decode_crucible_scenario_artifact(input.scenario())?;
     let (start, signal_fault_replay) = match input.start() {
         start @ (ResolvedAttemptStart::Discover { .. } | ResolvedAttemptStart::Branch { .. }) => {
-            decode_base_crucible_start(store, &scenario, input.scenario(), start, None)?
+            decode_base_crucible_start(store, &scenario, input.scenario(), start)?
         }
         ResolvedAttemptStart::AfterAttempt { base, origins } => {
-            let (base, base_signal_fault_replay) = decode_base_crucible_start(
-                store,
-                &scenario,
-                input.scenario(),
-                base,
-                origin_budget.as_mut(),
-            )?;
+            let (base, base_signal_fault_replay) =
+                decode_base_crucible_start(store, &scenario, input.scenario(), base)?;
+            crucible::owned_decode::charge_array::<CrucibleAttemptOrigin>(origins.len())
+                .map_err(CampaignCodecError::from)?;
             let mut decoded_origins = Vec::with_capacity(origins.len());
             let mut terminal_replay = None;
             for origin in origins.iter() {
-                let (reached, replay) = decode_selected_origin_configuration(
-                    store,
-                    &scenario,
-                    input.scenario(),
-                    origin.reached(),
-                    origin_budget
-                        .as_mut()
-                        .ok_or(CrucibleArtifactError::ResourceLimit {
-                            resource: "selected-origin-decoded-resident-bytes",
-                        })?,
-                )?;
-                terminal_replay = Some(replay.clone());
+                let (reached, replay) =
+                    crate::decode_crucible_configuration_artifact_with_signal_fault_replay(
+                        &scenario,
+                        input.scenario(),
+                        origin.reached(),
+                        store,
+                    )?;
+                terminal_replay = Some(replay.try_clone_admitted()?);
                 decoded_origins.push(CrucibleAttemptOrigin {
-                    attempt: origin.attempt().clone(),
+                    attempt: origin.attempt().clone_admitted()?,
                     reached,
                     signal_fault_replay: replay,
-                    source_stop: origin.source_stop().cloned(),
+                    source_stop: origin
+                        .source_stop()
+                        .map(crucible_campaign::StopOutcome::clone_admitted)
+                        .transpose()?,
                 });
             }
             let replay = terminal_replay.ok_or(CrucibleArtifactError::Campaign(
@@ -625,6 +789,12 @@ fn decode_crucible_attempt_execution_with_origin_limit(
                         reason: "attempt continuation has no origin boundary",
                     },
                 ))?;
+            crucible::owned_decode::charge_array::<CrucibleResolvedAttemptStart>(1)
+                .map_err(CampaignCodecError::from)?;
+            crucible::owned_decode::charge_array::<CrucibleAttemptOrigins>(1)
+                .map_err(CampaignCodecError::from)?;
+            crucible::owned_decode::charge_array::<CrucibleAttemptOrigin>(decoded_origins.len())
+                .map_err(CampaignCodecError::from)?;
             (
                 CrucibleResolvedAttemptStart::AfterAttempt {
                     base: Box::new(base),
@@ -640,13 +810,14 @@ fn decode_crucible_attempt_execution_with_origin_limit(
     };
 
     Ok(CrucibleAttemptExecution {
-        lineage: input.lineage().clone(),
+        lineage: input.lineage().clone_admitted()?,
         scenario,
-        attempt: input.attempt().clone(),
-        path: input.path().clone(),
+        attempt: input.attempt().clone_admitted()?,
+        path: input.path().clone_admitted()?,
         start,
         signal_fault_replay,
         replay_continuation_basis: None,
+        _decode_custody: crucible::owned_decode::current_custody().unwrap_or_default(),
     })
 }
 
@@ -655,46 +826,29 @@ fn decode_base_crucible_start(
     scenario: &ScenarioDefForm,
     scenario_artifact: &crucible_campaign::ScenarioArtifact,
     start: &ResolvedAttemptStart,
-    mut origin_budget: Option<&mut SelectedOriginDecodeBudget>,
 ) -> Result<(CrucibleResolvedAttemptStart, SignalFaultCampaignReplayPlan), CrucibleArtifactError> {
     match start {
         ResolvedAttemptStart::Discover { configuration } => {
-            let (configuration, replay) = match origin_budget.as_deref_mut() {
-                Some(budget) => decode_selected_origin_configuration(
-                    store,
-                    scenario,
-                    scenario_artifact,
-                    configuration,
-                    budget,
-                )?,
-                None => crate::decode_crucible_configuration_artifact_with_signal_fault_replay(
+            let (configuration, replay) =
+                crate::decode_crucible_configuration_artifact_with_signal_fault_replay(
                     scenario,
                     scenario_artifact,
                     configuration,
                     store,
-                )?,
-            };
+                )?;
             Ok((
                 CrucibleResolvedAttemptStart::Discover { configuration },
                 replay,
             ))
         }
         ResolvedAttemptStart::Branch { parent, selection } => {
-            let (parent, parent_replay) = match origin_budget.as_deref_mut() {
-                Some(budget) => decode_selected_origin_configuration(
-                    store,
-                    scenario,
-                    scenario_artifact,
-                    parent,
-                    budget,
-                )?,
-                None => crate::decode_crucible_configuration_artifact_with_signal_fault_replay(
+            let (parent, parent_replay) =
+                crate::decode_crucible_configuration_artifact_with_signal_fault_replay(
                     scenario,
                     scenario_artifact,
                     parent,
                     store,
-                )?,
-            };
+                )?;
             let recorded = selection.selection();
             recorded
                 .validate_branch_replay(
@@ -717,7 +871,7 @@ fn decode_base_crucible_start(
                         selection.opportunity(),
                         selection.domain(),
                     )?;
-                    Some(Box::new(selectable.resolve_branch(recorded)?))
+                    Some(selectable.resolve_branch(recorded)?)
                 }
                 _ => None,
             };
@@ -737,9 +891,15 @@ fn decode_base_crucible_start(
                 _ => None,
             };
             let selected = if let Some(branch) = signal_fault.as_ref() {
-                branch.selected().clone()
+                branch
+                    .selected()
+                    .try_clone_admitted()
+                    .map_err(owned_model_clone_error)?
             } else if let Some(branch) = network_fault.as_ref() {
-                branch.selected().clone()
+                branch
+                    .selected()
+                    .try_clone_admitted()
+                    .map_err(owned_model_clone_error)?
             } else {
                 try_step(
                     &parent,
@@ -750,22 +910,30 @@ fn decode_base_crucible_start(
                     source: Box::new(source),
                 })?
             };
-            if let Some(budget) = origin_budget {
-                budget.charge_branch_start(&selected)?;
-            }
             let (_, mut branches, mut network_branches) = parent_replay.into_parts();
-            if let Some(branch) = signal_fault.as_deref() {
-                branches.push(branch.clone());
+            if let Some(branch) = signal_fault {
+                crucible::owned_decode::reserve_vec(&mut branches, 1)
+                    .map_err(CampaignCodecError::from)?;
+                branches.push(branch);
             }
             if let Some(branch) = network_fault {
+                crucible::owned_decode::reserve_vec(&mut network_branches, 1)
+                    .map_err(CampaignCodecError::from)?;
                 network_branches.push(branch);
             }
-            let replay = SignalFaultCampaignReplayPlan::new(selected.clone(), branches)?
-                .with_network_branches(network_branches)?;
+            let replay = SignalFaultCampaignReplayPlan::new(
+                selected
+                    .try_clone_admitted()
+                    .map_err(owned_model_clone_error)?,
+                branches,
+            )?
+            .with_network_branches(network_branches)?;
+            crucible::owned_decode::charge_array::<ResolvedSelection>(1)
+                .map_err(CampaignCodecError::from)?;
             Ok((
                 CrucibleResolvedAttemptStart::Branch {
                     parent,
-                    selection: selection.clone(),
+                    selection: Box::new(selection.clone_admitted()?),
                     selected,
                 },
                 replay,
@@ -891,13 +1059,14 @@ where
         context: &AttemptExecutionContext,
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
         self.last_materialization = None;
+        let _decode_scope = input.enter_decode_scope();
         let decoded = decode_crucible_attempt_execution_with_resources(
             &self.store,
             input,
             context.resources(),
         )
         .map_err(map_artifact_failure)?;
-        // Terminal v9 captures have no durable campaign pin. GC must not pass
+        // Terminal native captures have no durable campaign pin. GC must not pass
         // its ref-inventory fence between root-last publication and restore.
         let outcome = {
             let _gc_exclusion =
@@ -964,11 +1133,12 @@ fn enforce_required_exact_restore<R: CrucibleExecutionRunner>(
 fn map_artifact_failure<E>(
     error: CrucibleArtifactError,
 ) -> AttemptWorkerFailure<CrucibleExecutionModelError<E>> {
-    let retryable = matches!(
-        &error,
-        CrucibleArtifactError::SelectionRepository(repository)
-            if repository.executor_rejection() == ExecutorRejection::UnavailableInput
-    );
+    let retryable = error.is_decode_admission_refusal()
+        || matches!(
+            &error,
+            CrucibleArtifactError::SelectionRepository(repository)
+                if repository.executor_rejection() == ExecutorRejection::UnavailableInput
+        );
     let error = CrucibleExecutionModelError::Artifact(error);
     if retryable {
         AttemptWorkerFailure::Retryable(error)

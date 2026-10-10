@@ -22,12 +22,12 @@ pub struct BindingSearchChoice {
     pub overridden: bool,
 }
 
-/// Typed meaning retained for one RFC-0014 finite search candidate sequence.
+/// Typed meaning retained for one finite signal-fault search candidate sequence.
 ///
 /// Candidate identities are ordered exactly like the binding policy's
 /// canonical candidate vector. They let the campaign boundary expose Boolean
 /// outcomes and stable discrete transition or parameter alternatives while the
-/// effect adapter continues to consume the original typed RFC-0014 values.
+/// effect adapter continues to consume the original typed signal-fault values.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BindingSearchCandidateSemantics {
     /// False/true effect outcome candidates, in that order.
@@ -84,7 +84,7 @@ impl BindingSearchCandidateSemantics {
     }
 }
 
-/// Exact typed meaning of one selected RFC-0014 finite-search candidate.
+/// Exact typed meaning of one selected finite signal-fault search candidate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum BindingSearchCandidate {

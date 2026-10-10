@@ -154,6 +154,9 @@ fn reply_for(
 
 #[test]
 fn production_reply_releases_zero_peer_hold_before_network_settlement() -> TestResult {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let mut lifecycle = stopped_lifecycle(0)?;
     let pending = lifecycle.drain_pending_selectable_requests()?.remove(0);
     let (parent, decision, selected, reply) = reply_for(&lifecycle, &pending)?;
@@ -181,6 +184,9 @@ fn production_reply_releases_zero_peer_hold_before_network_settlement() -> TestR
 
 #[test]
 fn production_network_preselection_hides_requests_without_consuming_them() -> TestResult {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let mut stopped = stopped_lifecycle(0)?;
     let pending = stopped.drain_pending_selectable_requests()?.remove(0);
     let (parent, decision, selected, reply) = reply_for(&stopped, &pending)?;
@@ -227,6 +233,9 @@ fn production_network_preselection_hides_requests_without_consuming_them() -> Te
 
 #[test]
 fn production_reply_keeps_peer_request_private_until_once_only_publication() -> TestResult {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let mut lifecycle = stopped_lifecycle(1)?;
     assert_eq!(
         lifecycle
@@ -273,6 +282,9 @@ fn production_reply_keeps_peer_request_private_until_once_only_publication() -> 
 
 #[test]
 fn production_reply_refusal_retains_original_stop_and_request() -> TestResult {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let mut lifecycle = stopped_lifecycle(0)?;
     let witness = lifecycle
         .inner
@@ -385,16 +397,23 @@ impl ProductionVmNodeLauncher for PublicationBoundaryLauncher {
 
 #[test]
 fn production_peer_publication_failure_retains_evidence_and_refuses_republication() -> TestResult {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let mut lifecycle = stopped_lifecycle(1)?;
     let pending = lifecycle.drain_pending_selectable_requests()?.remove(0);
     let (parent, decision, selected, reply) = reply_for(&lifecycle, &pending)?;
     lifecycle.apply_selectable_reply(&parent, decision, &selected, &pending, &reply)?;
-    let retained = lifecycle
+    let original = &lifecycle
         .pending_held_host_outcomes
         .as_ref()
         .ok_or("peer outcomes absent")?
-        .outcomes
-        .clone();
+        .outcomes;
+    let mut retained = Vec::new();
+    crucible::owned_decode::reserve_vec(&mut retained, original.len())?;
+    for outcome in original {
+        retained.push(outcome.try_clone_admitted()?);
+    }
     lifecycle.trigger_graph = EventGraph::builder()
         .event("publication-effect")
         .when(crucible::Condition::at(
@@ -442,6 +461,9 @@ fn production_peer_publication_failure_retains_evidence_and_refuses_republicatio
 
 #[test]
 fn production_marker_release_settles_zero_peer_hold_and_retains_refused_park() -> TestResult {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let mut lifecycle = stopped_lifecycle_with_kind(0, true)?;
     let witness = lifecycle
         .inner

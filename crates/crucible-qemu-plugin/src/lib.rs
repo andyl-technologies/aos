@@ -1,7 +1,7 @@
 //! SPDX-License-Identifier: GPL-2.0-only
 //! `crucible-qemu-plugin` owns the in-VM QEMU plugin.
 //!
-//! Spec index: RFC-0010 files 11, 12.
+//! Implementation contract: GPL-side guest observation, deterministic execution fences, and host paging.
 //!
 //! License boundary: this crate is GPL-2.0-only because its `cdylib` is loaded
 //! into QEMU and directly implements QEMU plugin entry points and callbacks.
@@ -10,9 +10,9 @@
 //! Crucible host/runtime crates in production. Host/plugin communication stays
 //! within the versioned socket control protocol and shared-memory process ABI.
 //!
-//! This L2 crate builds the `cdylib` loaded by QEMU. Later tasks will add the
-//! QEMU TCG plugin entry points, time-control hooks, and device callbacks
-//! specified by its indexed RFC-0010 files. It is an unsafe-boundary crate
+//! This L2 crate builds the `cdylib` loaded by QEMU. It implements TCG plugin
+//! entry points, time-control hooks, and device callbacks through versioned
+//! process protocols. It is an unsafe-boundary crate
 //! because the plugin speaks QEMU's C ABI and may read guest memory.
 //!
 //! Module map: `abi` owns the raw QEMU plugin `cdylib` entry point and capability
@@ -44,10 +44,11 @@
 //! `runtime` owns live fail-closed installation and process-lifetime active state;
 //! `vcpu_introspection` owns side-effect-free per-vCPU register and RR cursor
 //! reads for N-vCPU fingerprinting;
+//! `ram_fingerprint` owns coherent incremental RAM roots and prepared mutation
+//! publication; `paged_ram` owns Linux host residency and preserved page bytes;
 //! `coverage` owns optional TCG-exec coverage planning and observational
 //! basic-block map updates; `io_wire_fuzz` owns the pure block and 9p wire fuzz
-//! target used by the ABI-conformance gate. Future modules will add live device
-//! callback behavior and QEMU-facing helpers.
+//! target used by the ABI-conformance gate.
 //!
 //! Unsafe boundary discipline: exported C ABI entry points validate raw QEMU
 //! pointers and delegate to safe Rust shims for time-control, callback
@@ -65,18 +66,29 @@ pub mod block_io;
 pub mod boot_barrier;
 pub mod coverage;
 pub mod deadline;
+mod device_digest_workspace;
+mod startup_source;
+pub use startup_source::StartupSourceError;
 pub mod device_io;
 pub mod fault_command;
 mod fingerprint_sampler;
+pub use device_digest_workspace::DeviceDigestWorkspaceError;
 pub mod handshake;
 pub mod idle_loop;
 pub mod inbound;
 pub mod inertness;
 pub mod io_wire_fuzz;
+#[cfg(feature = "native-conformance")]
+mod native_conformance;
 pub mod network_rx;
 pub mod network_tx;
 pub mod ninep_io;
+#[cfg(target_os = "linux")]
+mod paged_ram;
 pub mod preemption;
+mod ram_diagnostics;
+mod ram_error;
+mod ram_fingerprint;
 pub mod registration;
 pub mod round_robin;
 #[cfg(unix)]
@@ -96,10 +108,11 @@ pub use abi::{
     QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_HELD, QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_MAPPING_DONTFORK,
     QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_TEARDOWN, QEMU_PLUGIN_HOT_FORK_BARRIER_HOLD,
     QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY, QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE,
-    QEMU_PLUGIN_HOT_FORK_BARRIER_STATUS_VERSION, QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_ACTIVE,
-    QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_CALLBACKS_HELD, QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_FAILED,
-    QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_MAPPING_INSTALLED,
-    QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_WORKERS_READY, QEMU_PLUGIN_HOT_FORK_CHILD_INITIALIZE,
+    QEMU_PLUGIN_HOT_FORK_BARRIER_STATUS_VERSION, QEMU_PLUGIN_HOT_FORK_CHILD_DISARM,
+    QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_ACTIVE, QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_CALLBACKS_HELD,
+    QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_FAILED, QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_MAPPING_INSTALLED,
+    QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_WORKERS_READY,
+    QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_WORKSPACE_DISARMED, QEMU_PLUGIN_HOT_FORK_CHILD_INITIALIZE,
     QEMU_PLUGIN_HOT_FORK_CHILD_PLAN_VERSION, QEMU_PLUGIN_HOT_FORK_CHILD_QUERY,
     QEMU_PLUGIN_HOT_FORK_CHILD_RELEASE, QEMU_PLUGIN_HOT_FORK_CHILD_STATUS_VERSION,
     QEMU_PLUGIN_ICOUNT_RAW_SYMBOL, QEMU_PLUGIN_INSTALL_ERROR, QEMU_PLUGIN_INSTALL_OK,

@@ -183,6 +183,9 @@ where
         state.issued.insert(identity.clone());
         drop(state);
         Ok(QemuHotForkWorldNodeTarget {
+            #[cfg(test)]
+            component_ram_facts: false,
+            host_ram: None,
             state: Arc::clone(&self.state),
             identity,
             resources: self.resources,
@@ -437,6 +440,22 @@ impl<G> QemuAttemptProcessResourceGuard for QemuHotForkWorldLifecycleGuard<G>
 where
     G: QemuAttemptProcessResourceGuard,
 {
+    fn native_resource_controller(
+        &mut self,
+    ) -> Result<Option<crucible_qemu::LinuxQemuNativeResourceController>, QemuVmRealizationError>
+    {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.finished || state.terminal {
+            return Err(world_resource_error(
+                "native resource controller owner is not operational",
+            ));
+        }
+        state.guard.native_resource_controller()
+    }
+
     fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
         let state = self
             .state

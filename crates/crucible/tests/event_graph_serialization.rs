@@ -93,12 +93,7 @@ fn graph(world: &World) -> EventGraph {
         .event("pass-when-safe")
         .when(Condition::all_of(vec![
             Condition::assertion_state(assertion("cluster-safe"), AssertionPhase::Satisfied),
-            Condition::console_match(
-                node("db-0"),
-                RegexProgram {
-                    pattern: String::from("converged"),
-                },
-            ),
+            Condition::console_match(node("db-0"), RegexProgram::from_pattern("converged")),
         ]))
         .action(Action::pass())
         .build_with_assertions_for_world([assertion("cluster-safe")], world)

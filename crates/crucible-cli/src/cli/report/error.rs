@@ -9,8 +9,23 @@ pub(in super::super) enum CliError {
     Artifact(String),
     Usage(String),
     Serve(String),
+    SqliteStartup(crucible_daemon::campaign_store_composition::StoreError),
     Backend(String),
     Identity(String),
+    EventEvidence {
+        context: &'static str,
+        source: Box<crucible::EngineError>,
+    },
+    MetadataAdmission(crucible_session::engine::owned_decode::DecodeAdmissionError),
+    LifecycleAdmission(Box<crucible_api::LifecycleApiError>),
+    InputAuthority(Box<crucible_daemon::campaign_store_composition::StoreError>),
+    ProviderAdmission(crucible_daemon::ProviderServiceAdmissionError),
+    CampaignArchive(crucible_campaign::CampaignRepositoryError),
+    ArchiveTransfer(crucible_daemon::CampaignArchiveTransferError),
+    ExecutionAdmission {
+        context: &'static str,
+        source: NativeExecutionAdmissionError,
+    },
     SaveWorkflowTrace {
         source: Box<CliError>,
         trace: SaveWorkflowFailureTrace,
@@ -30,9 +45,14 @@ impl CliError {
             Self::Store(_) => 5,
             Self::Artifact(_) => 5,
             Self::Usage(_) => 64,
-            Self::Serve(_) => 3,
+            Self::Serve(_) | Self::SqliteStartup(_) => 3,
             Self::Backend(_) => 4,
             Self::Identity(_) => 3,
+            Self::EventEvidence { .. } => 4,
+            Self::MetadataAdmission(_) => 4,
+            Self::InputAuthority(_) | Self::LifecycleAdmission(_) | Self::ProviderAdmission(_) => 4,
+            Self::CampaignArchive(_) | Self::ArchiveTransfer(_) => 4,
+            Self::ExecutionAdmission { .. } => 4,
             Self::SaveWorkflowTrace { source, .. } => source.exit_code(),
             Self::Outcome(BackendCommandStatus::Passed) => 0,
             Self::Outcome(BackendCommandStatus::Failed) => 1,
@@ -55,8 +75,23 @@ impl fmt::Display for CliError {
             Self::Artifact(error) => write!(formatter, "{error}"),
             Self::Usage(error) => write!(formatter, "{error}"),
             Self::Serve(error) => write!(formatter, "{error}"),
+            Self::SqliteStartup(error) => write!(formatter, "SQLite process admission: {error}"),
             Self::Backend(error) => write!(formatter, "{error}"),
             Self::Identity(error) => write!(formatter, "{error}"),
+            Self::EventEvidence { context, source } => write!(formatter, "{context}: {source}"),
+            Self::MetadataAdmission(source) => {
+                write!(formatter, "input metadata admission: {source}")
+            }
+            Self::LifecycleAdmission(source) => write!(formatter, "lifecycle admission: {source}"),
+            Self::InputAuthority(source) => write!(formatter, "input resource authority: {source}"),
+            Self::ProviderAdmission(source) => {
+                write!(formatter, "input resource authority: {source}")
+            }
+            Self::CampaignArchive(source) => write!(formatter, "archive operation: {source}"),
+            Self::ArchiveTransfer(source) => write!(formatter, "archive transfer: {source}"),
+            Self::ExecutionAdmission { context, source } => {
+                write!(formatter, "{context}: {source}")
+            }
             Self::SaveWorkflowTrace { source, .. } => write!(formatter, "{source}"),
             Self::Outcome(status) => write!(formatter, "run ended with {status:?}"),
             Self::ReplayCheck(error) => write!(formatter, "{error}"),
@@ -76,8 +111,17 @@ impl Error for CliError {
             Self::Artifact(_) => None,
             Self::Usage(_) => None,
             Self::Serve(_) => None,
+            Self::SqliteStartup(source) => Some(source),
             Self::Backend(_) => None,
             Self::Identity(_) => None,
+            Self::EventEvidence { source, .. } => Some(source.as_ref()),
+            Self::MetadataAdmission(source) => Some(source),
+            Self::LifecycleAdmission(source) => Some(source.as_ref()),
+            Self::InputAuthority(source) => Some(source.as_ref()),
+            Self::ProviderAdmission(source) => Some(source),
+            Self::CampaignArchive(source) => Some(source),
+            Self::ArchiveTransfer(source) => Some(source),
+            Self::ExecutionAdmission { source, .. } => Some(source),
             Self::SaveWorkflowTrace { source, .. } => Some(source.as_ref()),
             Self::Outcome(_) => None,
             Self::ReplayCheck(_) => None,

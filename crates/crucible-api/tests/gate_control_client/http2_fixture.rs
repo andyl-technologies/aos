@@ -167,6 +167,7 @@ pub(super) fn lifecycle_control_plane() -> TestLifecyclePlane {
         )],
         test_loop_factory as fn(&ScenarioDef, Seed) -> ServerQuantumLoop,
     )
+    .with_decode_budget(crate::output_support::budget())
     .with_resume_replay_closure_validator(|_, _, _, closure| {
         if closure.schema_version() == 7 && closure.payload() == b"rpc-replay-closure" {
             Ok(())
@@ -1739,10 +1740,17 @@ pub(super) fn in_process_client_fixture() -> (InProcessControlClient, SessionAct
 pub(super) fn streaming_session_fixture<L>(
     quantum_loop: L,
     seed: u64,
-) -> (InProcessStreamingSession, SessionActor<L>, SessionRef)
+) -> (
+    InProcessStreamingSession,
+    SessionActor<L>,
+    SessionRef,
+    crucible::owned_decode::DecodeBudget,
+)
 where
     L: QuantumLoop + Send + 'static,
 {
+    let output_budget = crate::output_support::budget();
+    let _output_scope = output_budget.enter();
     let scenario = generated_scenario(seed);
     let scenario_def = scenario.scenario_def();
     let config = Configuration::genesis(scenario_def.clone());
@@ -1759,7 +1767,8 @@ where
         actor.reproduction_log(),
         actor.state_transition_bus(),
     );
-    (streaming, actor, session)
+    drop(_output_scope);
+    (streaming, actor, session, output_budget)
 }
 
 pub(super) async fn start_and_pause_streaming_actor(
@@ -1850,6 +1859,8 @@ pub(super) fn attach_gdb_command(node_name: &str) -> SessionCommand {
 }
 
 pub(super) fn event_pair(first_sequence: u64, quantum: u64) -> Vec<SchedulerEventLogEntry> {
+    let budget = crate::output_support::budget();
+    let _scope = budget.enter();
     let frontier = VirtualTime { ticks: quantum };
     let causal = condition_payload_entry_for_test(
         first_sequence,
@@ -1858,7 +1869,8 @@ pub(super) fn event_pair(first_sequence: u64, quantum: u64) -> Vec<SchedulerEven
             stream: RngStreamId::from_name(format!("rpc-{quantum}")),
             value: quantum,
         })),
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite fixture event admission: {error}"));
 
     let mut details = BTreeMap::new();
     details.insert(String::from("quantum"), EventAttributeValue::U64(quantum));
@@ -1870,7 +1882,8 @@ pub(super) fn event_pair(first_sequence: u64, quantum: u64) -> Vec<SchedulerEven
             EventLevel::Info,
             details,
         )),
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite fixture event admission: {error}"));
     vec![causal, observational]
 }
 
@@ -1909,6 +1922,7 @@ impl QuantumLoop for ServerQuantumLoop {
             event_log_segment_hash: None,
             event_log_offset: EventLogOffset::default(),
             scheduler_quiescence: None,
+            event_log_custody: Default::default(),
         })
     }
 }
@@ -1948,6 +1962,7 @@ impl QuantumLoop for ReferenceSimDoubleLoop {
             event_log_segment_hash: Some(ContentHash::from_bytes(b"simdouble-reference")),
             event_log_offset: EventLogOffset::new(Default::default(), 0, self.event_log_events),
             scheduler_quiescence: None,
+            event_log_custody: crucible::EventLogOutputCustody::retain_current()?,
         })
     }
 
@@ -1960,16 +1975,21 @@ impl QuantumLoop for ReferenceSimDoubleLoop {
 
 impl ReferenceSimDoubleLoop {
     fn reference_event_log_entries(&mut self) -> Vec<SchedulerEventLogEntry> {
+        let budget = crate::output_support::budget();
+        let _scope = budget.enter();
         let base = self.event_log_events;
-        let entries = vec![condition_payload_entry_for_test(
-            base,
-            VirtualTime { ticks: self.quanta },
-            SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(
-                "api.reference.conformance.simdouble",
-                EventLevel::Debug,
-                BTreeMap::new(),
-            )),
-        )];
+        let entries = vec![
+            condition_payload_entry_for_test(
+                base,
+                VirtualTime { ticks: self.quanta },
+                SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(
+                    "api.reference.conformance.simdouble",
+                    EventLevel::Debug,
+                    BTreeMap::new(),
+                )),
+            )
+            .unwrap_or_else(|error| panic!("finite reference event admission: {error}")),
+        ];
         self.event_log_events = self
             .event_log_events
             .saturating_add(u64::try_from(entries.len()).unwrap_or(u64::MAX));
@@ -1997,6 +2017,8 @@ pub(super) fn complete_reference_sim_double_setup(backend: &mut SimDouble) {
 
     let setup = control_encode_host_msg(&HostMsg::Setup {
         region_len: backend.shmem_layout().region_size,
+        process_generation: 1,
+        device_digest_workspace: None,
     });
     match backend.accept_host_control_frame(&setup) {
         Ok(Some(_setup_ack)) => {}
@@ -2025,6 +2047,7 @@ impl QuantumLoop for RejectingGdbLoop {
             event_log_segment_hash: None,
             event_log_offset: EventLogOffset::default(),
             scheduler_quiescence: None,
+            event_log_custody: Default::default(),
         })
     }
 
@@ -2060,6 +2083,7 @@ impl QuantumLoop for InternalGdbLoop {
             event_log_segment_hash: None,
             event_log_offset: EventLogOffset::default(),
             scheduler_quiescence: None,
+            event_log_custody: Default::default(),
         })
     }
 
@@ -2095,6 +2119,7 @@ impl QuantumLoop for RejectingOnceShutdownLoop {
             event_log_segment_hash: None,
             event_log_offset: EventLogOffset::default(),
             scheduler_quiescence: None,
+            event_log_custody: Default::default(),
         })
     }
 

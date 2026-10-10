@@ -3,6 +3,7 @@
   mkSystem,
   attrPath ? "checks.crucible.phase9.gates.campaignServiceModuleContract",
 }: let
+  processResources = import ./campaign-process-resources-fixture.nix;
   evaluate = campaignConfig:
     builtins.tryEval (
       let
@@ -17,12 +18,22 @@
         builtins.deepSeq evaluated.config.system.build.toplevel true
     );
   valid = evaluate {
+    inherit processResources;
     enable = true;
     listenAddress = "127.0.0.1:18080";
     socketPath = "/run/crucible-campaign/service.sock";
     stateDirectory = "/var/lib/crucible-campaign";
   };
   invalid = [
+    (evaluate {enable = true;})
+    (evaluate {
+      enable = true;
+      processResources = processResources // {sqliteHeapBytes = processResources.memoryMaxBytes;};
+    })
+    (evaluate {
+      enable = true;
+      processResources = processResources // {blockingThreads = processResources.tasksMax;};
+    })
     (evaluate {listenAddress = "0.0.0.0:18080";})
     (evaluate {listenAddress = "localhost:18080";})
     (evaluate {listenAddress = "127.0.0.1:0";})

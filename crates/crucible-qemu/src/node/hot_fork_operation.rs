@@ -102,6 +102,7 @@ pub struct QemuHotForkHostContinuation {
     pub(super) console_spool: Option<QemuConsoleObservationSpool>,
     pub(super) node_state: QemuHotForkNodeStateContinuation,
     pub(super) checkpoint_cancellation: OwnedFd,
+    pub(super) ram: Option<Box<QemuHotForkRamContinuation>>,
 }
 
 impl std::fmt::Debug for QemuHotForkHostContinuation {
@@ -113,6 +114,19 @@ impl std::fmt::Debug for QemuHotForkHostContinuation {
             .field("endpoint_stage", &self.endpoint_stage)
             .field("host_io_binding", &self.host_io_binding)
             .finish_non_exhaustive()
+    }
+}
+
+impl QemuHotForkHostContinuation {
+    /// Retains physical RAM custody in the outer child reconciliation owner.
+    ///
+    /// This clone grants no native process or release authority. The outer
+    /// owner supplies its authenticated process-control loan after actual reap.
+    #[must_use]
+    pub fn ram_launch_custody(&self) -> Option<crate::QemuRamLaunchCustody> {
+        self.ram.as_ref().map(|ram| crate::QemuRamLaunchCustody {
+            cleanup: ram.cleanup.clone(),
+        })
     }
 }
 

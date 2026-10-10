@@ -34,6 +34,9 @@
     inherit pkgs lib qemuPackage;
     sourceCheck = checkpointSource;
   };
+  ordinaryCheckpointRefusal = import ./phase2-qemu-checkpoint-ordinary-refusal.nix {
+    inherit pkgs qemuPackage;
+  };
   diagnosticPolicy = import ./phase1-qemu-diagnostic-patches-dev-only.nix {
     inherit pkgs lib qemuPackage;
   };
@@ -82,13 +85,15 @@
 
     live_result="${checkpointFlight}/result"
     grep -Fxq PASS "$live_result"
-    grep -Fxq 'checkpoint_delta_source_prerequisite_passed=true' "$live_result"
-    grep -Fxq 'checkpoint_delta_exact_test_passed=1' "$live_result"
-    grep -Fxq 'ordinary_mode_checkpoint_test_passed=1' "$live_result"
-    grep -Fxq 'ordinary_mode_checkpoint_rejected=true' "$live_result"
-    grep -Fxq 'ordinary_mode_inert=true' "$live_result"
-    grep -Fxq 'direct_delta_reconstruction_equal=true' "$live_result"
-    grep -Fxq 'checkpoint_restore_equal=true' "$live_result"
+    grep -Fxq PASS "${checkpointSource}/result"
+    grep -Fxq 'managed_lazy_restore_measurement=cold-launch-through-first-quantum' "$live_result"
+    grep -Fxq 'managed_lazy_restore_first_quantum_identity=true' "$live_result"
+    grep -Fxq 'managed_lazy_restore_published_ram_root_identity=true' "$live_result"
+    grep -Fxq 'managed_lazy_restore_cleanup_before_discharge=true' "$live_result"
+    grep -Fxq PASS "${ordinaryCheckpointRefusal}/result"
+    grep -Fxq 'ordinary_mode_checkpoint_commit_rejected=true' "${ordinaryCheckpointRefusal}/result"
+    grep -Fxq 'ordinary_mode_checkpoint_epoch_unchanged=true' "${ordinaryCheckpointRefusal}/result"
+    grep -Fxq 'ordinary_mode_paused_cpu_observation_rejected=true' "${ordinaryCheckpointRefusal}/result"
 
     grep -Fxq PASS "${diagnosticPolicy}/result"
     grep -Fxq 'qemu_diagnostic_patches_shipped=false' "${diagnosticPolicy}/result"
@@ -171,8 +176,8 @@
     patched_qemu_package=${qemuPackage}
     patched_qemu_package_version=${qemuPackage.version}
     atomic_patch_runtime_is_shipped_qemu=true
-    atomic_patch_live_checkpoint_delta_gate_passed=true
-    atomic_patch_live_checkpoint_delta_negative_control=true
+    atomic_patch_live_paged_checkpoint_gate_passed=true
+    atomic_patch_ordinary_checkpoint_negative_control=true
     stock_qemu_lacks_atomic_exports=true
     qemu_plugin_clock_deadline_ps_export_present=true
     qemu_plugin_net_exports_present=true
@@ -231,6 +236,7 @@ in
         atomicPatchRepository
         qemuPatchRegeneration
         checkpointFlight
+        ordinaryCheckpointRefusal
         diagnosticPolicy
       ];
       timeout = 3600;

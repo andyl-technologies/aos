@@ -600,3 +600,5 @@ fn backend(client: Arc<FakeS3Client>) -> S3BlobBackend {
 }
 
 mod behavior;
+
+mod checked_admin;

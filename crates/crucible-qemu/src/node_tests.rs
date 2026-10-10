@@ -30,6 +30,8 @@ use super::*;
 mod child_exit;
 #[path = "node/tests/fault_command.rs"]
 mod fault_command;
+#[path = "node/tests/fault_fingerprint.rs"]
+mod fault_fingerprint;
 #[path = "node/tests/host_io_runtime.rs"]
 pub(crate) mod host_io_runtime;
 #[path = "node/tests/hot_fork.rs"]
@@ -961,6 +963,15 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
             self.staged_fault_events.push(event);
         }
         Ok(())
+    }
+
+    fn publish_fresh_execution_fingerprint_for_test(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        // This scripted runtime owns no real sample slot. Mapped receiver tests
+        // separately exercise fresh request generations and exact sample ACKs.
+        self.publish_current_execution_fingerprint(timeout)
     }
 
     fn clear_checkpoint_pause_while_stopped(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {

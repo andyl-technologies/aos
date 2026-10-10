@@ -245,6 +245,7 @@ impl super::ControlCallbackWitness {
 
 impl LiveVcpuTimeCallbackState {
     /// Copies original mapping identity before callback registration.
+    #[cfg(test)]
     pub(in crate::runtime) fn attach_control_stage_identity(
         mut self,
         backing: crucible_shmem::SetupRegionBackingIdentity,

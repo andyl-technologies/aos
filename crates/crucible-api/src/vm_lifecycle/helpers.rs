@@ -1,7 +1,6 @@
 //! Private construction and event-log helpers for production VM lifecycles.
 
 use super::*;
-use std::fmt::Write as _;
 use std::io::Read;
 
 pub(super) struct ExactCheckpointTargetManifestBasis<'a> {
@@ -65,9 +64,6 @@ pub(super) fn validate_exact_checkpoint_target(
         .validate()
         .map_err(|error| loop_factory_error(error.to_string()))?;
     validate_exact_checkpoint_artifact(&exact_ram.device_artifact, "device state")?;
-    for layer in &exact_ram.layers {
-        validate_exact_checkpoint_artifact(&layer.artifact, "RAM checkpoint layer")?;
-    }
     let observed = exact_ram_checkpoint_target_manifest_identity(basis, exact_ram);
     if observed != manifest_identity {
         return Err(loop_factory_error(format!(
@@ -83,47 +79,20 @@ pub(super) fn exact_ram_checkpoint_target_manifest_identity(
     checkpoint: &ProductionExactRamCheckpoint,
 ) -> ContentHash {
     let target = exact_checkpoint_target_manifest_identity(basis);
-    let mut material = format!(
-        "target={}\nparent_closure={}\ndevice_sha256={}",
+    let material = format!(
+        "target={}\ndevice_sha256={}\nram_root_object={}\nram_logical_root={}\nram_checkpoint={}\nram_target={}\nram_frontier={}",
         target.to_hex(),
-        checkpoint
-            .parent_closure
-            .map_or_else(String::new, ContentHash::to_hex),
         checkpoint.device_content_sha256.to_hex(),
+        checkpoint.ram.object_id().encode(),
+        ContentHash {
+            bytes: *checkpoint.ram.logical_digest().as_bytes()
+        }
+        .to_hex(),
+        checkpoint.identity.checkpoint.to_hex(),
+        checkpoint.identity.target.to_hex(),
+        checkpoint.identity.frontier.to_hex(),
     );
-    for (index, layer) in checkpoint.layers.iter().enumerate() {
-        let parent = layer
-            .parent
-            .map_or_else(String::new, exact_checkpoint_identity_material);
-        let _ = write!(
-            material,
-            "\nlayer.{index}.kind={}\nlayer.{index}.checkpoint={}\nlayer.{index}.target={}\nlayer.{index}.frontier={}\nlayer.{index}.parent={}\nlayer.{index}.topology={}\nlayer.{index}.regions={}\nlayer.{index}.records={}\nlayer.{index}.sha256={}\nlayer.{index}.artifact={}\nlayer.{index}.length={}",
-            match layer.kind {
-                ProductionExactRamKind::Direct => "direct",
-                ProductionExactRamKind::Delta => "delta",
-            },
-            layer.identity.checkpoint.to_hex(),
-            layer.identity.target.to_hex(),
-            layer.identity.frontier.to_hex(),
-            parent,
-            layer.topology.to_hex(),
-            layer.ram_regions,
-            layer.ram_records,
-            layer.content_sha256.to_hex(),
-            layer.artifact.identity.to_hex(),
-            layer.artifact.length,
-        );
-    }
-    ContentHash::from_canonical_material("crucible.production-vm-exact-checkpoint.v2", &material)
-}
-
-fn exact_checkpoint_identity_material(identity: ProductionExactCheckpointIdentity) -> String {
-    format!(
-        "{}/{}/{}",
-        identity.checkpoint.to_hex(),
-        identity.target.to_hex(),
-        identity.frontier.to_hex(),
-    )
+    ContentHash::from_canonical_material("crucible.production-vm-exact-checkpoint.v3", &material)
 }
 
 pub(super) fn exact_checkpoint_target_manifest_identity(
@@ -141,7 +110,7 @@ pub(super) fn exact_checkpoint_target_manifest_identity(
         device_state,
     } = basis;
     ContentHash::from_canonical_material(
-        "crucible.production-vm-exact-checkpoint.v3",
+        "crucible.production-vm-exact-checkpoint.v4",
         &format!(
             "configuration={}\nimmutable_backing={}\nnode={}\ncounter={}\nscheduler_time={}\nsnapshot={}\nfault={}\noverlay={}\ndevice_state={}",
             configuration.to_hex(),
@@ -431,35 +400,77 @@ pub(super) fn no_named_trigger_leaf(_leaf: ConditionLeaf<'_>) -> bool {
     false
 }
 
+pub(super) fn copy_event_log_appends(
+    appends: &[SchedulerEventLogAppend],
+) -> Result<Vec<SchedulerEventLogAppend>, SchedulerError> {
+    if appends.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let _original = appends[0].event_log_custody.enter_decode_scope();
+    let budget = crucible::owned_decode::require_current_child_budget()
+        .map_err(|source| crucible::EngineError::ArtifactDecodeAdmission { source })?;
+    let _scope = budget.enter();
+    let mut copies = Vec::new();
+    crucible::owned_decode::reserve_vec(&mut copies, appends.len())
+        .map_err(|source| crucible::EngineError::ArtifactDecodeAdmission { source })?;
+    let table_custody = crucible::EventLogOutputCustody::retain_current()?;
+    for append in appends {
+        let mut copy = append.try_clone_admitted()?;
+        copy.event_log_custody = copy.event_log_custody.combine(&table_custody)?;
+        copies.push(copy);
+    }
+    Ok(copies)
+}
+
 pub(super) fn merge_event_log_append(
     outcome: &mut QuantumOutcome,
     append: SchedulerEventLogAppend,
-) {
-    outcome.event_log_entries.extend(append.entries);
-    outcome.event_log_segment_bytes = append.segment_bytes;
-    outcome.event_log_segment_text = append.segment_text;
-    outcome.event_log_segment_hash = append.segment_hash;
-    outcome.event_log_offset = append.offset;
+) -> Result<(), SchedulerError> {
+    outcome
+        .merge_event_log_append(append)
+        .map_err(SchedulerError::from)
 }
 
 pub(super) fn prepend_event_log_appends(
     outcome: &mut QuantumOutcome,
     appends: Vec<SchedulerEventLogAppend>,
-) {
-    let mut entries = appends
-        .iter()
-        .flat_map(|append| append.entries.iter().cloned())
-        .collect::<Vec<_>>();
+) -> Result<(), SchedulerError> {
+    if appends.is_empty() {
+        return Ok(());
+    }
+
+    let mut custody = outcome.event_log_custody.clone();
+    let mut entry_count = outcome.event_log_entries.len();
+    for append in &appends {
+        custody = custody.combine(&append.event_log_custody)?;
+        entry_count = entry_count
+            .checked_add(append.entries.len())
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("event-log prefix entry count overflows"),
+            })?;
+    }
+
+    // Keep all original loans before reserving a new table. Entry and segment
+    // bodies move without copying and their source credits remain attached.
+    outcome.event_log_custody = custody;
+    let _scope = outcome.event_log_custody.enter_decode_scope();
+    let mut entries = Vec::new();
+    crucible::owned_decode::reserve_vec(&mut entries, entry_count)
+        .map_err(|source| crucible::EngineError::ArtifactDecodeAdmission { source })?;
+    let use_prefix_segment = outcome.event_log_segment_hash.is_none();
+    for append in appends {
+        entries.extend(append.entries);
+        if use_prefix_segment {
+            outcome.event_log_segment_bytes = append.segment_bytes;
+            outcome.event_log_segment_text = append.segment_text;
+            outcome.event_log_segment_hash = append.segment_hash;
+            outcome.event_log_offset = append.offset;
+        }
+    }
     entries.append(&mut outcome.event_log_entries);
     outcome.event_log_entries = entries;
-    if outcome.event_log_segment_hash.is_none()
-        && let Some(append) = appends.last()
-    {
-        outcome.event_log_segment_bytes = append.segment_bytes.clone();
-        outcome.event_log_segment_text = append.segment_text.clone();
-        outcome.event_log_segment_hash = append.segment_hash;
-        outcome.event_log_offset = append.offset;
-    }
+    Ok(())
 }
 
 pub(super) fn merge_terminal_verdict(
@@ -537,6 +548,9 @@ pub(super) fn loop_factory_error(message: impl Into<String>) -> LifecycleApiErro
         message: message.into(),
     }
 }
+
+#[cfg(test)]
+mod event_output_tests;
 
 #[cfg(test)]
 mod tests {
@@ -730,6 +744,9 @@ mod tests {
 
     #[test]
     fn typed_app_random_checkpoint_restores_node_stream_cursors() {
+        let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
         let scenario = ScenarioDef::from_canonical_material_with_seed_and_app_random_draw_cap(
             "crucible.test.production-app-random-checkpoint",
             "scenario=typed-app-random-checkpoint",
@@ -833,6 +850,9 @@ mod tests {
 
     #[test]
     fn app_random_restart_between_reseeds_keeps_global_boundary_and_active_seed_cursors() {
+        let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
         let scenario = ScenarioDef::from_canonical_material_with_seed_and_app_random_draw_cap(
             "crucible.test.production-app-random-reseed-restart",
             "scenario=typed-app-random-reseed-restart",

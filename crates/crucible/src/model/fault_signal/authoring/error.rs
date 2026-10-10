@@ -8,6 +8,8 @@ use super::super::*;
 /// Failure to project or admit the public fault-signal authoring grammar.
 #[derive(Debug)]
 pub(crate) enum FaultSignalAuthoringError {
+    /// Original artifact authority refused validation ownership.
+    OriginalAdmission(crate::owned_decode::DecodeAdmissionError),
     /// Public TOML cannot encode multiple independently bounded graphs.
     MultiplePrograms {
         /// Submitted program count.
@@ -163,6 +165,7 @@ impl fmt::Display for FaultSignalAuthoringError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("fault signal authoring admission failed: ")?;
         match self {
+            Self::OriginalAdmission(source) => source.fmt(formatter),
             Self::MultiplePrograms { actual } => write!(
                 formatter,
                 "public TOML requires one flat signal graph, found {actual} programs"
@@ -281,6 +284,7 @@ impl fmt::Display for FaultSignalAuthoringError {
 impl Error for FaultSignalAuthoringError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::OriginalAdmission(source) => Some(source),
             Self::Toml(error) => Some(error),
             Self::ResourceLimit(error) => Some(error),
             Self::Contract(error) => Some(error),

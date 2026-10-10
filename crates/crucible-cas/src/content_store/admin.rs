@@ -9,6 +9,14 @@
 
 use super::*;
 
+mod checked;
+mod checked_fence;
+pub(super) mod outcome;
+pub(super) use checked::{CheckedReceipt, PreparedResources};
+pub use checked::{DeleteBatchReceipt, InventorySummaryReceipt};
+pub use checked_fence::CheckedInventoryFence;
+pub use outcome::AdministrativeScopeError;
+
 /// Exact digest of one stable physical blob inventory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct InventoryGeneration([u8; 32]);
@@ -203,6 +211,54 @@ pub trait BlobInventoryFence {
     /// sparse pack. This primitive does not decide reachability.
     fn delete_candidate(&mut self, id: ContentId) -> Result<PlannedDeleteDisposition, StoreError>;
 
+    /// Streams the fenced inventory under the caller's original boundary.
+    ///
+    /// Visitors may observe a prefix on failure. Only the owning terminal
+    /// summary authenticates completion; cursor failures never replay visits.
+    ///
+    /// # Errors
+    /// Refuses unsupported checked enumeration, incomplete SQL work, expired
+    /// authority, malformed placement metadata or exhausted original resources.
+    fn visit_inventory_with_boundary(
+        &mut self,
+        _visitor: &mut dyn FnMut(BlobInventoryRecord) -> Result<(), StoreError>,
+        _boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<InventorySummaryReceipt, StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "supervised-blob-inventory",
+        })
+    }
+
+    /// Durably removes at most 64 exact candidates in their supplied order.
+    ///
+    /// For an initially present candidate, duplicate IDs produce `Deleted`
+    /// followed by `AlreadyAbsent`.
+    /// The caller must already own every reachability and root-set proof.
+    ///
+    /// # Errors
+    /// Refuses unsupported checked deletion, oversized batches, malformed
+    /// generations, original authority loss or incomplete durable publication.
+    fn delete_candidates_with_boundary(
+        &mut self,
+        _ids: &[ContentId],
+        _boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<DeleteBatchReceipt, StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "supervised-blob-delete-batch",
+        })
+    }
+
+    /// Retains a late checked-operation failure with the fence's original loan.
+    ///
+    /// This failure-only handoff performs no work and grants no capability.
+    /// Supported checked fences consume their diagnostic custody, preventing
+    /// reuse while the returned failure owns it. Opaque fences preserve the
+    /// failure and continue to reject checked operations.
+    #[doc(hidden)]
+    fn retain_checked_failure(&mut self, error: StoreError) -> StoreError {
+        error
+    }
+
     /// Publishes an authenticated repair while retaining this exclusive fence.
     ///
     /// This operation is available only to the store graph's repair authority.
@@ -233,6 +289,23 @@ pub trait BlobStoreAdmin: Send + Sync {
     /// Returns [`StoreError`] when the backend cannot establish the exact
     /// physical fence required to exclude cooperating conditional puts.
     fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError>;
+
+    /// Acquires a checked exclusive fence under the original caller boundary.
+    ///
+    /// The fence owns one linear diagnostic bank and its real lock resources.
+    /// It never falls back to an ordinary blocking acquisition.
+    ///
+    /// # Errors
+    /// Refuses unsupported acquisition, original authority loss, unavailable
+    /// physical resources or incomplete metadata authentication.
+    fn acquire_inventory_fence_with_boundary(
+        &self,
+        _boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<CheckedInventoryFence<'_>, StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "supervised-blob-inventory-fence",
+        })
+    }
 }
 
 /// Exact digest of one stable authoritative-reference inventory.
@@ -336,7 +409,7 @@ pub trait RefInventoryFence {
 /// the exclusive side of the same backend lifecycle lock. That ordering keeps
 /// a GC apply from deleting newly written children while their publishing
 /// transaction is waiting to make the ref authoritative.
-pub trait RefPublicationGuard {}
+pub trait RefPublicationGuard: Send + Sync {}
 
 /// Separate administrative capability for an authoritative ref backend.
 pub trait RefStoreAdmin: Send + Sync {

@@ -159,7 +159,7 @@
       }
       {
         label = "causal event-log projection";
-        needle = "event_log_causal_projection(&event_log).content_hash()";
+        needle = "causal_event_log_fingerprint: event_log_causal_projection(&event_log)\n                .unwrap_or_else(|error| panic!(\"finite component event-log operation: {error}\"))\n                .content_hash()";
       }
       {
         label = "backend fingerprint equality";

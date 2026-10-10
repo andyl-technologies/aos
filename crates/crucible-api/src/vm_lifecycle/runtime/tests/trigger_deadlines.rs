@@ -5,12 +5,18 @@ use super::*;
 #[test]
 fn restored_trigger_state_rearms_the_exact_scheduler_cap_before_run()
 -> Result<(), Box<dyn std::error::Error>> {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     restored_trigger_deadline(false)
 }
 
 #[test]
 fn restored_trigger_state_reaches_its_deadline_with_no_active_nodes()
 -> Result<(), Box<dyn std::error::Error>> {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     restored_trigger_deadline(true)
 }
 
@@ -106,6 +112,9 @@ fn restored_trigger_deadline(inactive: bool) -> Result<(), Box<dyn std::error::E
 #[test]
 fn terminal_network_pass_waits_for_the_shared_frontier_to_commit_prior_output()
 -> Result<(), Box<dyn std::error::Error>> {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let base = initially_violated_scenario();
     let world = base.world();
     let source_node = NodeId {

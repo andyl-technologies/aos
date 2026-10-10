@@ -22,7 +22,11 @@
 
   deviceManifest = builtins.readFile ../../crates/crucible-device/Cargo.toml;
   deviceGate = builtins.readFile ../../crates/crucible-device/tests/gate_layer1_injection.rs;
-  protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
+  protocolLib = builtins.concatStringsSep "\n" (map builtins.readFile [
+    ../../crates/crucible-protocol/src/lib.rs
+    ../../crates/crucible-protocol/src/plugin_observation.rs
+    ../../crates/crucible-protocol/src/control_lifecycle.rs
+  ]);
   protocolGate = builtins.readFile ../../crates/crucible-protocol/tests/gate_layer1_injection.rs;
   gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
   gateCatalog = builtins.readFile ../../crates/crucible-harness/src/lib.rs;

@@ -1118,7 +1118,7 @@ in
                 atomic_init(&header.ring_data_off, 9984u);
                 atomic_init(&header.entry_stride, CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE);
                 atomic_init(&header.region_size, 42026112u);
-                atomic_init(&header.icount_shift, 4u);
+                atomic_init(&header.ticks_per_ns, 1000u);
                 atomic_init(&header.pause_requested, 1u);
                 atomic_init(&header.shutdown_requested, 0u);
                 atomic_init(
@@ -1138,9 +1138,9 @@ in
                 atomic_init(&slot.device_io_active, 1u);
                 atomic_init(&slot.publish_gen, 4u);
                 atomic_init(&slot.control_boundary_ack, 11u);
-                atomic_init(&slot.preemption_at_icount, 160u);
-                atomic_init(&slot.preemption_deadline_icount, 128u);
-                atomic_init(&slot.preemption_ceiling_icount, 256u);
+                atomic_init(&slot.preemption_at_tick, 160u);
+                atomic_init(&slot.preemption_deadline_tick, 128u);
+                atomic_init(&slot.preemption_ceiling_tick, 256u);
                 atomic_init(&slot.preemption_published_sequence, 9u);
                 atomic_init(&slot.preemption_consumed_sequence, 8u);
                 atomic_init(&slot.preemption_arg0, 0u);
@@ -1406,7 +1406,7 @@ in
                     || atomic_load_explicit(&header.ring_data_off, memory_order_acquire) != 9984u
                     || atomic_load_explicit(&header.entry_stride, memory_order_acquire) != CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE
                     || atomic_load_explicit(&header.region_size, memory_order_acquire) != 42026112u
-                    || atomic_load_explicit(&header.icount_shift, memory_order_acquire) != 4u
+                    || atomic_load_explicit(&header.ticks_per_ns, memory_order_acquire) != 1000u
                     || atomic_load_explicit(&header.pause_requested, memory_order_acquire) != 1u
                     || atomic_load_explicit(&header.shutdown_requested, memory_order_acquire) != 0u
                     || atomic_load_explicit(
@@ -1427,9 +1427,9 @@ in
                     || atomic_load_explicit(&slot.device_io_active, memory_order_acquire) != 1u
                     || atomic_load_explicit(&slot.publish_gen, memory_order_acquire) != 4u
                     || atomic_load_explicit(&slot.control_boundary_ack, memory_order_acquire) != 11u
-                    || atomic_load_explicit(&slot.preemption_at_icount, memory_order_acquire) != 160u
-                    || atomic_load_explicit(&slot.preemption_deadline_icount, memory_order_acquire) != 128u
-                    || atomic_load_explicit(&slot.preemption_ceiling_icount, memory_order_acquire) != 256u
+                    || atomic_load_explicit(&slot.preemption_at_tick, memory_order_acquire) != 160u
+                    || atomic_load_explicit(&slot.preemption_deadline_tick, memory_order_acquire) != 128u
+                    || atomic_load_explicit(&slot.preemption_ceiling_tick, memory_order_acquire) != 256u
                     || atomic_load_explicit(&slot.preemption_published_sequence, memory_order_acquire) != 9u
                     || atomic_load_explicit(&slot.preemption_consumed_sequence, memory_order_acquire) != 8u
                     || atomic_load_explicit(&slot.preemption_arg0, memory_order_acquire) != 0u

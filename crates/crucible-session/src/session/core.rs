@@ -5,9 +5,6 @@ use super::*;
 /// Number of live event-log frames retained by the broadcast tail.
 pub const SESSION_EVENT_LOG_BROADCAST_CAPACITY: usize = 1024;
 
-/// Maximum number of retained event-log frames cloned by one stream receive.
-pub const SESSION_EVENT_LOG_REPLAY_BATCH_SIZE: usize = 64;
-
 /// Number of live state-transition frames retained by the broadcast tail.
 pub const SESSION_STATE_BROADCAST_CAPACITY: usize = 256;
 
@@ -87,7 +84,7 @@ pub fn drive_engine_concurrent_quantum<L: crucible::ConcurrentQuantumLoop>(
 
 /// Explicit run state for the Crucible engine.
 ///
-/// The closed state set is the control-plane contract from RFC-0010 §10:
+/// The control plane admits only the following closed lifecycle states:
 /// configuration loaded, actively running bounded quanta, paused at a quantum
 /// boundary, or terminal.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -517,27 +514,34 @@ impl ActiveStep {
         &self,
         outcome: &QuantumOutcome,
         event_log_len_before: u64,
-    ) -> Result<bool, ConditionEvaluationError> {
+    ) -> Result<bool, SessionError> {
         if let Some(target) = self.target_frontier {
             return Ok(outcome.frontier >= target);
         }
-        let prefix = if outcome.event_log_entries.is_empty() {
+        let _original = outcome.event_log_custody.enter_decode_scope();
+        let copied = AdmittedEventEntries::copied(&outcome.event_log_entries)?;
+        let (entries, _copy_credit) = copied.into_parts();
+        let prefix = if entries.is_empty() {
             ConditionEventLogPrefix::from_evaluation_boundary(
                 event_log_len_before,
                 outcome.frontier,
                 SchedulerEvaluationBoundaryKind::Quantum,
-            )?
+            )
         } else {
             ConditionEventLogPrefix::from_scheduler_event_log_entries_with_base_sequence(
-                outcome.event_log_entries.clone(),
+                entries,
                 event_log_len_before,
-            )?
-        };
+            )
+        }
+        .map_err(|error| SessionError::BreakpointConditionPrefix {
+            reason: error.to_string(),
+        })?;
         let mut pass = ConditionEvaluationPass::from_log_prefix(
             prefix,
             StepConditionLeaves::from_outcome(outcome),
         );
-        Ok(pass.evaluate_assertion_condition(&self.breakpoint.predicate))
+        pass.evaluate_assertion_condition(&self.breakpoint.predicate)
+            .map_err(|error| SessionError::Scheduler(error.into()))
     }
 }
 

@@ -270,14 +270,28 @@ pub struct DirectoryCampaignTransferJournal {
     inner: Arc<DirectoryCampaignTransferJournalInner>,
 }
 
+#[cfg(feature = "private-measurement-domain")]
+mod original;
+
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) use original::{OriginalCampaignTransferJournalOwner, OriginalJournalError};
+
 struct DirectoryCampaignTransferJournalInner {
     root: PathBuf,
     writer_lock: File,
     lifecycle: RwLock<()>,
+    #[cfg(feature = "private-measurement-domain")]
+    original_release: Option<original::OriginalWriterRelease>,
 }
 
 impl Drop for DirectoryCampaignTransferJournalInner {
     fn drop(&mut self) {
+        #[cfg(feature = "private-measurement-domain")]
+        if self.original_release.is_some() {
+            // The original owner retains uncertain custody or has already
+            // observed the one actual unlock. Drop must not signal again.
+            return;
+        }
         let _ = flock(&self.writer_lock, FlockOperation::Unlock);
     }
 }
@@ -310,6 +324,8 @@ impl DirectoryCampaignTransferJournal {
                 root,
                 writer_lock,
                 lifecycle: RwLock::new(()),
+                #[cfg(feature = "private-measurement-domain")]
+                original_release: None,
             }),
         };
         cleanup_staging(&journal.inner.root.join(STAGING_DIRECTORY))?;
@@ -780,6 +796,39 @@ pub fn transfer_campaign_archive_durably(
     campaign_name: Option<&str>,
     destination_durability: DurabilityRequirement,
 ) -> Result<CampaignArchiveDurabilityReceipt, CampaignArchiveTransferError> {
+    transfer_campaign_archive_durably_with_boundary(
+        source,
+        destination,
+        plan,
+        archive_name,
+        campaign_name,
+        destination_durability,
+        &mut || Ok(()),
+    )
+}
+
+/// Transfers an archive while servicing its original operational supervisor.
+///
+/// The boundary callback preserves the caller's clocks, live configuration,
+/// and cancellation provenance throughout RAM discovery and durable storage.
+/// Errors leave both journals intact for retry and never publish an execution
+/// handoff. The caller controls the transfer's transport and supervision owner.
+///
+/// # Errors
+///
+/// Returns an error for supervisor cancellation, resource limits, corruption,
+/// unavailable objects, insufficient durability, or publication failure.
+// crucible-lint: allow rust-allow -- explicit transfer inputs bind source, destination, durable operation, retention, and original supervision.
+#[allow(clippy::too_many_arguments)]
+pub fn transfer_campaign_archive_durably_with_boundary(
+    source: &mut CampaignArchiveTransferEndpoint<'_>,
+    destination: &mut CampaignArchiveTransferEndpoint<'_>,
+    plan: &CampaignArchivePlan,
+    archive_name: &str,
+    campaign_name: Option<&str>,
+    destination_durability: DurabilityRequirement,
+    boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
+) -> Result<CampaignArchiveDurabilityReceipt, CampaignArchiveTransferError> {
     if !source.writable {
         return Err(CampaignArchiveTransferError::SourceReadOnly);
     }
@@ -822,7 +871,9 @@ pub fn transfer_campaign_archive_durably(
         source
             .journal
             .begin(operation, TransferJournalRole::Source, plan)?;
-        source.repository.stage_campaign_archive_metadata(plan)?;
+        source
+            .repository
+            .stage_campaign_archive_metadata_with_boundary(plan, boundary)?;
     }
     {
         let _destination_gc = destination.repository.acquire_gc_exclusion_guard()?;
@@ -831,11 +882,18 @@ pub fn transfer_campaign_archive_durably(
             .begin(operation, TransferJournalRole::Destination, plan)?;
     }
 
-    let report = source.repository.transfer_campaign_archive_objects(
-        destination.repository,
-        plan,
-        destination_durability,
-    )?;
+    let report = source
+        .repository
+        .transfer_campaign_archive_objects_for_operation(
+            destination.repository,
+            plan,
+            destination_durability,
+            operation.0,
+            destination.identity,
+            source.repository.ram_admission().original(),
+            destination.repository.ram_admission().original(),
+            boundary,
+        )?;
     if let Some(checkpoints) = destination.checkpoints {
         let destination_campaign = campaign_name
             .map(CampaignName::new)
@@ -879,13 +937,16 @@ pub fn transfer_campaign_archive_durably(
     }
     destination
         .repository
-        .publish_campaign_archive(archive_name, None, plan)?;
+        .publish_campaign_archive_with_boundary(archive_name, None, plan, boundary)?;
     if let Some(campaign_name) = campaign_name {
-        destination.repository.publish_transferred_campaign(
-            campaign_name,
-            None,
-            plan.manifest_id(),
-        )?;
+        destination
+            .repository
+            .publish_transferred_campaign_with_boundary(
+                campaign_name,
+                None,
+                plan.manifest_id(),
+                boundary,
+            )?;
     }
     destination.journal.complete(operation)?;
     source.journal.complete(operation)?;

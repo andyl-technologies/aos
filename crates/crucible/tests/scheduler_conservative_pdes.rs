@@ -14,6 +14,9 @@ use crucible::{
 
 #[test]
 fn conservative_pdes_authorization_clamps_at_unresolved_cross_node_dependency() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("consumer");
     let producer = scheduler_node("producer");
     let event = backend_event(5, &consumer, &producer, 7, b"frame");
@@ -38,6 +41,9 @@ fn conservative_pdes_authorization_clamps_at_unresolved_cross_node_dependency() 
 
 #[test]
 fn conservative_pdes_authorization_allows_target_before_dependency() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("consumer");
     let producer = scheduler_node("producer");
     let event = backend_event(8, &consumer, &producer, 1, b"later");
@@ -56,6 +62,9 @@ fn conservative_pdes_authorization_allows_target_before_dependency() {
 
 #[test]
 fn conservative_pdes_authorization_rejects_rollback() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = scheduler_node("node-a");
     let error = authorize_conservative_advance(
         &node,
@@ -71,6 +80,9 @@ fn conservative_pdes_authorization_rejects_rollback() {
 
 #[test]
 fn conservative_pdes_dependencies_only_include_cross_node_backend_input() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("consumer");
     let producer = scheduler_node("producer");
     let local_event = backend_event(3, &consumer, &consumer, 1, b"local");
@@ -104,6 +116,9 @@ fn conservative_pdes_dependencies_only_include_cross_node_backend_input() {
 
 #[test]
 fn single_scheduler_stops_at_future_cross_node_dependency_before_horizon() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("consumer");
     let producer = scheduler_node("producer");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
@@ -139,6 +154,9 @@ fn single_scheduler_stops_at_future_cross_node_dependency_before_horizon() {
 
 #[test]
 fn single_scheduler_delivers_non_instruction_aligned_dependency_exactly() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("consumer");
     let producer = scheduler_node("producer");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
@@ -173,6 +191,9 @@ fn single_scheduler_delivers_non_instruction_aligned_dependency_exactly() {
 
 #[test]
 fn single_scheduler_rejects_due_cross_node_dependency_before_advance() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("consumer");
     let producer = scheduler_node("producer");
     let scenario = SchedulerLivenessScenario::from_canonical_material(

@@ -32,7 +32,11 @@ fn cache_attempt_continuation_prefix(
             lineage,
             origin_depth,
         };
-        cache.validated_attempts.insert(id, validated.clone());
+        crucible_cas::owned_decode::charge_btree_entry::<ContentId, ValidatedAttempt>()
+            .map_err(CampaignCodecError::from)?;
+        cache
+            .validated_attempts
+            .insert(id, validated.clone_admitted()?);
     }
 
     if validated.attempt.id()?.content_id() != requested {
@@ -48,6 +52,8 @@ fn charge_selection_resolution_record(
     charged_bytes: &mut usize,
     maximum_canonical_bytes: usize,
 ) -> Result<(), CampaignRepositoryError> {
+    crucible_cas::owned_decode::charge_btree_set_entry::<ContentId>()
+        .map_err(CampaignCodecError::from)?;
     if !charged.insert(envelope.content_id()) {
         return Ok(());
     }

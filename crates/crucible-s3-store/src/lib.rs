@@ -1,6 +1,6 @@
 //! AWS SDK transport for Crucible's S3-compatible immutable-store leaf.
 //!
-//! Spec index: RFC-0020 file 06.
+//! Implementation contract: Authenticated remote object storage and durable reference coordination.
 //!
 //! [`AwsSdkS3Client`] owns a bounded command queue and a dedicated Tokio
 //! runtime. This keeps the synchronous, streaming `crucible-cas` contract free
@@ -492,6 +492,23 @@ impl StoreS3StrongCasClient for AwsSdkS3StrongCasClient {
                 key,
                 expected: expected.as_str().to_string(),
                 bytes,
+                response,
+            })
+    }
+
+    fn delete_small_if_version(
+        &self,
+        bucket: &str,
+        key: &str,
+        expected: &StoreS3ObjectVersion,
+    ) -> Result<StoreS3ConditionalDeleteOutcome, StoreError> {
+        let (bucket, key) = request_location(bucket, key)?;
+        let retained = retained_lengths(&[bucket.len(), key.len(), expected.as_str().len()])?;
+        self.client
+            .call(retained, |response| Command::DeleteIfVersion {
+                bucket,
+                key,
+                expected: expected.as_str().to_string(),
                 response,
             })
     }

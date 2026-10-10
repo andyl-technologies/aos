@@ -154,7 +154,7 @@ impl PackedTransformFixture {
             &store,
             format!(
                 r#"schema = "crucible.campaign-repository-store"
-version = 2
+version = 3
 root = "packed"
 admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
 ref_directory = {refs:?}

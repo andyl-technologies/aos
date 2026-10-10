@@ -3,6 +3,14 @@
 use super::*;
 
 impl QemuNode {
+    /// Returns the independently owned execution's operational supervisor.
+    #[must_use]
+    pub fn host_operation_supervisor(
+        &self,
+    ) -> Option<&crucible_linux_resource::host_supervision::HostOperationSupervisor> {
+        self.host_io_runtime.host_operation_supervisor()
+    }
+
     #[cfg(target_os = "linux")]
     pub(crate) fn install_checkpoint_cancellation(&mut self, cancellation: OwnedFd) {
         self.checkpoint_cancellation = Some(cancellation);
@@ -33,7 +41,7 @@ impl QemuNode {
         .map(|(snapshot, _)| snapshot)
     }
 
-    /// Captures an admitted direct or parent-relative exact checkpoint.
+    /// Captures an admitted coherent paged checkpoint and device state.
     ///
     /// QEMU consumes all three imported descriptor names. Success leaves the
     /// node paused and the candidate uncommitted so the caller can durably
@@ -64,11 +72,15 @@ impl QemuNode {
             node,
         )?;
         let QemuExactCheckpointCaptureAdmission {
-            request,
+            mut request,
             ram,
             device,
+            publication_preflight,
             ..
         } = admission;
+        let publication_preflight = publication_preflight.ok_or_else(|| {
+            QemuNodeError::checkpoint("exact RAM capture lacks destination graph preflight")
+        })?;
         let parent = request.parent();
         let (snapshot, qemu) = self.capture_exact_snapshot_inner(
             node,
@@ -77,7 +89,8 @@ impl QemuNode {
             resume_after_pre_save_failure,
             terminal_lifecycle_stop,
             SnapshotCapture::ExactRam(ExactRamCapture {
-                request: &request,
+                request: &mut request,
+                publication_preflight,
                 descriptors: QemuExactCheckpointCaptureDescriptors::new(
                     ram.as_fd(),
                     device.as_fd(),
@@ -88,11 +101,30 @@ impl QemuNode {
         let qemu = qemu.ok_or_else(|| {
             QemuNodeError::checkpoint("exact RAM capture returned no QEMU report")
         })?;
+        let paged = match paged_capture::QemuPagedRamCapture::admit(ram, qemu.ram_bytes()) {
+            Ok(paged)
+                if paged.generation() == qemu.capture_generation()
+                    && paged.initial() == qemu.initial_required()
+                    && paged.record().digest().as_bytes() == &qemu.ram_root().bytes =>
+            {
+                paged
+            }
+            result => {
+                let message = match result {
+                    Ok(_) => "RAM capture spool does not match authenticated QMP report".to_owned(),
+                    Err(error) => error.to_string(),
+                };
+                return self.fail_indeterminate_checkpoint_capture(QemuNodeChannelError::new(
+                    "authenticate coherent page capture",
+                    message,
+                ));
+            }
+        };
         Ok(QemuExactCheckpointCaptureResult {
             snapshot,
             qemu,
             parent,
-            ram,
+            paged,
             device,
         })
     }
@@ -220,10 +252,11 @@ impl QemuNode {
     pub(crate) fn commit_exact_checkpoint(
         &mut self,
         identity: crate::QmpCheckpointIdentity,
+        capture_generation: u64,
     ) -> Result<crate::QmpCheckpointEpochState, QemuNodeError> {
         self.channels
             .qmp_machine_control
-            .commit_exact_checkpoint(identity)
+            .commit_exact_checkpoint(identity, capture_generation)
             .map_err(|source| {
                 QemuNodeError::from_channel(QemuNodeChannelPlane::QmpMachineControl, source)
             })
@@ -238,11 +271,12 @@ impl QemuNode {
     pub(crate) fn abort_exact_checkpoint(
         &mut self,
         identity: crate::QmpCheckpointIdentity,
+        capture_generation: u64,
         expected_committed: Option<crate::QmpCheckpointIdentity>,
     ) -> Result<crate::QmpCheckpointEpochState, QemuNodeError> {
         self.channels
             .qmp_machine_control
-            .abort_exact_checkpoint(identity, expected_committed)
+            .abort_exact_checkpoint(identity, capture_generation, expected_committed)
             .map_err(|source| {
                 QemuNodeError::from_channel(QemuNodeChannelPlane::QmpMachineControl, source)
             })
@@ -581,6 +615,33 @@ impl QemuNode {
             #[cfg(target_os = "linux")]
             SnapshotCapture::ExactRam(exact_ram) => {
                 let installed = (|| {
+                    self.channels
+                        .qmp_machine_control
+                        .install_exact_checkpoint_descriptor(
+                            exact_ram.request.ram_descriptor(),
+                            exact_ram.descriptors.ram,
+                        )?;
+                    self.channels
+                        .qmp_machine_control
+                        .install_exact_checkpoint_descriptor(
+                            exact_ram.request.cancellation_descriptor(),
+                            exact_ram.descriptors.cancellation,
+                        )?;
+                    let topology = self
+                        .channels
+                        .qmp_machine_control
+                        .prepare_exact_checkpoint_topology(exact_ram.request)?;
+                    let record = read_capture_topology(exact_ram.descriptors.ram, topology)?;
+                    (exact_ram.publication_preflight.0)(&record).map_err(|source| {
+                        QemuNodeChannelError::new(
+                            "admit RAM catalog before page capture",
+                            source.to_string(),
+                        )
+                    })?;
+                    exact_ram
+                        .request
+                        .admit_topology(topology.generation)
+                        .map_err(QemuNodeChannelError::from)?;
                     self.channels
                         .qmp_machine_control
                         .install_exact_checkpoint_descriptor(

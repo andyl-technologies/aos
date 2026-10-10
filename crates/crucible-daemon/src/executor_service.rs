@@ -35,6 +35,8 @@ where
 {
     inner: Option<ExecutorLocalServiceInner<L, V>>,
     shutdown: ExecutorLocalServiceShutdown<L, V>,
+    #[cfg(feature = "private-measurement-domain")]
+    original_retired: bool,
 }
 
 struct ExecutorLocalServiceInner<L, V> {
@@ -81,6 +83,8 @@ where
                 endpoint_guard,
             }),
             shutdown,
+            #[cfg(feature = "private-measurement-domain")]
+            original_retired: false,
         })
     }
 
@@ -88,6 +92,44 @@ where
     #[must_use]
     pub fn shutdown_handle(&self) -> ExecutorLocalServiceShutdown<L, V> {
         self.shutdown.clone()
+    }
+
+    /// Shares this exact unserved pool under its caller's saved original.
+    ///
+    /// # Errors
+    /// Refuses a retired service, a stopped pool or the same original boundary.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(crate) fn original_component(
+        &self,
+        original: Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+    ) -> Result<LocalExecutorPoolService<L, V>, crate::LocalExecutorPoolServiceError<L::Error>>
+    {
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or(crate::LocalExecutorPoolServiceError::ShuttingDown)?;
+        inner.pool.service().bind_original(original)
+    }
+
+    /// Retires the unserved listener and exact pool under their saved original.
+    ///
+    /// # Errors
+    /// Retains both domains when original-bounded worker retirement refuses.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(crate) fn try_retire_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), crate::executor_pool::original_retirement::OriginalPoolRetirementError> {
+        original.wait_slice()?;
+        if let Some(inner) = self.inner.as_mut() {
+            inner.pool.try_retire_original(original)?;
+        }
+        // No server thread was started. Its listener and the already joined
+        // pool are physically dropped together before enclosing credit closes.
+        self.original_retired = true;
+        drop(self.inner.take());
+        original.wait_slice()?;
+        Ok(())
     }
 
     /// Serves authenticated requests and waits for owned worker cleanup on exit.
@@ -155,6 +197,12 @@ where
     V: AttemptAdmissionValidator + Send + Sync + 'static,
 {
     fn drop(&mut self) {
+        #[cfg(feature = "private-measurement-domain")]
+        if self.original_retired {
+            // The original path already freed the unserved listener and joined
+            // its exact pool. The remaining shutdown facade is only an alias.
+            return;
+        }
         self.shutdown.shutdown();
         let Some(ExecutorLocalServiceInner {
             server,

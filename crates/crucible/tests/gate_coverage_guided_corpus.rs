@@ -16,6 +16,9 @@ use crucible::{
 
 #[test]
 fn gate_coverage_guided_corpus_persists_replay_artifacts() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let family = fuzz_family()?;
     let store = MemoryDagStore::new();
     let config = CoverageGuidedFuzzConfig::new(Seed::from_u64(0xc0_5015), 25);
@@ -104,6 +107,9 @@ fn gate_coverage_guided_corpus_persists_replay_artifacts() -> Result<(), Box<dyn
 
 #[test]
 fn gate_coverage_guided_corpus_is_seeded_and_deduplicated() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let family = fuzz_family()?;
     let config = CoverageGuidedFuzzConfig::new(Seed::from_u64(0x5150), 25);
     let corpus_config = CoverageGuidedCorpusConfig::new(Seed::from_u64(0x5151));
@@ -161,11 +167,13 @@ fn coverage_feedback(
         crucible::test_support::condition_observation_entry_for_test(
             0,
             &ObservableEvent::coverage_block(icount(10), node.clone(), guest_pc, 0x20),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_observation_entry_for_test(
             1,
             &ObservableEvent::coverage_marker(icount(11), node, marker(marker_name)),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
     EventLogCoverageFeedback::from_event_log(&log)
 }

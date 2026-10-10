@@ -12,6 +12,9 @@ const CHECKPOINT_BOUNDARY_CHUNK_BYTES: usize = 1024 * 1024;
 #[test]
 fn terminal_v9_restore_rejects_a_stale_precommit_snapshot() -> Result<(), Box<dyn std::error::Error>>
 {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let root = tempfile::tempdir()?;
     let fixture =
         checkpoint_store::build_exact_ram_production_checkpoint_codec_fixture(root.path())?;
@@ -20,12 +23,13 @@ fn terminal_v9_restore_rejects_a_stale_precommit_snapshot() -> Result<(), Box<dy
         &fixture.configuration().def,
         fixture.source(),
         fixture.closure().identity(),
+        Some(&crate::vm_lifecycle::checkpoint_store::test_support::test_ram_catalog_provider()),
     )?;
     let (node, target) = checkpoint.targets.iter().next().ok_or("no v9 target")?;
     let terminal_nodes = BTreeSet::from([node.clone()]);
     let precommit = target.snapshot.checkpoint().clone();
 
-    validate_terminal_v9_checkpoint(
+    validate_terminal_exact_checkpoint(
         &checkpoint,
         fixture.configuration(),
         &precommit,
@@ -35,7 +39,7 @@ fn terminal_v9_restore_rejects_a_stale_precommit_snapshot() -> Result<(), Box<dy
     let mut stale = precommit;
     stale.id = ContentHash::from_bytes(b"earlier terminal snapshot");
     assert!(
-        validate_terminal_v9_checkpoint(
+        validate_terminal_exact_checkpoint(
             &checkpoint,
             fixture.configuration(),
             &stale,

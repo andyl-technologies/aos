@@ -119,6 +119,9 @@ impl Drop for ExportDirectory {
 
 #[test]
 fn offline_rich_finding_replays_without_campaign_store() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let export = replay_export()?;
     assert_consumer_is_listed()?;
 
@@ -148,6 +151,9 @@ fn offline_rich_finding_replays_without_campaign_store() -> Result<(), Box<dyn E
 #[test]
 #[ignore = "spawned offline campaign-replay consumer"]
 fn offline_campaign_replay_consumer() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let directory = std::env::var_os(EXPORT_DIRECTORY_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|| panic!("{EXPORT_DIRECTORY_ENV} is required"));
@@ -707,11 +713,13 @@ fn native_evidence(
         .violations()
         .iter()
         .find(|violation| violation.assertion == AssertionId::from_name("no-forbidden-marker"))
-        .cloned()
-        .ok_or_else(|| invalid("fixture assertion did not fail at its recorded boundary"))?;
+        .ok_or_else(|| invalid("fixture assertion did not fail at its recorded boundary"))?
+        .try_clone_admitted()?;
     violation.reproduction_artifact = finding.artifact.id();
-    let failure =
-        FailureClusterReportFailure::property(FailurePropertyViolationRecord::new(violation));
+    let failure = FailureClusterReportFailure::property(
+        FailurePropertyViolationRecord::new(violation)
+            .unwrap_or_else(|error| panic!("finite component assertion setup: {error}")),
+    );
     FailureTriageReplayEvidence::new(
         finding.clone(),
         failure,
@@ -734,24 +742,31 @@ fn recorded_entries(decisions: &[Decision]) -> Vec<SchedulerEventLogEntry> {
                 },
                 SchedulerEventLogPayload::Decision(decision.clone()),
             )
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
         })
         .collect::<Vec<_>>();
-    entries.push(condition_observation_entry_for_test(
-        decisions.len() as u64,
-        &ObservableEvent::coverage_marker(
-            Icount { retired: 7 },
-            node_id(),
-            MarkerId::from_name("portable-hot-path"),
-        ),
-    ));
-    entries.push(condition_observation_entry_for_test(
-        decisions.len() as u64 + 1,
-        &ObservableEvent::assertion_state_changed(
-            VirtualTime { ticks: 8 },
-            AssertionId::from_name("no-forbidden-marker"),
-            AssertionPhase::Violated,
-        ),
-    ));
+    entries.push(
+        condition_observation_entry_for_test(
+            decisions.len() as u64,
+            &ObservableEvent::coverage_marker(
+                Icount { retired: 7 },
+                node_id(),
+                MarkerId::from_name("portable-hot-path"),
+            ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+    );
+    entries.push(
+        condition_observation_entry_for_test(
+            decisions.len() as u64 + 1,
+            &ObservableEvent::assertion_state_changed(
+                VirtualTime { ticks: 8 },
+                AssertionId::from_name("no-forbidden-marker"),
+                AssertionPhase::Violated,
+            ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+    );
     entries
 }
 

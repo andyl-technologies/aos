@@ -153,6 +153,7 @@ impl GateFixture {
         let repository = CampaignRepository::with_component_authorities(
             blobs.clone(),
             refs.clone(),
+            crucible_campaign::CampaignRamAdmission::Unavailable,
             planner_authority.clone(),
             debugger_authority.clone(),
         )?;
@@ -601,6 +602,7 @@ fn planner_driver_with_proposal_limit(
         Arc::new(CampaignRepository::with_component_authorities(
             fixture.blobs.clone(),
             fixture.refs.clone(),
+            crucible_campaign::CampaignRamAdmission::Unavailable,
             fixture.planner_authority.clone(),
             fixture.debugger_authority.clone(),
         )?),

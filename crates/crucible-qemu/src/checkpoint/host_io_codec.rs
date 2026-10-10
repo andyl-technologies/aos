@@ -19,6 +19,7 @@ use super::bounded_cbor::{
     map_decode_error,
 };
 
+mod device_decode;
 mod resource;
 use resource::*;
 
@@ -178,11 +179,12 @@ impl QemuHostIoCheckpoint {
         execution_binding: ContentHash,
         maximum: u64,
     ) -> Result<Self, QemuHostIoCheckpointCodecError> {
+        let original = crucible::owned_decode::current_budget();
         let payload = bytes
             .strip_prefix(MAGIC)
             .ok_or(QemuHostIoCheckpointCodecError::Version)?;
         admit_input(bytes, "host-I/O checkpoint", maximum).map_err(map_bounded_cbor_error)?;
-        let wire: HostIoWire = ciborium::de::from_reader(payload)
+        let wire: HostIoWire = device_decode::decode_outer(payload, original.as_ref())
             .map_err(map_decode_error)
             .map_err(map_bounded_cbor_error)?;
         validate_bindings(&wire)?;
@@ -194,11 +196,11 @@ impl QemuHostIoCheckpoint {
             execution_binding,
             block: wire
                 .block
-                .map(|block| decode_block(block, maximum))
+                .map(|block| decode_block(block, maximum, original.as_ref()))
                 .transpose()?,
             ninep: wire
                 .ninep
-                .map(|ninep| decode_ninep(ninep, maximum))
+                .map(|ninep| decode_ninep(ninep, maximum, original.as_ref()))
                 .transpose()?,
             #[cfg(target_os = "linux")]
             accelerator: wire
@@ -220,6 +222,7 @@ impl QemuHostIoCheckpoint {
         {
             return Err(QemuHostIoCheckpointCodecError::Noncanonical);
         }
+        device_decode::verify_final(original.as_ref())?;
         Ok(checkpoint)
     }
 }
@@ -360,6 +363,7 @@ fn encode_block(
 fn decode_block(
     wire: BlockWire,
     maximum: u64,
+    original: Option<&crucible::owned_decode::DecodeBudget>,
 ) -> Result<QemuLiveBlockIoServicerCheckpoint, QemuHostIoCheckpointCodecError> {
     let region_header: RegionHeaderSnapshot = wire.region_header.into();
     let queue_capacity = region_header.queue_capacity as usize;
@@ -372,13 +376,16 @@ fn decode_block(
         region_header,
         vm_slot: wire.vm_slot,
         size_bytes: wire.size_bytes,
-        device: BlockSnapshot::from_canonical_bytes_with_limit(wire.device.as_slice(), maximum)
+        device: device_decode::decode_block_device(wire.device.as_slice(), maximum, original)
             .map_err(map_block_snapshot_error)?,
-        requests: SpscRingSnapshot::from_canonical_bytes(wire.requests.as_slice(), queue_capacity)
-            .map_err(|error| {
-                map_host_ring_error(error, "block requests", region_header.queue_capacity)
-            })?,
-        responses: SpscRingSnapshot::from_canonical_bytes(
+        requests: super::node_codec::decode_original_ring_snapshot(
+            wire.requests.as_slice(),
+            queue_capacity,
+        )
+        .map_err(|error| {
+            map_host_ring_error(error, "block requests", region_header.queue_capacity)
+        })?,
+        responses: super::node_codec::decode_original_ring_snapshot(
             wire.responses.as_slice(),
             queue_capacity,
         )
@@ -463,6 +470,7 @@ fn encode_ninep(
 fn decode_ninep(
     wire: NinepWire,
     maximum: u64,
+    original: Option<&crucible::owned_decode::DecodeBudget>,
 ) -> Result<QemuLive9pIoServicerCheckpoint, QemuHostIoCheckpointCodecError> {
     let region_header: RegionHeaderSnapshot = wire.region_header.into();
     let queue_capacity = region_header.queue_capacity as usize;
@@ -474,13 +482,14 @@ fn decode_ninep(
         tree: ContentHash { bytes: wire.tree },
         region_header,
         vm_slot: wire.vm_slot,
-        device: NinepSnapshot::from_canonical_bytes_with_limit(wire.device.as_slice(), maximum)
+        device: device_decode::decode_ninep_device(wire.device.as_slice(), maximum, original)
             .map_err(map_ninep_snapshot_error)?,
-        requests: SpscRingSnapshot::from_canonical_bytes(wire.requests.as_slice(), queue_capacity)
-            .map_err(|error| {
-                map_host_ring_error(error, "9p requests", region_header.queue_capacity)
-            })?,
-        responses: SpscRingSnapshot::from_canonical_bytes(
+        requests: super::node_codec::decode_original_ring_snapshot(
+            wire.requests.as_slice(),
+            queue_capacity,
+        )
+        .map_err(|error| map_host_ring_error(error, "9p requests", region_header.queue_capacity))?,
+        responses: super::node_codec::decode_original_ring_snapshot(
             wire.responses.as_slice(),
             queue_capacity,
         )

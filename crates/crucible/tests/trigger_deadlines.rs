@@ -26,11 +26,14 @@ fn evaluate(
             false
         })
         .with_timer_fires(timers.clone());
-    Ok(pass.evaluate_event_graph(graph, state))
+    Ok(pass.evaluate_event_graph(graph, state)?)
 }
 
 #[test]
 fn relative_and_timer_deadlines_reconstruct_after_restore_cancel_and_rearm() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let begin = EventId::from_name("begin");
     let timer = TimerId {
         name: String::from("finish"),
@@ -87,6 +90,9 @@ fn relative_and_timer_deadlines_reconstruct_after_restore_cancel_and_rearm() -> 
 
 #[test]
 fn repeatable_disjunction_observes_falling_edges_between_exact_pulses() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let graph = EventGraph::new(vec![Event::repeatable(
         EventId::from_name("pulses"),
         Some(Condition::AnyOf {
@@ -119,6 +125,9 @@ fn repeatable_disjunction_observes_falling_edges_between_exact_pulses() -> TestR
 
 #[test]
 fn latched_once_predicates_do_not_keep_waking_the_scheduler() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let graph = EventGraph::new(vec![Event::repeatable(
         EventId::from_name("latched"),
         Some(Condition::Once {
@@ -138,6 +147,9 @@ fn latched_once_predicates_do_not_keep_waking_the_scheduler() -> TestResult {
 
 #[test]
 fn activation_projection_distinguishes_negation_from_quiescent_bookkeeping() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let pulse = Condition::at(VirtualTime { ticks: 7 });
     let quiet = EventGraph::new(vec![Event::repeatable(
         EventId::from_name("quiet-at-seven"),
@@ -170,6 +182,9 @@ fn activation_projection_distinguishes_negation_from_quiescent_bookkeeping() -> 
 
 #[test]
 fn intervening_once_latches_preserve_later_activation_and_overflow_is_terminal() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let graph = EventGraph::new(vec![Event::once(
         EventId::from_name("later"),
         Some(Condition::AllOf {
@@ -213,6 +228,9 @@ fn intervening_once_latches_preserve_later_activation_and_overflow_is_terminal()
 
 #[test]
 fn leading_node_prefix_cannot_consume_a_global_time_trigger() -> TestResult {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let graph = EventGraph::new(vec![Event::once(
         EventId::from_name("global"),
         Some(Condition::Once {
@@ -233,16 +251,19 @@ fn leading_node_prefix_cannot_consume_a_global_time_trigger() -> TestResult {
     let before = state.to_compact_binary();
     assert!(
         pass.evaluate_event_graph_at_frontier(&graph, &mut state, VirtualTime { ticks: 0 })
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
             .is_empty()
     );
     assert_eq!(state.to_compact_binary(), before);
     assert_eq!(
         pass.evaluate_event_graph_at_frontier(&graph, &mut state, VirtualTime { ticks: 7 })
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
             .len(),
         1
     );
     assert!(
         pass.evaluate_event_graph_at_frontier(&graph, &mut state, VirtualTime { ticks: 7 })
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
             .is_empty()
     );
     Ok(())

@@ -77,7 +77,7 @@ pub(super) fn typed_command_header(
 }
 
 pub(super) fn memory_evidence_matches(
-    evidence: &MemoryMutationEvidenceV1,
+    evidence: &MemoryMutationEvidenceV2,
     payload: &MemoryMutationPayloadV1,
     coordinate: u64,
     target_node_hash: [u8; 32],

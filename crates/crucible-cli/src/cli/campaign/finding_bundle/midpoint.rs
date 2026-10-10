@@ -2,9 +2,8 @@
 
 use std::fmt::Write as _;
 use std::path::Path;
-use std::sync::Arc;
 
-use crucible_campaign::{AttemptResourceLimits, ChoiceDomain, ChoiceValue};
+use crucible_campaign::{ChoiceDomain, ChoiceValue};
 use crucible_daemon::finding_production_replay::FindingProductionReplaySelectedSide;
 use rcgen::{
     BasicConstraints, CertificateParams, CertifiedIssuer, ExtendedKeyUsagePurpose, IsCa, KeyPair,
@@ -15,13 +14,11 @@ use serde_json::{Value, json};
 use super::*;
 
 pub(super) struct PreparedFindingBundleMidpoint {
-    pub(super) midpoint: crucible_daemon::ArchivedFindingDebugMidpoint,
-    pub(super) checkpoints: Arc<ExactCheckpointStore>,
-    pub(super) lifecycle: crucible_api::ProductionVmLifecycleConfig,
-    pub(super) host: crucible_daemon::LinuxQemuAttemptHostConfig,
-    pub(super) resources: AttemptResourceLimits,
+    pub(super) imported: crucible_daemon::qemu_campaign_lifecycle::GuardedImportedFindingMidpoint,
     pub(super) report: Value,
     pub(super) private: tempfile::TempDir,
+    pub(super) decoding: crucible_session::engine::owned_decode::DecodeBudget,
+    pub(super) archive_admission: ArchiveBundleAdmission,
 }
 
 /// Opens a private QEMU restore and exposes one read-only local GDB relay.
@@ -39,118 +36,134 @@ pub(crate) fn run_finding_bundle_midpoint(
     }
 
     let prepared = prepare_finding_bundle_midpoint(cli, args)?;
-    let PreparedFindingBundleMidpoint {
-        midpoint,
-        checkpoints,
-        lifecycle,
-        host,
-        resources,
-        report,
-        private,
-    } = prepared;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(async move {
-        let transport = private_midpoint_transport(private.path())?;
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .map_err(CliError::Io)?;
-        let address = listener.local_addr().map_err(CliError::Io)?;
-        let mut policy = DebugAuthorizationPolicy::deny_all();
-        policy
-            .grant_certificate_role(
-                transport.client_identity.certificate_sha256(),
-                DebugRole::new([DebugCapability::Observe, DebugCapability::Control]),
+    let output_budget = prepared.decoding.clone();
+    let admitted = crucible_api::admit_future(
+        async move {
+            // Restore and relay owners close before the original archive service.
+            let PreparedFindingBundleMidpoint {
+                archive_admission,
+                imported,
+                report,
+                private,
+                decoding,
+            } = prepared;
+            let transport = private_midpoint_transport(private.path())?;
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .map_err(CliError::Io)?;
+            let address = listener.local_addr().map_err(CliError::Io)?;
+            let mut policy = DebugAuthorizationPolicy::deny_all();
+            policy
+                .grant_certificate_role(
+                    transport.client_identity.certificate_sha256(),
+                    DebugRole::new([DebugCapability::Observe, DebugCapability::Control]),
+                )
+                .map_err(|error| {
+                    backend_error(format!("midpoint client role is invalid: {error}"))
+                })?;
+            let client = RpcControlClient::new_mtls(
+                RpcEndpoint::http2(format!("https://{address}")),
+                RpcMutualTlsConfig::from_pem(transport.ca_pem, transport.client_identity_pem),
             )
-            .map_err(|error| backend_error(format!("midpoint client role is invalid: {error}")))?;
-        let client = RpcControlClient::new_mtls(
-            RpcEndpoint::http2(format!("https://{address}")),
-            RpcMutualTlsConfig::from_pem(transport.ca_pem, transport.client_identity_pem),
-        )
-        .map_err(control_client_error)?;
-        let session = midpoint
-            .admit_guarded_read_only_session(checkpoints, lifecycle, host, resources)
-            .await
-            .map_err(|error| backend_error(format!("finding midpoint restore failed: {error}")))?;
-        let (shutdown, stopped) = tokio::sync::oneshot::channel();
-        let mut server = tokio::spawn(serve_shared_lifecycle_http2_mtls_with_mode_until_shutdown(
-            listener,
-            session.shared_control_plane(),
-            LifecycleServerMode::read_write(),
-            transport.acceptor,
-            policy,
-            async move {
-                let _ = stopped.await;
-            },
-        ));
-        let relay = async {
-            print_midpoint_report(&report, cli.output_format())?;
-            crate::cli_triage_debug::run_private_unix_debug_relay_with_client_async(
-                &client,
-                session.session(),
-                crucible::NodeId {
-                    name: args.node.clone(),
-                },
-                &private.path().join("gdb.sock"),
-            )
-            .await
-        }
-        .await;
-        let destroyed = session
-            .in_process_client()
-            .destroy_session(
-                DestroySessionRequest::new(session.session())
-                    .with_expected_epoch(session.session().epoch),
-            )
-            .await
-            .map_err(control_client_error);
-        drop(client);
-        let _ = shutdown.send(());
-        let served =
-            match tokio::time::timeout(std::time::Duration::from_secs(10), &mut server).await {
-                Ok(result) => result
-                    .map_err(|error| {
-                        backend_error(format!("finding midpoint relay task failed: {error}"))
-                    })?
-                    .map_err(CliError::Io),
-                Err(_) => {
-                    server.abort();
-                    let _ = server.await;
-                    Err(backend_error("finding midpoint relay shutdown timed out"))
-                }
-            };
-        destroyed?;
-        served?;
-        relay
-    })
+            .map_err(control_client_error)?
+            .with_decode_budget(decoding.clone());
+            let session = imported.admit_read_only_session().await.map_err(|error| {
+                backend_error(format!("finding midpoint restore failed: {error}"))
+            })?;
+            let (shutdown, stopped) = tokio::sync::oneshot::channel();
+            let mut server =
+                tokio::spawn(serve_shared_lifecycle_http2_mtls_with_mode_until_shutdown(
+                    listener,
+                    session.shared_control_plane(),
+                    LifecycleServerMode::read_write(),
+                    transport.acceptor,
+                    policy,
+                    async move {
+                        let _ = stopped.await;
+                    },
+                ));
+            let relay = async {
+                print_midpoint_report(&report, cli.output_format())?;
+                crate::cli_triage_debug::run_private_unix_debug_relay_with_client_async(
+                    &client,
+                    session.session(),
+                    crucible::NodeId {
+                        name: args.node.clone(),
+                    },
+                    &private.path().join("gdb.sock"),
+                )
+                .await
+            }
+            .await;
+            let destroyed = session
+                .in_process_client()
+                .destroy_session(
+                    DestroySessionRequest::new(session.session())
+                        .with_expected_epoch(session.session().epoch),
+                )
+                .await
+                .map_err(control_client_error);
+            drop(client);
+            let _ = shutdown.send(());
+            let served =
+                match tokio::time::timeout(std::time::Duration::from_secs(10), &mut server).await {
+                    Ok(result) => result
+                        .map_err(|error| {
+                            backend_error(format!("finding midpoint relay task failed: {error}"))
+                        })?
+                        .map_err(CliError::Io),
+                    Err(_) => {
+                        server.abort();
+                        let _ = server.await;
+                        Err(backend_error("finding midpoint relay shutdown timed out"))
+                    }
+                };
+            destroyed?;
+            served?;
+            relay?;
+            archive_admission.complete()
+        },
+        output_budget,
+    )
+    .map_err(|error| backend_error(format!("midpoint task admission failed: {error}")))?;
+    runtime.block_on(admitted)
 }
 
 pub(super) fn prepare_finding_bundle_midpoint(
     cli: &Cli,
     args: &CampaignFindingBundleMidpointArgs,
 ) -> Result<PreparedFindingBundleMidpoint, CliError> {
-    let bundle = load_authenticated_bundle(&args.input)?;
+    let archive_admission = ArchiveBundleAdmission::open(
+        args.archive_policy.as_deref(),
+        crucible_api::host_operational::HostOperationClass::Preparation,
+        None,
+        Some(&args.input),
+        None,
+    )?;
+    let FindingSourceAuthentication {
+        owner,
+        deployment,
+        qemu,
+        plugin,
+        workspace,
+        decoding,
+        ..
+    } = FindingSourceAuthentication::open(cli, archive_admission.input_path(&args.input))?;
+    let _scope = decoding.enter();
+    let archive_scope = archive_admission.input_scope()?;
+    let bundle = load_authenticated_bundle_in_workspace(
+        archive_admission.input_path(&args.input),
+        &workspace,
+        &archive_admission,
+        &mut || archive_admission.boundary(),
+    )?;
     let finding =
         bundle.evidence.finding.id().map_err(|error| {
             backend_error(format!("verified finding identity is invalid: {error}"))
         })?;
-    let objects: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
-        "finding-bundle-midpoint",
-        args.input.join("archive/objects"),
-    ));
-    let checkpoints = Arc::new(
-        ExactCheckpointStore::new(objects, args.maximum_checkpoint_bytes).map_err(|error| {
-            backend_error(format!("finding checkpoint store is invalid: {error}"))
-        })?,
-    );
-    let midpoint = crucible_daemon::prepare_archived_finding_debug_midpoint(
-        &bundle.archive,
-        bundle.archive_id,
-        finding,
-        &checkpoints,
-    )
-    .map_err(|error| backend_error(format!("finding midpoint is invalid: {error}")))?;
     let capture = crucible_daemon::load_archived_finding_production_capture(
         &bundle.archive,
         bundle.archive_id,
@@ -158,21 +171,22 @@ pub(super) fn prepare_finding_bundle_midpoint(
         args.role.campaign_role(),
     )
     .map_err(|error| backend_error(format!("archived production replay is invalid: {error}")))?;
-    let (qemu, plugin, _) = exact::resolve_immutable_qemu(cli)?;
     let private = private_bundle_tempdir()?;
-    let guests = crucible_daemon::materialize_finding_replay_guest_assets(
-        capture.deployment(),
-        &qemu,
-        &plugin,
-        private.path(),
-    )
-    .map_err(|error| backend_error(format!("finding guest assets are invalid: {error}")))?;
+    let guests = retain_materialized_guest_assets(
+        crucible_daemon::materialize_finding_replay_guest_assets(
+            capture.deployment(),
+            &qemu,
+            &plugin,
+            &workspace,
+        )
+        .map_err(|error| backend_error(format!("finding guest assets are invalid: {error}")))?,
+    )?;
     let lifecycle_objects = exact::load_lifecycle_objects(&capture)?;
     let mut lifecycle = exact::lifecycle_config(
         &qemu,
         &plugin,
         &guests,
-        &private.path().join("midpoint"),
+        &workspace.join("midpoint"),
         capture.recipe(),
         lifecycle_objects,
     )?;
@@ -203,34 +217,49 @@ pub(super) fn prepare_finding_bundle_midpoint(
         })
         .transpose()?;
     if let Some(trace) = &fault_trace {
-        lifecycle = lifecycle.with_fault_replay(trace.clone());
+        lifecycle = lifecycle.with_fault_replay(trace.try_clone_admitted().map_err(|error| {
+            backend_error(format!(
+                "finding fault trace copy admission failed: {error}"
+            ))
+        })?);
     }
-    let deployment = crate::cli_verify_serve::load_guarded_campaign_deployment(
-        cli.campaign_deployment.as_deref(),
-    )?;
     let recipe = capture.recipe();
     if deployment.resources.maximum_execution_quanta() < recipe.lifecycle_quantum_budget {
         return Err(backend_error(
             "local host deployment cannot admit captured midpoint budget",
         ));
     }
-    let resources = AttemptResourceLimits::new(
-        deployment.resources.maximum_vcpus(),
-        deployment.resources.maximum_resident_bytes(),
-        deployment.resources.maximum_disk_bytes(),
-        recipe.lifecycle_quantum_budget,
-    )
-    .map_err(|error| backend_error(format!("finding midpoint resources are invalid: {error}")))?;
-
-    let report = midpoint_report(&bundle, &midpoint, &capture, selected, fault_trace.as_ref())?;
+    let owner = owner
+        .with_imported_lifecycle(lifecycle)
+        .and_then(|owner| owner.with_imported_guest_assets(Arc::clone(&guests)))
+        .map_err(|error| backend_error(format!("finding midpoint recipe is invalid: {error}")))?;
+    let imported = owner
+        .import_finding_midpoint(
+            &bundle.archive,
+            bundle.archive_id,
+            finding,
+            model.scenario_form(),
+        )
+        .map_err(|error| backend_error(format!("finding receiver import failed: {error}")))?;
+    if imported.midpoint().restore_bytes() > args.maximum_checkpoint_bytes {
+        return Err(backend_error(
+            "finding midpoint exceeds selected checkpoint byte limit",
+        ));
+    }
+    let report = midpoint_report(
+        &bundle,
+        imported.midpoint(),
+        &capture,
+        selected,
+        fault_trace.as_ref(),
+    )?;
+    drop(archive_scope);
     Ok(PreparedFindingBundleMidpoint {
-        midpoint,
-        checkpoints,
-        lifecycle,
-        host: deployment.host,
-        resources,
+        imported,
         report,
         private,
+        decoding,
+        archive_admission,
     })
 }
 
@@ -433,11 +462,19 @@ mod tests {
             let (stream, _) = listener.accept().await.expect("accept TLS test peer");
             acceptor.accept(stream).await.is_ok()
         });
-        let client = RpcControlClient::new_mtls(
-            RpcEndpoint::http2(format!("https://{address}")),
-            RpcMutualTlsConfig::from_pem(ca_pem, client_identity_pem),
-        )
-        .expect("construct TLS test client");
+        let authority = crucible_daemon::component_ram_root_resources()
+            .expect("finite TLS component metadata authority");
+        let decoding = crucible_session::engine::owned_decode::DecodeBudget::for_store(authority)
+            .expect("finite TLS component metadata budget");
+        let client = {
+            let _scope = decoding.enter();
+            RpcControlClient::new_mtls(
+                RpcEndpoint::http2(format!("https://{address}")),
+                RpcMutualTlsConfig::from_pem(ca_pem, client_identity_pem),
+            )
+            .expect("construct TLS test client")
+            .with_decode_budget(decoding.clone())
+        };
 
         let _ = tokio::time::timeout(Duration::from_secs(5), client.list_sessions()).await;
         tokio::time::timeout(Duration::from_secs(5), server)

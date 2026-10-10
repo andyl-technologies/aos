@@ -281,6 +281,16 @@ pub(crate) fn reseed_run_scenario_ref(
     scenario: &RunScenarioRef,
     seed: crucible::Seed,
 ) -> Result<RunScenarioRef, CliError> {
+    let original = crucible_session::engine::owned_decode::current_budget()
+        .ok_or_else(|| backend_error("scenario reseeding requires original input metadata"))?;
+    let identity_bytes = match scenario {
+        RunScenarioRef::BuiltInExample { name, .. } => name.len(),
+        RunScenarioRef::File { path, .. } => path.as_os_str().len(),
+        RunScenarioRef::Stored { .. } => 0,
+    };
+    original
+        .charge_bytes(identity_bytes as u64)
+        .map_err(CliError::MetadataAdmission)?;
     let form = scenario.scenario_form();
     let seeded_form = crucible::ScenarioDefForm::from_components_with_app_random_draw_cap(
         form.world(),
@@ -462,8 +472,7 @@ pub(crate) fn execute_determinism_ergonomics_plan(
 ) -> Result<(), CliError> {
     if !plan.proves_t_cli_4() {
         return Err(CliError::Backend(
-            "CLI determinism ergonomics violate the RFC-0010 seed/artifact/trace contract"
-                .to_string(),
+            "CLI determinism output violates seed, artifact, and trace identity".to_string(),
         ));
     }
     let rendered = render_canonical_trace_format_proof()?;
@@ -526,6 +535,7 @@ pub(crate) fn seed_resolution_mode(command: &Commands) -> SeedResolutionMode {
         | Commands::Serve(_)
         | Commands::Campaign(_)
         | Commands::Store(_)
+        | Commands::Host(_)
         | Commands::Completions(_) => SeedResolutionMode::NotApplicable,
     }
 }

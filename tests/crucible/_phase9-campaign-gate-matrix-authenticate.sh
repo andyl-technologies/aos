@@ -43,19 +43,25 @@ normalize_campaign_matrix_semantic_result() {
     return 0
   fi
 
-  for metric in \
-    metric_direct_restore_to_runnable_us \
-    metric_delta_restore_to_runnable_us; do
-    test "$(grep -Ec "^$metric=[1-9][0-9]*$" "$bound_result")" -eq 1 \
-      || return 1
-    value=$(sed -n "s/^$metric=//p" "$bound_result") || return 1
-    # The enclosing mode executor has a one-hour timeout, so a larger metric
-    # cannot have come from its retained observation.
-    test "$value" -le 3600000000 || return 1
-  done
+  duration=$(campaign_matrix_exact_field metric_cold_launch_to_first_quantum_ns "$bound_result") \
+    || return 1
+  installs=$(campaign_matrix_exact_field metric_lazy_restore_missing_installs "$bound_result") \
+    || return 1
+
+  # These are host observations rather than modeled identities. The duration
+  # cannot exceed the native test's 4,500-second original execution deadline;
+  # the activity counter remains a canonical positive unsigned 64-bit value.
+  printf '%s\n' "$duration" | grep -Eq '^[1-9][0-9]*$' || return 1
+  test "${#duration}" -le 13 || return 1
+  test "$duration" -le 4500000000000 || return 1
+  printf '%s\n' "$installs" | awk '
+    !/^[1-9][0-9]*$/ { exit 1 }
+    length($0) > 20 { exit 1 }
+    length($0) == 20 && "x" $0 > "x18446744073709551615" { exit 1 }
+  ' || return 1
 
   grep -Ev \
-    '^(metric_direct_restore_to_runnable_us|metric_delta_restore_to_runnable_us)=' \
+    '^(metric_cold_launch_to_first_quantum_ns|metric_lazy_restore_missing_installs)=' \
     "$bound_result" > "$destination"
 }
 

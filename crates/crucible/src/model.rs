@@ -41,7 +41,12 @@ use crate::trigger::{
     SearchScheduleNamedPredicateTruths,
 };
 
+mod admitted_clone;
 mod canonical;
+pub(crate) use canonical::{
+    HexMaterialWriter, canonical_display_len, content_hash_from_canonical_material_bytes,
+    hash_material as hash_canonical_display,
+};
 mod guest_assertion;
 
 static LOCAL_DAG_STORE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);

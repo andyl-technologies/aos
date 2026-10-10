@@ -169,6 +169,7 @@ fn validate_live_qemu_probe_evidence(
         reason: BackendSelectionReason::ExplicitQemu,
         daemon: None,
         daemon_security: None,
+        metadata_deployment: None,
         remote_uses_control_api: false,
         local_uses_simulation_backend: true,
         local_remote_equivalence_contract: true,
@@ -330,6 +331,7 @@ pub(crate) fn run_local_qemu_verify_workflow(
         witnesses.push(witness);
     }
     let report = VerifyWorkflowReport {
+        _input_custody: crucible_session::engine::owned_decode::current_custody(),
         divergence: compare_verify_witnesses(&witnesses),
         witnesses,
     };

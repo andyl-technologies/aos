@@ -3,7 +3,7 @@
 //! A hot-fork child inherits guest memory from each paused source QEMU, but it
 //! does not inherit the host scheduler, network, trigger, assertion, selectable,
 //! or fault owners. This module captures that complete host continuation at one
-//! exact world boundary. The opaque token is the semantic half of a future
+//! exact world boundary. The opaque token is the semantic half of the
 //! atomic world-fork transaction; it grants no process launch, child admission,
 //! mutable run-directory, or source-template recovery authority.
 
@@ -30,6 +30,16 @@ struct HotForkRollbackReport {
     diagnostics: BTreeMap<NodeId, String>,
 }
 
+/// Observes verified physical cleanup of one retained source world.
+pub trait ProductionHotForkCleanupObserver: Send + Sync {
+    /// Discharges host service ownership after verified physical world cleanup.
+    ///
+    /// # Errors
+    /// Refuses a remaining node lease, unavailable capacity authority, or an
+    /// unjoined service observer. Failed discharge retains the complete charge.
+    fn after_world_cleanup(&self) -> Result<(), crate::host_operational::HostOperationalError>;
+}
+
 /// Prepared, stopped production source world at one exact scheduler boundary.
 ///
 /// The capability owns the complete lifecycle while every retained source is
@@ -38,16 +48,127 @@ struct HotForkRollbackReport {
 /// host continuation cannot be detached from one another through this API.
 #[must_use = "install the complete source world or recover every prepared QEMU source"]
 pub struct ProductionVmHotForkSourceWorld {
-    lifecycle: Option<Box<ProductionVmLifecycleLoop>>,
-    continuation: ProductionVmHotForkWorldContinuation,
-    prepared: Vec<QemuNodeSetPreparedHotForkTemplate>,
+    pub(super) lifecycle: Option<Box<ProductionVmLifecycleLoop>>,
+    continuation: Option<ProductionVmHotForkWorldContinuation>,
+    pub(super) prepared: Vec<QemuNodeSetPreparedHotForkTemplate>,
     disk_custody: BTreeMap<NodeId, Arc<ProductionVmHotForkDiskCustody>>,
+    cleanup_observer: Option<Arc<dyn ProductionHotForkCleanupObserver>>,
 }
 
+/// Refuses access to a continuation retained by terminal source cleanup.
+#[derive(Debug, thiserror::Error)]
+#[error("prepared source world continuation is unavailable")]
+pub struct ProductionVmHotForkContinuationUnavailable;
+
 impl ProductionVmHotForkSourceWorld {
+    /// Reports a retained exclusion, including uncertain native disposition.
+    ///
+    /// This is a refusal predicate only. It does not prove worker drain, native
+    /// ownership or source eligibility; those remain in the actual launcher.
+    #[must_use]
+    pub fn parent_park_drain_is_owned(&self) -> bool {
+        self.lifecycle
+            .as_deref()
+            .is_some_and(|lifecycle| lifecycle.node_launcher.parent_park_drain_is_owned())
+    }
+
+    fn require_unparked_source(&self) -> Result<(), SchedulerError> {
+        if self.parent_park_drain_is_owned() {
+            return Err(SchedulerError::Backend(
+                crucible::BackendError::Unsupported {
+                    capability: "source operation during retained parent park",
+                },
+            ));
+        }
+        Ok(())
+    }
+
+    /// Retains an observer whose discharge follows actual source-world shutdown.
+    pub fn with_cleanup_observer(
+        mut self,
+        observer: Arc<dyn ProductionHotForkCleanupObserver>,
+    ) -> Self {
+        self.cleanup_observer = Some(observer);
+        self
+    }
+
     /// Returns the captured process-neutral world continuation.
-    pub const fn continuation(&self) -> &ProductionVmHotForkWorldContinuation {
-        &self.continuation
+    ///
+    /// # Errors
+    /// Refuses a source whose complete continuation has entered terminal custody.
+    pub fn continuation(
+        &self,
+    ) -> Result<&ProductionVmHotForkWorldContinuation, ProductionVmHotForkContinuationUnavailable>
+    {
+        self.continuation
+            .as_ref()
+            .ok_or(ProductionVmHotForkContinuationUnavailable)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn continuation_mut_for_test(
+        &mut self,
+    ) -> Result<&mut ProductionVmHotForkWorldContinuation, ProductionVmHotForkContinuationUnavailable>
+    {
+        self.continuation
+            .as_mut()
+            .ok_or(ProductionVmHotForkContinuationUnavailable)
+    }
+
+    /// Borrows fresh operation authority for a checked-out source world.
+    ///
+    /// Each native source receives a private budget roster sharing the caller's
+    /// original cap. This does not reopen the execution that created the source
+    /// or transfer its retained physical resource charge. After host-only
+    /// attachment, every source seal is authenticated through its live channel.
+    ///
+    /// # Errors
+    /// Refuses unavailable ownership, changed process incarnations, terminal
+    /// caller authority, detached channels, or stale native source seals. A
+    /// partial attachment remains owned for containment rather than rollback to
+    /// a completed execution supervisor.
+    pub fn attach_borrowed_host_operation_supervisor(
+        &mut self,
+        supervisor: &crucible_linux_resource::host_supervision::HostOperationSupervisor,
+    ) -> Result<(), SchedulerError> {
+        let (_, budgets) = supervisor
+            .budgets()
+            .map_err(|error| hot_fork_boundary_error(error.to_string()))?;
+        let lifecycle = self.lifecycle.as_deref_mut().ok_or_else(|| {
+            hot_fork_boundary_error("prepared source world lost its lifecycle owner")
+        })?;
+        for prepared in &self.prepared {
+            let owner = supervisor
+                .new_budget_owner(budgets)
+                .map_err(|error| hot_fork_boundary_error(error.to_string()))?;
+            lifecycle
+                .inner
+                .backend_mut()
+                .attach_retained_source_supervisor(prepared, owner)
+                .map_err(|error| hot_fork_boundary_error(error.to_string()))?;
+        }
+        self.validate_source_ownership()
+    }
+
+    /// Ends a checkout loan by restoring each source's original service owner.
+    ///
+    /// # Errors
+    /// Refuses changed process incarnations, lost native ownership, or a source
+    /// without independently retained service supervision. Partial restoration
+    /// remains contained under the existing physical source reservation.
+    pub fn restore_retained_service_supervisor(&mut self) -> Result<(), SchedulerError> {
+        self.require_unparked_source()?;
+        let lifecycle = self.lifecycle.as_deref_mut().ok_or_else(|| {
+            hot_fork_boundary_error("prepared source world lost its lifecycle owner")
+        })?;
+        for prepared in &self.prepared {
+            lifecycle
+                .inner
+                .backend_mut()
+                .restore_retained_service_supervisor(prepared)
+                .map_err(|error| hot_fork_boundary_error(error.to_string()))?;
+        }
+        self.validate_source_ownership()
     }
 
     /// Replaces one immutable-root identity for construction-failure tests.
@@ -63,7 +184,8 @@ impl ProductionVmHotForkSourceWorld {
         root: ContentHash,
     ) -> Result<(), LifecycleApiError> {
         let retained = self
-            .continuation
+            .continuation_mut_for_test()
+            .map_err(|_| loop_factory_error("test source continuation is unavailable"))?
             .immutable_root_images
             .get_mut(node)
             .ok_or_else(|| loop_factory_error("test immutable-root node is absent"))?;
@@ -77,14 +199,28 @@ impl ProductionVmHotForkSourceWorld {
     /// cross-crate admission tests can prove that configuration identity alone
     /// does not authorize source reuse.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn mark_reuse_boundary_advanced_for_test(&mut self) {
-        self.continuation.initial_lifecycle_observations_pending = false;
+    ///
+    /// # Errors
+    /// Refuses an unavailable retained continuation.
+    pub fn mark_reuse_boundary_advanced_for_test(
+        &mut self,
+    ) -> Result<(), ProductionVmHotForkContinuationUnavailable> {
+        self.continuation_mut_for_test()?
+            .initial_lifecycle_observations_pending = false;
+        Ok(())
     }
 
     /// Replaces the captured scheduler for cross-crate boundary-refusal tests.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn replace_scheduler_for_test(&mut self, scheduler: SingleSchedulerCheckpoint) {
-        self.continuation.scheduler = Arc::new(scheduler);
+    ///
+    /// # Errors
+    /// Refuses an unavailable retained continuation.
+    pub fn replace_scheduler_for_test(
+        &mut self,
+        scheduler: SingleSchedulerCheckpoint,
+    ) -> Result<(), ProductionVmHotForkContinuationUnavailable> {
+        self.continuation_mut_for_test()?.scheduler = Arc::new(scheduler);
+        Ok(())
     }
 
     /// Mints a process-neutral continuation for one child world.
@@ -103,7 +239,10 @@ impl ProductionVmHotForkSourceWorld {
     ) -> Result<ProductionVmHotForkWorldContinuation, SchedulerError> {
         self.validate_source_ownership()?;
 
-        let continuation = self.continuation.try_clone_for_branch()?;
+        let continuation = self
+            .continuation()
+            .map_err(|_| hot_fork_boundary_error("prepared source continuation is unavailable"))?
+            .try_clone_for_branch()?;
         continuation.validate_complete_internal_state()?;
         Ok(continuation)
     }
@@ -217,6 +356,7 @@ impl ProductionVmHotForkSourceWorld {
         &mut self,
         node: &NodeId,
     ) -> Result<QemuNodeSetPreparedHotForkSource<'_>, SchedulerError> {
+        self.require_unparked_source()?;
         let prepared = self
             .prepared
             .iter()
@@ -256,6 +396,11 @@ impl ProductionVmHotForkSourceWorld {
     pub fn into_reusable(
         mut self,
     ) -> Result<Self, ProductionVmHotForkSourceWorldPreparationFailure> {
+        if self.parent_park_drain_is_owned() {
+            return Err(
+                ProductionVmHotForkSourceWorldPreparationFailure::retained_parent_park(self),
+            );
+        }
         if self.validate_source_ownership().is_ok() {
             return Ok(self);
         }
@@ -264,8 +409,12 @@ impl ProductionVmHotForkSourceWorld {
         // original file authority and revalidate its actual native receipt
         // before preparing another transaction on this same stopped source.
         let disk_custody = std::mem::take(&mut self.disk_custody);
-        self.recover()?
-            .prepare_hot_fork_source_world_with_disk_custody(disk_custody)
+        let observer = self.cleanup_observer.clone();
+        let mut source = self
+            .recover()?
+            .prepare_hot_fork_source_world_with_disk_custody(disk_custody)?;
+        source.cleanup_observer = observer;
+        Ok(source)
     }
 
     /// Aborts every retained-template transaction and recovers the lifecycle.
@@ -278,6 +427,11 @@ impl ProductionVmHotForkSourceWorld {
     pub fn recover(
         mut self,
     ) -> Result<ProductionVmLifecycleLoop, ProductionVmHotForkSourceWorldPreparationFailure> {
+        if self.parent_park_drain_is_owned() {
+            return Err(
+                ProductionVmHotForkSourceWorldPreparationFailure::retained_parent_park(self),
+            );
+        }
         let Some(mut lifecycle) = self.lifecycle.take() else {
             return Err(
                 ProductionVmHotForkSourceWorldPreparationFailure::new_without_lifecycle(
@@ -321,19 +475,36 @@ impl ProductionVmHotForkSourceWorld {
     /// Returns [`LifecycleApiError`] when source rollback or production
     /// lifecycle shutdown cannot be authenticated as complete.
     pub fn retire(self) -> Result<(), LifecycleApiError> {
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        if self.parent_park_drain_is_owned() {
+            // No legacy rollback, physical cleanup claim or credit refund can
+            // follow an unresolved native disposition.
+            std::mem::forget(self);
+            return Err(LifecycleApiError::ParentParkHeld);
+        }
+        let observer = self.cleanup_observer.clone();
         let mut lifecycle = self
             .recover()
             .map_err(|failure| loop_factory_error(failure.to_string()))?;
         if let Err(error) = lifecycle.shutdown() {
-            let _retained_for_process_lifetime = Box::leak(Box::new(lifecycle));
+            let _retained_for_process_lifetime = Box::leak(Box::new((lifecycle, observer)));
             return Err(loop_factory_error(format!(
                 "retire production hot-fork source world: {error}"
             )));
+        }
+        if let Some(observer) = observer {
+            observer.after_world_cleanup().map_err(|source| {
+                loop_factory_error(format!("retire source-world host service: {source}"))
+            })?;
         }
         Ok(())
     }
 
     fn validate_source_ownership(&mut self) -> Result<(), SchedulerError> {
+        self.require_unparked_source()?;
+        let continuation = self.continuation.as_ref().ok_or_else(|| {
+            hot_fork_boundary_error("prepared source continuation is unavailable")
+        })?;
         let lifecycle = self.lifecycle.as_deref_mut().ok_or_else(|| {
             hot_fork_boundary_error("prepared source world lost its lifecycle owner")
         })?;
@@ -385,8 +556,8 @@ impl ProductionVmHotForkSourceWorld {
                         node.name
                     ))
                 })?;
-            if prepared.configuration() != self.continuation.configuration().id()
-                || prepared.event_log().offset() != self.continuation.event_log_offset()
+            if prepared.configuration() != continuation.configuration().id()
+                || prepared.event_log().offset() != continuation.event_log_offset()
                 || prepared.launch_resources() != expected_resources
             {
                 return Err(hot_fork_boundary_error(format!(
@@ -405,7 +576,7 @@ impl ProductionVmHotForkSourceWorld {
                     ))
                 })?;
             if let Some(custody) = self.disk_custody.get(node) {
-                if self.continuation.disk_bases.get(node) != Some(custody.basis())
+                if continuation.disk_bases.get(node) != Some(custody.basis())
                     || !custody.current()?
                 {
                     return Err(hot_fork_boundary_error(format!(
@@ -420,7 +591,7 @@ impl ProductionVmHotForkSourceWorld {
                     node,
                     prepared.template_generation(),
                 )?;
-            } else if self.continuation.disk_bases.contains_key(node) {
+            } else if continuation.disk_bases.contains_key(node) {
                 return Err(hot_fork_boundary_error(format!(
                     "prepared source `{}` lost its disk file custody",
                     node.name
@@ -433,6 +604,22 @@ impl ProductionVmHotForkSourceWorld {
 
 impl Drop for ProductionVmHotForkSourceWorld {
     fn drop(&mut self) {
+        if self.parent_park_drain_is_owned() {
+            // Keep all future-affecting host state and decode custody together
+            // with the retained physical lifecycle, without allocating on Drop.
+            if let Some(continuation) = self.continuation.take() {
+                std::mem::forget(continuation);
+            }
+            if let Some(lifecycle) = self.lifecycle.take() {
+                std::mem::forget(lifecycle);
+            }
+            std::mem::forget(std::mem::take(&mut self.prepared));
+            std::mem::forget(std::mem::take(&mut self.disk_custody));
+            if let Some(observer) = self.cleanup_observer.take() {
+                std::mem::forget(observer);
+            }
+            return;
+        }
         let Some(mut lifecycle) = self.lifecycle.take() else {
             return;
         };
@@ -454,19 +641,33 @@ impl Drop for ProductionVmHotForkSourceWorld {
 /// Failed source-world preparation retaining all process and guard authority.
 #[must_use = "recover the lifecycle or retain it for fail-closed cleanup"]
 pub struct ProductionVmHotForkSourceWorldPreparationFailure {
-    lifecycle: Option<Box<ProductionVmLifecycleLoop>>,
+    // Reuses the complete source by value; no diagnostic allocation after refusal.
+    retained_parent_park: bool,
+    pub(super) lifecycle: Option<Box<ProductionVmLifecycleLoop>>,
     message: String,
     unreconciled_nodes: Vec<NodeId>,
     rollback_diagnostics: BTreeMap<NodeId, String>,
 }
 
 impl ProductionVmHotForkSourceWorldPreparationFailure {
+    fn retained_parent_park(source: ProductionVmHotForkSourceWorld) -> Self {
+        std::mem::forget(source);
+        Self {
+            retained_parent_park: true,
+            lifecycle: None,
+            message: String::new(),
+            unreconciled_nodes: Vec::new(),
+            rollback_diagnostics: BTreeMap::new(),
+        }
+    }
+
     fn new(
         lifecycle: ProductionVmLifecycleLoop,
         message: impl Into<String>,
         unreconciled_nodes: Vec<NodeId>,
     ) -> Self {
         Self {
+            retained_parent_park: false,
             lifecycle: Some(Box::new(lifecycle)),
             message: message.into(),
             unreconciled_nodes,
@@ -476,6 +677,7 @@ impl ProductionVmHotForkSourceWorldPreparationFailure {
 
     fn new_without_lifecycle(message: impl Into<String>) -> Self {
         Self {
+            retained_parent_park: false,
             lifecycle: None,
             message: message.into(),
             unreconciled_nodes: Vec::new(),
@@ -489,6 +691,7 @@ impl ProductionVmHotForkSourceWorldPreparationFailure {
         rollback: HotForkRollbackReport,
     ) -> Self {
         Self {
+            retained_parent_park: false,
             lifecycle: Some(Box::new(lifecycle)),
             message: message.into(),
             unreconciled_nodes: rollback.nodes,
@@ -515,7 +718,7 @@ impl ProductionVmHotForkSourceWorldPreparationFailure {
     /// Returns the unchanged failure while any source still owns unresolved
     /// retained-template state.
     pub fn into_recovered_lifecycle(mut self) -> Result<ProductionVmLifecycleLoop, Self> {
-        if self.unreconciled_nodes.is_empty() {
+        if !self.retained_parent_park && self.unreconciled_nodes.is_empty() {
             match self.lifecycle.take() {
                 Some(lifecycle) => Ok(*lifecycle),
                 None => Err(self),
@@ -539,6 +742,9 @@ impl std::fmt::Debug for ProductionVmHotForkSourceWorldPreparationFailure {
 
 impl std::fmt::Display for ProductionVmHotForkSourceWorldPreparationFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.retained_parent_park {
+            return formatter.write_str("complete source retained by unresolved parent park");
+        }
         write!(
             formatter,
             "prepare production hot-fork source world: {}",
@@ -551,6 +757,9 @@ impl std::error::Error for ProductionVmHotForkSourceWorldPreparationFailure {}
 
 impl Drop for ProductionVmHotForkSourceWorldPreparationFailure {
     fn drop(&mut self) {
+        if self.retained_parent_park {
+            return;
+        }
         if self.unreconciled_nodes.is_empty() {
             return;
         }
@@ -581,7 +790,7 @@ pub use boundary::{
 /// node children have been authenticated atomically.
 #[must_use = "install the continuation into an atomic child world or discard it before forking"]
 pub struct ProductionVmHotForkWorldContinuation {
-    config: ProductionVmLifecycleConfig,
+    config: Arc<ProductionVmLifecycleConfig>,
     configuration: Configuration,
     // Child admission restores independent runtime state from these immutable captures.
     scheduler: Arc<SingleSchedulerCheckpoint>,
@@ -607,6 +816,7 @@ pub struct ProductionVmHotForkWorldContinuation {
     failed_host_io: BTreeMap<NodeId, ProductionFailedNodeState>,
     nodes: Vec<ProductionVmHotForkNodeBoundary>,
     io_nodes: Vec<ProductionVmHotForkIoNodeBoundary>,
+    input_decode_custody: Option<crucible::owned_decode::DecodeCustody>,
 }
 
 impl ProductionVmHotForkWorldContinuation {
@@ -622,7 +832,9 @@ impl ProductionVmHotForkWorldContinuation {
             event_log_objects: self.event_log_objects.clone(),
             signal_artifact_objects: self.signal_artifact_objects.clone(),
             trigger_state: self.trigger_state.clone(),
-            assertion_state: self.assertion_state.clone(),
+            assertion_state: HostAssertionEvaluatorCheckpoint::from_canonical_bytes(
+                &self.assertion_state.canonical_bytes()?,
+            )?,
             terminal_verdict: self.terminal_verdict.clone(),
             terminal_cause: self.terminal_cause.clone(),
             initial_lifecycle_observations_pending: self.initial_lifecycle_observations_pending,
@@ -640,6 +852,7 @@ impl ProductionVmHotForkWorldContinuation {
             failed_host_io: self.failed_host_io.clone(),
             nodes: self.nodes.clone(),
             io_nodes: self.io_nodes.clone(),
+            input_decode_custody: self.input_decode_custody.clone(),
         })
     }
 
@@ -869,8 +1082,12 @@ impl ProductionVmHotForkWorldContinuation {
         self,
         node_generations: BTreeMap<NodeId, u64>,
         run_state_root: impl Into<PathBuf>,
-    ) -> ProductionVmHotForkRestoreParts {
-        let config = self.config.with_run_state_root(run_state_root);
+    ) -> Result<ProductionVmHotForkRestoreParts, ProductionVmLifecycleConfigCloneError> {
+        let _scope = self.config.enter_input_custody();
+        let config = self
+            .config
+            .try_clone_admitted()?
+            .with_run_state_root(run_state_root);
         let checkpoint = ProductionVmExactCheckpointSet {
             identity: self.configuration.id(),
             configuration: self.configuration,
@@ -892,7 +1109,7 @@ impl ProductionVmHotForkWorldContinuation {
             node_service_states: self.node_service_states,
             repository_restore: None,
         };
-        ProductionVmHotForkRestoreParts {
+        Ok(ProductionVmHotForkRestoreParts {
             config,
             checkpoint,
             immutable_root_images: self.immutable_root_images,
@@ -900,7 +1117,7 @@ impl ProductionVmHotForkWorldContinuation {
             block_bindings: self.block_bindings,
             ninep_bindings: self.ninep_bindings,
             active_host_io: self.active_host_io,
-        }
+        })
     }
 }
 
@@ -1373,9 +1590,10 @@ impl ProductionVmLifecycleLoop {
 
         let mut world = ProductionVmHotForkSourceWorld {
             lifecycle: Some(Box::new(self)),
-            continuation,
+            continuation: Some(continuation),
             prepared,
             disk_custody,
+            cleanup_observer: None,
         };
         if let Err(error) = world.validate_source_ownership() {
             let message = error.to_string();
@@ -1539,7 +1757,7 @@ impl ProductionVmLifecycleLoop {
             event_log_objects: Arc::new(event_log_objects),
             signal_artifact_objects: Arc::clone(&self.signal_artifact_objects),
             trigger_state: self.trigger_state.clone(),
-            assertion_state: self.assertion_evaluator.checkpoint(),
+            assertion_state: self.assertion_evaluator.checkpoint()?,
             terminal_verdict: self.terminal_verdict.clone(),
             terminal_cause: self.checkpoint_terminal_cause.clone(),
             initial_lifecycle_observations_pending: self.initial_lifecycle_observations_pending,
@@ -1557,6 +1775,7 @@ impl ProductionVmLifecycleLoop {
             failed_host_io: self.failed_host_io.clone(),
             nodes: before,
             io_nodes,
+            input_decode_custody: self.input_decode_custody.clone(),
         };
         continuation.validate_complete_internal_state()?;
         Ok(continuation)

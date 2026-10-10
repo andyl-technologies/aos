@@ -13,8 +13,24 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -123,6 +139,7 @@ in
     ];
 
     postPatch = ''
+      sed -i "1s|^#!/bin/sh|#!$CONFIG_SHELL|" util/install_helper.sh
       sed -i         -e "s|/bin/mount|${util-linux}/bin/mount|g"         -e "s|/bin/umount|${util-linux}/bin/umount|g"         lib/mount_util.c
       sed -i "s|/bin/sh|$CONFIG_SHELL|g" util/mount.fuse.c
     '';

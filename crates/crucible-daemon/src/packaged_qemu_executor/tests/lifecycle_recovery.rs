@@ -21,13 +21,13 @@ fn packaged_executor_completion_is_sticky_across_owner_panic() {
 fn competing_packaged_startup_preserves_live_native_catalogs() {
     let directory = tempfile::tempdir().expect("packaged competing-start directory");
     let mut config = config(&directory, 1);
-    config.lifecycle = ProductionVmLifecycleConfig::new(
+    config.lifecycle = Arc::new(ProductionVmLifecycleConfig::new(
         "qemu",
         "plugin",
         "kernel",
         "root",
         directory.path().join("run-state"),
-    );
+    ));
     let run_state_root = config.lifecycle.run_state_root();
     let workers = run_state_root.join("campaign-workers");
     let promotions = run_state_root.join("campaign-checkpoint-promotions");
@@ -86,7 +86,7 @@ fn packaged_native_catalog_recovery_is_crash_safe_and_idempotent() {
     .expect("fallback lineage");
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         b"packaged restart fallback",
     ))
     .expect("fallback checkpoint");
@@ -272,7 +272,7 @@ fn operational_phase_uses_exact_actor_ownership_and_durable_phase() {
 
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         b"packaged-status-checkpoint",
     ))
     .expect("checkpoint");

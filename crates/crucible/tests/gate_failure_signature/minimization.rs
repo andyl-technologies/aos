@@ -8,6 +8,9 @@ use super::*;
 
 #[test]
 fn signature_preserving_minimization_extends_base_pass_per_cluster() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario_form()?;
     let policy = SignaturePolicy::default_policy();
     let critical = override_decision("critical-assertion", "fail");
@@ -194,6 +197,9 @@ fn signature_preserving_minimization_extends_base_pass_per_cluster() -> Result<(
 
 #[test]
 fn per_cluster_reports_render_same_content_deterministically() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = scenario_form()?;
     let policy = SignaturePolicy::default_policy();
     let property_decision = override_decision("triage-decision", "fail");

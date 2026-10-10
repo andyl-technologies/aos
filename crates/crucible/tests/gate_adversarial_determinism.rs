@@ -1,7 +1,7 @@
 //! Checks `gate:adversarial-determinism` (the Phase-3 exit gate) on the REAL
 //! scheduler RESOLVE path.
 //!
-//! RFC-0010 file 24 [HARN-11] / §7: a fixed scenario run `N` times under
+//! A fixed scenario run `N` times under
 //! deliberately hostile host conditions MUST yield byte-identical canonical event
 //! logs and final fingerprints (INV-1, INV-4, INV-9 — the determinism that
 //! *survives* hostile conditions). This gate drives a **2-VM scenario with a disk
@@ -327,6 +327,9 @@ fn run(seed: Seed, condition_index: usize) -> RunWitness {
 
 #[test]
 fn gate_adversarial_determinism_two_vm_disk_scenario_is_byte_identical_across_hostile_runs() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let seed = Seed::from_u64(0x4ad_be57);
     let profiles = canonical_host_adversary_matrix();
     assert!(
@@ -341,14 +344,19 @@ fn gate_adversarial_determinism_two_vm_disk_scenario_is_byte_identical_across_ho
     // skew).
     let task_count = HOST_CONDITIONS.len();
     let mut witnesses = Vec::new();
+    let original = crucible::owned_decode::current_custody()
+        .expect("host-adversary fixture retains its original metadata authority");
     for profile in profiles {
-        let results = run_profiled_tasks(*profile, task_count, |task| run(seed, task.index))
-            .unwrap_or_else(|error| {
-                panic!(
-                    "adversarial profile {} should execute: {error}",
-                    profile.name
-                )
-            });
+        let results = run_profiled_tasks(*profile, task_count, |task| {
+            let _original = original.enter();
+            run(seed, task.index)
+        })
+        .unwrap_or_else(|error| {
+            panic!(
+                "adversarial profile {} should execute: {error}",
+                profile.name
+            )
+        });
         witnesses.extend(results);
     }
 
@@ -400,6 +408,9 @@ fn gate_adversarial_determinism_two_vm_disk_scenario_is_byte_identical_across_ho
 
 #[test]
 fn gate_adversarial_determinism_disk_completions_land_at_independently_computed_ticks() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     // The COMPUTE-skew teeth ([IO-2], [IO-4], [DET-19]): submitting the two disk
     // reads in forward vs reversed host order yields a BYTE-IDENTICAL fingerprint,
     // and BOTH completions land at ticks computed INDEPENDENTLY from the request +

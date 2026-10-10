@@ -400,6 +400,7 @@ in
               -chardev file,id=serial0,path="$TMPDIR/serial-$label.log" \
               -serial chardev:serial0 \
               -qmp "unix:$qmp_socket,server=on,wait=off" \
+              -plugin "${pkgs.crucible-qemu-trace-plugin}/lib/qemu/plugins/crucible-ram-observer.so,ram_metadata_budget=268435456" \
               -plugin "$PLUGIN",out="$TMPDIR/trace-$label.jsonl",cadence="$CADENCE",stop_at="$HORIZON",mem_events=off,vcpus=1 \
               -no-shutdown \
               -no-reboot
@@ -426,6 +427,7 @@ in
             qemu_binary=$(command -v "$1")
             bounded_preemption_launch_qemu \
               1200 "$TMPDIR/qemu-target-$label.pid" - "$qemu_binary" "$@" \
+              2>"$TMPDIR/ram-observer-$label.log" \
               || fail "guest $label QEMU launch failed"
 
             wait_for_socket "$qmp_socket" || fail "guest $label QMP socket did not appear"
@@ -459,6 +461,10 @@ in
             qmp_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-quit-$label.json" || true
             bounded_preemption_wait_qemu \
               || fail "guest $label QEMU exited unsuccessfully"
+            grep -Fq CRUCIBLE-RAM-ORACLE-PASS "$TMPDIR/ram-observer-$label.log" \
+              || fail "guest $label did not qualify the canonical RAM root"
+            ! grep -Fq CRUCIBLE-RAM-ORACLE-FAIL "$TMPDIR/ram-observer-$label.log" \
+              || fail "guest $label RAM root disagreed with the native oracle"
           }
 
           run_pair() {
@@ -614,7 +620,7 @@ in
               --argjson rr_switch_quantum "$RR_SWITCH_QUANTUM" '
               length >= 2
               and all(.[]; (
-                .schema == "crucible.qemu.trace-fingerprint.v7"
+                .schema == "crucible.qemu.trace-fingerprint.v8"
                 and .tracked_vcpus == 1
                 and .stop_at == $horizon
                 and .sample_register_failures == 0

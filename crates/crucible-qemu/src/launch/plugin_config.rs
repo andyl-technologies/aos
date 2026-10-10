@@ -24,6 +24,18 @@ const PLUGIN_ARG_APP_RANDOM_POSITIONS: &str = "app_random_positions";
 const PLUGIN_ARG_COVERAGE: &str = "coverage";
 const PLUGIN_ARG_FINGERPRINT: &str = "fingerprint";
 
+/// Fixed independent pager-control descriptor number.
+pub const QEMU_PLUGIN_RAM_CONTROL_FD: i32 = 9;
+
+/// Descriptor-bound authority for one independent pager-control session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QemuRamControlLaunch {
+    /// Fresh session replaced after fork or restore.
+    pub session: [u8; 32],
+    /// Exact operational mapping owner.
+    pub target: crucible_protocol::ram_control::RamControlTarget,
+}
+
 /// Plugin descriptors inherited at fixed child fd numbers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QemuLaunchInheritedFds {
@@ -166,6 +178,16 @@ pub struct QemuLaunchPluginConfig {
         Option<crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan>,
     coverage: QemuLaunchPluginSwitch,
     fingerprint: QemuLaunchPluginSwitch,
+    ram_control: Option<QemuRamControlLaunch>,
+    fault_actor_test_entitlement: Option<[u8; 32]>,
+    ram_metadata_budget: Option<u64>,
+    ram_resources: Option<crucible_linux_resource::ram_policy::HostResourceVector>,
+    ram_spill_quota: Option<u64>,
+    ram_initial_budgets: Option<String>,
+    ram_outer_cap: Option<String>,
+    original_startup: Option<crucible_protocol::plugin_setup_plan::StartupOperation>,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    device_digest_purpose: Option<crucible_protocol::plugin_setup_plan::DeviceDigestPurpose>,
 }
 
 impl QemuLaunchPluginConfig {
@@ -189,6 +211,16 @@ impl QemuLaunchPluginConfig {
             selectable_catalog_plan: None,
             coverage: QemuLaunchPluginSwitch::Off,
             fingerprint: QemuLaunchPluginSwitch::Off,
+            ram_control: None,
+            fault_actor_test_entitlement: None,
+            ram_metadata_budget: None,
+            ram_resources: None,
+            ram_spill_quota: None,
+            ram_initial_budgets: None,
+            ram_outer_cap: None,
+            original_startup: None,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            device_digest_purpose: None,
         }
     }
 
@@ -307,6 +339,107 @@ impl QemuLaunchPluginConfig {
         self
     }
 
+    /// Returns a launch bound to one fresh independent pager controller.
+    #[must_use]
+    pub fn with_ram_control(mut self, control: QemuRamControlLaunch) -> Self {
+        self.ram_control = Some(control);
+        self
+    }
+
+    pub(crate) fn with_fault_actor_test_entitlement(
+        mut self,
+        entitlement: Option<[u8; 32]>,
+    ) -> Self {
+        self.fault_actor_test_entitlement = entitlement;
+        self
+    }
+
+    /// Returns the exact independent pager-controller setup authority.
+    #[must_use]
+    pub const fn ram_control(&self) -> Option<QemuRamControlLaunch> {
+        self.ram_control
+    }
+
+    /// Returns a config carrying an independently admitted RAM metadata budget.
+    #[must_use]
+    pub fn with_ram_metadata_budget(mut self, bytes: u64) -> Self {
+        self.ram_metadata_budget = Some(bytes);
+        self
+    }
+
+    /// Returns the independently admitted native metadata allowance.
+    #[must_use]
+    pub const fn ram_metadata_budget(&self) -> Option<u64> {
+        self.ram_metadata_budget
+    }
+
+    /// Supplies the complete independently retained RAM admission envelope.
+    ///
+    /// The metadata subset is also installed as the native allocation allowance.
+    /// Entitlements never derive from a requested working-set policy target.
+    #[must_use]
+    pub fn with_ram_resources(
+        mut self,
+        resources: crucible_linux_resource::ram_policy::HostResourceVector,
+    ) -> Self {
+        self.ram_resources = Some(resources);
+        self.ram_metadata_budget = Some(resources.metadata_bytes);
+        self
+    }
+
+    /// Returns the complete resource envelope projected at launch.
+    #[must_use]
+    pub const fn ram_resources(
+        &self,
+    ) -> Option<crucible_linux_resource::ram_policy::HostResourceVector> {
+        self.ram_resources
+    }
+
+    /// Supplies the independently retained private spill allowance.
+    ///
+    /// This subset excludes CAS versions, VMState, overlays and operation staging.
+    #[must_use]
+    pub const fn with_ram_spill_quota(mut self, bytes: u64) -> Self {
+        self.ram_spill_quota = Some(bytes);
+        self
+    }
+
+    /// Returns the private spill subset projected into native startup.
+    #[must_use]
+    pub const fn ram_spill_quota(&self) -> Option<u64> {
+        self.ram_spill_quota
+    }
+
+    /// Supplies the actual owner's initial class budgets before control Hello.
+    ///
+    /// This versioned portable projection establishes timing only. Placement
+    /// remains unaccepted at revision zero until the independent Apply exchange.
+    ///
+    /// # Errors
+    /// Refuses fractional, zero, or overflowing durations and invalid encoding.
+    pub fn with_ram_initial_budgets(
+        mut self,
+        budgets: crucible_linux_resource::host_supervision::HostOperationBudgets,
+    ) -> Result<Self, crucible_protocol::ram_control::RamControlError> {
+        let wire = crate::ram_control::budgets_to_wire(budgets)?;
+        let bytes = crucible_protocol::ram_control::encode_ram_control_budgets(&wire)?;
+        self.ram_initial_budgets = Some(lowercase_hex(&bytes));
+        Ok(self)
+    }
+
+    /// Retains the original monotonic anchor of the independently owned cap.
+    ///
+    /// # Errors
+    /// Refuses an invalid cap identifier, state, duration or monotonic deadline.
+    pub fn with_ram_outer_cap(
+        mut self,
+        cap: crucible_protocol::ram_control::RamControlOuterCap,
+    ) -> Result<Self, crucible_protocol::ram_control::RamControlError> {
+        let bytes = crucible_protocol::ram_control::encode_ram_control_outer(cap)?;
+        self.ram_outer_cap = Some(lowercase_hex(&bytes));
+        Ok(self)
+    }
+
     /// Returns the plugin shared-object path.
     #[must_use]
     pub fn plugin_path(&self) -> &str {
@@ -359,13 +492,39 @@ impl QemuLaunchPluginConfig {
         }
     }
 
+    pub(crate) fn with_original_startup(
+        mut self,
+        owner: &crate::spawn::OriginalPluginStartup,
+    ) -> Result<Self, crate::spawn::PluginStartupError> {
+        self.original_startup = Some(owner.record()?);
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        if let Some(body) = owner.workspace_view()? {
+            self.device_digest_purpose = Some(
+                *body
+                    .record()
+                    .map_err(|source| owner.workspace_refusal(source))?,
+            );
+        }
+        Ok(self)
+    }
+
     /// Returns the complete process-neutral plugin setup plan.
     #[must_use]
     pub fn plugin_setup_plan(&self) -> crucible_protocol::plugin_setup_plan::PluginSetupPlan {
-        crucible_protocol::plugin_setup_plan::PluginSetupPlan::new(
+        let plan = crucible_protocol::plugin_setup_plan::PluginSetupPlan::new(
             self.app_random_branch_plan().clone(),
             self.selectable_catalog_plan().clone(),
-        )
+        );
+        let plan = match self.original_startup {
+            Some(startup) => plan.with_startup_operation(startup),
+            None => plan,
+        };
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        let plan = match self.device_digest_purpose {
+            Some(purpose) => plan.with_device_digest_purpose(purpose),
+            None => plan,
+        };
+        plan
     }
 
     /// Returns the single-VM fingerprint sampling switch passed to the plugin.
@@ -405,6 +564,67 @@ impl QemuLaunchPluginConfig {
             format!("{PLUGIN_ARG_WHITEBOX}={}", self.whitebox),
             format!("{PLUGIN_ARG_COVERAGE}={}", self.coverage),
         ];
+        if let Some(bytes) = self.ram_metadata_budget {
+            args.push(format!("ram_metadata_budget={bytes}"));
+        }
+        if let Some(bytes) = self.ram_spill_quota {
+            args.push(format!("ram_spill_quota={bytes}"));
+        }
+        if let Some(resources) = self.ram_resources {
+            args.extend([
+                format!("ram_resident_peak={}", resources.resident_peak_bytes),
+                format!("ram_backing_peak={}", resources.backing_peak_bytes),
+                format!("ram_metadata_peak={}", resources.metadata_bytes),
+                format!("ram_staging_peak={}", resources.staging_bytes),
+                format!("ram_io_slots={}", resources.paging_io_slots),
+                format!("ram_cpu_slots={}", resources.cpu_slots),
+                format!("ram_task_slots={}", resources.task_slots),
+                format!("ram_fd_slots={}", resources.file_descriptors),
+            ]);
+        }
+        if let Some(budgets) = &self.ram_initial_budgets {
+            args.push(format!("ram_initial_budgets={budgets}"));
+        }
+        if let Some(cap) = &self.ram_outer_cap {
+            args.push(format!("ram_outer_cap={cap}"));
+        }
+        if let Some(entitlement) = self.fault_actor_test_entitlement {
+            args.push(format!(
+                "ram_test_fault_actor={}",
+                lowercase_hex(&entitlement)
+            ));
+        }
+        if let Some(control) = self.ram_control {
+            args.extend([
+                format!("ram_control_fd={QEMU_PLUGIN_RAM_CONTROL_FD}"),
+                format!("ram_spill_fd={}", crate::spawn::QEMU_RAM_SPILL_LAUNCH_FD),
+                format!("ram_control_session={}", lowercase_hex(&control.session)),
+                format!(
+                    "ram_control_daemon={}",
+                    lowercase_hex(&control.target.daemon_epoch)
+                ),
+                format!(
+                    "ram_control_owner={}",
+                    lowercase_hex(&control.target.owner_id)
+                ),
+                format!(
+                    "ram_control_node={}",
+                    lowercase_hex(&control.target.node_id)
+                ),
+                format!(
+                    "ram_control_owner_generation={}",
+                    control.target.owner_generation
+                ),
+                format!(
+                    "ram_control_arena_generation={}",
+                    control.target.arena_generation
+                ),
+                format!(
+                    "ram_control_template={}",
+                    u8::from(control.target.retained_template)
+                ),
+            ]);
+        }
         if self.campaign_marker_parking == QemuLaunchPluginSwitch::On {
             args.push(format!("{PLUGIN_ARG_CAMPAIGN_MARKER_PARKING}=on"));
         }

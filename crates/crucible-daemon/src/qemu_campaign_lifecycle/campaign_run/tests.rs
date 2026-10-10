@@ -62,6 +62,8 @@ type TestGuardedDefaultCampaignRunError = GuardedDefaultCampaignRunError<
 
 #[test]
 fn supplemental_finding_source_round_trips_and_reopens_by_exact_identity() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let scenario = ScenarioDefId::from_hash(CampaignHash::derive(
         "test.supplemental-finding-source",
         b"scenario",
@@ -83,6 +85,7 @@ fn supplemental_finding_source_round_trips_and_reopens_by_exact_identity() {
             1024 * 1024,
         )),
         Arc::new(crucible_cas::content_store::MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let store = CampaignExecutorStore::new(repository);
     let content = source.content_id();
@@ -103,11 +106,25 @@ fn supplemental_finding_source_round_trips_and_reopens_by_exact_identity() {
 
 #[test]
 fn determinism_finding_verification_is_explicitly_opt_in() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (request, _) = request();
     assert!(!request.verifies_determinism_findings());
 
     let request = request.with_determinism_finding_verification();
     assert!(request.verifies_determinism_findings());
+}
+
+#[test]
+fn semantic_limits_cannot_grant_a_component_request_execution_authority() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+    let (request, _) = request();
+    let limits = request.resources;
+
+    assert!(matches!(
+        request.with_execution_limits(limits),
+        Err(GuardedDefaultCampaignRunConfigurationError::MissingAssignmentAuthority)
+    ));
 }
 
 struct TerminalLifecycle {
@@ -204,6 +221,7 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
         }
         self.configuration = Some(configuration.clone());
         Ok(QuantumOutcome {
+            event_log_custody: append.event_log_custody,
             configuration,
             frontier: self.frontier,
             advanced_node: None,
@@ -426,6 +444,7 @@ impl QemuFreshAttemptLifecycleOwner for SelectableLifecycle {
             )])?;
 
         Ok(QuantumOutcome {
+            event_log_custody: append.event_log_custody,
             configuration: request.configuration,
             frontier: self.frontier,
             advanced_node: None,
@@ -695,6 +714,8 @@ impl QemuFreshAttemptLifecycleFactory for ResumeLifecycleFactory {
 
 #[test]
 fn shared_owner_authenticates_completion_and_retains_terminal_evidence() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (request, node) = request();
     let request = request.with_watch_frames();
     let (factory, evidence) =
@@ -799,6 +820,8 @@ fn shared_owner_authenticates_completion_and_retains_terminal_evidence() {
 
 #[test]
 fn selected_schedule_replays_through_a_fresh_authenticated_repository() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (request, node) = selectable_request();
     let scenario = request.scenario.clone();
     let first_starts = Arc::new(AtomicUsize::new(0));
@@ -847,6 +870,8 @@ fn selected_schedule_replays_through_a_fresh_authenticated_repository() {
 
 #[test]
 fn unpublished_default_selection_survives_root_closure_restart_without_repository_records() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (request, node) = selectable_request();
     let scenario = request.scenario.clone();
     let completed = run_selectable_campaign(request, node.clone(), Arc::new(AtomicUsize::new(0)));
@@ -892,6 +917,7 @@ fn unpublished_default_selection_survives_root_closure_restart_without_repositor
             1024 * 1024,
         )),
         Arc::new(crucible_cas::content_store::MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let store = CampaignExecutorStore::new(repository);
     let completed = restarted
@@ -923,6 +949,8 @@ fn unpublished_default_selection_survives_root_closure_restart_without_repositor
 
 #[test]
 fn bounded_exploration_uses_accepted_branch_requests_and_observations() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (request, node) = selectable_request();
     let exploration = GuardedCampaignExploration::new(
         3,
@@ -981,6 +1009,8 @@ fn bounded_exploration_uses_accepted_branch_requests_and_observations() {
 
 #[test]
 fn bounded_exploration_lazily_admits_a_full_width_integer_domain() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let integer = IntegerDomain::new(
         1,
         IntegerRepresentation::Unsigned64,
@@ -1024,6 +1054,8 @@ fn bounded_exploration_lazily_admits_a_full_width_integer_domain() {
 
 #[test]
 fn bounded_exploration_reports_a_pruned_depth_boundary() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (request, node) = selectable_request();
     let exploration = GuardedCampaignExploration::new(
         3,
@@ -1051,6 +1083,8 @@ fn bounded_exploration_reports_a_pruned_depth_boundary() {
 
 #[test]
 fn bounded_exploration_stops_on_an_accepted_scenario_finding() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (request, node) = selectable_request();
     let exploration = GuardedCampaignExploration::new(
         3,
@@ -1090,6 +1124,8 @@ fn bounded_exploration_stops_on_an_accepted_scenario_finding() {
 
 #[test]
 fn bounded_exploration_stops_on_an_accepted_property_finding() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let property_name = "selected-branch-reports-success";
     let assertion = AssertionDef::guest_sometimes(
         AssertionId::from_name(property_name),
@@ -1133,6 +1169,8 @@ fn bounded_exploration_stops_on_an_accepted_property_finding() {
 
 #[test]
 fn explicit_terminal_discovery_precedes_supervisor_automatic_discovery() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (request, node) = selectable_request();
     let request = request.with_discovery_stop(StopCondition::Terminal);
     let starts = Arc::new(AtomicUsize::new(0));
@@ -1154,6 +1192,8 @@ fn explicit_terminal_discovery_precedes_supervisor_automatic_discovery() {
 
 #[test]
 fn explicit_virtual_time_discovery_retains_the_first_frontier_crossing_the_deadline() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let deadline = 2_000_000;
     let quantum_nanoseconds = 1_100_000;
     let completed_frontier = quantum_nanoseconds * 2;
@@ -1184,6 +1224,8 @@ fn explicit_virtual_time_discovery_retains_the_first_frontier_crossing_the_deadl
 
 #[test]
 fn virtual_time_savepoint_capture_replays_and_authenticates_the_same_boundary() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let deadline = 2_000_000;
     let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
@@ -1269,7 +1311,7 @@ where
         Arc::new(crucible_cas::content_store::MemoryRefBackend::new()),
     )?;
     let repository = Arc::new(repository);
-    let checkpoints = campaign_run_exact_checkpoint_store(&request)?;
+    let checkpoints = campaign_run_exact_checkpoint_store(&request, &repository)?;
     let exact_retention = Arc::new(CampaignRunFindingExactRetentionSource::new(
         CampaignExecutorStore::new(Arc::clone(&repository)),
         checkpoints,
@@ -1288,6 +1330,8 @@ where
 
 #[test]
 fn observation_capture_only_stops_before_any_continuation_attempt_or_quantum() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let condition = ObservationCondition::SchedulerQuiescentOrExecutionQuanta {
         execution_quanta: 1,
     };
@@ -1362,6 +1406,8 @@ fn observation_capture_only_stops_before_any_continuation_attempt_or_quantum() {
 
 #[test]
 fn selection_free_resume_authenticates_the_exact_source_before_continuing() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let source_frontier = VirtualTime { ticks: 5 };
     let schedule = Schedule::empty();
     let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
@@ -1449,6 +1495,8 @@ fn selection_free_resume_authenticates_the_exact_source_before_continuing() {
 
 #[test]
 fn selection_free_resume_terminal_at_source_needs_no_continuation() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let source_frontier = VirtualTime { ticks: 7 };
     let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
@@ -1489,6 +1537,8 @@ fn selection_free_resume_terminal_at_source_needs_no_continuation() {
 
 #[test]
 fn selection_free_resume_rejects_terminal_before_the_source_boundary() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let source_frontier = VirtualTime { ticks: 8 };
     let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
@@ -1528,6 +1578,8 @@ fn selection_free_resume_rejects_terminal_before_the_source_boundary() {
 
 #[test]
 fn selection_free_resume_rejects_a_checkpoint_for_another_configuration() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let source_frontier = VirtualTime { ticks: 5 };
     let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
@@ -1575,6 +1627,8 @@ fn selection_free_resume_rejects_a_checkpoint_for_another_configuration() {
 
 #[test]
 fn portable_resume_rejects_override_before_execution() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let schedules = [Schedule::from_decisions([crucible::Decision::Override(
         crucible::OverrideDecision {
             point: crucible::SchedulingPoint {
@@ -1625,6 +1679,8 @@ fn portable_resume_rejects_override_before_execution() {
 
 #[test]
 fn selection_free_resume_applies_an_earlier_final_stop_after_source_admission() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let source_frontier = VirtualTime { ticks: 5 };
     let final_stop = StopCondition::VirtualTimePicoseconds(3);
     let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
@@ -1675,6 +1731,8 @@ fn selection_free_resume_applies_an_earlier_final_stop_after_source_admission() 
 
 #[test]
 fn selection_free_resume_completes_at_the_requested_next_choice() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     // The source precedes the request's 2,050 ps trap. Its 2,100 ps stop
     // becomes visible before the terminal fixture boundary.
     let source_frontier = VirtualTime { ticks: 2_000 };
@@ -1724,6 +1782,8 @@ fn selection_free_resume_completes_at_the_requested_next_choice() {
 
 #[test]
 fn savepoint_capture_rejects_a_terminal_outcome_before_the_requested_deadline() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
     let (request, node) = checkpoint_request();
@@ -1757,6 +1817,8 @@ fn savepoint_capture_rejects_a_terminal_outcome_before_the_requested_deadline() 
 
 #[test]
 fn savepoint_capture_rejects_mismatched_replay_evidence() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
     let (request, node) = checkpoint_request();
@@ -1786,6 +1848,8 @@ fn savepoint_capture_rejects_mismatched_replay_evidence() {
 
 #[test]
 fn savepoint_default_choice_preserves_the_requested_continuation_stop() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let marker = StopCondition::NamedBoundary(String::from("checkpoint-ready"));
     assert_eq!(default_choice_continuation_stop(true, &marker), marker);
 
@@ -1802,6 +1866,8 @@ fn savepoint_default_choice_preserves_the_requested_continuation_stop() {
 
 #[test]
 fn explicit_execution_quanta_discovery_stops_at_the_absolute_coordinate() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let execution_quanta = 3;
     let quantum_nanoseconds = 11;
     let (request, node) = request();
@@ -1834,6 +1900,8 @@ fn explicit_execution_quanta_discovery_stops_at_the_absolute_coordinate() {
 
 #[test]
 fn explicit_combined_discovery_stops_at_the_first_reached_bound() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let virtual_time_picoseconds = 15;
     let execution_quanta = 3;
     let quantum_nanoseconds = 10;
@@ -1868,6 +1936,12 @@ fn explicit_combined_discovery_stops_at_the_first_reached_bound() {
 
 #[test]
 fn terminal_discovery_selection_survives_gc_restart_and_replay() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+
     let temp = tempfile::TempDir::new().expect("temporary campaign store");
     let blob_root = temp.path().join("blobs");
     let ref_root = temp.path().join("refs");
@@ -1875,6 +1949,7 @@ fn terminal_discovery_selection_survives_gc_restart_and_replay() {
     let journal_root = temp.path().join("gc-journal");
     let store_node = StoreNodeId::new("guarded-campaign-run-directory").expect("store node");
     let graph_config = || StoreGraphConfig {
+        gc_mark_root: None,
         root: store_node.clone(),
         admitted_kinds: campaign_object_kinds(),
         nodes: BTreeMap::from([(
@@ -1924,9 +1999,15 @@ fn terminal_discovery_selection_survives_gc_restart_and_replay() {
     let (repository, _) = default_run_repository::<io::Error>(graph.clone(), refs.clone())
         .expect("reopen campaign repository for GC planning");
     let mut ledger = DirectoryAssignmentLedger::open(&ledger_root).expect("open assignment ledger");
-    let prepared =
-        plan_single_host_campaign_gc(&repository, refs.as_ref(), &mut ledger, None, None, &admin)
-            .expect("plan campaign GC");
+    let prepared = plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
+    )
+    .expect("plan campaign GC");
     assert!(
         prepared
             .candidates()
@@ -1941,7 +2022,7 @@ fn terminal_discovery_selection_survives_gc_restart_and_replay() {
     );
     let planned_candidates =
         u64::try_from(prepared.candidates().len()).expect("planned candidate count");
-    let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared)
+    let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared, &gc_operation)
         .expect("persist campaign GC plan");
     drop(journal);
     drop(ledger);
@@ -1958,8 +2039,8 @@ fn terminal_discovery_selection_survives_gc_restart_and_replay() {
         .expect("reopen campaign repository for GC apply");
     let mut ledger =
         DirectoryAssignmentLedger::open(&ledger_root).expect("reopen assignment ledger");
-    let mut journal =
-        DirectoryCampaignGcJournal::open(&journal_root).expect("reopen campaign GC journal");
+    let mut journal = DirectoryCampaignGcJournal::open(&journal_root, &gc_operation)
+        .expect("reopen campaign GC journal");
     let report = apply_single_host_campaign_gc(
         &mut journal,
         &repository,
@@ -1967,7 +2048,7 @@ fn terminal_discovery_selection_survives_gc_restart_and_replay() {
         &mut ledger,
         None,
         None,
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("apply campaign GC after restart");
     assert_eq!(report.candidates(), planned_candidates);
@@ -2039,6 +2120,8 @@ fn terminal_discovery_selection_survives_gc_restart_and_replay() {
 
 #[test]
 fn replay_closure_rejects_missing_extra_duplicate_and_tampered_records_before_start() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (request, node) = selectable_request();
     let starts = Arc::new(AtomicUsize::new(0));
     let completed = run_selectable_campaign(request, node, starts);
@@ -2113,6 +2196,8 @@ fn replay_closure_rejects_missing_extra_duplicate_and_tampered_records_before_st
 
 #[test]
 fn remote_resume_validator_reconstructs_exact_closure_and_rejects_bad_envelopes() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (request, node) = selectable_request();
     let scenario = request.scenario.clone();
     let completed = run_selectable_campaign(request, node, Arc::new(AtomicUsize::new(0)));
@@ -2202,6 +2287,8 @@ fn remote_resume_validator_reconstructs_exact_closure_and_rejects_bad_envelopes(
 
 #[test]
 fn shared_owner_preserves_the_terminal_lifecycle_error_source() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (request, node) = request();
     let (factory, evidence) =
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(TerminalLifecycleFactory {
@@ -2268,6 +2355,11 @@ fn request() -> (GuardedDefaultCampaignRunRequest, NodeId) {
         65_533,
         65_533,
         16,
+        TEST_HOST_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_TASKS,
+        TEST_HOST_SERVICE_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_RESIDENT_BYTES,
+        TEST_WATCHER_SERVICE_RESIDENT_BYTES,
         1_024,
         Duration::from_secs(1),
     )
@@ -2278,7 +2370,7 @@ fn request() -> (GuardedDefaultCampaignRunRequest, NodeId) {
         ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state");
 
     (
-        GuardedDefaultCampaignRunRequest::new(
+        GuardedDefaultCampaignRunRequest::new_component(
             scenario,
             seed,
             "guarded-engine-test",
@@ -2316,6 +2408,11 @@ fn checkpoint_request() -> (GuardedDefaultCampaignRunRequest, NodeId) {
         65_532,
         65_532,
         16,
+        TEST_HOST_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_TASKS,
+        TEST_HOST_SERVICE_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_RESIDENT_BYTES,
+        TEST_WATCHER_SERVICE_RESIDENT_BYTES,
         1_024,
         Duration::from_secs(1),
     )
@@ -2326,7 +2423,7 @@ fn checkpoint_request() -> (GuardedDefaultCampaignRunRequest, NodeId) {
         ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state");
 
     (
-        GuardedDefaultCampaignRunRequest::new(
+        GuardedDefaultCampaignRunRequest::new_component(
             scenario,
             seed,
             "guarded-checkpoint-engine-test",
@@ -2345,7 +2442,20 @@ fn exact_checkpoint_store(directory: &tempfile::TempDir) -> Arc<ExactCheckpointS
         directory.path(),
     ));
     Arc::new(
-        ExactCheckpointStore::new(backend, 1024 * 1024).expect("durable exact checkpoint store"),
+        ExactCheckpointStore::new(
+            backend,
+            1024 * 1024,
+            crucible_cas::ram::RamRetentionAuthority::new(Arc::new(
+                crucible_cas::content_store::DirectoryRefBackend::new(
+                    directory.path().join("ram-retention-refs"),
+                ),
+            )),
+        )
+        .expect("durable exact checkpoint store")
+        .with_ram_root_resources(
+            crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+                .expect("finite component RAM-root credit"),
+        ),
     )
 }
 
@@ -2452,6 +2562,11 @@ fn selectable_request_with_domain_and_assertion(
         65_531,
         65_531,
         16,
+        TEST_HOST_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_TASKS,
+        TEST_HOST_SERVICE_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_RESIDENT_BYTES,
+        TEST_WATCHER_SERVICE_RESIDENT_BYTES,
         1_024,
         Duration::from_secs(1),
     )
@@ -2462,7 +2577,7 @@ fn selectable_request_with_domain_and_assertion(
         ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state");
 
     (
-        GuardedDefaultCampaignRunRequest::new(
+        GuardedDefaultCampaignRunRequest::new_component(
             scenario,
             seed,
             "guarded-selectable-engine-test",
@@ -2543,3 +2658,19 @@ fn try_selectable_campaign_with_store(
     let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
     run_guarded_default_campaign_with_store(request, runner, evidence, blobs, refs)
 }
+
+// Fixture policy reserves an explicit finite descriptor ceiling independently of vCPU count.
+#[cfg(test)]
+const TEST_HOST_FILE_DESCRIPTORS: u64 = 1_024;
+
+// Host-side pager workers and sockets have independent finite fixture entitlements.
+#[cfg(test)]
+const TEST_HOST_SERVICE_TASKS: u64 = 4;
+#[cfg(test)]
+const TEST_HOST_SERVICE_FILE_DESCRIPTORS: u64 = 32;
+
+// Operational services retain their own authored memory budgets outside QEMU.
+#[cfg(test)]
+const TEST_HOST_SERVICE_RESIDENT_BYTES: u64 = 8 * 1024 * 1024;
+#[cfg(test)]
+const TEST_WATCHER_SERVICE_RESIDENT_BYTES: u64 = 1024 * 1024;

@@ -23,6 +23,7 @@
   libcap-ng,
   libusb1,
   libgcrypt,
+  blake3-c,
   gnutls,
   fuse3,
   gcc-libs,
@@ -398,7 +399,8 @@
       fuse3
       samba-smbd
     ]
-    ++ lib.optional stdenv.hostPlatform.isLinux gcc-libs;
+    ++ lib.optional stdenv.hostPlatform.isLinux gcc-libs
+    ++ lib.optional applyCruciblePatch blake3-c;
   qemuRuntimeRpath = builtins.concatStringsSep ":" (map (dependency: "${dependency}/lib") qemuRuntimeDeps);
   fullUpstreamTestGuestRoots =
     [
@@ -459,6 +461,7 @@
     test_python=build/pyvenv/bin/python3
     test_perl=${buildPerl}/bin/perl
     test_shell=${buildBash}/bin/bash
+    qtest_launcher_shell=${buildBash}/bin/bash
     ${lib.optionalString fullUpstreamTestSuiteOnly ''
       test_certtool=${buildGnutls}/bin/certtool
       test_mformat=${buildMtools}/bin/mformat
@@ -516,79 +519,118 @@ in
       platformSupport =
         if pname == "qemu"
         then {
-        build = [{abi = ["gnu"]; os = ["linux"];}];
-        host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-        target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-        role = "public-package";
-      }
+          build = [
+            {
+              abi = ["gnu"];
+              os = ["linux"];
+            }
+          ];
+          host = [
+            {
+              abi = ["gnu"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["linux"];
+            }
+            {
+              abi = ["darwin"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["darwin"];
+            }
+          ];
+          target = [
+            {
+              abi = ["gnu"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["linux"];
+            }
+            {
+              abi = ["darwin"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["darwin"];
+            }
+          ];
+          role = "public-package";
+        }
         else {
-        build = [{abi = ["gnu"]; os = ["linux"];}];
-        host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
-        target = [];
-        role = "build-input";
-      };
-    qualification.packageProbe =
-      if qualification != null
-      then qualification.packageProbe
-      else lib.qualification.commandProbe {
-      "primary" = {
-        "artifacts" = [];
-        "expected" = "qemu-img reports the two images as identical.";
-        "files" = {
-          "left.raw" = "AOS raw image payload\n";
-          "right.raw" = "AOS raw image payload\n";
+          build = [
+            {
+              abi = ["gnu"];
+              os = ["linux"];
+            }
+          ];
+          host = [
+            {
+              abi = ["gnu"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["linux"];
+            }
+          ];
+          target = [];
+          role = "build-input";
         };
-        "input" = "Two raw disk-image byte streams with identical contents.";
-        "operation" = "Compare the images byte for byte through qemu-img's raw-image reader.";
-        "steps" = [
-          {
-            "argv" = [
-              "@out@/bin/qemu-img"
-              "compare"
-              "-f"
-              "raw"
-              "-F"
-              "raw"
-              "left.raw"
-              "right.raw"
-            ];
-            "exit_code" = 0;
-            "stderr" = {
-              "exact" = "";
+      qualification.packageProbe =
+        if qualification != null
+        then qualification.packageProbe
+        else
+          lib.qualification.commandProbe {
+            "primary" = {
+              "artifacts" = [];
+              "expected" = "qemu-img reports the two images as identical.";
+              "files" = {
+                "left.raw" = "AOS raw image payload\n";
+                "right.raw" = "AOS raw image payload\n";
+              };
+              "input" = "Two raw disk-image byte streams with identical contents.";
+              "operation" = "Compare the images byte for byte through qemu-img's raw-image reader.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/qemu-img"
+                    "compare"
+                    "-f"
+                    "raw"
+                    "-F"
+                    "raw"
+                    "left.raw"
+                    "right.raw"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "Images are identical.\n";
+                  };
+                }
+              ];
             };
-            "stdout" = {
-              "exact" = "Images are identical.\n";
+            "badInput" = {
+              "artifacts" = [];
+              "expected" = "qemu-img identifies the content mismatch and returns its comparison status.";
+              "files" = {
+                "left.raw" = "answer=41\n";
+                "right.raw" = "answer=42\n";
+              };
+              "input" = "Two raw disk-image byte streams that differ in one value.";
+              "operation" = "Compare the mismatched images through qemu-img.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/qemu-img"
+                    "compare"
+                    "-f"
+                    "raw"
+                    "-F"
+                    "raw"
+                    "left.raw"
+                    "right.raw"
+                  ];
+                  "exit_code" = 1;
+                  "observes_rejection" = true;
+                }
+              ];
             };
-          }
-        ];
-      };
-      "badInput" = {
-        "artifacts" = [];
-        "expected" = "qemu-img identifies the content mismatch and returns its comparison status.";
-        "files" = {
-          "left.raw" = "answer=41\n";
-          "right.raw" = "answer=42\n";
-        };
-        "input" = "Two raw disk-image byte streams that differ in one value.";
-        "operation" = "Compare the mismatched images through qemu-img.";
-        "steps" = [
-          {
-            "argv" = [
-              "@out@/bin/qemu-img"
-              "compare"
-              "-f"
-              "raw"
-              "-F"
-              "raw"
-              "left.raw"
-              "right.raw"
-            ];
-            "exit_code" = 1;
-            "observes_rejection" = true;
-          }
-        ];
-      };
-    };
+          };
 
       inherit pname;
       # QEMU permits deprecated interface removal without a major-version bump.
@@ -707,6 +749,24 @@ in
               grep -q 'ldid -S"$ENTITLEMENT" "$SRC"' scripts/entitlement.sh
               ! grep -Eq '^(Rez|SetFile|codesign) ' scripts/entitlement.sh
             ''}
+            # Configure reexecutes itself after entering the build directory.
+            # Its interpreter must remain available inside the hermetic sandbox.
+            sed -i "1s|^#!.*|#!$CONFIG_SHELL|" configure
+            # The native qtest launcher also invokes a shell from C. Normalize
+            # that explicit interpreter before compiling any test binary.
+            test "$(grep -F -c 'execlp("/bin/sh", "sh",' tests/qtest/libqtest.c)" -eq 1
+            sed -i 's|execlp("/bin/sh", "sh",|execlp("${buildBash}/bin/bash", "bash",|' \
+              tests/qtest/libqtest.c
+            find scripts -type f \
+              -exec grep -IlE '^#![[:space:]]*(/bin/(ba)?sh|/usr/bin/env (ba)?sh)' {} + \
+              | while IFS= read -r script; do
+                sed -i \
+                  -e "1s|^#![[:space:]]*/bin/sh|#!$CONFIG_SHELL|" \
+                  -e "1s|^#![[:space:]]*/bin/bash|#!$CONFIG_SHELL|" \
+                  -e "1s|^#![[:space:]]*/usr/bin/env sh|#!$CONFIG_SHELL|" \
+                  -e "1s|^#![[:space:]]*/usr/bin/env bash|#!$CONFIG_SHELL|" \
+                  "$script"
+              done
             # Patch Python shebangs for Nix sandbox
             find . -type f -name '*.py' | while read f; do
               if head -1 "$f" | grep -q '^#!'; then
@@ -766,7 +826,7 @@ in
               else ""
             }
 
-            ./configure \
+            "$CONFIG_SHELL" ./configure \
               --prefix=$out \
               --extra-cflags='-DQEMU_CRUCIBLE_BUILD_ID="${qemuBuildIdentity}" -DQEMU_CRUCIBLE_ATOMIC_PATCH_HASH="${atomicPatchHash}" -DQEMU_CRUCIBLE_SHMEM_HEADER_HASH="${shmemHeaderHash}"' \
               ${qemuConfigureFlagsScript}
@@ -1662,6 +1722,10 @@ in
                 block-backend-tests.raw.tap > block-backend-tests.tap
               build/tests/unit/test-crucible-hot-fork-child --tap
               build/tests/unit/test-crucible-hot-fork-coordinator --tap
+              timeout -k 2 10 build/tests/unit/test-crucible-replay-owner --tap \
+                --seed=R02S00000000000000000000000000000000 \
+                > replay-owner-tests.tap
+              cat replay-owner-tests.tap
               # Compile the actual monitor refusal bodies with their configured
               # headers and real Error implementation; lower-layer plans are modeled.
               ${python3}/bin/python3 - <<'PYTHON' > child-file-refusal.result
@@ -1783,20 +1847,46 @@ in
               environment["CC"] = command[0]
               environment["CFLAGS"] = shlex.join(flags)
               environment["LDFLAGS"] = "-L${glib.dev}/lib -Wl,-rpath,${glib}/lib -lglib-2.0"
+              for script, source, result_name, marker in (
+                  ("${../../tests/crucible/ram-write-generation-native.py}",
+                   source_root / "plugins/crucible-paged-ram.c",
+                   "ram-write-generation", "ram_write_generation_authorization_component=passed"),
+                  ("${../../tests/crucible/ram-dirty-plane-native.py}",
+                   source_root, "ram-dirty-plane",
+                   "ram_dirty_plane_activation_component=passed"),
+                  ("${../../tests/crucible/ram-child-contract-native.py}",
+                   source_root, "ram-child-contract",
+                   "child_contract_before_pager_rebind=true"),
+              ):
+                  with (source_root / f"{result_name}.result").open("w") as result:
+                      subprocess.run([
+                          sys.executable, script, "--source", str(source),
+                          "--cc", command[0],
+                      ], env=environment, stdout=result, check=True)
+                  result_text = (source_root / f"{result_name}.result").read_text()
+                  if marker not in result_text.splitlines():
+                      raise RuntimeError(f"missing native component result: {marker}")
+                  (Path(os.environ["out"]) / "share/aos/crucible" / f"{result_name}.result").write_text(result_text)
               for name in (
                   "net-output-stop", "lifecycle-projection", "control-deferred",
                   "control-observer", "control-delivery",
                   "stopped-control-rearm", "template-control-drain", "net-stop-chain",
-                  "aio-fork-custody", "stop-context",
+                  "aio-fork-custody", "stop-context", "ram-arena",
+                  "ram-worker-inventory",
+                  "placement-registration",
+                  "child-memory-limit",
                   "tcg-fast-paths",
                   "mutex-owner-cache",
                   "snapshot-fast-path",
+                  "dirty-iterator",
                   "settle-prepark",
                   "cold-fault-predicates",
                   "lazy-memory-identity",
                   "accel-classification",
                   "fault-rule-presence",
                   "rr-sim-barriers",
+                  "memory-service-ticket",
+                  "legacy-ram-load",
               ):
                   with (source_root / f"{name}.result").open("w") as result:
                       subprocess.run([
@@ -1809,13 +1899,36 @@ in
               cat net-output-stop.result lifecycle-projection.result \
                 control-deferred.result control-observer.result control-delivery.result \
                 stopped-control-rearm.result template-control-drain.result net-stop-chain.result \
-                aio-fork-custody.result stop-context.result
+                aio-fork-custody.result stop-context.result ram-arena.result \
+                child-memory-limit.result
+              grep -Fxq 'Crucible child memory limits PASS' child-memory-limit.result
+              cp child-memory-limit.result "$out/share/aos/crucible/child-memory-limit.result"
+              grep -Fxq 'RAM_ARENA_AUTHORITY_PASS: private/preallocated/partial geometry; shared and mutable readonly-file refusal; real sealed inode/COW authority; unmigratable ROMD producer dirty obligations' \
+                ram-arena.result
+              cp ram-arena.result "$out/share/aos/crucible/ram-arena.result"
+              cat ram-worker-inventory.result
+              grep -Fxq 'strict worker inventory: exact union, unknown/duplicate/schema refusal, epochs and hold custody PASS' \
+                ram-worker-inventory.result
+              cp ram-worker-inventory.result "$out/share/aos/crucible/ram-worker-inventory.result"
+              cat placement-registration.result
+              grep -Fxq 'placement registration: exact post-grant window, actual TID, refusal nonpublication and unchanged resume fences PASS' \
+                placement-registration.result
+              grep -Fxq 'write registration: original grant window, six null/partial slots, actual TID, unpublished refusals and release-published complete table PASS' \
+                placement-registration.result
+              cp placement-registration.result "$out/share/aos/crucible/placement-registration.result"
+              build/tests/unit/test-crucible-aio-retirement > aio-worker-retirement.result
+              cat aio-worker-retirement.result
+              grep -q '^AIO retirement: actual join, late unregister/kernel TID, nested/queued/active/completion/nonmain refusal, lazy recreation PASS;' \
+                aio-worker-retirement.result
+              cp aio-worker-retirement.result "$out/share/aos/crucible/aio-worker-retirement.result"
               cat tcg-fast-paths.result
               grep -q '^PASS production TCG fast paths:' tcg-fast-paths.result
               cat mutex-owner-cache.result
               grep -q '^PASS production mutex owner cache:' mutex-owner-cache.result
               cat snapshot-fast-path.result
               grep -q '^PASS production snapshot fast path:' snapshot-fast-path.result
+              cat dirty-iterator.result
+              grep -Fxq 'PASS production dirty iterator: ordered differential captures, runtime page sizes, bitmap work counts, refusal and acknowledgement' dirty-iterator.result
               cat settle-prepark.result
               grep -q '^PASS production settle prepark:' settle-prepark.result
               cat cold-fault-predicates.result
@@ -1828,6 +1941,13 @@ in
               grep -q '^PASS production-body differential rule-presence fixture' fault-rule-presence.result
               cat rr-sim-barriers.result
               grep -q '^PASS healthy ordinary 8->3 cycles per CPU' rr-sim-barriers.result
+              cat memory-service-ticket.result
+              grep -Fxq 'PASS production memory-service tickets: eight continuation controls; four matched predecessor failures' \
+                memory-service-ticket.result
+              cp memory-service-ticket.result "$out/share/aos/crucible/memory-service-ticket.result"
+              cat legacy-ram-load.result
+              grep -Fxq 'PASS production legacy RAM load: fourteen refusal and device-only controls' legacy-ram-load.result
+              cp legacy-ram-load.result "$out/share/aos/crucible/legacy-ram-load.result"
               # Use each changed translation unit's actual configured command,
               # then compare the reconstructed prior production bodies. Every
               # negative must compile and fail a native ownership assertion.
@@ -1934,6 +2054,34 @@ in
                 stop-context.result
               build/tests/unit/test-vmstate --tap \
                 -p /vmstate/subsection/prefix-boundary
+              set +e
+              QTEST_QEMU_BINARY="$PWD/build/qemu-system-x86_64" \
+                QTEST_QEMU_ARGS="-L $PWD/pc-bios" \
+                timeout -k 5 300 build/tests/qtest/ahci-test --tap --verbose \
+                --seed=R02S00000000000000000000000000000000 \
+                -p /x86_64/ahci/identify \
+                -p /x86_64/ahci/io/dma/lba28/fragmented \
+                -p /x86_64/ahci/migrate/dma/simple \
+                -p /x86_64/ahci/migrate/dma/halted \
+                -p /x86_64/ahci/migrate/ncq/simple \
+                -p /x86_64/ahci/migrate/ncq/halted \
+                -p /x86_64/ahci/reset/simple \
+                -p /x86_64/ahci/reset/pending_callback \
+                > ahci-coherent-ram-qtests.raw.tap
+              ahci_status=$?
+              set -e
+              cat ahci-coherent-ram-qtests.raw.tap
+              test "$ahci_status" -eq 0
+              # Preserve each verdict while removing temporary spawn paths and
+              # elapsed host-time comments from the installed evidence.
+              sed -e '/^# starting QEMU:/d' \
+                -e '/^# slow test .* executed in [0-9.]* secs$/d' \
+                ahci-coherent-ram-qtests.raw.tap > ahci-coherent-ram-qtests.tap
+              cat ahci-coherent-ram-qtests.tap
+              test "$(grep -E -c '^ok [0-9]+ /x86_64/ahci/' \
+                ahci-coherent-ram-qtests.tap)" -eq 8
+              cp ahci-coherent-ram-qtests.tap \
+                "$out/share/aos/crucible/ahci-coherent-ram-qtests.tap"
               QTEST_QEMU_BINARY="$PWD/build/qemu-system-x86_64" \
                 timeout -k 5 60 build/tests/qtest/qmp-cmd-test --tap \
                 -p /x86_64/qmp/crucible-adopt-launch-fdsets \
@@ -2013,14 +2161,10 @@ in
               test "$(grep -F -x -c \
                 '    dc->vmsd = &vmstate_e1000;' \
                 hw/net/e1000.c)" -eq 1
+              ! grep -F -q 'strcmp(current_accel_name(), "sim")' \
+                hw/i386/multiboot.c
               test "$(grep -F -x -c \
-                '        if (strcmp(current_accel_name(), "sim") == 0) {' \
-                hw/i386/multiboot.c)" -eq 1
-              test "$(grep -F -x -c \
-                '            mbs.mb_buf = g_malloc0(mb_kernel_size);' \
-                hw/i386/multiboot.c)" -eq 1
-              test "$(grep -F -x -c \
-                '            mbs.mb_buf = g_malloc(mb_kernel_size);' \
+                '        mbs.mb_buf = g_malloc0(mb_kernel_size);' \
                 hw/i386/multiboot.c)" -eq 1
               test "$(grep -F -x -c \
                 '        !qemu_plugin_request_time_control() ||' \
@@ -2028,6 +2172,22 @@ in
               test "$(grep -F -x -c \
                 '    qemu_plugin_register_sim_shmem_dispatch_cb(' \
                 tests/tcg/plugins/crucible-fingerprint-observer.c)" -eq 1
+              for resident_fixture in \
+                crucible-fingerprint-observer.c \
+                crucible-idle-wait-liveness.c \
+                crucible-exact-tb-exit.c \
+                crucible-resident-ram-observer.c; do
+                test "$(grep -F -c 'crucible_fixture_install_resident_ram()' \
+                  "tests/tcg/plugins/$resident_fixture")" -eq 1
+              done
+              for resident_owner_call in \
+                qemu_plugin_crucible_ram_set_metadata_budget_v1 \
+                qemu_plugin_crucible_register_ram_admission_v1 \
+                qemu_plugin_crucible_register_ram_readers_v3 \
+                qemu_plugin_crucible_register_ram_root_observer_v2; do
+                test "$(grep -F -c "$resident_owner_call(" \
+                  tests/tcg/plugins/crucible-resident-ram.h)" -eq 1
+              done
               python3 - <<'PYTHON'
               import re
               from pathlib import Path
@@ -2035,7 +2195,7 @@ in
               rr = Path("accel/tcg/tcg-accel-ops-rr.c").read_text()
               rr_header = Path("accel/tcg/tcg-accel-ops-rr.h").read_text()
               replay = Path("replay/replay.c").read_text()
-              replay_internal = Path("replay/replay-internal.c").read_text()
+              replay_mutex = Path("replay/replay-mutex.c").read_text()
               tcg_all = Path("accel/tcg/tcg-all.c").read_text()
               main_loop = Path("util/main-loop.c").read_text()
               block_shmem = Path("block/crucible-shmem.c").read_text()
@@ -3880,7 +4040,7 @@ in
                    r"tlg == &main_loop_tlg && type == QEMU_CLOCK_VIRTUAL.*?"
                    r"if \(owner && !owner\(\)\) \{\s*continue;", 1),
                   ("dispatch mutex is active without replay log",
-                   replay_internal,
+                   replay_mutex,
                    r"if \(mutex_enabled\) \{", 2),
                   ("icount accepts an already-held replay token", icount,
                    r"if \(!replay_already_locked\) \{\s*"
@@ -4143,9 +4303,16 @@ in
               python3 tests/qtest/crucible-multiboot-gap.py \
                 --qemu build/qemu-system-x86_64 \
                 --data-dir pc-bios \
+                --resident-plugin build/tests/tcg/plugins/libcrucible-resident-ram-observer.so \
                 > multiboot-gap.txt
               cat multiboot-gap.txt
-              grep -F -x -q 'multiboot_sim_intersegment_gap_zero=true' \
+              grep -F -x -q 'multiboot_loader_intersegment_gap_zero=true' \
+                multiboot-gap.txt
+              grep -F -x -q 'multiboot_sim_unmanaged_execution_refused=true' \
+                multiboot-gap.txt
+              grep -F -x -q 'multiboot_resident_sim_intersegment_gap_zero=true' \
+                multiboot-gap.txt
+              grep -F -x -q 'multiboot_resident_sim_guest_entry=true' \
                 multiboot-gap.txt
               build/tests/unit/test-crucible-idle-wait --tap \
                 --seed=R02S00000000000000000000000000000000 \
@@ -4243,6 +4410,7 @@ in
                       "build/qemu-system-aarch64",
                       "-machine", "virt",
                       "-accel", "sim",
+                      "-plugin", "build/tests/tcg/plugins/libcrucible-resident-ram-observer.so",
                       "-cpu", "cortex-a57",
                       "-icount", "shift=0,align=off,sleep=off",
                       "-S",
@@ -4445,10 +4613,19 @@ in
 
             mkdir -p "$out/share/aos/crucible"
             ${lib.optionalString runCrucibleChecks ''
+              # Downstream native component probes share the same bounded
+              # resident inventory owner; these artifacts do not qualify paging.
+              mkdir -p "$out/share/aos/crucible/native-tests"
+              install -m 644 tests/tcg/plugins/crucible-resident-ram.h \
+                "$out/share/aos/crucible/native-tests/crucible-resident-ram.h"
+              install -m 755 build/tests/tcg/plugins/libcrucible-resident-ram-observer.so \
+                "$out/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so"
               install -m 644 block-backend-tests.tap \
                 "$out/share/aos/crucible/block-backend-tests.tap"
               install -m 644 aio-hot-fork-tests.tap \
                 "$out/share/aos/crucible/aio-hot-fork-tests.tap"
+              install -m 644 replay-owner-tests.tap \
+                "$out/share/aos/crucible/replay-owner-tests.tap"
               install -m 644 child-file-refusal.result \
                 "$out/share/aos/crucible/child-file-refusal.result"
               install -m 644 child-file-refusal-proof/compile-command.json \
@@ -4460,7 +4637,7 @@ in
               for name in net-output-stop lifecycle-projection control-deferred \
                 control-observer control-delivery stopped-control-rearm \
                 template-control-drain net-stop-chain aio-fork-custody stop-context \
-                tcg-fast-paths mutex-owner-cache snapshot-fast-path settle-prepark \
+                tcg-fast-paths mutex-owner-cache snapshot-fast-path dirty-iterator settle-prepark \
                 cold-fault-predicates lazy-memory-identity accel-classification \
                 fault-rule-presence rr-sim-barriers; do
                 install -m 644 "$name.result" \
@@ -4468,6 +4645,8 @@ in
                 install -m 644 "$name-proof/compile-command.json" \
                   "$out/share/aos/crucible/$name.compile-command.json"
               done
+              install -m 644 dirty-iterator-proof/proof.json \
+                "$out/share/aos/crucible/dirty-iterator.proof.json"
               for name in mutex-waiter-counters tcg-page-collection tcg-crossing-membership tsc-source-index; do
                 install -m 644 "$name.result" \
                   "$out/share/aos/crucible/$name.result"

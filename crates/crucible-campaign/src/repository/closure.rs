@@ -11,7 +11,7 @@ pub struct CampaignValidationCheckpointMetrics {
     pub retained_heads: usize,
     /// Number of snapshots in the authenticated ancestry of the selected head.
     pub ancestry_depth: usize,
-    /// Conservative count of authenticated objects reachable from the selected head.
+    /// Authenticated campaign metadata work, with RAM graphs charged separately.
     pub closure_objects: usize,
     /// Fixed in-memory size of one retained checkpoint value.
     pub checkpoint_bytes: usize,
@@ -76,8 +76,11 @@ impl CampaignRepository {
             [transition],
             &anchors,
             &mut ChoiceValidationCache::default(),
-            Some(&mut linked_ids),
-            None,
+            incremental::ClosureCollection {
+                objects: Some(&mut linked_ids),
+                ..incremental::ClosureCollection::default()
+            },
+            &mut || Ok(()),
         )?;
         anchors.extend(linked_ids);
         let leaf_growth = self.verify_campaign_closures_anchored_cached(
@@ -141,21 +144,46 @@ impl CampaignRepository {
         self.load_validation_checkpoint(head).map(|_| ())
     }
 
+    pub(in crate::repository) fn validate_complete_head_with_boundary(
+        &self,
+        head: ContentId,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
+    ) -> Result<(), CampaignRepositoryError> {
+        self.load_validation_checkpoint_with_boundary(head, boundary)
+            .map(|_| ())
+    }
+
     pub(super) fn load_validation_checkpoint(
         &self,
         head: ContentId,
     ) -> Result<ValidationCheckpoint, CampaignRepositoryError> {
+        self.load_validation_checkpoint_with_boundary(head, &mut || Ok(()))
+    }
+
+    fn load_validation_checkpoint_with_boundary(
+        &self,
+        head: ContentId,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
+    ) -> Result<ValidationCheckpoint, CampaignRepositoryError> {
+        boundary().map_err(CampaignRepositoryError::Ram)?;
         if let Some(checkpoint) = self.validation_checkpoints().get(&head).copied() {
             return Ok(checkpoint);
         }
 
         let mut choice_cache = ChoiceValidationCache::default();
-        let (ancestry_depth, lifecycle, genesis, derived_branch) =
-            self.validate_snapshot_ancestry(head, &mut choice_cache, MAX_SNAPSHOT_ANCESTRY)?;
-        let closure_objects = self.verify_campaign_closures_anchored_cached(
+        let (ancestry_depth, lifecycle, genesis, derived_branch) = self
+            .validate_snapshot_ancestry_with_boundary(
+                head,
+                &mut choice_cache,
+                MAX_SNAPSHOT_ANCESTRY,
+                boundary,
+            )?;
+        let closure_objects = self.verify_campaign_closures_anchored_cached_collect(
             [head],
             &BTreeSet::new(),
             &mut choice_cache,
+            incremental::ClosureCollection::default(),
+            boundary,
         )?;
         let checkpoint = ValidationCheckpoint {
             ancestry_depth,
@@ -306,9 +334,32 @@ impl CampaignRepository {
 
     pub(super) fn validate_snapshot_ancestry(
         &self,
+        content_id: ContentId,
+        choice_cache: &mut ChoiceValidationCache,
+        maximum_depth: usize,
+    ) -> Result<
+        (
+            usize,
+            ProjectedState,
+            ContentId,
+            Option<DerivedBranchCheckpoint>,
+        ),
+        CampaignRepositoryError,
+    > {
+        self.validate_snapshot_ancestry_with_boundary(
+            content_id,
+            choice_cache,
+            maximum_depth,
+            &mut || Ok(()),
+        )
+    }
+
+    fn validate_snapshot_ancestry_with_boundary(
+        &self,
         mut content_id: ContentId,
         choice_cache: &mut ChoiceValidationCache,
         maximum_depth: usize,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
     ) -> Result<
         (
             usize,
@@ -332,6 +383,7 @@ impl CampaignRepository {
         let mut validated_generator_policies = BTreeSet::new();
 
         for depth in 1..=maximum_depth.min(MAX_SNAPSHOT_ANCESTRY) {
+            boundary().map_err(CampaignRepositoryError::Ram)?;
             if !snapshots.insert(content_id) {
                 return Err(integrity("snapshot-ancestry-cycle"));
             }
@@ -765,3 +817,4 @@ impl CampaignRepository {
 }
 
 mod incremental;
+pub use incremental::CampaignStorageClosure;

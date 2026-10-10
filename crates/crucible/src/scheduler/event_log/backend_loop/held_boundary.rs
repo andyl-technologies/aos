@@ -45,7 +45,7 @@ pub(super) fn hold_run_result(
     completed: &mut BTreeMap<NodeId, HeldHostRun>,
     boundaries: &mut BTreeMap<NodeId, HeldBoundaryRun>,
 ) -> Result<(), SchedulerError> {
-    if run.dispatch_contract == crate::BackendDispatchContract::ControlV3
+    if run.dispatch_contract == crate::BackendDispatchContract::CeilingControl
         && !matches!(&result, ConcurrentBackendRunResult::Completed(_))
     {
         return Err(SchedulerError::BoundaryViolation {

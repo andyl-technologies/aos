@@ -11,6 +11,8 @@
 //! A torn trailing record is discarded under the state lock; malformed complete
 //! records fail closed.
 
+use super::ObjectKind;
+
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -639,6 +641,13 @@ impl ImmutableBlobBackend for WriteBackStore {
         &self.name
     }
 
+    fn metadata_resources(&self) -> Result<Arc<dyn super::StorePhysicalQuotaGuard>, StoreError> {
+        super::composition::common_metadata_resources([
+            self.staging.as_ref(),
+            self.destination.as_ref(),
+        ])
+    }
+
     fn capabilities(&self) -> BackendCapabilities {
         let mut capabilities = self.staging.capabilities();
         let destination = self.destination.capabilities();
@@ -649,6 +658,11 @@ impl ImmutableBlobBackend for WriteBackStore {
         capabilities.repair_inventory = false;
         capabilities.planned_delete = false;
         capabilities
+    }
+
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        self.staging.admit_object_graph(objects)?;
+        self.destination.admit_object_graph(objects)
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {

@@ -15,9 +15,12 @@ use crate::content_store::admin::{
 };
 use crate::content_store::{
     BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin,
-    MAX_S3_OBJECT_LIST_ITEMS, PlannedDeleteDisposition, StoreS3ConditionalWriteOutcome,
-    StoreS3ObjectVersion, StoreS3StrongCasClient, StoreS3VersionedObjectMetadata,
+    CheckedInventoryFence, DeleteBatchReceipt, InventorySummaryReceipt, MAX_S3_OBJECT_LIST_ITEMS,
+    PlannedDeleteDisposition, StoreS3ConditionalWriteOutcome, StoreS3ObjectVersion,
+    StoreS3StrongCasClient, StoreS3VersionedObjectMetadata,
 };
+
+mod checked_admin;
 
 const INVENTORY_STATE_MAGIC: &[u8] = b"crucible.content-store.s3-object-inventory-state.v1\0";
 const INVENTORY_STATE_CHECKSUM_DOMAIN: &[u8] =
@@ -175,10 +178,19 @@ impl S3BlobAdministration {
         }
     }
 
-    fn load_state(&self, backend: &S3BlobBackend) -> Result<Option<InventoryState>, StoreError> {
+    fn load_state_checked(
+        &self,
+        backend: &S3BlobBackend,
+        check: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<Option<InventoryState>, StoreError> {
+        check()?;
         let key = Self::state_key(backend);
-        self.client
-            .get_small_versioned_object(&backend.bucket, &key, 4 * 1024)?
+        check()?;
+        let object = self
+            .client
+            .get_small_versioned_object(&backend.bucket, &key, 4 * 1024)?;
+        check()?;
+        object
             .map(|object| {
                 let (instance, generation) = decode_inventory_state(object.bytes())?;
                 Ok(InventoryState {
@@ -191,19 +203,34 @@ impl S3BlobAdministration {
     }
 
     fn load_or_create_state(&self, backend: &S3BlobBackend) -> Result<InventoryState, StoreError> {
-        if let Some(state) = self.load_state(backend)? {
+        self.load_or_create_state_checked(backend, &mut || Ok(()))
+    }
+
+    fn load_or_create_state_checked(
+        &self,
+        backend: &S3BlobBackend,
+        check: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<InventoryState, StoreError> {
+        check()?;
+        if let Some(state) = self.load_state_checked(backend, check)? {
             return Ok(state);
         }
+        check()?;
         let instance = new_inventory_instance()?;
+        check()?;
         let generation = 1;
         let bytes = Arc::<[u8]>::from(encode_inventory_state(instance, generation));
         let key = Self::state_key(backend);
-        match self
+        check()?;
+        let outcome = self
             .client
-            .put_small_if_absent(&backend.bucket, &key, bytes)?
-        {
+            .put_small_if_absent(&backend.bucket, &key, bytes)?;
+        check()?;
+        match outcome {
             StoreS3ConditionalWriteOutcome::Committed(version) => {
-                let state = self.load_state(backend)?.ok_or(StoreError::Incompatible)?;
+                let state = self
+                    .load_state_checked(backend, check)?
+                    .ok_or(StoreError::Incompatible)?;
                 if state.instance != instance
                     || state.generation != generation
                     || state.version != version
@@ -212,25 +239,36 @@ impl S3BlobAdministration {
                 }
                 Ok(state)
             }
-            StoreS3ConditionalWriteOutcome::PreconditionFailed => {
-                self.load_state(backend)?.ok_or(StoreError::Incompatible)
-            }
+            StoreS3ConditionalWriteOutcome::PreconditionFailed => self
+                .load_state_checked(backend, check)?
+                .ok_or(StoreError::Incompatible),
         }
     }
 
     fn advance_state(&self, backend: &S3BlobBackend) -> Result<InventoryState, StoreError> {
-        let current = self.load_or_create_state(backend)?;
+        self.advance_state_checked(backend, &mut || Ok(()))
+    }
+
+    fn advance_state_checked(
+        &self,
+        backend: &S3BlobBackend,
+        check: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<InventoryState, StoreError> {
+        check()?;
+        let current = self.load_or_create_state_checked(backend, check)?;
         let generation = current.generation.checked_add(1).ok_or(StoreError::Quota)?;
         let bytes = Arc::<[u8]>::from(encode_inventory_state(current.instance, generation));
         let key = Self::state_key(backend);
-        match self.client.replace_small_if_version(
-            &backend.bucket,
-            &key,
-            &current.version,
-            bytes,
-        )? {
+        check()?;
+        let outcome =
+            self.client
+                .replace_small_if_version(&backend.bucket, &key, &current.version, bytes)?;
+        check()?;
+        match outcome {
             StoreS3ConditionalWriteOutcome::Committed(version) => {
-                let state = self.load_state(backend)?.ok_or(StoreError::Incompatible)?;
+                let state = self
+                    .load_state_checked(backend, check)?
+                    .ok_or(StoreError::Incompatible)?;
                 if state.instance != current.instance
                     || state.generation != generation
                     || state.version != version
@@ -292,6 +330,13 @@ impl S3BlobBackend {
 }
 
 impl BlobStoreAdmin for S3BlobBackend {
+    fn acquire_inventory_fence_with_boundary(
+        &self,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<CheckedInventoryFence<'_>, StoreError> {
+        checked_admin::acquire(self, boundary)
+    }
+
     fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
         let administration =
             self.administration
@@ -336,12 +381,15 @@ impl S3BlobInventoryFence<'_> {
     fn visit_objects(
         &self,
         visitor: &mut dyn FnMut(BlobInventoryRecord) -> Result<(), StoreError>,
+        check: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<BlobInventorySummary, StoreError> {
+        check()?;
         let object_prefix = self.backend.object_prefix();
         let mut scan = self
             .administration
             .client
             .begin_small_object_scan(&self.backend.bucket, &object_prefix)?;
+        check()?;
         let generation = persistent_inventory_generation(
             &self.backend.name,
             self.inventory.instance,
@@ -359,9 +407,12 @@ impl S3BlobInventoryFence<'_> {
             if pages > MAX_S3_COMMITTED_OBJECT_VISITS.saturating_add(1) {
                 return Err(StoreError::Quota);
             }
+            check()?;
             let page = scan.next_page(MAX_S3_OBJECT_LIST_ITEMS)?;
+            check()?;
             let (keys, next) = page.into_parts();
             for key in keys {
+                check()?;
                 if prior_key.as_ref().is_some_and(|prior| &key <= prior) {
                     return Err(StoreError::Incompatible);
                 }
@@ -379,27 +430,32 @@ impl S3BlobInventoryFence<'_> {
                 if self.backend.key(id) != key {
                     return Err(StoreError::Incompatible);
                 }
+                check()?;
                 let metadata = scan
                     .head_versioned_object(&key)?
                     .ok_or(StoreError::Incompatible)?;
+                check()?;
                 if metadata.logical_length() > self.backend.maximum_logical_object_bytes {
                     return Err(StoreError::Corrupt { id });
                 }
                 let record = BlobInventoryRecord::new(id, metadata.logical_length());
                 counter.push(record)?;
                 visitor(record)?;
+                check()?;
             }
             if next.is_none() {
                 break;
             }
         }
+        check()?;
         let after = self
             .administration
-            .load_state(self.backend)?
+            .load_state_checked(self.backend, check)?
             .ok_or(StoreError::Incompatible)?;
         if after != self.inventory {
             return Err(StoreError::Incompatible);
         }
+        check()?;
         Ok(counter.finish(self.backend.name.clone()))
     }
 }
@@ -409,7 +465,7 @@ impl BlobInventoryFence for S3BlobInventoryFence<'_> {
         &mut self,
         visitor: &mut dyn FnMut(BlobInventoryRecord) -> Result<(), StoreError>,
     ) -> Result<BlobInventorySummary, StoreError> {
-        self.visit_objects(visitor)
+        self.visit_objects(visitor, &mut || Ok(()))
     }
 
     fn delete_candidate(&mut self, id: ContentId) -> Result<PlannedDeleteDisposition, StoreError> {

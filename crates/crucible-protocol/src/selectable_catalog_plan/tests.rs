@@ -2,6 +2,140 @@
 
 use super::*;
 
+#[test]
+fn reset_abandonment_preserves_completed_replies_and_excludes_replay()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut plan = restored_plan()?;
+    let old = plan
+        .continuation()
+        .pending()
+        .ok_or("pending fixture")?
+        .clone();
+    let declarations = plan.declarations().clone();
+    let before = plan.clone();
+    let wrong = SelectablePlanPendingRequest::new(
+        old.request().clone(),
+        old.raw_icount(),
+        old.trap_tick_ps(),
+        old.vcpu_index(),
+        old.guest_virtual_address() + 1,
+    );
+
+    assert!(plan.apply_reset_abandonment(&wrong).is_err());
+    assert_eq!(plan, before);
+    plan.apply_reset_abandonment(&old)?;
+
+    assert_eq!(plan.declarations(), &declarations);
+    assert_eq!(plan.continuation().phase(), SelectablePlanPhase::Frozen);
+    assert_eq!(plan.continuation().total_completed_requests(), 3);
+    assert_eq!(
+        plan.continuation().last_completed_request_sequence(),
+        Some(11)
+    );
+    assert_eq!(plan.continuation().total_abandoned_requests(), 1);
+    assert_eq!(
+        plan.continuation().last_abandoned_request_sequence(),
+        Some(12)
+    );
+    assert!(plan.continuation().pending().is_none());
+    assert!(plan.apply_pending_request(old.clone()).is_err());
+    assert_eq!(
+        SelectableCatalogPlan::decode(&plan.encode()?),
+        Ok(plan.clone())
+    );
+
+    let next = SelectablePlanPendingRequest::new(
+        SelectionRequest::new(13, "network.optional", "epoch/8", None, 160)?,
+        old.raw_icount(),
+        old.trap_tick_ps(),
+        old.vcpu_index(),
+        old.guest_virtual_address(),
+    );
+    plan.apply_pending_request(next)?;
+    assert_eq!(SelectableCatalogPlan::decode(&plan.encode()?), Ok(plan));
+    Ok(())
+}
+
+#[test]
+fn reset_abandonment_uses_the_same_finite_total_request_allowance()
+-> Result<(), Box<dyn std::error::Error>> {
+    let restored = restored_plan()?;
+    let mut plan = SelectableCatalogPlan::new(
+        SelectablePlanLimits::new(4, 4, 4)?,
+        restored.declarations().values().cloned().collect(),
+        restored.continuation().clone(),
+    )?;
+    let old = plan
+        .continuation()
+        .pending()
+        .ok_or("pending fixture")?
+        .clone();
+    plan.apply_reset_abandonment(&old)?;
+    let exhausted = plan.clone();
+    let next = SelectablePlanPendingRequest::new(
+        SelectionRequest::new(13, "network.optional", "epoch/8", None, 160)?,
+        old.raw_icount(),
+        old.trap_tick_ps(),
+        old.vcpu_index(),
+        old.guest_virtual_address(),
+    );
+
+    assert!(matches!(
+        plan.apply_pending_request(next),
+        Err(SelectableCatalogPlanError::RequestLimitExceeded {
+            field: "total_requests",
+            actual: 5,
+            maximum: 4
+        })
+    ));
+    assert_eq!(plan, exhausted);
+    assert_eq!(plan.continuation().total_completed_requests(), 3);
+    Ok(())
+}
+
+#[test]
+fn schema_five_refuses_hidden_or_stale_abandoned_continuation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let plan = restored_plan()?;
+    assert!(
+        plan.continuation()
+            .clone()
+            .with_abandoned_requests(
+                BTreeMap::from([("network.optional".to_owned(), 1)]),
+                Some(12),
+            )
+            .is_err()
+    );
+    assert!(
+        plan.continuation()
+            .clone()
+            .with_abandoned_requests(
+                BTreeMap::from([("network.optional".to_owned(), 0)]),
+                Some(10),
+            )
+            .is_err()
+    );
+
+    let mut plan = plan;
+    let old = plan
+        .continuation()
+        .pending()
+        .ok_or("pending fixture")?
+        .clone();
+    plan.apply_reset_abandonment(&old)?;
+    let mut bytes = plan.encode()?;
+    bytes[120..128].copy_from_slice(&2_u64.to_be_bytes());
+    assert!(SelectableCatalogPlan::decode(&bytes).is_err());
+    let mut old_schema = plan.encode()?;
+    old_schema[..8].copy_from_slice(b"CRUCSCP4");
+    old_schema[8..12].copy_from_slice(&4_u32.to_be_bytes());
+    assert_eq!(
+        SelectableCatalogPlan::decode(&old_schema),
+        Err(SelectableCatalogPlanError::InvalidMagic)
+    );
+    Ok(())
+}
+
 fn declaration(
     id: &str,
     presence: SelectablePlanPresence,
@@ -51,7 +185,7 @@ fn restored_plan() -> Result<SelectableCatalogPlan, Box<dyn std::error::Error>> 
 #[test]
 fn cold_and_restored_plans_round_trip_with_frozen_header() -> Result<(), Box<dyn std::error::Error>>
 {
-    assert_eq!(SELECTABLE_CATALOG_PLAN_VERSION, 4);
+    assert_eq!(SELECTABLE_CATALOG_PLAN_VERSION, 5);
 
     let cold = SelectableCatalogPlan::new(
         limits()?,
@@ -62,12 +196,12 @@ fn cold_and_restored_plans_round_trip_with_frozen_header() -> Result<(), Box<dyn
         SelectablePlanContinuation::cold(),
     )?;
     let cold_bytes = cold.encode()?;
-    assert_eq!(&cold_bytes[..8], b"CRUCSCP4");
-    assert_eq!(&cold_bytes[8..12], &[0, 0, 0, 4]);
-    assert_eq!(&cold_bytes[12..16], &[0, 0, 0, 112]);
+    assert_eq!(&cold_bytes[..8], b"CRUCSCP5");
+    assert_eq!(&cold_bytes[8..12], &[0, 0, 0, 5]);
+    assert_eq!(&cold_bytes[12..16], &[0, 0, 0, 136]);
     assert_eq!(SelectableCatalogPlan::decode(&cold_bytes), Ok(cold));
     let mut legacy = cold_bytes.clone();
-    legacy[..8].copy_from_slice(b"CRUCSCP3");
+    legacy[..8].copy_from_slice(b"CRUCSCP4");
     assert_eq!(
         SelectableCatalogPlan::decode(&legacy),
         Err(SelectableCatalogPlanError::InvalidMagic)
@@ -75,7 +209,10 @@ fn cold_and_restored_plans_round_trip_with_frozen_header() -> Result<(), Box<dyn
 
     let restored = restored_plan()?;
     let bytes = restored.encode()?;
-    assert_eq!(u32::from_be_bytes(bytes[20..24].try_into()?), KNOWN_FLAGS);
+    assert_eq!(
+        u32::from_be_bytes(bytes[20..24].try_into()?),
+        KNOWN_FLAGS & !FLAG_LAST_ABANDONED
+    );
     assert_eq!(u64::from_be_bytes(bytes[96..104].try_into()?), 0x4000);
     assert_eq!(u64::from_be_bytes(bytes[104..112].try_into()?), 1_000_037);
     assert_eq!(SelectableCatalogPlan::decode(&bytes), Ok(restored));

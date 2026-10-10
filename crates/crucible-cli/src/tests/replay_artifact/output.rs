@@ -3,7 +3,7 @@
 use super::*;
 
 #[test]
-pub(super) fn cli_exit_machine_readable_mapping_matches_rfc_15() {
+pub(super) fn cli_exit_machine_readable_mapping_matches_contract() {
     let cases = [
         (CliError::Outcome(BackendCommandStatus::Passed), 0),
         (CliError::Outcome(BackendCommandStatus::Failed), 1),
@@ -29,6 +29,7 @@ pub(super) fn cli_exit_machine_readable_mapping_matches_rfc_15() {
 #[test]
 pub(super) fn cli_exit_machine_readable_output_records_final_outcome() -> Result<(), Box<dyn Error>>
 {
+    let _component_scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let cli = Cli::parse_from([

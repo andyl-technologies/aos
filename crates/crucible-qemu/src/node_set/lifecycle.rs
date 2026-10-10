@@ -229,7 +229,7 @@ impl QemuNodeSet {
             .map_err(BackendError::from)
     }
 
-    /// Captures one guarded v9 candidate at an already fenced terminal stop.
+    /// Captures one guarded paged candidate at an already fenced terminal stop.
     ///
     /// # Errors
     ///
@@ -257,9 +257,10 @@ impl QemuNodeSet {
         &mut self,
         node: &NodeId,
         identity: crate::QmpCheckpointIdentity,
+        capture_generation: u64,
     ) -> Result<crate::QmpCheckpointEpochState, BackendError> {
         self.node_mut(node)?
-            .commit_exact_checkpoint(identity)
+            .commit_exact_checkpoint(identity, capture_generation)
             .map_err(BackendError::from)
     }
 
@@ -273,10 +274,11 @@ impl QemuNodeSet {
         &mut self,
         node: &NodeId,
         identity: crate::QmpCheckpointIdentity,
+        capture_generation: u64,
         expected_committed: Option<crate::QmpCheckpointIdentity>,
     ) -> Result<crate::QmpCheckpointEpochState, BackendError> {
         self.node_mut(node)?
-            .abort_exact_checkpoint(identity, expected_committed)
+            .abort_exact_checkpoint(identity, capture_generation, expected_committed)
             .map_err(BackendError::from)
     }
 

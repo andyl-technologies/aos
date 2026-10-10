@@ -28,10 +28,13 @@ use crucible_cas::content_store::{
     ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend,
 };
 
+mod catalog_gc;
+
 fn archive_plan() -> CampaignArchivePlan {
     let repository = CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new("transfer-test", 64 * 1024 * 1024)),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     plan_in_repository(&repository)
 }
@@ -287,6 +290,7 @@ fn durable_transfer_stages_source_metadata_and_retries_idempotently() {
         Arc::new(DirectoryRefBackend::new(
             temporary.path().join("source-refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     let destination = CampaignRepository::new(
         Arc::new(DirectoryBlobBackend::new(
@@ -296,6 +300,7 @@ fn durable_transfer_stages_source_metadata_and_retries_idempotently() {
         Arc::new(DirectoryRefBackend::new(
             temporary.path().join("destination-refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     let plan = plan_in_repository(&source);
     let mut source_journal =
@@ -378,6 +383,7 @@ fn durable_transfer_rejects_read_only_source_before_journaling() {
         Arc::new(DirectoryRefBackend::new(
             temporary.path().join("source-refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     let destination = CampaignRepository::new(
         Arc::new(DirectoryBlobBackend::new(
@@ -387,6 +393,7 @@ fn durable_transfer_rejects_read_only_source_before_journaling() {
         Arc::new(DirectoryRefBackend::new(
             temporary.path().join("destination-refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     let plan = plan_in_repository(&source);
     let mut source_journal =
@@ -445,6 +452,7 @@ fn invalid_publication_intent_is_rejected_before_transfer_ownership() {
         Arc::new(DirectoryRefBackend::new(
             temporary.path().join("source-refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     let destination = CampaignRepository::new(
         Arc::new(DirectoryBlobBackend::new(
@@ -454,6 +462,7 @@ fn invalid_publication_intent_is_rejected_before_transfer_ownership() {
         Arc::new(DirectoryRefBackend::new(
             temporary.path().join("destination-refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     let plan = plan_in_repository(&source);
     let mut source_journal =
@@ -520,6 +529,7 @@ fn corrupt_destination_object_retains_ownership_and_retries_after_repair() {
         Arc::new(DirectoryRefBackend::new(
             temporary.path().join("source-refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     let destination_backend = Arc::new(DirectoryBlobBackend::new(
         "destination",
@@ -530,6 +540,7 @@ fn corrupt_destination_object_retains_ownership_and_retries_after_repair() {
         Arc::new(DirectoryRefBackend::new(
             temporary.path().join("destination-refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     let plan = plan_in_repository(&source);
     let damaged = plan.selected()[0];
@@ -640,19 +651,45 @@ fn directory_object_path(root: &Path, id: crucible_cas::content_store::ContentId
 
 #[test]
 fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
+    use crucible_cas::content_store::RefStoreAdmin;
+
     let temporary = tempfile::tempdir().expect("transfer fixture");
-    let source_backend = Arc::new(DirectoryBlobBackend::new(
-        "source",
-        temporary.path().join("source-objects"),
+    let source_backend = crate::exact_checkpoint_store::test_support::fixture_metadata_backend(
+        Arc::new(DirectoryBlobBackend::new(
+            "source",
+            temporary.path().join("source-objects"),
+        )),
+        crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+            .expect("finite source component metadata authority"),
+    );
+    let source_refs = Arc::new(DirectoryRefBackend::new(
+        temporary.path().join("source-refs"),
     ));
+    let source_original = crucible::owned_decode::DecodeBudget::for_store(
+        source_backend
+            .metadata_resources()
+            .expect("original source namespace metadata"),
+    )
+    .expect("same original source namespace account");
     let source = CampaignRepository::new(
         source_backend.clone(),
-        Arc::new(DirectoryRefBackend::new(
-            temporary.path().join("source-refs"),
-        )),
+        source_refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Available(source_original.clone()),
     );
-    let source_checkpoints =
-        ExactCheckpointStore::new(source_backend, 64 * 1024 * 1024).expect("source checkpoints");
+    let source_checkpoints = ExactCheckpointStore::new(
+        source_backend.clone(),
+        64 * 1024 * 1024,
+        source.ram_retention_authority(),
+    )
+    .expect("source checkpoints")
+    .with_ram_root_resources(
+        source_backend
+            .metadata_resources()
+            .expect("original source component RAM-root credit"),
+    );
     let native_root = temporary.path().join("native");
     fs::create_dir(&native_root).expect("native fixture directory");
     let production = build_authenticated_production_checkpoint_codec_fixture(&native_root)
@@ -734,14 +771,16 @@ fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
     };
     let pinned = source.apply_pin("source", &pin).expect("pin campaign");
 
-    let raw = source_checkpoints
+    let mut raw = source_checkpoints
         .prepare_production_closure(production.closure().clone())
         .expect("prepare raw checkpoint");
     let raw_root = raw.root();
     source_checkpoints
         .publish_production_closure(&raw)
         .expect("publish raw checkpoint");
-    raw.retire_native_source().expect("retire native source");
+    drop(production);
+    raw.retire_native_source(&source_checkpoints)
+        .expect("retire native source");
     let cancellation = ExecutionCancellation::default();
     let mut installed = install_attempt_production_exact_checkpoint(
         &source_checkpoints,
@@ -796,11 +835,61 @@ fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
     source
         .authenticated_closure_ids([pinned.new_snapshot.content_id()])
         .expect("campaign snapshot closure");
-    assert!(
-        source
-            .authenticated_closure_ids([promoted_root.content_id()])
-            .is_err()
-    );
+    let complete_closure = source
+        .authenticated_closure_ids([promoted_root.content_id()])
+        .expect("complete authenticated promoted closure");
+
+    // Release source readers before borrowing the selected namespace's exclusive
+    // inventory authority. The durable selected root remains independently owned.
+    drop(installed);
+    drop(promoted);
+    drop(raw);
+    {
+        let original = source_original
+            .child()
+            .expect("source inventory operation account");
+        let inventory = source_refs
+            .acquire_ref_inventory_fence()
+            .expect("selected source inventory authority");
+        let split = source
+            .authenticated_storage_closure([promoted_root.content_id()], inventory.as_ref())
+            .expect("authenticated metadata and RAM frontier");
+        assert_eq!(split.ram_roots().len(), 1);
+
+        let ram_store = crucible_cas::ram::RamStore::new(
+            source_backend,
+            DurabilityRequirement::new(1, false).expect("RAM durability"),
+            crucible_cas::ram::RamStoreLimits::default(),
+        )
+        .expect("selected source RAM store");
+        let mut expected_closure = split.objects().clone();
+        for ram_root in split.ram_roots() {
+            ram_store
+                .visit_inventory_graph(
+                    *ram_root,
+                    inventory.as_ref(),
+                    &original,
+                    &mut || Ok(()),
+                    &mut |object| {
+                        expected_closure.insert(object);
+                        Ok(())
+                    },
+                )
+                .expect("authenticate every RAM descendant");
+        }
+        assert!(expected_closure.contains(&promoted_root.content_id()));
+        assert!(
+            expected_closure.iter().any(|object| {
+                object.kind() == crucible_cas::content_store::ObjectKind::RamTree
+            })
+        );
+        assert!(
+            expected_closure.iter().any(|object| {
+                object.kind() == crucible_cas::content_store::ObjectKind::RamExtent
+            })
+        );
+        assert_eq!(complete_closure, expected_closure);
+    }
     let mut resolver = ExactPinCampaignArchiveCheckpointResolver::new(
         &source,
         &source_checkpoints,
@@ -819,19 +908,38 @@ fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
     assert_eq!(plan.manifest().checkpoint_selections().len(), 1);
     drop(resolver);
 
-    let destination_backend = Arc::new(DirectoryBlobBackend::new(
-        "destination",
-        temporary.path().join("destination-objects"),
-    ));
+    let destination_backend = crate::exact_checkpoint_store::test_support::fixture_metadata_backend(
+        Arc::new(DirectoryBlobBackend::new(
+            "destination",
+            temporary.path().join("destination-objects"),
+        )),
+        crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+            .expect("finite destination component metadata authority"),
+    );
+    let destination_original = crucible::owned_decode::DecodeBudget::for_store(
+        destination_backend
+            .metadata_resources()
+            .expect("original destination namespace metadata"),
+    )
+    .expect("same original destination namespace account");
     let destination = CampaignRepository::new(
         destination_backend.clone(),
         Arc::new(DirectoryRefBackend::new(
             temporary.path().join("destination-refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Available(destination_original),
     );
-    let destination_checkpoints =
-        ExactCheckpointStore::new(destination_backend.clone(), 64 * 1024 * 1024)
-            .expect("fresh destination checkpoints");
+    let destination_checkpoints = ExactCheckpointStore::new(
+        destination_backend.clone(),
+        64 * 1024 * 1024,
+        destination.ram_retention_authority(),
+    )
+    .expect("fresh destination checkpoints")
+    .with_ram_root_resources(
+        destination_backend
+            .metadata_resources()
+            .expect("original destination component RAM-root credit"),
+    );
     let selection_root = temporary.path().join("destination-exact-pins");
     let mut destination_pins =
         DirectoryExactPinMaterializationStore::open(&selection_root).expect("destination pins");
@@ -892,8 +1000,17 @@ fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
     drop(destination_pins);
     drop(destination_checkpoints);
 
-    let restarted_checkpoints = ExactCheckpointStore::new(destination_backend, 64 * 1024 * 1024)
-        .expect("restarted destination checkpoints");
+    let restarted_checkpoints = ExactCheckpointStore::new(
+        destination_backend.clone(),
+        64 * 1024 * 1024,
+        destination.ram_retention_authority(),
+    )
+    .expect("restarted destination checkpoints")
+    .with_ram_root_resources(
+        destination_backend
+            .metadata_resources()
+            .expect("same original destination component RAM-root credit"),
+    );
     let mut restarted_pins =
         DirectoryExactPinMaterializationStore::open(&selection_root).expect("reopened pins");
     let mut source_journal = DirectoryCampaignTransferJournal::open(&source_journal_root)

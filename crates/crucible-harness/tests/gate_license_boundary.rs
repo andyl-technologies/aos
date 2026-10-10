@@ -19,7 +19,7 @@ const BOUNDARY_LICENSE: &str = "MIT OR Apache-2.0";
 const PLUGIN_LICENSE: &str = "GPL-2.0-only";
 const PLUGIN_PACKAGE: &str = "crucible-qemu-plugin";
 const DEBUG_GATEWAY_PACKAGE: &str = "crucible-debug-gateway";
-const BOUNDARY_PACKAGES: &[&str] = &["crucible-protocol", "crucible-shmem"];
+const BOUNDARY_PACKAGES: &[&str] = &["crucible-protocol", "crucible-shmem", "crucible-ram"];
 
 #[path = "gate_license_boundary/contributor_authorization.rs"]
 mod contributor_authorization;
@@ -500,7 +500,7 @@ fn boundary_artifacts_and_code_docs_remain_explicit() -> Result<(), Box<dyn Erro
 fn expected_license(package: &str) -> &'static str {
     match package {
         PLUGIN_PACKAGE | DEBUG_GATEWAY_PACKAGE => PLUGIN_LICENSE,
-        "crucible-protocol" | "crucible-shmem" => BOUNDARY_LICENSE,
+        "crucible-protocol" | "crucible-shmem" | "crucible-ram" => BOUNDARY_LICENSE,
         _ => APACHE_LICENSE,
     }
 }

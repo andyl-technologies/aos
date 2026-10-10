@@ -1,5 +1,7 @@
 //! Closed, bounded, introspectable store-graph admission and construction.
 
+use super::batch::admission_under;
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
@@ -41,11 +43,21 @@ use super::write_back::{
 };
 use super::*;
 
+mod checked_packed_admin;
 mod format;
+mod gc_marks;
+mod original_sqlite;
 mod verification;
+
+pub use original_sqlite::{
+    OriginalSqliteGraphCloseError, OriginalSqliteGraphConfig, OriginalSqliteGraphOwner,
+};
 
 #[cfg(test)]
 mod verification_tests;
+
+#[cfg(test)]
+mod memory_namespace_tests;
 
 use format::canonical_graph_configuration;
 pub use verification::{
@@ -139,6 +151,8 @@ pub enum StoreNodeSpec {
     Memory {
         /// Hard cap on retained authenticated logical bytes.
         max_logical_bytes: u64,
+        /// Hard cap on unique objects, including zero-byte bodies.
+        max_objects: u64,
     },
     /// Crash-safe loose-object directory leaf.
     Directory {
@@ -350,6 +364,11 @@ impl StoreNodeSpec {
 pub struct StoreGraphConfig {
     /// Root node serving the logical immutable-store contract.
     pub root: StoreNodeId,
+    /// Optional GC-only root owning one independent physical-quota directory.
+    ///
+    /// This root contributes physical resource admission and graph identity,
+    /// but serves no campaign object kind or blob-placement inventory.
+    pub gc_mark_root: Option<StoreNodeId>,
     /// Exact logical kinds admitted through the root.
     pub admitted_kinds: BTreeSet<ObjectKind>,
     /// Node definitions keyed by their validated operational IDs.
@@ -413,6 +432,10 @@ pub struct StoreNodeDescription {
 }
 
 /// Saturating operational counters for one metrics node.
+///
+/// Stream counters observe ordinary read handles. Checked dispatch records
+/// logical lookup and publication operations while retaining the child's
+/// source and reader directly; zero stream counters do not imply zero I/O.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StoreNodeMetrics {
     /// `contains` operations attempted.
@@ -492,12 +515,21 @@ impl StoreWriteBackFlushSummary {
 /// inventory/deletion only when graph construction receives its separate
 /// strong administration capability; bounded unfinished-upload cleanup remains
 /// available independently and is not itself a physical GC fence.
+/// An explicitly declared GC-only root retains its physical quota and original
+/// allocation credits separately; it is never a campaign placement inventory.
 pub struct StoreGraphAdmin {
     configuration: StoreGraphConfigurationId,
     authority_identity: Arc<StoreGraphAuthorityIdentity>,
     physical: BTreeMap<StoreNodeId, StoreGraphPhysicalAuthority>,
+    gc_mark_root: Option<GcMarkRootAuthority>,
     packed_repack: BTreeMap<StoreNodeId, StoreGraphPackedRepackAuthority>,
     s3_multipart_cleanup: BTreeMap<StoreNodeId, Arc<S3MultipartCleanupAdmin>>,
+}
+
+struct GcMarkRootAuthority {
+    node: StoreNodeId,
+    backend: Arc<dyn ImmutableBlobBackend>,
+    resources: crate::owned_decode::ResourceLoan,
 }
 
 struct StoreGraphPhysicalAuthority {
@@ -507,8 +539,44 @@ struct StoreGraphPhysicalAuthority {
 }
 
 struct StoreGraphPackedRepackAuthority {
+    body: Option<Box<PackedRepackBody>>,
+    _resources: crate::owned_decode::ResourceLoanSlot,
+}
+
+struct PackedRepackBody {
     backend: Arc<PackedBlobBackend>,
     physical_quota: Option<Arc<dyn StorePhysicalQuotaGuard>>,
+}
+
+impl StoreGraphPackedRepackAuthority {
+    fn new(
+        backend: Arc<PackedBlobBackend>,
+        physical_quota: Option<Arc<dyn StorePhysicalQuotaGuard>>,
+        resources: crate::owned_decode::ResourceLoanSlot,
+    ) -> Self {
+        Self {
+            body: Some(Box::new(PackedRepackBody {
+                backend,
+                physical_quota,
+            })),
+            _resources: resources,
+        }
+    }
+
+    fn body(&self) -> Result<&PackedRepackBody, StoreError> {
+        self.body.as_deref().ok_or(StoreError::Unavailable)
+    }
+}
+
+impl Drop for StoreGraphPackedRepackAuthority {
+    fn drop(&mut self) {
+        if let Some(boxed) = self.body.take() {
+            // Free the prepaid Box before its backend and guard aliases close;
+            // the original credit remains outside both physical controls.
+            let body = *boxed;
+            drop(body);
+        }
+    }
 }
 
 struct StoreGraphAuthorityIdentity;
@@ -615,6 +683,15 @@ impl StorePhysicalRepairReceipt {
 }
 
 impl StoreGraphAdmin {
+    /// Returns the explicitly declared GC-only physical quota boundary.
+    ///
+    /// This boundary remains charged and quota guarded, but is excluded from
+    /// [`Self::physical`] and its campaign blob-placement inventory.
+    #[must_use]
+    pub fn gc_mark_root_id(&self) -> Option<&StoreNodeId> {
+        self.gc_mark_root.as_ref().map(|root| &root.node)
+    }
+
     /// Returns the exact configuration identity shared with the admitted graph.
     #[must_use]
     pub const fn configuration_id(&self) -> StoreGraphConfigurationId {
@@ -630,6 +707,15 @@ impl StoreGraphAdmin {
         Arc::ptr_eq(&self.authority_identity, &graph.authority_identity)
     }
 
+    /// Returns the campaign blob-inventory boundary count without allocation.
+    ///
+    /// An explicitly declared GC-only physical root remains separately owned
+    /// and is reported by [`Self::gc_mark_root_id`].
+    #[must_use]
+    pub fn physical_count(&self) -> usize {
+        self.physical.len()
+    }
+
     /// Returns physical administration boundaries in canonical node-ID order.
     #[must_use]
     pub fn physical(&self) -> Vec<StoreGraphPhysicalAdmin<'_>> {
@@ -642,6 +728,38 @@ impl StoreGraphAdmin {
                 retention: &authority.retention,
             })
             .collect()
+    }
+
+    /// Opens GC marks under one explicitly selected guarded physical node.
+    ///
+    /// No leaf is inferred from a composed root. The selected node must belong
+    /// to this administration capability and retain its original quota owner.
+    ///
+    /// # Errors
+    /// Refuses an absent node, unavailable metadata authority, or secure
+    /// namespace preparation rejected by the original owner.
+    pub fn gc_mark_backend(
+        &self,
+        node: &str,
+        scope: &str,
+    ) -> Result<Arc<dyn ImmutableBlobBackend>, StoreError> {
+        if let Some(root) = &self.gc_mark_root
+            && root.node.as_str() == node
+        {
+            return root.backend.metadata_resources()?.gc_mark_backend(scope);
+        }
+        let authority = self
+            .physical
+            .iter()
+            .find(|(id, _)| id.as_str() == node)
+            .map(|(_, authority)| authority)
+            .ok_or(StoreError::InvalidComposition {
+                reason: "GC mark node is not an admitted physical boundary",
+            })?;
+        authority
+            .backend
+            .metadata_resources()?
+            .gc_mark_backend(scope)
     }
 
     /// Returns packed-leaf repack boundaries in canonical node-ID order.
@@ -861,7 +979,7 @@ impl<'a> StoreGraphPackedRepackAdmin<'a> {
     /// the packed index or one of its referenced packs cannot be authenticated.
     pub fn accounting(self) -> Result<PackedStorageAccounting, StoreError> {
         self.verify_physical_quota()?;
-        self.authority.backend.accounting()
+        self.authority.body()?.backend.accounting()
     }
 
     /// Plans an exact deterministic replacement of the current packed generation.
@@ -872,7 +990,7 @@ impl<'a> StoreGraphPackedRepackAdmin<'a> {
     /// the packed index or one of its referenced packs cannot be authenticated.
     pub fn plan_repack(self) -> Result<PackedRepackPlan, StoreError> {
         self.verify_physical_quota()?;
-        self.authority.backend.plan_repack()
+        self.authority.body()?.backend.plan_repack()
     }
 
     /// Plans a deterministic replacement of the current packed generation.
@@ -897,7 +1015,7 @@ impl<'a> StoreGraphPackedRepackAdmin<'a> {
     /// publication and authentication fail.
     pub fn apply_repack(self, plan: &PackedRepackPlan) -> Result<PackedRepackReport, StoreError> {
         self.verify_physical_quota()?;
-        self.authority.backend.apply_repack(plan)
+        self.authority.body()?.backend.apply_repack(plan)
     }
 
     /// Applies one exact-generation packed replacement plan.
@@ -920,11 +1038,12 @@ impl<'a> StoreGraphPackedRepackAdmin<'a> {
         self,
     ) -> Result<super::packed::PackedIncompleteCleanupReport, StoreError> {
         self.verify_physical_quota()?;
-        self.authority.backend.cleanup_incomplete_packs()
+        self.authority.body()?.backend.cleanup_incomplete_packs()
     }
 
     fn verify_physical_quota(self) -> Result<(), StoreError> {
         self.authority
+            .body()?
             .physical_quota
             .as_ref()
             .map(|guard| guard.verify())
@@ -1056,6 +1175,14 @@ impl<'a> StoreGraphPhysicalAdmin<'a> {
     pub fn retention(self, kind: ObjectKind) -> Option<StoreGraphPhysicalRetention> {
         self.retention.get(&kind).copied()
     }
+
+    /// Returns whether any admitted object kind is a removable cache placement.
+    #[must_use]
+    pub fn has_cache_retention(self) -> bool {
+        self.retention
+            .values()
+            .any(|role| *role == StoreGraphPhysicalRetention::Cache)
+    }
 }
 
 /// Borrowed cleanup capability for one exact admitted S3 leaf.
@@ -1091,6 +1218,29 @@ pub struct StoreGraph {
     write_back: BTreeMap<StoreNodeId, Arc<WriteBackStore>>,
     namespace_authorizer: Option<Arc<dyn StoreNamespaceAuthorizer>>,
     profile_validation: bool,
+    _gc_mark_resources: crate::owned_decode::ResourceLoanSlot,
+}
+
+/// Borrows the original in-memory and process-native resource issuers.
+///
+/// These operational owners do not enter canonical graph identity. SQLite
+/// leaves require an explicit process heap; a missing owner never opens a raw
+/// native connection. Memory leaves retain their existing admission behavior.
+#[derive(Clone, Copy, Default)]
+pub struct StoreGraphOriginalResources<'a> {
+    /// The original issuer for fixed Memory namespace node envelopes.
+    pub memory_namespaces: Option<&'a StorePhysicalQuotaBinderHandle>,
+    /// The same nominal process heap borrowed by every SQLite leaf.
+    pub sqlite_heap: Option<&'a SqliteProcessHeap>,
+}
+
+impl<'a> From<Option<&'a StorePhysicalQuotaBinderHandle>> for StoreGraphOriginalResources<'a> {
+    fn from(memory_namespaces: Option<&'a StorePhysicalQuotaBinderHandle>) -> Self {
+        Self {
+            memory_namespaces,
+            sqlite_heap: None,
+        }
+    }
 }
 
 impl StoreGraph {
@@ -1105,6 +1255,20 @@ impl StoreGraph {
     /// Returns [`StoreError::InvalidGraph`] or [`StoreError::InvalidComposition`]
     /// when the declarative graph cannot safely implement the logical store.
     pub fn build(config: StoreGraphConfig) -> Result<Self, StoreError> {
+        Self::build_with_original_resources(config, StoreGraphOriginalResources::default())
+    }
+
+    /// Constructs a graph with explicitly borrowed original resource owners.
+    ///
+    /// SQLite leaves require the supplied nominal process heap. Memory leaves
+    /// retain their independently supplied namespace admission capability.
+    ///
+    /// # Errors
+    /// Refuses missing original ownership or ordinary graph admission failures.
+    pub fn build_with_original_resources(
+        config: StoreGraphConfig,
+        original_resources: StoreGraphOriginalResources<'_>,
+    ) -> Result<Self, StoreError> {
         let keys = StoreGraphKeyring::new();
         let authorizers = StoreGraphNamespaceAuthorizers::new();
         let profilers = StoreGraphObjectProfilers::new();
@@ -1117,6 +1281,7 @@ impl StoreGraph {
             &profilers,
             &physical_quotas,
             &s3_clients,
+            original_resources,
         )?;
         Ok(graph)
     }
@@ -1145,6 +1310,7 @@ impl StoreGraph {
             &profilers,
             &physical_quotas,
             &s3_clients,
+            None,
         )?;
         Ok(graph)
     }
@@ -1174,6 +1340,7 @@ impl StoreGraph {
             &profilers,
             &physical_quotas,
             &s3_clients,
+            None,
         )?;
         Ok(graph)
     }
@@ -1184,19 +1351,22 @@ impl StoreGraph {
     /// physical-quota binders authenticate kernel-enforced leaf allocation;
     /// S3 clients bind separately configured transport and credentials to one
     /// non-secret endpoint-policy identity; namespace policy and encryption key
-    /// material remain operational.
+    /// material remain operational. An optional original Memory namespace
+    /// issuer admits each fixed node envelope before graph leaf effects. Without
+    /// it, bounded ordinary Memory models refuse checked RAM access.
     ///
     /// # Errors
     ///
     /// Returns [`StoreError::Unauthorized`] when a required capability is
     /// unavailable, or a graph/composition error when admission fails.
-    pub fn build_with_all_capabilities(
+    pub fn build_with_all_capabilities<'a>(
         config: StoreGraphConfig,
         keys: &StoreGraphKeyring,
         authorizers: &StoreGraphNamespaceAuthorizers,
         profilers: &StoreGraphObjectProfilers,
         physical_quotas: &StoreGraphPhysicalQuotaBinders,
         s3_clients: &StoreGraphS3Clients,
+        original_resources: impl Into<StoreGraphOriginalResources<'a>>,
     ) -> Result<Self, StoreError> {
         let (graph, _admin) = Self::build_with_admin_and_all_capabilities(
             config,
@@ -1205,6 +1375,7 @@ impl StoreGraph {
             profilers,
             physical_quotas,
             s3_clients,
+            original_resources,
         )?;
         Ok(graph)
     }
@@ -1224,6 +1395,20 @@ impl StoreGraph {
     pub fn build_with_admin(
         config: StoreGraphConfig,
     ) -> Result<(Self, StoreGraphAdmin), StoreError> {
+        Self::build_with_admin_and_original_resources(
+            config,
+            StoreGraphOriginalResources::default(),
+        )
+    }
+
+    /// Constructs a graph and its maintenance view under original resource owners.
+    ///
+    /// # Errors
+    /// Refuses missing original ownership or ordinary graph admission failures.
+    pub fn build_with_admin_and_original_resources(
+        config: StoreGraphConfig,
+        original_resources: StoreGraphOriginalResources<'_>,
+    ) -> Result<(Self, StoreGraphAdmin), StoreError> {
         let keys = StoreGraphKeyring::new();
         let authorizers = StoreGraphNamespaceAuthorizers::new();
         let profilers = StoreGraphObjectProfilers::new();
@@ -1236,6 +1421,7 @@ impl StoreGraph {
             &profilers,
             &physical_quotas,
             &s3_clients,
+            original_resources,
         )
     }
 
@@ -1263,6 +1449,7 @@ impl StoreGraph {
             &profilers,
             &physical_quotas,
             &s3_clients,
+            None,
         )
     }
 
@@ -1275,21 +1462,39 @@ impl StoreGraph {
     /// unfinished-upload cleanup. A separately supplied strong S3
     /// administration capability additionally contributes committed-object
     /// inventory/delete authority to the returned administration value.
+    /// `original_resources` retains the genuine issuers for fixed Memory node
+    /// grants and the process-wide SQLite heap. The existing Memory-only option
+    /// remains accepted; a graph containing SQLite requires the full resource
+    /// value with its explicit heap before any leaf effects.
     ///
     /// # Errors
     ///
     /// Returns [`StoreError::Unauthorized`] when a required capability is
     /// unavailable, or a graph/composition error when admission fails.
-    pub fn build_with_admin_and_all_capabilities(
-        config: StoreGraphConfig,
+    pub fn build_with_admin_and_all_capabilities<'a>(
+        mut config: StoreGraphConfig,
         keys: &StoreGraphKeyring,
         authorizers: &StoreGraphNamespaceAuthorizers,
         profilers: &StoreGraphObjectProfilers,
         physical_quotas: &StoreGraphPhysicalQuotaBinders,
         s3_clients: &StoreGraphS3Clients,
+        original_resources: impl Into<StoreGraphOriginalResources<'a>>,
     ) -> Result<(Self, StoreGraphAdmin), StoreError> {
         validate_structure(&config)?;
         validate_demands(&config)?;
+        let original_resources = original_resources.into();
+        if config
+            .nodes
+            .values()
+            .any(|node| matches!(node, StoreNodeSpec::Sqlite { .. }))
+        {
+            original_resources
+                .sqlite_heap
+                .ok_or(StoreError::InvalidComposition {
+                    reason: "SQLite graph leaves require their original process heap",
+                })?
+                .verify_live()?;
+        }
         let physical_retention = derive_physical_retention(&config)?;
         let configuration = StoreGraphConfigurationId::for_config(&config)?;
         let namespace_authorizer = config
@@ -1313,7 +1518,36 @@ impl StoreGraph {
             profilers,
             physical_quotas,
             s3_clients,
+            memory_namespaces: original_resources.memory_namespaces,
+            sqlite_heap: original_resources.sqlite_heap,
         };
+        // Admit every Memory namespace before instantiating any disk leaf or
+        // wrapper. The existing registries retain the same concrete leaf; no
+        // policy identifier or disk/project authority is invented for Memory.
+        for (id, node) in &config.nodes {
+            if let StoreNodeSpec::Memory {
+                max_logical_bytes,
+                max_objects,
+            } = node
+            {
+                let backend = match capabilities.memory_namespaces {
+                    Some(original) => MemoryBlobBackend::new_admitted(
+                        id.as_str(),
+                        *max_logical_bytes,
+                        *max_objects,
+                        original.clone(),
+                    )?,
+                    None => MemoryBlobBackend::new_bounded(
+                        id.as_str(),
+                        *max_logical_bytes,
+                        *max_objects,
+                    )?,
+                };
+                let leaf = Arc::new(backend);
+                state.physical.insert(id.clone(), leaf.clone());
+                state.built.insert(id.clone(), leaf);
+            }
+        }
         let root = instantiate(
             configuration,
             &config.root,
@@ -1321,6 +1555,11 @@ impl StoreGraph {
             &capabilities,
             &mut state,
         )?;
+        let gc_mark_root = config
+            .gc_mark_root
+            .take()
+            .map(|node| gc_marks::instantiate(node, &config.nodes, &capabilities, &mut state))
+            .transpose()?;
         validate_capability_edges(&config.nodes, &state.built)?;
         let mut description = Vec::with_capacity(config.nodes.len());
         for (id, spec) in &config.nodes {
@@ -1366,11 +1605,16 @@ impl StoreGraph {
                 write_back: state.write_back,
                 namespace_authorizer,
                 profile_validation,
+                _gc_mark_resources: gc_mark_root
+                    .as_ref()
+                    .map(|root| root.resources.clone())
+                    .into(),
             },
             StoreGraphAdmin {
                 configuration,
                 authority_identity,
                 physical,
+                gc_mark_root,
                 packed_repack: state.packed_repack,
                 s3_multipart_cleanup: state.s3_multipart_cleanup,
             },
@@ -1505,17 +1749,105 @@ impl WriteBackRetentionAdmin for StoreGraph {
 }
 
 impl ImmutableBlobBackend for StoreGraph {
+    fn read_merkle_node_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<super::OwnedBlobBytes, StoreError> {
+        if id.kind() != ObjectKind::MerkleNode {
+            return Err(StoreError::Corrupt { id });
+        }
+        self.require_admitted(id)?;
+        let mut check = || {
+            super::checked_reader::check(original, boundary)?;
+            self.require_admitted(id)
+        };
+        check()?;
+        let bytes = self
+            .root
+            .read_merkle_node_with_boundary(original, id, &mut check)?;
+        check()?;
+        Ok(bytes)
+    }
+
+    fn read_bounded_with_boundary(
+        &self,
+        request: &mut crate::ram::BoundedReadRequest<'_, '_>,
+    ) -> Result<(), StoreError> {
+        request.execute_graph_inventory(self, self.root.as_ref(), &|id| self.require_admitted(id))
+    }
+
+    fn checked_publication_metadata(
+        &self,
+        kind: ObjectKind,
+    ) -> Result<CheckedPublicationMetadata, StoreError> {
+        self.root.checked_publication_metadata(kind)
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PutBatchReceipt, StoreError> {
+        original
+            .verify_live()
+            .map_err(|error| admission_under(original, error))?;
+        for (id, _) in objects {
+            boundary()?;
+            original
+                .verify_live()
+                .map_err(|error| admission_under(original, error))?;
+            self.require_admitted(*id)?;
+        }
+        self.root
+            .put_many_if_absent_with_boundary(original, objects, boundary)
+    }
+
     fn name(&self) -> &str {
         self.root_id.as_str()
+    }
+
+    fn metadata_resources(&self) -> Result<Arc<dyn super::StorePhysicalQuotaGuard>, StoreError> {
+        self.root.metadata_resources()
     }
 
     fn capabilities(&self) -> BackendCapabilities {
         self.root.capabilities()
     }
 
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        if objects
+            .iter()
+            .any(|(kind, _)| !self.admitted_kinds.contains(kind))
+        {
+            return Err(invalid_graph(
+                self.root_id.as_str(),
+                GraphViolation::RouteCoverage,
+            ));
+        }
+        self.root.admit_object_graph(objects)
+    }
+
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
         self.require_admitted(id)?;
         self.root.contains(id)
+    }
+
+    fn read_with_boundary(
+        &self,
+        account: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        account
+            .verify_live()
+            .map_err(|error| admission_under(account, error))?;
+        boundary()?;
+        self.require_admitted(id)?;
+        self.root.read_with_boundary(account, id, range, boundary)
     }
 
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
@@ -1622,6 +1954,29 @@ fn validate_structure(config: &StoreGraphConfig) -> Result<(), StoreError> {
     let mut visiting = BTreeSet::new();
     let mut visited = BTreeSet::new();
     visit(&config.root, &config.nodes, 0, &mut visiting, &mut visited)?;
+    if let Some(root) = &config.gc_mark_root {
+        let child = match config.nodes.get(root) {
+            Some(StoreNodeSpec::PhysicalQuota { child, .. }) => child,
+            _ => {
+                return Err(invalid_graph(
+                    root.as_str(),
+                    GraphViolation::InvalidGcMarkRoot,
+                ));
+            }
+        };
+        if !matches!(
+            config.nodes.get(child),
+            Some(StoreNodeSpec::Directory { .. })
+        ) || visited.contains(root)
+            || visited.contains(child)
+        {
+            return Err(invalid_graph(
+                root.as_str(),
+                GraphViolation::InvalidGcMarkRoot,
+            ));
+        }
+        visit(root, &config.nodes, 0, &mut visiting, &mut visited)?;
+    }
     if visited.len() != config.nodes.len() {
         let unreachable = config
             .nodes
@@ -1634,11 +1989,19 @@ fn validate_structure(config: &StoreGraphConfig) -> Result<(), StoreError> {
 }
 
 fn validate_administrative_paths(config: &StoreGraphConfig) -> Result<(), StoreError> {
+    let mark_directory =
+        config
+            .gc_mark_root
+            .as_ref()
+            .and_then(|root| match config.nodes.get(root) {
+                Some(StoreNodeSpec::PhysicalQuota { child, .. }) => Some(child),
+                _ => None,
+            });
     let persistent = config
         .nodes
         .iter()
         .filter_map(|(id, node)| match node {
-            StoreNodeSpec::Directory { root } => Some((id, root, false)),
+            StoreNodeSpec::Directory { root } => Some((id, root, mark_directory == Some(id))),
             StoreNodeSpec::Sqlite { root } => Some((id, root, true)),
             StoreNodeSpec::CompressedDirectory { root, .. } => Some((id, root, true)),
             StoreNodeSpec::EncryptedDirectory { root, .. } => Some((id, root, true)),
@@ -1651,6 +2014,16 @@ fn validate_administrative_paths(config: &StoreGraphConfig) -> Result<(), StoreE
         .collect::<Vec<_>>();
     for left in 0..persistent.len() {
         let (node, path, _) = persistent[left];
+        if mark_directory.is_some()
+            && path
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err(invalid_graph(
+                node.as_str(),
+                GraphViolation::InvalidGcMarkRoot,
+            ));
+        }
         if path.as_os_str().as_bytes().len() > MAX_ADMINISTRATIVE_PATH_BYTES {
             return Err(invalid_graph(
                 node.as_str(),
@@ -2083,6 +2456,8 @@ struct GraphBuildCapabilities<'a> {
     profilers: &'a StoreGraphObjectProfilers,
     physical_quotas: &'a StoreGraphPhysicalQuotaBinders,
     s3_clients: &'a StoreGraphS3Clients,
+    memory_namespaces: Option<&'a StorePhysicalQuotaBinderHandle>,
+    sqlite_heap: Option<&'a SqliteProcessHeap>,
 }
 
 fn instantiate(
@@ -2099,8 +2474,15 @@ fn instantiate(
         .get(id)
         .ok_or_else(|| invalid_graph(id.as_str(), GraphViolation::MissingNode))?;
     let backend: Arc<dyn ImmutableBlobBackend> = match node {
-        StoreNodeSpec::Memory { max_logical_bytes } => {
-            let leaf = Arc::new(MemoryBlobBackend::new(id.as_str(), *max_logical_bytes));
+        StoreNodeSpec::Memory {
+            max_logical_bytes,
+            max_objects,
+        } => {
+            let leaf = Arc::new(MemoryBlobBackend::new_bounded(
+                id.as_str(),
+                *max_logical_bytes,
+                *max_objects,
+            )?);
             state.physical.insert(id.clone(), leaf.clone());
             leaf
         }
@@ -2110,7 +2492,12 @@ fn instantiate(
             leaf
         }
         StoreNodeSpec::Sqlite { root } => {
-            let leaf = Arc::new(SqliteBlobBackend::open(id.as_str(), root.clone())?);
+            let heap = capabilities
+                .sqlite_heap
+                .ok_or(StoreError::InvalidComposition {
+                    reason: "SQLite graph leaf lost its original process heap",
+                })?;
+            let leaf = Arc::new(SqliteBlobBackend::open(id.as_str(), root.clone(), heap)?);
             state.physical.insert(id.clone(), leaf.clone());
             leaf
         }
@@ -2170,10 +2557,7 @@ fn instantiate(
             state.physical.insert(id.clone(), leaf.clone());
             state.packed_repack.insert(
                 id.clone(),
-                StoreGraphPackedRepackAuthority {
-                    backend: Arc::clone(&leaf),
-                    physical_quota: None,
-                },
+                StoreGraphPackedRepackAuthority::new(Arc::clone(&leaf), None, Default::default()),
             );
             leaf
         }
@@ -2242,7 +2626,7 @@ fn instantiate(
                         promote_reads: tier.promote_reads,
                     })
                 })
-                .collect::<Result<Vec<_>, _>>()?;
+                .collect::<Result<Vec<_>, StoreError>>()?;
             Arc::new(TieredStore::new(id.as_str(), tiers)?)
         }
         StoreNodeSpec::ReadThrough { cache, source } => Arc::new(ReadThroughStore::new(
@@ -2330,19 +2714,64 @@ fn instantiate(
                 *maximum_physical_bytes,
                 *maximum_inodes,
             )?;
-            let child_backend = instantiate(configuration, child, nodes, capabilities, state)?;
-            let child_admin = state.physical.remove(child).ok_or_else(|| {
-                invalid_graph(id.as_str(), GraphViolation::InvalidPhysicalQuotaChild)
-            })?;
-            if let Some(repack) = state.packed_repack.get_mut(child) {
-                repack.physical_quota = Some(Arc::clone(&guard));
-            }
-            let store = Arc::new(PhysicalQuotaStore::new(
-                id.as_str(),
-                child_backend,
-                child_admin,
-                guard,
-            )?);
+            let (child_backend, child_admin, packed_resources) = match nodes.get(child) {
+                Some(StoreNodeSpec::Packed {
+                    root,
+                    target_pack_bytes,
+                }) => {
+                    // Exclusive quota-child validation means no other route
+                    // can have constructed this leaf before its real binding.
+                    if state.built.contains_key(child) {
+                        return Err(invalid_graph(
+                            id.as_str(),
+                            GraphViolation::InvalidPhysicalQuotaChild,
+                        ));
+                    }
+                    let admitted = super::packed::admitted::open(
+                        child.as_str(),
+                        root,
+                        *target_pack_bytes,
+                        Arc::clone(&guard),
+                        std::mem::size_of::<PackedRepackBody>() as u64,
+                    )?;
+                    let leaf = Arc::new(admitted.backend);
+                    let resources = admitted.resources;
+                    state.built.insert(child.clone(), leaf.clone());
+                    state.packed_repack.insert(
+                        child.clone(),
+                        StoreGraphPackedRepackAuthority::new(
+                            Arc::clone(&leaf),
+                            Some(Arc::clone(&guard)),
+                            resources.clone().into(),
+                        ),
+                    );
+                    (
+                        leaf.clone() as Arc<dyn ImmutableBlobBackend>,
+                        leaf as Arc<dyn BlobStoreAdmin>,
+                        Some(resources),
+                    )
+                }
+                _ => {
+                    let child_backend =
+                        instantiate(configuration, child, nodes, capabilities, state)?;
+                    let child_admin = state.physical.remove(child).ok_or_else(|| {
+                        invalid_graph(id.as_str(), GraphViolation::InvalidPhysicalQuotaChild)
+                    })?;
+                    (child_backend, child_admin, None)
+                }
+            };
+            let store = PhysicalQuotaStore::new(id.as_str(), child_backend, child_admin, guard)?;
+            let store = match packed_resources {
+                Some(resources) => store.with_child_resources(resources),
+                None => store,
+            };
+            let store = match nodes.get(child) {
+                Some(StoreNodeSpec::Directory { root }) => {
+                    store.with_directory_costs(DirectoryBlobBackend::quota_resource_costs(root)?)
+                }
+                _ => store,
+            };
+            let store = Arc::new(store);
             state.physical.insert(id.clone(), store.clone());
             store
         }
@@ -2495,3 +2924,6 @@ fn invalid_graph(node: &str, violation: GraphViolation) -> StoreError {
         violation,
     }
 }
+
+#[cfg(test)]
+mod packed_constructor_layout;

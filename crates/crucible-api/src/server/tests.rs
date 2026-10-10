@@ -23,7 +23,7 @@ use super::*;
 const TEST_SEED: &str = "000000000000000000000000000000000000000000000000000000000000004d";
 const TEST_HOLDER: &str = "00000000-0000-0000-0000-000000000009";
 
-type TestState = Http2LifecycleState<
+pub(super) type TestState = Http2LifecycleState<
     QuiescentLifecycleLoop,
     crate::lifecycle::LifecycleLoopFactory<QuiescentLifecycleLoop>,
 >;
@@ -37,8 +37,9 @@ fn open_shutdown_receiver() -> watch::Receiver<bool> {
     receiver
 }
 
-fn test_state(mode: LifecycleServerMode) -> TestState {
+pub(super) fn test_state(mode: LifecycleServerMode) -> TestState {
     Http2LifecycleState {
+        host_operational_control: None,
         control_plane: Arc::new(Mutex::new(LifecycleControlPlane::new(
             "server-test",
             Vec::new(),
@@ -54,6 +55,7 @@ fn test_state(mode: LifecycleServerMode) -> TestState {
 
 fn test_state_with_max_sessions(mode: LifecycleServerMode, max_sessions: usize) -> TestState {
     Http2LifecycleState {
+        host_operational_control: None,
         control_plane: Arc::new(Mutex::new(
             LifecycleControlPlane::new(
                 "server-test",

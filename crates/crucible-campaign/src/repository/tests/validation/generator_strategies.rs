@@ -306,7 +306,11 @@ fn corpus_mutation_generator_tracks_retained_values_by_portable_proposal_set() {
         .expect("issue mutation from newly retained anchor")
         .new_snapshot;
 
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     restarted
         .validate_complete_head(current.content_id())
         .expect("restart validates corpus-mutation history");
@@ -1064,7 +1068,11 @@ fn stratified_integer_generator_uses_exact_static_offsets() {
         .issue_proposal("generated-stratified", issued.new_snapshot, &first)
         .expect("issue first stratified proposal");
 
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     assert_eq!(
         restarted
             .head("generated-stratified")
@@ -1310,7 +1318,11 @@ fn log_integer_generator_uses_exact_rounded_powers() {
         .issue_proposal("generated-log", issued.new_snapshot, &first)
         .expect("issue first log proposal");
 
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     assert_eq!(
         restarted
             .head("generated-log")
@@ -1516,7 +1528,11 @@ fn modeled_uniform_integer_generator_bounds_full_width_and_restarts() {
         Some(&ContinuationState::Closed)
     );
 
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     assert_eq!(
         restarted
             .head("modeled-uniform")

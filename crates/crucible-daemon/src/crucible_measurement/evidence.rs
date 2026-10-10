@@ -23,6 +23,8 @@
 //! be the unique serializer output, scheduler entries must be dense and
 //! authenticated, and terminal coordinates must cover the retained log.
 
+pub(crate) mod boundary_error;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 
@@ -53,8 +55,18 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use super::{CrucibleMeasurementError, campaign_hash};
 
+mod container_bounds;
 mod guest;
+mod ownership;
 mod wire;
+
+use crucible::owned_decode::{
+    DecodeCustody, require_current_child_budget, require_current_custody,
+};
+pub(crate) use ownership::CrucibleMeasurementEventCustody;
+pub use ownership::{CrucibleMeasurementEvidenceBytes, CrucibleMeasurementSamples};
+use ownership::{admission, admitted_body};
+use std::sync::Arc;
 
 use guest::normalize_guest_measurements;
 #[cfg(test)]
@@ -80,13 +92,35 @@ const MAX_OPEN_GUEST_MEASUREMENT_INSTANCES: usize = 65_536;
 /// Raw, replayable inputs for one retained measurement evaluation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CrucibleMeasurementReplayEvidence {
+    body: Arc<ReplayEvidenceBody>,
+}
+
+#[derive(Debug)]
+struct ReplayEvidenceBody {
     scenario: ScenarioDefId,
     configuration: ConfigurationId,
     definitions: CampaignHash,
     entries: Vec<SchedulerEventLogEntry>,
     terminal: MeasurementTerminalState,
     stop: CrucibleMeasurementStopEvidence,
+    event_output_custody: Option<CrucibleMeasurementEventCustody>,
+    custody: DecodeCustody,
 }
+
+impl PartialEq for ReplayEvidenceBody {
+    fn eq(&self, other: &Self) -> bool {
+        // Allocation custody belongs to the host owner. It must not change
+        // equality between a produced leaf and its authenticated wire decoding.
+        self.scenario == other.scenario
+            && self.configuration == other.configuration
+            && self.definitions == other.definitions
+            && self.entries == other.entries
+            && self.terminal == other.terminal
+            && self.stop == other.stop
+    }
+}
+
+impl Eq for ReplayEvidenceBody {}
 
 /// Exact stop shape retained with one measurement evaluation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,38 +216,38 @@ impl CrucibleObservationBoundaryEvidence {
 impl CrucibleMeasurementReplayEvidence {
     /// Returns the exact scenario definition identity.
     #[must_use]
-    pub const fn scenario(&self) -> ScenarioDefId {
-        self.scenario
+    pub fn scenario(&self) -> ScenarioDefId {
+        self.body.scenario
     }
 
     /// Returns the exact scheduled configuration identity.
     #[must_use]
-    pub const fn configuration(&self) -> ConfigurationId {
-        self.configuration
+    pub fn configuration(&self) -> ConfigurationId {
+        self.body.configuration
     }
 
     /// Returns the bound measurement-definition identity.
     #[must_use]
-    pub const fn definitions(&self) -> CampaignHash {
-        self.definitions
+    pub fn definitions(&self) -> CampaignHash {
+        self.body.definitions
     }
 
     /// Returns the complete scheduler event-log sequence.
     #[must_use]
     pub fn entries(&self) -> &[SchedulerEventLogEntry] {
-        &self.entries
+        &self.body.entries
     }
 
     /// Returns the exact terminal evaluation state.
     #[must_use]
-    pub const fn terminal(&self) -> &MeasurementTerminalState {
-        &self.terminal
+    pub fn terminal(&self) -> &MeasurementTerminalState {
+        &self.body.terminal
     }
 
     /// Returns the exact stop shape retained by this evidence.
     #[must_use]
-    pub const fn stop(&self) -> CrucibleMeasurementStopEvidence {
-        self.stop
+    pub fn stop(&self) -> CrucibleMeasurementStopEvidence {
+        self.body.stop
     }
 
     /// Verifies an observation-stop proof against this retained raw boundary.
@@ -232,13 +266,13 @@ impl CrucibleMeasurementReplayEvidence {
         proof: &ObservationStopProof,
     ) -> Result<(), CrucibleMeasurementError> {
         let mismatch = |binding| CrucibleMeasurementError::EvidenceBindingMismatch { binding };
-        if self.configuration != proof.child() {
+        if self.body.configuration != proof.child() {
             return Err(mismatch("observation-stop-configuration"));
         }
 
         let boundary = proof.boundary();
         let event_log = proof.event_log();
-        let CrucibleMeasurementStopEvidence::Observation(retained_boundary) = self.stop else {
+        let CrucibleMeasurementStopEvidence::Observation(retained_boundary) = self.body.stop else {
             return Err(mismatch("observation-stop-execution-boundary"));
         };
         let retained_offset = retained_boundary.event_log_offset();
@@ -263,7 +297,7 @@ impl CrucibleMeasurementReplayEvidence {
         let quantum_start = usize::try_from(boundary.start_events())
             .map_err(|_| mismatch("observation-stop-quantum-event-count"))?;
         let prefix = self
-            .entries
+            .entries()
             .get(..event_count)
             .ok_or_else(|| mismatch("observation-stop-event-prefix"))?;
         if quantum_start > event_count
@@ -271,7 +305,7 @@ impl CrucibleMeasurementReplayEvidence {
             || prefix
                 .iter()
                 .any(|entry| entry.at().ticks > boundary.frontier_picoseconds())
-            || self.terminal.at.ticks < boundary.frontier_picoseconds()
+            || self.body.terminal.at.ticks < boundary.frontier_picoseconds()
         {
             return Err(mismatch("observation-stop-event-prefix"));
         }
@@ -332,25 +366,33 @@ impl CrucibleMeasurementReplayEvidence {
         configuration: ConfigurationId,
         definitions: &MeasurementDefinitions,
     ) -> Result<MeasurementEvaluation, CrucibleMeasurementError> {
-        if self.scenario != scenario {
+        if self.body.scenario != scenario {
             return Err(CrucibleMeasurementError::EvidenceBindingMismatch {
                 binding: "scenario",
             });
         }
-        if self.configuration != configuration {
+        if self.body.configuration != configuration {
             return Err(CrucibleMeasurementError::EvidenceBindingMismatch {
                 binding: "configuration",
             });
         }
-        if self.definitions != campaign_hash(definitions.content_hash()) {
+        if self.body.definitions != campaign_hash(definitions.content_hash()) {
             return Err(CrucibleMeasurementError::EvidenceBindingMismatch {
                 binding: "measurement-definitions",
             });
         }
 
-        let samples = derive_crucible_measurement_samples(definitions, &self.entries)?;
-        evaluate_measurements(definitions, &self.entries, samples, &self.terminal)
-            .map_err(Into::into)
+        let _original = self.body.custody.enter();
+        let samples = derive_crucible_measurement_samples(definitions, &self.body.entries)?;
+        let (samples, custody) = samples.into_parts();
+        let _sample_scope = custody.enter();
+        evaluate_measurements(
+            definitions,
+            &self.body.entries,
+            samples,
+            &self.body.terminal,
+        )
+        .map_err(Into::into)
     }
 
     /// Returns strict canonical replay-evidence bytes.
@@ -359,7 +401,9 @@ impl CrucibleMeasurementReplayEvidence {
     ///
     /// Returns [`CrucibleMeasurementError`] if CBOR serialization fails or the
     /// encoded leaf exceeds its format ceiling.
-    pub fn canonical_bytes(&self) -> Result<Vec<u8>, CrucibleMeasurementError> {
+    pub fn canonical_bytes(
+        &self,
+    ) -> Result<CrucibleMeasurementEvidenceBytes, CrucibleMeasurementError> {
         self.canonical_bytes_with_limit(MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES)
     }
 
@@ -373,16 +417,12 @@ impl CrucibleMeasurementReplayEvidence {
     pub fn canonical_bytes_with_limit(
         &self,
         maximum_bytes: usize,
-    ) -> Result<Vec<u8>, CrucibleMeasurementError> {
+    ) -> Result<CrucibleMeasurementEvidenceBytes, CrucibleMeasurementError> {
+        let _original = self.body.custody.enter();
+        let child = require_current_child_budget().map_err(admission)?;
+        let _scope = child.enter();
         let encoded_length = measure_canonical_bytes(self, maximum_bytes)?;
-        let mut bytes = Vec::with_capacity(encoded_length);
-        ciborium::ser::into_writer(&EvidenceWireRef::from(self), &mut bytes).map_err(|error| {
-            CrucibleMeasurementError::EvidenceEncoding {
-                reason: error.to_string(),
-            }
-        })?;
-        debug_assert_eq!(bytes.len(), encoded_length);
-        Ok(bytes)
+        ownership::encode(self, encoded_length, child.custody())
     }
 
     /// Decodes and validates strict canonical replay-evidence bytes.
@@ -410,11 +450,13 @@ impl CrucibleMeasurementReplayEvidence {
         maximum_bytes: usize,
     ) -> Result<Self, CrucibleMeasurementError> {
         enforce_evidence_bytes(bytes.len(), maximum_bytes)?;
-        let wire: EvidenceWireV2 = ciborium::de::from_reader(bytes).map_err(|error| {
-            CrucibleMeasurementError::EvidenceEncoding {
-                reason: error.to_string(),
-            }
-        })?;
+        let child = require_current_child_budget().map_err(admission)?;
+        let _scope = child.enter();
+        let _parser = child
+            .reserve_scratch_bytes(ownership::parser_peak(bytes.len())?)
+            .map_err(admission)?;
+        container_bounds::check(bytes)?;
+        let wire = ownership::decode(bytes, &child)?;
         if wire.schema_version != CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2 {
             return Err(CrucibleMeasurementError::UnsupportedEvidenceSchema {
                 actual: wire.schema_version,
@@ -431,17 +473,17 @@ impl CrucibleMeasurementReplayEvidence {
                 boundary.scheduler_quiescent,
             )?;
         }
-        let value = Self::from(wire);
+        let value = wire.into_evidence()?;
 
         // Empty definitions exercise the shared log and terminal validators
         // without claiming that semantic sample projection has run.
         evaluate_measurements(
             &MeasurementDefinitions::empty(),
-            &value.entries,
+            &value.body.entries,
             Vec::new(),
-            &value.terminal,
+            &value.body.terminal,
         )?;
-        if value.canonical_bytes_with_limit(maximum_bytes)? != bytes {
+        if !ownership::is_canonical(&value, bytes)? {
             return Err(CrucibleMeasurementError::NonCanonicalEvidence);
         }
         Ok(value)
@@ -514,59 +556,79 @@ pub(crate) fn verified_assertion_transition<'a>(
     entries: &'a [SchedulerEventLogEntry],
     quantum_start_events: u64,
     property: &str,
-) -> Option<&'a SchedulerEventLogEntry> {
-    if entries
-        .iter()
-        .enumerate()
-        .any(|(index, entry)| entry.sequence() != index as u64 || !entry.has_valid_content_hash())
-    {
-        return None;
+) -> Result<Option<&'a SchedulerEventLogEntry>, crucible::EngineError> {
+    for (index, entry) in entries.iter().enumerate() {
+        if entry.sequence() != index as u64 || !entry.has_valid_content_hash()? {
+            return Ok(None);
+        }
     }
-    let mut transitions = entries
-        .get(usize::try_from(quantum_start_events).ok()?..)?
-        .iter()
-        .filter(|entry| {
-            matches!(entry.source(), EventSource::Engine)
-                && matches!(
-                    entry.payload(),
-                    SchedulerEventLogPayload::Observable(
-                        ObservableEventPayload::AssertionStateChanged { name, state }
-                    ) if name.name == property && *state == AssertionPhase::Violated
-                )
-        });
-    let transition = transitions.next()?;
-    transitions.next().is_none().then_some(transition)
+    let Some(start) = usize::try_from(quantum_start_events)
+        .ok()
+        .and_then(|index| entries.get(index..))
+    else {
+        return Ok(None);
+    };
+    let mut transitions = start.iter().filter(|entry| {
+        matches!(entry.source(), EventSource::Engine)
+            && matches!(entry.payload(), SchedulerEventLogPayload::Observable(
+                ObservableEventPayload::AssertionStateChanged { name, state }
+            ) if name.name == property && *state == AssertionPhase::Violated)
+    });
+    let transition = transitions.next();
+    Ok(transition.filter(|_| transitions.next().is_none()))
 }
 
 pub(crate) fn verify_assertion_failure_boundary(
     leaf: &CrucibleMeasurementReplayEvidence,
     boundary: &FindingAssertionFailureBoundary,
-) -> bool {
+) -> Result<bool, crucible::EngineError> {
+    let _original = leaf.body.custody.enter();
     let entries = leaf.entries();
     let Some(transition) = verified_assertion_transition(
         entries,
         boundary.quantum_start_events(),
         boundary.property(),
-    ) else {
-        return false;
+    )?
+    else {
+        return Ok(false);
     };
-    leaf.id().ok() == Some(boundary.trace())
+    let cause = boundary_error::admit::<CrucibleMeasurementError>()
+        .map_err(|source| crucible::EngineError::ArtifactDecodeAdmission { source })?;
+    let identity = leaf
+        .id()
+        .map_err(|source| crucible::EngineError::ArtifactDecodeAdmission {
+            source: boundary_error::decode(source, cause),
+        })?;
+    Ok(identity == boundary.trace()
         && leaf.stop() == CrucibleMeasurementStopEvidence::Campaign
         && entries.len() as u64 == boundary.terminal_events()
         && observation_event_prefix_digest(entries) == boundary.prefix_digest()
         && transition.sequence() == boundary.transition_sequence()
-        && CampaignHash::from_bytes(transition.content_hash().bytes) == boundary.transition_hash()
+        && CampaignHash::from_bytes(transition.content_hash().bytes) == boundary.transition_hash())
 }
 
 /// A derived measurement set paired with the raw leaf required to verify it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct CrucibleMeasurementPublication {
     measurement_set: MeasurementSet,
     evidence: CrucibleMeasurementReplayEvidence,
-    evidence_bytes: Vec<u8>,
+    evidence_bytes: CrucibleMeasurementEvidenceBytes,
 }
 
 impl CrucibleMeasurementPublication {
+    pub(crate) fn retain_event_outputs(
+        mut self,
+        custody: CrucibleMeasurementEventCustody,
+    ) -> Result<Self, CrucibleMeasurementError> {
+        let body = Arc::get_mut(&mut self.evidence.body).ok_or(
+            CrucibleMeasurementError::EvidenceBindingMismatch {
+                binding: "shared-event-output-custody",
+            },
+        )?;
+        body.event_output_custody = Some(custody);
+        Ok(self)
+    }
+
     /// Returns the derived campaign measurement set.
     #[must_use]
     pub const fn measurement_set(&self) -> &MeasurementSet {
@@ -587,7 +649,13 @@ impl CrucibleMeasurementPublication {
 
     /// Splits the publication into its child trace bytes and parent record.
     #[must_use]
-    pub fn into_parts(self) -> (CrucibleMeasurementReplayEvidence, Vec<u8>, MeasurementSet) {
+    pub fn into_parts(
+        self,
+    ) -> (
+        CrucibleMeasurementReplayEvidence,
+        CrucibleMeasurementEvidenceBytes,
+        MeasurementSet,
+    ) {
         (self.evidence, self.evidence_bytes, self.measurement_set)
     }
 }
@@ -602,11 +670,17 @@ impl CrucibleMeasurementPublication {
 pub fn derive_crucible_measurement_samples(
     definitions: &MeasurementDefinitions,
     entries: &[SchedulerEventLogEntry],
-) -> Result<Vec<MeasurementRuntimeSample>, CrucibleMeasurementError> {
+) -> Result<CrucibleMeasurementSamples, CrucibleMeasurementError> {
+    let child = require_current_child_budget().map_err(admission)?;
+    let _scope = child.enter();
     validate_measurement_event_log(entries)?;
     let mut samples = normalize_guest_measurements(definitions, entries)?;
     append_model_measurement_samples(definitions, entries, &mut samples)?;
-    Ok(samples)
+    child.check().map_err(admission)?;
+    Ok(CrucibleMeasurementSamples {
+        samples,
+        custody: child.custody(),
+    })
 }
 
 /// Evaluates one run and builds its child-first measurement publication pair.
@@ -629,14 +703,16 @@ pub fn evaluate_crucible_measurement_publication(
     terminal: MeasurementTerminalState,
     maximum_evidence_bytes: usize,
 ) -> Result<CrucibleMeasurementPublication, CrucibleMeasurementError> {
-    let evidence = CrucibleMeasurementReplayEvidence {
+    let evidence = admitted_body(ReplayEvidenceBody {
         scenario,
         configuration,
         definitions: campaign_hash(definitions.content_hash()),
         entries,
         terminal,
         stop: CrucibleMeasurementStopEvidence::Campaign,
-    };
+        event_output_custody: None,
+        custody: require_current_custody().map_err(admission)?,
+    })?;
     evaluate_crucible_measurement_evidence(evidence, definitions, maximum_evidence_bytes)
 }
 
@@ -654,14 +730,16 @@ pub fn evaluate_crucible_observation_measurement_publication(
     observation_boundary: CrucibleObservationBoundaryEvidence,
     maximum_evidence_bytes: usize,
 ) -> Result<CrucibleMeasurementPublication, CrucibleMeasurementError> {
-    let evidence = CrucibleMeasurementReplayEvidence {
+    let evidence = admitted_body(ReplayEvidenceBody {
         scenario,
         configuration,
         definitions: campaign_hash(definitions.content_hash()),
         entries,
         terminal,
         stop: CrucibleMeasurementStopEvidence::Observation(observation_boundary),
-    };
+        event_output_custody: None,
+        custody: require_current_custody().map_err(admission)?,
+    })?;
     evaluate_crucible_measurement_evidence(evidence, definitions, maximum_evidence_bytes)
 }
 
@@ -670,18 +748,30 @@ fn evaluate_crucible_measurement_evidence(
     definitions: &MeasurementDefinitions,
     maximum_evidence_bytes: usize,
 ) -> Result<CrucibleMeasurementPublication, CrucibleMeasurementError> {
+    let _original = evidence.body.custody.enter();
+    let output = require_current_child_budget().map_err(admission)?;
+    let _scope = output.enter();
     let evidence_bytes = evidence.canonical_bytes_with_limit(maximum_evidence_bytes)?;
-    let evaluation = evidence.replay(evidence.scenario, evidence.configuration, definitions)?;
+    let evaluation = evidence.replay(
+        evidence.body.scenario,
+        evidence.body.configuration,
+        definitions,
+    )?;
     let evidence_id = ContentId::for_bytes(
         ObjectKind::Trace,
         evidence.schema_version(),
         &evidence_bytes,
     );
+    let mut payload = Vec::new();
+    crucible::owned_decode::reserve_vec(&mut payload, evaluation.canonical_bytes().len())
+        .map_err(admission)?;
+    payload.extend_from_slice(evaluation.canonical_bytes());
+    crucible::owned_decode::charge_btree_set_entry::<ContentId>().map_err(admission)?;
     let measurement_set = MeasurementSet::from_evaluation(
         campaign_hash(evaluation.definitions()),
         CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
         campaign_hash(evaluation.content_hash()),
-        evaluation.canonical_bytes().to_vec(),
+        payload,
         BTreeSet::from([evidence_id]),
     )?;
     Ok(CrucibleMeasurementPublication {

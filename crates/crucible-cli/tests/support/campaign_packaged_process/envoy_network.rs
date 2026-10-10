@@ -1138,7 +1138,8 @@ fn product_hot_fork_deployment_with_template_limit(
     // Admission reserves the measured source profile once for the retained
     // five-guest world and again for its child. The 5 GiB guest-RAM baseline
     // needs headroom for QEMU resident memory and measured private dirties.
-    // The deployment's independent 7 GiB resident ceiling remains enforced.
+    // The authored 7 GiB assignment and retained-source ceilings stay independent
+    // of the aggregate headroom reserved for simultaneous owners.
     fs::write(
         &deployment,
         format!(

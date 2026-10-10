@@ -4,6 +4,106 @@ use super::*;
 
 /// Host-I/O runtime used by the bounded async driver.
 pub trait QemuHostIoRuntime: Send {
+    /// Borrows the exact retained RAM controller registration, when installed.
+    ///
+    /// This supplies independent operational health observation only; it grants
+    /// no new reservation, policy revision, deadline or cleanup disposition.
+    fn ram_control_registration(&self) -> Option<&crate::ram_control::RamControlRegistration> {
+        None
+    }
+
+    /// Reserves host-resident storage before retaining authenticated manifest copies.
+    ///
+    /// The caller keeps the returned lease through every derived object's use.
+    /// This charges the original node service allocator and creates no new
+    /// capacity or guest-visible state.
+    ///
+    /// # Errors
+    /// Refuses absent production ownership, empty requests, or exhausted capacity.
+    #[cfg(target_os = "linux")]
+    fn reserve_fault_manifest_metadata(
+        &self,
+        _bytes: u64,
+    ) -> Result<crate::QemuFaultManifestMetadataLease, QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "reserve fault manifest metadata",
+            "runtime has no admitted node service allocator",
+        ))
+    }
+
+    /// Discharges RAM resources after process, source-worker, and borrower cleanup.
+    ///
+    /// # Errors
+    /// Returns an error while ownership or retained release remains uncertain.
+    fn retire_host_ram_after_cleanup(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Ok(())
+    }
+
+    /// Attaches an independently admitted live operation owner before execution.
+    ///
+    /// # Errors
+    /// Refuses runtimes that cannot retain the operational owner.
+    fn set_host_operation_supervisor(
+        &mut self,
+        _supervisor: crucible_linux_resource::host_supervision::HostOperationSupervisor,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "attach host operation supervisor",
+            "runtime has no live operational ownership",
+        ))
+    }
+
+    /// Returns live operational supervision outside modeled guest state.
+    ///
+    /// Scripted runtimes may omit this handle; production runtime construction
+    /// installs the execution owner's existing original-start supervisor.
+    fn host_operation_supervisor(
+        &self,
+    ) -> Option<&crucible_linux_resource::host_supervision::HostOperationSupervisor> {
+        None
+    }
+
+    /// Waits under a borrowed original operation without starting a new class.
+    ///
+    /// # Errors
+    /// Refuses runtimes without a genuine original-bound wait implementation.
+    fn await_child_under_original(
+        &mut self,
+        _wait: QemuAsyncWait,
+        _original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "original quantum wait",
+            "runtime has no original-bound wait",
+        ))
+    }
+
+    /// Repolls the same quantum under its caller's original operation.
+    ///
+    /// # Errors
+    /// Refuses runtimes without an original-bound repoll implementation.
+    fn repoll_child_under_original(
+        &mut self,
+        _wait: QemuAsyncWait,
+        _original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "original quantum repoll",
+            "runtime has no original-bound repoll",
+        ))
+    }
+
+    /// Returns the existing node-local service allocator for qualification.
+    ///
+    /// The clone shares the actual registration's accounting; it grants no new
+    /// capacity. Runtimes without an admitted native owner return `None`.
+    #[cfg(any(test, feature = "test-support"))]
+    fn host_service_allocator_for_test(
+        &self,
+    ) -> Option<crucible_linux_resource::host_services::HostServiceAllocator> {
+        None
+    }
+
     /// Binds a scripted fixture's complete queue inventory to its World owner.
     ///
     /// This test-only seam creates no operational Source or native capability.
@@ -105,6 +205,23 @@ pub trait QemuHostIoRuntime: Send {
         ))
     }
 
+    /// Exercises the actual branch-private network or 9p reader mapping guard.
+    ///
+    /// # Errors
+    /// Refuses a runtime without the real owner, missing 9p attachment, or any
+    /// result other than the specific unchanged-source alias rejection.
+    #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+    fn probe_hot_fork_reader_alias_for_test(
+        &mut self,
+        _descriptor: std::os::fd::BorrowedFd<'_>,
+        _ninep: bool,
+    ) -> Result<crate::QemuNodeChannelError, crate::QemuNodeChannelError> {
+        Err(crate::QemuNodeChannelError::new(
+            "probe hot-fork reader alias",
+            "runtime has no actual host reader probe",
+        ))
+    }
+
     /// Sets the aggregate number of fault events this runtime may stage.
     ///
     /// Production runtimes apply the plan-authored remaining event-record
@@ -188,6 +305,66 @@ pub trait QemuHostIoRuntime: Send {
         timeout: Duration,
     ) -> Result<(), QemuAsyncDriverRuntimeError>;
 
+    /// Forces a fresh capture using the caller's retained original operation.
+    ///
+    /// The live runtime publishes a new request and waits for its exact release
+    /// acknowledgement. It neither starts another operation nor completes this
+    /// one. Scripted runtimes refuse unless they implement this boundary.
+    ///
+    /// # Errors
+    /// Returns the actual operational or transport error, or refuses unsupported
+    /// runtimes before publishing a capture request.
+    fn publish_current_execution_fingerprint_under_original(
+        &mut self,
+        _original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "publish current execution fingerprint",
+            "runtime has no original-owned capture boundary",
+        ))
+    }
+
+    /// Forces a fresh capture under both retained Quiescence originals.
+    ///
+    /// The live runtime checks both cancellation subscriptions before request
+    /// publication and between effects, then waits for the exact fresh request.
+    /// It admits and completes neither operation. Unsupported runtimes refuse.
+    ///
+    /// # Errors
+    /// Returns either owner's actual refusal or a transport failure. An older
+    /// pending capture is refused before waking the external executor.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn publish_current_execution_fingerprint_under_originals(
+        &mut self,
+        _actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        _family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "publish current execution fingerprint",
+            "runtime has no paired-original capture boundary",
+        ))
+    }
+
+    /// Models a fresh capture for an explicit unsupervised test fixture.
+    ///
+    /// This method grants no live executor authority. Production captures use
+    /// the caller's existing original guard; fixtures must model a new request
+    /// and its acknowledgement rather than coalesce an older pending request.
+    ///
+    /// # Errors
+    /// Refuses fixtures that do not implement this boundary, or returns their
+    /// actual capture refusal within the remaining fixture timeout.
+    #[cfg(any(test, feature = "test-support"))]
+    fn publish_fresh_execution_fingerprint_for_test(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "publish fresh fault fingerprint",
+            "fixture has no fresh capture boundary",
+        ))
+    }
+
     /// Requests a coordinated shared-memory pause and waits for quiescence.
     ///
     /// Runtimes without a live external executor have nothing to pause. A live
@@ -203,6 +380,41 @@ pub trait QemuHostIoRuntime: Send {
         _timeout: Duration,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         Ok(())
+    }
+
+    /// Requests the existing checkpoint pause under the caller's saved operation.
+    ///
+    /// The live runtime borrows the same deadline through device settling,
+    /// ceiling revocation and plugin acknowledgement. Unsupported runtimes
+    /// refuse before effects rather than replacing the original admission.
+    ///
+    /// # Errors
+    /// Returns the actual original refusal or checkpoint handoff error.
+    fn quiesce_for_checkpoint_under_original(
+        &mut self,
+        _original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "quiesce for checkpoint",
+            "runtime has no original-owned pause boundary",
+        ))
+    }
+
+    /// Parks at the existing exact Pause boundary under both retained owners.
+    ///
+    /// # Errors
+    /// Refuses an unsupported runtime, either original cancellation or expiry,
+    /// or an unavailable exact Pause/control/device-drain boundary.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn quiesce_for_parent_park_under_originals(
+        &mut self,
+        _actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        _family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "quiesce for parent park/drain",
+            "runtime has no paired original-owned Pause boundary",
+        ))
     }
 
     /// Clears a coordinated plugin pause while QEMU is already stopped.

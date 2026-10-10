@@ -112,6 +112,17 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         ));
     }
 
+    let _retained_input_scope = if crucible::owned_decode::current_custody().is_none() {
+        config.enter_input_custody()
+    } else {
+        None
+    };
+    // Configuration ownership is admitted before any native launch effects.
+    let retained_config = config.try_clone_shared_admitted()?;
+    // Runtime replay buffers live as long as this world, so their copies use
+    // the returned world's account rather than the caller's transient scope.
+    let _world_input_scope = retained_config.enter_input_custody();
+
     if config.branch.is_some() && !config.continuation_branches.is_empty() {
         return Err(loop_factory_error(
             "single and ordered production branch configurations cannot coexist",
@@ -256,6 +267,32 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                 ))
             })?;
 
+    if let Some(factory) = &config.host_ram_registration_factory {
+        let shape_budget = crucible::owned_decode::current_child_budget()
+            .map_err(LifecycleApiError::ConfigurationCopy)?;
+        let _shape_scope = shape_budget
+            .as_ref()
+            .map(crucible::owned_decode::DecodeBudget::enter);
+        let mut shapes = Vec::new();
+        crucible::owned_decode::reserve_vec(&mut shapes, nodes.len())
+            .map_err(LifecycleApiError::ConfigurationCopy)?;
+        for vm in nodes {
+            let declared_ram_bytes = u64::from(vm.memory_mib)
+                .checked_mul(1024 * 1024)
+                .ok_or_else(|| loop_factory_error("declared guest RAM overflow"))?;
+            crucible::owned_decode::charge_bytes(vm.id.name.len() as u64)
+                .map_err(LifecycleApiError::ConfigurationCopy)?;
+            shapes.push(ProductionHostRamLaunchShape {
+                node: vm.id.name.clone(),
+                declared_ram_bytes,
+                vcpus: u32::from(vm.smp_vcpus),
+            });
+        }
+        factory
+            .configure_world(&shapes)
+            .map_err(|error| loop_factory_error(error.to_string()))?;
+    }
+
     let (run_directory, mut run_manifest, lifecycle_journal) = production_run_directory(
         scenario,
         config,
@@ -265,6 +302,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         &config.run_state_root,
         scenario,
         source,
+        config.ram_catalog_provider(),
     )?;
     run_manifest
         .processes
@@ -287,6 +325,10 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     let mut repository_restore = restore_checkpoint
         .as_mut()
         .and_then(|checkpoint| checkpoint.repository_restore.take());
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(authority) = repository_restore.as_mut() {
+        authority.ram_source_decorator = config.ram_source_decorator.clone();
+    }
     let mut repository_parent_targets = BTreeMap::new();
     let scenario_seed = scenario.seed().bytes();
     let mut launch_seed_bytes = [0_u8; 8];
@@ -383,7 +425,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             })
             .map_err(|error| {
                 loop_factory_error(format!(
-                    "derive v9 exact restore identity for `{}`: {error}",
+                    "derive paged exact restore identity for `{}`: {error}",
                     vm.id.name
                 ))
             })?;
@@ -391,7 +433,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                 && QmpCheckpointIdentity::from(exact_ram.identity) != expected
             {
                 return Err(loop_factory_error(format!(
-                    "v9 exact checkpoint identity for `{}` differs from its authenticated restore basis",
+                    "paged exact checkpoint identity for `{}` differs from its authenticated restore basis",
                     vm.id.name
                 )));
             }
@@ -405,7 +447,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             }
             matches!(
                 &target.materialization,
-                ProductionVmExactCheckpointMaterialization::Repository
+                ProductionVmExactCheckpointMaterialization::Unmaterialized
             )
             .then_some(expected)
         } else {
@@ -480,6 +522,31 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         .with_console_capture()
         .with_process_generation(generation)
         .with_fault_resource_limits(source.plan().fault_signals().resource_limits());
+        if let Some(supervisor) = &config.host_operation_supervisor {
+            launch = launch.with_host_operation_supervisor(supervisor.clone());
+        }
+        if let Some(factory) = &config.host_ram_registration_factory {
+            let declared_ram_bytes = u64::from(vm.memory_mib)
+                .checked_mul(1024 * 1024)
+                .ok_or_else(|| loop_factory_error(String::from("declared guest RAM overflow")))?;
+            let registration = factory
+                .prepare(
+                    &vm.id.name,
+                    generation,
+                    declared_ram_bytes,
+                    u32::from(vm.smp_vcpus),
+                )
+                .map_err(|error| loop_factory_error(error.to_string()))?;
+            launch = launch.with_ram_control_registration(registration);
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(entitlement) = config.fault_actor_test_entitlement {
+            launch = launch
+                .with_fault_actor_test_entitlement(entitlement)
+                .map_err(|source| {
+                    loop_factory_error(format!("authorize fault worker fixture: {source}"))
+                })?;
+        }
         if campaign_marker_parking {
             if vm.white_box != crucible::WhiteBoxPolicy::Enabled {
                 return Err(loop_factory_error(format!(
@@ -724,16 +791,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                 restored_node_paused(service_state)?,
             )?;
             if let Some(expected) = repository_parent_identity {
-                let (checkpoint, target, frontier) = admission
-                    .basis
-                    .target
-                    .final_ram_layer_identity()
-                    .ok_or_else(|| {
-                        loop_factory_error(format!(
-                            "repository restore for `{}` has no authenticated RAM layer",
-                            vm.id.name
-                        ))
-                    })?;
+                let (checkpoint, target, frontier) = admission.basis.target.ram_identity();
                 if QmpCheckpointIdentity::new(checkpoint, target, frontier) != expected {
                     return Err(loop_factory_error(format!(
                         "repository RAM parent for `{}` differs from its authenticated execution boundary",
@@ -1206,7 +1264,13 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     } else {
         None
     };
-    let (signal_effect_replay, campaign_effect_replay) = match config.fault_replay.clone() {
+    let copied_fault_replay = config
+        .fault_replay
+        .as_ref()
+        .map(ResolvedEffectTrace::try_clone_admitted)
+        .transpose()
+        .map_err(ProductionVmLifecycleConfigCloneError::Replay)?;
+    let (signal_effect_replay, campaign_effect_replay) = match copied_fault_replay {
         Some(trace) => {
             trace
                 .validate(source.plan().fault_signals().resource_limits())
@@ -1349,20 +1413,29 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         if node_service_states.get(node) == Some(&ProductionNodeServiceState::PermanentlyFailed) {
             continue;
         }
+        let coordinator = ProductionBlockFaultCoordinator::new(
+            Arc::clone(&fault_runtime),
+            Arc::clone(&fault_evaluation_cursor),
+            Arc::clone(&storage_fault_observations),
+            Arc::clone(&block_devices),
+            source.world().clone(),
+            block.target.clone(),
+            source.plan().fault_signals(),
+            scenario.id(),
+        );
+        #[cfg(any(test, feature = "test-support"))]
+        let coordinator =
+            coordinator.with_completion_observer(config.block_completion_observer.clone());
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(observer) = &config.block_completion_observer {
+            backends
+                .install_block_completion_observer_for_test(node, Arc::clone(observer))
+                .map_err(|error| {
+                    loop_factory_error(format!("attach actual block completion observer: {error}"))
+                })?;
+        }
         backends
-            .install_block_fault_coordinator(
-                node,
-                Box::new(ProductionBlockFaultCoordinator::new(
-                    Arc::clone(&fault_runtime),
-                    Arc::clone(&fault_evaluation_cursor),
-                    Arc::clone(&storage_fault_observations),
-                    Arc::clone(&block_devices),
-                    source.world().clone(),
-                    block.target.clone(),
-                    source.plan().fault_signals(),
-                    scenario.id(),
-                )),
-            )
+            .install_block_fault_coordinator(node, Box::new(coordinator))
             .map_err(|error| {
                 loop_factory_error(format!(
                     "attach signal-driven block coordinator to `{}`: {error}",
@@ -1464,7 +1537,10 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             }),
         trigger_world: source.world().clone(),
         assertion_evaluator: HostAssertionEvaluator::new(source.properties())
-            .with_world_white_box_policies(source.world()),
+            .and_then(|evaluator| evaluator.with_world_white_box_policies(source.world()))
+            .map_err(|error| LifecycleApiError::BackendConstruction {
+                source: crate::lifecycle::LifecycleBackendConstructionError::new(error),
+            })?,
         assertion_oracle: BlackBoxHostOracle,
         terminal_verdict: restore_checkpoint
             .as_ref()
@@ -1503,7 +1579,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         run_manifest,
         scenario: scenario.clone(),
         source: source.clone(),
-        config: config.clone(),
+        config: retained_config,
         checkpoint_targets,
         exact_ram_parents,
         repository_exact_ram_rebase,
@@ -1525,16 +1601,13 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             .map(|file| Box::new(file) as Box<dyn Send>)
             .collect(),
         retained_resource_owners: Vec::new(),
+        input_decode_custody: crucible::owned_decode::current_custody(),
     };
     if let Some(checkpoint) = &restore_checkpoint {
-        let prefix = lifecycle
-            .inner
-            .loop_impl()
-            .condition_event_log_prefix()
-            .clone();
+        let prefix = lifecycle.inner.loop_impl().condition_event_log_prefix();
         if let Err(error) = checkpoint
             .assertion_state
-            .restore_into(&mut lifecycle.assertion_evaluator, &prefix)
+            .restore_into(&mut lifecycle.assertion_evaluator, prefix)
         {
             let cleanup = QuantumLoop::shutdown(&mut lifecycle);
             return Err(loop_factory_error(format!(

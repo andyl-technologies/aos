@@ -1,6 +1,6 @@
 //! The 9p filesystem sub-node: a read-only 9P2000.L server over a content tree.
 //!
-//! This module assembles the 9p I/O sub-node of RFC-0010 §15.3 from four focused
+//! This module assembles the scheduled 9p I/O sub-node from four focused
 //! submodules and re-exports their public surface:
 //!
 //! - [`codec`]: the versioned, little-endian, bounds-checked 9p wire ABI

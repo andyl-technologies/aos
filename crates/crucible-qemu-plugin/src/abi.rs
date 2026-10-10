@@ -327,7 +327,7 @@ pub const QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY: u32 = 2;
 /// Hot-fork barrier callback action that releases the reversible hold.
 pub const QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE: u32 = 3;
 /// Current fixed-layout callback, ring, worker, and mapping barrier schema.
-pub const QEMU_PLUGIN_HOT_FORK_BARRIER_STATUS_VERSION: u32 = 6;
+pub const QEMU_PLUGIN_HOT_FORK_BARRIER_STATUS_VERSION: u32 = 7;
 /// Callback-barrier status flag indicating that the reversible hold is active.
 pub const QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_HELD: u32 = 1_u32 << 0;
 /// Callback-barrier status flag indicating permanent teardown closure.
@@ -339,7 +339,7 @@ pub const QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_MAPPING_DONTFORK: u32 = 1_u32 << 2;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct QemuPluginHotForkBarrierStatus {
-    /// Status schema version, currently six.
+    /// Status schema version, currently seven.
     pub schema_version: u32,
     /// Exact C ABI structure size.
     pub struct_size: u32,
@@ -365,6 +365,12 @@ pub struct QemuPluginHotForkBarrierStatus {
     pub pending_worker_mask: u64,
     /// Checked count of worker operations admitted before the hold.
     pub worker_operations_in_flight: u64,
+    /// Actual creating process for the registered worker incarnations.
+    pub worker_process_id: u64,
+    /// Checked membership epoch changed by every worker entry, exit, and reset.
+    pub worker_membership_generation: u64,
+    /// Actual thread IDs indexed by RUN-control, teardown, and fingerprint roles.
+    pub worker_thread_ids: [u64; 3],
 }
 
 /// Plugin callback that changes or observes the callback-admission barrier.
@@ -379,10 +385,12 @@ pub const QEMU_PLUGIN_HOT_FORK_CHILD_INITIALIZE: u32 = 1;
 pub const QEMU_PLUGIN_HOT_FORK_CHILD_QUERY: u32 = 2;
 /// Fork-child runtime callback action that releases reconstructed workers.
 pub const QEMU_PLUGIN_HOT_FORK_CHILD_RELEASE: u32 = 3;
+/// Authenticated early child action that disarms inherited workspace ownership.
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_DISARM: u32 = 4;
 /// Current fixed-layout fork-child runtime plan schema.
-pub const QEMU_PLUGIN_HOT_FORK_CHILD_PLAN_VERSION: u32 = 4;
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_PLAN_VERSION: u32 = 5;
 /// Current fixed-layout fork-child runtime status schema.
-pub const QEMU_PLUGIN_HOT_FORK_CHILD_STATUS_VERSION: u32 = 4;
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_STATUS_VERSION: u32 = 5;
 /// Child status flag indicating that callback admission remains held.
 pub const QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_CALLBACKS_HELD: u32 = 1_u32 << 0;
 /// Child status flag indicating that the private shared-memory mapping exists.
@@ -393,16 +401,18 @@ pub const QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_WORKERS_READY: u32 = 1_u32 << 2;
 pub const QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_ACTIVE: u32 = 1_u32 << 3;
 /// Child status flag indicating a terminal reconstruction failure.
 pub const QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_FAILED: u32 = 1_u32 << 4;
+/// Child status flag recording actual inherited-workspace disarm completion.
+pub const QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_WORKSPACE_DISARMED: u32 = 1_u32 << 5;
 
 /// Exact staged-resource basis supplied to a fork-child runtime.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct QemuPluginHotForkChildPlan {
-    /// Plan schema version, currently four.
+    /// Plan schema version, currently five.
     pub schema_version: u32,
     /// Exact C ABI structure size.
     pub struct_size: u32,
-    /// Closed flag mask; version four requires zero.
+    /// Closed flag mask; version five requires zero.
     pub flags: u32,
     /// Reserved field that must remain zero.
     pub reserved: u32,
@@ -434,7 +444,7 @@ pub struct QemuPluginHotForkChildPlan {
     pub source_mapping_start: u64,
     /// Exact authenticated template setup-region VMA length.
     pub source_mapping_length: u64,
-    /// Exact authenticated template setup-region file offset; version four requires zero.
+    /// Exact authenticated template setup-region file offset; version five requires zero.
     pub source_mapping_offset: u64,
     /// Descriptor carrying the branch-private shared-memory object.
     pub private_ring_fd: i32,
@@ -444,13 +454,27 @@ pub struct QemuPluginHotForkChildPlan {
     pub wake_fd: i32,
     /// Reserved descriptor field that must remain negative one.
     pub reserved_fd: i32,
+    /// Actual original child-account generation authenticated by native staging.
+    pub account_generation: u64,
+    /// Once-issued child workspace resource generation.
+    pub workspace_generation: u64,
+    /// Actual device number of the child-private workspace descriptor.
+    pub workspace_device: u64,
+    /// Actual inode number of the child-private workspace descriptor.
+    pub workspace_inode: u64,
+    /// Exact workspace extent; enabled fingerprint workers require 65536 bytes.
+    pub workspace_length: u64,
+    /// Child-private workspace descriptor, or negative one when disabled.
+    pub workspace_fd: i32,
+    /// Reserved field that must remain zero.
+    pub workspace_reserved: u32,
 }
 
 /// Exact process-local progress reported by the fork-child runtime callback.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct QemuPluginHotForkChildStatus {
-    /// Status schema version, currently four.
+    /// Status schema version, currently five.
     pub schema_version: u32,
     /// Exact C ABI structure size.
     pub struct_size: u32,
@@ -488,6 +512,20 @@ pub struct QemuPluginHotForkChildStatus {
     pub pending_worker_mask: u64,
     /// Replacement worker operations admitted before their hold.
     pub worker_operations_in_flight: u64,
+    /// Actual original child-account generation retained by the child runtime.
+    pub account_generation: u64,
+    /// Once-issued child workspace resource generation.
+    pub workspace_generation: u64,
+    /// Actual device number of the child-private workspace descriptor.
+    pub workspace_device: u64,
+    /// Actual inode number of the child-private workspace descriptor.
+    pub workspace_inode: u64,
+    /// Exact workspace extent; enabled fingerprint workers require 65536 bytes.
+    pub workspace_length: u64,
+    /// Installed child-private workspace descriptor, or negative one when disabled.
+    pub workspace_fd: i32,
+    /// Reserved field that must remain zero.
+    pub workspace_reserved: u32,
 }
 
 /// Plugin callback that initializes, observes, or releases the fork-child runtime.
@@ -2166,7 +2204,7 @@ pub static qemu_plugin_version: c_int = QEMU_PLUGIN_API_VERSION;
 /// `info` must point to a live QEMU 11.1.1 `qemu_info_t` for the duration of
 /// this call. When `argc` is positive, `argv` must point to at least `argc`
 /// live pointers to NUL-terminated C strings for the same duration.
-#[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "native-conformance"), unsafe(no_mangle))]
 pub unsafe extern "C" fn qemu_plugin_install(
     id: QemuPluginId,
     info: *const QemuPluginInfo,
@@ -2190,6 +2228,49 @@ pub unsafe extern "C" fn qemu_plugin_install(
         let _ = (id, info, argc, argv);
         QEMU_PLUGIN_INSTALL_ERROR
     }
+}
+
+/// Validates the native execution profile and borrows its sole observer argument.
+///
+/// # Errors
+/// Rejects unsupported execution models or architectures, invalid argument
+/// counts, null entries, and arguments that are not valid UTF-8.
+///
+/// # Safety
+/// `info` must point to an aligned, initialized `QemuPluginInfo` whose target
+/// name is a live NUL-terminated string. For a nonnegative `argc`, `argv` must
+/// contain that many initialized entries, each pointing to a live NUL-terminated
+/// string. QEMU must retain these loans until this synchronous call returns;
+/// structural validation cannot establish the validity of foreign pointers.
+#[cfg(feature = "native-conformance")]
+pub(crate) unsafe fn conformance_install_argument(
+    info: *const QemuPluginInfo,
+    argc: c_int,
+    argv: *mut *mut c_char,
+) -> Result<String, crate::ram_error::RamError> {
+    validate_install_boundary(info, argc, argv)?;
+    // SAFETY: the exported conformance entrypoint retains QEMU's complete info
+    // and argument loans until this synchronous validation returns.
+    let info = unsafe { &*info };
+    observed_execution_model(info, resolve_qemu_single_threaded_rr_symbol)?;
+    target_architecture_from_qemu_info(info)?;
+    if argc != 1 {
+        return Err(crate::ram_error::RamError::Invariant(
+            "conformance observer requires one explicit RAM metadata allowance",
+        ));
+    }
+    // SAFETY: boundary validation admitted the one-entry argv vector.
+    let argument = unsafe { *argv };
+    if argument.is_null() {
+        return Err(crate::ram_error::RamError::Invariant(
+            "conformance observer argument is null",
+        ));
+    }
+    // SAFETY: QEMU lends this NUL-terminated argument for the install callback.
+    unsafe { CStr::from_ptr(argument) }
+        .to_str()
+        .map(str::to_owned)
+        .map_err(crate::ram_error::RamError::from)
 }
 
 #[cfg(unix)]

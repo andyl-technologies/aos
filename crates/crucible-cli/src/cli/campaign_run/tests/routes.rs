@@ -4,6 +4,7 @@ use super::*;
 
 #[test]
 fn campaign_virtual_time_run_preserves_duration_units_and_refuses_overflow() {
+    let _component_scope = crate::tests::component_decode_scope();
     for (duration, expected) in [
         ("2", 2),
         ("2tick", 2),
@@ -57,6 +58,7 @@ fn campaign_virtual_time_run_preserves_duration_units_and_refuses_overflow() {
 
 #[test]
 fn default_run_reports_attempt_timeout_and_bounded_primary_separately() {
+    let _component_scope = crate::tests::component_decode_scope();
     let mut plan = default_run_plan();
     plan.max_virtual_time_ticks = Some(10);
     let primary =
@@ -90,6 +92,7 @@ fn default_run_reports_attempt_timeout_and_bounded_primary_separately() {
 
 #[test]
 fn batch_campaign_route_accepts_exact_semantic_stops() {
+    let _component_scope = crate::tests::component_decode_scope();
     let mut default = default_run_plan();
     assert!(batch_campaign_run_eligible(&default));
     default.campaign_deployment = Some(PathBuf::from("guarded.toml"));
@@ -230,6 +233,7 @@ fn batch_campaign_route_accepts_exact_semantic_stops() {
 
 #[test]
 fn campaign_save_route_accepts_standard_virtual_time_and_marker_saves() {
+    let _component_scope = crate::tests::component_decode_scope();
     let cli = Cli::parse_from([
         "crucible",
         "save",
@@ -295,6 +299,7 @@ fn campaign_save_route_accepts_standard_virtual_time_and_marker_saves() {
 
 #[test]
 fn campaign_save_schedule_taxonomy_admits_typed_selections() {
+    let _component_scope = crate::tests::component_decode_scope();
     let scenario = default_run_plan().scenario.scenario_def().clone();
     let schedule = typed_selection_schedule(&scenario);
 
@@ -306,6 +311,7 @@ fn campaign_save_schedule_taxonomy_admits_typed_selections() {
 
 #[test]
 fn campaign_virtual_time_save_exports_closure_for_resume_and_replay_readers() {
+    let _component_scope = crate::tests::component_decode_scope();
     assert_campaign_save_exports_closure(
         &["--at", "virtual-time", "--max-virtual-time", "2ms"],
         StopCondition::VirtualTimePicoseconds(2_000_000_000),
@@ -315,6 +321,7 @@ fn campaign_virtual_time_save_exports_closure_for_resume_and_replay_readers() {
 
 #[test]
 fn campaign_marker_save_exports_current_event_proof_for_resume_and_replay_readers() {
+    let _component_scope = crate::tests::component_decode_scope();
     let marker = "guarded-campaign-save-fixture-marker";
     assert_campaign_save_exports_closure(
         &["--at", "marker", "--marker", marker],
@@ -325,6 +332,7 @@ fn campaign_marker_save_exports_current_event_proof_for_resume_and_replay_reader
 
 #[test]
 fn campaign_marker_save_after_a_typed_choice_exports_a_portable_resume() {
+    let _component_scope = crate::tests::component_decode_scope();
     let marker = "guarded-campaign-save-fixture-marker";
     assert_campaign_save_exports_closure(
         &["--at", "marker", "--marker", marker],
@@ -335,6 +343,7 @@ fn campaign_marker_save_after_a_typed_choice_exports_a_portable_resume() {
 
 #[test]
 fn campaign_virtual_time_save_after_a_typed_choice_exports_a_portable_resume() {
+    let _component_scope = crate::tests::component_decode_scope();
     assert_campaign_save_exports_closure(
         &["--at", "virtual-time", "--max-virtual-time", "2ticks"],
         StopCondition::VirtualTimePicoseconds(2),
@@ -344,6 +353,7 @@ fn campaign_virtual_time_save_after_a_typed_choice_exports_a_portable_resume() {
 
 #[test]
 fn campaign_quiescence_save_after_a_typed_choice_replays_its_observation_proof() {
+    let _component_scope = crate::tests::component_decode_scope();
     assert_campaign_save_exports_closure(
         &["--at", "quiescence"],
         StopCondition::Observation(ObservationCondition::SchedulerQuiescent),
@@ -353,6 +363,7 @@ fn campaign_quiescence_save_after_a_typed_choice_replays_its_observation_proof()
 
 #[test]
 fn campaign_property_save_after_a_typed_choice_replays_its_observation_proof() {
+    let _component_scope = crate::tests::component_decode_scope();
     assert_campaign_save_exports_closure(
         &["--at", "property", "--property", "no-split-brain"],
         StopCondition::Observation(ObservationCondition::AssertionViolationTransition(
@@ -364,6 +375,7 @@ fn campaign_property_save_after_a_typed_choice_replays_its_observation_proof() {
 
 #[test]
 fn campaign_typed_save_without_a_replay_closure_fails_before_export() {
+    let _component_scope = crate::tests::component_decode_scope();
     let marker = "guarded-campaign-save-fixture-marker";
     let stop = StopCondition::NamedBoundary(String::from(marker));
     let capture = capture_campaign_save(&["--at", "marker", "--marker", marker], stop.clone());
@@ -397,6 +409,7 @@ fn campaign_typed_save_without_a_replay_closure_fails_before_export() {
 
 #[test]
 fn run_duration_units_produce_picosecond_ticks() {
+    let _component_scope = crate::tests::component_decode_scope();
     for (duration, expected) in [
         ("2", 2),
         ("2tick", 2),
@@ -413,6 +426,7 @@ fn run_duration_units_produce_picosecond_ticks() {
 
 #[test]
 fn run_duration_rejects_overflow_at_each_unit_boundary() {
+    let _component_scope = crate::tests::component_decode_scope();
     for (unit, ticks_per_unit) in [
         ("ns", 1_000),
         ("us", 1_000_000),
@@ -448,6 +462,7 @@ fn run_duration_rejects_overflow_at_each_unit_boundary() {
 
 #[test]
 fn run_duration_requires_a_positive_supported_integer() {
+    let _component_scope = crate::tests::component_decode_scope();
     for invalid in ["", "0", "0ns", "-1ms", "1.5s", "1 ms", "1ps", "1m"] {
         assert_eq!(parse_run_duration_budget_ticks(invalid), None, "{invalid}");
     }

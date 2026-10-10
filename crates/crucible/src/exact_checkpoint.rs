@@ -3,11 +3,10 @@
 //! Storage uses the private canonical codecs in this module while consuming an
 //! independently selected repository root. The resulting opaque relation binds
 //! one target to the recomputed closure root, target manifest, snapshot,
-//! artifacts, and ordered RAM chain. Persisted records alone carry no live
+//! artifacts, and complete immutable RAM root. Persisted records alone carry no live
 //! process authority.
 
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -18,38 +17,39 @@ pub use crucible_campaign::ExactCheckpointId;
 use crucible_cas::content_envelope::ContentEnvelope;
 use crucible_cas::content_store::{ContentId, ObjectKind};
 
+mod capture_read;
+mod captured;
 mod codec;
 mod decode;
 mod repository;
 mod semantics;
+pub use captured::{ExactCheckpointCaptureBinding, authenticate_captured_exact_checkpoint};
 mod streams;
 
+pub use capture_read::CaptureReadError;
 pub use repository::authenticate_exact_checkpoint_repository;
 pub use semantics::ExactCheckpointSemanticObjectRole;
 pub use streams::ExactCheckpointRestoreStreams;
 
 use codec::*;
 
-/// Maximum number of RAM layers in one authenticated production checkpoint.
-pub const MAX_EXACT_CHECKPOINT_RAM_LAYERS: usize = 8;
-
-/// Maximum canonical v9 closure-manifest size.
+/// Maximum canonical v10 closure-manifest size.
 pub const MAX_EXACT_CHECKPOINT_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 
 /// Current production exact-closure manifest schema version.
-pub const PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION: u8 = 9;
+pub const PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION: u8 = 10;
 
-const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v9\0";
-const CLOSURE_DOMAIN: &str = "crucible.production-exact-closure.v9";
-const TARGET_DOMAIN: &str = "crucible.production-vm-exact-checkpoint.v3";
-const RAM_TARGET_DOMAIN: &str = "crucible.production-vm-exact-checkpoint.v2";
+const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v10\0";
+const CLOSURE_DOMAIN: &str = "crucible.production-exact-closure.v10";
+const TARGET_DOMAIN: &str = "crucible.production-vm-exact-checkpoint.v4";
+const RAM_TARGET_DOMAIN: &str = "crucible.production-vm-exact-checkpoint.v3";
 const SPARSE_ARTIFACT_DOMAIN: &str = "crucible.production-exact-sparse-artifact.v1";
 const ARTIFACT_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
 const ROOT_SCHEMA: &str = "crucible.executor.exact-checkpoint-root";
-const ROOT_SCHEMA_VERSION: u32 = 5;
+const ROOT_SCHEMA_VERSION: u32 = 6;
 const ROOT_BODY_BYTES: usize = 124;
 const MANIFEST_ROLE: &str = "production-manifest";
-const MANIFEST_SCHEMA_VERSION: u32 = 4;
+const MANIFEST_SCHEMA_VERSION: u32 = 5;
 const PROMOTION_SOURCE_ROLE: &str = "replay-oracle-source";
 const PROMOTION_EVIDENCE_ROLE: &str = "replay-oracle-evidence";
 const PROMOTION_EVIDENCE_SCHEMA_VERSION: u32 = 1;
@@ -62,17 +62,8 @@ const INDEX_MAGIC: &[u8; 8] = b"CRUCPIDX";
 const INDEX_PAGE_OBJECTS: usize = 4_096;
 const MAX_INDEX_BYTES: usize = 4 * 1024 * 1024;
 const OBJECT_ROLE_PREFIX: &str = "object-";
-const OBJECT_SCHEMA_VERSION: u32 = 5;
-
-/// Direct or parent-relative RAM content in an exact checkpoint.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum ExactCheckpointRamKind {
-    /// Complete RAM image.
-    Direct,
-    /// Delta relative to the preceding exact RAM identity.
-    Delta,
-}
+const OBJECT_SCHEMA_VERSION: u32 = 6;
+const RAM_ROOT_ROLE_PREFIX: &str = "ram-root-";
 
 /// QEMU checkpoint, target, and scheduler-frontier identity.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -120,43 +111,28 @@ struct ExactCheckpointArtifactRecord {
     pub extents: Vec<ExactCheckpointArtifactExtent>,
 }
 
-/// One RAM layer and its authenticated artifact relation.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ExactCheckpointRamLayerRecord {
-    /// Direct or delta encoding.
-    pub kind: ExactCheckpointRamKind,
-    /// Identity committed by QEMU for this layer.
-    pub identity: ExactCheckpointIdentity,
-    /// Required preceding identity for a delta.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent: Option<ExactCheckpointIdentity>,
-    /// Canonical RAMBlock topology identity.
-    pub topology: ContentHash,
-    /// Number of RAMBlock regions.
-    pub ram_regions: u64,
-    /// Number of encoded RAM records.
-    pub ram_records: u64,
-    /// SHA-256 QEMU must authenticate while restoring.
-    pub content_sha256: ContentHash,
-    /// Content-addressed RAM artifact.
-    pub artifact: ExactCheckpointArtifactRecord,
-}
-
-/// Direct-plus-delta RAM and device-state relation.
+/// Complete authenticated paged RAM and device-state relation.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ExactCheckpointRamRecord {
-    /// Retained ancestor closure when the chain contains deltas.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_closure: Option<ContentHash>,
     /// SHA-256 QEMU must authenticate for device VMState.
     pub device_content_sha256: ContentHash,
     /// Content-addressed device VMState artifact.
     pub device: ExactCheckpointArtifactRecord,
-    /// Ordered direct-then-delta RAM layers.
+    /// Complete immutable logical RAM realization, independent of residency.
+    pub paged: ExactCheckpointPagedRamRecord,
+}
+
+/// Canonical complete RAM relation embedded in one whole-world target.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ExactCheckpointPagedRamRecord {
+    #[serde(deserialize_with = "decode::deserialize_string")]
+    root_object: String,
+    logical_root: ContentHash,
     #[serde(deserialize_with = "decode::deserialize_vec")]
-    pub layers: Vec<ExactCheckpointRamLayerRecord>,
+    root_record: Vec<u8>,
+    identity: ExactCheckpointIdentity,
 }
 
 /// Per-node target relation embedded in a closure manifest.
@@ -208,7 +184,7 @@ struct ExactCheckpointObjectRecord {
     pub length: u64,
 }
 
-/// Complete canonical v9 closure record used to authenticate a target.
+/// Complete canonical v10 closure record used to authenticate a target.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ExactCheckpointClosureRecord {
@@ -325,6 +301,7 @@ pub struct ExactCheckpointRepositoryBinding {
     manifest_id: ContentId,
     manifest_bytes: u64,
     objects: Vec<RepositoryObjectBinding>,
+    ram_roots: Vec<ContentId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -335,11 +312,39 @@ struct RepositoryObjectBinding {
 }
 
 impl ExactCheckpointClosureBinding {
+    /// Visits complete RAM relations one node at a time without flattening pages.
+    ///
+    /// The visitor receives logical and storage identities, not live source
+    /// ownership. It can authenticate leased source metadata independently of
+    /// semantic-object decoding before preparing a restore transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed RAM records, consumed targets, or a
+    /// visitor rejection.
+    pub fn visit_paged_ram_roots(
+        &self,
+        mut visitor: impl FnMut(
+            &str,
+            &ExactCheckpointPagedRamBinding,
+        ) -> Result<(), ExactCheckpointRelationError>,
+    ) -> Result<(), ExactCheckpointRelationError> {
+        for target in &self.targets {
+            let target = target
+                .as_ref()
+                .ok_or(ExactCheckpointRelationError::InvalidStructure)?;
+            let binding = decode_paged_ram(&target.exact_ram.paged)?;
+            visitor(&target.node, &binding)?;
+        }
+        Ok(())
+    }
+
     /// Consumes and visits every authenticated semantic object once.
     ///
-    /// Each object is opened, bounded, hashed, delivered, and closed before
-    /// the next object is opened. Shared object identities count once against
-    /// `byte_limit` while each semantic role is still delivered.
+    /// Each unique object is opened, bounded, hashed, and closed before the
+    /// next object is opened. The authenticated buffers remain together until
+    /// all semantic roles have been delivered in their declared order. Shared
+    /// identities count once against `byte_limit` while each role is delivered.
     /// The visitor returns the decoded semantic identity for the fault
     /// continuation and `None` for every other role. The resulting target
     /// claims retain that identity for QMP RAM provenance authentication.
@@ -349,18 +354,17 @@ impl ExactCheckpointClosureBinding {
     /// Returns [`ExactCheckpointExecutionSourceError`] when an object is
     /// unavailable, has the wrong length or identity, exceeds the aggregate
     /// limit, or either callback rejects the operation.
-    pub fn visit_semantic_objects(
+    pub fn visit_semantic_objects<R: std::io::Read + Send>(
         self,
         byte_limit: u64,
         boundary: impl FnMut() -> std::io::Result<()>,
-        open: impl FnMut(ContentHash) -> std::io::Result<Box<dyn std::io::Read + Send>>,
+        open: impl FnMut(ContentHash) -> std::io::Result<R>,
         visit: impl FnMut(
             ExactCheckpointSemanticObjectRole<'_>,
             &[u8],
         ) -> std::io::Result<Option<ContentHash>>,
     ) -> Result<ExactCheckpointTraversedClosureBinding, ExactCheckpointExecutionSourceError> {
         let fault_semantic_identity = semantics::visit_authenticated_semantic_objects(
-            &self.repository,
             &self.closure,
             &self.targets,
             byte_limit,
@@ -525,14 +529,7 @@ impl ExactCheckpointStructuralTargetClaim {
             checkpoint.id,
             scheduler,
         )?;
-        if self
-            .target
-            .exact_ram
-            .layers
-            .last()
-            .map(|layer| layer.identity)
-            != Some(expected)
-        {
+        if self.target.exact_ram.paged.identity != expected {
             return Err(ExactCheckpointRelationError::TargetManifestMismatch);
         }
 
@@ -548,38 +545,17 @@ impl ExactCheckpointStructuralTargetClaim {
             self.target.exact_ram.device.length,
         )
     }
-
-    /// Returns the number of ordered RAM layers.
-    #[must_use]
-    fn ram_layer_count(&self) -> usize {
-        self.target.exact_ram.layers.len()
-    }
-
-    /// Returns one ordered RAM-layer view.
-    #[must_use]
-    fn ram_layer(&self, index: usize) -> Option<ExactCheckpointRamLayerBinding<'_>> {
-        self.target
-            .exact_ram
-            .layers
-            .get(index)
-            .map(|layer| ExactCheckpointRamLayerBinding { layer })
-    }
 }
 
 impl ExactCheckpointStructuralTargetClaim {
-    /// Returns the structurally bound final RAM-layer identity, if present.
+    /// Returns the structurally bound frozen RAM checkpoint identity.
     ///
     /// The caller must still authenticate its concrete execution state before
     /// using this identity as a QEMU restore or capture authority.
     #[must_use]
-    pub fn final_ram_layer_identity(&self) -> Option<(ContentHash, ContentHash, ContentHash)> {
-        self.target.exact_ram.layers.last().map(|layer| {
-            (
-                layer.identity.checkpoint,
-                layer.identity.target,
-                layer.identity.frontier,
-            )
-        })
+    pub fn ram_identity(&self) -> (ContentHash, ContentHash, ContentHash) {
+        let identity = self.target.exact_ram.paged.identity;
+        (identity.checkpoint, identity.target, identity.frontier)
     }
 
     /// Authenticates execution state and opens its logical artifact streams.
@@ -616,6 +592,20 @@ impl ExactCheckpointStructuralTargetClaim {
 }
 
 impl ExactCheckpointVerifiedNode {
+    /// Returns the exact scoped RAM root authenticated by the whole-world target.
+    ///
+    /// The relation binds logical contents and storage realization. Source
+    /// leases and fresh pager/controller registrations remain runtime authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if canonical root decoding or identity validation fails.
+    pub fn paged_ram(
+        &self,
+    ) -> Result<ExactCheckpointPagedRamBinding, ExactCheckpointRelationError> {
+        decode_paged_ram(&self.target.target.exact_ram.paged)
+    }
+
     /// Returns the authenticated repository root enclosing this execution.
     #[must_use]
     pub fn repository_root(&self) -> ExactCheckpointId {
@@ -712,18 +702,88 @@ impl ExactCheckpointVerifiedNode {
     pub fn device_state(&self) -> (ContentHash, ContentHash, u64) {
         self.target.device_state()
     }
+}
 
-    /// Returns the number of ordered RAM layers.
-    #[must_use]
-    pub fn ram_layer_count(&self) -> usize {
-        self.target.ram_layer_count()
+/// Authenticated complete logical RAM relation for lazy local restoration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExactCheckpointPagedRamBinding {
+    root_object: ContentId,
+    root_record: crucible_ram::RootRecord,
+    identity: ExactCheckpointIdentity,
+}
+
+impl ExactCheckpointPagedRamBinding {
+    /// Returns the root's independently authenticated CAS storage identity.
+    pub const fn object_id(&self) -> ContentId {
+        self.root_object
     }
 
-    /// Returns one ordered RAM-layer view.
-    #[must_use]
-    pub fn ram_layer(&self, index: usize) -> Option<ExactCheckpointRamLayerBinding<'_>> {
-        self.target.ram_layer(index)
+    /// Returns the complete inventory and exact-scope region commitments.
+    pub fn root_record(&self) -> &crucible_ram::RootRecord {
+        &self.root_record
     }
+
+    /// Returns the frozen checkpoint, target, and scheduler frontier identities.
+    pub const fn identity(&self) -> (ContentHash, ContentHash, ContentHash) {
+        (
+            self.identity.checkpoint,
+            self.identity.target,
+            self.identity.frontier,
+        )
+    }
+
+    /// Authenticates a leased store realization before registering a lazy source.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the root object or canonical logical record differs.
+    pub fn authenticate_source(
+        &self,
+        root: &crucible_cas::ram::LeasedRamRoot,
+    ) -> Result<(), ExactCheckpointRelationError> {
+        if self.root_object != root.object_id() || self.root_record != *root.record() {
+            return Err(ExactCheckpointRelationError::TargetManifestMismatch);
+        }
+        Ok(())
+    }
+}
+
+fn decode_paged_ram(
+    record: &ExactCheckpointPagedRamRecord,
+) -> Result<ExactCheckpointPagedRamBinding, ExactCheckpointRelationError> {
+    let invalid = |_| ExactCheckpointRelationError::InvalidStructure;
+    let root_object = ContentId::parse(&record.root_object).map_err(invalid)?;
+    crate::owned_decode::charge_array::<u8>(root_object.encoded_len())
+        .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
+    if root_object.encode() != record.root_object
+        || root_object.kind() != ObjectKind::ExactManifest
+        || root_object.schema_version() != 1
+    {
+        return Err(ExactCheckpointRelationError::InvalidStructure);
+    }
+    let limits = crucible_ram::Limits::default();
+    let decoded_bytes = crucible_ram::RootRecord::decoding_memory_bound(limits)
+        .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
+    crate::owned_decode::charge_bytes(decoded_bytes)
+        .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
+    let root_record = crucible_ram::RootRecord::decode(&record.root_record, limits)
+        .map_err(|_| ExactCheckpointRelationError::InvalidStructure)?;
+    crate::owned_decode::charge_array::<u8>(root_record.encoded_len())
+        .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
+    if root_record.scope() != crucible_ram::Scope::Exact
+        || root_record
+            .try_encode()
+            .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?
+            != record.root_record
+        || root_record.digest().as_bytes() != &record.logical_root.bytes
+    {
+        return Err(ExactCheckpointRelationError::InvalidStructure);
+    }
+    Ok(ExactCheckpointPagedRamBinding {
+        root_object,
+        root_record,
+        identity: record.identity,
+    })
 }
 
 impl ExactCheckpointRootOverlayVerifier {
@@ -833,40 +893,6 @@ impl ExactCheckpointRootOverlayVerifier {
     }
 }
 
-/// Borrowed authenticated RAM-layer relation.
-#[derive(Clone, Copy, Debug)]
-pub struct ExactCheckpointRamLayerBinding<'a> {
-    layer: &'a ExactCheckpointRamLayerRecord,
-}
-
-impl ExactCheckpointRamLayerBinding<'_> {
-    /// Returns the checkpoint, target, and frontier identities.
-    #[must_use]
-    pub const fn identity(self) -> (ContentHash, ContentHash, ContentHash) {
-        (
-            self.layer.identity.checkpoint,
-            self.layer.identity.target,
-            self.layer.identity.frontier,
-        )
-    }
-
-    /// Returns the RAMBlock topology identity.
-    #[must_use]
-    pub const fn topology(self) -> ContentHash {
-        self.layer.topology
-    }
-
-    /// Returns the artifact identity, SHA-256, and logical length.
-    #[must_use]
-    pub const fn artifact(self) -> (ContentHash, ContentHash, u64) {
-        (
-            self.layer.artifact.identity,
-            self.layer.content_sha256,
-            self.layer.artifact.length,
-        )
-    }
-}
-
 /// Exact-checkpoint relation authentication failure.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum ExactCheckpointRelationError {
@@ -913,7 +939,7 @@ pub enum ExactCheckpointExecutionSourceError {
 /// substitute a snapshot, artifact, RAM layer, parent, or geometry value after
 /// validation.
 /// The decoder admits every owned allocation against `owned_byte_limit`, then
-/// requires the input bytes to match the canonical v9 encoding exactly.
+/// requires the input bytes to match the canonical v10 encoding exactly.
 /// Storage separately authenticates the bytes named by each artifact; QEMU
 /// rechecks those identities while consuming the proof.
 ///
@@ -927,53 +953,18 @@ pub fn authenticate_exact_checkpoint_closure(
     manifest_bytes: &[u8],
     owned_byte_limit: u64,
 ) -> Result<ExactCheckpointClosureBinding, ExactCheckpointRelationError> {
-    let payload = manifest_bytes
-        .strip_prefix(MANIFEST_MAGIC)
-        .ok_or(ExactCheckpointRelationError::InvalidStructure)?;
-    if payload.len() > MAX_EXACT_CHECKPOINT_MANIFEST_BYTES
-        || u64::try_from(manifest_bytes.len()).unwrap_or(u64::MAX) > owned_byte_limit
-    {
-        return Err(ExactCheckpointRelationError::ResourceExhausted);
-    }
-    let mut closure: ExactCheckpointClosureRecord =
-        decode::decode_cbor_with_limit(payload, owned_byte_limit)?;
-    closure
-        .objects
-        .try_reserve_exact(repository.objects.len())
-        .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
-    closure.objects.extend(
+    let mut closure = decode_canonical_closure(
+        manifest_bytes,
+        owned_byte_limit,
         repository
             .objects
             .iter()
-            .map(|object| ExactCheckpointObjectRecord {
-                identity: object.identity,
-                length: object.length,
-            }),
-    );
-
-    let canonical_manifest = exact_checkpoint_closure_bytes(&closure, manifest_bytes.len())?;
-    if canonical_manifest != manifest_bytes {
-        return Err(ExactCheckpointRelationError::InvalidStructure);
-    }
-    validate_closure_structure(&closure)?;
-
-    let root = exact_checkpoint_closure_identity(&mut closure)?;
-    if closure.identity != root {
-        return Err(ExactCheckpointRelationError::RootMismatch);
-    }
-    authenticate_repository_manifest(&repository, &closure, root, &canonical_manifest)?;
-
-    for target in &closure.targets {
-        let observed = exact_checkpoint_target_manifest_identity(
-            closure.configuration,
-            closure.fault_checkpoint,
-            target,
-        );
-        if target.manifest_identity != observed {
-            return Err(ExactCheckpointRelationError::TargetManifestMismatch);
-        }
-    }
-
+            .map(|object| (object.identity, object.length)),
+    )?;
+    authenticate_repository_manifest(&repository, &closure, closure.identity, manifest_bytes)?;
+    validate_target_identities(&closure)?;
+    crate::owned_decode::charge_array::<Option<ExactCheckpointTargetRecord>>(closure.targets.len())
+        .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
     let mut targets = Vec::new();
     targets
         .try_reserve_exact(closure.targets.len())
@@ -985,18 +976,80 @@ pub fn authenticate_exact_checkpoint_closure(
             &target.node,
         );
         let index = targets.len();
+        crate::owned_decode::charge_btree_entry::<ContentHash, usize>()
+            .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
         if target_index.insert(identity, index).is_some() {
             return Err(ExactCheckpointRelationError::InvalidStructure);
         }
         targets.push(Some(target));
     }
 
+    let (layout, _) = std::alloc::Layout::new::<[usize; 2]>()
+        .extend(std::alloc::Layout::new::<ExactCheckpointRepositoryBinding>())
+        .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
+    crate::owned_decode::charge_array::<u8>(layout.pad_to_align().size())
+        .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
     Ok(ExactCheckpointClosureBinding {
         repository: Arc::new(repository),
         closure,
         targets,
         target_index,
     })
+}
+
+fn decode_canonical_closure(
+    manifest_bytes: &[u8],
+    owned_byte_limit: u64,
+    objects: impl ExactSizeIterator<Item = (ContentHash, u64)>,
+) -> Result<ExactCheckpointClosureRecord, ExactCheckpointRelationError> {
+    let payload = manifest_bytes
+        .strip_prefix(MANIFEST_MAGIC)
+        .ok_or(ExactCheckpointRelationError::InvalidStructure)?;
+    if payload.len() > MAX_EXACT_CHECKPOINT_MANIFEST_BYTES
+        || u64::try_from(manifest_bytes.len()).unwrap_or(u64::MAX) > owned_byte_limit
+    {
+        return Err(ExactCheckpointRelationError::ResourceExhausted);
+    }
+    let mut closure: ExactCheckpointClosureRecord =
+        decode::decode_cbor_with_limit(payload, owned_byte_limit)?;
+    crate::owned_decode::charge_array::<ExactCheckpointObjectRecord>(objects.len())
+        .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
+    closure
+        .objects
+        .try_reserve_exact(objects.len())
+        .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
+    closure
+        .objects
+        .extend(objects.map(|(identity, length)| ExactCheckpointObjectRecord { identity, length }));
+
+    let canonical_manifest = exact_checkpoint_closure_bytes(&closure, manifest_bytes.len())?;
+    if canonical_manifest != manifest_bytes {
+        return Err(ExactCheckpointRelationError::InvalidStructure);
+    }
+    validate_closure_structure(&closure)?;
+
+    let root = exact_checkpoint_closure_identity(&mut closure)?;
+    if closure.identity != root {
+        return Err(ExactCheckpointRelationError::RootMismatch);
+    }
+
+    Ok(closure)
+}
+
+fn validate_target_identities(
+    closure: &ExactCheckpointClosureRecord,
+) -> Result<(), ExactCheckpointRelationError> {
+    for target in &closure.targets {
+        let observed = exact_checkpoint_target_manifest_identity(
+            closure.configuration,
+            closure.fault_checkpoint,
+            target,
+        )?;
+        if target.manifest_identity != observed {
+            return Err(ExactCheckpointRelationError::TargetManifestMismatch);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

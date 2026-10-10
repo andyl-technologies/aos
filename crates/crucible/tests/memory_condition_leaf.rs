@@ -88,6 +88,9 @@ impl ConditionLeafOracle for NoNamedLeaves {
 
 #[test]
 fn memory_predicate_observes_current_physical_sample() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let place = MemPlace::physical_address(0x1000, MemoryWidth::U32);
     let condition = Predicate::memory_predicate(node("server"), place, MemoryCmp::Eq, 0xfeed);
     let matching = ObservableEvent::memory_sample(
@@ -115,11 +118,15 @@ fn memory_predicate_observes_current_physical_sample() {
     assert!(
         evaluator(21, vec![wrong_place, wrong_time, matching])
             .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
     );
 }
 
 #[test]
 fn memory_predicate_comparisons_are_unsigned_and_deterministic() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let place = MemPlace::register("rax", MemoryWidth::U64);
     let sample = ObservableEvent::memory_sample(
         time(5),
@@ -130,22 +137,42 @@ fn memory_predicate_comparisons_are_unsigned_and_deterministic() {
     );
 
     assert!(
-        evaluator(5, vec![sample.clone()]).evaluate_assertion_condition(
-            &Predicate::memory_predicate(node("server"), place.clone(), MemoryCmp::Ge, 10),
-        )
+        evaluator(5, vec![sample.clone()])
+            .evaluate_assertion_condition(&Predicate::memory_predicate(
+                node("server"),
+                place.clone(),
+                MemoryCmp::Ge,
+                10
+            ),)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
     );
     assert!(
-        evaluator(5, vec![sample.clone()]).evaluate_assertion_condition(
-            &Predicate::memory_predicate(node("server"), place.clone(), MemoryCmp::Lt, 11),
-        )
+        evaluator(5, vec![sample.clone()])
+            .evaluate_assertion_condition(&Predicate::memory_predicate(
+                node("server"),
+                place.clone(),
+                MemoryCmp::Lt,
+                11
+            ),)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
     );
-    assert!(!evaluator(5, vec![sample]).evaluate_assertion_condition(
-        &Predicate::memory_predicate(node("server"), place, MemoryCmp::Gt, 10),
-    ));
+    assert!(
+        !evaluator(5, vec![sample])
+            .evaluate_assertion_condition(&Predicate::memory_predicate(
+                node("server"),
+                place,
+                MemoryCmp::Gt,
+                10
+            ),)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
 }
 
 #[test]
 fn memory_predicate_resolves_symbols_host_side() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let place = MemPlace::symbol("cluster_state", MemoryWidth::U8);
     let condition = Predicate::memory_predicate(node("server"), place.clone(), MemoryCmp::Eq, 2);
     let sample = ObservableEvent::memory_sample(
@@ -163,12 +190,20 @@ fn memory_predicate_resolves_symbols_host_side() {
     assert!(
         evaluator_with_resolution(33, vec![sample.clone()], vec![resolution])
             .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
     );
-    assert!(!evaluator(33, vec![sample]).evaluate_assertion_condition(&condition));
+    assert!(
+        !evaluator(33, vec![sample])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
 }
 
 #[test]
 fn memory_predicate_virtual_address_requires_host_resolution() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let place = MemPlace::virtual_address(0x7000, MemoryWidth::U8);
     let condition = Predicate::memory_predicate(node("server"), place.clone(), MemoryCmp::Eq, 2);
     let sample = ObservableEvent::memory_sample(
@@ -183,15 +218,23 @@ fn memory_predicate_virtual_address_requires_host_resolution() {
         ResolvedMemPlace::virtual_address(0x7000, 1),
     );
 
-    assert!(!evaluator(34, vec![sample.clone()]).evaluate_assertion_condition(&condition));
+    assert!(
+        !evaluator(34, vec![sample.clone()])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
     assert!(
         evaluator_with_resolution(34, vec![sample], vec![resolution])
             .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
     );
 }
 
 #[test]
 fn memory_sample_event_keeps_sample_icount_and_explicit_evaluation_time() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let event = ObservableEvent::memory_sample(
         time(99),
         icount(44),
@@ -211,6 +254,9 @@ fn memory_sample_event_keeps_sample_icount_and_explicit_evaluation_time() {
 
 #[test]
 fn event_graph_fires_from_memory_predicate_without_guest_marker_support() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let graph = EventGraph::new_for_world(
         vec![Event::once(
             crucible::EventId::from_name("pass-on-state"),
@@ -242,6 +288,9 @@ fn event_graph_fires_from_memory_predicate_without_guest_marker_support() {
 
 #[test]
 fn memory_predicate_properties_validate_referenced_nodes() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = Properties::from_assertions_for_world(
         &memory_world(),
         vec![assertion(
@@ -265,6 +314,9 @@ fn memory_predicate_properties_validate_referenced_nodes() {
 
 #[test]
 fn memory_predicate_round_trips_through_properties_serialization() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = memory_world();
     let predicate = Predicate::all_of(vec![
         Predicate::memory_predicate(
@@ -307,6 +359,9 @@ fn memory_predicate_round_trips_through_properties_serialization() {
 
 #[test]
 fn memory_predicate_material_distinguishes_place_cmp_and_value() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let address_a = properties_for(Predicate::memory_predicate(
         node("server"),
         MemPlace::physical_address(0x1000, MemoryWidth::U32),

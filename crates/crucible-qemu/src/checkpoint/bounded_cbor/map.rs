@@ -4,7 +4,7 @@ use serde::de::{IgnoredAny, MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{BoundedCborError, collection_resource, resource_message};
+use super::{BoundedCborError, collection_resource, reserve_table, resource_message};
 
 /// A canonically ordered map backed by one fallibly grown vector.
 pub(crate) struct BoundedMap<K, V, const MAX: u64> {
@@ -72,9 +72,14 @@ impl<K: Ord, V, const MAX: u64> BoundedMap<K, V, MAX> {
                 MAX,
             ));
         }
-        self.entries
-            .try_reserve_exact(additional)
-            .map_err(|_| collection_resource("bounded CBOR map", current, requested, MAX))
+        reserve_table(
+            &mut self.entries,
+            additional,
+            "bounded CBOR map",
+            MAX,
+            false,
+        )
+        .map_err(|_| collection_resource("bounded CBOR map", current, requested, MAX))
     }
 
     /// Returns the admitted entry capacity for precommit staging tests.
@@ -100,8 +105,7 @@ impl<K: Ord, V, const MAX: u64> BoundedMap<K, V, MAX> {
                 if current >= MAX {
                     return Err(collection_resource("bounded CBOR map", current, 1, MAX));
                 }
-                self.entries
-                    .try_reserve(1)
+                reserve_table(&mut self.entries, 1, "bounded CBOR map", MAX, true)
                     .map_err(|_| collection_resource("bounded CBOR map", current, 1, MAX))?;
                 self.entries.insert(index, (key, value));
                 Ok(None)
@@ -129,9 +133,14 @@ impl<K, V, const MAX: u64> BoundedMap<K, V, MAX> {
         allocation_error: impl FnOnce() -> E,
     ) -> Result<Self, E> {
         let mut entries = Vec::new();
-        entries
-            .try_reserve_exact(self.entries.len())
-            .map_err(|_| allocation_error())?;
+        reserve_table(
+            &mut entries,
+            self.entries.len(),
+            "bounded CBOR map",
+            MAX,
+            false,
+        )
+        .map_err(|_| allocation_error())?;
         for (key, value) in &self.entries {
             entries.push((clone_key(key)?, clone_value(value)?));
         }
@@ -220,16 +229,22 @@ impl<'de, K: Deserialize<'de> + Ord, V: Deserialize<'de>, const MAX: u64> Deseri
                     )));
                 }
                 let mut entries: Vec<(K, V)> = Vec::new();
-                let initial = hint.min(1024);
-                entries.try_reserve_exact(initial).map_err(|_| {
-                    serde::de::Error::custom(resource_message(
-                        "bounded CBOR map",
-                        0,
-                        initial as u64,
-                        MAX,
-                        MAX,
-                    ))
-                })?;
+                let initial = if crucible::owned_decode::current_budget().is_some() {
+                    hint
+                } else {
+                    hint.min(1024)
+                };
+                reserve_table(&mut entries, initial, "bounded CBOR map", MAX, false).map_err(
+                    |_| {
+                        serde::de::Error::custom(resource_message(
+                            "bounded CBOR map",
+                            0,
+                            initial as u64,
+                            MAX,
+                            MAX,
+                        ))
+                    },
+                )?;
                 loop {
                     let current = u64::try_from(entries.len()).unwrap_or(u64::MAX);
                     if current >= MAX {
@@ -245,15 +260,17 @@ impl<'de, K: Deserialize<'de> + Ord, V: Deserialize<'de>, const MAX: u64> Deseri
                         break;
                     }
                     if entries.len() == entries.capacity() {
-                        entries.try_reserve(1).map_err(|_| {
-                            serde::de::Error::custom(resource_message(
-                                "bounded CBOR map",
-                                current,
-                                1,
-                                MAX,
-                                MAX,
-                            ))
-                        })?;
+                        reserve_table(&mut entries, 1, "bounded CBOR map", MAX, true).map_err(
+                            |_| {
+                                serde::de::Error::custom(resource_message(
+                                    "bounded CBOR map",
+                                    current,
+                                    1,
+                                    MAX,
+                                    MAX,
+                                ))
+                            },
+                        )?;
                     }
                     let Some((key, value)) = map.next_entry()? else {
                         break;
@@ -269,6 +286,9 @@ impl<'de, K: Deserialize<'de> + Ord, V: Deserialize<'de>, const MAX: u64> Deseri
             }
         }
 
-        deserializer.deserialize_map(BoundedMapVisitor::<K, V, MAX>(std::marker::PhantomData))
+        crucible::owned_decode::deserialize_prepaid_map(
+            deserializer,
+            BoundedMapVisitor::<K, V, MAX>(std::marker::PhantomData),
+        )
     }
 }

@@ -47,6 +47,7 @@ where
             .collect();
         Self {
             server_name: server_name.into(),
+            host_operational_control: None,
             scenarios,
             sessions: BTreeMap::new(),
             next_session_id: 1,
@@ -62,6 +63,7 @@ where
             max_sessions: None,
             retain_stopped_sessions: false,
             _loop: PhantomData,
+            decode_budget: None,
         }
     }
 }

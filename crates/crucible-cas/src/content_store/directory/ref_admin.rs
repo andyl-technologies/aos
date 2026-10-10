@@ -121,6 +121,15 @@ impl DirectoryRefBackend {
 
 impl RefStoreAdmin for DirectoryRefBackend {
     fn acquire_ref_inventory_fence(&self) -> Result<Box<dyn RefInventoryFence + '_>, StoreError> {
+        self.acquire_ref_inventory_fence_with_quota(None)
+    }
+}
+
+impl DirectoryRefBackend {
+    pub(super) fn acquire_ref_inventory_fence_with_quota<'a>(
+        &'a self,
+        quota: Option<&'a dyn StorePhysicalQuotaGuard>,
+    ) -> Result<Box<dyn RefInventoryFence + 'a>, StoreError> {
         let publication = self.acquire_ref_publication_lock(FlockOperation::LockExclusive)?;
         let lock = self.acquire_ref_inventory_lock(FlockOperation::LockExclusive)?;
         let state = self.load_or_create_ref_inventory_state()?;
@@ -129,6 +138,7 @@ impl RefStoreAdmin for DirectoryRefBackend {
             _publication: publication,
             _lock: lock,
             state,
+            quota,
         }))
     }
 }
@@ -138,6 +148,16 @@ pub(super) fn scan_ref_namespace(
     namespace: &RefName,
     after: Option<&RefName>,
     limit: usize,
+) -> Result<RefScanPage, StoreError> {
+    scan_ref_namespace_with_quota(backend, namespace, after, limit, None)
+}
+
+pub(super) fn scan_ref_namespace_with_quota(
+    backend: &DirectoryRefBackend,
+    namespace: &RefName,
+    after: Option<&RefName>,
+    limit: usize,
+    quota: Option<&dyn StorePhysicalQuotaGuard>,
 ) -> Result<RefScanPage, StoreError> {
     validate_ref_scan_basis(namespace, after, limit)?;
     let inventory_root = backend.root.join("refs");
@@ -186,6 +206,7 @@ pub(super) fn scan_ref_namespace(
             Ok(())
         },
         &mut inventory_count,
+        quota,
     )?;
 
     let has_more = candidates.len() > limit;
@@ -209,6 +230,7 @@ struct DirectoryRefInventoryFence<'a> {
     _publication: File,
     _lock: File,
     state: DirectoryRefInventoryState,
+    quota: Option<&'a dyn StorePhysicalQuotaGuard>,
 }
 
 impl RefInventoryFence for DirectoryRefInventoryFence<'_> {
@@ -238,7 +260,15 @@ impl RefInventoryFence for DirectoryRefInventoryFence<'_> {
                 });
             }
         }
-        visit_ref_directory(self.backend, &root, &root, 0, visitor, &mut refs)?;
+        visit_ref_directory(
+            self.backend,
+            &root,
+            &root,
+            0,
+            visitor,
+            &mut refs,
+            self.quota,
+        )?;
         Ok(RefInventorySummary::from_parts(generation, refs))
     }
 }
@@ -250,7 +280,20 @@ fn visit_ref_directory(
     depth: u16,
     visitor: &mut dyn FnMut(RefInventoryRecord) -> Result<(), StoreError>,
     refs: &mut u64,
+    quota: Option<&dyn StorePhysicalQuotaGuard>,
 ) -> Result<(), StoreError> {
+    // Recursion acquires each directory descriptor separately. A shallow
+    // namespace does not have to reserve the maximum 512-level path in advance.
+    let _resources = quota
+        .map(|guard| {
+            let path_bytes = (directory.as_os_str().len() as u64)
+                .checked_add(1024)
+                .and_then(|bytes| bytes.checked_mul(8))
+                .and_then(|bytes| bytes.checked_add(64 * 1024))
+                .ok_or(StoreError::Quota)?;
+            guard.reserve_resources(2, path_bytes)
+        })
+        .transpose()?;
     let entries = fs::read_dir(directory).map_err(|source| StoreError::Io {
         operation: "read-ref-inventory-directory",
         path: directory.to_path_buf(),
@@ -275,7 +318,15 @@ fn visit_ref_directory(
                 });
             }
             validate_relative_ref_name(root, &path)?;
-            visit_ref_directory(backend, root, &path, depth.saturating_add(1), visitor, refs)?;
+            visit_ref_directory(
+                backend,
+                root,
+                &path,
+                depth.saturating_add(1),
+                visitor,
+                refs,
+                quota,
+            )?;
             continue;
         }
         if !file_type.is_file() {

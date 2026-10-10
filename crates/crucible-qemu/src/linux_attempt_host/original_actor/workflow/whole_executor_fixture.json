@@ -1,0 +1,290 @@
+{
+  "schema": "crucible.measurement-resident-workflow.v2",
+  "family": "residentThroughput",
+  "nativeCount": 1,
+  "hotFork": null,
+  "worldMemoryMib": 512,
+  "executionQuanta": 32,
+  "serviceProfile": {
+    "operator": {
+      "executor": {
+        "endpoint": {
+          "path": "/run/crucible/measurement-executor.sock",
+          "ownerUserId": 0,
+          "ownerGroupId": 0,
+          "socketMode": 384
+        },
+        "server": {
+          "connectionWorkers": 1,
+          "pendingConnections": 1,
+          "maximumRequestsPerConnection": 1,
+          "acceptPollMillis": 1,
+          "readTimeoutMillis": 100,
+          "writeTimeoutMillis": 100
+        },
+        "ledgerDirectory": "executor-ledger",
+        "maximumCheckpointBytes": 1048576,
+        "daemonEpoch": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "storeNamespace": "0000000000000000000000000000000000000000000000000000000000000000",
+        "capacity": {
+          "maximumConcurrentExecutions": 4,
+          "maximumVcpus": 10,
+          "maximumResidentBytes": 17179869184,
+          "maximumDiskBytes": 68719476736,
+          "maximumExecutionQuanta": 150000
+        },
+        "hostOperationalCapacity": {
+          "maximumPagingIoSlots": 16,
+          "maximumTaskSlots": 4096,
+          "maximumFileDescriptors": 65536,
+          "maximumMetadataBytes": 8589934592,
+          "maximumStagingBytes": 1073741824
+        },
+        "workerCount": 1,
+        "hostArchitecture": "x86_64",
+        "qemuProfile": "deterministic-tcg-v1",
+        "host": {
+          "cgroupRoot": "/sys/fs/cgroup/crucible-measurement",
+          "runRoot": "/var/lib/crucible/measurement-attempts",
+          "attemptNamespace": "measurement",
+          "firstProjectId": 100,
+          "projectIdCount": 4,
+          "childUserId": 60000,
+          "childGroupId": 60000,
+          "maximumTasks": 64,
+          "maximumFileDescriptors": 1024,
+          "maximumNodeHostServiceTasks": 4,
+          "maximumNodeHostServiceFileDescriptors": 16,
+          "maximumNodeHostServiceResidentBytes": 1048576,
+          "watcherServiceResidentBytes": 1048576,
+          "maximumInodes": 1024,
+          "finishTimeoutMillis": 1000,
+          "maximumLockedBytes": 0
+        },
+        "assignmentResources": {
+          "residentPeakBytes": 1610612736,
+          "backingPeakBytes": 4294967296,
+          "metadataBytes": 536870912,
+          "stagingBytes": 33554432,
+          "pagingIoSlots": 1,
+          "cpuSlots": 1,
+          "taskSlots": 69,
+          "fileDescriptors": 1056
+        },
+        "assignmentLimits": {
+          "maximumVcpus": 1,
+          "maximumResidentBytes": 536870912,
+          "maximumDiskBytes": 1073741824,
+          "maximumExecutionQuanta": 32
+        },
+        "hostOperationBudgets": {
+          "setup": {
+            "pollMillis": 10,
+            "progressMillis": null,
+            "totalMillis": 30000
+          },
+          "quantum": {
+            "pollMillis": 10,
+            "progressMillis": null,
+            "totalMillis": null
+          },
+          "pageIn": {
+            "pollMillis": 10,
+            "progressMillis": null,
+            "totalMillis": 30000
+          },
+          "writeback": {
+            "pollMillis": 10,
+            "progressMillis": null,
+            "totalMillis": 30000
+          },
+          "fingerprintInitialization": {
+            "pollMillis": 10,
+            "progressMillis": null,
+            "totalMillis": 30000
+          },
+          "fingerprintUpdate": {
+            "pollMillis": 10,
+            "progressMillis": null,
+            "totalMillis": 30000
+          },
+          "quiescence": {
+            "pollMillis": 10,
+            "progressMillis": null,
+            "totalMillis": 30000
+          },
+          "checkpointCapture": {
+            "pollMillis": 10,
+            "progressMillis": null,
+            "totalMillis": 30000
+          },
+          "checkpointPublication": {
+            "pollMillis": 10,
+            "progressMillis": null,
+            "totalMillis": 30000
+          },
+          "restore": {
+            "pollMillis": 10,
+            "progressMillis": null,
+            "totalMillis": 30000
+          },
+          "forkRearm": {
+            "pollMillis": 10,
+            "progressMillis": null,
+            "totalMillis": 30000
+          },
+          "transfer": {
+            "pollMillis": 10,
+            "progressMillis": null,
+            "totalMillis": 30000
+          },
+          "preparation": {
+            "pollMillis": 10,
+            "progressMillis": null,
+            "totalMillis": 3600000
+          },
+          "cleanup": {
+            "pollMillis": 10,
+            "progressMillis": null,
+            "totalMillis": 30000
+          }
+        },
+        "campaignExecution": {
+          "planner": {
+            "exhaustive": {
+              "search": "breadthFirst"
+            }
+          },
+          "planningBudget": {
+            "branchRequests": 1,
+            "proposals": 1,
+            "inputObjects": 16384,
+            "inputBytes": 33554432,
+            "fuel": 4096
+          },
+          "plannerScanLimit": 100,
+          "executorScanLimit": 100,
+          "retention": "discard",
+          "grant": {
+            "proposals": 1,
+            "attempts": 1
+          }
+        }
+      },
+      "campaignServer": {
+        "connectionWorkers": 1,
+        "pendingConnections": 1,
+        "maximumRequestsPerConnection": 1,
+        "acceptPollMillis": 1,
+        "readTimeoutMillis": 100,
+        "writeTimeoutMillis": 100
+      },
+      "campaignMode": "readWrite",
+      "componentAuthorities": {
+        "path": "/etc/crucible/measurement-components.v1",
+        "blake3": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "sqliteBootstrapBytes": 4096,
+      "sqliteHeapBytes": 8192,
+      "sqliteConnections": 1,
+      "actorMainStackBytes": 8388608,
+      "sqliteBootstrapProof": {
+        "path": "/etc/crucible/sqlite-bootstrap-target.json",
+        "blake3": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "campaignPolicy": {
+        "path": "/etc/crucible/measurement-service-policy.toml",
+        "blake3": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "campaignPolicyProjection": {
+        "path": "/etc/crucible/measurement-service-policy.json",
+        "blake3": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "registry": {
+        "residentPeakBytes": 268435456,
+        "backingPeakBytes": 1073741824,
+        "metadataBytes": 33554432,
+        "stagingBytes": 33554432,
+        "pagingIoSlots": 1,
+        "cpuSlots": 1,
+        "taskSlots": 1,
+        "fileDescriptors": 64
+      },
+      "registryProjectId": 42,
+      "catalogProjectId": 43,
+      "registryMaximumInodes": 1024
+    },
+    "catalog": {
+      "residentPeakBytes": 536870912,
+      "backingPeakBytes": 4294967296,
+      "metadataBytes": 268435456,
+      "stagingBytes": 33554432,
+      "pagingIoSlots": 1,
+      "cpuSlots": 1,
+      "taskSlots": 4,
+      "fileDescriptors": 128
+    },
+    "catalogMaximumInodes": 1048576,
+    "native": {
+      "residentPeakBytes": 1610612736,
+      "backingPeakBytes": 4294967296,
+      "metadataBytes": 536870912,
+      "stagingBytes": 33554432,
+      "pagingIoSlots": 1,
+      "cpuSlots": 1,
+      "taskSlots": 69,
+      "fileDescriptors": 1056
+    },
+    "aggregate": {
+      "nativeSlots": 4,
+      "cpuSlots": 10,
+      "residentBytes": 17179869184,
+      "backingBytes": 68719476736,
+      "metadataBytes": 8589934592,
+      "stagingBytes": 1073741824,
+      "pagingIoSlots": 16,
+      "taskSlots": 4096,
+      "fileDescriptors": 65536,
+      "dirtyUnits": 150000
+    },
+    "preparationSeconds": 3600,
+    "invocationSeconds": 3900
+  },
+  "guestAssets": {
+    "architecture": "x86_64",
+    "bootMode": "directKernel",
+    "kernel": {
+      "path": "/nix/store/fixture-kernel",
+      "bytes": 1,
+      "blake3": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "rootImage": {
+      "path": "/nix/store/fixture-root",
+      "bytes": 1,
+      "blake3": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "initrd": null,
+    "rootImageFormat": "raw",
+    "kernelCmdline": "console=ttyS0"
+  },
+  "qemu": {},
+  "plugin": {},
+  "rows": []
+}

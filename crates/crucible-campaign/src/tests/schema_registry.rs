@@ -93,7 +93,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     let selectable_catalog = rows
         .get("crucible.guest-selectable.catalog-plan")
         .expect("missing selectable catalog-plan schema");
-    assert_eq!(selectable_catalog[1], "4");
+    assert_eq!(selectable_catalog[1], "5");
     assert_eq!(
         selectable_catalog[2],
         "crucible-protocol::selectable_catalog_plan"
@@ -173,7 +173,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         let message = rows
             .get(schema)
             .unwrap_or_else(|| panic!("missing executor capability schema {schema}"));
-        assert_eq!(message[1], "1");
+        assert_eq!(message[1], "2");
         assert_eq!(message[2], "crucible-campaign::executor_capability");
         assert_eq!(message[3], "component-message");
         owned_campaign_schemas.insert(schema);
@@ -327,13 +327,13 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.production-exact-closure",
-            "9",
+            "10",
             "crucible-api::vm_lifecycle",
             "device-state",
         ),
         (
             "crucible.executor.production-checkpoint-object",
-            "5",
+            "6",
             "crucible-daemon::exact_checkpoint_store",
             "device-state",
         ),
@@ -351,7 +351,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.executor.exact-checkpoint-root",
-            "5",
+            "6",
             "crucible-daemon::exact_checkpoint_store",
             "exact-manifest",
         ),
@@ -452,7 +452,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.campaign-packaged-executor",
-            "2",
+            "3",
             "crucible-cli::verify_serve::packaged_executor",
             "deployment-config",
         ),
@@ -493,7 +493,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     let campaign_store = rows
         .get("crucible.campaign-repository-store")
         .unwrap_or_else(|| panic!("missing campaign repository-store deployment schema"));
-    assert_eq!(campaign_store[1], "2");
+    assert_eq!(campaign_store[1], "3");
     assert_eq!(campaign_store[2], "crucible-cli::campaign_store");
     assert_eq!(campaign_store[3], "deployment-config");
     let campaign_s3_credentials = rows
@@ -718,7 +718,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
             .get(schema)
             .unwrap_or_else(|| panic!("missing lower schema {schema}"));
         let expected_version = if schema == "crucible.content-store.graph-configuration" {
-            "11"
+            "12"
         } else {
             "1"
         };

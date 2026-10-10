@@ -1,10 +1,10 @@
-//! Executable gate contracts for RFC-0020 campaign requirements.
+//! Executable gate contracts for distributed campaign requirements.
 //!
-//! RFC-0020 defines gates beyond the original RFC-0010 determinism catalog.
+//! Distributed campaigns add gates beyond the core determinism catalog.
 //! This registry records whether each campaign gate has an isolable automated
 //! target wired to a Nix check.
 
-/// The executable contract attached to an RFC-0020 gate.
+/// The executable contract attached to a campaign gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CampaignGateContract {
     /// One or more isolable Cargo targets or product flights wired to a Nix check.
@@ -97,7 +97,7 @@ const fn integration_target(
     }
 }
 
-/// A canonical gate referenced by RFC-0020 requirement traceability.
+/// A canonical gate referenced by campaign requirement traceability.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CampaignGateSpec {
     /// Canonical gate name, including the `gate:` prefix.
@@ -384,7 +384,7 @@ const CAMPAIGN_ENVOY_PRODUCT_NIX_SOURCES: &[&str] = &[
     "tests/crucible/phase9-campaign-envoy-product-lifecycle.nix",
 ];
 
-/// Canonical RFC-0020 campaign gate catalog.
+/// Canonical distributed campaign gate catalog.
 pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
     automated(
         "gate:abi-conformance",
@@ -755,8 +755,8 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
                 evidence_input: "nativeIsolation",
                 evidence: &[
                     "native_isolation_scopes=network-device,native-9p-device,writable-qcow2-root,serial,pidfile,export-socket,temp-files,native-running-sibling-mutation",
-                    "native_negative_isolation_matrix=private-ring-omitted,qmp-control-aliased,console-diagnostics-aliased,writable-disk-backing-aliased,network-omitted,ninep-aliased,host-continuation-identity-aliased",
-                    "native_negative_isolation_rejected_before=child-readiness,resume,world-publication",
+                    "native_negative_isolation_matrix=private-ring-source-aliased,plugin-control-source-aliased,plugin-wake-source-aliased,console-diagnostic-source-aliased,writable-vmstate-source-aliased,network-reader-ring-scope-aliased,ninep-reader-ring-scope-aliased",
+                    "native_negative_isolation_rejected_before=native-fork,child-readiness,resume,world-publication",
                     "native_negative_isolation_source_unchanged=true",
                 ],
                 ignored: true,
@@ -780,7 +780,7 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
                     evidence: &[
                         "source=two-running-one-permanently-failed",
                         "io=block,ninep",
-                        "native_negative_isolation_matrix=private-ring-omitted,qmp-control-aliased,console-diagnostics-aliased,writable-disk-backing-aliased,network-omitted,ninep-aliased,host-continuation-identity-aliased",
+                        "native_negative_isolation_matrix=private-ring-source-aliased,plugin-control-source-aliased,plugin-wake-source-aliased,console-diagnostic-source-aliased,writable-vmstate-source-aliased,network-reader-ring-scope-aliased,ninep-reader-ring-scope-aliased",
                     ],
                     ignored: true,
                 },
@@ -980,13 +980,13 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
     ),
 ];
 
-/// Returns every RFC-0020 gate in stable lexical order.
+/// Returns every distributed campaign gate in stable lexical order.
 #[must_use]
 pub fn campaign_gates() -> &'static [CampaignGateSpec] {
     CAMPAIGN_GATES
 }
 
-/// Finds an RFC-0020 gate by its canonical name.
+/// Finds a distributed campaign gate by its canonical name.
 #[must_use]
 pub fn find_campaign_gate(name: &str) -> Option<&'static CampaignGateSpec> {
     CAMPAIGN_GATES.iter().find(|gate| gate.name == name)

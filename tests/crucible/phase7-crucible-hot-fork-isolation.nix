@@ -45,13 +45,16 @@ in
             'native_isolation_scopes=network-device,native-9p-device,writable-qcow2-root,serial,pidfile,export-socket,temp-files,native-running-sibling-mutation' \
             "$TMPDIR/native-atomic-world.evidence"
           grep -Fxq \
-            'native_negative_isolation_matrix=private-ring-omitted,qmp-control-aliased,console-diagnostics-aliased,writable-disk-backing-aliased,network-omitted,ninep-aliased,host-continuation-identity-aliased' \
+            'native_negative_isolation_matrix=private-ring-source-aliased,plugin-control-source-aliased,plugin-wake-source-aliased,console-diagnostic-source-aliased,writable-vmstate-source-aliased,network-reader-ring-scope-aliased,ninep-reader-ring-scope-aliased' \
             "$TMPDIR/native-atomic-world.evidence"
           grep -Fxq \
-            'native_negative_isolation_rejected_before=child-readiness,resume,world-publication' \
+            'native_negative_isolation_rejected_before=native-fork,child-readiness,resume,world-publication' \
             "$TMPDIR/native-atomic-world.evidence"
           grep -Fxq \
             'native_negative_isolation_source_unchanged=true' \
+            "$TMPDIR/native-atomic-world.evidence"
+          grep -Fxq \
+            'native_negative_isolation_mechanisms=authenticated-pidfd-getfd,native-stage-query,monitor-closefd,host-reader-guard' \
             "$TMPDIR/native-atomic-world.evidence"
           grep -Fxq \
             'native_real_resource_omission=child-vmstate-destination' \
@@ -94,9 +97,10 @@ in
           ambient_outputs_rejected=pidfile,export-socket
           running_sibling_mutation_isolated=true
           native_isolation_scopes=network-device,native-9p-device,writable-qcow2-root,serial,pidfile,export-socket,temp-files,native-running-sibling-mutation
-          native_negative_isolation_matrix=private-ring-omitted,qmp-control-aliased,console-diagnostics-aliased,writable-disk-backing-aliased,network-omitted,ninep-aliased,host-continuation-identity-aliased
-          native_negative_isolation_rejected_before=child-readiness,resume,world-publication
+          native_negative_isolation_matrix=private-ring-source-aliased,plugin-control-source-aliased,plugin-wake-source-aliased,console-diagnostic-source-aliased,writable-vmstate-source-aliased,network-reader-ring-scope-aliased,ninep-reader-ring-scope-aliased
+          native_negative_isolation_rejected_before=native-fork,child-readiness,resume,world-publication
           native_negative_isolation_source_unchanged=true
+          native_negative_isolation_mechanisms=authenticated-pidfd-getfd,native-stage-query,monitor-closefd,host-reader-guard
           native_real_resource_omission=child-vmstate-destination
           native_real_resource_omission_nodes=2
           native_real_resource_omission_rejected_before=child-readiness,world-publication

@@ -28,8 +28,17 @@ impl IoCoreSnapshot {
         &self,
         maximum: u64,
     ) -> Result<Vec<u8>, IoCoreSnapshotCodecError> {
+        self.canonical_bytes_with_admission(maximum, &mut |_| Ok(()))
+    }
+
+    pub(crate) fn canonical_bytes_with_admission(
+        &self,
+        maximum: u64,
+        admit_allocation: &mut dyn FnMut(u64) -> Result<(), IoCoreSnapshotCodecError>,
+    ) -> Result<Vec<u8>, IoCoreSnapshotCodecError> {
         let encoded_len = self.canonical_length_with_limit(maximum)?;
         let configured = maximum.min(HARD_IO_CORE_CHECKPOINT_BYTES);
+        admit_allocation(encoded_len as u64)?;
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(encoded_len).map_err(|_| {
             io_core_configured_resource_limit(
@@ -93,6 +102,30 @@ impl IoCoreSnapshot {
         bytes: &[u8],
         maximum: u64,
     ) -> Result<Self, IoCoreSnapshotCodecError> {
+        Self::from_canonical_bytes_with_admission(bytes, maximum, &mut |_| Ok(()))
+    }
+
+    /// Decodes a continuation after borrowing an admission for each allocation.
+    ///
+    /// The callback receives the checked target byte extent before each queue
+    /// table, payload copy, and canonical validation output is reserved. It is
+    /// never retained. The caller must retain its allocation credits through
+    /// the returned snapshot's destruction; this method supplies no resource
+    /// account or ownership wrapper.
+    ///
+    /// Representation limits and ordinary validation order are unchanged. A
+    /// callback refusal is returned without reading later members or accepting
+    /// the snapshot. Empty tables request zero bytes and do not allocate.
+    ///
+    /// # Errors
+    /// Returns any callback refusal unchanged, or the same format, geometry,
+    /// allocation, and canonicality errors as
+    /// [`Self::from_canonical_bytes_with_limit`].
+    pub fn from_canonical_bytes_with_admission(
+        bytes: &[u8],
+        maximum: u64,
+        admit_allocation: &mut dyn FnMut(u64) -> Result<(), IoCoreSnapshotCodecError>,
+    ) -> Result<Self, IoCoreSnapshotCodecError> {
         let configured = maximum.min(HARD_IO_CORE_CHECKPOINT_BYTES);
         let requested = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         if requested > configured {
@@ -104,7 +137,7 @@ impl IoCoreSnapshot {
                 HARD_IO_CORE_CHECKPOINT_BYTES,
             ));
         }
-        let mut reader = IoCoreSnapshotReader::new(bytes)?;
+        let mut reader = IoCoreSnapshotReader::new(bytes, admit_allocation)?;
         let current_icount = reader.u64("current icount")?;
         let ticks_per_ns = reader.u32("ticks per ns")?;
         let src_node = reader.u32("source node")?;
@@ -130,7 +163,11 @@ impl IoCoreSnapshot {
             outbox,
         };
         validate_io_core_snapshot(&snapshot)?;
-        if snapshot.canonical_bytes_with_limit(maximum)?.as_slice() != bytes {
+        if snapshot
+            .canonical_bytes_with_admission(maximum, admit_allocation)?
+            .as_slice()
+            != bytes
+        {
             return Err(IoCoreSnapshotCodecError::Noncanonical);
         }
         Ok(snapshot)

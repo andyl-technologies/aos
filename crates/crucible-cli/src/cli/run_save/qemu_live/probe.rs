@@ -104,8 +104,9 @@ impl LiveQemuProbeRunner for ProductionLiveQemuProbeRunner {
 pub(crate) fn run_local_qemu_debug_workflow(
     _backend: &ResolvedLocalBackend,
     plan: &DebugInvocationPlan,
+    deployment: Option<&Path>,
 ) -> Result<Vec<String>, CliError> {
-    let artifact_context = artifact_debug_context(plan)?;
+    let artifact_context = artifact_debug_context(plan, deployment)?;
     let target = match &plan.target {
         DebugPlanTarget::Artifact(path) => {
             format!(
@@ -165,16 +166,14 @@ struct ArtifactFailureContext {
 
 fn artifact_debug_context(
     plan: &DebugInvocationPlan,
+    deployment: Option<&Path>,
 ) -> Result<Option<ArtifactFailureContext>, CliError> {
     let DebugPlanTarget::Artifact(path) = &plan.target else {
         return Ok(None);
     };
-    let bytes = std::fs::read(path).map_err(|error| {
-        artifact_error(format!(
-            "debug artifact `{}` could not be read: {error}",
-            path.display()
-        ))
-    })?;
+    let resources = crate::cli_input_resources::StandaloneInputResources::open(deployment)?;
+    let _scope = resources.decoding.enter();
+    let bytes = resources.read(path)?;
     let artifact = decode_reproduction_artifact(&bytes)?;
     if !matches!(plan.coordinate, DebugPlanCoordinate::AtFailure) {
         return Ok(None);

@@ -88,3 +88,62 @@ fn snapshot_fixture(label: &str) -> QemuVmSnapshot {
     QemuVmSnapshot::diskless(checkpoint)
         .unwrap_or_else(|error| panic!("build diskless snapshot: {error}"))
 }
+
+#[test]
+fn typed_comparison_admits_different_capture_bindings_and_refuses_changed_node_state() {
+    let baseline = snapshot_fixture("baseline representation");
+    let mut candidate = snapshot_fixture("candidate representation");
+    let baseline_bytes = baseline.to_canonical_bytes().unwrap();
+    let candidate_bytes = candidate.to_canonical_bytes().unwrap();
+
+    assert_ne!(baseline.checkpoint.id, candidate.checkpoint.id);
+    assert!(
+        QemuVmSnapshot::compare_host_continuation_bytes(
+            &baseline_bytes,
+            &candidate_bytes,
+            1_048_576,
+        )
+        .unwrap()
+    );
+
+    candidate.node.console_observation_boundary.ticks += 1;
+    candidate.identity = canonical_snapshot_identity(
+        &candidate.checkpoint,
+        &candidate.host_io,
+        &candidate.node,
+        candidate.live_capture,
+    )
+    .unwrap();
+    let changed_bytes = candidate.to_canonical_bytes().unwrap();
+    assert!(
+        !QemuVmSnapshot::compare_host_continuation_bytes(
+            &baseline_bytes,
+            &changed_bytes,
+            1_048_576,
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn typed_comparison_refuses_wrong_binding_corruption_and_declared_byte_limit() {
+    let baseline = snapshot_fixture("baseline representation");
+    let mut candidate = snapshot_fixture("candidate representation");
+    let baseline_bytes = baseline.to_canonical_bytes().unwrap();
+    let candidate_bytes = candidate.to_canonical_bytes().unwrap();
+
+    assert!(
+        QemuVmSnapshot::compare_host_continuation_bytes(&baseline_bytes, &candidate_bytes, 64,)
+            .is_err()
+    );
+    let mut corrupt = candidate_bytes.clone();
+    *corrupt.last_mut().unwrap() ^= 1;
+    assert!(
+        QemuVmSnapshot::compare_host_continuation_bytes(&baseline_bytes, &corrupt, 1_048_576,)
+            .is_err()
+    );
+
+    candidate.node.execution_binding = baseline.checkpoint.id;
+    assert!(!baseline.same_host_continuation(&candidate));
+    assert!(candidate.to_canonical_bytes().is_err());
+}

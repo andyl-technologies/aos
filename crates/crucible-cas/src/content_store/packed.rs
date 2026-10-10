@@ -9,15 +9,23 @@
 //! switches the index generation, and only then removes superseded pack names.
 //! Readers that opened the old generation retain their file inode until EOF.
 //!
+//! Placement uses only the bounded version-two tree. The retained `index-v1`
+//! filename is a namespace location, not a format promise: its root magic must
+//! identify version two, and older roots are refused without an importer.
+//! Pack-body framing remains version one; the configuration binding and graph
+//! identity explicitly select the version-two placement semantics.
+//!
 //! ```text
 //! root/
 //!   packs/<pack-id>.pack
 //!   .packed-admin/index-v1
+//!   .packed-admin/arena-<id>
 //!   .packed-admin/lifecycle.lock
 //!   .packed-admin/state.lock
 //! ```
 
-use std::collections::{BTreeMap, BTreeSet};
+use super::{ObjectKind, graph_object_count};
+
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -28,12 +36,31 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use rustix::fs::{FlockOperation, Mode, OFlags, flock, open};
 
+pub(super) mod admitted;
+mod checked;
+mod checked_publication;
+
+pub(in crate::content_store) use checked_publication::Accepted;
+pub use checked_publication::{PackedPublicationOutcome, PackedScopeError};
+mod checked_io;
 mod format;
+mod index_arena;
+mod index_build;
+mod index_format;
+mod index_io;
+mod index_update;
+mod inventory;
+mod maintenance;
+mod placement_index;
+pub(crate) mod read_view;
+mod repack;
+use placement_index as index_snapshot;
+#[cfg(test)]
+mod placement_tests;
 
 use format::{
-    decode_index, decode_repack_plan, encode_index, encode_pack_manifest, encode_repack_plan,
-    new_repack_plan, pack_fixed_header_length, pack_id, packed_index_digest, read_pack_header,
-    write_pack_header,
+    decode_repack_plan, encode_pack_manifest, encode_repack_plan, new_repack_plan,
+    pack_fixed_header_length, pack_id, read_pack_header, write_pack_header,
 };
 
 use super::admin::{
@@ -43,20 +70,19 @@ use super::admin::{
 use super::directory::create_dir_all_durable;
 use super::{
     BackendCapabilities, BlobHandle, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary,
-    BlobSource, BlobStoreAdmin, ByteRange, ContentId, ImmutableBlobBackend, PlacementReceipt,
-    PlannedDeleteDisposition, PutReceipt, StoreError, content_hasher, copy_source,
+    BlobSource, BlobStoreAdmin, ByteRange, CheckedInventoryFence, ContentId, ImmutableBlobBackend,
+    PlacementReceipt, PlannedDeleteDisposition, PutReceipt, StoreError, content_hasher,
+    copy_source,
 };
 
 const PACK_MAGIC: &[u8] = b"crucible.content-store.pack.v1\0";
-const INDEX_MAGIC: &[u8] = b"crucible.content-store.pack-index.v1\0";
 const PACK_ID_DOMAIN: &[u8] = b"crucible.content-store.pack-id.v1";
 const PACK_MANIFEST_DOMAIN: &[u8] = b"crucible.content-store.pack-manifest.v1";
-const INDEX_CHECKSUM_DOMAIN: &[u8] = b"crucible.content-store.pack-index.v1";
-const INDEX_DIGEST_DOMAIN: &[u8] = b"crucible.content-store.pack-index-digest.v1";
-const REPACK_PLAN_MAGIC: &[u8] = b"crucible.content-store.pack-repack-plan.v1\0";
-const REPACK_PLAN_CHECKSUM_DOMAIN: &[u8] = b"crucible.content-store.pack-repack-plan.v1";
-const REPACK_PLAN_ID_DOMAIN: &[u8] = b"crucible.content-store.pack-repack-plan-id.v1";
-const CONFIGURATION_DOMAIN: &[u8] = b"crucible.content-store.packed-configuration.v1";
+const REPACK_PLAN_MAGIC: &[u8] = b"crucible.content-store.pack-repack-plan.v2\0";
+const REPACK_PLAN_CHECKSUM_DOMAIN: &[u8] = b"crucible.content-store.pack-repack-plan.v2";
+const REPACK_PLAN_ID_DOMAIN: &[u8] = b"crucible.content-store.pack-repack-plan-id.v2";
+const CONFIGURATION_DOMAIN: &[u8] = b"crucible.content-store.packed-configuration.v2";
+pub(in crate::content_store) const INDEX_VERSION_MARKER: &[u8] = b"packed-index-v2\0";
 const INSTANCE_DOMAIN: &[u8] = b"crucible.content-store.packed-instance.v1";
 const ADMIN_DIRECTORY: &str = ".packed-admin";
 const PACK_DIRECTORY: &str = "packs";
@@ -64,9 +90,7 @@ const INDEX_FILE: &str = "index-v1";
 const LIFECYCLE_LOCK_FILE: &str = "lifecycle.lock";
 const STATE_LOCK_FILE: &str = "state.lock";
 const PACK_SUFFIX: &str = ".pack";
-const MAX_INDEX_BYTES: u64 = 16 * 1024 * 1024;
-const MAX_LOGICAL_OBJECTS: usize = 65_536;
-const MAX_PACKS: usize = 65_536;
+const MAX_PACK_MANIFEST_BYTES: u64 = 4096 * 111;
 const MAX_PACK_ENTRIES: usize = 4_096;
 const MAX_PACK_BYTES: u64 = 128 * 1024 * 1024;
 const MIN_TARGET_PACK_BYTES: u64 = 64 * 1024;
@@ -172,169 +196,100 @@ impl PackedBlobBackend {
     /// Returns an error when the index or a referenced pack cannot be
     /// authenticated and measured completely.
     pub fn accounting(&self) -> Result<PackedStorageAccounting, StoreError> {
-        let _lifecycle = self.lock_lifecycle(FlockOperation::LockShared)?;
-        let _state = self.lock_state()?;
-        let index = self.load_index()?;
-        self.validate_index_packs(&index)?;
-        self.accounting_for(&index)
+        repack::accounting(self)
     }
 
-    /// Plans a deterministic replacement of the exact current index generation.
-    ///
-    /// Planning is read-only. Any intervening put, delete, or successful repack
-    /// makes the returned plan stale and causes [`Self::apply_repack`] to fail
-    /// closed.
+    /// Plans a replacement of the exact authenticated placement generation.
     ///
     /// # Errors
-    ///
-    /// Returns an error when the current index or one of its packs cannot be
-    /// authenticated and measured completely.
+    /// Refuses corrupt metadata, incomplete physical accounting or generation overflow.
     pub fn plan_repack(&self) -> Result<PackedRepackPlan, StoreError> {
-        let _lifecycle = self.lock_lifecycle(FlockOperation::LockShared)?;
-        let _state = self.lock_state()?;
-        let index = self.load_index()?;
-        self.validate_index_packs(&index)?;
-        let before = self.accounting_for(&index)?;
-        let index_digest = packed_index_digest(&index, self.configuration)?;
-        Ok(new_repack_plan(
-            self.configuration,
-            index.instance,
-            index.generation,
-            index_digest,
-            before,
-        ))
+        repack::plan(self)
     }
 
-    /// Applies one exact-generation replacement-pack plan.
+    /// Rewrites one exact generation into bounded packs without retaining its closure.
     ///
-    /// Existing readers keep pinned old pack inodes. New readers observe the
-    /// replacement generation only after every replacement pack is durable.
-    /// Superseded pack names are removed only after the index switch. Retrying
-    /// the same plan after an indeterminate index publication or cleanup error
-    /// is idempotent while no later logical mutation has committed.
+    /// Existing readers retain their pinned inodes. Replacement names are
+    /// durable before the root changes; superseded names close afterward.
     ///
     /// # Errors
-    ///
-    /// Returns an error when the plan names another backend incarnation or a
-    /// stale index generation, or for corrupt logical bytes, pack or index
-    /// publication failure, generation overflow, or a resource bound.
+    /// Refuses a stale plan, corrupt logical bytes, incomplete publication or cleanup.
     pub fn apply_repack(&self, plan: &PackedRepackPlan) -> Result<PackedRepackReport, StoreError> {
-        let _lifecycle = self.lock_lifecycle(FlockOperation::LockExclusive)?;
-        let _state = self.lock_state()?;
-        let index = self.load_index()?;
-        self.validate_index_packs(&index)?;
-
-        if plan.configuration != self.configuration || plan.instance != index.instance {
-            return Err(StoreError::Incompatible);
-        }
-        if index.last_repack_plan == Some(plan.id) {
-            let expected_generation = plan
-                .generation
-                .checked_add(1)
-                .ok_or(StoreError::Incompatible)?;
-            if index.generation != expected_generation {
-                return Err(StoreError::Incompatible);
-            }
-            self.cleanup_staging_packs()?;
-            let removed_before = self.cleanup_unreferenced_packs(&index)?;
-            let after = self.accounting_for(&index)?;
-            return Ok(PackedRepackReport {
-                plan: plan.id,
-                before: plan.before,
-                after,
-                removed_packs: removed_before,
-                replayed: true,
-            });
-        }
-
-        let before = self.accounting_for(&index)?;
-        if index.generation != plan.generation
-            || before != plan.before
-            || packed_index_digest(&index, self.configuration)? != plan.index_digest
-        {
-            return Err(StoreError::Incompatible);
-        }
-        self.cleanup_staging_packs()?;
-        let removed_before = self.cleanup_unreferenced_packs(&index)?;
-
-        let groups = self.repack_groups(&index)?;
-        let mut candidates = Vec::with_capacity(groups.len());
-        for group in groups {
-            let mut sources = Vec::with_capacity(group.len());
-            for id in group {
-                let entry = index.entries.get(&id).ok_or(StoreError::Incompatible)?;
-                sources.push((id, self.open_entry(id, entry)?));
-            }
-            candidates.push(self.build_pack(&sources)?);
-        }
-
-        let mut next_entries = BTreeMap::new();
-        for candidate in &candidates {
-            self.publish_pack(candidate)?;
-            for (id, entry) in candidate.entries_with_pack() {
-                next_entries.insert(id, entry);
-            }
-        }
-        if !candidates.is_empty() {
-            #[cfg(feature = "destructive-recovery-faults")]
-            inject_pack_index_interruption();
-
-            for candidate in &candidates {
-                remove_temporary(&candidate.temporary, true)?;
-            }
-            sync_directory(&self.packs)?;
-        }
-
-        let next = IndexState {
-            instance: index.instance,
-            generation: index.generation.checked_add(1).ok_or(StoreError::Quota)?,
-            last_repack_plan: Some(plan.id),
-            entries: next_entries,
-        };
-        self.publish_index_reconciled(&next)?;
-
-        let retained = next.pack_ids();
-        let mut removed_packs = removed_before;
-        for pack in index.pack_ids().difference(&retained) {
-            if self.remove_pack(*pack)? {
-                removed_packs = removed_packs.checked_add(1).ok_or(StoreError::Quota)?;
-            }
-        }
-        let after = self.accounting_for(&next)?;
-        Ok(PackedRepackReport {
-            plan: plan.id,
-            before,
-            after,
-            removed_packs,
-            replayed: false,
-        })
+        repack::apply(self, plan)
     }
 
-    /// Reclaims complete and staging packs absent from the authenticated index.
-    ///
-    /// The current index and every retained pack authenticate before deletion.
-    /// An exclusive lifecycle lock excludes puts, deletes, and repacks for the
-    /// whole operation. Each removed path is outside the retained generation,
-    /// so interruption is idempotently recoverable by repeating this method.
+    /// Removes staging packs and complete packs outside the retained generation.
     ///
     /// # Errors
-    ///
-    /// Returns an error when the retained index or one of its packs fails
-    /// authentication, an unexpected pack-directory entry is present, or a
-    /// removal cannot be made durable.
+    /// Refuses malformed directory entries, corrupt retained metadata or incomplete cleanup.
     pub fn cleanup_incomplete_packs(&self) -> Result<PackedIncompleteCleanupReport, StoreError> {
         let _lifecycle = self.lock_lifecycle(FlockOperation::LockExclusive)?;
         let _state = self.lock_state()?;
         let index = self.load_index()?;
         self.validate_index_packs(&index)?;
-
-        let removed_unreferenced_packs = self.cleanup_unreferenced_packs(&index)?;
-        let removed_staging_packs = self.cleanup_staging_packs()?;
+        let (removed_unreferenced_packs, removed_staging_packs) = self.cleanup_material(&index)?;
         Ok(PackedIncompleteCleanupReport {
-            index_generation: index.generation,
+            index_generation: index.header.generation,
             removed_unreferenced_packs,
             removed_staging_packs,
         })
+    }
+
+    /// Authenticates accounting using the caller's unchanged original resources.
+    ///
+    /// # Errors
+    /// Refuses original supervision, exhausted metadata or descriptors, and corrupt placements.
+    pub fn accounting_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PackedStorageAccounting, StoreError> {
+        repack::accounting_under(
+            self,
+            &mut index_io::Operation {
+                original: Some(original),
+                boundary,
+            },
+        )
+    }
+
+    /// Plans maintenance under the same supplied original operation.
+    ///
+    /// # Errors
+    /// Refuses original supervision, incomplete physical authentication or counter overflow.
+    pub fn plan_repack_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PackedRepackPlan, StoreError> {
+        repack::plan_under(
+            self,
+            &mut index_io::Operation {
+                original: Some(original),
+                boundary,
+            },
+        )
+    }
+
+    /// Applies an exact plan under the caller's original allocation and I/O authority.
+    ///
+    /// # Errors
+    /// Refuses stale plans, original supervision, corrupt sources, insufficient current
+    /// disk headroom, and native publication or cleanup errors with their actual outcome.
+    pub fn apply_repack_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        plan: &PackedRepackPlan,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PackedRepackReport, StoreError> {
+        repack::apply_under(
+            self,
+            plan,
+            &mut index_io::Operation {
+                original: Some(original),
+                boundary,
+            },
+        )
     }
 
     fn initialize(&self) -> Result<(), StoreError> {
@@ -352,12 +307,14 @@ impl PackedBlobBackend {
                 });
             }
             Err(source) if source.kind() == io::ErrorKind::NotFound => {
-                let initial = IndexState {
-                    instance: new_instance(&self.root)?,
-                    generation: 0,
-                    last_repack_plan: None,
-                    entries: BTreeMap::new(),
-                };
+                let initial = index_snapshot::EncodedIndex::empty_under(
+                    self,
+                    new_instance(&self.root)?,
+                    &mut index_io::Operation {
+                        original: None,
+                        boundary: &mut || Ok(()),
+                    },
+                )?;
                 self.publish_index(&initial)?;
             }
             Err(source) => return Err(io_error("inspect packed index", &path, source)),
@@ -392,23 +349,21 @@ impl PackedBlobBackend {
         Ok(file)
     }
 
-    fn load_index(&self) -> Result<IndexState, StoreError> {
-        let path = self.index_path();
-        let bytes = read_bounded_file(&path, MAX_INDEX_BYTES, "read packed index")?;
-        let index = decode_index(&bytes, self.configuration)?;
-        sync_directory(&self.admin)?;
-        Ok(index)
+    fn load_index(&self) -> Result<index_snapshot::IndexSnapshot, StoreError> {
+        index_snapshot::IndexSnapshot::load_under(
+            self,
+            &mut index_io::Operation {
+                original: None,
+                boundary: &mut || Ok(()),
+            },
+        )
     }
 
-    fn publish_index(&self, index: &IndexState) -> Result<(), StoreError> {
-        let bytes = encode_index(index, self.configuration)?;
-        if bytes.len() as u64 > MAX_INDEX_BYTES {
-            return Err(StoreError::Quota);
-        }
+    fn publish_index(&self, index: &index_snapshot::EncodedIndex) -> Result<(), StoreError> {
         let (temporary, mut output) = self.create_temporary(&self.admin, "index")?;
         let result = (|| {
             output
-                .write_all(&bytes)
+                .write_all(index.bytes())
                 .and_then(|()| output.sync_all())
                 .map_err(|source| io_error("write packed index", &temporary, source))?;
             let path = self.index_path();
@@ -420,11 +375,19 @@ impl PackedBlobBackend {
         result
     }
 
-    fn publish_index_reconciled(&self, index: &IndexState) -> Result<(), StoreError> {
+    fn publish_index_reconciled(
+        &self,
+        index: &index_snapshot::EncodedIndex,
+    ) -> Result<(), StoreError> {
         match self.publish_index(index) {
             Ok(()) => Ok(()),
             Err(error) => match self.load_index() {
-                Ok(current) if current == *index => Ok(()),
+                Ok(current)
+                    if current.header == index.header
+                        && current.encoded_bytes() == index.bytes() =>
+                {
+                    Ok(())
+                }
                 Ok(_) | Err(_) => Err(error),
             },
         }
@@ -458,54 +421,34 @@ impl PackedBlobBackend {
             .join(format!("{}{}", encode_hex(pack.0), PACK_SUFFIX))
     }
 
-    fn build_pack(&self, sources: &[(ContentId, BlobHandle)]) -> Result<PackCandidate, StoreError> {
-        if sources.is_empty() || sources.len() > MAX_PACK_ENTRIES {
-            return Err(StoreError::Quota);
-        }
-        let mut ordered = sources.iter().collect::<Vec<_>>();
-        ordered.sort_by_key(|(id, _source)| *id);
-        if ordered.windows(2).any(|pair| pair[0].0 == pair[1].0) {
-            return Err(StoreError::InvalidComposition {
-                reason: "packed batch contains duplicate logical IDs",
-            });
-        }
-
-        let manifest_length = ordered.iter().try_fold(0_u64, |total, (id, _source)| {
-            total
-                .checked_add(2)
-                .and_then(|value| value.checked_add(id.to_string().len() as u64))
-                .and_then(|value| value.checked_add(16))
+    fn build_single_pack(
+        &self,
+        id: ContentId,
+        source: &BlobHandle,
+    ) -> Result<PackCandidate, StoreError> {
+        let header_length = id.with_encoded_text(|text| {
+            pack_fixed_header_length()
+                .checked_add(text.len() as u64 + 18)
                 .ok_or(StoreError::Quota)
         })?;
-        let header_length = u64::try_from(PACK_MAGIC.len())
-            .map_err(|_| StoreError::Quota)?
-            .checked_add(32 + 4 + 4)
-            .and_then(|value| value.checked_add(manifest_length))
-            .and_then(|value| value.checked_add(32))
-            .ok_or(StoreError::Quota)?;
-        let mut offset = header_length;
-        let mut entries = Vec::with_capacity(ordered.len());
-        for (id, source) in &ordered {
-            let length = source.logical_length();
-            offset = offset.checked_add(length).ok_or(StoreError::Quota)?;
-            entries.push(PackManifestEntry {
-                id: *id,
-                offset: offset - length,
-                length,
-            });
-        }
-        if offset > MAX_PACK_BYTES {
+        let entry = PackManifestEntry {
+            id,
+            offset: header_length,
+            length: source.logical_length(),
+        };
+        if header_length
+            .checked_add(entry.length)
+            .is_none_or(|length| length > MAX_PACK_BYTES)
+        {
             return Err(StoreError::Quota);
         }
-
+        let entries = [entry];
         let manifest = encode_pack_manifest(&entries)?;
         let pack = pack_id(self.configuration, &manifest);
         let (temporary, mut output) = self.create_temporary(&self.packs, "pack")?;
         let result = (|| {
             write_pack_header(&mut output, self.configuration, &entries, &manifest)?;
-            for (id, source) in ordered {
-                copy_source(*id, source, &mut output)?;
-            }
+            copy_source(id, source, &mut output)?;
             output
                 .sync_all()
                 .map_err(|source| io_error("sync packed candidate", &temporary, source))?;
@@ -528,7 +471,7 @@ impl PackedBlobBackend {
             Ok(()) => sync_directory(&self.packs),
             Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
                 let manifest = self.load_pack_manifest(candidate.id)?;
-                if manifest != candidate.entries
+                if manifest.as_slice() != candidate.entries
                     || !files_equal(&candidate.temporary, &path, MAX_PACK_BYTES)?
                 {
                     return Err(StoreError::Incompatible);
@@ -613,88 +556,27 @@ impl PackedBlobBackend {
         }
         Ok(BlobHandle::integrity_checked(
             id,
-            Arc::new(PackedBlobSource {
+            PackedBlobSource {
                 file,
                 id,
                 offset: entry.offset,
                 logical_length: entry.length,
-            }),
+            },
         ))
     }
 
-    fn accounting_for(&self, index: &IndexState) -> Result<PackedStorageAccounting, StoreError> {
-        let logical_objects = u64::try_from(index.entries.len()).map_err(|_| StoreError::Quota)?;
-        let logical_bytes = index.entries.values().try_fold(0_u64, |total, entry| {
-            total.checked_add(entry.length).ok_or(StoreError::Quota)
-        })?;
-        let packs = index.pack_ids();
-        let physical_bytes = packs.iter().try_fold(0_u64, |total, pack| {
-            let path = self.pack_path(*pack);
-            let length = fs::metadata(&path)
-                .map_err(|source| io_error("measure referenced pack", &path, source))?
-                .len();
-            total.checked_add(length).ok_or(StoreError::Quota)
-        })?;
-        Ok(PackedStorageAccounting {
-            generation: index.generation,
-            logical_objects,
-            logical_bytes,
-            packs: u64::try_from(packs.len()).map_err(|_| StoreError::Quota)?,
-            physical_bytes,
-        })
-    }
-
-    fn validate_index_packs(&self, index: &IndexState) -> Result<(), StoreError> {
-        let mut manifests = BTreeMap::new();
-        for pack in index.pack_ids() {
-            let entries = self.load_pack_manifest(pack)?;
-            manifests.insert(
-                pack,
-                entries
-                    .into_iter()
-                    .map(|entry| (entry.id, entry))
-                    .collect::<BTreeMap<_, _>>(),
-            );
-        }
-        for (id, entry) in &index.entries {
-            let manifest = manifests
-                .get(&entry.pack)
-                .and_then(|manifest| manifest.get(id))
-                .ok_or(StoreError::Incompatible)?;
-            if manifest.offset != entry.offset || manifest.length != entry.length {
-                return Err(StoreError::Incompatible);
-            }
-        }
-        Ok(())
-    }
-
-    fn repack_groups(&self, index: &IndexState) -> Result<Vec<Vec<ContentId>>, StoreError> {
-        let mut groups = Vec::new();
-        let mut current = Vec::new();
-        let mut current_bytes = pack_fixed_header_length();
-        for (id, entry) in &index.entries {
-            let entry_bytes = 2_u64
-                .checked_add(id.to_string().len() as u64)
-                .and_then(|value| value.checked_add(16))
-                .and_then(|value| value.checked_add(entry.length))
-                .ok_or(StoreError::Quota)?;
-            let exceeds_target = !current.is_empty()
-                && current_bytes
-                    .checked_add(entry_bytes)
-                    .is_none_or(|total| total > self.target_pack_bytes);
-            if exceeds_target || current.len() == MAX_PACK_ENTRIES {
-                groups.push(std::mem::take(&mut current));
-                current_bytes = pack_fixed_header_length();
-            }
-            current.push(*id);
-            current_bytes = current_bytes
-                .checked_add(entry_bytes)
-                .ok_or(StoreError::Quota)?;
-        }
-        if !current.is_empty() {
-            groups.push(current);
-        }
-        Ok(groups)
+    fn validate_index_packs(
+        &self,
+        index: &index_snapshot::IndexSnapshot,
+    ) -> Result<(), StoreError> {
+        maintenance::validate(
+            self,
+            index,
+            &mut index_io::Operation {
+                original: None,
+                boundary: &mut || Ok(()),
+            },
+        )
     }
 
     fn remove_pack(&self, pack: PackId) -> Result<bool, StoreError> {
@@ -709,74 +591,18 @@ impl PackedBlobBackend {
         }
     }
 
-    fn cleanup_unreferenced_packs(&self, index: &IndexState) -> Result<u64, StoreError> {
-        let retained = index.pack_ids();
-        let mut observed = 0_usize;
-        let mut removed = 0_u64;
-        for entry in fs::read_dir(&self.packs)
-            .map_err(|source| io_error("list immutable packs", &self.packs, source))?
-        {
-            let entry = entry
-                .map_err(|source| io_error("read immutable pack entry", &self.packs, source))?;
-            let name = entry
-                .file_name()
-                .into_string()
-                .map_err(|_| StoreError::Incompatible)?;
-            if name.starts_with('.') {
-                continue;
-            }
-            observed = observed.checked_add(1).ok_or(StoreError::Quota)?;
-            if observed > MAX_PACKS * 2 {
-                return Err(StoreError::Quota);
-            }
-            let digest = name
-                .strip_suffix(PACK_SUFFIX)
-                .and_then(decode_hex)
-                .ok_or(StoreError::Incompatible)?;
-            let pack = PackId(digest);
-            if !retained.contains(&pack) && self.remove_pack(pack)? {
-                removed = removed.checked_add(1).ok_or(StoreError::Quota)?;
-            }
-        }
-        Ok(removed)
-    }
-
-    // The caller holds lifecycle exclusively after authenticating the retained generation.
-    fn cleanup_staging_packs(&self) -> Result<u64, StoreError> {
-        let mut removed = 0_u64;
-        for entry in fs::read_dir(&self.packs)
-            .map_err(|source| io_error("list packed staging files", &self.packs, source))?
-        {
-            let entry = entry
-                .map_err(|source| io_error("read packed staging entry", &self.packs, source))?;
-            let name = entry
-                .file_name()
-                .into_string()
-                .map_err(|_| StoreError::Incompatible)?;
-            if !is_pack_temporary_name(&name) {
-                continue;
-            }
-            let file_type = entry.file_type().map_err(|source| {
-                io_error("inspect packed staging entry", &entry.path(), source)
-            })?;
-            if !file_type.is_file() {
-                return Err(StoreError::InvalidComposition {
-                    reason: "packed staging path is not a regular file",
-                });
-            }
-            fs::remove_file(entry.path()).map_err(|source| {
-                io_error(
-                    "remove abandoned packed staging file",
-                    &entry.path(),
-                    source,
-                )
-            })?;
-            removed = removed.checked_add(1).ok_or(StoreError::Quota)?;
-        }
-        if removed != 0 {
-            sync_directory(&self.packs)?;
-        }
-        Ok(removed)
+    fn cleanup_material(
+        &self,
+        index: &index_snapshot::IndexSnapshot,
+    ) -> Result<(u64, u64), StoreError> {
+        maintenance::cleanup(
+            self,
+            index,
+            &mut index_io::Operation {
+                original: None,
+                boundary: &mut || Ok(()),
+            },
+        )
     }
 }
 
@@ -789,6 +615,32 @@ fn inject_pack_index_interruption() {
 }
 
 impl ImmutableBlobBackend for PackedBlobBackend {
+    fn read_bounded_with_boundary(
+        &self,
+        request: &mut crate::ram::BoundedReadRequest<'_, '_>,
+    ) -> Result<(), StoreError> {
+        request.execute_packed(self)
+    }
+
+    fn checked_publication_metadata(
+        &self,
+        _kind: ObjectKind,
+    ) -> Result<super::CheckedPublicationMetadata, StoreError> {
+        Ok(super::CheckedPublicationMetadata {
+            maximum_placements: 1,
+            maximum_backend_name_bytes: self.name.len(),
+        })
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<super::PutBatchReceipt, StoreError> {
+        checked_publication::publish(self, original, objects, boundary)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -806,6 +658,28 @@ impl ImmutableBlobBackend for PackedBlobBackend {
         }
     }
 
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        let additional = graph_object_count(objects)?;
+        let _state = self.lock_state()?;
+        let index = self.load_index()?;
+        index
+            .header
+            .count
+            .checked_add(additional)
+            .ok_or(StoreError::Quota)?;
+        index
+            .header
+            .packs
+            .checked_add(additional)
+            .ok_or(StoreError::Quota)?;
+        index
+            .header
+            .records
+            .checked_add(additional.checked_mul(2).ok_or(StoreError::Quota)?)
+            .ok_or(StoreError::Quota)?;
+        Ok(())
+    }
+
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
         let handle = match self.read(id, None) {
             Ok(handle) => handle,
@@ -820,167 +694,87 @@ impl ImmutableBlobBackend for PackedBlobBackend {
         let _lifecycle = self.lock_lifecycle(FlockOperation::LockShared)?;
         let _state = self.lock_state()?;
         let index = self.load_index()?;
-        let entry = index.entries.get(&id).ok_or(StoreError::NotFound { id })?;
-        self.open_entry(id, entry)?.slice(range)
+        let mut operation = index_io::Operation {
+            original: None,
+            boundary: &mut || Ok(()),
+        };
+        let entry = index
+            .reader(self, &mut operation)?
+            .find(index_format::Key::object(id), &mut operation)?
+            .map(index_format::Value::entry)
+            .transpose()?
+            .ok_or(StoreError::NotFound { id })?;
+        self.open_entry(id, &entry)?.slice(range)
+    }
+
+    fn read_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        checked::lookup(self, original, id, range, boundary)
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
-        // Keep staging protected so exclusive cleanup cannot unlink an in-flight put.
         let _lifecycle = self.lock_lifecycle(FlockOperation::LockShared)?;
-        {
-            let _state = self.lock_state()?;
-            let index = self.load_index()?;
-            if let Some(entry) = index.entries.get(&id) {
-                self.open_entry(id, entry)?.copy_to(&mut io::sink())?;
-                source.verified_as(id)?;
-                return Ok(packed_receipt(&self.name, id, source.logical_length()));
-            }
-            if index.entries.len() >= MAX_LOGICAL_OBJECTS {
-                return Err(StoreError::Quota);
-            }
-        }
-
-        let candidate = self.build_pack(&[(id, source.clone())])?;
-        let result = (|| {
-            let _state = self.lock_state()?;
-            let mut index = self.load_index()?;
-            if let Some(existing) = index.entries.get(&id) {
-                if existing.length != source.logical_length() {
-                    return Err(StoreError::Incompatible);
-                }
-                self.open_entry(id, existing)?.copy_to(&mut io::sink())?;
-                return Ok(packed_receipt(&self.name, id, source.logical_length()));
-            }
-            if index.entries.len() >= MAX_LOGICAL_OBJECTS || index.pack_ids().len() >= MAX_PACKS {
-                return Err(StoreError::Quota);
-            }
-            self.publish_pack(&candidate)?;
-            let entry = candidate
-                .entries
-                .first()
-                .ok_or(StoreError::Incompatible)?
-                .to_index_entry(candidate.id);
-            index.entries.insert(id, entry);
-            index.generation = index.generation.checked_add(1).ok_or(StoreError::Quota)?;
-            index.last_repack_plan = None;
-            self.publish_index_reconciled(&index)?;
-            Ok(packed_receipt(&self.name, id, source.logical_length()))
-        })();
-        remove_temporary(&candidate.temporary, result.is_ok())?;
-        result
-    }
-}
-
-impl BlobStoreAdmin for PackedBlobBackend {
-    fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
-        let lifecycle = self.lock_lifecycle(FlockOperation::LockExclusive)?;
-        let state_lock = self.lock_state()?;
+        let _state = self.lock_state()?;
         let index = self.load_index()?;
-        self.validate_index_packs(&index)?;
-        self.cleanup_unreferenced_packs(&index)?;
-        Ok(Box::new(PackedInventoryFence {
-            backend: self,
-            _lifecycle: lifecycle,
-            _state_lock: state_lock,
-            index,
-        }))
-    }
-}
-
-struct PackedInventoryFence<'a> {
-    backend: &'a PackedBlobBackend,
-    _lifecycle: File,
-    _state_lock: File,
-    index: IndexState,
-}
-
-impl BlobInventoryFence for PackedInventoryFence<'_> {
-    fn visit_inventory(
-        &mut self,
-        visitor: &mut dyn FnMut(BlobInventoryRecord) -> Result<(), StoreError>,
-    ) -> Result<BlobInventorySummary, StoreError> {
-        let generation = persistent_inventory_generation(
-            &self.backend.name,
-            self.index.instance,
-            self.index.generation,
-        )?;
-        let mut inventory =
-            InventoryCounter::new(physical_storage_identity(self.index.instance), generation);
-        for (id, entry) in &self.index.entries {
-            let record = BlobInventoryRecord::new(*id, entry.length);
-            visitor(record)?;
-            inventory.push(record)?;
-        }
-        Ok(inventory.finish(self.backend.name.clone()))
-    }
-
-    fn delete_candidate(&mut self, id: ContentId) -> Result<PlannedDeleteDisposition, StoreError> {
-        let Some(removed) = self.index.entries.get(&id).copied() else {
-            self.backend.cleanup_unreferenced_packs(&self.index)?;
-            return Ok(PlannedDeleteDisposition::AlreadyAbsent);
+        let mut operation = index_io::Operation {
+            original: None,
+            boundary: &mut || Ok(()),
         };
-        let mut next = self.index.clone();
-        next.entries.remove(&id);
-        next.generation = next.generation.checked_add(1).ok_or(StoreError::Quota)?;
-        next.last_repack_plan = None;
-        self.backend.publish_index_reconciled(&next)?;
-        self.index = next;
-        if !self
-            .index
-            .entries
-            .values()
-            .any(|entry| entry.pack == removed.pack)
+        if let Some(existing) = index
+            .reader(self, &mut operation)?
+            .find(index_format::Key::object(id), &mut operation)?
         {
-            self.backend.remove_pack(removed.pack)?;
-        }
-        Ok(PlannedDeleteDisposition::Deleted)
-    }
-
-    fn repair_put_if_absent(
-        &mut self,
-        _authority: &PhysicalRepairAuthority,
-        id: ContentId,
-        source: &BlobHandle,
-    ) -> Result<PutReceipt, StoreError> {
-        if let Some(existing) = self.index.entries.get(&id) {
-            self.backend
-                .open_entry(id, existing)?
+            self.open_entry(id, &existing.entry()?)?
                 .copy_to(&mut io::sink())?;
             source.verified_as(id)?;
-            return Ok(packed_receipt(
-                &self.backend.name,
-                id,
-                source.logical_length(),
-            ));
+            sync_directory(&self.admin)?;
+            return Ok(packed_receipt(&self.name, id, source.logical_length()));
         }
-        if self.index.entries.len() >= MAX_LOGICAL_OBJECTS
-            || self.index.pack_ids().len() >= MAX_PACKS
-        {
-            return Err(StoreError::Quota);
-        }
-
-        let candidate = self.backend.build_pack(&[(id, source.clone())])?;
+        let pack_bytes = id.with_encoded_text(|text| {
+            pack_fixed_header_length()
+                .checked_add(text.len() as u64 + 18)
+                .and_then(|bytes| bytes.checked_add(source.logical_length()))
+                .ok_or(StoreError::Quota)
+        })?;
+        maintenance::publication_headroom(self, &index, 1, pack_bytes, &mut operation)?;
+        let candidate = self.build_single_pack(id, source)?;
+        let mut progress = checked_publication::Progress::default();
         let result = (|| {
-            self.backend.publish_pack(&candidate)?;
             let entry = candidate
                 .entries
                 .first()
                 .ok_or(StoreError::Incompatible)?
                 .to_index_entry(candidate.id);
-            let mut next = self.index.clone();
-            next.entries.insert(id, entry);
-            next.generation = next.generation.checked_add(1).ok_or(StoreError::Quota)?;
-            next.last_repack_plan = None;
-            self.backend.publish_index_reconciled(&next)?;
-            self.index = next;
-            Ok(packed_receipt(
-                &self.backend.name,
-                id,
-                source.logical_length(),
-            ))
+            let physical_bytes = entry
+                .offset
+                .checked_add(entry.length)
+                .ok_or(StoreError::Quota)?;
+            let replacement = maintenance::replacement(
+                self,
+                &index,
+                &[(id, entry)],
+                physical_bytes,
+                &mut operation,
+                &mut progress,
+            )?;
+            self.publish_pack(&candidate)?;
+            self.publish_index_reconciled(&replacement)?;
+            Ok(packed_receipt(&self.name, id, source.logical_length()))
         })();
-        remove_temporary(&candidate.temporary, result.is_ok())?;
-        result
+        let cleanup = remove_temporary(&candidate.temporary, result.is_ok());
+        let result = match result {
+            Ok(value) => {
+                checked_publication::record_cleanup(Ok(()), cleanup, &mut progress).map(|()| value)
+            }
+            Err(error) => checked_publication::record_cleanup(Err(error), cleanup, &mut progress)
+                .and(Err(StoreError::Unavailable)),
+        };
+        maintenance::ordinary_completion(self, result, &mut progress)
     }
 }
 
@@ -1014,41 +808,12 @@ impl PackManifestEntry {
 struct PackCandidate {
     id: PackId,
     temporary: PathBuf,
-    entries: Vec<PackManifestEntry>,
-}
-
-impl PackCandidate {
-    fn entries_with_pack(&self) -> impl Iterator<Item = (ContentId, IndexEntry)> + '_ {
-        self.entries.iter().map(|entry| {
-            (
-                entry.id,
-                IndexEntry {
-                    pack: self.id,
-                    offset: entry.offset,
-                    length: entry.length,
-                },
-            )
-        })
-    }
+    entries: [PackManifestEntry; 1],
 }
 
 impl Drop for PackCandidate {
     fn drop(&mut self) {
         let _ignored = fs::remove_file(&self.temporary);
-    }
-}
-
-#[derive(Clone, PartialEq, Eq)]
-struct IndexState {
-    instance: [u8; 32],
-    generation: u64,
-    last_repack_plan: Option<PackedRepackPlanId>,
-    entries: BTreeMap<ContentId, IndexEntry>,
-}
-
-impl IndexState {
-    fn pack_ids(&self) -> BTreeSet<PackId> {
-        self.entries.values().map(|entry| entry.pack).collect()
     }
 }
 
@@ -1156,33 +921,6 @@ fn packed_receipt(name: &str, id: ContentId, logical_length: u64) -> PutReceipt 
             logical_length,
         },
     )
-}
-
-fn read_bounded_file(
-    path: &Path,
-    maximum: u64,
-    operation: &'static str,
-) -> Result<Vec<u8>, StoreError> {
-    let file = open_regular_file(path, operation)?;
-    let length = file
-        .metadata()
-        .map_err(|source| io_error(operation, path, source))?
-        .len();
-    if length > maximum {
-        return Err(StoreError::Quota);
-    }
-    let capacity = usize::try_from(length).map_err(|_| StoreError::Quota)?;
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(capacity)
-        .map_err(|_| StoreError::Quota)?;
-    file.take(maximum + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|source| io_error(operation, path, source))?;
-    if bytes.len() as u64 != length {
-        return Err(StoreError::Incompatible);
-    }
-    Ok(bytes)
 }
 
 fn files_equal(left: &Path, right: &Path, maximum: u64) -> Result<bool, StoreError> {

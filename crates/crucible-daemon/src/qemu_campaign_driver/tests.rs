@@ -41,10 +41,13 @@ use super::*;
 use crate::{ExecutionCancellation, ExecutionCheckpointRequest, QemuFreshAttemptLifecycleOwner};
 
 mod guest_marker_boundary;
+mod measurement;
 mod network_boundary;
 
 #[test]
 fn envoy_boot_arms_only_from_the_authenticated_west_semantic_marker() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let payload = crucible_protocol::WhiteboxMarkerPayload::SemanticMarker(
         crucible_protocol::WhiteboxSemanticMarkerBody {
             marker: String::from("network.converged"),
@@ -58,7 +61,8 @@ fn envoy_boot_arms_only_from_the_authenticated_west_semantic_marker() {
         &payload,
     )
     .expect("guest semantic marker must project to an observation");
-    let marker = crucible::test_support::condition_observation_entry_for_test(0, &event);
+    let marker = crucible::test_support::condition_observation_entry_for_test(0, &event)
+        .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
     assert!(super::envoy_boot::west_convergence_marker_seen(&[marker]));
 
     let other_node = SchedulerEventLogEntry::guest_semantic_marker_observation(
@@ -68,7 +72,8 @@ fn envoy_boot_arms_only_from_the_authenticated_west_semantic_marker() {
         String::from("network.converged"),
         String::from("instance-1"),
         Vec::new(),
-    );
+    )
+    .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
     assert!(!super::envoy_boot::west_convergence_marker_seen(&[
         other_node
     ]));
@@ -534,6 +539,8 @@ fn expect_observation(
 
 #[test]
 fn sticky_checkpoint_request_stops_at_a_safe_boundary_without_driving() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = input(StopCondition::Terminal);
     let checkpoint_request = ExecutionCheckpointRequest::default();
     checkpoint_request.request_for_test();
@@ -571,6 +578,8 @@ fn sticky_checkpoint_request_stops_at_a_safe_boundary_without_driving() {
 
 #[test]
 fn savepoint_capture_ignores_prelatched_checkpoint_until_attempt_stop() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = input(StopCondition::ExecutionQuanta(2));
     let configuration = starting_configuration(&input);
     let checkpoint_request = ExecutionCheckpointRequest::default();
@@ -641,6 +650,8 @@ fn savepoint_capture_ignores_prelatched_checkpoint_until_attempt_stop() {
 
 #[test]
 fn savepoint_replay_probe_records_the_reached_boundary_before_shutdown() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = input(StopCondition::ExecutionQuanta(2));
     let configuration = starting_configuration(&input);
     let expected_configuration = configuration.id();
@@ -686,6 +697,8 @@ fn savepoint_replay_probe_records_the_reached_boundary_before_shutdown() {
 
 #[test]
 fn savepoint_replay_proof_rejects_quiet_progress_at_another_coordinate() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let configuration = starting_configuration(&input(StopCondition::ExecutionQuanta(200)));
     let earlier = QemuSavepointReplayProof::from_reached_boundary(
         &configuration,
@@ -705,13 +718,27 @@ fn savepoint_replay_proof_rejects_quiet_progress_at_another_coordinate() {
     let later_frontier = VirtualTime { ticks: 200 };
 
     assert_ne!(earlier, later);
-    assert!(!earlier.matches_boundary(&configuration, 200, earlier_frontier, 0, &[]));
-    assert!(!earlier.matches_boundary(&configuration, 100, later_frontier, 0, &[]));
-    assert!(later.matches_boundary(&configuration, 200, later_frontier, 0, &[]));
+    assert!(
+        !earlier
+            .matches_boundary(&configuration, 200, earlier_frontier, 0, &[])
+            .unwrap_or_else(|source| panic!("fixture boundary admission: {source}"))
+    );
+    assert!(
+        !earlier
+            .matches_boundary(&configuration, 100, later_frontier, 0, &[])
+            .unwrap_or_else(|source| panic!("fixture boundary admission: {source}"))
+    );
+    assert!(
+        later
+            .matches_boundary(&configuration, 200, later_frontier, 0, &[])
+            .unwrap_or_else(|source| panic!("fixture boundary admission: {source}"))
+    );
 }
 
 #[test]
 fn terminal_verdict_wins_over_a_coincident_checkpoint_request() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = input(StopCondition::Terminal);
     let checkpoint_request = ExecutionCheckpointRequest::default();
     checkpoint_request.request_for_test();
@@ -753,6 +780,8 @@ fn terminal_verdict_wins_over_a_coincident_checkpoint_request() {
 
 #[test]
 fn event_count_seals_final_drain_coverage_into_exact_candidate() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = input(StopCondition::EventCount(1));
     let configuration = starting_configuration(&input);
     let node = node("node-a");
@@ -839,288 +868,9 @@ fn event_count_seals_final_drain_coverage_into_exact_candidate() {
 }
 
 #[test]
-fn modeled_scheduler_metrics_are_derived_from_the_canonical_log() {
-    let fixture = crucible::happy_path_scenario().expect("happy-path fixture");
-    let scenario = measured_scenario(&fixture.scenario);
-    let input = input_for_scenario(scenario, StopCondition::Terminal);
-    let configuration = starting_configuration(&input);
-    let mut log = EventLog::new();
-    let append = log
-        .append_observable_events(fixture.observations().iter().cloned())
-        .expect("happy-path event log");
-    let mut quantum = outcome(configuration, append.entries, append.offset, 38);
-    quantum.scheduler_quiescence = Some(SchedulerQuiescence::default());
-    let mut owner = FakeLifecycle {
-        outcomes: VecDeque::from([Ok(quantum)]),
-        terminal: Some(QuantumTerminalVerdict::Passed),
-        initial_quanta: 0,
-        drives: 0,
-    };
-    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
-    let mut driver = QemuFreshModeledDriver::new();
-
-    let pending = expect_observation(
-        driver
-            .drive(
-                &mut lifecycle,
-                &input,
-                &context(),
-                QemuFreshStartMaterialization::genesis(),
-            )
-            .expect("terminal modeled stop"),
-    );
-    let product = driver
-        .seal(pending, Vec::new())
-        .expect("model-owned measurement projection");
-    let candidate = prepared_semantic_observation(product);
-    let retained = candidate.measurements().evaluation();
-    let payload = std::str::from_utf8(retained.payload()).expect("canonical measurement JSON");
-    assert!(payload.contains("\"scheduler-events\""));
-    assert!(payload.contains(&format!(
-        "\"aggregate\":{{\"kind\":\"unsigned\",\"value\":{}}}",
-        fixture.observations().len()
-    )));
-}
-
-#[test]
-fn guest_measurement_messages_normalize_against_the_exact_scenario_contract() {
-    let fixture = crucible::happy_path_scenario().expect("happy-path fixture");
-    let definitions = guest_measurement_definitions(&fixture.scenario);
-    let node = fixture
-        .scenario
-        .world()
-        .vm_nodes()
-        .first()
-        .expect("happy-path VM")
-        .id
-        .clone();
-    let entries = vec![
-        SchedulerEventLogEntry::guest_measurement_observation(
-            0,
-            Icount { retired: 1 },
-            node.clone(),
-            GuestMeasurementEvent::Begin {
-                measurement: String::from("driver-window"),
-                instance: String::from("epoch-7"),
-            },
-        ),
-        SchedulerEventLogEntry::guest_measurement_observation(
-            1,
-            Icount { retired: 2 },
-            node.clone(),
-            GuestMeasurementEvent::Sample {
-                measurement: String::from("driver-window"),
-                instance: String::from("epoch-7"),
-                metric: String::from("healthy-peers"),
-                value: GuestMeasurementValue::Unsigned(3),
-            },
-        ),
-        SchedulerEventLogEntry::guest_semantic_marker_observation(
-            2,
-            Icount { retired: 3 },
-            node.clone(),
-            String::from("routing-converged"),
-            String::from("epoch-7"),
-            Vec::new(),
-        ),
-        SchedulerEventLogEntry::guest_measurement_observation(
-            3,
-            Icount { retired: 4 },
-            node,
-            GuestMeasurementEvent::End {
-                measurement: String::from("driver-window"),
-                instance: String::from("epoch-7"),
-            },
-        ),
-    ];
-
-    let publication = evaluate_test_measurements(&definitions, entries)
-        .expect("declared guest measurement publication");
-    let evaluation = publication.measurement_set().evaluation();
-    let payload = std::str::from_utf8(evaluation.payload()).expect("canonical evaluation JSON");
-
-    assert!(payload.contains("\"driver-window\""));
-    assert!(payload.contains("\"healthy-peers\""));
-    assert!(payload.contains("\"sequence\":1"));
-    assert!(payload.contains("\"value\":3"));
-}
-
-#[test]
-fn fresh_driver_retains_verified_guest_measurement_evaluation() {
-    let fixture = crucible::happy_path_scenario().expect("happy-path fixture");
-    let scenario = guest_measured_scenario(&fixture.scenario);
-    let input = input_for_scenario(scenario, StopCondition::Terminal);
-    let configuration = starting_configuration(&input);
-    let node = input
-        .scenario()
-        .world()
-        .vm_nodes()
-        .first()
-        .expect("happy-path VM")
-        .id
-        .clone();
-    let mut observations = fixture.observations().to_vec();
-    observations.extend([
-        ObservableEvent::guest_measurement(
-            Icount { retired: 40 },
-            node.clone(),
-            GuestMeasurementEvent::Begin {
-                measurement: String::from("driver-window"),
-                instance: String::from("epoch-7"),
-            },
-        ),
-        ObservableEvent::guest_measurement(
-            Icount { retired: 41 },
-            node.clone(),
-            GuestMeasurementEvent::Sample {
-                measurement: String::from("driver-window"),
-                instance: String::from("epoch-7"),
-                metric: String::from("healthy-peers"),
-                value: GuestMeasurementValue::Unsigned(3),
-            },
-        ),
-        ObservableEvent::guest_semantic_marker(
-            Icount { retired: 42 },
-            node.clone(),
-            String::from("routing-converged"),
-            String::from("epoch-7"),
-            Vec::new(),
-        ),
-        ObservableEvent::guest_measurement(
-            Icount { retired: 43 },
-            node,
-            GuestMeasurementEvent::End {
-                measurement: String::from("driver-window"),
-                instance: String::from("epoch-7"),
-            },
-        ),
-    ]);
-    let mut log = EventLog::new();
-    let append = log
-        .append_observable_events(observations)
-        .expect("guest measurement event log");
-    let mut quantum = outcome(configuration, append.entries, append.offset, 43);
-    quantum.scheduler_quiescence = Some(SchedulerQuiescence::default());
-    let mut owner = FakeLifecycle {
-        outcomes: VecDeque::from([Ok(quantum)]),
-        terminal: Some(QuantumTerminalVerdict::Passed),
-        initial_quanta: 0,
-        drives: 0,
-    };
-    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
-    let mut driver = QemuFreshModeledDriver::new();
-
-    let pending = expect_observation(
-        driver
-            .drive(
-                &mut lifecycle,
-                &input,
-                &context(),
-                QemuFreshStartMaterialization::genesis(),
-            )
-            .expect("terminal guest-measured stop"),
-    );
-    let product = driver
-        .seal(pending, Vec::new())
-        .expect("verified guest measurement projection");
-    let candidate = prepared_semantic_observation(product);
-    let evaluation = candidate.measurements().evaluation();
-    let payload = std::str::from_utf8(evaluation.payload()).expect("canonical evaluation JSON");
-
-    assert!(payload.contains("\"driver-window\""));
-    assert!(payload.contains("\"healthy-peers\""));
-    assert!(payload.contains("\"scheduler-events\""));
-    assert!(payload.contains("\"value\":3"));
-}
-
-#[test]
-fn guest_measurement_messages_fail_closed_on_type_and_lifecycle_mismatch() {
-    let fixture = crucible::happy_path_scenario().expect("happy-path fixture");
-    let definitions = guest_measurement_definitions(&fixture.scenario);
-    let node = fixture
-        .scenario
-        .world()
-        .vm_nodes()
-        .first()
-        .expect("happy-path VM")
-        .id
-        .clone();
-    let begin = SchedulerEventLogEntry::guest_measurement_observation(
-        0,
-        Icount { retired: 1 },
-        node.clone(),
-        GuestMeasurementEvent::Begin {
-            measurement: String::from("driver-window"),
-            instance: String::from("epoch-7"),
-        },
-    );
-    let wrong_instance = SchedulerEventLogEntry::guest_measurement_observation(
-        0,
-        Icount { retired: 1 },
-        node.clone(),
-        GuestMeasurementEvent::Begin {
-            measurement: String::from("driver-window"),
-            instance: String::from("other-epoch"),
-        },
-    );
-    let wrong_type = SchedulerEventLogEntry::guest_measurement_observation(
-        1,
-        Icount { retired: 2 },
-        node,
-        GuestMeasurementEvent::Sample {
-            measurement: String::from("driver-window"),
-            instance: String::from("epoch-7"),
-            metric: String::from("healthy-peers"),
-            value: GuestMeasurementValue::Boolean(true),
-        },
-    );
-    let wrong_cohort_marker = SchedulerEventLogEntry::guest_semantic_marker_observation(
-        0,
-        Icount { retired: 1 },
-        fixture
-            .scenario
-            .world()
-            .vm_nodes()
-            .get(1)
-            .expect("measurement fixture second VM")
-            .id
-            .clone(),
-        String::from("routing-converged"),
-        String::from("epoch-7"),
-        Vec::new(),
-    );
-
-    let error = evaluate_test_measurements(&definitions, vec![begin.clone(), wrong_type])
-        .expect_err("declared unsigned metric must reject a boolean");
-    assert!(matches!(
-        error,
-        CrucibleMeasurementError::GuestMeasurementProtocol { sequence: 1, .. }
-    ));
-
-    let error = evaluate_test_measurements(&definitions, vec![wrong_instance])
-        .expect_err("a guest message must bind the declared exact instance");
-    assert!(matches!(
-        error,
-        CrucibleMeasurementError::GuestMeasurementProtocol { sequence: 0, .. }
-    ));
-
-    let error = evaluate_test_measurements(&definitions, vec![wrong_cohort_marker])
-        .expect_err("a semantic marker must come from the declared cohort");
-    assert!(matches!(
-        error,
-        CrucibleMeasurementError::GuestMeasurementProtocol { sequence: 0, .. }
-    ));
-
-    let error = evaluate_test_measurements(&definitions, vec![begin])
-        .expect_err("an open measurement instance must be closed");
-    assert!(matches!(
-        error,
-        CrucibleMeasurementError::GuestMeasurementProtocol { sequence: 1, .. }
-    ));
-}
-
-#[test]
 fn named_boundary_requires_the_exact_guest_marker() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = input(StopCondition::NamedBoundary(String::from("target")));
     let configuration = starting_configuration(&input);
     let node = node("node-a");
@@ -1169,6 +919,8 @@ fn named_boundary_requires_the_exact_guest_marker() {
 
 #[test]
 fn virtual_time_boundary_caps_a_quantum_before_a_later_terminal() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let deadline = 2_000_000;
     let attempt = input(StopCondition::VirtualTimePicoseconds(deadline));
     let configuration = starting_configuration(&attempt);
@@ -1216,6 +968,8 @@ fn virtual_time_boundary_caps_a_quantum_before_a_later_terminal() {
 
 #[test]
 fn combined_stop_uses_the_first_absolute_bound() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let stop = StopCondition::VirtualTimeOrExecutionQuanta {
         virtual_time_picoseconds: 10,
         execution_quanta: 2,
@@ -1261,6 +1015,8 @@ fn combined_stop_uses_the_first_absolute_bound() {
 
 #[test]
 fn policy_timeout_prefers_virtual_time_at_a_shared_completed_quantum() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let stop = StopCondition::Bounded {
         primary: Box::new(StopCondition::NamedBoundary(String::from("later"))),
         virtual_time_picoseconds: Some(10),
@@ -1292,6 +1048,8 @@ fn policy_timeout_prefers_virtual_time_at_a_shared_completed_quantum() {
 
 #[test]
 fn policy_virtual_timeout_seals_a_typed_stop_with_retained_causal_marker() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let stop = StopCondition::Bounded {
         primary: Box::new(StopCondition::Terminal),
         virtual_time_picoseconds: Some(1),
@@ -1349,6 +1107,8 @@ fn policy_virtual_timeout_seals_a_typed_stop_with_retained_causal_marker() {
 
 #[test]
 fn bounded_primary_retains_its_exact_predeadline_coordinate() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let stop = StopCondition::Bounded {
         primary: Box::new(StopCondition::VirtualTimePicoseconds(4)),
         virtual_time_picoseconds: Some(10),
@@ -1377,6 +1137,8 @@ fn bounded_primary_retains_its_exact_predeadline_coordinate() {
 
 #[test]
 fn bounded_next_choice_intrinsic_fallback_is_not_a_choice() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let stop = StopCondition::Bounded {
         primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
             execution_quanta: 1,
@@ -1407,6 +1169,8 @@ fn bounded_next_choice_intrinsic_fallback_is_not_a_choice() {
 
 #[test]
 fn bounded_next_choice_reaches_an_actual_choice_before_intrinsic_fallback() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let stop = StopCondition::Bounded {
         primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
             execution_quanta: 2,
@@ -1440,6 +1204,8 @@ fn bounded_next_choice_reaches_an_actual_choice_before_intrinsic_fallback() {
 
 #[test]
 fn bounded_next_choice_reached_accepts_a_live_preselection_handoff() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let stop = StopCondition::Bounded {
         primary: Box::new(StopCondition::NextChoice),
         virtual_time_picoseconds: Some(10),
@@ -1455,6 +1221,8 @@ fn bounded_next_choice_reached_accepts_a_live_preselection_handoff() {
 
 #[test]
 fn bounded_next_choice_intrinsic_fallback_wins_a_same_quantum_choice() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let stop = StopCondition::Bounded {
         primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
             execution_quanta: 2,
@@ -1488,6 +1256,8 @@ fn bounded_next_choice_intrinsic_fallback_wins_a_same_quantum_choice() {
 
 #[test]
 fn next_choice_ignores_a_discovery_defaulted_in_the_same_quantum() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let stop = StopCondition::NextChoice;
     let input = input(stop.clone());
     let parent = starting_configuration(&input);
@@ -1526,6 +1296,8 @@ fn next_choice_ignores_a_discovery_defaulted_in_the_same_quantum() {
 
 #[test]
 fn absolute_stop_at_resume_boundary_does_not_drive_another_quantum() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let stop = StopCondition::ExecutionQuanta(3);
     let input = input(stop.clone());
     let mut owner = FakeLifecycle {
@@ -1553,6 +1325,8 @@ fn absolute_stop_at_resume_boundary_does_not_drive_another_quantum() {
 
 #[test]
 fn restored_start_at_intrinsic_choice_fallback_seals_exact_timeout() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let stop = StopCondition::Bounded {
         primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
             execution_quanta: 7,
@@ -1598,6 +1372,8 @@ fn restored_start_at_intrinsic_choice_fallback_seals_exact_timeout() {
 
 #[test]
 fn restored_start_past_intrinsic_choice_fallback_fails_before_sealing() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let stop = StopCondition::Bounded {
         primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
             execution_quanta: 7,
@@ -1640,6 +1416,8 @@ fn restored_start_past_intrinsic_choice_fallback_fails_before_sealing() {
 
 #[test]
 fn continued_origin_past_intrinsic_choice_fallback_fails_before_sealing() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let stop = StopCondition::Bounded {
         primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
             execution_quanta: 7,
@@ -1680,6 +1458,8 @@ fn continued_origin_past_intrinsic_choice_fallback_fails_before_sealing() {
 
 #[test]
 fn reached_policy_deadline_wins_over_overdue_intrinsic_fallback_at_start() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let stop = StopCondition::Bounded {
         primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
             execution_quanta: 7,
@@ -1728,6 +1508,8 @@ fn reached_policy_deadline_wins_over_overdue_intrinsic_fallback_at_start() {
 
 #[test]
 fn restored_terminal_verdict_wins_past_intrinsic_choice_fallback() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let stop = StopCondition::Bounded {
         primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
             execution_quanta: 7,
@@ -1769,6 +1551,8 @@ fn restored_terminal_verdict_wins_past_intrinsic_choice_fallback() {
 
 #[test]
 fn restored_virtual_time_uses_the_scheduler_frontier_when_the_log_tail_is_earlier() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let deadline = 8;
     let input = input(StopCondition::VirtualTimePicoseconds(deadline));
     let mut source_log = EventLog::new();
@@ -1782,7 +1566,11 @@ fn restored_virtual_time_uses_the_scheduler_frontier_when_the_log_tail_is_earlie
     let prefix_bytes = prefix
         .entries
         .iter()
-        .map(SchedulerEventLogEntry::canonical_material_len)
+        .map(|entry| {
+            entry
+                .canonical_material_len()
+                .unwrap_or_else(|source| panic!("fixture event material admission: {source}"))
+        })
         .sum();
     let mut owner = FakeLifecycle {
         outcomes: VecDeque::new(),
@@ -1823,6 +1611,8 @@ fn restored_virtual_time_uses_the_scheduler_frontier_when_the_log_tail_is_earlie
 
 #[test]
 fn resumed_driver_starts_from_the_actual_restored_configuration() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = input(StopCondition::ExecutionQuanta(2));
     let original = input.start().configuration().clone();
     let prior_decision = crucible::Decision::RngDraw(crucible::RngDecision {
@@ -1838,6 +1628,8 @@ fn resumed_driver_starts_from_the_actual_restored_configuration() {
     let mut lifecycle = RestoredFrontierLifecycle {
         expected_first: restored.clone(),
         next: Some(QuantumOutcome {
+            event_log_custody: crucible::EventLogOutputCustody::retain_current()
+                .unwrap_or_else(|source| panic!("fixture quantum output admission: {source}")),
             configuration: continued.clone(),
             frontier: VirtualTime { ticks: 2 },
             advanced_node: None,
@@ -1880,6 +1672,8 @@ fn resumed_driver_starts_from_the_actual_restored_configuration() {
 
 #[test]
 fn modeled_driver_rejects_a_materialized_quantum_coordinate_mismatch() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = input(StopCondition::ExecutionQuanta(3));
     let mut owner = FakeLifecycle {
         outcomes: VecDeque::new(),
@@ -1912,6 +1706,8 @@ fn modeled_driver_rejects_a_materialized_quantum_coordinate_mismatch() {
 
 #[test]
 fn terminal_verdict_precedes_a_coincident_execution_quanta_stop() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = input(StopCondition::ExecutionQuanta(1));
     let configuration = starting_configuration(&input);
     let mut owner = FakeLifecycle {
@@ -1944,6 +1740,8 @@ fn terminal_verdict_precedes_a_coincident_execution_quanta_stop() {
 
 #[test]
 fn execution_quanta_resume_charges_only_the_suffix_and_matches_uninterrupted_evidence() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let checkpoint_quanta = 2;
     let stop_quanta = 4;
     let input = input(StopCondition::ExecutionQuanta(stop_quanta));
@@ -2001,7 +1799,11 @@ fn execution_quanta_resume_charges_only_the_suffix_and_matches_uninterrupted_evi
         .collect::<Vec<_>>();
     let prefix_bytes = prefix
         .iter()
-        .map(SchedulerEventLogEntry::canonical_material_len)
+        .map(|entry| {
+            entry
+                .canonical_material_len()
+                .unwrap_or_else(|source| panic!("fixture event material admission: {source}"))
+        })
         .sum();
     let mut resumed_owner = FakeLifecycle {
         outcomes: (usize::try_from(checkpoint_quanta).expect("checkpoint coordinate")
@@ -2066,6 +1868,8 @@ fn execution_quanta_resume_charges_only_the_suffix_and_matches_uninterrupted_evi
 
 #[test]
 fn event_count_resume_excludes_origin_events_and_counts_the_same_attempt_prefix() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let origin_quanta = 2_u64;
     let checkpoint_attempt_events = 2_usize;
     let stop_events = 4_usize;
@@ -2092,7 +1896,11 @@ fn event_count_resume_excludes_origin_events_and_counts_the_same_attempt_prefix(
         .collect::<Vec<_>>();
     let origin_bytes = origin_entries
         .iter()
-        .map(SchedulerEventLogEntry::canonical_material_len)
+        .map(|entry| {
+            entry
+                .canonical_material_len()
+                .unwrap_or_else(|source| panic!("fixture event material admission: {source}"))
+        })
         .sum();
     let attempt_outcome = |attempt_index: usize| {
         let segment = &segments[origin_quanta as usize + attempt_index];
@@ -2148,7 +1956,11 @@ fn event_count_resume_excludes_origin_events_and_counts_the_same_attempt_prefix(
         .collect::<Vec<_>>();
     let resumed_bytes = resumed_entries
         .iter()
-        .map(SchedulerEventLogEntry::canonical_material_len)
+        .map(|entry| {
+            entry
+                .canonical_material_len()
+                .unwrap_or_else(|source| panic!("fixture event material admission: {source}"))
+        })
         .sum();
     let resumed_quanta =
         origin_quanta + u64::try_from(checkpoint_attempt_events).expect("checkpoint event count");
@@ -2204,6 +2016,8 @@ fn event_count_resume_excludes_origin_events_and_counts_the_same_attempt_prefix(
 
 #[test]
 fn scheduler_operational_class_survives_the_concrete_driver() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = input(StopCondition::Terminal);
     let mut owner = FakeLifecycle {
         outcomes: VecDeque::from([Err(SchedulerError::OperationalBoundary {
@@ -2238,6 +2052,8 @@ fn scheduler_operational_class_survives_the_concrete_driver() {
 
 #[test]
 fn next_choice_retains_the_complete_discovery_bundle() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = input(StopCondition::NextChoice);
     let configuration = starting_configuration(&input);
     let discovery = choice_discovery(input.lineage().scenario());
@@ -2279,6 +2095,8 @@ fn next_choice_retains_the_complete_discovery_bundle() {
 
 #[test]
 fn next_choice_does_not_republish_a_selection_in_its_authenticated_start() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let genesis_input = input(StopCondition::NextChoice);
     let genesis = starting_configuration(&genesis_input);
     let selected_choice = choice_discovery_named(genesis_input.lineage().scenario(), "selected");
@@ -2364,6 +2182,8 @@ fn next_choice_does_not_republish_a_selection_in_its_authenticated_start() {
 
 #[test]
 fn next_choice_preserves_settled_defaults_before_the_unresolved_choice() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = input(StopCondition::NextChoice);
     let genesis = starting_configuration(&input);
     let settled_choice = choice_discovery_named(input.lineage().scenario(), "settled");
@@ -2431,6 +2251,8 @@ fn next_choice_preserves_settled_defaults_before_the_unresolved_choice() {
 
 #[test]
 fn produced_selections_are_scoped_to_the_start_schedule_suffix() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = input(StopCondition::Terminal);
     let genesis = starting_configuration(&input);
     let discovery = choice_discovery(input.lineage().scenario());
@@ -2484,6 +2306,8 @@ fn produced_selections_are_scoped_to_the_start_schedule_suffix() {
 
 #[test]
 fn next_choice_publishes_the_live_signal_fault_frontier_at_its_exact_parent() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = input(StopCondition::NextChoice);
     let configuration = starting_configuration(&input);
     let discovery = signal_fault_choice_discovery(&configuration, 1);
@@ -2543,6 +2367,8 @@ fn next_choice_publishes_the_live_signal_fault_frontier_at_its_exact_parent() {
 
 #[test]
 fn signal_fault_frontier_is_not_published_after_execution_passes_it() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = input(StopCondition::NamedBoundary(String::from("target")));
     let configuration = starting_configuration(&input);
     let mut first = outcome(
@@ -2594,6 +2420,8 @@ fn signal_fault_frontier_is_not_published_after_execution_passes_it() {
 
 #[test]
 fn pending_guest_choice_diagnostic_sampling_failure_is_nonsemantic() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (input, node) = input_with_guest_selectable(StopCondition::NextChoice);
     let configuration = starting_configuration(&input);
     let diagnostic_config = crate::GuestSelectableBoundaryDiagnosticConfig::new(2)
@@ -2648,6 +2476,8 @@ fn pending_guest_choice_diagnostic_sampling_failure_is_nonsemantic() {
 
 #[test]
 fn named_boundary_reached_with_checkpoint_request_returns_the_semantic_stop() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let boundary = "checkpoint-coincident-boundary";
     let input = input(StopCondition::NamedBoundary(String::from(boundary)));
     let configuration = starting_configuration(&input);
@@ -2696,6 +2526,8 @@ fn named_boundary_reached_with_checkpoint_request_returns_the_semantic_stop() {
 
 #[test]
 fn pending_default_reply_at_start_reaches_event_count_without_an_extra_quantum() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (input, node) = input_with_guest_selectable(StopCondition::EventCount(1));
     let configuration = starting_configuration(&input);
     let mut event_log = EventLog::new();
@@ -2788,6 +2620,8 @@ fn pending_default_reply_at_start_reaches_event_count_without_an_extra_quantum()
 
 #[test]
 fn checkpoint_replay_matches_the_pre_choice_pending_boundary() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (input, node) = input_with_guest_selectable(StopCondition::ExecutionQuanta(5));
     let configuration = starting_configuration(&input);
     let target = QemuSelectedResumeBoundary::new(
@@ -2839,6 +2673,8 @@ fn checkpoint_replay_matches_the_pre_choice_pending_boundary() {
 
 #[test]
 fn pending_guest_choice_stops_without_reply_and_retains_scenario_discovery() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (input, node) = input_with_guest_selectable(StopCondition::NextChoice);
     let configuration = starting_configuration(&input);
     let mut owner = PendingSelectableLifecycle {
@@ -2878,6 +2714,8 @@ fn pending_guest_choice_stops_without_reply_and_retains_scenario_discovery() {
 
 #[test]
 fn pending_guest_choice_waits_for_the_global_frontier() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (input, node) = input_with_guest_selectable(StopCondition::NextChoice);
     let mut configuration = starting_configuration(&input);
     let mut discoveries = RetainedChoiceDiscoveries::default();
@@ -2923,6 +2761,8 @@ fn pending_guest_choice_waits_for_the_global_frontier() {
 
 #[test]
 fn pending_guest_choice_applies_and_replies_with_exact_default() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (input, node) = input_with_guest_selectable(StopCondition::EventCount(1));
     let configuration = starting_configuration(&input);
     let mut event_log = EventLog::new();
@@ -3014,6 +2854,18 @@ fn pending_guest_choice_applies_and_replies_with_exact_default() {
         terminal_at: pending.terminal_at,
         completed_quanta: pending.completed_quanta,
         attempt_event_count: pending.attempt_event_count,
+        event_custody: pending.event_custody.clone(),
+        event_output_custody: Some({
+            let mut custody = crate::crucible_measurement::CrucibleMeasurementEventCustody::new()
+                .expect("original component event table");
+            custody
+                .retain(
+                    crucible::EventLogOutputCustody::retain_current()
+                        .expect("original component event output"),
+                )
+                .expect("component event table admission");
+            custody
+        }),
     };
     let error = build_finding_candidate_boundary_evidence(pending, &candidate, Vec::new(), None)
         .expect_err("a default guest continuation must reject this candidate");
@@ -3029,6 +2881,8 @@ fn pending_guest_choice_applies_and_replies_with_exact_default() {
 
 #[test]
 fn zero_progress_choice_discovery_does_not_consume_execution_quanta() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (input, node) = input_with_guest_selectable(StopCondition::ExecutionQuanta(1));
     let configuration = starting_configuration(&input);
     let mut owner = PendingSelectableLifecycle {
@@ -3077,6 +2931,8 @@ fn zero_progress_choice_discovery_does_not_consume_execution_quanta() {
 
 #[test]
 fn assertion_observation_drives_past_nonmatching_quanta_to_a_new_violation() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let assertion = AssertionId::from_name("safety");
     let input = input_with_assertions(
         StopCondition::Observation(ObservationCondition::AssertionViolationTransition(
@@ -3087,28 +2943,37 @@ fn assertion_observation_drives_past_nonmatching_quanta_to_a_new_violation() {
     let configuration = starting_configuration(&input);
     let mut log = EventLog::new();
     let first_nonmatching = log
-        .append_entries(vec![SchedulerEventLogEntry::assertion_state_observation(
-            0,
-            VirtualTime { ticks: 1 },
-            assertion.clone(),
-            AssertionPhase::Satisfied,
-        )])
+        .append_entries(vec![
+            SchedulerEventLogEntry::assertion_state_observation(
+                0,
+                VirtualTime { ticks: 1 },
+                assertion.clone(),
+                AssertionPhase::Satisfied,
+            )
+            .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
+        ])
         .expect("first nonmatching assertion segment");
     let second_nonmatching = log
-        .append_entries(vec![SchedulerEventLogEntry::assertion_state_observation(
-            1,
-            VirtualTime { ticks: 2 },
-            AssertionId::from_name("another-assertion"),
-            AssertionPhase::Violated,
-        )])
+        .append_entries(vec![
+            SchedulerEventLogEntry::assertion_state_observation(
+                1,
+                VirtualTime { ticks: 2 },
+                AssertionId::from_name("another-assertion"),
+                AssertionPhase::Violated,
+            )
+            .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
+        ])
         .expect("second nonmatching assertion segment");
     let matching = log
-        .append_entries(vec![SchedulerEventLogEntry::assertion_state_observation(
-            2,
-            VirtualTime { ticks: 3 },
-            assertion,
-            AssertionPhase::Violated,
-        )])
+        .append_entries(vec![
+            SchedulerEventLogEntry::assertion_state_observation(
+                2,
+                VirtualTime { ticks: 3 },
+                assertion,
+                AssertionPhase::Violated,
+            )
+            .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
+        ])
         .expect("matching assertion segment");
     let mut owner = FakeLifecycle {
         outcomes: VecDeque::from([
@@ -3161,6 +3026,8 @@ fn assertion_observation_drives_past_nonmatching_quanta_to_a_new_violation() {
 
 #[test]
 fn any_assertion_observation_accepts_the_second_declared_assertion() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = input_with_assertions(
         StopCondition::Observation(ObservationCondition::AnyAssertionViolationTransition),
         ["first-safety", "second-safety"],
@@ -3168,12 +3035,15 @@ fn any_assertion_observation_accepts_the_second_declared_assertion() {
     let configuration = starting_configuration(&input);
     let mut log = EventLog::new();
     let matching = log
-        .append_entries(vec![SchedulerEventLogEntry::assertion_state_observation(
-            0,
-            VirtualTime { ticks: 1 },
-            AssertionId::from_name("second-safety"),
-            AssertionPhase::Violated,
-        )])
+        .append_entries(vec![
+            SchedulerEventLogEntry::assertion_state_observation(
+                0,
+                VirtualTime { ticks: 1 },
+                AssertionId::from_name("second-safety"),
+                AssertionPhase::Violated,
+            )
+            .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
+        ])
         .expect("second assertion transition");
     let mut owner = FakeLifecycle {
         outcomes: VecDeque::from([Ok(outcome(
@@ -3213,18 +3083,23 @@ fn any_assertion_observation_accepts_the_second_declared_assertion() {
 
 #[test]
 fn named_assertion_observation_rejects_an_undeclared_event() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = input(StopCondition::Observation(
         ObservationCondition::AssertionViolationTransition(String::from("undeclared")),
     ));
     let configuration = starting_configuration(&input);
     let mut log = EventLog::new();
     let matching = log
-        .append_entries(vec![SchedulerEventLogEntry::assertion_state_observation(
-            0,
-            VirtualTime { ticks: 1 },
-            AssertionId::from_name("undeclared"),
-            AssertionPhase::Violated,
-        )])
+        .append_entries(vec![
+            SchedulerEventLogEntry::assertion_state_observation(
+                0,
+                VirtualTime { ticks: 1 },
+                AssertionId::from_name("undeclared"),
+                AssertionPhase::Violated,
+            )
+            .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
+        ])
         .expect("synthetic undeclared transition");
     let quantum = outcome(configuration, matching.entries, matching.offset, 1);
 
@@ -3244,6 +3119,8 @@ fn named_assertion_observation_rejects_an_undeclared_event() {
 
 #[test]
 fn scheduler_quiescence_observation_is_post_source_and_evidence_backed() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let stop = StopCondition::Observation(ObservationCondition::SchedulerQuiescent);
     let input = input(stop.clone());
     let configuration = starting_configuration(&input);
@@ -3293,6 +3170,8 @@ fn scheduler_quiescence_observation_is_post_source_and_evidence_backed() {
 
 #[test]
 fn compound_observation_uses_an_absolute_bound_from_a_nonzero_source() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let condition = ObservationCondition::SchedulerQuiescentOrExecutionQuanta {
         execution_quanta: 11,
     };
@@ -3339,6 +3218,8 @@ fn compound_observation_uses_an_absolute_bound_from_a_nonzero_source() {
 
 #[test]
 fn compound_observation_prefers_quiescence_at_the_exact_bound() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let condition = ObservationCondition::SchedulerQuiescentOrExecutionQuanta {
         execution_quanta: 2,
     };
@@ -3379,6 +3260,8 @@ fn compound_observation_prefers_quiescence_at_the_exact_bound() {
 
 #[test]
 fn restored_violation_does_not_fake_a_new_assertion_transition() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let assertion = AssertionId::from_name("safety");
     let input = input_with_assertions(
         StopCondition::Observation(ObservationCondition::AssertionViolationTransition(
@@ -3389,33 +3272,46 @@ fn restored_violation_does_not_fake_a_new_assertion_transition() {
     let configuration = starting_configuration(&input);
     let mut log = EventLog::new();
     let inherited = log
-        .append_entries(vec![SchedulerEventLogEntry::assertion_state_observation(
-            0,
-            VirtualTime { ticks: 1 },
-            assertion.clone(),
-            AssertionPhase::Violated,
-        )])
+        .append_entries(vec![
+            SchedulerEventLogEntry::assertion_state_observation(
+                0,
+                VirtualTime { ticks: 1 },
+                assertion.clone(),
+                AssertionPhase::Violated,
+            )
+            .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
+        ])
         .expect("inherited violation segment");
     let nonmatching = log
-        .append_entries(vec![SchedulerEventLogEntry::assertion_state_observation(
-            1,
-            VirtualTime { ticks: 2 },
-            assertion.clone(),
-            AssertionPhase::Satisfied,
-        )])
+        .append_entries(vec![
+            SchedulerEventLogEntry::assertion_state_observation(
+                1,
+                VirtualTime { ticks: 2 },
+                assertion.clone(),
+                AssertionPhase::Satisfied,
+            )
+            .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
+        ])
         .expect("post-source nonmatching segment");
     let matching = log
-        .append_entries(vec![SchedulerEventLogEntry::assertion_state_observation(
-            2,
-            VirtualTime { ticks: 3 },
-            assertion,
-            AssertionPhase::Violated,
-        )])
+        .append_entries(vec![
+            SchedulerEventLogEntry::assertion_state_observation(
+                2,
+                VirtualTime { ticks: 3 },
+                assertion,
+                AssertionPhase::Violated,
+            )
+            .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
+        ])
         .expect("post-source matching segment");
     let inherited_bytes = inherited
         .entries
         .iter()
-        .map(SchedulerEventLogEntry::canonical_material_len)
+        .map(|entry| {
+            entry
+                .canonical_material_len()
+                .unwrap_or_else(|source| panic!("fixture event material admission: {source}"))
+        })
         .sum();
     let mut owner = FakeLifecycle {
         outcomes: VecDeque::from([
@@ -3475,6 +3371,8 @@ fn restored_violation_does_not_fake_a_new_assertion_transition() {
 
 #[test]
 fn terminal_verdict_preempts_a_coincident_assertion_observation() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let assertion = AssertionId::from_name("safety");
     let input = input_with_assertions(
         StopCondition::Observation(ObservationCondition::AssertionViolationTransition(
@@ -3485,12 +3383,15 @@ fn terminal_verdict_preempts_a_coincident_assertion_observation() {
     let configuration = starting_configuration(&input);
     let mut log = EventLog::new();
     let matching = log
-        .append_entries(vec![SchedulerEventLogEntry::assertion_state_observation(
-            0,
-            VirtualTime { ticks: 1 },
-            assertion,
-            AssertionPhase::Violated,
-        )])
+        .append_entries(vec![
+            SchedulerEventLogEntry::assertion_state_observation(
+                0,
+                VirtualTime { ticks: 1 },
+                assertion,
+                AssertionPhase::Violated,
+            )
+            .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
+        ])
         .expect("coincident violation segment");
     let mut owner = FakeLifecycle {
         outcomes: VecDeque::from([Ok(outcome(
@@ -3522,6 +3423,8 @@ fn terminal_verdict_preempts_a_coincident_assertion_observation() {
 
 #[test]
 fn terminal_only_never_reached_failure_is_not_an_observation_match() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let assertion = AssertionId::from_name("must-arrive");
     let node = node("router-a");
     let world = World::from_nodes(vec![WorldNode {
@@ -3901,9 +3804,9 @@ fn signal_fault_choice_discovery(parent: &Configuration, ticks: u64) -> ChoiceDi
     let frontier =
         crucible::SignalFaultSelectable::runtime_frontier(parent, VirtualTime { ticks }, &choice)
             .expect("typed signal-fault frontier");
-    crucible::SignalFaultSelectable::from_frontier(&frontier)
-        .and_then(|selectable| selectable.discovery())
-        .expect("signal-fault discovery")
+    let selectable =
+        crucible::SignalFaultSelectable::from_frontier(&frontier).expect("signal-fault discovery");
+    selectable.discovery().expect("signal-fault discovery")
 }
 
 fn starting_configuration(input: &CrucibleAttemptExecution) -> Configuration {
@@ -3940,6 +3843,8 @@ fn outcome(
     ticks: u64,
 ) -> QuantumOutcome {
     QuantumOutcome {
+        event_log_custody: crucible::EventLogOutputCustody::retain_current()
+            .unwrap_or_else(|source| panic!("fixture quantum output admission: {source}")),
         configuration,
         frontier: VirtualTime { ticks },
         advanced_node: None,

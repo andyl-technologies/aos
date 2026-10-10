@@ -87,17 +87,12 @@
           sed "s|@vendor@|${cargoDeps}|g" \
             "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
           test "$(${pkgs.grep}/bin/grep -Fxc '        .with_console_capture()' \
-            crates/crucible-qemu/examples/crucible-qemu-production-plugin-flight.rs)" -eq 1
-          cargo build --frozen --offline --release \
-            --manifest-path crates/Cargo.toml \
-            --target-dir "$TMPDIR/target" \
-            -p crucible-qemu \
-            --example crucible-qemu-production-plugin-flight
+            crates/crucible-daemon/src/packaged_qemu_executor/tests/paging_native/plugin_flight/driver.rs)" -eq 1
           cargo test --frozen --offline \
             --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/target" \
-            -p crucible-qemu \
-            --example crucible-qemu-production-plugin-flight
+            -p crucible-daemon --lib \
+            packaged_qemu_executor::tests::paging_native::plugin_flight
           cargo test --frozen --offline \
             --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/target" \
@@ -123,9 +118,6 @@
             "$TMPDIR/daemon-messages.jsonl")
           test -f "$daemon_test"
           mkdir -p "$out/bin"
-          cp \
-            "$TMPDIR/target/release/examples/crucible-qemu-production-plugin-flight" \
-            "$out/bin/"
           cp "$daemon_test" "$out/bin/crucible-daemon-host-parallel-flight"
           mkdir -p "$out/share"
           cp tests/crucible/fixtures/e2e-determinism.scenario.toml "$out/share/"
@@ -133,7 +125,24 @@
       }
     ];
   };
+  rootImage = import ./_ram-native-root-image.nix {inherit pkgs;};
+  pagingKernelSetupScript = import ./_ram-native-kernel-setup.nix {
+    inherit pkgs lib rootImage;
+    nativeQemu = pkgs.qemu-crucible;
+    nativePlugin = pkgs.crucible-qemu-plugin;
+    guest = idleGuest;
+    lanes = ["plugin-four" "plugin-block" "parallel-serial" "parallel-two" "parallel-failure"];
+    storageImageBytes = 17179869184;
+    buildGraph = builtins.hashString "sha256" (builtins.concatStringsSep "\n" [
+      pkgs.linux.drvPath
+      pkgs.qemu-crucible.drvPath
+      pkgs.crucible-qemu-plugin.drvPath
+      flight.drvPath
+      rootImage.drvPath
+    ]);
+  };
   rootfsDeps = [
+    rootImage
     flight
     guest
     idleGuest
@@ -145,45 +154,55 @@
     pkgs.coreutils
     pkgs.util-linux
     pkgs.grep
+    pkgs.gawk
   ];
-  attemptHostSetupScript = ''
-    mkdir -p /sys/fs/cgroup
-    if ! ${pkgs.util-linux}/bin/mountpoint -q /sys/fs/cgroup; then
-      ${pkgs.util-linux}/bin/mount -t cgroup2 none /sys/fs/cgroup
-    fi
-    echo '+cpu +memory +pids' > /sys/fs/cgroup/cgroup.subtree_control
-    mkdir -p /sys/fs/cgroup/crucible
-    echo '+cpu +memory +pids' > /sys/fs/cgroup/crucible/cgroup.subtree_control
-
-    truncate -s 8G /tmp/attempts.img
-    ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F -O quota,project \
-      -E quotatype=prjquota /tmp/attempts.img
-    mkdir /tmp/attempts
-    ${pkgs.util-linux}/bin/mount -o loop,prjquota \
-      /tmp/attempts.img /tmp/attempts
-    mkdir -m 700 /tmp/attempts/run
-  '';
   productionFlightCommand = ''
-    ${pkgs.coreutils}/bin/timeout -k 15 900 \
-      ${flight}/bin/crucible-qemu-production-plugin-flight \
-      ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
-      ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
-      ${pkgs.linux}/boot/vmlinuz-* \
-      ${idleGuest}/initrd.img \
-      ${blockGuest}/initrd.img \
-      ${pkgs.qemu-crucible}/share/qemu/bios-256k.bin \
-      /sys/fs/cgroup/crucible /tmp/attempts/run \
+    ${pkgs.coreutils}/bin/timeout -k 30 1800 \
+      ${flight}/bin/crucible-daemon-host-parallel-flight \
+      --ignored --exact \
+      packaged_qemu_executor::tests::paging_native::plugin_flight::production_managed_plugin_flight_preserves_preemption_idle_trace_and_block_recovery \
+      --nocapture
+  '';
+  pluginAssetScript = ''
+    export CRUCIBLE_PLUGIN_FLIGHT_IDLE_INITRD=${idleGuest}/initrd.img
+    export CRUCIBLE_PLUGIN_FLIGHT_BLOCK_INITRD=${blockGuest}/initrd.img
+    export CRUCIBLE_PLUGIN_FLIGHT_FIRMWARE=${pkgs.qemu-crucible}/share/qemu/bios-256k.bin
+  '';
+  traceSummaryScript = ''
+    # Only the accepted native driver emits this bounded summary after its
+    # quota-contained trace closes; extraction performs no guest execution.
+    test "$(${pkgs.grep}/bin/grep -Fxc PRODUCTION_PLUGIN_REFERENCE_TRACE_SUMMARY_BEGIN "$flight_log")" -eq 1
+    test "$(${pkgs.grep}/bin/grep -Fxc PRODUCTION_PLUGIN_REFERENCE_TRACE_SUMMARY_END "$flight_log")" -eq 1
+    ${pkgs.gawk}/bin/awk '
+      $0 == "PRODUCTION_PLUGIN_REFERENCE_TRACE_SUMMARY_BEGIN" { inside = 1; next }
+      $0 == "PRODUCTION_PLUGIN_REFERENCE_TRACE_SUMMARY_END" { inside = 0; next }
+      inside { print }
+    ' "$flight_log" > "$runtime_trace"
+  '';
+  retainFlightResultScript = ''
+    ${pkgs.grep}/bin/grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$flight_log"
+    cat "$flight_log"
+    # Retain libtest diagnostics separately from deterministic assertion rows;
+    # host elapsed time and test runner banners are not guest evidence.
+    ${pkgs.gawk}/bin/awk '
+      $0 == "PRODUCTION_PLUGIN_REFERENCE_TRACE_SUMMARY_BEGIN" { summary = 1; next }
+      $0 == "PRODUCTION_PLUGIN_REFERENCE_TRACE_SUMMARY_END" { summary = 0; next }
+      summary { next }
+      { sub(/^test packaged_qemu_executor::tests::paging_native::plugin_flight::production_managed_plugin_flight_preserves_preemption_idle_trace_and_block_recovery \.\.\. /, "") }
+      $0 == "PASS" || /^[a-z_][a-z0-9_]*=/ { print }
+    ' "$flight_log" > "$result"
   '';
   testScript = ''
     set -eu
-    for option in CFS_BANDWIDTH QUOTA QFMT_V2 QUOTACTL; do
-      ${pkgs.grep}/bin/grep -Fxq "CONFIG_$option=y" ${pkgs.linux}/boot/config-*
-    done
-    ${attemptHostSetupScript}
+    ${pagingKernelSetupScript}
+    ${pluginAssetScript}
 
     result=/tmp/production-plugin-result
+    flight_log=/tmp/production-managed-plugin-libtest.log
     runtime_trace=/tmp/production-reference-runtime-determinism.summary
-    ${productionFlightCommand} "$runtime_trace" > "$result"
+    ${productionFlightCommand} > "$flight_log" 2>&1
+    ${retainFlightResultScript}
+    ${traceSummaryScript}
     test -f "$runtime_trace"
     test ! -L "$runtime_trace"
     test -s "$runtime_trace"
@@ -203,6 +222,7 @@
     for evidence in \
       PASS \
       gate=gate:production-rust-plugin-flight \
+      production_accepted_assignment=true \
       rust_plugin_loaded=true \
       diskless_multiboot_runs=2 \
       fingerprint_flight_variants=reference,host-preempted \
@@ -322,31 +342,10 @@
     test "$(${pkgs.grep}/bin/grep -Ec '^reference_runtime_trace_sha256=[0-9a-f]{64}$' "$result")" -eq 1
     # The exact picosecond clock retires one instruction per 50 ticks.
     test "$ticks_per_instruction" = 50
-    for lane in \
-      host-serial host-parallel host-failure host-recovery \
-      host-replay-genesis host-replay-oracle; do
-      mkdir "/sys/fs/cgroup/crucible/$lane"
-      echo '+cpu +memory +pids' \
-        > "/sys/fs/cgroup/crucible/$lane/cgroup.subtree_control"
-      mkdir -m 700 "/tmp/attempts/run/$lane"
-    done
-    mkdir -m 700 /tmp/run-state /tmp/checkpoints
-    for kernel in ${pkgs.linux}/boot/vmlinuz-*; do
-      export CRUCIBLE_HOST_PARALLEL_KERNEL="$kernel"
-    done
-    export CRUCIBLE_HOST_PARALLEL_QEMU=${pkgs.qemu-crucible}/bin/qemu-system-x86_64
-    export CRUCIBLE_HOST_PARALLEL_PLUGIN=${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so
-    export CRUCIBLE_HOST_PARALLEL_ROOT=${guest}/root.ext4
     export CRUCIBLE_HOST_PARALLEL_SCENARIO=${flight}/share/e2e-determinism.scenario.toml
-    export CRUCIBLE_HOST_PARALLEL_CGROUP=/sys/fs/cgroup/crucible
-    export CRUCIBLE_HOST_PARALLEL_STORAGE=/tmp/attempts/run
-    export CRUCIBLE_HOST_PARALLEL_RUN_STATE=/tmp/run-state
-    export CRUCIBLE_HOST_PARALLEL_CHECKPOINTS=/tmp/checkpoints
-    export CRUCIBLE_HOST_PARALLEL_UID=65534
-    export CRUCIBLE_HOST_PARALLEL_GID=65534
     lifecycle_log=/tmp/production-lifecycle-host-parallel.log
     set +e
-    ${pkgs.coreutils}/bin/timeout -k 30 1800 \
+    ${pkgs.coreutils}/bin/timeout -k 30 3600 \
       ${flight}/bin/crucible-daemon-host-parallel-flight \
       --ignored --exact \
       qemu_campaign_lifecycle::tests::host_parallel_native::production_lifecycle_host_parallel_rounds_are_canonical_and_recoverable \
@@ -405,25 +404,28 @@
     printf '%s\n' PRODUCTION_PLUGIN_RESULT_BEGIN
     cat "$result"
     printf '%s\n' PRODUCTION_PLUGIN_RESULT_END
-    ${pkgs.util-linux}/bin/umount /tmp/attempts
+    ${pkgs.util-linux}/bin/umount /var/paging-storage
     echo "check=${attrPath}"
   '';
   blockRecoveryTestScript = ''
     set -eu
-    ${attemptHostSetupScript}
+    ${pagingKernelSetupScript}
+    ${pluginAssetScript}
 
     result=/tmp/block-recovery-diagnostic-result
+    flight_log=/tmp/block-recovery-managed-libtest.log
     set +e
     CRUCIBLE_PRODUCTION_PLUGIN_FLIGHT_BLOCK_RECOVERY_ONLY=1 \
-      ${productionFlightCommand} /tmp/unused-reference-runtime-trace > "$result"
+      ${productionFlightCommand} > "$flight_log" 2>&1
     flight_status=$?
     set -e
 
-    cat "$result"
-    ${pkgs.util-linux}/bin/umount /tmp/attempts
+    cat "$flight_log"
     if test "$flight_status" -ne 0; then
       exit "$flight_status"
     fi
+    ${retainFlightResultScript}
+    ${pkgs.util-linux}/bin/umount /var/paging-storage
     for evidence in \
       PASS \
       diagnostic_mode=block-recovery-only \
@@ -445,40 +447,51 @@
   '';
   gate = testing.mkVMTest {
     name = "crucible-production-rust-plugin-flight";
-    memory = 8192;
+    memory = 12288;
+    headlessVcpuCount = 6;
+    # The complete accepted assignment and independently retained services
+    # fit their authored resident and backing envelopes throughout setup.
+    extraWritableMiB = 32768;
     # Two sequential plugin variants precede the separately bounded host
     # parallel subflight; the 120-second headless default cannot contain them.
-    timeout = 3000;
+    timeout = 6000;
     inherit rootfsDeps testScript;
   };
   blockRecoveryDiagnostic = testing.mkVMTest {
     name = "crucible-production-rust-plugin-block-recovery-diagnostic";
-    memory = 8192;
-    # The inner advance has a finite 300-second host panic; leave enough time
-    # for rootfs boot, guest setup, clean QEMU reap, and retained diagnostics.
-    timeout = 600;
+    memory = 12288;
+    headlessVcpuCount = 6;
+    extraWritableMiB = 32768;
+    timeout = 2100;
     inherit rootfsDeps;
     testScript = blockRecoveryTestScript;
   };
   partitionDiagnostic = testing.mkVMTest {
     name = "crucible-phase4-qemu-clock-partition-diagnostic";
-    memory = 8192;
-    timeout = 1200;
+    memory = 12288;
+    headlessVcpuCount = 6;
+    extraWritableMiB = 32768;
+    timeout = 2100;
     inherit rootfsDeps;
     testScript = ''
       set -eu
-      ${attemptHostSetupScript}
+      ${pagingKernelSetupScript}
+      ${pluginAssetScript}
 
       export CRUCIBLE_PHASE4_PARTITION_PROBE=1
       result=/tmp/phase4-clock-partition-result
+      flight_log=/tmp/phase4-clock-partition-managed-libtest.log
       runtime_trace=/tmp/phase4-clock-partition-reference.summary
-      ${productionFlightCommand} "$runtime_trace" > "$result"
+      ${productionFlightCommand} > "$flight_log" 2>&1
+      ${retainFlightResultScript}
+      ${traceSummaryScript}
       cat "$result"
       test -s "$runtime_trace"
       ${pkgs.grep}/bin/grep -Fxq 'PASS' "$result"
       ${pkgs.grep}/bin/grep -Fxq 'diagnostic_mode=phase4-partition-probe' "$result"
       ${pkgs.grep}/bin/grep -Fxq 'phase4_partition_span_ps=1000000' "$result"
       ${pkgs.grep}/bin/grep -Fq 'phase4_partition_exact_match=true' "$result"
+      ${pkgs.util-linux}/bin/umount /var/paging-storage
     '';
   };
   exposedGate =

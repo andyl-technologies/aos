@@ -1,5 +1,6 @@
 //! Wire encoding and decoding for debugger-controller RPC operations.
 
+use super::super::request_storage::{Hex, encode, line, session as session_fields};
 use super::*;
 
 pub(super) fn parse_debug_bool_line(
@@ -18,35 +19,39 @@ pub(super) fn parse_debug_bool_line(
 pub(super) fn encode_debug_controller_acquire_request(
     session: SessionRef,
     holder: uuid::Uuid,
-) -> Vec<u8> {
-    let mut output = String::from("crucible.rpc/debug-controller-acquire-request\n");
-    push_session_ref(&mut output, session);
-    push_line(&mut output, "holder", &holder.to_string());
-    output.into_bytes()
+) -> Result<Bytes, ControlClientError> {
+    encode(|output| {
+        output.write_str("crucible.rpc/debug-controller-acquire-request\n")?;
+        session_fields(output, session)?;
+
+        line(output, "holder", holder)
+    })
 }
 
 pub(super) fn encode_debug_controller_release_request(
     session: SessionRef,
     generation: u64,
     holder: uuid::Uuid,
-) -> Vec<u8> {
-    let mut output = String::from("crucible.rpc/debug-controller-release-request\n");
-    push_session_ref(&mut output, session);
-    push_line(&mut output, "generation", &generation.to_string());
-    push_line(&mut output, "holder", &holder.to_string());
-    output.into_bytes()
+) -> Result<Bytes, ControlClientError> {
+    encode(|output| {
+        output.write_str("crucible.rpc/debug-controller-release-request\n")?;
+        session_fields(output, session)?;
+        line(output, "generation", generation)?;
+        line(output, "holder", holder)
+    })
 }
 
 pub(super) fn encode_debug_relay_open_request(
     session: SessionRef,
     generation: u64,
     holder: uuid::Uuid,
-) -> Vec<u8> {
-    let mut output = String::from("crucible.rpc/debug-relay-open-request\n");
-    push_session_ref(&mut output, session);
-    push_line(&mut output, "generation", &generation.to_string());
-    push_line(&mut output, "holder", &holder.to_string());
-    output.into_bytes()
+) -> Result<Bytes, ControlClientError> {
+    encode(|output| {
+        output.write_str("crucible.rpc/debug-relay-open-request\n")?;
+        session_fields(output, session)?;
+        line(output, "generation", generation)?;
+        line(output, "holder", holder)
+    })
 }
 
 pub(super) fn encode_debug_goto_request(
@@ -54,27 +59,41 @@ pub(super) fn encode_debug_goto_request(
     generation: u64,
     holder: uuid::Uuid,
     target: &crucible::DebugCoordinate,
-) -> Result<Vec<u8>, ControlClientError> {
-    let coordinate = match target {
-        crucible::DebugCoordinate::VirtualTime(time) => format!("virtual-time:{}", time.ticks),
-        crucible::DebugCoordinate::NodeIcount { node, icount } => format!(
-            "node-icount:{}:{}",
-            hex_encode(node.name.as_bytes()),
-            icount.retired
-        ),
-        crucible::DebugCoordinate::EventSequence(sequence) => format!("event:{sequence}"),
-        crucible::DebugCoordinate::Configuration(_) | crucible::DebugCoordinate::Checkpoint(_) => {
-            return Err(rpc_decode(
-                "unary remote goto accepts virtual-time, event-log, or node-icount coordinates",
-            ));
+) -> Result<Bytes, ControlClientError> {
+    if matches!(
+        target,
+        crucible::DebugCoordinate::Configuration(_) | crucible::DebugCoordinate::Checkpoint(_)
+    ) {
+        return Err(rpc_decode(
+            "unary remote goto accepts virtual-time, event-log, or node-icount coordinates",
+        ));
+    }
+    encode(|output| {
+        output.write_str("crucible.rpc/debug-goto-request\n")?;
+        session_fields(output, session)?;
+        line(output, "generation", generation)?;
+        line(output, "holder", holder)?;
+        match target {
+            crucible::DebugCoordinate::VirtualTime(time) => line(
+                output,
+                "coordinate",
+                format_args!("virtual-time:{}", time.ticks),
+            ),
+            crucible::DebugCoordinate::NodeIcount { node, icount } => line(
+                output,
+                "coordinate",
+                format_args!(
+                    "node-icount:{}:{}",
+                    Hex(node.name.as_bytes()),
+                    icount.retired
+                ),
+            ),
+            crucible::DebugCoordinate::EventSequence(sequence) => {
+                line(output, "coordinate", format_args!("event:{sequence}"))
+            }
+            _ => Err(std::fmt::Error),
         }
-    };
-    let mut output = String::from("crucible.rpc/debug-goto-request\n");
-    push_session_ref(&mut output, session);
-    push_line(&mut output, "generation", &generation.to_string());
-    push_line(&mut output, "holder", &holder.to_string());
-    push_line(&mut output, "coordinate", &coordinate);
-    Ok(output.into_bytes())
+    })
 }
 
 pub(super) fn encode_debug_reverse_step_request(
@@ -82,7 +101,7 @@ pub(super) fn encode_debug_reverse_step_request(
     generation: u64,
     holder: uuid::Uuid,
     grain: crucible::DebugReverseStepGrain,
-) -> Vec<u8> {
+) -> Result<Bytes, ControlClientError> {
     let grain = match grain {
         crucible::DebugReverseStepGrain::Instruction => "instruction",
         crucible::DebugReverseStepGrain::Quantum => "quantum",
@@ -90,12 +109,13 @@ pub(super) fn encode_debug_reverse_step_request(
         crucible::DebugReverseStepGrain::Assertion => "assertion",
         crucible::DebugReverseStepGrain::Timer => "timer",
     };
-    let mut output = String::from("crucible.rpc/debug-reverse-step-request\n");
-    push_session_ref(&mut output, session);
-    push_line(&mut output, "generation", &generation.to_string());
-    push_line(&mut output, "holder", &holder.to_string());
-    push_line(&mut output, "grain", grain);
-    output.into_bytes()
+    encode(|output| {
+        output.write_str("crucible.rpc/debug-reverse-step-request\n")?;
+        session_fields(output, session)?;
+        line(output, "generation", generation)?;
+        line(output, "holder", holder)?;
+        line(output, "grain", grain)
+    })
 }
 
 pub(super) fn encode_debug_reverse_continue_request(
@@ -103,17 +123,18 @@ pub(super) fn encode_debug_reverse_continue_request(
     generation: u64,
     holder: uuid::Uuid,
     condition: &crucible::Predicate,
-) -> Vec<u8> {
-    let mut output = String::from("crucible.rpc/debug-reverse-continue-request\n");
-    push_session_ref(&mut output, session);
-    push_line(&mut output, "generation", &generation.to_string());
-    push_line(&mut output, "holder", &holder.to_string());
-    push_line(
-        &mut output,
-        "condition",
-        &hex_encode(&condition.to_compact_binary()),
-    );
-    output.into_bytes()
+) -> Result<Bytes, ControlClientError> {
+    super::super::request_storage::authority()?;
+    let condition = condition
+        .to_compact_binary_admitted()
+        .map_err(client_output_admission)?;
+    encode(|output| {
+        output.write_str("crucible.rpc/debug-reverse-continue-request\n")?;
+        session_fields(output, session)?;
+        line(output, "generation", generation)?;
+        line(output, "holder", holder)?;
+        line(output, "condition", Hex(&condition))
+    })
 }
 
 pub(super) fn decode_debug_reposition_response(
@@ -237,13 +258,14 @@ pub(super) fn encode_debug_attach_request(
     generation: u64,
     holder: uuid::Uuid,
     node: &NodeId,
-) -> Vec<u8> {
-    let mut output = String::from("crucible.rpc/debug-attach-request\n");
-    push_session_ref(&mut output, session);
-    push_line(&mut output, "generation", &generation.to_string());
-    push_line(&mut output, "holder", &holder.to_string());
-    push_line(&mut output, "node", &hex_encode(node.name.as_bytes()));
-    output.into_bytes()
+) -> Result<Bytes, ControlClientError> {
+    encode(|output| {
+        output.write_str("crucible.rpc/debug-attach-request\n")?;
+        session_fields(output, session)?;
+        line(output, "generation", generation)?;
+        line(output, "holder", holder)?;
+        line(output, "node", Hex(node.name.as_bytes()))
+    })
 }
 
 pub(super) fn encode_debug_relay_request(
@@ -251,21 +273,27 @@ pub(super) fn encode_debug_relay_request(
     session: SessionRef,
     generation: u64,
     holder: uuid::Uuid,
-    relay_tail: Option<(crate::DebugRelayId, &'static str, String)>,
-) -> Vec<u8> {
-    let mut output = String::new();
-    output.push_str(header);
-    output.push('\n');
-    push_session_ref(&mut output, session);
-    push_line(&mut output, "generation", &generation.to_string());
-    push_line(&mut output, "holder", &holder.to_string());
-    if let Some((relay, field, value)) = relay_tail {
-        push_line(&mut output, "relay-id", &relay.0.to_string());
-        if field != "close" {
-            push_line(&mut output, field, &value);
+    relay: crate::DebugRelayId,
+    tail: RelayTail<'_>,
+) -> Result<Bytes, ControlClientError> {
+    encode(|output| {
+        writeln!(output, "{header}")?;
+        session_fields(output, session)?;
+        line(output, "generation", generation)?;
+        line(output, "holder", holder)?;
+        line(output, "relay-id", relay.0)?;
+        match tail {
+            RelayTail::Data(bytes) => line(output, "data", Hex(bytes)),
+            RelayTail::Maximum(maximum) => line(output, "maximum", maximum),
+            RelayTail::Close => Ok(()),
         }
-    }
-    output.into_bytes()
+    })
+}
+
+pub(super) enum RelayTail<'a> {
+    Data(&'a [u8]),
+    Maximum(usize),
+    Close,
 }
 
 pub(super) fn encode_debug_guest_exchange_request(
@@ -275,23 +303,38 @@ pub(super) fn encode_debug_guest_exchange_request(
     node: &NodeId,
     channel_id: u64,
     record: Option<&crucible_protocol::guest_introspection::GuestIntrospectionRecord>,
-) -> Result<Vec<u8>, ControlClientError> {
-    let mut output = String::from("crucible.rpc/debug-guest-exchange-request\n");
-    push_session_ref(&mut output, session);
-    push_line(&mut output, "generation", &generation.to_string());
-    push_line(&mut output, "holder", &holder.to_string());
-    push_line(&mut output, "node", &hex_encode(node.name.as_bytes()));
-    push_line(&mut output, "channel-id", &channel_id.to_string());
-    let encoded = match record {
-        Some(record) => hex_encode(
-            &record
-                .encode()
-                .map_err(|error| rpc_decode(error.to_string()))?,
-        ),
-        None => String::new(),
-    };
-    push_line(&mut output, "record", &encoded);
-    Ok(output.into_bytes())
+) -> Result<Bytes, ControlClientError> {
+    let budget = crucible::owned_decode::require_current_child_budget()
+        .map_err(|source| client_output_admission(crate::admitted_output::admission(source)))?;
+    let _scope = budget.enter();
+    let length = record
+        .map(|record| record.encoded_len())
+        .transpose()
+        .map_err(|error| rpc_decode(error.to_string()))?
+        .unwrap_or(0);
+    let _record_loan = budget
+        .reserve_scratch_bytes(length as u64)
+        .map_err(|source| client_output_admission(crate::admitted_output::admission(source)))?;
+    let mut encoded = Vec::new();
+    encoded.try_reserve_exact(length).map_err(|source| {
+        client_output_admission(crate::admitted_output::admission(
+            crucible::owned_decode::DecodeAdmissionError::new(source),
+        ))
+    })?;
+    if let Some(record) = record {
+        record
+            .encode_into(&mut encoded)
+            .map_err(|error| rpc_decode(error.to_string()))?;
+    }
+    encode(|output| {
+        output.write_str("crucible.rpc/debug-guest-exchange-request\n")?;
+        session_fields(output, session)?;
+        line(output, "generation", generation)?;
+        line(output, "holder", holder)?;
+        line(output, "node", Hex(node.name.as_bytes()))?;
+        line(output, "channel-id", channel_id)?;
+        line(output, "record", Hex(&encoded))
+    })
 }
 
 pub(super) fn encode_debug_guest_fork_request(
@@ -299,11 +342,12 @@ pub(super) fn encode_debug_guest_fork_request(
     generation: u64,
     holder: uuid::Uuid,
     node: &NodeId,
-) -> Vec<u8> {
-    let mut output = String::from("crucible.rpc/debug-guest-fork-request\n");
-    push_session_ref(&mut output, session);
-    push_line(&mut output, "generation", &generation.to_string());
-    push_line(&mut output, "holder", &holder.to_string());
-    push_line(&mut output, "node", &hex_encode(node.name.as_bytes()));
-    output.into_bytes()
+) -> Result<Bytes, ControlClientError> {
+    encode(|output| {
+        output.write_str("crucible.rpc/debug-guest-fork-request\n")?;
+        session_fields(output, session)?;
+        line(output, "generation", generation)?;
+        line(output, "holder", holder)?;
+        line(output, "node", Hex(node.name.as_bytes()))
+    })
 }

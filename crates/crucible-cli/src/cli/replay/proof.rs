@@ -146,7 +146,9 @@ pub(super) fn materialize_replay_to_savepoint(
         thin_checkpoint: oracle.thin_checkpoint,
     };
     let evidence = crucible::TemporalGraphReplayEvidence {
-        configuration: configuration.clone(),
+        configuration: configuration
+            .try_clone_admitted()
+            .map_err(|error| artifact_error(format!("admit replay configuration copy: {error}")))?,
         replay,
     };
     let report = graph
@@ -173,14 +175,31 @@ pub(super) fn replay_bisect_artifacts(
     artifact: &CliReproductionArtifact,
     artifact_bytes: &[u8],
     bounded_scheduler_preemption: bool,
+    authentication: Option<&crate::cli_campaign::FindingSourceAuthentication>,
+    standalone: Option<&crate::cli_input_resources::StandaloneInputResources>,
 ) -> Result<ReplayBisectionReport, CliError> {
-    let other_bytes = fs::read(other_path)?;
-    let other_artifact = validate_replayable_reproduction_artifact(cli, &other_bytes)?;
+    let other_bytes = match authentication {
+        Some(source) => source.read_input(other_path)?,
+        None => standalone
+            .ok_or_else(|| backend_error("bisection lost its admitted input resources"))?
+            .read(other_path)?,
+    };
+    let mut read_input = |path: &Path| match authentication {
+        Some(source) => source.read_input(path),
+        None => standalone
+            .ok_or_else(|| backend_error("bisection lost its admitted input resources"))?
+            .read(path),
+    };
+    let other_artifact =
+        validate_replayable_reproduction_artifact(cli, &other_bytes, &mut read_input)?;
     if replay_uses_live_qemu(cli)? {
         replay_embedded_model_artifact(&other_artifact)?.ok_or_else(|| {
             artifact_error("replay --bisect requires a model proof in the other artifact")
         })?;
-        replay_live_qemu_evidence(cli, &other_artifact, bounded_scheduler_preemption)?;
+        let owner = &authentication
+            .ok_or_else(|| backend_error("native bisection requires its original input owner"))?
+            .owner;
+        replay_live_qemu_evidence(cli, &other_artifact, bounded_scheduler_preemption, owner)?;
     }
     verify_compare_artifact_inputs_match("replay --bisect", artifact, &other_artifact)?;
     let mode = VerifyMode::CompareArtifacts {
@@ -195,14 +214,30 @@ pub(super) fn replay_bisect_artifacts(
     let right_reduction = reductions
         .next()
         .ok_or_else(|| backend_error("replay bisection omitted right reduction"))?;
-    let witnesses = vec![
-        verify_witness_from_artifact(left_reduction, artifact.clone(), artifact_bytes.to_vec())?,
-        verify_witness_from_artifact(right_reduction, other_artifact, other_bytes.clone())?,
-    ];
+    // Projection borrows the authenticated input, while moving the second
+    // byte extent avoids a duplicate allocation.
+    let mut left_bytes = Vec::new();
+    crucible_session::engine::owned_decode::reserve_vec(&mut left_bytes, artifact_bytes.len())
+        .map_err(CliError::MetadataAdmission)?;
+    left_bytes.extend_from_slice(artifact_bytes);
+    let other_digest = content_address_bytes(&other_bytes);
+    let mut witnesses = Vec::new();
+    crucible_session::engine::owned_decode::reserve_vec(&mut witnesses, 2)
+        .map_err(CliError::MetadataAdmission)?;
+    witnesses.push(verify_witness_from_artifact(
+        left_reduction,
+        artifact,
+        left_bytes,
+    )?);
+    witnesses.push(verify_witness_from_artifact(
+        right_reduction,
+        &other_artifact,
+        other_bytes,
+    )?);
     let divergence = compare_verify_witnesses(&witnesses);
     Ok(ReplayBisectionReport {
         other_path: other_path.to_path_buf(),
-        other_digest: content_address_bytes(&other_bytes),
+        other_digest,
         divergence,
     })
 }

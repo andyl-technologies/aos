@@ -70,10 +70,14 @@ pub(super) fn validate_and_order(
                 },
             )?;
         }
-        let id = node.id.clone();
-        if by_id.insert(id.clone(), node).is_some() {
-            return Err(SignalProgramError::DuplicateNode { id });
+        if by_id.contains_key(&node.id) {
+            admit_id(&node.id)?;
+            return Err(SignalProgramError::DuplicateNode { id: node.id });
         }
+        crate::owned_decode::charge_btree_entry::<SignalId, SignalNode>()
+            .map_err(SignalProgramError::OriginalAdmission)?;
+        admit_id(&node.id)?;
+        by_id.insert(node.id.clone(), node);
     }
     check_resource(
         "signal_edges",
@@ -173,7 +177,7 @@ pub(super) fn canonicalize_node_inputs(node: &mut SignalNode) {
         }) | SignalNodeKind::Pure(PureSignalSpecification::MergeEvents { .. })
     );
     if commutative {
-        node.inputs.sort();
+        node.inputs.sort_unstable();
     }
 }
 
@@ -208,12 +212,13 @@ pub(super) fn validate_node_contract(
                     actual: node.inputs.len(),
                 });
             }
-            let actual = value
-                .value_type()
-                .ok_or_else(|| SignalProgramError::InvalidValue {
-                    node: node.id.clone(),
-                })?;
-            if actual != node.output.value_type {
+            if !value.has_type(&node.output.value_type) {
+                let actual =
+                    value
+                        .value_type()
+                        .ok_or_else(|| SignalProgramError::InvalidValue {
+                            node: node.id.clone(),
+                        })?;
                 return Err(SignalProgramError::LiteralTypeMismatch {
                     node: node.id.clone(),
                     declared: node.output.value_type.material(),
@@ -230,14 +235,21 @@ pub(super) fn validate_node_contract(
                     environment_signals,
                     ..
                 } => {
-                    let mut expected = vec![position_signal.clone()];
-                    expected.extend(orientation_signal.iter().cloned());
-                    expected.extend(environment_signals.iter().cloned());
-                    expected
+                    let expected = std::iter::once(position_signal)
+                        .chain(orientation_signal.iter())
+                        .chain(environment_signals.iter());
+                    if !node.inputs.iter().eq(expected) {
+                        return Err(SignalProgramError::InvalidInputCount {
+                            node: node.id.clone(),
+                            expected: "the source schema's referenced signals in field order",
+                            actual: node.inputs.len(),
+                        });
+                    }
+                    None
                 }
-                _ => Vec::new(),
+                _ => Some(&[][..]),
             };
-            if node.inputs != expected_inputs {
+            if expected_inputs.is_some_and(|expected| node.inputs != expected) {
                 return Err(SignalProgramError::InvalidInputCount {
                     node: node.id.clone(),
                     expected: "the source schema's referenced signals in field order",
@@ -267,8 +279,7 @@ pub(super) fn validate_source(
     specification: &SignalSourceSpecification,
     limits: SignalResourceLimits,
 ) -> Result<(), SignalProgramError> {
-    let valid_value =
-        |value: &SignalValue| value.value_type().as_ref() == Some(&node.output.value_type);
+    let valid_value = |value: &SignalValue| value.has_type(&node.output.value_type);
     let valid_point = |point: &SignalPoint| {
         coordinate_domain(&point.coordinate) == node.domain && valid_value(&point.value)
     };
@@ -481,7 +492,7 @@ pub(super) fn boundary_valid(
     value_type: &SignalValueType,
 ) -> bool {
     match boundary {
-        SignalBoundaryBehavior::Constant(value) => value.value_type().as_ref() == Some(value_type),
+        SignalBoundaryBehavior::Constant(value) => value.has_type(value_type),
         SignalBoundaryBehavior::Error
         | SignalBoundaryBehavior::Hold
         | SignalBoundaryBehavior::Repeat
@@ -639,8 +650,8 @@ pub(super) fn validate_pure(
         PureSignalSpecification::Clamp {
             minimum, maximum, ..
         } => {
-            minimum.value_type().as_ref() == Some(&node.output.value_type)
-                && maximum.value_type().as_ref() == Some(&node.output.value_type)
+            minimum.has_type(&node.output.value_type)
+                && maximum.has_type(&node.output.value_type)
                 && minimum <= maximum
         }
         PureSignalSpecification::LookupStep {
@@ -650,9 +661,9 @@ pub(super) fn validate_pure(
         } => {
             point_count_valid(points.len(), limits.lookup_points_per_node)
                 && points.windows(2).all(|pair| pair[0].0 < pair[1].0)
-                && points.iter().all(|(_, output)| {
-                    output.value_type().as_ref() == Some(&node.output.value_type)
-                })
+                && points
+                    .iter()
+                    .all(|(_, output)| output.has_type(&node.output.value_type))
                 && boundary_valid(before, &node.output.value_type)
                 && boundary_valid(after, &node.output.value_type)
         }
@@ -660,16 +671,16 @@ pub(super) fn validate_pure(
             point_count_valid(points.len(), limits.lookup_points_per_node)
                 && points.windows(2).all(|pair| pair[0].0 < pair[1].0)
                 && node.output.value_type.is_numeric()
-                && points.iter().all(|(_, output)| {
-                    output.value_type().as_ref() == Some(&node.output.value_type)
-                })
+                && points
+                    .iter()
+                    .all(|(_, output)| output.has_type(&node.output.value_type))
         }
         PureSignalSpecification::EnumMap { entries } => {
             point_count_valid(entries.len(), limits.lookup_points_per_node)
                 && entries.windows(2).all(|pair| pair[0].0 < pair[1].0)
-                && entries.iter().all(|(_, output)| {
-                    output.value_type().as_ref() == Some(&node.output.value_type)
-                })
+                && entries
+                    .iter()
+                    .all(|(_, output)| output.has_type(&node.output.value_type))
         }
         PureSignalSpecification::UnitConvert {
             from_unit, to_unit, ..
@@ -737,13 +748,22 @@ pub(super) fn validate_stateful(
         | StatefulSignalSpecification::BurstProcess { .. } => 0,
         StatefulSignalSpecification::QueueModel { .. } => 2,
         StatefulSignalSpecification::FiniteStateMachine { transitions, .. } => {
-            let guards = transitions
+            let mut guards = BTreeSet::new();
+            for guard in transitions
                 .iter()
-                .filter_map(|transition| transition.guard.clone())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>();
-            if node.inputs.get(1..) != Some(guards.as_slice()) {
+                .filter_map(|transition| transition.guard.as_ref())
+            {
+                if !guards.contains(guard) {
+                    crate::owned_decode::charge_btree_set_entry::<&SignalId>()
+                        .map_err(SignalProgramError::OriginalAdmission)?;
+                    guards.insert(guard);
+                }
+            }
+            if !node
+                .inputs
+                .get(1..)
+                .is_some_and(|inputs| inputs.iter().eq(guards))
+            {
                 return Err(SignalProgramError::InvalidStatefulOperator {
                     node: node.id.clone(),
                 });
@@ -771,19 +791,21 @@ pub(super) fn validate_stateful(
             ..
         } => {
             node.output.value_type == SignalValueType::Bool
-                && set_when.value_type() == clear_when.value_type()
+                && set_when
+                    .scalar_type()
+                    .is_some_and(|kind| kind.is_numeric() && clear_when.has_type(&kind))
                 && clear_when < set_when
         }
         StatefulSignalSpecification::Debounce {
             initial,
             residence_nanos,
-        } => initial.value_type().as_ref() == Some(&node.output.value_type) && *residence_nanos > 0,
+        } => initial.has_type(&node.output.value_type) && *residence_nanos > 0,
         StatefulSignalSpecification::Integrator {
             initial,
             time_unit_nanos,
             ..
         } => {
-            initial.value_type().as_ref() == Some(&node.output.value_type)
+            initial.has_type(&node.output.value_type)
                 && node.output.value_type.is_numeric()
                 && *time_unit_nanos > 0
         }
@@ -794,7 +816,7 @@ pub(super) fn validate_stateful(
             maximum_catch_up_steps,
             ..
         } => {
-            initial.value_type().as_ref() == Some(&node.output.value_type)
+            initial.has_type(&node.output.value_type)
                 && node.output.value_type.is_numeric()
                 && *cadence_nanos > 0
                 && *time_unit_nanos > 0
@@ -1047,18 +1069,19 @@ pub(super) fn validate_input_group(
     node: &SignalNode,
     nodes: &BTreeMap<SignalId, SignalNode>,
 ) -> Result<(), SignalProgramError> {
-    let inputs = node
-        .inputs
-        .iter()
-        .map(|id| {
+    let mut inputs = Vec::new();
+    crate::owned_decode::reserve_vec(&mut inputs, node.inputs.len())
+        .map_err(SignalProgramError::OriginalAdmission)?;
+    for id in &node.inputs {
+        inputs.push(
             nodes
                 .get(id)
                 .ok_or_else(|| SignalProgramError::MissingInput {
                     node: node.id.clone(),
                     input: id.clone(),
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+                })?,
+        );
+    }
     if let SignalNodeKind::Stateful { specification, .. } = &node.kind {
         let valid = match specification {
             StatefulSignalSpecification::Hysteresis {
@@ -1067,8 +1090,8 @@ pub(super) fn validate_input_group(
                 ..
             } => inputs.first().is_some_and(|input| {
                 input.output.value_type.is_numeric()
-                    && set_when.value_type().as_ref() == Some(&input.output.value_type)
-                    && clear_when.value_type().as_ref() == Some(&input.output.value_type)
+                    && set_when.has_type(&input.output.value_type)
+                    && clear_when.has_type(&input.output.value_type)
             }),
             StatefulSignalSpecification::Debounce { .. } => inputs
                 .first()
@@ -1201,7 +1224,7 @@ pub(super) fn validate_input_group(
                 input.output.value_type.is_numeric()
                     && points
                         .iter()
-                        .all(|(key, _)| key.value_type().as_ref() == Some(&input.output.value_type))
+                        .all(|(key, _)| key.has_type(&input.output.value_type))
             })
         }
         PureSignalOperator::FieldSample => {
@@ -1290,60 +1313,115 @@ pub(super) fn cross_domain_operator(kind: &SignalNodeKind) -> bool {
     )
 }
 
-pub(super) fn reachable_nodes(
-    nodes: &BTreeMap<SignalId, SignalNode>,
-    exports: &[SignalId],
-) -> Result<BTreeSet<SignalId>, SignalProgramError> {
+pub(super) fn reachable_nodes<'a>(
+    nodes: &'a BTreeMap<SignalId, SignalNode>,
+    exports: &'a [SignalId],
+) -> Result<BTreeSet<&'a SignalId>, SignalProgramError> {
     let mut reachable = BTreeSet::new();
-    let mut pending = exports.to_vec();
+    let capacity = nodes.values().try_fold(exports.len(), |count, node| {
+        count
+            .checked_add(node.inputs.len())
+            .ok_or(SignalProgramError::CountOverflow {
+                field: "signal_edges",
+            })
+    })?;
+    let mut pending = Vec::new();
+    crate::owned_decode::reserve_vec(&mut pending, capacity)
+        .map_err(SignalProgramError::OriginalAdmission)?;
+    pending.extend(exports);
     while let Some(id) = pending.pop() {
-        if !reachable.insert(id.clone()) {
+        if reachable.contains(id) {
             continue;
         }
+        crate::owned_decode::charge_btree_set_entry::<&SignalId>()
+            .map_err(SignalProgramError::OriginalAdmission)?;
+        reachable.insert(id);
         let node = nodes
-            .get(&id)
+            .get(id)
             .ok_or_else(|| SignalProgramError::MissingExport { id: id.clone() })?;
-        pending.extend(node.inputs.iter().cloned());
+        pending.extend(&node.inputs);
     }
     Ok(reachable)
+}
+
+fn admit_id(id: &SignalId) -> Result<(), SignalProgramError> {
+    crate::owned_decode::charge_array::<u8>(id.as_str().len())
+        .map_err(SignalProgramError::OriginalAdmission)
 }
 
 pub(super) fn topological_order(
     mut nodes: BTreeMap<SignalId, SignalNode>,
     configured_depth: u16,
 ) -> Result<Vec<SignalNode>, SignalProgramError> {
-    let mut dependants: BTreeMap<SignalId, Vec<SignalId>> = BTreeMap::new();
+    let mut dependants: BTreeMap<&SignalId, (usize, Vec<&SignalId>)> = BTreeMap::new();
     let mut indegree = BTreeMap::new();
     let mut depth = BTreeMap::new();
     for node in nodes.values() {
-        indegree.insert(node.id.clone(), node.inputs.len());
+        crate::owned_decode::charge_btree_entry::<&SignalId, usize>()
+            .map_err(SignalProgramError::OriginalAdmission)?;
+        crate::owned_decode::charge_btree_entry::<&SignalId, u16>()
+            .map_err(SignalProgramError::OriginalAdmission)?;
+        indegree.insert(&node.id, node.inputs.len());
+        depth.insert(&node.id, 1_u16);
         for input in &node.inputs {
-            dependants
-                .entry(input.clone())
-                .or_default()
-                .push(node.id.clone());
+            if !dependants.contains_key(input) {
+                crate::owned_decode::charge_btree_entry::<&SignalId, (usize, Vec<&SignalId>)>()
+                    .map_err(SignalProgramError::OriginalAdmission)?;
+                dependants.insert(input, (0, Vec::new()));
+            }
+            if let Some((count, _)) = dependants.get_mut(input) {
+                *count = count
+                    .checked_add(1)
+                    .ok_or(SignalProgramError::CountOverflow {
+                        field: "signal_edges",
+                    })?;
+            }
         }
     }
-    for values in dependants.values_mut() {
-        values.sort();
+    for (count, children) in dependants.values_mut() {
+        crate::owned_decode::reserve_vec(children, *count)
+            .map_err(SignalProgramError::OriginalAdmission)?;
     }
-    let mut ready = indegree
-        .iter()
-        .filter_map(|(id, count)| (*count == 0).then_some(id.clone()))
-        .collect::<VecDeque<_>>();
-    let mut ordered_ids = Vec::with_capacity(nodes.len());
+    for node in nodes.values() {
+        for input in &node.inputs {
+            if let Some((_, children)) = dependants.get_mut(input) {
+                children.push(&node.id);
+            }
+        }
+    }
+    for (_, children) in dependants.values_mut() {
+        children.sort_unstable();
+    }
+    crate::owned_decode::charge_array::<&SignalId>(nodes.len())
+        .map_err(SignalProgramError::OriginalAdmission)?;
+    let mut ready = VecDeque::new();
+    ready
+        .try_reserve_exact(nodes.len())
+        .map_err(|_| SignalProgramError::CountOverflow {
+            field: "signal_order_workspace",
+        })?;
+    ready.extend(
+        indegree
+            .iter()
+            .filter_map(|(id, count)| (*count == 0).then_some(*id)),
+    );
+    let mut ordered_ids = Vec::new();
+    crate::owned_decode::reserve_vec(&mut ordered_ids, nodes.len())
+        .map_err(SignalProgramError::OriginalAdmission)?;
     while let Some(id) = ready.pop_front() {
-        let node_depth = *depth.entry(id.clone()).or_insert(1_u16);
+        let node_depth = depth[id];
         if node_depth > configured_depth {
+            admit_id(id)?;
             return Err(SignalProgramError::GraphDepthExceeded {
-                node: id,
+                node: id.clone(),
                 current: u64::from(node_depth),
                 configured: u64::from(configured_depth),
                 hard: u64::from(HARD_SIGNAL_GRAPH_DEPTH_LIMIT),
             });
         }
+        admit_id(id)?;
         ordered_ids.push(id.clone());
-        if let Some(children) = dependants.get(&id) {
+        if let Some((_, children)) = dependants.get(id) {
             for child in children {
                 let child_depth =
                     node_depth
@@ -1352,14 +1430,14 @@ pub(super) fn topological_order(
                             field: "signal_graph_depth",
                         })?;
                 depth
-                    .entry(child.clone())
+                    .entry(child)
                     .and_modify(|current| *current = (*current).max(child_depth))
                     .or_insert(child_depth);
                 let count =
                     indegree
-                        .get_mut(child)
+                        .get_mut(*child)
                         .ok_or_else(|| SignalProgramError::MissingInput {
-                            node: child.clone(),
+                            node: (*child).clone(),
                             input: id.clone(),
                         })?;
                 *count = count
@@ -1369,7 +1447,7 @@ pub(super) fn topological_order(
                     })?;
                 if *count == 0 {
                     let position = ready.partition_point(|candidate| candidate < child);
-                    ready.insert(position, child.clone());
+                    ready.insert(position, child);
                 }
             }
         }
@@ -1381,14 +1459,18 @@ pub(super) fn topological_order(
             .ok_or(SignalProgramError::CountOverflow {
                 field: "signal_nodes",
             })?;
-        return Err(SignalProgramError::Cycle { node: id });
+        admit_id(id)?;
+        return Err(SignalProgramError::Cycle { node: id.clone() });
     }
-    ordered_ids
-        .into_iter()
-        .map(|id| {
-            nodes.remove(&id).ok_or(SignalProgramError::CountOverflow {
-                field: "signal_nodes",
-            })
-        })
-        .collect()
+    drop(dependants);
+    drop(depth);
+    let mut ordered = Vec::new();
+    crate::owned_decode::reserve_vec(&mut ordered, nodes.len())
+        .map_err(SignalProgramError::OriginalAdmission)?;
+    for id in ordered_ids {
+        ordered.push(nodes.remove(&id).ok_or(SignalProgramError::CountOverflow {
+            field: "signal_nodes",
+        })?);
+    }
+    Ok(ordered)
 }

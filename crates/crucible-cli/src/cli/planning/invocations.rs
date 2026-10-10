@@ -847,7 +847,7 @@ impl SimBackendLifecycleLoop {
     fn diagnostic_entry(
         &self,
         frontier: crucible::VirtualTime,
-    ) -> crucible::SchedulerEventLogEntry {
+    ) -> Result<crucible::SchedulerEventLogEntry, crucible::EngineError> {
         let mut details = BTreeMap::new();
         details.insert(
             String::from("quantum"),
@@ -868,12 +868,29 @@ impl SimBackendLifecycleLoop {
 #[cfg(test)]
 impl EngineLoop for SimBackendLifecycleLoop {
     impl_quantum_drive_method!(drive_quantum, QReq, QOut, QErr, |loop_state, request| {
+        let output_custody =
+            crucible::EventLogOutputCustody::retain_current().map_err(|source| {
+                crucible::SchedulerError::Evaluation {
+                    source: Arc::new(source),
+                }
+            })?;
+        let _output_scope = output_custody.enter_decode_scope();
         loop_state.quanta = loop_state.quanta.saturating_add(1);
         let frontier = crucible::VirtualTime {
             ticks: loop_state.quanta,
         };
         crucible::SimulationBackend::step_to(&mut loop_state.backend, frontier)?;
-        let event_log_entries = vec![loop_state.diagnostic_entry(frontier)];
+        let mut event_log_entries = Vec::new();
+        crucible::owned_decode::reserve_vec(&mut event_log_entries, 1).map_err(|source| {
+            crucible::SchedulerError::Evaluation {
+                source: Arc::new(crucible::EngineError::ArtifactDecodeAdmission { source }),
+            }
+        })?;
+        event_log_entries.push(loop_state.diagnostic_entry(frontier).map_err(|source| {
+            crucible::SchedulerError::Evaluation {
+                source: Arc::new(source),
+            }
+        })?);
         loop_state.event_log_events = loop_state
             .event_log_events
             .saturating_add(event_log_entries.len() as u64);
@@ -894,6 +911,7 @@ impl EngineLoop for SimBackendLifecycleLoop {
                 loop_state.event_log_events,
             ),
             scheduler_quiescence: Some(crucible::SchedulerQuiescence::default()),
+            event_log_custody: output_custody,
         })
     });
 
@@ -1583,8 +1601,17 @@ pub(crate) fn load_search_retained_evidence_toml(
                         sequence,
                         crucible::VirtualTime { ticks },
                     )
+                    .map_err(|source| CliError::EventEvidence {
+                        context: "construct retained assertion boundary",
+                        source: Box::new(source),
+                    })?
                 } else {
-                    RecordedAssertionLog::from_entries(entries)
+                    RecordedAssertionLog::from_entries(entries).map_err(|source| {
+                        CliError::EventEvidence {
+                            context: "construct retained assertion log",
+                            source: Box::new(source),
+                        }
+                    })?
                 };
             let mut evidence = SearchRetainedLogAssertionEvidence::new(recorded_log);
             if let Some(quiescence) = terminal_quiescence_by_configuration.remove(&configuration) {
@@ -1643,21 +1670,51 @@ pub(crate) fn push_search_retained_guest_marker_entry(
         )));
     }
     let retained_icount = entry.retired_icount.unwrap_or(1);
+    if !entries_by_configuration.contains_key(&configuration) {
+        crucible::owned_decode::charge_btree_entry::<
+            crucible::ContentHash,
+            Vec<crucible::SchedulerEventLogEntry>,
+        >()
+        .map_err(CliError::MetadataAdmission)?;
+    }
     let entries = entries_by_configuration.entry(configuration).or_default();
+    crucible::owned_decode::reserve_vec(entries, 1).map_err(CliError::MetadataAdmission)?;
+    // TOML is an authoring input. Its parser-owned strings are copied into the
+    // actual retained-output account before the log adopts them.
+    let node = copy_retained_authoring_text(&node)?;
+    let marker = copy_retained_authoring_text(&marker)?;
     let sequence = u64::try_from(entries.len()).map_err(|_| {
         backend_error(format!(
             "search retained evidence {label} entry {index} sequence index overflowed"
         ))
     })?;
-    entries.push(crucible::SchedulerEventLogEntry::guest_marker_observation(
-        sequence,
-        crucible::Icount {
-            retired: retained_icount,
-        },
-        crucible::NodeId { name: node },
-        crucible::MarkerId::from_name(marker),
-    ));
+    entries.push(
+        crucible::SchedulerEventLogEntry::guest_marker_observation(
+            sequence,
+            crucible::Icount {
+                retired: retained_icount,
+            },
+            crucible::NodeId { name: node },
+            crucible::MarkerId::from_name(marker),
+        )
+        .map_err(|source| CliError::EventEvidence {
+            context: "construct retained guest marker",
+            source: Box::new(source),
+        })?,
+    );
     Ok(())
+}
+
+fn copy_retained_authoring_text(text: &str) -> Result<String, CliError> {
+    crucible::owned_decode::charge_bytes(text.len() as u64).map_err(CliError::MetadataAdmission)?;
+    let mut copy = String::new();
+    copy.try_reserve_exact(text.len()).map_err(|error| {
+        backend_error(format!(
+            "retained authoring text allocation refused: {error}"
+        ))
+    })?;
+    copy.push_str(text);
+    Ok(copy)
 }
 
 /// Parses one retained assertion-evaluation boundary entry.

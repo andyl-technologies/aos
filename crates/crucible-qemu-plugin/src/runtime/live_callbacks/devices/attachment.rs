@@ -27,6 +27,7 @@ impl LiveDeviceCallbackState {
         )
     }
 
+    #[cfg(test)]
     pub(super) fn new_with_history_limits(
         vm_slot: u32,
         block_rings: LiveDirectedRingPair,
@@ -66,6 +67,48 @@ impl LiveDeviceCallbackState {
             accelerator_restore_staging: None,
         })
     }
+
+    pub(super) fn initialize_with_history_limits(
+        target: &mut Option<Mutex<Self>>,
+        vm_slot: u32,
+        block_rings: LiveDirectedRingPair,
+        ninep_rings: LiveDirectedRingPair,
+        storage_history_limits: PluginStorageHistoryLimits,
+        accelerator_generation: u64,
+        accelerator_rings: crucible_shmem::DetachedPluginAcceleratorRings,
+    ) -> Result<(), LiveDeviceCallbackError> {
+        let block = PluginBlockIo::from_directed_rings_with_history_limits(
+            vm_slot,
+            block_rings.outbound.descriptor,
+            block_rings.inbound.descriptor,
+            storage_history_limits,
+        )
+        .map_err(|source| LiveDeviceCallbackError::Block { source })?;
+        let ninep = PluginNinePIo::from_directed_rings(
+            vm_slot,
+            ninep_rings.outbound.descriptor,
+            ninep_rings.inbound.descriptor,
+        )
+        .map_err(|source| LiveDeviceCallbackError::NineP { source })?;
+        *target = Some(Mutex::new(Self {
+            freeze: PluginDeviceIoFreeze::new(),
+            block,
+            block_rings,
+            block_tokens: BTreeMap::new(),
+            block_reissue_preserve: BTreeSet::new(),
+            pending_block_event: None,
+            ninep,
+            ninep_rings,
+            ninep_tokens: BTreeMap::new(),
+            accelerator_generation,
+            accelerator_rings,
+            accelerator_pending: BTreeMap::new(),
+            accelerator_completed: BTreeMap::new(),
+            accelerator_cancelled: BTreeMap::new(),
+            accelerator_restore_staging: None,
+        }));
+        Ok(())
+    }
 }
 
 impl LiveVcpuTimeCallbackState {
@@ -89,6 +132,7 @@ impl LiveVcpuTimeCallbackState {
         Ok(self)
     }
 
+    #[cfg(test)]
     pub(in crate::runtime) fn attach_devices_with_history_limits(
         mut self,
         vm_slot: u32,
@@ -98,17 +142,36 @@ impl LiveVcpuTimeCallbackState {
         accelerator_generation: u64,
         accelerator_rings: crucible_shmem::DetachedPluginAcceleratorRings,
     ) -> Result<Self, LiveVcpuTimeCallbackError> {
-        self.devices = Some(Mutex::new(
-            LiveDeviceCallbackState::new_with_history_limits(
-                vm_slot,
-                block,
-                ninep,
-                storage_history_limits,
-                accelerator_generation,
-                accelerator_rings,
-            )
-            .map_err(LiveVcpuTimeCallbackError::live_device)?,
-        ));
+        self.attach_devices_with_history_limits_in_place(
+            vm_slot,
+            block,
+            ninep,
+            storage_history_limits,
+            accelerator_generation,
+            accelerator_rings,
+        )?;
         Ok(self)
+    }
+
+    pub(in crate::runtime) fn attach_devices_with_history_limits_in_place(
+        &mut self,
+        vm_slot: u32,
+        block: LiveDirectedRingPair,
+        ninep: LiveDirectedRingPair,
+        storage_history_limits: PluginStorageHistoryLimits,
+        accelerator_generation: u64,
+        accelerator_rings: crucible_shmem::DetachedPluginAcceleratorRings,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        LiveDeviceCallbackState::initialize_with_history_limits(
+            &mut self.devices,
+            vm_slot,
+            block,
+            ninep,
+            storage_history_limits,
+            accelerator_generation,
+            accelerator_rings,
+        )
+        .map_err(LiveVcpuTimeCallbackError::live_device)?;
+        Ok(())
     }
 }

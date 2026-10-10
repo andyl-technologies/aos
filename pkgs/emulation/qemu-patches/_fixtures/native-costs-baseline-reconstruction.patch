@@ -445,7 +445,7 @@ index 4eb0540ef5f26a902381bd985e7e0e4410800034..8c78247aa6a1c0d10fe52311c552eadb
          }
      }
 diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
-index 38925e9bf24119bd8f97f61ed3a77f0efe331855..1b59d60925d365c2f3747dad8c06d5df41488ccf 100644
+index 2b7523149b1ba10d3d80af0eb599c15c5aea107f..082cc9aa6f2aec50ce36122a6b92d127285c7b59 100644
 --- a/util/qemu-thread-posix.c
 +++ b/util/qemu-thread-posix.c
 @@ -30,6 +30,7 @@ typedef struct CrucibleHotForkMutexEntry {
@@ -456,7 +456,7 @@ index 38925e9bf24119bd8f97f61ed3a77f0efe331855..1b59d60925d365c2f3747dad8c06d5df
      uint32_t acquisition_waiters;
      uint32_t condition_waiters;
      int64_t condition_waiter_thread_id;
-@@ -487,7 +488,7 @@ static void crucible_hot_fork_mutex_wait_begin(QemuMutex *mutex)
+@@ -501,7 +502,7 @@ static void crucible_hot_fork_mutex_wait_begin(QemuMutex *mutex)
      crucible_hot_fork_mutex_registry_lock();
      entry = crucible_hot_fork_mutex_entry(mutex);
      if (entry) {
@@ -465,7 +465,7 @@ index 38925e9bf24119bd8f97f61ed3a77f0efe331855..1b59d60925d365c2f3747dad8c06d5df
      }
      crucible_hot_fork_mutex_registry_unlock();
  }
-@@ -502,7 +503,7 @@ static void crucible_hot_fork_mutex_wait_cancel(QemuMutex *mutex)
+@@ -516,7 +517,7 @@ static void crucible_hot_fork_mutex_wait_cancel(QemuMutex *mutex)
          if (qatomic_read(&entry->acquisition_waiters) == 0) {
              qatomic_set(&entry->ownership_valid, false);
          } else {
@@ -474,7 +474,7 @@ index 38925e9bf24119bd8f97f61ed3a77f0efe331855..1b59d60925d365c2f3747dad8c06d5df
          }
      }
      crucible_hot_fork_mutex_registry_unlock();
-@@ -542,7 +543,7 @@ static void crucible_hot_fork_mutex_acquired(QemuMutex *mutex)
+@@ -556,7 +557,7 @@ static void crucible_hot_fork_mutex_acquired(QemuMutex *mutex)
      if (qatomic_read(&entry->acquisition_waiters) == 0) {
          qatomic_set(&entry->ownership_valid, false);
      } else {
@@ -483,7 +483,7 @@ index 38925e9bf24119bd8f97f61ed3a77f0efe331855..1b59d60925d365c2f3747dad8c06d5df
      }
      crucible_hot_fork_mutex_registry_unlock();
  }
-@@ -606,7 +607,7 @@ static void crucible_hot_fork_mutex_condition_wait_begin(QemuMutex *mutex)
+@@ -620,7 +621,7 @@ static void crucible_hot_fork_mutex_condition_wait_begin(QemuMutex *mutex)
      owner = qatomic_read(&entry->owner_thread_id);
      depth = qatomic_read(&entry->recursion_depth);
  
@@ -492,7 +492,7 @@ index 38925e9bf24119bd8f97f61ed3a77f0efe331855..1b59d60925d365c2f3747dad8c06d5df
          qatomic_set(&entry->condition_waiter_thread_id,
                      crucible_mutex_owner_thread_id());
      } else {
-@@ -645,7 +646,7 @@ static void crucible_hot_fork_mutex_condition_wait_end(QemuMutex *mutex)
+@@ -659,7 +660,7 @@ static void crucible_hot_fork_mutex_condition_wait_end(QemuMutex *mutex)
      qatomic_set(&entry->recursion_depth, 1);
      if (qatomic_read(&entry->condition_waiters) == 0) {
          qatomic_set(&entry->ownership_valid, false);

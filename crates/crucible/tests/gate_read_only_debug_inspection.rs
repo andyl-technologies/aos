@@ -18,6 +18,9 @@ use crucible::{
 #[test]
 fn debug_read_only_inspection_preserves_causal_log_and_virtual_time() -> Result<(), Box<dyn Error>>
 {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = single_node_world("read-only-debug-inspection")?;
     let scenario = world.scenario_def();
     let root = Configuration::genesis(scenario.clone());
@@ -52,7 +55,9 @@ fn debug_read_only_inspection_preserves_causal_log_and_virtual_time() -> Result<
         ],
     );
 
-    let report = graph.read_only_debug_inspection(&attach, &request, &no_debug_log);
+    let report = graph
+        .read_only_debug_inspection(&attach, &request, &no_debug_log)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
 
     assert!(report.proves_read_only());
     assert!(report.graph_unchanged());
@@ -77,7 +82,9 @@ fn debug_read_only_inspection_preserves_causal_log_and_virtual_time() -> Result<
     );
     assert_eq!(
         report.causal_event_log_before.canonical_bytes(),
-        event_log_causal_projection(&no_debug_log).canonical_bytes()
+        event_log_causal_projection(&no_debug_log)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+            .canonical_bytes()
     );
     assert_eq!(
         report.causal_event_log_before.canonical_bytes(),
@@ -126,7 +133,8 @@ fn debug_read_only_inspection_preserves_causal_log_and_virtual_time() -> Result<
     );
 
     let comparison =
-        compare_event_log_determinism(&no_debug_log, &report.event_log_with_observations);
+        compare_event_log_determinism(&no_debug_log, &report.event_log_with_observations)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
 
     assert!(comparison.passes());
     assert_eq!(
@@ -149,8 +157,9 @@ fn debug_read_only_inspection_preserves_causal_log_and_virtual_time() -> Result<
         different_time(report.footprint_before.virtual_time),
         [DebugReadOnlyInspectionKind::RegisterRead],
     );
-    let mismatched_report =
-        graph.read_only_debug_inspection(&attach, &mismatched_request, &no_debug_log);
+    let mismatched_report = graph
+        .read_only_debug_inspection(&attach, &mismatched_request, &no_debug_log)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     assert!(!mismatched_report.proves_read_only());
     assert!(!mismatched_report.requested_virtual_time_matches_checkpoint());
     assert!(mismatched_report.virtual_time_unchanged());
@@ -203,6 +212,7 @@ fn rng_entry(sequence: u64, ticks: u64, stream: &str, value: u64) -> SchedulerEv
             value,
         })),
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
@@ -211,6 +221,7 @@ fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
         time(ticks),
         SchedulerEvaluationBoundaryKind::Quantum,
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn time(ticks: u64) -> VirtualTime {

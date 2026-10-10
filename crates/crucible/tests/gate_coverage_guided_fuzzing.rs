@@ -24,6 +24,9 @@ use crucible::{
 
 #[test]
 fn gate_coverage_guided_fuzzing_is_seeded_and_reproducible() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let family = fuzz_family()?;
     let config = CoverageGuidedFuzzConfig::new(Seed::from_u64(0xf00d), 4);
     let feedback = vec![coverage_feedback("guest-a", 0x4000, "first")];
@@ -80,6 +83,9 @@ fn gate_coverage_guided_fuzzing_is_seeded_and_reproducible() -> Result<(), Box<d
 
 #[test]
 fn gate_coverage_guided_fuzzing_prefers_first_seen_coverage() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let family = fuzz_family()?;
     let config = CoverageGuidedFuzzConfig::new(Seed::from_u64(0xbeef), 3);
     let first_feedback = coverage_feedback("guest-a", 0x5000, "first");
@@ -130,6 +136,9 @@ fn gate_coverage_guided_fuzzing_prefers_first_seen_coverage() -> Result<(), Box<
 
 #[test]
 fn gate_coverage_guided_fuzzing_pins_bounded_fault_plan_variants() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let invalid_space = FamilySpace::new(
         SeedSpace::explicit(vec![Seed::from_u64(0x11)])?,
         TopologySizeRange::new(2, 2)?,
@@ -280,11 +289,13 @@ fn coverage_feedback(
         crucible::test_support::condition_observation_entry_for_test(
             0,
             &ObservableEvent::coverage_block(icount(10), node.clone(), guest_pc, 0x20),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_observation_entry_for_test(
             1,
             &ObservableEvent::coverage_marker(icount(11), node, marker(marker_name)),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
     EventLogCoverageFeedback::from_event_log(&log)
 }

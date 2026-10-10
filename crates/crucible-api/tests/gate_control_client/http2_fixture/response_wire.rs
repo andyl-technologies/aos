@@ -85,7 +85,7 @@ pub(crate) fn encode_destroy_session_response(response: &DestroySessionResponse)
 pub(crate) fn encode_get_reproduction_response(response: &GetReproductionResponse) -> String {
     let mut output = String::from("crucible.rpc/get-reproduction-response\n");
     push_session_ref(&mut output, response.session);
-    for command in &response.commands {
+    for command in response.commands.iter() {
         push_wire_line(&mut output, "command", &reproduction_record_wire(command));
     }
     output
@@ -93,6 +93,13 @@ pub(crate) fn encode_get_reproduction_response(response: &GetReproductionRespons
 
 pub(crate) fn lifecycle_error_response(error: LifecycleApiError) -> axum::response::Response {
     match error {
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        LifecycleApiError::ParentParkHeld => typed_rpc_status_response(
+            axum::http::StatusCode::CONFLICT,
+            crucible_api::RpcStatusCode::InvalidState,
+            "parent-park-held",
+            "parent park disposition remains retained",
+        ),
         LifecycleApiError::EpochMismatch {
             session_id,
             expected,
@@ -155,12 +162,14 @@ pub(crate) fn lifecycle_error_response(error: LifecycleApiError) -> axum::respon
         LifecycleApiError::RpcAbi { .. }
         | LifecycleApiError::GenesisGraph { .. }
         | LifecycleApiError::ResourceLimit(..)
+        | LifecycleApiError::ConfigurationCopy(_)
         | LifecycleApiError::SessionRetention { .. }
         | LifecycleApiError::CommandChannelClosed { .. }
         | LifecycleApiError::StateDidNotAdvance { .. }
         | LifecycleApiError::ActorJoin { .. }
         | LifecycleApiError::ActorFailed { .. }
         | LifecycleApiError::LoopFactory { .. }
+        | LifecycleApiError::BackendConstruction { .. }
         | LifecycleApiError::AttemptOperational { .. } => typed_rpc_status_response(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             crucible_api::RpcStatusCode::Internal,
@@ -187,7 +196,8 @@ pub(crate) fn streaming_error_response(error: StreamingApiError) -> axum::respon
         StreamingApiError::CommandChannelClosed { .. }
         | StreamingApiError::CommandResponseMissing { .. }
         | StreamingApiError::StateDidNotAdvance { .. }
-        | StreamingApiError::EventStreamLagged { .. } => typed_rpc_status_response(
+        | StreamingApiError::EventStreamLagged { .. }
+        | StreamingApiError::OutputAdmission { .. } => typed_rpc_status_response(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             crucible_api::RpcStatusCode::Internal,
             "internal",

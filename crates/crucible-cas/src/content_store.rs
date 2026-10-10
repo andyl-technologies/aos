@@ -23,62 +23,94 @@ use std::sync::Arc;
 use thiserror::Error;
 
 mod admin;
+pub(crate) mod batch;
+mod blob_source_owner;
+pub(crate) mod checked_reader;
+mod composite_publication;
 mod composition;
+
+#[cfg(test)]
+pub(crate) use composition::{MetricsStore, RoutedStore};
 mod compressed_directory;
 mod directory;
+mod encoded_directory_admin;
 mod encrypted_directory;
 mod graph;
+mod identity_render;
+
+#[cfg(feature = "private-measurement-domain")]
+pub use directory::OriginalDirectoryRefOwner;
 mod memory;
 mod namespace;
 mod packed;
+pub(crate) use packed::read_view::View as PackedReadView;
 mod physical_quota;
+mod prepaid_source;
 mod profile;
+mod provider_diagnostic;
+mod publication;
 mod quota;
 mod s3;
 mod s3_ref;
 mod sqlite;
+pub(crate) use sqlite::SqliteRamReadSession;
 mod write_back;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod conformance;
 
 pub use admin::{
-    BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin,
-    InventoryGeneration, PhysicalStorageIdentity, PlannedDeleteDisposition, RefInventoryFence,
+    AdministrativeScopeError, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary,
+    BlobStoreAdmin, CheckedInventoryFence, DeleteBatchReceipt, InventoryGeneration,
+    InventorySummaryReceipt, PhysicalStorageIdentity, PlannedDeleteDisposition, RefInventoryFence,
     RefInventoryGeneration, RefInventoryRecord, RefInventorySummary, RefPublicationGuard,
     RefStoreAdmin,
 };
+pub use batch::{OwnedBlobBytes, PutBatchReceipt};
+pub use checked_reader::{CheckedBlobReader, CheckedReader};
+pub use composite_publication::{
+    CheckedPublicationMetadata, CompositeBoundaryRefusal, CompositeScopeError,
+};
 pub use compressed_directory::CompressedDirectoryBlobBackend;
-pub use directory::{DirectoryBlobBackend, DirectoryRefBackend};
+pub use directory::{
+    DirectoryBlobAuthorities, DirectoryBlobBackend, DirectoryMaintenanceOutcome,
+    DirectoryPublicationOutcome, DirectoryRefAuthorities, DirectoryRefBackend, DirectoryScopeError,
+};
 pub use encrypted_directory::{
     EncryptedDirectoryBlobBackend, StoreEncryptionKey, StoreEncryptionKeyId, StoreGraphKeyring,
 };
 pub use graph::{
-    MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES, MAX_STORE_GRAPH_VERIFY_PLACEMENTS, StoreGraph,
-    StoreGraphAdmin, StoreGraphConfig, StoreGraphConfigurationId, StoreGraphPackedRepackAdmin,
-    StoreGraphPhysicalAdmin, StoreGraphPhysicalRepairDisposition, StoreGraphPhysicalRetention,
-    StoreGraphPhysicalVerification, StoreGraphS3MultipartCleanupAdmin, StoreGraphVerificationError,
-    StoreGraphVerificationLimit, StoreGraphVerificationLimits, StoreGraphVerificationLimitsError,
-    StoreGraphVerificationReport, StoreNodeDescription, StoreNodeId, StoreNodeKind,
-    StoreNodeMetrics, StoreNodeMetricsDescription, StoreNodeSpec, StorePhysicalRepairDisposition,
-    StorePhysicalRepairReceipt, StoreTierPolicy, StoreWriteBackFlushSummary,
+    MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES, MAX_STORE_GRAPH_VERIFY_PLACEMENTS,
+    OriginalSqliteGraphCloseError, OriginalSqliteGraphConfig, OriginalSqliteGraphOwner, StoreGraph,
+    StoreGraphAdmin, StoreGraphConfig, StoreGraphConfigurationId, StoreGraphOriginalResources,
+    StoreGraphPackedRepackAdmin, StoreGraphPhysicalAdmin, StoreGraphPhysicalRepairDisposition,
+    StoreGraphPhysicalRetention, StoreGraphPhysicalVerification, StoreGraphS3MultipartCleanupAdmin,
+    StoreGraphVerificationError, StoreGraphVerificationLimit, StoreGraphVerificationLimits,
+    StoreGraphVerificationLimitsError, StoreGraphVerificationReport, StoreNodeDescription,
+    StoreNodeId, StoreNodeKind, StoreNodeMetrics, StoreNodeMetricsDescription, StoreNodeSpec,
+    StorePhysicalRepairDisposition, StorePhysicalRepairReceipt, StoreTierPolicy,
+    StoreWriteBackFlushSummary,
 };
-pub use memory::{MemoryBlobBackend, MemoryRefBackend};
+pub use memory::{MemoryBlobBackend, MemoryPublicationOutcome, MemoryRefBackend, MemoryScopeError};
 pub use namespace::{
     StoreGraphNamespaceAuthorizers, StoreNamespaceAuthorizer, StoreNamespaceId,
     StoreNamespaceOperation,
 };
 pub use packed::{
-    PackedBlobBackend, PackedIncompleteCleanupReport, PackedRepackPlan, PackedRepackPlanId,
-    PackedRepackReport, PackedStorageAccounting,
+    PackedBlobBackend, PackedIncompleteCleanupReport, PackedPublicationOutcome, PackedRepackPlan,
+    PackedRepackPlanId, PackedRepackReport, PackedScopeError, PackedStorageAccounting,
 };
 pub use physical_quota::{
-    StoreGraphPhysicalQuotaBinders, StorePhysicalQuotaBinder, StorePhysicalQuotaGuard,
-    StorePhysicalQuotaPolicyId,
+    StoreGraphPhysicalQuotaBinders, StorePhysicalQuotaBinder, StorePhysicalQuotaBinderHandle,
+    StorePhysicalQuotaGuard, StorePhysicalQuotaPolicyId,
 };
 pub use profile::{
     ObjectProfile, Reconstructibility, RetentionRole, SensitivityClass, StoreGraphObjectProfilers,
     StoreObjectProfilePolicyId, StoreObjectProfiler,
+};
+pub use provider_diagnostic::{
+    ProviderDiagnosticError, ProviderDiagnosticPermit, ProviderDiagnosticStorage,
+    ProviderFailureKind,
 };
 pub use s3::{
     MAX_S3_COMMITTED_OBJECT_VISITS, MAX_S3_MULTIPART_LIST_ITEMS, S3BlobBackend,
@@ -94,12 +126,31 @@ pub use s3_ref::{
     StoreS3RefCapability, StoreS3StrongCasClient, StoreS3VersionedObject,
     StoreS3VersionedObjectMetadata,
 };
-pub use sqlite::SqliteBlobBackend;
+#[cfg(feature = "test-support")]
+pub use sqlite::SqliteScopeFaultObservation;
+pub use sqlite::{
+    SqliteBlobAuthorities, SqliteBlobBackend, SqliteCatalogOperation, SqliteCatalogOperationKind,
+    SqliteCatalogSupervisor, SqliteCommitOutcome, SqliteConnection, SqliteDiagnosticError,
+    SqliteHeapAuthority, SqliteHeapError, SqliteHeapIssuer, SqliteProcessBootstrapAuthority,
+    SqliteProcessHeap, SqliteScopeError, minimum_sqlite_catalog_resident_bytes,
+    minimum_sqlite_catalog_staging_bytes,
+};
 pub use write_back::{
     WriteBackRetentionAdmin, WriteBackRetentionFence, WriteBackRetentionGeneration,
     WriteBackRetentionRoot, WriteBackRetentionSummary,
 };
 
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_resources;
+
+#[cfg(any(test, feature = "test-support"))]
+mod sqlite_fixture;
+
+#[cfg(any(test, feature = "test-support"))]
+pub use sqlite_fixture::{
+    FixtureSqliteConnectionError, fixture_sqlite_connection, fixture_sqlite_heap,
+    isolated_small_fixture_sqlite_heap,
+};
 #[cfg(test)]
 mod tests;
 
@@ -130,6 +181,8 @@ pub enum ObjectKind {
     ExactManifest,
     /// Logical guest RAM page or extent.
     RamExtent,
+    /// Persistent binary RAM catalog node with authenticated children.
+    RamTree,
     /// Logical disk page or extent.
     DiskExtent,
     /// Opaque device or QEMU VMState artifact.
@@ -157,6 +210,7 @@ impl ObjectKind {
             Self::Policy => "policy",
             Self::ExactManifest => "exact-manifest",
             Self::RamExtent => "ram-extent",
+            Self::RamTree => "ram-tree",
             Self::DiskExtent => "disk-extent",
             Self::DeviceState => "device-state",
             Self::Observation => "observation",
@@ -176,6 +230,7 @@ impl ObjectKind {
             "policy" => Some(Self::Policy),
             "exact-manifest" => Some(Self::ExactManifest),
             "ram-extent" => Some(Self::RamExtent),
+            "ram-tree" => Some(Self::RamTree),
             "disk-extent" => Some(Self::DiskExtent),
             "device-state" => Some(Self::DeviceState),
             "observation" => Some(Self::Observation),
@@ -252,15 +307,32 @@ impl ContentId {
         Self::for_bytes(self.kind, self.schema_version, bytes) == self
     }
 
+    /// Returns the exact byte length of the stable textual identity.
+    #[must_use]
+    pub fn encoded_len(self) -> usize {
+        self.kind.as_str().len()
+            + 2
+            + self.schema_version.checked_ilog10().unwrap_or(0) as usize
+            + 1
+            + 64
+    }
+
     /// Renders the stable `kind.schema.digest` representation.
     #[must_use]
     pub fn encode(self) -> String {
-        format!(
-            "{}.{}.{}",
-            self.kind.as_str(),
-            self.schema_version,
-            encode_hex(&self.digest)
-        )
+        use std::fmt::Write as _;
+        let length = self.encoded_len();
+        if crate::owned_decode::charge_array::<u8>(length).is_err() {
+            return String::new();
+        }
+        let mut encoded = String::with_capacity(length);
+        let _ = write!(encoded, "{}.{}.", self.kind.as_str(), self.schema_version);
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        for byte in self.digest {
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        encoded
     }
 
     /// Parses the stable `kind.schema.digest` representation.
@@ -270,37 +342,50 @@ impl ContentId {
     /// Returns [`StoreError::InvalidId`] when the kind, version, separators, or
     /// digest are malformed.
     pub fn parse(value: &str) -> Result<Self, StoreError> {
+        // All accepted fields are ASCII and bounded before parsing. Canonical
+        // validation must not allocate an encoded copy of an untrusted ID.
+        if !value.is_ascii() || value.len() > "campaign-snapshot".len() + 1 + 10 + 1 + 64 {
+            return Err(StoreError::InvalidId);
+        }
         let mut fields = value.split('.');
         let kind = fields
             .next()
             .and_then(ObjectKind::parse)
             .ok_or(StoreError::InvalidId)?;
-        let schema_version = fields
-            .next()
-            .and_then(|field| field.parse::<u32>().ok())
-            .ok_or(StoreError::InvalidId)?;
-        let digest = fields
-            .next()
-            .and_then(decode_digest)
-            .ok_or(StoreError::InvalidId)?;
+        let version = fields.next().ok_or(StoreError::InvalidId)?;
+        if version.is_empty()
+            || version.len() > 10
+            || (version.len() > 1 && version.starts_with('0'))
+            || !version.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(StoreError::InvalidId);
+        }
+        let schema_version = version.parse::<u32>().map_err(|_| StoreError::InvalidId)?;
+        let digest = fields.next().ok_or(StoreError::InvalidId)?;
+        if !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        {
+            return Err(StoreError::InvalidId);
+        }
+        let digest = decode_digest(digest).ok_or(StoreError::InvalidId)?;
         if fields.next().is_some() {
             return Err(StoreError::InvalidId);
         }
-        let parsed = Self {
+        Ok(Self {
             kind,
             schema_version,
             digest,
-        };
-        if parsed.encode() != value {
-            return Err(StoreError::InvalidId);
-        }
-        Ok(parsed)
+        })
     }
 }
 
 impl fmt::Display for ContentId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.encode())
+        self.with_encoded_text(|bytes| {
+            let encoded = std::str::from_utf8(bytes).map_err(|_| fmt::Error)?;
+            formatter.write_str(encoded)
+        })
     }
 }
 
@@ -327,6 +412,24 @@ impl ByteRange {
     }
 }
 
+/// Bounds one complete canonical campaign Merkle-node envelope.
+pub const MAX_MERKLE_NODE_ENVELOPE_BYTES: usize = 64 * 1024;
+
+/// Selects a source's checked complete-read route without running it.
+///
+/// This operational selector grants no content identity or EOF authentication
+/// proof. Whole reads still validate their complete output; owning streams
+/// retain their original account and finish their own EOF contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckedReadAccess {
+    /// Provides no checked read capability.
+    Unsupported,
+    /// Implements synchronous checked whole reads, with optional owning opens.
+    Whole,
+    /// Implements an owning checked stream, including deferred EOF validation.
+    Owning,
+}
+
 /// Reopenable source of a finite logical byte stream.
 ///
 /// Reopenability lets composition layers retry or mirror a put without
@@ -335,6 +438,16 @@ impl ByteRange {
 /// bytes; a source may fail instead. Immutable backends independently
 /// authenticate each stream against its [`ContentId`].
 pub trait BlobSource: Send + Sync {
+    /// Declares its checked access contract without callbacks or effects.
+    ///
+    /// The default refuses checked dispatch. A source that declares `Whole`
+    /// implements checked complete reads; `Owning` implements checked opens.
+    /// Range wrappers declare owning access so hidden bytes authenticate before
+    /// the exposed range reaches EOF. Ordinary I/O never grants either mode.
+    fn checked_read_access(&self) -> CheckedReadAccess {
+        CheckedReadAccess::Unsupported
+    }
+
     /// Returns the exact number of logical bytes produced by each stream.
     fn logical_length(&self) -> u64;
 
@@ -344,6 +457,52 @@ pub trait BlobSource: Send + Sync {
     ///
     /// Returns a stable store error when the source cannot be reopened.
     fn open(&self) -> Result<Box<dyn Read + Send>, StoreError>;
+
+    /// Opens an owning reader under the caller's original finite boundary.
+    ///
+    /// # Errors
+    /// Returns an original admission or source failure, or unsupported when
+    /// the source cannot supervise its internal waits and EOF authentication.
+    fn open_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        _boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<CheckedReader, StoreError> {
+        original
+            .verify_live()
+            .map_err(|error| batch::admission_under(original, error))?;
+        Err(StoreError::Unsupported {
+            capability: "checked-blob-reader",
+        })
+    }
+
+    /// Reads to authenticated EOF under an existing finite caller boundary.
+    ///
+    /// Implementations admit output before allocation, poll the same boundary
+    /// through their own bounded waits and chunks, and retain original credits
+    /// in the returned owner. The caller supplies its saved account before any
+    /// callback; sources retain their independently admitted resource owners.
+    /// Opaque sources do not grant this capability.
+    ///
+    /// # Errors
+    /// Returns a boundary, source, length or authentication failure, or
+    /// [`StoreError::Unsupported`] when checked reads are unavailable.
+    fn read_all_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        maximum: u64,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<OwnedBlobBytes, StoreError> {
+        if self.checked_read_access() == CheckedReadAccess::Owning {
+            return checked_reader::read_all(self, original, maximum, boundary);
+        }
+        original
+            .verify_live()
+            .map_err(|error| batch::admission_under(original, error))?;
+        Err(StoreError::Unsupported {
+            capability: "checked-whole-blob-read",
+        })
+    }
 }
 
 /// Cloneable handle to a reopenable finite logical byte stream.
@@ -355,7 +514,7 @@ pub trait BlobSource: Send + Sync {
 /// completion rule for common consumers.
 #[derive(Clone)]
 pub struct BlobHandle {
-    source: Arc<dyn BlobSource>,
+    source: blob_source_owner::SourceOwner,
     logical_length: u64,
     authenticated_id: Option<ContentId>,
     integrity_id: Option<ContentId>,
@@ -363,9 +522,19 @@ pub struct BlobHandle {
 }
 
 impl BlobHandle {
-    /// Wraps a reopenable source.
+    /// Owns a concrete reopenable source in one shared allocation.
+    ///
+    /// The source value moves into a private owner; every handle clone retains
+    /// that same allocation. Its control closes before the source and any
+    /// credits stored inside it are dropped. The caller admits the source's
+    /// allocation and any incoming payloads before construction. This method
+    /// grants no resource allowance or authentication contract.
+    ///
+    /// Shared payloads held inside a custom source keep their own ownership
+    /// contract. They do not become admitted or terminally owned by this handle.
     #[must_use]
-    pub fn new(source: Arc<dyn BlobSource>) -> Self {
+    pub fn new<S: BlobSource + 'static>(source: S) -> Self {
+        let source = blob_source_owner::SourceOwner::new(source);
         let logical_length = source.logical_length();
         Self {
             source,
@@ -376,17 +545,25 @@ impl BlobHandle {
         }
     }
 
+    /// Returns the complete shared allocation extent for a concrete source.
+    ///
+    /// This includes the control counters and their alignment padding. It
+    /// excludes the separately stored handle and allocations already owned by
+    /// the source. Callers admit this extent in their original account before
+    /// calling [`Self::new`]. No allowance is created by this query.
+    #[must_use]
+    pub const fn source_allocation_bytes<S: BlobSource + 'static>() -> u64 {
+        blob_source_owner::allocation_bytes::<S>()
+    }
+
     /// Creates an in-memory source from owned bytes.
     #[must_use]
     pub fn from_bytes(bytes: impl Into<Vec<u8>>) -> Self {
-        Self::new(Arc::new(BytesBlobSource::new(bytes.into())))
+        Self::new(BytesBlobSource::new(bytes.into()))
     }
 
-    pub(crate) fn from_authenticated_bytes(id: ContentId, bytes: Arc<[u8]>) -> Self {
-        Self::authenticated(id, Arc::new(BytesBlobSource { bytes }))
-    }
-
-    pub(crate) fn authenticated(id: ContentId, source: Arc<dyn BlobSource>) -> Self {
+    pub(crate) fn authenticated<S: BlobSource + 'static>(id: ContentId, source: S) -> Self {
+        let source = blob_source_owner::SourceOwner::new(source);
         let logical_length = source.logical_length();
         Self {
             source,
@@ -397,7 +574,8 @@ impl BlobHandle {
         }
     }
 
-    pub(crate) fn integrity_checked(id: ContentId, source: Arc<dyn BlobSource>) -> Self {
+    pub(crate) fn integrity_checked<S: BlobSource + 'static>(id: ContentId, source: S) -> Self {
+        let source = blob_source_owner::SourceOwner::new(source);
         let logical_length = source.logical_length();
         Self {
             source,
@@ -412,7 +590,8 @@ impl BlobHandle {
     ///
     /// Composition layers use this only for transparent observation wrappers
     /// whose declared length and bytes are identical to the wrapped handle.
-    pub(crate) fn with_observed_source(self, source: Arc<dyn BlobSource>) -> Self {
+    pub(crate) fn with_observed_source<S: BlobSource + 'static>(self, source: S) -> Self {
+        let source = blob_source_owner::SourceOwner::new(source);
         debug_assert_eq!(source.logical_length(), self.logical_length);
         Self {
             source,
@@ -421,6 +600,19 @@ impl BlobHandle {
             integrity_id: self.integrity_id,
             self_authenticating: self.self_authenticating,
         }
+    }
+
+    /// Replaces a fixture source without trusting its bytes or EOF identity.
+    ///
+    /// The exact integrity identity remains for ordinary handle hashing, while
+    /// corrupted or adversarial replacement bytes lose the original source's
+    /// transparent observation and authenticated-output contract.
+    #[cfg(test)]
+    pub(crate) fn with_untrusted_source<S: BlobSource + 'static>(self, source: S) -> Self {
+        let mut handle = self.with_observed_source(source);
+        handle.authenticated_id = None;
+        handle.self_authenticating = false;
+        handle
     }
 
     /// Returns the source's declared logical length.
@@ -440,6 +632,18 @@ impl BlobHandle {
     /// Returns a stable store error when the source cannot be reopened.
     pub fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
         self.source.open()
+    }
+
+    /// Opens a checked reader that authenticates length and identity at EOF.
+    ///
+    /// # Errors
+    /// Returns unsupported source dispatch, admission, or original boundary failure.
+    pub fn open_with_boundary(
+        &self,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<CheckedReader, StoreError> {
+        let original = batch::account()?;
+        checked_reader::open_handle(self, &original, boundary)
     }
 
     /// Copies the complete stream to a destination without full-size buffering.
@@ -469,10 +673,11 @@ impl BlobHandle {
             return Ok(self.clone());
         };
         validate_range(self.logical_length(), range)?;
-        let mut sliced = Self::new(Arc::new(RangeBlobSource {
+        let mut sliced = Self::new(RangeBlobSource {
             source: self.clone(),
             range,
-        }));
+            _credit: None,
+        });
         sliced.integrity_id = self.integrity_id;
         sliced.self_authenticating = self.self_authenticating;
         Ok(sliced)
@@ -489,6 +694,60 @@ impl BlobHandle {
         read_handle_all(self, max_bytes)
     }
 
+    /// Reads the complete source using its saved caller account and boundary.
+    ///
+    /// # Errors
+    /// Returns unsupported dispatch, an original boundary failure, quota
+    /// refusal, or length/authentication failure before returning bytes.
+    pub fn read_all_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        maximum: u64,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<OwnedBlobBytes, StoreError> {
+        checked_reader::check(original, boundary)?;
+        if self.logical_length > maximum {
+            return Err(StoreError::Quota);
+        }
+        match self.source.checked_read_access() {
+            CheckedReadAccess::Unsupported => {
+                return Err(StoreError::Unsupported {
+                    capability: "checked-blob-access",
+                });
+            }
+            CheckedReadAccess::Owning => {
+                let mut reader = checked_reader::open_handle(self, original, boundary)?;
+                return checked_reader::read_owned(
+                    &mut reader,
+                    original,
+                    self.logical_length,
+                    maximum,
+                    boundary,
+                );
+            }
+            CheckedReadAccess::Whole => {}
+        }
+
+        let bytes = self
+            .source
+            .read_all_with_boundary(original, maximum, boundary)?;
+        let payer = bytes.original_account();
+        checked_reader::check_pair(original, payer, boundary)?;
+        if bytes.len() as u64 != self.logical_length {
+            return Err(StoreError::InvalidSourceLength {
+                declared: self.logical_length,
+                observed: bytes.len() as u64,
+            });
+        }
+        if !self.self_authenticating
+            && let Some(id) = self.integrity_id
+        {
+            validate_bytes(id, &bytes)?;
+        }
+        checked_reader::check_pair(original, payer, boundary)?;
+        Ok(bytes)
+    }
+
     pub(crate) fn verified_as(&self, id: ContentId) -> Result<Self, StoreError> {
         if self.authenticated_id == Some(id) {
             return Ok(self.clone());
@@ -503,6 +762,27 @@ impl BlobHandle {
 }
 
 impl BlobSource for BlobHandle {
+    fn checked_read_access(&self) -> CheckedReadAccess {
+        self.source.checked_read_access()
+    }
+
+    fn open_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<CheckedReader, StoreError> {
+        checked_reader::open_handle(self, original, boundary)
+    }
+
+    fn read_all_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        maximum: u64,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<OwnedBlobBytes, StoreError> {
+        BlobHandle::read_all_with_boundary(self, original, maximum, boundary)
+    }
+
     fn logical_length(&self) -> u64 {
         self.logical_length
     }
@@ -525,6 +805,40 @@ impl BytesBlobSource {
 }
 
 impl BlobSource for BytesBlobSource {
+    fn checked_read_access(&self) -> CheckedReadAccess {
+        CheckedReadAccess::Whole
+    }
+
+    fn open_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<CheckedReader, StoreError> {
+        checked_reader::memory(self.bytes.clone(), original, boundary)
+    }
+
+    fn read_all_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        maximum: u64,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<OwnedBlobBytes, StoreError> {
+        let mut reader = Cursor::new(self.bytes.as_ref());
+        batch::read_reader_under(
+            original,
+            original,
+            self.logical_length(),
+            maximum,
+            boundary,
+            &mut |output, _| {
+                reader.read(output).map_err(|source| StoreError::StreamIo {
+                    operation: "read-memory-batch-source",
+                    source,
+                })
+            },
+        )
+    }
+
     fn logical_length(&self) -> u64 {
         self.bytes.len() as u64
     }
@@ -537,9 +851,22 @@ impl BlobSource for BytesBlobSource {
 struct RangeBlobSource {
     source: BlobHandle,
     range: ByteRange,
+    _credit: Option<crate::owned_decode::DecodeScratch>,
 }
 
 impl BlobSource for RangeBlobSource {
+    fn checked_read_access(&self) -> CheckedReadAccess {
+        CheckedReadAccess::Owning
+    }
+
+    fn open_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<CheckedReader, StoreError> {
+        checked_reader::range(&self.source, self.range, original, boundary)
+    }
+
     fn logical_length(&self) -> u64 {
         self.range.length
     }
@@ -843,6 +1170,72 @@ pub enum RefCasOutcome {
 /// Failure returned by immutable/ref store components.
 #[derive(Debug, Error)]
 pub enum StoreError {
+    /// The originating composite adapter recorded a first callback refusal.
+    #[error(transparent)]
+    CompositeBoundary {
+        /// Private-constructor marker; no failure evidence is contained here.
+        source: CompositeBoundaryRefusal,
+    },
+    /// A checked multiwriter retains every earlier publication and the failure.
+    #[error(transparent)]
+    CompositeScope {
+        /// Complete current failure and prior concrete outcome owners.
+        source: CompositeScopeError,
+    },
+    /// A checked administrative operation retains its actual deletion progress.
+    #[error(transparent)]
+    AdministrativeScope {
+        /// Original cause, confirmed deletion prefix and uncertain mutation state.
+        source: AdministrativeScopeError,
+    },
+    /// A checked memory operation retains its actual visible publication state.
+    #[error(transparent)]
+    MemoryScope {
+        /// Original work failure and synchronous map publication outcome.
+        source: MemoryScopeError,
+    },
+    /// A checked directory operation retains its actual visibility and cleanup.
+    #[error(transparent)]
+    DirectoryScope {
+        /// Original work, cleanup and filesystem publication outcome.
+        source: DirectoryScopeError,
+    },
+    /// A checked Packed operation retains physical/index visibility and cleanup.
+    #[error(transparent)]
+    PackedScope {
+        /// Original work and cleanup causes with the actual publication outcome.
+        source: PackedScopeError,
+    },
+    /// The current RAM callback adapter recorded an original boundary refusal.
+    #[error(transparent)]
+    RamBoundary {
+        /// Private-constructor inline marker; it carries no discarded cause.
+        source: crate::ram::RamBoundaryRefusal,
+    },
+    /// RAM readback failed while a publication outcome remained owned.
+    #[error(transparent)]
+    RamValidation {
+        /// Complete RAM failure retained by its prepaid original loan.
+        source: crate::ram::RamFailureCause<std::convert::Infallible>,
+    },
+    /// A bounded read retains an adapter-evidenced first boundary refusal.
+    #[error(transparent)]
+    RamReadBoundary {
+        /// Complete original boundary and storage cause under prepaid custody.
+        source: crate::ram::RamFailureCause<crate::ram::RamStoreError>,
+    },
+    /// A validation failure retains the complete provider cleanup outcome.
+    #[error(transparent)]
+    RamReadValidation {
+        /// Original validation and provider failures under existing custody.
+        source: crate::ram::RamReadValidation,
+    },
+    /// A provider returned a distinct failure after a retained RAM refusal.
+    #[error(transparent)]
+    RamReadContinuation {
+        /// Linear owner retaining the first cause and complete later outcome.
+        source: crate::ram::RamReadContinuation,
+    },
     /// The requested logical object does not exist in this store.
     #[error("content object {id} was not found")]
     NotFound {
@@ -871,6 +1264,62 @@ pub enum StoreError {
         offset: u64,
         /// Requested byte count.
         length: u64,
+    },
+    /// An owned storage operation lost its original supervision authority.
+    #[error("store operational supervision refused: {source}")]
+    Supervision {
+        /// Original typed host cancellation, deadline or admission failure.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+    /// A provider refusal retains its genuinely precharged diagnostic slot.
+    #[error("provider admission refused: {source}")]
+    ProviderDiagnostic {
+        /// Original typed cause, source allocation and exclusive slot custody.
+        #[source]
+        source: ProviderDiagnosticError,
+    },
+    /// A checked operation's original metadata account refused admission.
+    ///
+    /// The inline cause avoids allocating another error wrapper after the
+    /// account has refused credit. Custody keeps the same account alive.
+    #[error("store metadata admission refused: {source}")]
+    DecodeAdmission {
+        /// Original typed account or resource-authority failure.
+        #[source]
+        source: crate::owned_decode::DecodeAdmissionError,
+        /// Existing account custody, shared without requesting new credit.
+        custody: Option<crate::owned_decode::DecodeCustody>,
+    },
+    /// A checked operation could not allocate already-admitted storage.
+    #[error("store allocation failed: {source}")]
+    Allocation {
+        /// Original allocator failure, retained without an additional Box.
+        #[source]
+        source: std::collections::TryReserveError,
+        /// Existing account custody for the failed allocation.
+        custody: Option<crate::owned_decode::DecodeCustody>,
+    },
+    /// A process-native heap retains its original lifecycle refusal.
+    #[error("{source}")]
+    SqliteHeap {
+        /// Same-scope native failure and retained original heap ownership.
+        #[from]
+        source: SqliteHeapError,
+    },
+    /// A checked SQLite scope preserves work, cleanup and durable outcome.
+    #[error("{source}")]
+    SqliteScope {
+        /// Original typed causes and their linear allocation loan.
+        #[source]
+        source: SqliteScopeError,
+    },
+    /// A checked SQLite failure retains its prepaid diagnostic allocations.
+    #[error("checked SQLite operation failed: {source}")]
+    SqliteDiagnostic {
+        /// Original store failure and its same-account allocation loan.
+        #[source]
+        source: SqliteDiagnosticError,
     },
     /// A composition graph had no route or usable child.
     #[error("store composition is invalid: {reason}")]
@@ -955,6 +1404,113 @@ pub enum StoreError {
     MultipartCleanupRequired,
 }
 
+impl StoreError {
+    pub(crate) fn confirmed_absence(&self, id: ContentId) -> bool {
+        match self {
+            Self::RamValidation { source } => match source.storage_failure() {
+                crate::ram::RamStoreError::Store(original) => original.confirmed_absence(id),
+                _ => false,
+            },
+            Self::NotFound { id: missing } => *missing == id,
+            Self::SqliteDiagnostic { source } => source.failure().confirmed_absence(id),
+            Self::SqliteScope { source }
+                if source.outcome() == SqliteCommitOutcome::NotCommitted
+                    && source.rollback_failure().is_none()
+                    && source.blob_close_failure().is_none()
+                    && source.metadata_completion_failure().is_none()
+                    && source.metadata_finalization_failure().is_none()
+                    && source.restoration_failure().is_none() =>
+            {
+                source
+                    .work_failure()
+                    .is_some_and(|error| error.confirmed_absence(id))
+            }
+            Self::DirectoryScope { source }
+                if source.outcome().published_objects == 0
+                    && source.outcome().durable_objects == 0
+                    && !source.outcome().durability_uncertain
+                    && source.cleanup_failure().is_none() =>
+            {
+                source
+                    .work_failure()
+                    .is_some_and(|error| error.confirmed_absence(id))
+            }
+            _ => false,
+        }
+    }
+
+    /// Borrows the original work failure through retained SQLite carriers.
+    ///
+    /// The enclosing error continues to own diagnostic and cleanup credits.
+    /// A scope without a work failure remains the returned error, so cleanup
+    /// or restoration refusal is not misclassified as successful work.
+    #[must_use]
+    pub fn original_failure(&self) -> &Self {
+        let mut failure = self;
+        loop {
+            failure = match failure {
+                Self::RamValidation { source } => match source.storage_failure() {
+                    crate::ram::RamStoreError::Store(original) => original,
+                    _ => return failure,
+                },
+                Self::RamReadContinuation { source } => match source.first_failure() {
+                    crate::ram::RamStoreError::Store(original) => original,
+                    _ => return failure,
+                },
+                Self::RamReadValidation { source } => match source.first_validation() {
+                    crate::ram::RamStoreError::Store(original) => original,
+                    _ => return failure,
+                },
+                Self::RamReadBoundary { source } => match source
+                    .first_boundary()
+                    .unwrap_or_else(|| source.storage_failure())
+                {
+                    crate::ram::RamStoreError::Store(original) => original,
+                    _ => return failure,
+                },
+                Self::MemoryScope { source } => source.work_failure(),
+                Self::AdministrativeScope { source } => source.work_failure(),
+                Self::CompositeScope { source } => {
+                    match source.first_boundary().or_else(|| source.work_failure()) {
+                        Some(original) => original,
+                        None => return failure,
+                    }
+                }
+                Self::DirectoryScope { source } => {
+                    match source.work_failure().or_else(|| source.cleanup_failure()) {
+                        Some(original) => original,
+                        None => return failure,
+                    }
+                }
+                Self::PackedScope { source } => {
+                    match source
+                        .first_boundary()
+                        .or_else(|| source.work_failure())
+                        .or_else(|| source.cleanup_failure())
+                    {
+                        Some(original) => original,
+                        None => return failure,
+                    }
+                }
+                Self::SqliteDiagnostic { source } => source.failure(),
+                Self::SqliteScope { source } => match source.work_failure() {
+                    Some(work) => work,
+                    None => return failure,
+                },
+                Self::DecodeAdmission { source, .. } => {
+                    match std::error::Error::source(source)
+                        .and_then(|cause| cause.downcast_ref::<Self>())
+                    {
+                        Some(original) => original,
+                        None => return failure,
+                    }
+                }
+                _ => return failure,
+            };
+        }
+    }
+}
+
 /// Stable reason that a closed store graph failed admission.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GraphViolation {
@@ -1002,6 +1558,8 @@ pub enum GraphViolation {
     InvalidPhysicalQuotaBounds,
     /// A physical quota does not exclusively own one persistent physical leaf.
     InvalidPhysicalQuotaChild,
+    /// The GC-only root does not independently own one quota-guarded directory.
+    InvalidGcMarkRoot,
     /// An S3 leaf has an invalid bucket, prefix, object bound, or part geometry.
     InvalidS3Configuration,
     /// A journal and another persistent graph path overlap lexically.
@@ -1043,12 +1601,22 @@ impl fmt::Display for GraphViolation {
             Self::InvalidPhysicalQuotaChild => {
                 "physical quota must exclusively own a persistent physical leaf"
             }
+            Self::InvalidGcMarkRoot => "GC mark root must independently own a quota directory",
             Self::InvalidS3Configuration => "invalid S3 leaf configuration",
             Self::OverlappingAdministrativePath => "overlapping administrative path",
             Self::RelativeAdministrativePath => "relative administrative path",
             Self::AdministrativePathTooLong => "administrative path is too long",
         })
     }
+}
+
+fn graph_object_count(objects: &[(ObjectKind, u64)]) -> Result<u64, StoreError> {
+    if objects.len() > 256 {
+        return Err(StoreError::Quota);
+    }
+    objects.iter().try_fold(0_u64, |total, (_, count)| {
+        total.checked_add(*count).ok_or(StoreError::Quota)
+    })
 }
 
 /// Streaming immutable logical-object backend.
@@ -1058,6 +1626,58 @@ pub trait ImmutableBlobBackend: Send + Sync {
 
     /// Returns capabilities available through this component.
     fn capabilities(&self) -> BackendCapabilities;
+
+    /// Declares metadata bounds for one input of checked publication.
+    ///
+    /// The declaration performs no publication, callback, or admission. Its
+    /// placement and backend label bounds let a composition prepay aggregate
+    /// arrays before invoking any writer. Unsupported publishers fail closed.
+    ///
+    /// # Errors
+    /// Returns unsupported dispatch, routing failure, or checked bound overflow.
+    fn checked_publication_metadata(
+        &self,
+        _kind: ObjectKind,
+    ) -> Result<CheckedPublicationMetadata, StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "checked-publication-metadata-bound",
+        })
+    }
+
+    /// Returns the original admitted owner of decoded caller metadata.
+    ///
+    /// The authority is retained through every decoded object and deferred
+    /// reader. Projection creates no new capacity, quota binding, or deadline.
+    /// Compositions with different possible resource owners must refuse rather
+    /// than choose an arbitrary leaf. Unadmitted backends refuse by default.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Unsupported`] when no unambiguous admitted owner
+    /// exists for this logical backend.
+    fn metadata_resources(&self) -> Result<Arc<dyn StorePhysicalQuotaGuard>, StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "decoded-metadata-resources",
+        })
+    }
+
+    /// Checks conservative additional object headroom before graph publication.
+    ///
+    /// Counts are grouped by logical object kind and assume every additional
+    /// object is unique. Authoritative writable leaves enforce their index or
+    /// quota limits; read caches do not grant durable capacity. This check does
+    /// not reserve space against concurrent writers. Every later publication
+    /// must still enforce its quota and durability contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Quota`] for insufficient headroom or count overflow,
+    /// or [`StoreError::Unsupported`] when capacity has not been admitted.
+    fn admit_object_graph(&self, _objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "object-graph-headroom",
+        })
+    }
 
     /// Returns whether an authenticated logical object is present.
     ///
@@ -1078,6 +1698,70 @@ pub trait ImmutableBlobBackend: Send + Sync {
     /// failed authentication, [`StoreError::InvalidRange`] for an invalid range,
     /// or another backend failure.
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError>;
+
+    /// Looks up a deferred source under an existing original operation.
+    ///
+    /// # Errors
+    /// Returns original boundary, metadata admission, lookup or range errors.
+    /// Opaque backends refuse instead of substituting an unchecked lookup.
+    fn read_with_boundary(
+        &self,
+        account: &crate::owned_decode::DecodeBudget,
+        _id: ContentId,
+        _range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        checked_reader::check(account, boundary)?;
+        Err(StoreError::Unsupported {
+            capability: "checked-blob-metadata",
+        })
+    }
+
+    /// Reads one complete Merkle node under the caller's existing boundary.
+    ///
+    /// The fixed kind and shared 64 KiB envelope limit precede body I/O. Every
+    /// successful read authenticates current complete bytes and retains their
+    /// original allocation credit; unsupported checked backends refuse.
+    ///
+    /// # Errors
+    /// Returns wrong-kind, original admission, boundary, absence, corruption,
+    /// checked I/O or native cleanup errors. No ordinary read is substituted.
+    fn read_merkle_node_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<OwnedBlobBytes, StoreError> {
+        if id.kind() != ObjectKind::MerkleNode {
+            return Err(StoreError::Corrupt { id });
+        }
+        checked_reader::check(original, boundary)?;
+        let source = self.read_with_boundary(original, id, None, boundary)?;
+        let bytes = source.read_all_with_boundary(
+            original,
+            MAX_MERKLE_NODE_ENVELOPE_BYTES as u64,
+            boundary,
+        )?;
+        drop(source);
+        checked_reader::check(original, boundary)?;
+        Ok(bytes)
+    }
+
+    /// Executes one opaque bounded read under its existing RAM operation.
+    ///
+    /// Forwarding preserves the same request and account. The default executes
+    /// this backend's checked metadata and body path once; it does not retry a
+    /// route, substitute an unchecked reader, or create a new operation.
+    ///
+    /// # Errors
+    /// Returns the original checked read, boundary, validation or cleanup
+    /// failure. A consumed or incomplete request cannot produce a result.
+    fn read_bounded_with_boundary(
+        &self,
+        request: &mut crate::ram::BoundedReadRequest<'_, '_>,
+    ) -> Result<(), StoreError> {
+        request.execute_existing_checked(self)
+    }
 
     /// Idempotently places canonical bytes under their expected logical ID.
     ///
@@ -1105,6 +1789,27 @@ pub trait ImmutableBlobBackend: Send + Sync {
             .iter()
             .map(|(id, source)| self.put_if_absent(*id, source))
             .collect()
+    }
+
+    /// Publishes a batch under the caller's existing finite operation boundary.
+    ///
+    /// Implementations poll the same callback through staging, bounded waits,
+    /// publication and completion. The caller supplies its original metadata
+    /// account captured before callbacks; the returned owner retains the receipt
+    /// allocation credits. Unsupported facades do not silently fall back to opaque puts.
+    ///
+    /// # Errors
+    /// Returns an original boundary or store failure, or
+    /// [`StoreError::Unsupported`] if bounded batch dispatch is unavailable.
+    fn put_many_if_absent_with_boundary(
+        &self,
+        _original: &crate::owned_decode::DecodeBudget,
+        _objects: &[(ContentId, BlobHandle)],
+        _boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PutBatchReceipt, StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "supervised-immutable-batch",
+        })
     }
 
     /// Publishes authenticated bytes through an admitted physical repair capability.
@@ -1146,6 +1851,22 @@ impl PhysicalRepairAuthority {
     }
 }
 
+/// Outcome of conditionally retiring one exact authoritative reference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefRemoveOutcome {
+    /// The expected binding was removed under the backend's durability contract.
+    Removed,
+    /// The reference was already absent, making retirement idempotent.
+    AlreadyAbsent,
+    /// Another exact binding remains and was not modified.
+    Conflict {
+        /// Binding the retiring owner expected.
+        expected: ContentId,
+        /// Actual current binding preserved by the backend.
+        current: ContentId,
+    },
+}
+
 /// Authoritative mutable-reference backend.
 pub trait MutableRefBackend: Send + Sync {
     /// Returns capabilities enforced for every successful ref operation.
@@ -1161,7 +1882,28 @@ pub trait MutableRefBackend: Send + Sync {
     /// # Errors
     ///
     /// Returns a backend error when the publication lifecycle cannot be fenced.
-    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard + '_>, StoreError>;
+    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard>, StoreError>;
+
+    /// Conditionally retires only the caller's exact authoritative binding.
+    ///
+    /// Removal advances the same namespace inventory generation as publication
+    /// and is ordered against inventory under the same lifecycle authority.
+    /// Absence is idempotent; a different current target remains unchanged. This
+    /// operation grants no immutable-object deletion or inventory capability.
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend error without claiming successful retirement, or
+    /// [`StoreError::Unsupported`] when conditional removal is unavailable.
+    fn compare_remove(
+        &self,
+        _name: &RefName,
+        _expected: ContentId,
+    ) -> Result<RefRemoveOutcome, StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "conditional-ref-retirement",
+        })
+    }
 
     /// Reads one named ref.
     ///
@@ -1252,6 +1994,11 @@ pub(crate) fn read_handle_all(source: &BlobHandle, max_bytes: u64) -> Result<Vec
         return Err(StoreError::Quota);
     }
     let capacity = usize::try_from(logical_length).map_err(|_| StoreError::Quota)?;
+    crate::owned_decode::charge_array::<u8>(capacity).map_err(|source| {
+        StoreError::Supervision {
+            source: Box::new(source),
+        }
+    })?;
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(capacity)
@@ -1460,7 +2207,7 @@ fn discard_io_exact(reader: &mut dyn Read, mut remaining: u64) -> io::Result<()>
     Ok(())
 }
 
-fn read_retry(reader: &mut dyn Read, buffer: &mut [u8]) -> io::Result<usize> {
+pub(crate) fn read_retry(reader: &mut dyn Read, buffer: &mut [u8]) -> io::Result<usize> {
     loop {
         match reader.read(buffer) {
             Err(source) if source.kind() == io::ErrorKind::Interrupted => continue,

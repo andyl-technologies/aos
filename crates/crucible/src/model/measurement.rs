@@ -357,7 +357,7 @@ pub struct MeasurementDefinition {
 pub struct MeasurementDefinitions {
     definitions: Vec<MeasurementDefinition>,
     id: ContentHash,
-    canonical: Vec<u8>,
+    canonical: std::borrow::Cow<'static, [u8]>,
 }
 
 impl Default for MeasurementDefinitions {
@@ -379,7 +379,7 @@ impl MeasurementDefinitions {
         Self {
             definitions,
             id,
-            canonical: canonical.to_vec(),
+            canonical: std::borrow::Cow::Borrowed(canonical),
         }
     }
 
@@ -432,9 +432,29 @@ impl MeasurementDefinitions {
         properties: &Properties,
         definitions: Vec<MeasurementDefinition>,
     ) -> Result<Self, EngineError> {
-        Self::new(world, plan, properties, definitions).map_err(|error| {
-            scenario_serialization_error(format!("invalid measurement definitions: {error}"))
+        Self::new(world, plan, properties, definitions).map_err(|error| match error {
+            MeasurementDefinitionError::ArtifactDecodeAdmission { source } => {
+                EngineError::ArtifactDecodeAdmission { source }
+            }
+            error => {
+                scenario_serialization_error(format!("invalid measurement definitions: {error}"))
+            }
         })
+    }
+
+    pub(super) fn into_validated(
+        mut self,
+        world: &World,
+        plan: &Plan,
+        properties: &Properties,
+    ) -> Result<Self, EngineError> {
+        canonicalize_and_validate_definitions(world, plan, properties, &mut self.definitions)
+            .map_err(|error| {
+                scenario_serialization_error(format!("invalid measurement definitions: {error}"))
+            })?;
+        // Only canonical data can construct this type. Context revalidation
+        // changes no definition bytes, so its admitted canonical buffer stays.
+        Ok(self)
     }
 
     fn from_canonical_definitions(
@@ -448,7 +468,7 @@ impl MeasurementDefinitions {
         Ok(Self {
             definitions,
             id,
-            canonical,
+            canonical: std::borrow::Cow::Owned(canonical),
         })
     }
 }
@@ -539,6 +559,13 @@ fn preflight_boundary_shape(
 /// Stable failure while admitting measurement definitions.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum MeasurementDefinitionError {
+    /// The original artifact owner refused a canonical buffer allocation.
+    #[error("measurement artifact admission refused: {source}")]
+    ArtifactDecodeAdmission {
+        /// Original typed resource or accounting refusal.
+        #[source]
+        source: crate::owned_decode::DecodeAdmissionError,
+    },
     /// An identifier violates the common bounded ASCII profile.
     #[error("invalid {kind} identifier `{value}`")]
     InvalidIdentifier {
@@ -621,7 +648,7 @@ fn canonicalize_and_validate_definitions(
         definitions.len(),
         MAX_MEASUREMENT_DEFINITIONS,
     )?;
-    definitions.sort_by(|left, right| left.id.cmp(&right.id));
+    definitions.sort_unstable_by(|left, right| left.id.cmp(&right.id));
     reject_duplicate_ids(
         "scenario measurements",
         definitions.iter().map(|definition| definition.id.as_str()),
@@ -647,7 +674,7 @@ fn canonicalize_and_validate_definitions(
         }
         definition
             .metrics
-            .sort_by(|left, right| left.id.cmp(&right.id));
+            .sort_unstable_by(|left, right| left.id.cmp(&right.id));
         reject_duplicate_ids(
             "measurement metrics",
             definition.metrics.iter().map(|metric| metric.id.as_str()),
@@ -681,7 +708,7 @@ fn canonicalize_cohort(
             field: "cohort nodes",
         });
     }
-    nodes.sort();
+    nodes.sort_unstable();
     if nodes.windows(2).any(|pair| pair[0] == pair[1]) {
         return Err(MeasurementDefinitionError::DuplicateId {
             namespace: "measurement cohort",
@@ -854,7 +881,7 @@ fn validate_metric(
                 variants.len(),
                 MAX_METRIC_ENUM_VARIANTS,
             )?;
-            variants.sort();
+            variants.sort_unstable();
             for variant in variants.iter() {
                 validate_measurement_identifier("metric enum variant", variant)?;
             }
@@ -923,7 +950,7 @@ fn validate_metric(
             upper_bounds.len(),
             MAX_METRIC_HISTOGRAM_BOUNDS,
         )?;
-        upper_bounds.sort();
+        upper_bounds.sort_unstable();
         if upper_bounds.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(MeasurementDefinitionError::DuplicateId {
                 namespace: "histogram bounds",
@@ -1036,7 +1063,7 @@ fn require_link(world: &World, link: Option<&LinkId>) -> Result<(), MeasurementD
         Some(link)
             if world.links().iter().any(|candidate| {
                 let (left, right) = candidate.endpoints();
-                LinkId::for_endpoints(left, right) == *link
+                link.matches_endpoints(left, right)
             }) =>
         {
             Ok(())
@@ -1051,9 +1078,30 @@ fn require_link(world: &World, link: Option<&LinkId>) -> Result<(), MeasurementD
 fn canonical_measurement_json(
     definitions: &[MeasurementDefinition],
 ) -> Result<Vec<u8>, MeasurementDefinitionError> {
-    serde_json::to_vec(definitions).map_err(|error| MeasurementDefinitionError::CanonicalEncoding {
-        reason: error.to_string(),
-    })
+    let mut counter = BoundedByteCounter {
+        length: 0,
+        maximum: MAX_MEASUREMENT_DEFINITION_BYTES,
+        exceeded: false,
+    };
+    serde_json::to_writer(&mut counter, definitions).map_err(|error| {
+        MeasurementDefinitionError::CanonicalEncoding {
+            reason: error.to_string(),
+        }
+    })?;
+    crate::owned_decode::charge_array::<u8>(counter.length)
+        .map_err(|source| MeasurementDefinitionError::ArtifactDecodeAdmission { source })?;
+    let mut canonical = Vec::new();
+    canonical
+        .try_reserve_exact(counter.length)
+        .map_err(|error| MeasurementDefinitionError::CanonicalEncoding {
+            reason: error.to_string(),
+        })?;
+    serde_json::to_writer(&mut canonical, definitions).map_err(|error| {
+        MeasurementDefinitionError::CanonicalEncoding {
+            reason: error.to_string(),
+        }
+    })?;
+    Ok(canonical)
 }
 
 fn preflight_canonical_measurement_bytes(

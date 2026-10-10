@@ -14,12 +14,18 @@ pub(in super::super) fn run_remote_workflow(
         .build()?;
     let client = remote_rpc_client(daemon, backend_plan)?;
     let report = if matches!(run_plan.execution_mode, RunExecutionMode::Interactive) {
-        runtime.block_on(run_control_client_workflow_stdin_async(
-            &client, run_plan, true, false,
-        ))?
+        runtime.block_on(admit_rpc_future(
+            &client,
+            run_control_client_workflow_stdin_async(&client, run_plan, true, false),
+        )?)?
     } else {
-        runtime.block_on(run_control_client_workflow_async(&client, run_plan, &[]))?
+        runtime.block_on(admit_rpc_future(
+            &client,
+            run_control_client_workflow_async(&client, run_plan, &[]),
+        )?)?
     };
+    let budget = rpc_input_budget(&client)?;
+    let _scope = budget.enter();
     finish_run_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, run_plan, report)
 }
 
@@ -32,11 +38,22 @@ pub(in super::super) fn run_remote_verify_workflow(
 ) -> Result<BackendCommandOutcome, CliError> {
     let report = match &verify_plan.mode {
         VerifyMode::RunScenario { scenario } => {
+            let resources = crate::cli_input_resources::StandaloneInputResources::open(
+                backend_plan.metadata_deployment.as_deref(),
+            )?;
             let request_seed = ergonomics_plan
                 .map(|plan| crucible::Seed::from_u64(plan.seed.value))
                 .unwrap_or_else(|| scenario.scenario_def().seed());
-            let seeded_scenario = reseed_run_scenario_ref(scenario, request_seed)?;
-            let mut witnesses = Vec::with_capacity(verify_plan.reductions.len());
+            let mut witnesses = {
+                let _scope = resources.decoding.enter();
+                let mut values = Vec::new();
+                crucible_session::engine::owned_decode::reserve_vec(
+                    &mut values,
+                    verify_plan.reductions.len(),
+                )
+                .map_err(CliError::MetadataAdmission)?;
+                values
+            };
             for reduction in &verify_plan.reductions {
                 let mut runtime_builder = if reduction.host_profile.logical_cores == 1 {
                     tokio::runtime::Builder::new_current_thread()
@@ -46,17 +63,21 @@ pub(in super::super) fn run_remote_verify_workflow(
                     builder
                 };
                 let runtime = runtime_builder.enable_all().build()?;
-                let client = remote_rpc_client(daemon, backend_plan)?;
-                let witness = runtime
-                    .block_on(run_control_client_verify_reduction_async(
+                let client = remote_rpc_client_with_resources(daemon, backend_plan, &resources)?;
+                let future = {
+                    let _scope = resources.decoding.enter();
+                    run_control_client_verify_reduction_async(
                         &client,
-                        seeded_scenario.clone(),
+                        reseed_run_scenario_ref(scenario, request_seed)?,
                         request_seed,
                         reduction.clone(),
                         backend_plan.resolved_backend.as_ref(),
                         ergonomics_plan,
                         &verify_plan.store_root,
-                    ))
+                    )
+                };
+                let witness = runtime
+                    .block_on(admit_rpc_future(&client, future)?)
                     .map_err(|error| {
                         backend_error(format!(
                             "remote verify hostile profile `{}` failed: {error}",
@@ -65,12 +86,16 @@ pub(in super::super) fn run_remote_verify_workflow(
                     })?;
                 witnesses.push(witness);
             }
+            let _scope = resources.decoding.enter();
             VerifyWorkflowReport {
+                _input_custody: crucible_session::engine::owned_decode::current_custody(),
                 divergence: compare_verify_witnesses(&witnesses),
                 witnesses,
             }
         }
-        VerifyMode::CompareArtifacts { .. } => verify_compare_artifacts(verify_plan)?,
+        VerifyMode::CompareArtifacts { .. } => {
+            verify_compare_artifacts(verify_plan, backend_plan.metadata_deployment.as_deref())?
+        }
     };
     finish_verify_workflow_outcome(
         thin_plan,
@@ -92,9 +117,12 @@ pub(in super::super) fn run_remote_save_workflow(
         .enable_all()
         .build()?;
     let client = remote_rpc_client(daemon, backend_plan)?;
-    let report = runtime.block_on(run_remote_control_client_save_workflow_async(
-        &client, save_plan,
-    ))?;
+    let report = runtime.block_on(admit_rpc_future(
+        &client,
+        run_remote_control_client_save_workflow_async(&client, save_plan),
+    )?)?;
+    let budget = rpc_input_budget(&client)?;
+    let _scope = budget.enter();
     finish_save_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, save_plan, report)
 }
 
@@ -109,10 +137,12 @@ pub(in super::super) fn run_remote_resume_workflow(
         .enable_all()
         .build()?;
     let client = remote_rpc_client(daemon, backend_plan)?;
-    let report = runtime.block_on(run_remote_control_client_resume_workflow_async(
+    let report = runtime.block_on(admit_rpc_future(
         &client,
-        resume_plan,
-    ))?;
+        run_remote_control_client_resume_workflow_async(&client, resume_plan),
+    )?)?;
+    let budget = rpc_input_budget(&client)?;
+    let _scope = budget.enter();
     finish_resume_workflow_outcome(
         thin_plan,
         backend_plan,
@@ -120,6 +150,23 @@ pub(in super::super) fn run_remote_resume_workflow(
         resume_plan,
         report,
     )
+}
+
+pub(in super::super) fn rpc_input_budget(
+    client: &RpcControlClient,
+) -> Result<crucible_session::engine::owned_decode::DecodeBudget, CliError> {
+    client
+        .decode_budget()
+        .cloned()
+        .ok_or_else(|| backend_error("RPC workflow lost its original input resources"))
+}
+
+pub(in super::super) fn admit_rpc_future<F: std::future::Future>(
+    client: &RpcControlClient,
+    future: F,
+) -> Result<impl std::future::Future<Output = F::Output>, CliError> {
+    crucible_api::admit_future(future, rpc_input_budget(client)?)
+        .map_err(|error| backend_error(format!("RPC workflow admission refused: {error}")))
 }
 
 pub(in super::super) fn daemon_rpc_endpoint(daemon: &str) -> String {
@@ -134,42 +181,51 @@ pub(in super::super) fn remote_rpc_client(
     daemon: &str,
     backend_plan: &BackendSelectionPlan,
 ) -> Result<RpcControlClient, CliError> {
+    let resources = crate::cli_input_resources::StandaloneInputResources::open(
+        backend_plan.metadata_deployment.as_deref(),
+    )?;
+    remote_rpc_client_with_resources(daemon, backend_plan, &resources)
+}
+
+fn remote_rpc_client_with_resources(
+    daemon: &str,
+    backend_plan: &BackendSelectionPlan,
+    resources: &crate::cli_input_resources::StandaloneInputResources,
+) -> Result<RpcControlClient, CliError> {
     let endpoint = RpcEndpoint::http2(daemon_rpc_endpoint(daemon));
     let Some(paths) = backend_plan.daemon_security.as_ref() else {
-        return RpcControlClient::new(endpoint).map_err(control_client_error);
+        return RpcControlClient::new(endpoint)
+            .map(|client| client.with_decode_budget(resources.decoding.clone()))
+            .map_err(control_client_error);
     };
-    let server_ca = fs::read(&paths.server_ca).map_err(|error| {
-        control_client_error(crucible_api::ControlClientError::HttpClientBuild {
-            message: format!(
-                "cannot read daemon CA certificate {}: {error}",
-                paths.server_ca.display()
-            ),
-        })
-    })?;
-    let mut client_identity = fs::read(&paths.client_certificate).map_err(|error| {
-        control_client_error(crucible_api::ControlClientError::HttpClientBuild {
-            message: format!(
-                "cannot read daemon client certificate {}: {error}",
-                paths.client_certificate.display()
-            ),
-        })
-    })?;
+    let server_ca = resources.read(&paths.server_ca)?;
+    let mut client_identity = resources.read(&paths.client_certificate)?;
     if !client_identity.ends_with(b"\n") {
         client_identity.push(b'\n');
     }
-    let private_key = fs::read(&paths.client_private_key).map_err(|error| {
-        control_client_error(crucible_api::ControlClientError::HttpClientBuild {
-            message: format!(
-                "cannot read daemon client private key {}: {error}",
-                paths.client_private_key.display()
-            ),
-        })
-    })?;
+    let private_key = resources.read(&paths.client_private_key)?;
+    resources
+        .decoding
+        .charge_bytes(
+            u64::try_from(
+                client_identity
+                    .len()
+                    .checked_add(private_key.len())
+                    .and_then(|bytes| bytes.checked_add(1))
+                    .ok_or_else(|| backend_error("TLS identity size overflow"))?,
+            )
+            .map_err(|_| backend_error("TLS identity size overflow"))?,
+        )
+        .map_err(|error| backend_error(format!("TLS identity storage refused: {error}")))?;
+    client_identity
+        .try_reserve_exact(private_key.len() + 1)
+        .map_err(|error| backend_error(format!("TLS identity allocation refused: {error}")))?;
     client_identity.extend_from_slice(&private_key);
     RpcControlClient::new_mtls(
         endpoint,
         RpcMutualTlsConfig::from_pem(server_ca, client_identity),
     )
+    .map(|client| client.with_decode_budget(resources.decoding.clone()))
     .map_err(control_client_error)
 }
 
@@ -328,6 +384,10 @@ pub(in super::super) fn finish_verify_workflow_outcome(
     verify_plan: &VerifyInvocationPlan,
     report: VerifyWorkflowReport,
 ) -> Result<BackendCommandOutcome, CliError> {
+    let _scope = report
+        ._input_custody
+        .as_ref()
+        .and_then(|custody| custody.enter());
     let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
     outcome.stdout.push(format!(
         "verify-plan\tmode={}\truns={}\treductions={}\thostile_conditions={}\tbisect={}",

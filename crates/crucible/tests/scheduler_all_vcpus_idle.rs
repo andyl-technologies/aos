@@ -15,6 +15,9 @@ use crucible::{
 
 #[test]
 fn all_vcpus_halted_without_timer_or_input_are_quiescent() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scheduler = scheduler_with_snapshot(vcpu_snapshot(
         "guest",
         vec![halted_vcpu(0), halted_vcpu(1), halted_vcpu(2)],
@@ -30,6 +33,9 @@ fn all_vcpus_halted_without_timer_or_input_are_quiescent() {
 
 #[test]
 fn active_vcpu_prevents_idle_and_uses_one_node_level_projection() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = scheduler_node("guest");
     let mut scheduler = scheduler_with_snapshot(vcpu_snapshot(
         "guest",
@@ -69,6 +75,9 @@ fn active_vcpu_prevents_idle_and_uses_one_node_level_projection() {
 
 #[test]
 fn pending_vcpu_input_prevents_idle_even_when_all_vcpus_are_halted() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = scheduler_node("guest");
     let mut state = halted_vcpu(1);
     state.pending_input = true;
@@ -95,6 +104,9 @@ fn pending_vcpu_input_prevents_idle_even_when_all_vcpus_are_halted() {
 
 #[test]
 fn node_idle_wake_uses_minimum_vcpu_deadline_and_clears_due_timer() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = scheduler_node("guest");
     let mut scheduler = scheduler_with_snapshot(vcpu_snapshot(
         "guest",
@@ -147,6 +159,9 @@ fn node_idle_wake_uses_minimum_vcpu_deadline_and_clears_due_timer() {
 
 #[test]
 fn liveness_drains_all_vcpu_deadlines_before_terminal_quiescence() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = base_scenario("all-vcpu-deadlines-drain")
         .with_vcpu_idle_snapshot(vcpu_snapshot(
             "guest",
@@ -167,6 +182,9 @@ fn liveness_drains_all_vcpu_deadlines_before_terminal_quiescence() {
 
 #[test]
 fn vcpu_idle_snapshot_rejects_duplicate_vcpu_indices() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let error = SchedulerNodeVcpuIdleSnapshot::new(
         scheduler_node("guest"),
         2,
@@ -181,6 +199,9 @@ fn vcpu_idle_snapshot_rejects_duplicate_vcpu_indices() {
 
 #[test]
 fn vcpu_idle_snapshot_rejects_missing_vcpu_coverage() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let error =
         SchedulerNodeVcpuIdleSnapshot::new(scheduler_node("guest"), 2, vec![halted_vcpu(0)])
             .expect_err("missing vCPU coverage should fail");
@@ -192,6 +213,9 @@ fn vcpu_idle_snapshot_rejects_missing_vcpu_coverage() {
 
 #[test]
 fn vcpu_idle_snapshot_count_must_match_rr_subdivision_policy() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = base_scenario("vcpu-idle-rr-policy-count")
         .with_vcpu_idle_snapshot(vcpu_snapshot("guest", vec![halted_vcpu(0), halted_vcpu(1)]))
         .expect("vCPU snapshot should be valid")
@@ -209,6 +233,9 @@ fn vcpu_idle_snapshot_count_must_match_rr_subdivision_policy() {
 
 #[test]
 fn vcpu_idle_snapshot_participates_in_configuration_identity() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let base = base_scenario("vcpu-idle-identity");
     let first = base
         .clone()

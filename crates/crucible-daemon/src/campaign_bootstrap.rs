@@ -21,7 +21,7 @@ use std::sync::Arc;
 use crucible::{ScenarioDefForm, Schedule};
 use crucible_campaign::{
     CampaignAuthorizationError, CampaignCodecError, CampaignHash, CampaignName, CampaignPrincipal,
-    CampaignPrincipalAuthorizer, CampaignRepository, CampaignRepositoryError,
+    CampaignPrincipalAuthorizer, CampaignRamAdmission, CampaignRepository, CampaignRepositoryError,
     CampaignServiceFailure, CampaignServiceOperation, CandidateGeneratorSpec,
     CandidateGeneratorSpecId, ConfigurationArtifactId, DebuggerAuthorityKey, PlannerAuthorityKey,
 };
@@ -78,13 +78,37 @@ const COMPONENT_AUTHORITY_FILE_BYTES: usize = 8 + 32 + 32;
 type CampaignComponentAuthorities = Option<(PlannerAuthorityKey, DebuggerAuthorityKey)>;
 type AuthenticatedCampaignDeployment = (Arc<UnixPeerCampaignPolicy>, CampaignComponentAuthorities);
 
+#[cfg(feature = "private-measurement-domain")]
+mod original_state;
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) use original_state::PreparedCampaignStateOwner;
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) use original_state::{OriginalCampaignStateBootstrap, OriginalCampaignStateError};
+#[cfg(not(feature = "private-measurement-domain"))]
+type PreparedCampaignStateOwner = CampaignStateOwner;
+
 mod deployment_files;
 mod maintenance;
 mod runtime_registry;
 mod service;
 
 use maintenance::CampaignStoreMaintenanceOwner;
+#[cfg(feature = "private-measurement-domain")]
+mod original_graph;
+#[cfg(feature = "private-measurement-domain")]
+mod original_repository;
+#[cfg(feature = "private-measurement-domain")]
+mod original_service;
 pub use maintenance::{CampaignStoreMaintenanceConfig, CampaignStoreMaintenanceConfigError};
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) use original_graph::{prepare_original_directory_refs, prepare_original_sqlite_graph};
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) use original_repository::OriginalCampaignRepositoryBootstrap;
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) use original_service::{
+    OriginalCampaignCoordinator, OriginalCampaignCoordinatorError,
+    OriginalPreparedCampaignServiceOwner, OriginalPreparedServiceError,
+};
 pub use runtime_registry::CampaignRuntimeAttachmentHandle;
 use runtime_registry::{CampaignRuntimeRegistryOwner, CanonicalCampaignRuntimeController};
 
@@ -121,6 +145,7 @@ pub struct CampaignLocalRepositoryStore {
     blobs: Arc<dyn ImmutableBlobBackend>,
     refs: Arc<dyn MutableRefBackend>,
     maintenance: Option<CampaignLocalRepositoryMaintenance>,
+    ram_admission: CampaignRamAdmission,
 }
 
 /// Separately retained maintenance authority for one composed repository.
@@ -146,7 +171,8 @@ impl CampaignLocalRepositoryStore {
     /// Returns [`CampaignLocalServiceError::InvalidRepositoryStore`] when the
     /// immutable backend is not durable or can overwrite existing logical IDs,
     /// or when the mutable-ref backend does not retain successful comparisons
-    /// across restart.
+    /// across restart. Also returns an original namespace admission failure
+    /// when an advertised metadata authority is denied, expired, or ambiguous.
     #[cfg(test)]
     fn new(
         blobs: Arc<dyn ImmutableBlobBackend>,
@@ -157,10 +183,12 @@ impl CampaignLocalRepositoryStore {
         {
             return Err(CampaignLocalServiceError::InvalidRepositoryStore);
         }
+        let ram_admission = repository_ram_admission(blobs.as_ref())?;
         Ok(Self {
             blobs,
             refs,
             maintenance: None,
+            ram_admission,
         })
     }
 
@@ -177,6 +205,8 @@ impl CampaignLocalRepositoryStore {
     /// Returns [`CampaignLocalServiceError::InvalidRepositoryStore`] when the
     /// graph is not durably conditional, the ref backend is not durable, or
     /// the maintenance authority belongs to a different graph configuration.
+    /// Returns an original namespace admission failure when an advertised
+    /// metadata authority is denied, expired, or ambiguous.
     pub fn new_with_maintenance<R>(
         graph: Arc<StoreGraph>,
         refs: Arc<R>,
@@ -199,6 +229,7 @@ impl CampaignLocalRepositoryStore {
         {
             return Err(CampaignLocalServiceError::InvalidRepositoryStore);
         }
+        let ram_admission = repository_ram_admission(blobs.as_ref())?;
         Ok(Self {
             blobs,
             refs: mutable_refs,
@@ -207,6 +238,7 @@ impl CampaignLocalRepositoryStore {
                 graph: graph_maintenance,
                 refs: maintenance_refs,
             }),
+            ram_admission,
         })
     }
 
@@ -216,9 +248,32 @@ impl CampaignLocalRepositoryStore {
         Arc<dyn ImmutableBlobBackend>,
         Arc<dyn MutableRefBackend>,
         Option<CampaignLocalRepositoryMaintenance>,
+        CampaignRamAdmission,
     ) {
-        (self.blobs, self.refs, self.maintenance)
+        (self.blobs, self.refs, self.maintenance, self.ram_admission)
     }
+}
+
+// The exact unsupported capability preserves checkpoint-free deployments.
+// A refused or ambiguous original namespace must never become unavailable mode.
+fn repository_ram_admission(
+    backend: &dyn ImmutableBlobBackend,
+) -> Result<CampaignRamAdmission, CampaignLocalServiceError> {
+    let resources = match backend.metadata_resources() {
+        Ok(resources) => resources,
+        Err(StoreError::Unsupported {
+            capability: "decoded-metadata-resources",
+        }) => return Ok(CampaignRamAdmission::Unavailable),
+        Err(source) => return Err(CampaignLocalServiceError::RepositoryRamAdmission(source)),
+    };
+    let original =
+        crucible_cas::owned_decode::DecodeBudget::for_store(resources).map_err(|source| {
+            CampaignLocalServiceError::RepositoryRamAdmission(StoreError::DecodeAdmission {
+                source,
+                custody: None,
+            })
+        })?;
+    Ok(CampaignRamAdmission::Available(original))
 }
 
 impl CampaignLocalServiceMode {
@@ -370,7 +425,12 @@ impl CampaignLocalServiceConfig {
     /// Returns [`CampaignLocalServiceError`] when the policy, state namespace,
     /// durable subdirectories, or repository lock cannot be authenticated and
     /// acquired exactly.
-    pub fn prepare(&self) -> Result<PreparedCampaignLocalService, CampaignLocalServiceError> {
+    pub fn prepare(
+        &self,
+        heap: &crucible_cas::content_store::SqliteProcessHeap,
+    ) -> Result<PreparedCampaignLocalService, CampaignLocalServiceError> {
+        heap.verify_live()
+            .map_err(|_| CampaignLocalServiceError::InvalidRepositoryStore)?;
         let (policy, component_authorities) = self.authenticate_deployment()?;
         let state = CampaignStateOwner::open(
             &self.state_directory,
@@ -381,11 +441,18 @@ impl CampaignLocalServiceConfig {
         let object_root = self.state_directory.join(OBJECT_DIRECTORY);
         let root = StoreNodeId::new("campaign-primary")
             .map_err(|_| CampaignLocalServiceError::InvalidRepositoryStore)?;
-        let (graph, maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
-            root: root.clone(),
-            admitted_kinds: BTreeSet::from(CAMPAIGN_REPOSITORY_OBJECT_KINDS),
-            nodes: BTreeMap::from([(root, StoreNodeSpec::Sqlite { root: object_root })]),
-        })
+        let (graph, maintenance) = StoreGraph::build_with_admin_and_original_resources(
+            StoreGraphConfig {
+                gc_mark_root: None,
+                root: root.clone(),
+                admitted_kinds: BTreeSet::from(CAMPAIGN_REPOSITORY_OBJECT_KINDS),
+                nodes: BTreeMap::from([(root, StoreNodeSpec::Sqlite { root: object_root })]),
+            },
+            crucible_cas::content_store::StoreGraphOriginalResources {
+                memory_namespaces: None,
+                sqlite_heap: Some(heap),
+            },
+        )
         .map_err(|_| CampaignLocalServiceError::InvalidRepositoryStore)?;
         let store = CampaignLocalRepositoryStore::new_with_maintenance(
             Arc::new(graph),
@@ -453,7 +520,7 @@ impl CampaignLocalServiceConfig {
         policy: Arc<UnixPeerCampaignPolicy>,
         component_authorities: CampaignComponentAuthorities,
     ) -> Result<PreparedCampaignLocalService, CampaignLocalServiceError> {
-        let (blobs, refs, maintenance) = store.into_parts();
+        let (blobs, refs, maintenance, ram_admission) = store.into_parts();
         let hot_fork_retention =
             Arc::new(crate::DirectoryHotCheckpointFallbackRetentionStore::open(
                 self.state_directory.join(HOT_FORK_FALLBACK_DIRECTORY),
@@ -468,14 +535,21 @@ impl CampaignLocalServiceConfig {
                 (
                     Arc::new(
                         CampaignRepository::with_component_authorities(
-                            blobs, refs, planner, debugger,
+                            blobs,
+                            refs,
+                            ram_admission,
+                            planner,
+                            debugger,
                         )
                         .map_err(|_| CampaignLocalServiceError::InvalidComponentAuthorityFile)?,
                     ),
                     Some(retained_planner),
                 )
             }
-            None => (Arc::new(CampaignRepository::new(blobs, refs)), None),
+            None => (
+                Arc::new(CampaignRepository::new(blobs, refs, ram_admission)),
+                None,
+            ),
         };
         Ok(PreparedCampaignLocalService {
             endpoint: self.endpoint.clone(),
@@ -484,6 +558,9 @@ impl CampaignLocalServiceConfig {
             planner_authority,
             policy,
             mode: self.mode,
+            #[cfg(feature = "private-measurement-domain")]
+            state: state.into(),
+            #[cfg(not(feature = "private-measurement-domain"))]
             state,
             maintenance,
             maintenance_config: None,
@@ -504,8 +581,11 @@ impl CampaignLocalServiceConfig {
     ///
     /// Returns [`CampaignLocalServiceError`] when preparation or managed
     /// endpoint binding fails.
-    pub fn open(&self) -> Result<CampaignLocalService, CampaignLocalServiceError> {
-        self.prepare()?.bind()
+    pub fn open(
+        &self,
+        heap: &crucible_cas::content_store::SqliteProcessHeap,
+    ) -> Result<CampaignLocalService, CampaignLocalServiceError> {
+        self.prepare(heap)?.bind()
     }
 }
 
@@ -522,7 +602,7 @@ pub struct PreparedCampaignLocalService {
     planner_authority: Option<PlannerAuthorityKey>,
     policy: Arc<UnixPeerCampaignPolicy>,
     mode: CampaignLocalServiceMode,
-    state: CampaignStateOwner,
+    state: PreparedCampaignStateOwner,
     maintenance: Option<CampaignLocalRepositoryMaintenance>,
     maintenance_config: Option<CampaignStoreMaintenanceConfig>,
     runtime_control_planner: Option<CanonicalPlannerProcessConfig>,
@@ -647,6 +727,19 @@ impl<'a> CampaignLocalStoreMaintenanceAuthority<'a> {
 }
 
 impl CampaignLocalStoreGcAuthority<'_> {
+    /// Opens isolated mark storage under the repository's original quota owner.
+    ///
+    /// # Errors
+    /// Refuses missing or ambiguous metadata authority, expired supervision,
+    /// and unavailable secure namespace preparation.
+    pub fn gc_mark_backend(
+        &self,
+        node: &str,
+        scope: &str,
+    ) -> Result<Arc<dyn ImmutableBlobBackend>, StoreError> {
+        self.maintenance.graph.gc_mark_backend(node, scope)
+    }
+
     /// Builds one complete non-destructive single-host deletion plan.
     ///
     /// The caller supplies the stopped executor's exact assignment ledger and,
@@ -663,6 +756,7 @@ impl CampaignLocalStoreGcAuthority<'_> {
         &self,
         ledger: &mut L,
         exact_pins: Option<&mut dyn crate::ExactPinRetentionAdmin>,
+        operation: &crate::CampaignGcOperationContext<'_>,
     ) -> Result<crate::CampaignGcPreparedPlan, crate::CampaignGcPlanningError<L::Error>>
     where
         L: crate::AssignmentRetentionAdmin,
@@ -685,7 +779,7 @@ impl CampaignLocalStoreGcAuthority<'_> {
             ledger,
             Some(self.maintenance.store.as_ref()),
             roots,
-            &self.maintenance.graph,
+            crate::CampaignGcMaintenance::new(&self.maintenance.graph, operation),
         )
     }
 
@@ -706,6 +800,7 @@ impl CampaignLocalStoreGcAuthority<'_> {
         journal: &mut crate::DirectoryCampaignGcJournal,
         ledger: &mut L,
         exact_pins: Option<&mut dyn crate::ExactPinRetentionAdmin>,
+        operation: &crate::CampaignGcOperationContext<'_>,
     ) -> Result<crate::CampaignGcApplyReport, crate::CampaignGcApplyError<L::Error>>
     where
         L: crate::AssignmentRetentionAdmin,
@@ -729,12 +824,34 @@ impl CampaignLocalStoreGcAuthority<'_> {
             ledger,
             Some(self.maintenance.store.as_ref()),
             roots,
-            &self.maintenance.graph,
+            crate::CampaignGcMaintenance::new(&self.maintenance.graph, operation),
         )
     }
 }
 
 impl PreparedCampaignLocalService {
+    /// Shares the attached executor's genuine campaign authority for local replay.
+    ///
+    /// # Errors
+    /// Refuses a different repository, a missing authenticated planner key, or
+    /// unavailable native actor ownership. No second executor is opened.
+    pub fn guarded_campaign_owner(
+        &self,
+        executor: &crate::AttachedPackagedQemuExecutor,
+    ) -> Result<
+        crate::qemu_campaign_lifecycle::GuardedCampaignOwner,
+        crate::PackagedQemuExecutorError,
+    > {
+        if !executor.uses_repository(&self.repository) {
+            return Err(crucible_api::host_operational::HostOperationalError::Unavailable.into());
+        }
+        let planner = self
+            .planner_authority
+            .clone()
+            .ok_or(crucible_api::host_operational::HostOperationalError::Unavailable)?;
+        executor.guarded_campaign_owner(planner)
+    }
+
     /// Resolves this process's effective Unix identity through the deployment policy.
     ///
     /// The returned principal is the one a local socket connection from this
@@ -785,6 +902,42 @@ impl PreparedCampaignLocalService {
         ))
     }
 
+    /// Creates exact checkpoint storage under this owner's authoritative GC refs.
+    ///
+    /// The backend is the deployment-configured object namespace used by this
+    /// repository. Retention comes from the already locked repository owner;
+    /// callers cannot replace it with an unrelated ephemeral ref directory.
+    /// Checkpoint-free archives can use a backend without metadata admission;
+    /// selecting a checkpoint then refuses before reading its metadata.
+    ///
+    /// # Errors
+    /// Rejects an invalid ceiling, denied or expired original metadata authority,
+    /// or a backend lacking streaming and conditional-creation capabilities.
+    pub fn exact_checkpoint_store(
+        &self,
+        maximum_checkpoint_bytes: u64,
+    ) -> Result<crate::ExactCheckpointStore, crate::ExactCheckpointStoreError> {
+        let backend = self.repository.blob_backend();
+        let resources = match backend.metadata_resources() {
+            Ok(resources) => Some(resources),
+            Err(StoreError::Unsupported {
+                capability: "decoded-metadata-resources",
+            }) => None,
+            Err(error) => return Err(error.into()),
+        };
+        let store = crate::ExactCheckpointStore::new(
+            backend,
+            maximum_checkpoint_bytes,
+            self.repository.ram_retention_authority(),
+        )?;
+        // Checkpoint-free archives can plan without this capability. Selecting
+        // any checkpoint still refuses before its metadata or RAM is decoded.
+        Ok(match resources {
+            Some(resources) => store.with_ram_root_resources(resources),
+            None => store,
+        })
+    }
+
     /// Builds one authenticated archive plan under this repository owner.
     ///
     /// # Errors
@@ -802,22 +955,31 @@ impl PreparedCampaignLocalService {
             .plan_campaign_archive(snapshot, policy, retained_roots, checkpoint_resolver)
     }
 
-    /// Builds an archive plan using this owner's exact-pin materialization catalog.
+    /// Plans an archive while retaining one actual transfer supervision boundary.
+    ///
+    /// The source's exact-pin fence remains live through semantic selection and
+    /// full RAM availability verification. Callback failure never creates an
+    /// archive or a guest fault outcome.
     ///
     /// # Errors
     ///
-    /// Returns [`crate::CampaignArchiveTransferError`] when the source campaign
-    /// name, exact-pin catalog, checkpoint closure, or selected archive closure
-    /// cannot be authenticated.
-    pub fn plan_campaign_archive_with_exact_pins(
+    /// Returns an error for invalid source state, storage unavailability, stale
+    /// exact-pin selections, or a rejected operational boundary.
+    pub fn plan_campaign_archive_with_exact_pins_with_boundary(
         &self,
         campaign: CampaignName,
         snapshot: crucible_campaign::CampaignSnapshotId,
         policy: crucible_campaign::CampaignArchivePolicy,
         retained_roots: impl IntoIterator<Item = crucible_cas::content_store::ContentId>,
-        checkpoints: &crate::ExactCheckpointStore,
-        exact_pins: &mut dyn crate::ExactPinRetentionAdmin,
+        checkpoint_retention: (
+            &crate::ExactCheckpointStore,
+            &mut dyn crate::ExactPinRetentionAdmin,
+        ),
+        boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
     ) -> Result<crucible_campaign::CampaignArchivePlan, crate::CampaignArchiveTransferError> {
+        boundary().map_err(crucible_campaign::CampaignRepositoryError::Ram)?;
+        let (checkpoints, exact_pins) = checkpoint_retention;
+
         let mut resolver = crate::ExactPinCampaignArchiveCheckpointResolver::new(
             self.repository.as_ref(),
             checkpoints,
@@ -825,7 +987,13 @@ impl PreparedCampaignLocalService {
             exact_pins,
         )?;
         self.repository
-            .plan_campaign_archive(snapshot, policy, retained_roots, Some(&mut resolver))
+            .plan_campaign_archive_with_boundary(
+                snapshot,
+                policy,
+                retained_roots,
+                Some(&mut resolver),
+                boundary,
+            )
             .map_err(Into::into)
     }
 
@@ -833,23 +1001,51 @@ impl PreparedCampaignLocalService {
     ///
     /// This narrow export holds source GC exclusion across metadata staging and
     /// the entire copy. A standalone bundle writer owns the destination and
-    /// publishes its directory only after this call and destination inspection
-    /// succeed, so it needs no long-lived transfer journal in the source.
+    /// publishes its directory only after this call succeeds. The destination
+    /// receives an authenticated archive-only ref before publication, so its
+    /// RAM descendants remain owned after the temporary transfer leases end.
+    /// A private destination needs no long-lived source transfer journal.
     ///
     /// # Errors
     ///
-    /// Returns [`CampaignRepositoryError`] if the source plan changes, source
-    /// GC exclusion cannot be acquired, or destination placement fails.
-    pub fn export_campaign_archive_to_repository(
+    /// Returns [`CampaignRepositoryError`] if the source plan changes, either
+    /// GC exclusion cannot be acquired, the operation boundary is rejected,
+    /// or destination placement, authentication, or archive publication fails.
+    pub fn export_campaign_archive_to_repository_with_boundary(
         &self,
         plan: &crucible_campaign::CampaignArchivePlan,
         destination: &CampaignRepository,
         durability: crucible_cas::content_store::DurabilityRequirement,
+        destination_original: Option<&crucible_cas::owned_decode::DecodeBudget>,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
     ) -> Result<crucible_campaign::CampaignArchiveTransferReport, CampaignRepositoryError> {
+        boundary().map_err(CampaignRepositoryError::Ram)?;
         let _source_gc = self.repository.acquire_gc_exclusion_guard()?;
-        self.repository.stage_campaign_archive_metadata(plan)?;
+        let _destination_gc = destination.acquire_gc_exclusion_guard()?;
         self.repository
-            .transfer_campaign_archive_objects(destination, plan, durability)
+            .stage_campaign_archive_metadata_with_boundary(plan, boundary)?;
+        let mut operation = blake3::Hasher::new();
+        operation.update(b"crucible.campaign.private-archive-export.v1\0");
+        operation.update(plan.manifest_id().content_id().encode().as_bytes());
+        let report = self
+            .repository
+            .transfer_campaign_archive_objects_for_operation(
+                destination,
+                plan,
+                durability,
+                *operation.finalize().as_bytes(),
+                "private-finding-bundle",
+                self.repository.ram_admission().original(),
+                destination_original,
+                boundary,
+            )?;
+        destination.publish_campaign_archive_with_boundary(
+            "exported-finding-bundle",
+            None,
+            plan,
+            boundary,
+        )?;
+        Ok(report)
     }
 
     /// Authenticates one named archive and its complete direct inventory.
@@ -858,11 +1054,13 @@ impl PreparedCampaignLocalService {
     ///
     /// Returns [`CampaignRepositoryError`] when the archive ref is absent or
     /// its manifest, inventory pages, or selected objects fail authentication.
-    pub fn inspect_campaign_archive_ref(
+    pub fn inspect_campaign_archive_ref_with_boundary(
         &self,
         archive_name: &str,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
     ) -> Result<crucible_campaign::CampaignArchiveInspection, CampaignRepositoryError> {
-        self.repository.inspect_campaign_archive_ref(archive_name)
+        self.repository
+            .inspect_campaign_archive_ref_with_boundary(archive_name, boundary)
     }
 
     /// Borrows this deployment's GC-registered archive-transfer endpoint.
@@ -1050,6 +1248,44 @@ impl PreparedCampaignLocalService {
             checkpoint_backend,
             self.hot_fork_retention.as_ref().clone(),
             config,
+        )
+        .map_err(Box::new)?;
+        Ok(executor)
+    }
+
+    /// Prepares the genuine packaged pool under its admitted private original.
+    ///
+    /// The opaque authority is constructed only by the closed original actor.
+    /// Its external paired credits must remain held through actual factory,
+    /// native/source quarantine, watcher and final shared-control retirement.
+    /// This uses the ordinary repository authentication and concrete factory;
+    /// it does not certify that retirement or create a second host allocator.
+    ///
+    /// # Errors
+    /// Preserves ordinary preparation refusals and the same original's typed
+    /// derivation, watcher, capture and cleanup refusals. Missing complete
+    /// purpose admission must refuse before this authority can be issued.
+    #[cfg(feature = "private-measurement-domain")]
+    pub fn prepare_original_packaged_executor(
+        &self,
+        config: PackagedQemuExecutorConfig,
+        original: crate::private_original_capture::OriginalPreparation,
+        binding: crucible_qemu::OriginalNativeAccountFactoryBinding,
+    ) -> Result<PackagedQemuExecutor, CampaignLocalServiceError> {
+        if self.mode == CampaignLocalServiceMode::ReadOnly {
+            return Err(CampaignLocalServiceError::RuntimeReadOnly);
+        }
+        let maintenance = self
+            .maintenance
+            .as_ref()
+            .ok_or(CampaignLocalServiceError::StoreMaintenanceUnavailable)?;
+        let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = maintenance.store.clone();
+        let executor = crate::packaged_qemu_executor::prepare_original_packaged_qemu_executor(
+            Arc::clone(&self.repository),
+            checkpoint_backend,
+            self.hot_fork_retention.as_ref().clone(),
+            config.with_original_preparation(original),
+            binding,
         )
         .map_err(Box::new)?;
         Ok(executor)
@@ -1292,8 +1528,12 @@ impl PreparedCampaignLocalService {
         {
             server = server.with_operational_status(operational_status);
         }
+        #[cfg(feature = "private-measurement-domain")]
+        let debug_path = state.debug_session_inventory_path()?;
+        #[cfg(not(feature = "private-measurement-domain"))]
+        let debug_path = state.debug_session_inventory_path();
         let debug_inventory = Arc::new(
-            crate::CampaignDebugSessionInventory::open(state.debug_session_inventory_path())
+            crate::CampaignDebugSessionInventory::open(debug_path)
                 .map_err(CampaignLocalServiceError::DebugSessionInventory)?,
         );
         if let (Some(lifecycle), Some(executor)) = (campaign_debug_lifecycle, executor.as_ref()) {
@@ -1513,6 +1753,10 @@ impl CampaignPrincipalAuthorizer for CampaignLocalAuthorizer {
 /// Failure to authenticate, acquire, or serve one local campaign deployment.
 #[derive(Debug, thiserror::Error)]
 pub enum CampaignLocalServiceError {
+    /// The original state handle refused before service or registry ownership.
+    #[cfg(feature = "private-measurement-domain")]
+    #[error(transparent)]
+    OriginalState(#[from] OriginalCampaignStateError),
     /// The durable state path was relative, noncanonical, unbounded, or empty.
     #[error("campaign service state path is invalid")]
     InvalidStatePath,
@@ -1540,6 +1784,9 @@ pub enum CampaignLocalServiceError {
     /// The supplied immutable repository backend is not durably conditional.
     #[error("campaign service repository store is not durably conditional")]
     InvalidRepositoryStore,
+    /// The original repository namespace refused RAM metadata admission.
+    #[error("campaign repository RAM admission failed: {0}")]
+    RepositoryRamAdmission(#[source] StoreError),
     /// Store maintenance was requested without retained graph administration.
     #[error("campaign service repository store has no maintenance authority")]
     StoreMaintenanceUnavailable,

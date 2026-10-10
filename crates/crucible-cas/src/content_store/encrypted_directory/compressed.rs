@@ -158,11 +158,12 @@ pub(super) fn compressed_header_authenticator(
     id: ContentId,
     header: EncryptedObjectHeader,
 ) -> [u8; 32] {
-    let encoded_id = id.encode();
     let mut hasher = blake3::Hasher::new_keyed(key);
     hasher.update(COMPRESSED_HEADER_AUTHENTICATOR_DOMAIN);
-    hasher.update(&(encoded_id.len() as u64).to_be_bytes());
-    hasher.update(encoded_id.as_bytes());
+    id.with_encoded_text(|encoded_id| {
+        hasher.update(&(encoded_id.len() as u64).to_be_bytes());
+        hasher.update(encoded_id);
+    });
     hasher.update(&header.logical_length.to_be_bytes());
     hasher.update(&header.payload_length.to_be_bytes());
     hasher.update(&(ENCRYPTED_CHUNK_BYTES as u32).to_be_bytes());

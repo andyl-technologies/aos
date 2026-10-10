@@ -3,6 +3,11 @@
 use super::*;
 use std::io::SeekFrom;
 
+mod fixture_authority;
+pub(in crate::vm_lifecycle) use fixture_authority::test_ram_catalog_provider;
+#[cfg(test)]
+pub(in crate::vm_lifecycle) use fixture_authority::tracked_ram_catalog_provider;
+
 const STREAMING_FIXTURE_BUFFER_BYTES: usize = 64 * 1024;
 const STREAMING_FIXTURE_OVERLAY_BYTES: u64 = 20 * ARTIFACT_CHUNK_BYTES_U64 + 137;
 const STREAMING_FIXTURE_VMSTATE_BYTES: u64 = 3 * ARTIFACT_CHUNK_BYTES_U64 + 257;
@@ -20,44 +25,41 @@ pub struct AuthenticatedProductionCheckpointCodecFixture {
     vmstate_bytes: u64,
 }
 
-/// Authenticated v9 closure containing a direct RAM base and one delta.
+/// Authenticated closure containing a persistent RAM image with one changed page.
 pub struct AuthenticatedProductionExactRamCodecFixture {
     source: ScenarioDefForm,
-    configuration: Configuration,
+    // Retains the complete captured configuration when inspection is disabled.
+    _configuration: Configuration,
     closure: ProductionExactCheckpointClosure,
-    parent_closure: ContentHash,
-    layer_identities: Vec<QmpCheckpointIdentity>,
+    // Keeps the preceding RAM image leased for the entire fixture lifetime.
+    _previous_ram: crucible_cas::ram::LeasedRamRoot,
 }
 
 impl AuthenticatedProductionExactRamCodecFixture {
-    /// Returns the scenario source that authenticates both retained closures.
+    /// Returns the scenario source that authenticates the complete closure.
     #[must_use]
     pub const fn source(&self) -> &ScenarioDefForm {
         &self.source
     }
 
     /// Returns the modeled configuration captured by the fixture.
+    #[cfg(feature = "test-support")]
     #[must_use]
     pub const fn configuration(&self) -> &Configuration {
-        &self.configuration
+        &self._configuration
     }
 
-    /// Returns the final self-contained direct-plus-delta closure.
+    /// Returns the self-contained closure with its leased persistent RAM tree.
     #[must_use]
     pub const fn closure(&self) -> &ProductionExactCheckpointClosure {
         &self.closure
     }
 
-    /// Returns the retained direct closure named as delta provenance.
+    /// Returns the independently retained RAM image preceding the page change.
+    #[cfg(feature = "test-support")]
     #[must_use]
-    pub const fn parent_closure(&self) -> ContentHash {
-        self.parent_closure
-    }
-
-    /// Returns QEMU checkpoint identities in direct-then-delta order.
-    #[must_use]
-    pub fn layer_identities(&self) -> &[QmpCheckpointIdentity] {
-        &self.layer_identities
+    pub fn previous_ram(&self) -> &crucible_cas::ram::LeasedRamRoot {
+        &self._previous_ram
     }
 }
 
@@ -105,6 +107,7 @@ impl AuthenticatedProductionCheckpointCodecFixture {
 ///
 /// Returns [`LifecycleApiError`] when fixture construction or durable closure
 /// publication under `run_state_root` fails.
+#[cfg(feature = "test-support")]
 pub fn build_authenticated_production_checkpoint_codec_fixture(
     run_state_root: &Path,
 ) -> Result<AuthenticatedProductionCheckpointCodecFixture, LifecycleApiError> {
@@ -127,15 +130,15 @@ pub fn build_streaming_production_checkpoint_codec_fixture(
     build_production_checkpoint_codec_fixture(run_state_root, FixtureArtifactShape::Streaming)
 }
 
-/// Builds a v9 closure with a retained direct RAM base and one delta layer.
+/// Builds a complete persistent RAM closure after one page replacement.
 ///
 /// The fixture passes through the production staging, manifest, publication,
-/// open, and resume-basis paths. Its compact CRUCRAM placeholders model the
-/// storage protocol and are deliberately not accepted as native QEMU state.
+/// open, and resume-basis paths. RAM pages use the authenticated tree store;
+/// placeholder device-state bytes deliberately cannot restore native QEMU.
 ///
 /// # Errors
 ///
-/// Returns [`LifecycleApiError`] when either closure cannot be staged,
+/// Returns [`LifecycleApiError`] when either RAM image cannot be staged,
 /// published, reopened, or authenticated.
 pub fn build_exact_ram_production_checkpoint_codec_fixture(
     run_state_root: &Path,
@@ -159,6 +162,7 @@ fn build_exact_ram_production_checkpoint_codec_fixture_inner(
         &scenario,
         &source,
         base.closure().identity(),
+        Some(&test_ram_catalog_provider()),
     )?;
     let node = source
         .world()
@@ -166,59 +170,52 @@ fn build_exact_ram_production_checkpoint_codec_fixture_inner(
         .first()
         .map(|node| node.id.clone())
         .ok_or_else(|| loop_factory_error("exact RAM fixture scenario has no VM node"))?;
-    let (direct_layer, device_sha256, device_artifact) = checkpoint
+    let (previous_ram, catalog, device_sha256, device_artifact) = checkpoint
         .targets
         .get(&node)
         .and_then(|target| {
-            target.native_exact_ram().and_then(|exact_ram| {
-                exact_ram.layers.first().cloned().map(|layer| {
-                    (
-                        layer,
-                        exact_ram.device_content_sha256,
-                        exact_ram.device_artifact.clone(),
-                    )
-                })
+            target.native_exact_ram().map(|exact_ram| {
+                (
+                    exact_ram.ram.clone(),
+                    exact_ram.catalog.clone(),
+                    exact_ram.device_content_sha256,
+                    exact_ram.device_artifact.clone(),
+                )
             })
         })
-        .ok_or_else(|| loop_factory_error("fixture direct RAM layer disappeared"))?;
-    let parent_closure = base.closure().identity();
-    let direct_identity: QmpCheckpointIdentity = direct_layer.identity.into();
-    let topology = direct_layer.topology;
-
-    let delta_path = run_state_root.join("fixture-delta.crucram");
-    fs::write(&delta_path, b"CRUCRAM1 fixture changed RAM extent")
-        .map_err(|error| loop_factory_error(format!("write delta RAM fixture: {error}")))?;
-    let delta_artifact = stage_checkpoint_artifact_chunks_with_boundary(
-        &delta_path,
-        &run_state_root.join("fixture-delta-chunks"),
-        "delta RAM fixture",
-        direct_layer.artifact.length,
-        limits,
-        &mut || Ok(()),
-    )
-    .map_err(|error| fixture_error("stage delta RAM fixture", error))?;
-    let delta_sha256 = hash_exact_checkpoint_file_sha256_with_boundary(&delta_path, &mut || Ok(()))
-        .map_err(|error| fixture_error("hash delta RAM fixture", error))?;
-
-    let delta_identity = exact_ram_fixture_qmp_identity(&checkpoint, &node)?;
-    let delta_layer = ProductionExactRamLayer {
-        kind: ProductionExactRamKind::Delta,
-        identity: delta_identity.into(),
-        parent: Some(direct_identity.into()),
-        topology,
-        ram_regions: 1,
-        ram_records: 1,
-        content_sha256: delta_sha256,
-        artifact: delta_artifact,
-    };
-    let delta = ProductionExactRamCheckpoint::new(
-        Some(parent_closure),
+        .ok_or_else(|| loop_factory_error("fixture RAM image disappeared"))?;
+    let mut changes = Some(crucible_cas::ram::RamPageChange {
+        region_id: String::from("machine.ram"),
+        page_index: 1,
+        bytes: vec![0x7f; 4096],
+    });
+    let account = catalog
+        .original()
+        .child()
+        .map_err(|error| fixture_error("admit fixture RAM operation", error))?;
+    let changed_ram = catalog
+        .store()
+        .update_with_reader(
+            &previous_ram,
+            &mut || Ok(changes.take()),
+            catalog
+                .retention()
+                .map_err(|error| fixture_error("admit fixture RAM root", error))?
+                .as_ref(),
+            &account,
+            &mut || Ok(()),
+        )
+        .map_err(|error| fixture_error("replace fixture RAM page", error))?;
+    let identity = exact_ram_fixture_qmp_identity(&checkpoint, &node)?;
+    let changed = ProductionExactRamCheckpoint::from_paged_capture(
+        identity.into(),
         device_sha256,
         device_artifact,
-        vec![direct_layer, delta_layer],
+        catalog,
+        changed_ram,
     )
-    .map_err(|error| fixture_error("build delta RAM checkpoint", error))?;
-    bind_exact_ram_fixture_target(&mut checkpoint, &node, delta, limits)?;
+    .map_err(|error| fixture_error("build changed RAM checkpoint", error))?;
+    bind_exact_ram_fixture_target(&mut checkpoint, &node, changed, limits)?;
     let prepared = prepare_exact_checkpoint_set_with_boundary(
         run_state_root,
         scenario.id(),
@@ -226,18 +223,22 @@ fn build_exact_ram_production_checkpoint_codec_fixture_inner(
         &mut checkpoint,
         &mut || Ok(()),
     )
-    .map_err(|error| fixture_error("prepare delta RAM fixture", error))?;
+    .map_err(|error| fixture_error("prepare changed RAM fixture", error))?;
     let identity = prepared.identity();
     prepared
         .publish()
-        .map_err(|error| fixture_error("publish delta RAM fixture", error))?;
-    let closure = open_exact_checkpoint_closure(run_state_root, &source, identity)?;
+        .map_err(|error| fixture_error("publish changed RAM fixture", error))?;
+    let closure = open_exact_checkpoint_closure(
+        run_state_root,
+        &source,
+        identity,
+        Some(&test_ram_catalog_provider()),
+    )?;
     Ok(AuthenticatedProductionExactRamCodecFixture {
         source,
-        configuration,
+        _configuration: configuration,
         closure,
-        parent_closure,
-        layer_identities: vec![direct_identity, delta_identity],
+        _previous_ram: previous_ram,
     })
 }
 
@@ -310,54 +311,43 @@ fn bind_exact_ram_fixture_target(
     Ok(())
 }
 
-fn bind_direct_ram_fixture_target(
+fn bind_paged_ram_fixture_target(
     run_state_root: &Path,
     checkpoint: &mut ProductionVmExactCheckpointSet,
     node: &NodeId,
     limits: FaultResourceLimits,
 ) -> Result<(), LifecycleApiError> {
-    let direct_path = run_state_root.join("fixture-direct.crucram");
-    fs::write(&direct_path, b"CRUCRAM1 fixture direct RAM base")
-        .map_err(|error| loop_factory_error(format!("write direct RAM fixture: {error}")))?;
-    let direct_artifact = stage_checkpoint_artifact_chunks_with_boundary(
-        &direct_path,
-        &run_state_root.join("fixture-direct-chunks"),
-        "direct RAM fixture",
-        0,
-        limits,
-        &mut || Ok(()),
-    )
-    .map_err(|error| fixture_error("stage direct RAM fixture", error))?;
-    let direct_sha256 =
-        hash_exact_checkpoint_file_sha256_with_boundary(&direct_path, &mut || Ok(()))
-            .map_err(|error| fixture_error("hash direct RAM fixture", error))?;
     let device_path = run_state_root.join("fixture-vmstate.bin");
     let device_sha256 =
         hash_exact_checkpoint_file_sha256_with_boundary(&device_path, &mut || Ok(()))
             .map_err(|error| fixture_error("hash device-state fixture", error))?;
-    let direct_identity = exact_ram_fixture_qmp_identity(checkpoint, node)?;
-    let direct_layer = ProductionExactRamLayer {
-        kind: ProductionExactRamKind::Direct,
-        identity: direct_identity.into(),
-        parent: None,
-        topology: ContentHash::from_bytes(b"fixture RAMBlock topology"),
-        ram_regions: 1,
-        ram_records: 1,
-        content_sha256: direct_sha256,
-        artifact: direct_artifact,
-    };
-    let device_artifact = checkpoint
+    let identity = exact_ram_fixture_qmp_identity(checkpoint, node)?;
+    let source = checkpoint
         .targets
         .get(node)
         .and_then(ProductionVmExactCheckpointTarget::native_exact_ram)
-        .ok_or_else(|| loop_factory_error("fixture direct target disappeared"))?
-        .device_artifact
-        .clone();
-    let direct =
-        ProductionExactRamCheckpoint::new(None, device_sha256, device_artifact, vec![direct_layer])
-            .map_err(|error| fixture_error("build direct RAM checkpoint", error))?;
+        .ok_or_else(|| loop_factory_error("fixture RAM target disappeared"))?;
+    let complete = ProductionExactRamCheckpoint::from_paged_capture(
+        identity.into(),
+        device_sha256,
+        source.device_artifact.clone(),
+        source.catalog.clone(),
+        source.ram.clone(),
+    )
+    .map_err(|error| fixture_error("bind complete RAM checkpoint", error))?;
 
-    bind_exact_ram_fixture_target(checkpoint, node, direct, limits)
+    bind_exact_ram_fixture_target(checkpoint, node, complete, limits)
+}
+
+fn fixture_ram_topology() -> Result<crucible_ram::Topology, LifecycleApiError> {
+    use crucible_ram::{Limits, RegionClass, RegionDescriptor, Topology};
+
+    let main = RegionDescriptor::new("machine.ram", RegionClass::MutableMain, 8192 + 19)
+        .map_err(|error| fixture_error("declare fixture RAM", error))?;
+    let image = RegionDescriptor::new("machine.rom", RegionClass::ImmutableImage, 37)
+        .map_err(|error| fixture_error("declare fixture ROM", error))?;
+    Topology::new(vec![main, image], Limits::default())
+        .map_err(|error| fixture_error("bind fixture RAM topology", error))
 }
 
 #[derive(Clone, Copy)]
@@ -539,24 +529,49 @@ fn build_production_checkpoint_codec_fixture(
         target: ContentHash::from_bytes(b"fixture target"),
         frontier: ContentHash::from_bytes(b"fixture frontier"),
     };
-    let bootstrap_exact_ram = ProductionExactRamCheckpoint::new(
-        None,
+    let catalog = paged::PagedRamCatalog::open(
+        run_state_root,
+        scenario.id(),
+        source.plan().fault_signals().resource_limits(),
+        Some(&test_ram_catalog_provider()),
+    )
+    .map_err(|error| fixture_error("open fixture RAM catalog", error))?;
+    let topology = fixture_ram_topology()?;
+    let ram = {
+        let account = catalog.original().child().map_err(|source| {
+            fixture_error(
+                "capture fixture RAM tree",
+                crucible_cas::ram::RamStoreError::from_admission(catalog.original(), source),
+            )
+        })?;
+        let retention = catalog
+            .retention()
+            .map_err(|error| fixture_error("capture fixture RAM tree", error))?;
+
+        catalog.store().capture(
+            topology,
+            crucible_ram::Scope::Exact,
+            &mut |region, index, bytes| {
+                bytes.fill(if region.id() == "machine.rom" {
+                    0xa5
+                } else {
+                    (index + 1) as u8
+                });
+                Ok(())
+            },
+            retention.as_ref(),
+            &account,
+            &mut || Ok(()),
+        )
+    }
+    .map_err(|error| fixture_error("capture fixture RAM tree", error))?;
+    let bootstrap_exact_ram = ProductionExactRamCheckpoint::from_paged_capture(
+        bootstrap_identity,
         hash_exact_checkpoint_file_sha256_with_boundary(&vmstate, &mut || Ok(()))
             .map_err(|error| fixture_error("hash fixture device state", error))?,
-        vmstate_artifact.clone(),
-        vec![ProductionExactRamLayer {
-            kind: ProductionExactRamKind::Direct,
-            identity: bootstrap_identity,
-            parent: None,
-            topology: ContentHash::from_bytes(b"fixture bootstrap topology"),
-            ram_regions: 1,
-            ram_records: 1,
-            content_sha256: hash_exact_checkpoint_file_sha256_with_boundary(&vmstate, &mut || {
-                Ok(())
-            })
-            .map_err(|error| fixture_error("hash fixture bootstrap RAM", error))?,
-            artifact: vmstate_artifact,
-        }],
+        vmstate_artifact,
+        catalog,
+        ram,
     )
     .map_err(|error| fixture_error("build bootstrap exact RAM", error))?;
     let mut selectable_catalog_plans = BTreeMap::new();
@@ -625,7 +640,11 @@ fn build_production_checkpoint_codec_fixture(
         event_log_objects: Arc::new(BTreeMap::new()),
         signal_artifact_objects: Arc::new(BTreeMap::new()),
         trigger_state: EventGraphState::default(),
-        assertion_state: HostAssertionEvaluator::new(source.properties()).checkpoint(),
+        assertion_state: crate::vm_lifecycle::admitted_clone::component_assertion_evaluator(
+            &source,
+        )
+        .checkpoint()
+        .unwrap_or_else(|error| panic!("component assertion checkpoint: {error}")),
         terminal_verdict: None,
         terminal_cause: None,
         initial_lifecycle_observations_pending: true,
@@ -668,7 +687,7 @@ fn build_production_checkpoint_codec_fixture(
         repository_restore: None,
     };
     for node in &fixture_nodes {
-        bind_direct_ram_fixture_target(
+        bind_paged_ram_fixture_target(
             run_state_root,
             &mut checkpoint,
             node,
@@ -687,7 +706,12 @@ fn build_production_checkpoint_codec_fixture(
     prepared
         .publish()
         .map_err(|error| fixture_error("publish fixture checkpoint", error))?;
-    let closure = open_exact_checkpoint_closure(run_state_root, &source, identity)?;
+    let closure = open_exact_checkpoint_closure(
+        run_state_root,
+        &source,
+        identity,
+        Some(&test_ram_catalog_provider()),
+    )?;
     Ok(AuthenticatedProductionCheckpointCodecFixture {
         source,
         configuration,

@@ -49,6 +49,9 @@ impl ConditionLeafOracle for TrueNames<'_> {
 
 #[test]
 fn compound_combinators_nest_arbitrarily() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let condition = Predicate::all_of(vec![
         Predicate::not(Predicate::named("blocked")),
         Predicate::any_of(vec![
@@ -60,14 +63,33 @@ fn compound_combinators_nest_arbitrarily() {
         ]),
     ]);
 
-    assert!(evaluator(1, &["ready"]).evaluate_assertion_condition(&condition));
-    assert!(evaluator(1, &["warm"]).evaluate_assertion_condition(&condition));
-    assert!(!evaluator(1, &["ready", "blocked"]).evaluate_assertion_condition(&condition));
-    assert!(!evaluator(1, &["warm", "cold"]).evaluate_assertion_condition(&condition));
+    assert!(
+        evaluator(1, &["ready"])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
+    assert!(
+        evaluator(1, &["warm"])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
+    assert!(
+        !evaluator(1, &["ready", "blocked"])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
+    assert!(
+        !evaluator(1, &["warm", "cold"])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
 }
 
 #[test]
 fn once_latches_after_inner_was_true_even_when_all_of_was_false() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let graph = EventGraph::new(vec![Event::once(
         event_id("fire-after-gate-and-past-pulse"),
         Some(Predicate::all_of(vec![
@@ -91,6 +113,9 @@ fn once_latches_after_inner_was_true_even_when_all_of_was_false() {
 
 #[test]
 fn once_inside_any_of_observes_non_short_circuited_branch() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let graph = EventGraph::new(vec![Event::repeatable(
         event_id("pulse-or-gate"),
         Some(Predicate::any_of(vec![
@@ -120,6 +145,9 @@ fn once_inside_any_of_observes_non_short_circuited_branch() {
 
 #[test]
 fn equivalent_once_conditions_share_latch_state_across_events() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let graph = EventGraph::new(vec![
         Event::repeatable(
             event_id("pulse-seen"),
@@ -150,6 +178,9 @@ fn equivalent_once_conditions_share_latch_state_across_events() {
 
 #[test]
 fn event_graph_rejects_empty_all_of_and_any_of_at_build_time() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let empty_all = EventGraph::new(vec![Event::once(
         event_id("empty-all"),
         Some(Predicate::all_of(Vec::new())),
@@ -179,6 +210,9 @@ fn event_graph_rejects_empty_all_of_and_any_of_at_build_time() {
 
 #[test]
 fn properties_reject_empty_all_of_and_any_of_at_build_time() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_nodes(Vec::new()).expect("empty world should build");
     let empty_all = Properties::from_assertions_for_world(
         &world,

@@ -12,7 +12,7 @@ use std::hash::{Hash, Hasher};
 use crucible_campaign::{ChoiceSource, SelectableDeclaration, SelectableId};
 use crucible_protocol::SELECTABLE_PROTOCOL_VERSION;
 
-use super::{EngineError, NodeId, World, scenario_serialization_error};
+use super::{ContentHash, EngineError, NodeId, World, scenario_serialization_error};
 
 /// Maximum declarations admitted by one scenario across all producers.
 pub const MAX_SCENARIO_SELECTABLE_DECLARATIONS: usize = 65_536;
@@ -26,6 +26,15 @@ pub const MAX_SCENARIO_SELECTABLE_REQUESTS: u64 = 1_000_000;
 const SCENARIO_SELECTABLE_MAGIC: &[u8; 8] = b"CRUCSDS1";
 const SCENARIO_SELECTABLE_VERSION: u32 = 1;
 const SCENARIO_SELECTABLE_HEADER_BYTES: usize = 40;
+const DEFAULT_CANONICAL_HEADER: [u8; SCENARIO_SELECTABLE_HEADER_BYTES] = canonical_header(
+    ScenarioSelectableLimits {
+        declarations_per_node: MAX_SCENARIO_SELECTABLE_DECLARATIONS_PER_NODE as u32,
+        declarations_per_world: MAX_SCENARIO_SELECTABLE_DECLARATIONS as u32,
+        requests_per_selectable: MAX_SCENARIO_SELECTABLE_REQUESTS,
+        requests_per_node: MAX_SCENARIO_SELECTABLE_REQUESTS,
+    },
+    0,
+);
 
 /// Scenario-owned node and runtime ceilings for guest selectables.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -110,21 +119,56 @@ impl Default for ScenarioSelectableLimits {
 }
 
 /// Canonical scenario declaration catalog shared by launch and runtime choice authority.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct ScenarioSelectables {
     limits: ScenarioSelectableLimits,
     declarations: BTreeMap<SelectableId, SelectableDeclaration>,
     declarations_by_name: BTreeMap<String, SelectableId>,
+    content_hash: ContentHash,
+    canonical: Option<Vec<u8>>,
 }
+
+impl PartialEq for ScenarioSelectables {
+    fn eq(&self, other: &Self) -> bool {
+        // The cached encoding and its derived hash do not add semantic state.
+        // Exhaustive patterns require an explicit policy for future fields.
+        let Self {
+            limits,
+            declarations,
+            declarations_by_name,
+            content_hash: _,
+            canonical: _,
+        } = self;
+        let Self {
+            limits: other_limits,
+            declarations: other_declarations,
+            declarations_by_name: other_declarations_by_name,
+            content_hash: _,
+            canonical: _,
+        } = other;
+
+        limits == other_limits
+            && declarations == other_declarations
+            && declarations_by_name == other_declarations_by_name
+    }
+}
+
+impl Eq for ScenarioSelectables {}
 
 impl ScenarioSelectables {
     /// Returns an empty catalog with the hard selectable ceilings.
     #[must_use]
     pub fn empty() -> Self {
+        let limits = ScenarioSelectableLimits::default();
         Self {
-            limits: ScenarioSelectableLimits::default(),
+            limits,
             declarations: BTreeMap::new(),
             declarations_by_name: BTreeMap::new(),
+            content_hash: ContentHash::from_canonical_material_bytes(
+                "crucible.model.scenario-selectables.v1",
+                &DEFAULT_CANONICAL_HEADER,
+            ),
+            canonical: None,
         }
     }
 
@@ -150,6 +194,10 @@ impl ScenarioSelectables {
             ));
         }
 
+        for node in world.vm_nodes() {
+            admit_map_entry::<NodeId, super::WhiteBoxPolicy>()?;
+            admit_array::<u8>(node.id.name.len())?;
+        }
         let world_nodes = world
             .vm_nodes()
             .iter()
@@ -174,6 +222,10 @@ impl ScenarioSelectables {
                     "scenario selectable canonical bytes exceed the hard maximum",
                 ));
             }
+            admit_array::<u8>(declaration.name().len())?;
+            admit_array::<u8>(declaration.name().len())?;
+            crate::owned_decode::charge_btree_set_entry::<String>()
+                .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
             let name = declaration.name().to_owned();
             if !names.insert(name.clone()) {
                 return Err(scenario_serialization_error(
@@ -185,6 +237,8 @@ impl ScenarioSelectables {
                 protocol_version,
             } = declaration.source()
             {
+                admit_array::<u8>(node.len())?;
+                admit_map_entry::<NodeId, usize>()?;
                 let node = NodeId { name: node.clone() };
                 let Some(white_box) = world_nodes.get(&node) else {
                     return Err(scenario_serialization_error(
@@ -216,19 +270,29 @@ impl ScenarioSelectables {
                     "derive scenario selectable declaration identity: {error}"
                 ))
             })?;
+            admit_map_entry::<SelectableId, SelectableDeclaration>()?;
             if indexed.insert(id, declaration).is_some() {
                 return Err(scenario_serialization_error(
                     "scenario selectable declaration identity is duplicated",
                 ));
             }
+            admit_map_entry::<String, SelectableId>()?;
             declarations_by_name.insert(name, id);
         }
-        let value = Self {
+        let mut value = Self {
             limits,
             declarations: indexed,
             declarations_by_name,
+            content_hash: ContentHash { bytes: [0; 32] },
+            canonical: None,
         };
-        debug_assert_eq!(value.canonical_bytes().len(), charged_bytes);
+        let canonical = value.canonical_bytes_with_admission()?;
+        debug_assert_eq!(canonical.len(), charged_bytes);
+        value.content_hash = ContentHash::from_canonical_material_bytes(
+            "crucible.model.scenario-selectables.v1",
+            &canonical,
+        );
+        value.canonical = Some(canonical);
         Ok(value)
     }
 
@@ -258,6 +322,64 @@ impl ScenarioSelectables {
         self.declarations.is_empty()
     }
 
+    pub(super) const fn content_hash(&self) -> ContentHash {
+        self.content_hash
+    }
+
+    pub(super) fn is_default_catalog(&self) -> bool {
+        self.is_empty() && self.limits == ScenarioSelectableLimits::default()
+    }
+
+    pub(super) fn canonical_body(&self) -> &[u8] {
+        self.canonical
+            .as_deref()
+            .unwrap_or(&DEFAULT_CANONICAL_HEADER)
+    }
+
+    fn canonical_bytes_with_admission(&self) -> Result<Vec<u8>, EngineError> {
+        admit_array::<Vec<u8>>(self.declarations.len())?;
+        let mut bodies = Vec::new();
+        bodies
+            .try_reserve_exact(self.declarations.len())
+            .map_err(|source| {
+                scenario_serialization_error(format!(
+                    "reserve canonical selectable bodies: {source}"
+                ))
+            })?;
+        let mut length = SCENARIO_SELECTABLE_HEADER_BYTES;
+        for declaration in self.declarations.values() {
+            let body = declaration.canonical_bytes();
+            if let Some(budget) = crate::owned_decode::current_budget()
+                && let Some(source) = budget
+                    .failure()
+                    .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?
+            {
+                return Err(EngineError::ArtifactDecodeAdmission { source });
+            }
+            length = length
+                .checked_add(4)
+                .and_then(|length| length.checked_add(body.len()))
+                .ok_or_else(|| {
+                    scenario_serialization_error("canonical selectable length overflow")
+                })?;
+            bodies.push(body);
+        }
+        admit_array::<u8>(length)?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(length).map_err(|source| {
+            scenario_serialization_error(format!("reserve canonical selectable bytes: {source}"))
+        })?;
+        bytes.extend_from_slice(&canonical_header(
+            self.limits,
+            self.declarations.len() as u32,
+        ));
+        for body in bodies {
+            bytes.extend_from_slice(&(body.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(&body);
+        }
+        Ok(bytes)
+    }
+
     /// Returns guest declarations for `node` in exact content-ID order.
     pub fn guest_declarations<'a>(
         &'a self,
@@ -274,20 +396,7 @@ impl ScenarioSelectables {
     /// Encodes the complete bounded declaration component.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(SCENARIO_SELECTABLE_HEADER_BYTES);
-        bytes.extend_from_slice(SCENARIO_SELECTABLE_MAGIC);
-        bytes.extend_from_slice(&SCENARIO_SELECTABLE_VERSION.to_be_bytes());
-        bytes.extend_from_slice(&self.limits.declarations_per_node.to_be_bytes());
-        bytes.extend_from_slice(&self.limits.declarations_per_world.to_be_bytes());
-        bytes.extend_from_slice(&(self.declarations.len() as u32).to_be_bytes());
-        bytes.extend_from_slice(&self.limits.requests_per_selectable.to_be_bytes());
-        bytes.extend_from_slice(&self.limits.requests_per_node.to_be_bytes());
-        for declaration in self.declarations.values() {
-            let body = declaration.canonical_bytes();
-            bytes.extend_from_slice(&(body.len() as u32).to_be_bytes());
-            bytes.extend_from_slice(&body);
-        }
-        bytes
+        self.canonical_body().to_vec()
     }
 
     /// Decodes and revalidates one canonical declaration component.
@@ -324,6 +433,7 @@ impl ScenarioSelectables {
             ));
         }
         let mut cursor = SCENARIO_SELECTABLE_HEADER_BYTES;
+        admit_array::<SelectableDeclaration>(count)?;
         let mut declarations = Vec::new();
         declarations.try_reserve_exact(count).map_err(|_| {
             scenario_serialization_error("reserve scenario selectable declarations")
@@ -351,7 +461,7 @@ impl ScenarioSelectables {
             ));
         }
         let value = Self::new(world, limits, declarations)?;
-        if value.canonical_bytes() != bytes {
+        if value.canonical_body() != bytes {
             return Err(scenario_serialization_error(
                 "scenario selectable component is not canonically ordered",
             ));
@@ -366,9 +476,43 @@ impl Default for ScenarioSelectables {
     }
 }
 
+fn admit_array<T>(count: usize) -> Result<(), EngineError> {
+    crate::owned_decode::charge_array::<T>(count)
+        .map_err(|source| EngineError::ArtifactDecodeAdmission { source })
+}
+
+fn admit_map_entry<K, V>() -> Result<(), EngineError> {
+    crate::owned_decode::charge_btree_entry::<K, V>()
+        .map_err(|source| EngineError::ArtifactDecodeAdmission { source })
+}
+
+const fn canonical_header(limits: ScenarioSelectableLimits, count: u32) -> [u8; 40] {
+    let mut bytes = [0; SCENARIO_SELECTABLE_HEADER_BYTES];
+    let mut index = 0;
+    while index < SCENARIO_SELECTABLE_MAGIC.len() {
+        bytes[index] = SCENARIO_SELECTABLE_MAGIC[index];
+        index += 1;
+    }
+    write_fixed(&mut bytes, 8, SCENARIO_SELECTABLE_VERSION.to_be_bytes());
+    write_fixed(&mut bytes, 12, limits.declarations_per_node.to_be_bytes());
+    write_fixed(&mut bytes, 16, limits.declarations_per_world.to_be_bytes());
+    write_fixed(&mut bytes, 20, count.to_be_bytes());
+    write_fixed(&mut bytes, 24, limits.requests_per_selectable.to_be_bytes());
+    write_fixed(&mut bytes, 32, limits.requests_per_node.to_be_bytes());
+    bytes
+}
+
+const fn write_fixed<const N: usize>(output: &mut [u8; 40], offset: usize, bytes: [u8; N]) {
+    let mut index = 0;
+    while index < N {
+        output[offset + index] = bytes[index];
+        index += 1;
+    }
+}
+
 impl Hash for ScenarioSelectables {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.canonical_bytes().hash(state);
+        self.canonical_body().hash(state);
     }
 }
 
@@ -503,6 +647,33 @@ mod tests {
                 vec![declaration("router-b")?],
             )
             .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cached_catalog_identity_preserves_default_and_bounded_empty_semantics()
+    -> Result<(), Box<dyn Error>> {
+        let world = selectable_world()?;
+        let default = ScenarioSelectables::empty();
+        let decoded = ScenarioSelectables::from_canonical_bytes(&world, default.canonical_body())?;
+        let bounded = ScenarioSelectables::new(
+            &world,
+            ScenarioSelectableLimits::new(8, 16, 64, 128)?,
+            Vec::new(),
+        )?;
+
+        assert_eq!(decoded, default);
+        assert_eq!(decoded.content_hash(), default.content_hash());
+        assert!(decoded.is_default_catalog());
+        assert!(!bounded.is_default_catalog());
+        assert_ne!(bounded.content_hash(), default.content_hash());
+        assert_eq!(
+            bounded.content_hash(),
+            ContentHash::from_canonical_material_bytes(
+                "crucible.model.scenario-selectables.v1",
+                bounded.canonical_body(),
+            )
         );
         Ok(())
     }

@@ -33,6 +33,13 @@ use crate::spawn::{QemuChildCredentials, QemuChildProcessContract};
 use crate::{QemuNodeChild, QemuProcessIdentity, linux_process_identity};
 
 mod attempt_owner;
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) mod measurement_domain;
+mod memory_control;
+#[cfg(feature = "private-measurement-domain")]
+mod original_finish;
+/// Opaque pinned memory authority confined to the physical owner boundary.
+pub(crate) type LinuxQemuCgroupMemoryControl = memory_control::LinuxQemuCgroupMemoryControl;
 mod quarantine;
 
 pub(crate) use attempt_owner::{
@@ -237,6 +244,8 @@ pub struct LinuxQemuCgroupCleanupAuthority {
     parent_directory: OwnedFd,
     name: String,
     directory: Option<OwnedFd>,
+    #[cfg(feature = "private-measurement-domain")]
+    original_removed: bool,
 }
 
 impl LinuxQemuCgroupCleanupAuthority {
@@ -522,6 +531,102 @@ impl LinuxQemuCgroupWatcher {
         self.close_and_wait(timeout)
     }
 
+    /// Joins the existing watcher within the Parent's retained absolute end.
+    ///
+    /// No new clock, watcher or cleanup allowance is created. A refusing wait
+    /// returns the same watcher to the caller; its original clock cause remains
+    /// in the externally retained process owner.
+    ///
+    /// # Errors
+    /// Retains the watcher on original refusal, signaling or wait failure.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(crate) fn finish_under_original_parent(
+        mut self,
+        original: &crucible_linux_resource::host_services::process_birth::OriginalParentAttempt,
+    ) -> Result<(), LinuxQemuCgroupWatcherWaitError> {
+        if original.check_original().is_err() {
+            return Err(LinuxQemuCgroupWatcherWaitError::Timeout {
+                watcher: Box::new(self),
+            });
+        }
+        let signal = signal_terminal(&self.watcher_state, self.cancellation_event.as_raw_fd());
+        let post = original.check_original();
+        if let Err(source) = signal {
+            return Err(LinuxQemuCgroupWatcherWaitError::Signal {
+                watcher: Box::new(self),
+                source,
+            });
+        }
+        if post.is_err() {
+            return Err(LinuxQemuCgroupWatcherWaitError::Timeout {
+                watcher: Box::new(self),
+            });
+        }
+        loop {
+            let remaining = match original.remaining() {
+                Ok(remaining) => remaining,
+                Err(_) => {
+                    return Err(LinuxQemuCgroupWatcherWaitError::Timeout {
+                        watcher: Box::new(self),
+                    });
+                }
+            };
+            let Some(join) = self.join.as_ref() else {
+                return Err(LinuxQemuCgroupWatcherWaitError::DetachedThreadPanicked {
+                    path: self.path.clone(),
+                });
+            };
+            if join.is_finished() {
+                break;
+            }
+            let interval = WATCHER_WAIT_POLL_INTERVAL.min(remaining);
+            let mut descriptors = [];
+            let wait = rustix::event::poll(
+                &mut descriptors,
+                Some(&rustix::time::Timespec {
+                    tv_sec: 0,
+                    tv_nsec: i64::from(interval.subsec_nanos()),
+                }),
+            );
+            let post = original.check_original();
+            if let Err(source) = wait {
+                return Err(LinuxQemuCgroupWatcherWaitError::OriginalWait {
+                    watcher: Box::new(self),
+                    source: source.into(),
+                });
+            }
+            if post.is_err() {
+                return Err(LinuxQemuCgroupWatcherWaitError::Timeout {
+                    watcher: Box::new(self),
+                });
+            }
+        }
+        let Some(join) = self.join.take() else {
+            return Err(LinuxQemuCgroupWatcherWaitError::DetachedThreadPanicked {
+                path: self.path.clone(),
+            });
+        };
+        let joined = join.join();
+        match joined {
+            Ok(authority) => {
+                drop(authority);
+                if original.check_original().is_err() {
+                    Err(LinuxQemuCgroupWatcherWaitError::Timeout {
+                        watcher: Box::new(self),
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+            Err(_) => {
+                let _ = original.check_original();
+                Err(LinuxQemuCgroupWatcherWaitError::DetachedThreadPanicked {
+                    path: self.path.clone(),
+                })
+            }
+        }
+    }
+
     fn close_and_wait(self, timeout: Duration) -> Result<(), LinuxQemuCgroupWatcherWaitError> {
         if let Err(source) =
             signal_terminal(&self.watcher_state, self.cancellation_event.as_raw_fd())
@@ -628,6 +733,15 @@ pub enum LinuxQemuCgroupWatcherWaitError {
         /// Underlying eventfd failure.
         source: io::Error,
     },
+    /// The original Parent's finite poll failed while its watcher stayed owned.
+    #[cfg(feature = "private-measurement-domain")]
+    #[error("failed to wait for original Parent watcher: {source}")]
+    OriginalWait {
+        /// Watcher retained in the original process owner.
+        watcher: Box<LinuxQemuCgroupWatcher>,
+        /// Actual kernel polling failure.
+        source: io::Error,
+    },
     /// The bounded wait expired while the watcher remained live.
     #[error("timed out waiting for QEMU cgroup watcher")]
     Timeout {
@@ -648,6 +762,8 @@ impl LinuxQemuCgroupWatcherWaitError {
     pub fn into_watcher(self) -> Option<LinuxQemuCgroupWatcher> {
         match self {
             Self::Signal { watcher, .. } | Self::Timeout { watcher } => Some(*watcher),
+            #[cfg(feature = "private-measurement-domain")]
+            Self::OriginalWait { watcher, .. } => Some(*watcher),
             Self::DetachedThreadPanicked { .. } => None,
         }
     }
@@ -787,6 +903,8 @@ impl LinuxQemuCgroupRoot {
             parent_directory,
             name,
             directory: None,
+            #[cfg(feature = "private-measurement-domain")]
+            original_removed: false,
         };
         let directory =
             match open_directory_at(&cleanup.parent_directory, &cleanup.name, &cleanup.path) {
@@ -938,6 +1056,8 @@ impl LinuxQemuCgroup {
     pub(crate) fn child_process_contract(
         &self,
         maximum_writable_bytes: u64,
+        maximum_file_descriptors: u64,
+        maximum_locked_bytes: u64,
         child_user_id: libc::uid_t,
         child_group_id: libc::gid_t,
         exact_checkpoint_root: Option<crucible::ContentHash>,
@@ -981,7 +1101,11 @@ impl LinuxQemuCgroup {
             cgroup_procs,
             cancellation_event,
             self.limits,
-            maximum_writable_bytes,
+            crate::spawn::QemuChildFileLimits {
+                writable_bytes: maximum_writable_bytes,
+                descriptors: maximum_file_descriptors,
+                locked_bytes: maximum_locked_bytes,
+            },
             credentials,
             exact_checkpoint_root,
         )
@@ -1686,6 +1810,55 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "private-measurement-domain")]
+    #[test]
+    fn parent_partial_group_failure_remains_owned_through_postcheck_panic()
+    -> Result<(), LinuxQemuCgroupError> {
+        let directory = tempfile::tempdir().map_err(|source| LinuxQemuCgroupError::Io {
+            operation: "create Parent partial setup fixture",
+            path: PathBuf::from("fixture"),
+            source,
+        })?;
+        let fd = open_directory(directory.path(), "open Parent partial setup fixture")?;
+        lock_namespace(&fd, directory.path())?;
+        let mut root = LinuxQemuCgroupRoot {
+            path: directory.path().to_owned(),
+            directory: fd,
+        };
+        let mut saved = crate::linux_attempt_host::OriginalParentSetup::empty();
+        let created = root.create("parent-partial", LinuxQemuCgroupLimits::new(1, 4096, 16)?);
+        let error = created.expect_err("ordinary directory must refuse missing cgroup controls");
+        assert!(
+            error.cleanup.is_some(),
+            "actual mkdir must return its pinned partial owner"
+        );
+        saved.retain_group_failure(error);
+        drop(root);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                panic!("original postcheck uncertainty after partial publication");
+            }))
+            .is_err()
+        );
+
+        assert!(
+            saved
+                .group_failure
+                .as_ref()
+                .is_some_and(|error| error.cleanup.is_some())
+        );
+        let contender = open_directory(directory.path(), "open Parent partial setup contender")?;
+        assert!(matches!(
+            lock_namespace(&contender, directory.path()),
+            Err(LinuxQemuCgroupError::NamespaceLocked { .. })
+        ));
+        assert!(directory.path().join("parent-partial").is_dir());
+        // This synthetic filesystem proves retained real descriptors and the
+        // existing lock only, never cgroup-v2 enforcement or a Parent grant.
+        drop(saved);
+        Ok(())
+    }
+
     #[test]
     fn failed_setup_retains_child_and_namespace_authority() -> Result<(), LinuxQemuCgroupError> {
         let directory = tempfile::tempdir().map_err(|source| LinuxQemuCgroupError::Io {
@@ -2005,7 +2178,7 @@ mod tests {
         };
 
         assert!(matches!(
-            group.child_process_contract(4096, 65_533, 65_532, None),
+            group.child_process_contract(4096, 1024, 0, 65_533, 65_532, None),
             Err(LinuxQemuCgroupError::WatcherNotRunning { .. })
         ));
         let watcher = group.start_watcher()?;
@@ -2058,7 +2231,7 @@ mod tests {
         };
 
         assert!(matches!(
-            group.child_process_contract(4096, 65_533, 65_532, None),
+            group.child_process_contract(4096, 1024, 0, 65_533, 65_532, None),
             Err(LinuxQemuCgroupError::WatcherNotRunning { .. })
         ));
         Ok(())

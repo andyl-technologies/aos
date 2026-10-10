@@ -110,13 +110,19 @@ in {
             '';
           }
           {
-            name = "kernel-version";
-            description = "Kernel version matches the selected kernel";
+            name = "systemd-running";
+            description = "systemd reached multi-user.target";
             script = ''
-              actual_kernel = vm.succeed("uname -r").strip()
-              expected_kernel = "${config.system.build.kernel.version}"
-              assert actual_kernel == expected_kernel, \
-                  f"expected kernel {expected_kernel}, got {actual_kernel}"
+              vm.succeed("systemctl is-active multi-user.target")
+            '';
+          }
+          {
+            name = "kernel-version";
+            description = "Running kernel matches the configured kernel package";
+            script = ''
+              expected = ${builtins.toJSON config.system.build.kernel.version}
+              actual = vm.succeed("uname -r").strip()
+              assert actual == expected, (actual, expected)
             '';
           }
           {

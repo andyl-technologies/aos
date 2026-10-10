@@ -19,6 +19,53 @@ mod adapters;
 mod callbacks;
 mod idle_advance;
 
+#[test]
+fn final_placement_device_refusal_leaves_destination_unpublished_and_allows_valid_attachment() {
+    let slot = NodeSlot::new(KIND_VM);
+    let initial_ack = slot.snapshot().control_boundary_ack;
+    let mut state = Box::new(
+        crate::runtime::live_callbacks::tests::test_live_state(90, 1, 0, &slot)
+            .unwrap_or_else(|error| panic!("completed fixture should build: {error}")),
+    );
+    let pointer = std::ptr::from_ref(state.as_ref());
+    let mut storage = DeviceRingStorage::new();
+    let mut invalid_block = storage.block_pair();
+    invalid_block.outbound.descriptor.src_slot = 91;
+    let ninep = storage.ninep_pair();
+    let accelerator = storage.accelerator_rings();
+
+    let refused = state.attach_devices_with_history_limits_in_place(
+        0,
+        invalid_block,
+        ninep,
+        crate::PluginStorageHistoryLimits::compiled_maximum(),
+        1,
+        accelerator,
+    );
+    assert!(refused.is_err());
+    assert!(state.devices.is_none());
+    assert_eq!(std::ptr::from_ref(state.as_ref()), pointer);
+    assert_eq!(slot.snapshot().control_boundary_ack, initial_ack);
+
+    let block = storage.block_pair();
+    let ninep = storage.ninep_pair();
+    let accelerator = storage.accelerator_rings();
+    state
+        .attach_devices_with_history_limits_in_place(
+            0,
+            block,
+            ninep,
+            crate::PluginStorageHistoryLimits::compiled_maximum(),
+            1,
+            accelerator,
+        )
+        .unwrap_or_else(|error| panic!("valid attachment should succeed: {error}"));
+    assert!(state.devices.is_some());
+    assert_eq!(std::ptr::from_ref(state.as_ref()), pointer);
+    let pinned = std::pin::Pin::from(state);
+    assert_eq!(std::ptr::from_ref(pinned.as_ref().get_ref()), pointer);
+}
+
 static FORCE_VCPU_EXIT_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 extern "C" fn test_deadline() -> i64 {

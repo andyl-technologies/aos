@@ -84,6 +84,7 @@ fn rollback_policy() -> QemuShutdownPolicy {
 
 #[test]
 fn rollback_retains_every_unfinished_owner_on_termination_failure() {
+    let _metadata_scope = component_metadata_scope();
     let terminations = Arc::new(AtomicUsize::new(0));
     let quarantines = Arc::new(AtomicUsize::new(0));
     let children = BTreeMap::from([
@@ -125,6 +126,7 @@ fn rollback_retains_every_unfinished_owner_on_termination_failure() {
 
 #[test]
 fn rollback_deadline_covers_reap_private_release_and_cancellation_progress() {
+    let _metadata_scope = component_metadata_scope();
     for (mode, expected) in [
         (RollbackFailureMode::ReapForever, "reconcile `node-0`"),
         (
@@ -186,7 +188,7 @@ fn three_source_world(
     }
     let (_nodes, source_world) =
         prepared_test_source_world(sources).expect("prepared source world");
-    let roster = source_world.continuation().nodes().to_vec();
+    let roster = source_world.continuation().unwrap().nodes().to_vec();
     (source_processes, roster, source_world)
 }
 
@@ -200,6 +202,7 @@ fn assert_process_absent(process: u32) {
 
 #[test]
 fn production_three_node_clean_rejection_is_atomic_at_every_launch_index() {
+    let _metadata_scope = component_metadata_scope();
     for failure_index in 0..3 {
         let (source_processes, original_roster, source_world) =
             three_source_world(failure_index, QemuTestHotForkOutcome::RejectedOnce);
@@ -259,6 +262,7 @@ fn production_three_node_clean_rejection_is_atomic_at_every_launch_index() {
                 .as_ref()
                 .expect("restored source")
                 .continuation()
+                .unwrap()
                 .nodes(),
             original_roster
         );
@@ -282,6 +286,7 @@ fn production_three_node_clean_rejection_is_atomic_at_every_launch_index() {
 
 #[test]
 fn production_three_node_ambiguous_launch_is_fail_closed_at_every_index() {
+    let _metadata_scope = component_metadata_scope();
     for failure_index in 0..3 {
         let (source_processes, _roster, source_world) =
             three_source_world(failure_index, QemuTestHotForkOutcome::Indeterminate);
@@ -335,10 +340,11 @@ fn production_three_node_ambiguous_launch_is_fail_closed_at_every_index() {
 
 #[test]
 fn production_three_node_adoption_failure_retains_the_complete_world() {
+    let _metadata_scope = component_metadata_scope();
     for failure_index in 0..3 {
         let (source_processes, _roster, mut source_world) =
             three_source_world(usize::MAX, QemuTestHotForkOutcome::Forked);
-        let node = source_world.continuation().nodes()[failure_index]
+        let node = source_world.continuation().unwrap().nodes()[failure_index]
             .node()
             .clone();
         source_world
@@ -395,6 +401,7 @@ fn production_three_node_adoption_failure_retains_the_complete_world() {
 
 #[test]
 fn production_aggregate_release_failure_blocks_source_restore() {
+    let _metadata_scope = component_metadata_scope();
     let (_source_processes, _roster, source_world) =
         three_source_world(1, QemuTestHotForkOutcome::RejectedOnce);
     let input = execution_input();
@@ -436,6 +443,7 @@ fn production_aggregate_release_failure_blocks_source_restore() {
 
 #[test]
 fn production_source_identity_drift_blocks_restore_after_complete_rollback() {
+    let _metadata_scope = component_metadata_scope();
     let (source_processes, _roster, source_world) =
         three_source_world(1, QemuTestHotForkOutcome::RejectedAfterSourceExit);
     let input = execution_input();

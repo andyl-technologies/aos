@@ -159,10 +159,11 @@ fn store_candidate(
         .put(
             &candidate
                 .replay_closure
-                .to_canonical_bytes()
+                .to_canonical_bytes_admitted()
                 .map_err(|error| {
                     artifact_error(format!("encode QEMU fuzz choice closure: {error}"))
-                })?,
+                })?
+                .0,
         )
         .map_err(CliError::Store)?;
     let coverage_bytes = serde_json::to_vec(&candidate.coverage_entries)
@@ -245,12 +246,22 @@ fn load_entry(
     let coverage_entries: Vec<crucible::SchedulerEventLogEntry> =
         serde_json::from_slice(&coverage_bytes)
             .map_err(|error| artifact_error(format!("decode QEMU fuzz coverage: {error}")))?;
+    for entry in &coverage_entries {
+        if !entry
+            .has_valid_content_hash()
+            .map_err(|source| CliError::EventEvidence {
+                context: "authenticate retained QEMU fuzz coverage identity",
+                source: Box::new(source),
+            })?
+        {
+            return Err(artifact_error(
+                "QEMU fuzz coverage entries fail event-log authentication",
+            ));
+        }
+    }
     if coverage_entries
-        .iter()
-        .any(|entry| !entry.has_valid_content_hash())
-        || coverage_entries
-            .windows(2)
-            .any(|pair| pair[0].sequence() >= pair[1].sequence())
+        .windows(2)
+        .any(|pair| pair[0].sequence() >= pair[1].sequence())
     {
         return Err(artifact_error(
             "QEMU fuzz coverage entries fail event-log authentication",
@@ -328,6 +339,7 @@ mod tests {
     #[test]
     fn durable_corpus_reopens_coverage_and_rejects_corruption()
     -> Result<(), Box<dyn std::error::Error>> {
+        let _scope = crate::tests::component_decode_scope();
         let directory = tempfile::tempdir()?;
         let store = crucible::LocalDagStore::new(directory.path());
         store.put(b"orphaned-before-first-index-publish")?;
@@ -347,7 +359,7 @@ mod tests {
                     0x4000,
                     0x20,
                 ),
-            ),
+            )?,
         ];
         let feedback = crucible::EventLogCoverageFeedback::from_event_log(&coverage_entries);
         let coverage_ids = feedback
@@ -405,7 +417,7 @@ mod tests {
                     0x5000,
                     0x20,
                 ),
-            ),
+            )?,
         );
         let next_feedback = crucible::EventLogCoverageFeedback::from_event_log(&next_events);
         let next_ids = next_feedback

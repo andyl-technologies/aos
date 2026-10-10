@@ -1,4 +1,4 @@
-//! Checks RFC-0010 requirement coverage, task drift, gate references, and names.
+//! Checks specification requirement coverage, task drift, gate references, and names.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;

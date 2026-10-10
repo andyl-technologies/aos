@@ -63,8 +63,8 @@ fn reproduction_artifact_format_round_trips_seed_scenario_schedule_and_pinned_id
         decoded.build_identity.guest_host_protocol_version,
         crucible_harness::e2e::CANONICAL_GUEST_HOST_PROTOCOL_VERSION.to_string()
     );
-    assert_eq!(decoded.build_identity.rpc_abi_version, "8.0.0");
-    assert_eq!(decoded.build_identity.rpc_abi_build, "crucible-rpc-abi-v8");
+    assert_eq!(decoded.build_identity.rpc_abi_version, "9.0.0");
+    assert_eq!(decoded.build_identity.rpc_abi_build, "crucible-rpc-abi-v9");
     assert!(!decoded.fingerprint_tail.is_empty());
     assert!(!decoded.sampling_config.regions.is_empty());
     assert!(
@@ -200,8 +200,8 @@ fn reproduction_artifact_format_keeps_large_components_by_reference() -> Result<
             shmem_abi_version: crucible_harness::e2e::CANONICAL_SHMEM_ABI_VERSION.to_string(),
             guest_host_protocol_version:
                 crucible_harness::e2e::CANONICAL_GUEST_HOST_PROTOCOL_VERSION.to_string(),
-            rpc_abi_version: String::from("8.0.0"),
-            rpc_abi_build: String::from("crucible-rpc-abi-v8"),
+            rpc_abi_version: String::from("9.0.0"),
+            rpc_abi_build: String::from("crucible-rpc-abi-v9"),
             plugin_abi: String::from("plugin-abi:v1"),
         },
         scenario: scenario.clone(),
@@ -290,8 +290,8 @@ fn reproduction_artifact_format_rejects_payload_digest_mismatch() -> Result<(), 
             shmem_abi_version: crucible_harness::e2e::CANONICAL_SHMEM_ABI_VERSION.to_string(),
             guest_host_protocol_version:
                 crucible_harness::e2e::CANONICAL_GUEST_HOST_PROTOCOL_VERSION.to_string(),
-            rpc_abi_version: String::from("8.0.0"),
-            rpc_abi_build: String::from("crucible-rpc-abi-v8"),
+            rpc_abi_version: String::from("9.0.0"),
+            rpc_abi_build: String::from("crucible-rpc-abi-v9"),
             plugin_abi: String::from("plugin-abi:v1"),
         },
         scenario: scenario.clone(),
@@ -662,7 +662,8 @@ fn campaign_corpus_reuse_refuses_abi_drift() -> Result<(), Box<dyn Error>> {
         prior_identity.clone(),
     )?;
     let mut run_identity = prior_identity;
-    run_identity.guest_host_protocol_version = String::from("4");
+    assert_ne!(run_identity.guest_host_protocol_version, "3");
+    run_identity.guest_host_protocol_version = String::from("3");
 
     let decision = evaluate_campaign_corpus_reuse(&prior, &run_identity)?;
 

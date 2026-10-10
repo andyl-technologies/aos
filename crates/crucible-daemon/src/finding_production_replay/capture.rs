@@ -172,6 +172,7 @@ pub enum FindingProductionReplayCaptureError {
         /// Closed model operation that failed.
         operation: &'static str,
         /// Typed engine failure.
+        #[source]
         error: Box<crucible::EngineError>,
     },
     /// The authenticated campaign choice closure is invalid.
@@ -400,7 +401,12 @@ pub(super) fn selected_side(
         [_] => Ok(FindingProductionReplaySelectedSide::Observed),
         [expected, reproduced] => {
             let comparison =
-                compare_event_log_determinism(&expected.event_log, &reproduced.event_log);
+                compare_event_log_determinism(&expected.event_log, &reproduced.event_log).map_err(
+                    |error| FindingProductionReplayCaptureError::Model {
+                        operation: "event-projection",
+                        error: Box::new(error),
+                    },
+                )?;
             let mismatch = comparison
                 .mismatch()
                 .ok_or(FindingProductionReplayCaptureError::PairedSidesDoNotDiverge)?;
@@ -549,7 +555,12 @@ pub(super) fn validate_execution_side(
     let mut event_bytes = 0usize;
     for entry in &side.event_log {
         event_bytes = event_bytes
-            .checked_add(entry.canonical_material_len())
+            .checked_add(entry.canonical_material_len().map_err(|error| {
+                FindingProductionReplayCaptureError::Model {
+                    operation: "event-identity",
+                    error: Box::new(error),
+                }
+            })?)
             .ok_or(FindingProductionReplayCaptureError::LimitExceeded {
                 limit: "finding-production-replay-event-bytes",
             })?;

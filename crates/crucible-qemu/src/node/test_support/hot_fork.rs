@@ -165,6 +165,7 @@ struct ScriptedHostIoRuntime {
     // This fixture implements no block/9p queues or native timer/input source.
     // Binding validates the immutable World instead of guessing absence.
     io_world: Option<(crucible::model::World, NodeId)>,
+    supervisor: Option<crucible_linux_resource::host_supervision::HostOperationSupervisor>,
 }
 
 struct ScriptedChildFiles {
@@ -189,6 +190,7 @@ struct ScriptedRetainedChild {
 type RetainedStream = (crate::QmpDescriptorName, u64, bool);
 
 struct ScriptedQmpMachineControl {
+    supervisor: Option<crucible_linux_resource::host_supervision::HostOperationSupervisor>,
     #[cfg(feature = "test-support")]
     process_id: u32,
     resource_identity: crucible_shmem::SetupRegionBackingIdentity,
@@ -303,6 +305,7 @@ pub fn scripted_hot_fork_source_with_script_for_test(
             quantum_completed: false,
         },
         ScriptedQmpMachineControl {
+            supervisor: None,
             #[cfg(feature = "test-support")]
             process_id,
             resource_identity: setup_identity,
@@ -338,6 +341,15 @@ pub fn scripted_hot_fork_source_with_script_for_test(
         ScriptedHostIoRuntime::default(),
         2,
     );
+    let supervisor = crucible_linux_resource::host_supervision::HostOperationSupervisor::new(
+        crucible_linux_resource::host_supervision::HostOperationBudgets::default(),
+        Some(Duration::from_secs(600)),
+    )
+    .map_err(|source| QemuTestHotForkSourceError::new("scripted original service cap", source))?;
+    // Scripted processes still retain a finite original source cap. Reuse must
+    // restore this exact handle after borrowing a child's operation roster.
+    node.attach_host_operation_supervisor(supervisor)
+        .map_err(|source| QemuTestHotForkSourceError::new("attach scripted source cap", source))?;
     // Match production launch priming: the retained scheduler mirror must
     // describe the channel's completed boot boundary before source capture.
     node.synchronize_observed_time().map_err(|source| {
@@ -412,6 +424,16 @@ impl QemuTestHotForkSourceError {
 }
 
 impl QemuPluginIpcControlChannel for ScriptedPluginControl {
+    fn send_quit_supervised(
+        &mut self,
+        guard: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuNodeChannelError> {
+        guard.wait_slice().map_err(|source| {
+            QemuNodeChannelError::new("send scripted Quit", source.to_string())
+        })?;
+        self.send_quit()
+    }
+
     fn send_quit(&mut self) -> Result<(), QemuNodeChannelError> {
         Ok(())
     }
@@ -732,6 +754,20 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
 }
 
 impl QemuHostIoRuntime for ScriptedHostIoRuntime {
+    fn host_operation_supervisor(
+        &self,
+    ) -> Option<&crucible_linux_resource::host_supervision::HostOperationSupervisor> {
+        self.supervisor.as_ref()
+    }
+
+    fn set_host_operation_supervisor(
+        &mut self,
+        supervisor: crucible_linux_resource::host_supervision::HostOperationSupervisor,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.supervisor = Some(supervisor);
+        Ok(())
+    }
+
     fn validate_scripted_run_admission_for_test(
         &self,
         admission: &crucible::PreparedRunAdmission,
@@ -848,6 +884,14 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
 }
 
 impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
+    fn set_host_operation_supervisor(
+        &mut self,
+        supervisor: crucible_linux_resource::host_supervision::HostOperationSupervisor,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.supervisor = Some(supervisor);
+        Ok(())
+    }
+
     fn is_paused_for_hot_fork_template(&mut self) -> Result<bool, QemuNodeChannelError> {
         Ok(self.paused)
     }
@@ -871,6 +915,7 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
     fn commit_exact_checkpoint(
         &mut self,
         _identity: crate::QmpCheckpointIdentity,
+        _capture_generation: u64,
     ) -> Result<crate::QmpCheckpointEpochState, QemuNodeChannelError> {
         reject_out_of_scope_scripted_hot_fork_qmp("commit exact checkpoint")
     }
@@ -878,6 +923,7 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
     fn abort_exact_checkpoint(
         &mut self,
         _identity: crate::QmpCheckpointIdentity,
+        _capture_generation: u64,
         _expected_committed: Option<crate::QmpCheckpointIdentity>,
     ) -> Result<crate::QmpCheckpointEpochState, QemuNodeChannelError> {
         reject_out_of_scope_scripted_hot_fork_qmp("abort exact checkpoint")

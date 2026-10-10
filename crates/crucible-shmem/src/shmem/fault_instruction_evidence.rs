@@ -11,10 +11,10 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{FaultAbiError, FaultCapabilityScope, FaultRegisterMutationEvidenceV1};
 
-/// Magic prefix for version-1 canonical instruction evidence.
-pub const FAULT_INSTRUCTION_EVIDENCE_MAGIC_V1: [u8; 8] = *b"CRUCIEV1";
+/// Magic prefix for version-2 instruction evidence with BLAKE3 RAM roots.
+pub const FAULT_INSTRUCTION_EVIDENCE_MAGIC_V2: [u8; 8] = *b"CRUCIEV2";
 /// Fixed bytes before exact instruction bytes and optional mutation detail.
-pub const FAULT_INSTRUCTION_EVIDENCE_HEADER_V1_BYTES: usize = 608;
+pub const FAULT_INSTRUCTION_EVIDENCE_HEADER_V2_BYTES: usize = 608;
 /// Magic prefix for a canonical x86 port-I/O transcript.
 pub const FAULT_INSTRUCTION_PORT_IO_EVIDENCE_MAGIC_V1: [u8; 8] = *b"CRUCIOP1";
 /// Fixed bytes before canonical x86 port-I/O transcript entries.
@@ -82,7 +82,7 @@ impl FaultInstructionMutationKindV1 {
 
 /// Complete independently verifiable record of one instruction mutation.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FaultInstructionEvidenceV1 {
+pub struct FaultInstructionEvidenceV2 {
     /// Architecture that decoded and executed the instruction.
     pub architecture: FaultCapabilityScope,
     /// Mutation operation applied at this execution.
@@ -127,10 +127,10 @@ pub struct FaultInstructionEvidenceV1 {
     pub code_page_bases: Vec<u64>,
     /// SHA-256 digests of the corresponding complete code pages.
     pub code_page_sha256: Vec<[u8; 32]>,
-    /// SHA-256 digest of writable guest RAM before execution.
-    pub before_ram_sha256: [u8; 32],
-    /// SHA-256 digest of writable guest RAM after execution.
-    pub after_ram_sha256: [u8; 32],
+    /// execution-scope BLAKE3 RAM root before execution.
+    pub before_ram_blake3: [u8; 32],
+    /// execution-scope BLAKE3 RAM root after execution.
+    pub after_ram_blake3: [u8; 32],
     /// SHA-256 digest of QEMU's non-RAM migration VMState stream before execution.
     ///
     /// The stream may include registered CPU sections; use nested transaction
@@ -152,7 +152,7 @@ pub struct FaultInstructionEvidenceV1 {
     pub detail: Vec<u8>,
 }
 
-impl FaultInstructionEvidenceV1 {
+impl FaultInstructionEvidenceV2 {
     /// Encodes canonical instruction evidence.
     ///
     /// # Errors
@@ -161,9 +161,9 @@ impl FaultInstructionEvidenceV1 {
     /// destination, page identity, or nested register record is inconsistent.
     pub fn encode(&self) -> Result<Vec<u8>, FaultAbiError> {
         self.validate()?;
-        let mut bytes = vec![0_u8; FAULT_INSTRUCTION_EVIDENCE_HEADER_V1_BYTES];
-        bytes[..8].copy_from_slice(&FAULT_INSTRUCTION_EVIDENCE_MAGIC_V1);
-        put_u16(&mut bytes, 8, 1);
+        let mut bytes = vec![0_u8; FAULT_INSTRUCTION_EVIDENCE_HEADER_V2_BYTES];
+        bytes[..8].copy_from_slice(&FAULT_INSTRUCTION_EVIDENCE_MAGIC_V2);
+        put_u16(&mut bytes, 8, 2);
         put_u16(&mut bytes, 10, self.architecture as u16);
         put_u32(&mut bytes, 12, self.mutation_kind as u32);
         put_u32(&mut bytes, 16, self.replay_ordinal);
@@ -187,8 +187,8 @@ impl FaultInstructionEvidenceV1 {
         for (index, digest) in self.code_page_sha256.iter().enumerate() {
             bytes[224 + index * 32..256 + index * 32].copy_from_slice(digest);
         }
-        bytes[288..320].copy_from_slice(&self.before_ram_sha256);
-        bytes[320..352].copy_from_slice(&self.after_ram_sha256);
+        bytes[288..320].copy_from_slice(&self.before_ram_blake3);
+        bytes[320..352].copy_from_slice(&self.after_ram_blake3);
         bytes[352..384].copy_from_slice(&self.before_device_sha256);
         bytes[384..416].copy_from_slice(&self.after_device_sha256);
         bytes[416..448].copy_from_slice(&self.before_cpu_sha256);
@@ -211,6 +211,9 @@ impl FaultInstructionEvidenceV1 {
         }
         bytes[568..600].copy_from_slice(&self.matched_input_state_sha256);
         put_u32(&mut bytes, 600, self.outcome as u32);
+        put_u16(&mut bytes, 604, 1);
+        bytes[606] = 0;
+        bytes[607] = 1;
         bytes.extend_from_slice(&self.instruction_bytes);
         bytes.extend_from_slice(&self.detail);
         Ok(bytes)
@@ -223,10 +226,12 @@ impl FaultInstructionEvidenceV1 {
     /// Returns [`FaultAbiError`] for malformed framing, nonzero reserved bytes,
     /// unknown tags, inconsistent lengths or hashes, or invalid nested evidence.
     pub fn decode(bytes: &[u8]) -> Result<Self, FaultAbiError> {
-        if bytes.len() < FAULT_INSTRUCTION_EVIDENCE_HEADER_V1_BYTES
-            || bytes[..8] != FAULT_INSTRUCTION_EVIDENCE_MAGIC_V1
-            || u16_at(bytes, 8)? != 1
-            || bytes[604..608].iter().any(|byte| *byte != 0)
+        if bytes.len() < FAULT_INSTRUCTION_EVIDENCE_HEADER_V2_BYTES
+            || bytes[..8] != FAULT_INSTRUCTION_EVIDENCE_MAGIC_V2
+            || u16_at(bytes, 8)? != 2
+            || u16_at(bytes, 604)? != 1
+            || bytes[606] != 0
+            || bytes[607] != 1
         {
             return Err(FaultAbiError::CapabilityInvariant);
         }
@@ -234,7 +239,7 @@ impl FaultInstructionEvidenceV1 {
             usize::try_from(u32_at(bytes, 56)?).map_err(|_| FaultAbiError::CapabilityInvariant)?;
         let detail_len =
             usize::try_from(u32_at(bytes, 60)?).map_err(|_| FaultAbiError::CapabilityInvariant)?;
-        let payload_len = FAULT_INSTRUCTION_EVIDENCE_HEADER_V1_BYTES
+        let payload_len = FAULT_INSTRUCTION_EVIDENCE_HEADER_V2_BYTES
             .checked_add(instruction_len)
             .and_then(|length| length.checked_add(detail_len))
             .ok_or(FaultAbiError::CapabilityInvariant)?;
@@ -251,7 +256,7 @@ impl FaultInstructionEvidenceV1 {
         if bytes[184..192].iter().any(|byte| *byte != 0) {
             return Err(FaultAbiError::CapabilityInvariant);
         }
-        let instruction_start = FAULT_INSTRUCTION_EVIDENCE_HEADER_V1_BYTES;
+        let instruction_start = FAULT_INSTRUCTION_EVIDENCE_HEADER_V2_BYTES;
         let detail_start = instruction_start + instruction_len;
         let value = Self {
             architecture: FaultCapabilityScope::from_u16(u16_at(bytes, 10)?)?,
@@ -286,8 +291,8 @@ impl FaultInstructionEvidenceV1 {
             code_page_sha256: (0..page_count)
                 .map(|index| array32(bytes, 224 + index * 32))
                 .collect::<Result<_, _>>()?,
-            before_ram_sha256: array32(bytes, 288)?,
-            after_ram_sha256: array32(bytes, 320)?,
+            before_ram_blake3: array32(bytes, 288)?,
+            after_ram_blake3: array32(bytes, 320)?,
             before_device_sha256: array32(bytes, 352)?,
             after_device_sha256: array32(bytes, 384)?,
             before_ram_bytes: u64_at(bytes, 480)?,
@@ -374,8 +379,8 @@ impl FaultInstructionEvidenceV1 {
                 &self.manifest_sha256,
                 &self.before_cpu_sha256,
                 &self.after_cpu_sha256,
-                &self.before_ram_sha256,
-                &self.after_ram_sha256,
+                &self.before_ram_blake3,
+                &self.after_ram_blake3,
                 &self.before_device_sha256,
                 &self.after_device_sha256,
                 &self.matched_input_state_sha256,
@@ -384,14 +389,14 @@ impl FaultInstructionEvidenceV1 {
             .all(nonzero)
             || instruction_system_digest(
                 self.before_cpu_sha256,
-                self.before_ram_sha256,
+                self.before_ram_blake3,
                 self.before_device_sha256,
                 self.before_ram_bytes,
                 self.before_device_bytes,
             ) != self.before_state_sha256
             || instruction_system_digest(
                 self.after_cpu_sha256,
-                self.after_ram_sha256,
+                self.after_ram_blake3,
                 self.after_device_sha256,
                 self.after_ram_bytes,
                 self.after_device_bytes,
@@ -414,15 +419,15 @@ pub use exception::FaultExceptionEvidenceV1;
 
 fn instruction_system_digest(
     cpu_sha256: [u8; 32],
-    ram_sha256: [u8; 32],
+    ram_blake3: [u8; 32],
     device_sha256: [u8; 32],
     ram_bytes: u64,
     device_bytes: u64,
 ) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update(b"crucible.instruction-state.v1\0");
+    digest.update(b"crucible.instruction-state.v2\0");
     digest.update(cpu_sha256);
-    digest.update(ram_sha256);
+    digest.update(ram_blake3);
     digest.update(device_sha256);
     digest.update(ram_bytes.to_le_bytes());
     digest.update(device_bytes.to_le_bytes());

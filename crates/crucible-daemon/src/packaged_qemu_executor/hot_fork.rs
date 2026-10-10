@@ -2,6 +2,10 @@
 
 use super::*;
 
+pub(super) mod retained_service;
+
+use retained_service::{RetainedTemplateService, RetainedTemplateServiceFactory};
+
 use std::error::Error as _;
 use std::io::Write;
 
@@ -24,8 +28,17 @@ pub(super) type PackagedQemuHotForkDemotionError = AuthenticatedHotCheckpointDem
 >;
 
 /// Complete retained-source shutdown failure report for a packaged executor.
-pub type PackagedQemuHotForkSourceShutdownError =
-    SharedManagedQemuHotForkSourceWorldShutdownError<PackagedQemuHotForkDemotionError>;
+#[derive(Debug, thiserror::Error)]
+pub enum PackagedQemuHotForkSourceShutdownError {
+    /// Reports actual native source-world cleanup failures.
+    #[error(transparent)]
+    Sources(
+        #[from] SharedManagedQemuHotForkSourceWorldShutdownError<PackagedQemuHotForkDemotionError>,
+    ),
+    /// Reports a retained service whose physical resource discharge was refused.
+    #[error("discharge retained-template service after source-world cleanup")]
+    Service(#[from] crucible_api::host_operational::HostOperationalError),
+}
 
 pub(super) trait PackagedQemuHotForkSourceOwner: Send {
     fn orderly_shutdown(&self) -> Result<(), PackagedQemuHotForkSourceShutdownError>;
@@ -43,6 +56,7 @@ where
 {
     pool: SharedManagedQemuHotForkSourceWorldPool<D, R>,
     retention: Arc<dyn crate::HotCheckpointFallbackRetentionAdmin>,
+    services: Arc<std::sync::Mutex<Vec<Arc<RetainedTemplateService>>>>,
 }
 
 impl<D, R> PackagedQemuHotForkSourceOwner for ConcretePackagedQemuHotForkSourceOwner<D, R>
@@ -79,7 +93,15 @@ where
                         sources.failures().len().saturating_sub(8),
                     );
                 }
-            })
+            })?;
+        let services = self
+            .services
+            .lock()
+            .map_err(|_| crucible_api::host_operational::HostOperationalError::Unavailable)?;
+        for service in services.iter() {
+            service.release_after_world_cleanup()?;
+        }
+        Ok(())
     }
 
     fn retention_admin(&self) -> Arc<dyn crate::HotCheckpointFallbackRetentionAdmin> {
@@ -110,7 +132,13 @@ where
     R: crate::HotCheckpointFallbackRetentionStore + Send + 'static,
 {
     fn drop(&mut self) {
-        let _ = self.pool.orderly_shutdown();
+        if self.pool.orderly_shutdown().is_ok()
+            && let Ok(services) = self.services.lock()
+        {
+            for service in services.iter() {
+                let _ = service.release_after_world_cleanup();
+            }
+        }
     }
 }
 
@@ -124,6 +152,10 @@ where
     checkpoints: Arc<ExactCheckpointStore>,
     factories: BTreeMap<CampaignLineageId, ProductionQemuHotForkSourceFactory<G>>,
     signals: HotCheckpointHotnessSignals,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    original_park_caller: Option<crate::private_original_capture::OriginalPackagedParkCaller>,
+    service_factory: RetainedTemplateServiceFactory,
+    services: Arc<std::sync::Mutex<Vec<Arc<RetainedTemplateService>>>>,
 }
 
 impl<D, R, G> crate::qemu_hot_fork_world_factory::source_world_provider_sealed::Sealed
@@ -206,8 +238,29 @@ where
         let Some(factory) = self.factories.get_mut(&lineage) else {
             return Ok(None);
         };
+        if context.runtime_basis().is_none() {
+            return Err(Self::Error::Capture {
+                class: crucible::SchedulerOperationalFailureClass::Terminal,
+                diagnostic: "retained exact source has no admitted semantic runtime basis".into(),
+            });
+        }
+        let mut selected_root = context.take_selected_checkpoint();
+        let service = self.service_factory.start_for_resume(
+            input.scenario(),
+            checkpoint,
+            context,
+            &mut selected_root,
+        );
+        if let Some(selected_root) = selected_root {
+            context.restore_selected_checkpoint(selected_root);
+        }
+        let service = service.map_err(|source| Self::Error::Capture {
+            class: crucible::SchedulerOperationalFailureClass::Terminal,
+            diagnostic: source.to_string(),
+        })?;
+        let service = Arc::new(service);
         let Some(source) = factory
-            .capture_exact(&self.checkpoints, input, context)
+            .capture_exact(&self.checkpoints, input, service.context())
             .map_err(|source| {
                 let class = source.failure_class(context.cancellation().is_canceled());
                 let diagnostic = source.to_string();
@@ -217,6 +270,17 @@ where
         else {
             return Ok(None);
         };
+
+        let source = source.with_cleanup_observer(service.clone());
+        let mut services = self
+            .services
+            .lock()
+            .map_err(|_| Self::Error::AdmissionPoisoned)?;
+        // Retain unresolved physical owners, without accumulating completed
+        // service contexts over repeated hot-to-cold demotions.
+        services.retain(|service| !service.is_released());
+        services.push(service);
+        drop(services);
 
         match self
             .pool
@@ -231,6 +295,18 @@ where
                     failure,
                 ),
             ) => self.reconcile_exact_admission_failure(key, checkpoint, failure),
+        }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_before_fork(
+        &mut self,
+        lease: &QemuHotForkSourceWorldLease,
+    ) -> Result<(), crate::managed_qemu_hot_fork_source_world_pool::ManagedParentParkError> {
+        match &self.original_park_caller {
+            Some(caller) => self.provider.park_parent_before_fork(lease, caller),
+            // Ordinary configuration does not select or claim this authority.
+            None => Ok(()),
         }
     }
 
@@ -479,6 +555,7 @@ pub(super) fn compose_packaged_qemu_executor_with_baked_genesis<H>(
     config: PackagedQemuExecutorConfig,
     shared: SharedQemuAttemptHostResourceFactory<H>,
     baked: BTreeMap<ScenarioArtifactId, ProductionBakedGenesisCheckpoint>,
+    preparation: super::preparation::PackagedPreparation,
 ) -> Result<PackagedQemuExecutor, PackagedQemuExecutorError>
 where
     H: QemuAttemptHostResourceFactory
@@ -491,21 +568,25 @@ where
         + Send
         + 'static,
 {
+    let replay_services = super::RetainedTemplateServiceFactory::new(&preparation, &config);
     let catalog = ProductionBakedGenesisReplayCatalogFactory::new(
         baked.into_values(),
         ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
     )?
-    .with_savepoint_replay_config(config.lifecycle.clone());
+    .with_savepoint_replay_config(config.lifecycle.clone())
+    .with_replay_services(replay_services);
     let promotion_catalog = catalog.clone();
     let source_catalog = catalog;
     let source_bases = basis.sources.values().cloned().collect::<Vec<_>>();
     let hot_fork = config.hot_fork.clone();
+    let retained_service_config = config.clone();
 
     compose_packaged_qemu_executor_with_builders(
         storage,
         basis,
         config,
         shared,
+        Some(preparation),
         move |store, checkpoints, _shared, run_state_root, worker_count| {
             (0..worker_count)
                 .map(|slot| {
@@ -527,14 +608,17 @@ where
               lifecycles,
               finding_replay_brokers,
               lifecycle_config,
-              resource_ceiling| {
+              _resource_ceiling,
+              preparation| {
             let fresh_runners = || {
-                PackagedQemuInitialRunnerBuild::fresh(
+                Ok(PackagedQemuInitialRunnerBuild::fresh(
                     (0..worker_count)
                         .map(|slot| {
-                            let lifecycle = lifecycle_config.clone().with_run_state_root(
-                                worker_state_root.join(format!("worker-{slot:03}")),
-                            );
+                            let lifecycle = retained_service_config
+                                .admitted_lifecycle_config()?
+                                .with_run_state_root(
+                                    worker_state_root.join(format!("worker-{slot:03}")),
+                                );
                             let lifecycle_factory = PackagedStatusLifecycleFactory {
                                 inner: QemuAttemptProductionVmLifecycleFactory::new(
                                     lifecycle,
@@ -547,7 +631,7 @@ where
                                 QemuObservedFreshAttemptLifecycleFactory::with_evidence(
                                     lifecycle_factory,
                                 );
-                            (
+                            Ok((
                                 PackagedQemuInitialExecutionRunner::Fresh(
                                     QemuFreshExecutionRunner::new(
                                         lifecycle_factory,
@@ -558,13 +642,13 @@ where
                                     )),
                                 ),
                                 evidence,
-                            )
+                            ))
                         })
-                        .collect(),
-                )
+                        .collect::<Result<Vec<_>, PackagedQemuExecutorError>>()?,
+                ))
             };
             let Some(hot_fork) = hot_fork else {
-                return Ok(fresh_runners());
+                return fresh_runners();
             };
 
             let retention_admin: Arc<dyn crate::HotCheckpointFallbackRetentionAdmin> =
@@ -582,12 +666,14 @@ where
             for basis in &source_bases {
                 let lineage = basis.lineage_id();
                 let fallback = HotCheckpointFallback::Thin(basis.source_artifact());
-                let source_lifecycle = lifecycle_config.clone().with_run_state_root(
-                    lifecycle_config
-                        .run_state_root()
-                        .join("campaign-hot-fork-sources")
-                        .join(lineage.to_string()),
-                );
+                let source_lifecycle = retained_service_config
+                    .admitted_lifecycle_config()?
+                    .with_run_state_root(
+                        lifecycle_config
+                            .run_state_root()
+                            .join("campaign-hot-fork-sources")
+                            .join(lineage.to_string()),
+                    );
                 let lifecycles = QemuAttemptProductionVmLifecycleFactory::new(
                     source_lifecycle,
                     ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
@@ -598,7 +684,7 @@ where
                     lifecycles,
                     hot_fork.launch_identity().qemu_build_id(),
                 )?;
-                source_factories.push((lineage, fallback, factory));
+                source_factories.push((lineage, fallback, factory, basis.scenario().clone()));
             }
 
             let mut pool = ManagedQemuHotForkSourceWorldPool::open(
@@ -607,15 +693,14 @@ where
                 hot_fork_retention,
             )?;
 
-            let capture_context = AttemptExecutionContext::new(
-                resource_ceiling,
-                ExecutionRetentionIntent::Discard,
-                ExecutionCancellation::default(),
-                ExecutionCheckpointRequest::default(),
-                crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
-            );
-            for (lineage, fallback, mut source_factory) in source_factories {
-                let source = match source_factory.capture(&capture_context) {
+            let service_factory =
+                RetainedTemplateServiceFactory::new(preparation, &retained_service_config);
+            let services = Arc::new(std::sync::Mutex::new(Vec::with_capacity(
+                source_factories.len(),
+            )));
+            for (lineage, fallback, mut source_factory, scenario) in source_factories {
+                let service = Arc::new(service_factory.start(&scenario, None)?);
+                let source = match source_factory.capture(service.context()) {
                     Ok(source) => source,
                     Err(source) => {
                         let source = PackagedQemuExecutorError::HotForkSourceCapture {
@@ -625,6 +710,11 @@ where
                         return Err(cleanup_captured_sources(source, &mut pool));
                     }
                 };
+                let source = source.with_cleanup_observer(service.clone());
+                services
+                    .lock()
+                    .map_err(|_| crucible_api::host_operational::HostOperationalError::Unavailable)?
+                    .push(service);
                 if let Err(failure) =
                     pool.admit_authenticated_source(source, hot_fork.initial_signals(), fallback)
                 {
@@ -637,13 +727,14 @@ where
                 Box::new(ConcretePackagedQemuHotForkSourceOwner {
                     pool: pool.clone(),
                     retention: retention_admin,
+                    services: Arc::clone(&services),
                 });
             let mut runners = Vec::with_capacity(worker_count);
             for (slot, finding_replay_broker) in finding_replay_brokers.iter().cloned().enumerate()
             {
                 let evidence = QemuAttemptExecutionEvidence::default();
-                let lifecycle = lifecycle_config
-                    .clone()
+                let lifecycle = retained_service_config
+                    .admitted_lifecycle_config()?
                     .with_run_state_root(worker_state_root.join(format!("worker-{slot:03}")));
                 let fallback_lifecycles = PackagedStatusLifecycleFactory {
                     inner: QemuAttemptProductionVmLifecycleFactory::new(
@@ -673,13 +764,15 @@ where
                 let mut demanded_factories = BTreeMap::new();
                 for basis in &source_bases {
                     let lineage = basis.lineage_id();
-                    let source_lifecycle = lifecycle_config.clone().with_run_state_root(
-                        lifecycle_config
-                            .run_state_root()
-                            .join("campaign-hot-fork-demanded")
-                            .join(format!("worker-{slot:03}"))
-                            .join(lineage.to_string()),
-                    );
+                    let source_lifecycle = retained_service_config
+                        .admitted_lifecycle_config()?
+                        .with_run_state_root(
+                            lifecycle_config
+                                .run_state_root()
+                                .join("campaign-hot-fork-demanded")
+                                .join(format!("worker-{slot:03}"))
+                                .join(lineage.to_string()),
+                        );
                     let lifecycles = QemuAttemptProductionVmLifecycleFactory::new(
                         source_lifecycle,
                         ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
@@ -698,6 +791,10 @@ where
                     checkpoints: Arc::clone(checkpoints),
                     factories: demanded_factories,
                     signals: hot_fork.initial_signals(),
+                    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+                    original_park_caller: retained_service_config.original_park_caller.clone(),
+                    service_factory: service_factory.clone(),
+                    services: Arc::clone(&services),
                 };
                 let hot_factory = QemuProductionHotForkWorldLifecycleFactory::new(
                     provider,
@@ -858,8 +955,8 @@ where
         Ok(_demotions) => source,
         Err(cleanup) => PackagedQemuExecutorError::HotForkStartupCleanup {
             source: Box::new(source),
-            cleanup: Box::new(SharedManagedQemuHotForkSourceWorldShutdownError::Sources(
-                cleanup,
+            cleanup: Box::new(PackagedQemuHotForkSourceShutdownError::Sources(
+                SharedManagedQemuHotForkSourceWorldShutdownError::Sources(cleanup),
             )),
         },
     }

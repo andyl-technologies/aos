@@ -1,7 +1,7 @@
 //! Scheduler construction, World/device attachment, materialization, faults, and lifecycle.
 
 use super::*;
-use crate::IoEventKind;
+use crate::{EngineError, IoEventKind};
 
 impl SingleScheduler {
     /// Builds a scheduler from a finite generated liveness scenario.
@@ -306,7 +306,7 @@ impl SingleScheduler {
     }
 
     /// Installs a deterministic exact-completion I/O sub-node (disk/9p) on its target VM node
-    /// (RFC-0010 [IO-1], [IO-3], §15.1).
+    /// with completion coordinates owned by deterministic device timing.
     ///
     /// The sub-node's in-flight head delivery icount is the **real** source of the
     /// owning node's exact I/O-completion horizon term, so an otherwise-idle
@@ -676,7 +676,7 @@ impl SingleScheduler {
     }
 
     /// RESOLVEs every device completion for `node` due at or before
-    /// `consumer_icount` (RFC-0010 [SCHED-29], [SCHED-30], §8.9.4).
+    /// `consumer_icount` in canonical exact-delivery order.
     ///
     /// Drains each targeting sub-node's due completions in the canonical
     /// `(delivery_icount, src_node, seq)` order, mints each event's `sequence`
@@ -1090,18 +1090,23 @@ impl SingleScheduler {
     /// Armed trigger timers are made visible to `Timer` leaves from the
     /// scheduler-owned [`TriggerActionState`], so a timer fires exactly at the
     /// virtual time produced by the `ArmTimer` action that armed it.
+    ///
+    /// # Errors
+    /// Returns the original predicate allocation refusal before firing actions.
     pub fn evaluate_event_graph<O>(
         &self,
         graph: &EventGraph,
         state: &mut EventGraphState,
         oracle: O,
-    ) -> EventFirings
+    ) -> Result<EventFirings, EngineError>
     where
         O: ConditionLeafOracle,
     {
-        let mut pass =
-            ConditionEvaluationPass::from_log_prefix_ref(self.event_log.condition_prefix(), oracle)
-                .with_timer_fires(self.trigger_actions.armed_timers.clone());
+        let mut pass = ConditionEvaluationPass::from_log_prefix_ref(
+            self.event_log.condition_prefix(),
+            oracle,
+        )?
+        .with_timer_fires(self.trigger_actions.armed_timers.clone());
         pass.evaluate_event_graph(graph, state)
     }
 
@@ -1139,7 +1144,7 @@ impl SingleScheduler {
                 sequence,
                 application.at,
                 SchedulerEventLogPayload::TriggerActionApplied(application),
-            ));
+            )?);
         }
         let append = self.event_log.append_entries(entries)?;
         self.trigger_actions = trigger_actions;
@@ -1191,7 +1196,7 @@ impl SingleScheduler {
                 sequence,
                 firing.at(),
                 SchedulerEventLogPayload::TriggerFired(firing.clone()),
-            ));
+            )?);
         }
         Ok(entries)
     }

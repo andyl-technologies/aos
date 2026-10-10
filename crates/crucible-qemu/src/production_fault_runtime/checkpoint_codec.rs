@@ -236,7 +236,7 @@ impl ProductionFaultRuntimeCheckpoint {
             .reserve("fat_checkpoint_bytes", 0, requested)
             .map_err(map_plan_resource_error)?;
         preflight_checkpoint_payload(payload, plan.resource_limits())?;
-        let wire: CheckpointWire = ciborium::de::from_reader(payload)
+        let wire: CheckpointWire = crucible::owned_decode::from_cbor_slice(payload)
             .map_err(map_decode_error)
             .map_err(map_bounded_cbor_error)?;
         let runtime = wire

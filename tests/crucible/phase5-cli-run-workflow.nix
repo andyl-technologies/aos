@@ -673,7 +673,7 @@ in
     ];
 
     meta = {
-      description = "RFC-0010 phase 5 CLI run workflow gate for ${taskList}";
+      description = "Crucible CLI run workflow gate for ${taskList}";
       passthru = {
         inherit attrPath taskIds openTaskIds dependencies;
         failureText = failureText;

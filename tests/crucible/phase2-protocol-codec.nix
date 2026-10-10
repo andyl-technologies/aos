@@ -7,7 +7,11 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
+  protocolLib = builtins.concatStringsSep "\n" (map builtins.readFile [
+    ../../crates/crucible-protocol/src/lib.rs
+    ../../crates/crucible-protocol/src/plugin_observation.rs
+    ../../crates/crucible-protocol/src/control_lifecycle.rs
+  ]);
   codecTest = builtins.readFile ../../crates/crucible-protocol/tests/codec.rs;
   protocolAbiGate = builtins.readFile ../../crates/crucible-protocol/tests/gate_abi_conformance.rs;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;

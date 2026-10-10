@@ -258,8 +258,8 @@ pub(super) fn assert_rejection_names_state_and_command(
 ) {
     match error {
         SessionError::InvalidTransition { state, command } => {
-            assert_eq!(*state, expected_state);
-            assert_eq!(*command, expected_command);
+            assert_eq!(state, LifecycleStateKind::from(&expected_state));
+            assert_eq!(command, SessionCommandKind::from(&expected_command));
         }
         other => panic!("unexpected rejection type: {other}"),
     }

@@ -2,6 +2,39 @@
 
 use super::*;
 
+#[cfg(feature = "kernel-swap-measurement")]
+#[test]
+fn kernel_swap_admission_unsupported_node_preserves_owner_and_zero_channel_effects()
+-> Result<(), Box<dyn Error>> {
+    use crucible_linux_resource::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+
+    let log = shared_log();
+    let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
+    let contract = unvalidated_hot_fork_process_contract()?;
+    let mut cancellation = crate::QmpKernelSwapCancellation::new(&contract)?;
+    let supervisor = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(Duration::from_secs(2)),
+    )?;
+    let original = supervisor.begin(HostOperationClass::CheckpointCapture)?;
+    let before = recorded(&log);
+
+    let result = node.discover_kernel_swap_admission(&mut cancellation, 17, &original);
+
+    assert!(matches!(
+        result,
+        Err(crate::QmpError::InvalidBound {
+            operation: "kernel-swap admission channel unavailable",
+        })
+    ));
+    assert!(!cancellation.requires_native_retirement());
+    assert!(original.wait_slice().is_ok());
+    assert_eq!(recorded(&log), before);
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn orphan_quarantine_ignores_a_reused_process_identity() -> Result<(), Box<dyn Error>> {
@@ -504,5 +537,165 @@ fn bounded_scheduler_preemption_rejects_reaped_direct_child() -> Result<(), Box<
     ));
     assert!(evidence.snapshot().is_none());
     assert!(evidence.claim().is_err());
+    Ok(())
+}
+
+#[test]
+fn managed_reset_unsupported_node_has_zero_channel_effects() -> Result<(), Box<dyn Error>> {
+    use crucible_linux_resource::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+
+    let log = shared_log();
+    let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
+    let supervisor = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(Duration::from_secs(2)),
+    )?;
+    let original = Arc::new(supervisor.begin(HostOperationClass::Preparation)?);
+    let before = recorded(&log);
+
+    let pending = crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest::new(
+        crucible_protocol::SelectionRequest::new(3, "flight.ready", "w001", None, 97)?,
+        9,
+        11,
+        0,
+        0x7000,
+    );
+    let result = node.reset_selectable_under_original(&pending, &original);
+
+    assert!(matches!(
+        result,
+        Err(crate::QmpError::SelectableResetBoundary { .. })
+    ));
+    assert_eq!(recorded(&log), before);
+    assert!(original.wait_slice().is_ok());
+    Ok(())
+}
+
+#[test]
+fn reset_transition_blocks_ordinary_advances_and_keeps_each_custody_state()
+-> Result<(), Box<dyn Error>> {
+    use crucible_linux_resource::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+
+    let supervisor = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(Duration::from_secs(2)),
+    )?;
+    let original = Arc::new(supervisor.begin(HostOperationClass::Preparation)?);
+    for state in [
+        super::super::guarded_reset::ResetResumeState::Requested,
+        super::super::guarded_reset::ResetResumeState::Observed,
+        super::super::guarded_reset::ResetResumeState::Reconciled,
+        super::super::guarded_reset::ResetResumeState::InFlight,
+    ] {
+        let log = shared_log();
+        let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
+        node.reset_resume_pending = Some(super::super::guarded_reset::ResetResumeTransition {
+            state,
+            original: Arc::clone(&original),
+        });
+        let before = recorded(&log);
+
+        assert!(node.advance_to_ceiling(Icount { retired: 31 }).is_err());
+        assert!(node.advance_to_next_idle(Icount { retired: 31 }).is_err());
+        assert!(node.resume_after_restore().is_err());
+        let retained = node
+            .reset_resume_pending
+            .as_ref()
+            .expect("reset custody remains");
+        assert_eq!(retained.state, state);
+        assert!(Arc::ptr_eq(&retained.original, &original));
+        assert!(!node.selectable_reply_is_checkpoint_quiescent());
+        assert_eq!(recorded(&log), before);
+    }
+    Ok(())
+}
+
+#[test]
+fn reset_resume_rejects_another_live_original_before_channel_effects() -> Result<(), Box<dyn Error>>
+{
+    use crucible_linux_resource::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+
+    let log = shared_log();
+    let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
+    let supervisor = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(Duration::from_secs(2)),
+    )?;
+    let original = Arc::new(supervisor.begin(HostOperationClass::Preparation)?);
+    let replacement = Arc::new(supervisor.begin(HostOperationClass::Preparation)?);
+    node.reset_resume_pending = Some(super::super::guarded_reset::ResetResumeTransition {
+        state: super::super::guarded_reset::ResetResumeState::Reconciled,
+        original: Arc::clone(&original),
+    });
+    let before = recorded(&log);
+
+    let error = node
+        .resume_reset_to_fresh_idle_under_original(Icount { retired: 31 }, &replacement)
+        .expect_err("a different live operation cannot renew reset continuation");
+
+    assert!(error.to_string().contains("retained original operation"));
+    assert_eq!(recorded(&log), before);
+    let retained = node
+        .reset_resume_pending
+        .as_ref()
+        .expect("original remains owned");
+    assert_eq!(
+        retained.state,
+        super::super::guarded_reset::ResetResumeState::Reconciled
+    );
+    assert!(Arc::ptr_eq(&retained.original, &original));
+    assert_eq!(original.status()?.completed_work_units, 0);
+    assert_eq!(replacement.status()?.completed_work_units, 0);
+    assert!(original.wait_slice().is_ok());
+    assert!(replacement.wait_slice().is_ok());
+    Ok(())
+}
+
+#[test]
+fn reset_transition_retains_original_until_node_drop_and_unwind() -> Result<(), Box<dyn Error>> {
+    println!(
+        "reset layout: state={} transition={} optional={} node={} align={}",
+        std::mem::size_of::<super::super::guarded_reset::ResetResumeState>(),
+        std::mem::size_of::<super::super::guarded_reset::ResetResumeTransition>(),
+        std::mem::size_of::<Option<super::super::guarded_reset::ResetResumeTransition>>(),
+        std::mem::size_of::<QemuNode>(),
+        std::mem::align_of::<QemuNode>(),
+    );
+
+    use crucible_linux_resource::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+
+    for unwind in [false, true] {
+        let supervisor = HostOperationSupervisor::new(
+            HostOperationBudgets::default(),
+            Some(Duration::from_secs(2)),
+        )?;
+        let original = Arc::new(supervisor.begin(HostOperationClass::Preparation)?);
+        let weak = Arc::downgrade(&original);
+        let mut node = scripted_node(shared_log(), false, false, false)?;
+        node.reset_resume_pending = Some(super::super::guarded_reset::ResetResumeTransition {
+            state: super::super::guarded_reset::ResetResumeState::Observed,
+            original: Arc::clone(&original),
+        });
+        drop(original);
+        assert!(weak.upgrade().is_some());
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _owned_node = node;
+            if unwind {
+                panic!("authored reset owner unwind");
+            }
+        }));
+
+        assert_eq!(outcome.is_err(), unwind);
+        assert!(weak.upgrade().is_none());
+    }
     Ok(())
 }

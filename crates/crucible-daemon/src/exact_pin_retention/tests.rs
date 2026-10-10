@@ -9,8 +9,8 @@ use crucible_campaign::{
     RetentionPolicy, ScenarioDefId,
 };
 use crucible_cas::content_store::{
-    BackendCapabilities, BlobHandle, ByteRange, ImmutableBlobBackend, MemoryBlobBackend,
-    MemoryRefBackend, ObjectKind, PlacementReceipt, PutReceipt, StoreError, StoreGraph,
+    BackendCapabilities, BlobHandle, ByteRange, DirectoryBlobBackend, ImmutableBlobBackend,
+    MemoryRefBackend, ObjectKind, PutReceipt, RefStoreAdmin, StoreError, StoreGraph,
     StoreGraphConfig, StoreNodeId, StoreNodeSpec,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -40,37 +40,52 @@ fn exact_pin_owner_drop_releases_a_duplicated_writer_descriptor() {
 }
 
 struct TestDurableBackend {
-    memory: MemoryBlobBackend,
+    directory: DirectoryBlobBackend,
+    _root: tempfile::TempDir,
 }
 
 impl TestDurableBackend {
     fn new() -> Self {
+        let root = tempfile::tempdir().expect("exact-pin checkpoint objects");
         Self {
-            memory: MemoryBlobBackend::new("exact-pin-materialization-test", 64 * STORE_LIMIT),
+            directory: DirectoryBlobBackend::new("exact-pin-materialization-test", root.path()),
+            _root: root,
         }
     }
 }
 
 impl ImmutableBlobBackend for TestDurableBackend {
+    fn checked_publication_metadata(
+        &self,
+        kind: ObjectKind,
+    ) -> Result<crucible_cas::content_store::CheckedPublicationMetadata, StoreError> {
+        self.directory.checked_publication_metadata(kind)
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        original: &crucible::owned_decode::DecodeBudget,
+        objects: &[(crucible_cas::content_store::ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<crucible_cas::content_store::PutBatchReceipt, StoreError> {
+        self.directory
+            .put_many_if_absent_with_boundary(original, objects, boundary)
+    }
+
     fn name(&self) -> &str {
         "exact-pin-materialization-test"
     }
 
     fn capabilities(&self) -> BackendCapabilities {
-        BackendCapabilities {
-            durable: true,
-            deferred_write: false,
-            range_read: true,
-            streaming_read: true,
-            conditional_create: true,
-            streaming_put: true,
-            repair_inventory: false,
-            planned_delete: false,
-        }
+        self.directory.capabilities()
+    }
+
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        self.directory.admit_object_graph(objects)
     }
 
     fn contains(&self, id: crucible_cas::content_store::ContentId) -> Result<bool, StoreError> {
-        self.memory.contains(id)
+        self.directory.contains(id)
     }
 
     fn read(
@@ -78,7 +93,7 @@ impl ImmutableBlobBackend for TestDurableBackend {
         id: crucible_cas::content_store::ContentId,
         range: Option<ByteRange>,
     ) -> Result<BlobHandle, StoreError> {
-        self.memory.read(id, range)
+        self.directory.read(id, range)
     }
 
     fn put_if_absent(
@@ -86,15 +101,18 @@ impl ImmutableBlobBackend for TestDurableBackend {
         id: crucible_cas::content_store::ContentId,
         source: &BlobHandle,
     ) -> Result<PutReceipt, StoreError> {
-        self.memory.put_if_absent(id, source)?;
-        Ok(PutReceipt {
-            id,
-            placements: vec![PlacementReceipt {
-                backend: self.name().to_owned(),
-                durable: true,
-                logical_length: source.logical_length(),
-            }],
-        })
+        self.directory.put_if_absent(id, source)
+    }
+
+    fn read_with_boundary(
+        &self,
+        original: &crucible::owned_decode::DecodeBudget,
+        id: crucible_cas::content_store::ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        self.directory
+            .read_with_boundary(original, id, range, boundary)
     }
 }
 
@@ -110,9 +128,16 @@ struct Fixture {
 
 #[test]
 fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+
     let temp = tempfile::tempdir().expect("exact-pin GC root");
     let node = StoreNodeId::new("durable").expect("store node");
     let (graph, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
+        gc_mark_root: None,
         root: node.clone(),
         admitted_kinds: BTreeSet::from([
             ObjectKind::CampaignFact,
@@ -123,6 +148,7 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
             ObjectKind::Policy,
             ObjectKind::ExactManifest,
             ObjectKind::RamExtent,
+            ObjectKind::RamTree,
             ObjectKind::DiskExtent,
             ObjectKind::DeviceState,
             ObjectKind::Observation,
@@ -139,8 +165,13 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
     })
     .expect("durable store graph");
     let graph = Arc::new(graph);
-    let backend: Arc<dyn ImmutableBlobBackend> = graph.clone();
-    let fixture = fixture_with_backend("gc", backend);
+    let metadata = crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+        .expect("finite exact-pin namespace metadata");
+    let backend = crate::exact_checkpoint_store::test_support::fixture_metadata_backend(
+        graph.clone(),
+        metadata,
+    );
+    let fixture = fixture_with_backend("gc", backend.clone());
     let mut ledger = crate::MemoryAssignmentLedger::default();
     let mut selections = DirectoryExactPinMaterializationStore::open(temp.path().join("pins"))
         .expect("selection store");
@@ -152,7 +183,7 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
             &mut ledger,
             None,
             None,
-            &admin,
+            crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
         ),
         Err(crate::CampaignGcPlanningError::MissingExactPinMaterialization { .. })
     ));
@@ -163,18 +194,66 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
         &mut ledger,
         None,
         Some(&mut selections),
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("plan with exact materialization");
-    let exact_closure = fixture
-        .checkpoints
-        .authenticated_production_closure_ids(fixture.checkpoint)
-        .expect("complete exact checkpoint closure");
+    let exact_closure = {
+        let original = fixture
+            .repository
+            .ram_admission()
+            .original()
+            .expect("same original exact-pin namespace account")
+            .child()
+            .expect("exact-pin inventory operation account");
+        let inventory = fixture
+            .refs
+            .acquire_ref_inventory_fence()
+            .expect("selected ref inventory fence");
+        let closure = fixture
+            .repository
+            .authenticated_storage_closure([fixture.checkpoint.content_id()], inventory.as_ref())
+            .expect("authenticated exact checkpoint frontier");
+        assert_eq!(closure.ram_roots().len(), 1);
+        let ram_store = crucible_cas::ram::RamStore::new(
+            backend,
+            crucible_cas::content_store::DurabilityRequirement::new(1, false)
+                .expect("durable RAM policy"),
+            crucible_cas::ram::RamStoreLimits::default(),
+        )
+        .expect("RAM inventory store");
+        let mut retained = closure.objects().clone();
+        for root in closure.ram_roots() {
+            ram_store
+                .visit_inventory_graph(
+                    *root,
+                    inventory.as_ref(),
+                    &original,
+                    &mut || Ok(()),
+                    &mut |id| {
+                        retained.insert(id);
+                        Ok(())
+                    },
+                )
+                .expect("authenticated transitive RAM inventory");
+        }
+        retained
+    };
     assert!(exact_closure.len() > 1);
     assert!(
         exact_closure
             .iter()
-            .all(|id| planned.roots().iter().any(|root| root == *id))
+            .any(|id| id.kind() == ObjectKind::RamTree)
+    );
+    assert!(
+        exact_closure
+            .iter()
+            .any(|id| id.kind() == ObjectKind::RamExtent)
+    );
+    assert!(
+        planned
+            .roots()
+            .iter()
+            .any(|root| root == fixture.checkpoint.content_id())
     );
     assert!(
         planned
@@ -182,9 +261,12 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
             .iter()
             .all(|candidate| !exact_closure.contains(&candidate.id()))
     );
-    let (mut journal, _) =
-        crate::DirectoryCampaignGcJournal::create(temp.path().join("gc-journal"), &planned)
-            .expect("persist exact-pin GC plan");
+    let (mut journal, _) = crate::DirectoryCampaignGcJournal::create(
+        temp.path().join("gc-journal"),
+        &planned,
+        &gc_operation,
+    )
+    .expect("persist exact-pin GC plan");
 
     let head = fixture
         .repository
@@ -212,7 +294,7 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
             &mut ledger,
             None,
             Some(&mut selections),
-            &admin,
+            crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
         ),
         Err(crate::CampaignGcApplyError::RefBasisChanged)
     ));
@@ -228,7 +310,7 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
         &mut ledger,
         None,
         Some(&mut selections),
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("plan after unpin with stale selection record");
     assert!(
@@ -243,12 +325,18 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
             .iter()
             .any(|candidate| candidate.id() == fixture.checkpoint.content_id())
     );
+    assert!(after_unpin.candidates().iter().any(|candidate| {
+        candidate.id().kind() == ObjectKind::RamExtent && exact_closure.contains(&candidate.id())
+    }));
     drop(admin);
     drop(graph);
 }
 
 #[test]
 fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let temp = tempfile::tempdir().expect("selection journal root");
     let fixture = fixture("round-trip");
     let mut store = DirectoryExactPinMaterializationStore::open(temp.path())
@@ -285,10 +373,10 @@ fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
             &bytes,
         )
         .to_hex(),
-        // The current closure includes the v6 scheduler continuation and its
-        // World-bound I/O ledger. Authenticate the pin and closure above before
-        // pinning these recanonicalized selection bytes.
-        "547dbea896dc4d2c24b24e3b0b1caf58ef75daa24bf52a423dfb09bdd49c77ea"
+        // Authenticate the current paged closure before pinning its selection
+        // bytes, including the scheduler continuation, World-bound I/O ledger,
+        // and authenticated v5 selectable catalog checked by this fixture.
+        "fbece536dbb678ee2e71665787b985447784e51ebcce7a7f532f49038de93696"
     );
     drop(store);
 
@@ -307,6 +395,9 @@ fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
 
 #[test]
 fn imported_selection_never_replaces_an_existing_campaign_owner() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let temp = tempfile::tempdir().expect("selection journal root");
     let fixture = fixture("import-conflict");
     let original = ExactPinMaterializationSelection::prepare(
@@ -320,7 +411,7 @@ fn imported_selection_never_replaces_an_existing_campaign_owner() {
     let mut conflicting = original.clone();
     let conflicting_content = crucible_cas::content_store::ContentId::for_bytes(
         crucible_cas::content_store::ObjectKind::ExactManifest,
-        5,
+        6,
         b"conflicting imported checkpoint",
     );
     conflicting.checkpoint = ExactCheckpointId::parse(&format!(
@@ -353,6 +444,9 @@ fn imported_selection_never_replaces_an_existing_campaign_owner() {
 
 #[test]
 fn selection_rejects_unpinned_configuration_before_journal_write() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let temp = tempfile::tempdir().expect("selection journal root");
     let expected = fixture("expected");
     let foreign_configuration = ConfigurationId::from_hash(CampaignHash::derive(
@@ -384,6 +478,9 @@ fn selection_rejects_unpinned_configuration_before_journal_write() {
 
 #[test]
 fn clear_is_idempotent_and_corruption_fails_closed() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let temp = tempfile::tempdir().expect("selection journal root");
     let fixture = fixture("clear");
     let mut store = DirectoryExactPinMaterializationStore::open(temp.path())
@@ -418,7 +515,12 @@ fn clear_is_idempotent_and_corruption_fails_closed() {
 }
 
 fn fixture(name: &str) -> Fixture {
-    let backend = Arc::new(TestDurableBackend::new());
+    let metadata = crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+        .expect("finite exact-pin namespace metadata");
+    let backend = crate::exact_checkpoint_store::test_support::fixture_metadata_backend(
+        Arc::new(TestDurableBackend::new()),
+        metadata,
+    );
     fixture_with_backend(name, backend)
 }
 
@@ -437,13 +539,23 @@ fn select_fixture(
 }
 
 fn fixture_with_backend(name: &str, backend: Arc<dyn ImmutableBlobBackend>) -> Fixture {
+    let metadata = backend
+        .metadata_resources()
+        .expect("original namespace metadata");
+    let decoding = crucible::owned_decode::DecodeBudget::for_store(metadata.clone())
+        .expect("same original namespace decode account");
+    let _namespace_scope = decoding.enter();
     let production_directory = tempfile::tempdir().expect("production checkpoint fixture");
     let production = crucible_api::build_exact_ram_production_checkpoint_codec_fixture(
         production_directory.path(),
     )
     .expect("production checkpoint fixture");
     let refs = Arc::new(MemoryRefBackend::new());
-    let repository = CampaignRepository::new(backend.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        backend.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Available(decoding.clone()),
+    );
     let scenario_source = production.source().clone();
     let scenario = scenario_source.scenario_def();
     let configuration = production.configuration().clone();
@@ -502,7 +614,11 @@ fn fixture_with_backend(name: &str, backend: Arc<dyn ImmutableBlobBackend>) -> F
         })
         .expect("pin inventory");
 
-    let checkpoints = ExactCheckpointStore::new(backend, STORE_LIMIT).expect("checkpoint store");
+    let checkpoints =
+        ExactCheckpointStore::new(backend, STORE_LIMIT, repository.ram_retention_authority())
+            .expect("checkpoint store")
+            .with_ram_root_resources(metadata);
+    assert_current_catalog_continuation(production.closure(), &decoding);
     let prepared = checkpoints
         .prepare_production_closure(production.closure().clone())
         .expect("prepare checkpoint");
@@ -520,6 +636,83 @@ fn fixture_with_backend(name: &str, backend: Arc<dyn ImmutableBlobBackend>) -> F
         pin_fact: pin_fact.expect("exact pin fact"),
         checkpoint,
     }
+}
+
+// Inspect the actual lifecycle object named by the same closure being published.
+// The v5 abandoned-request fields change that object's identity even when zero.
+fn assert_current_catalog_continuation(
+    closure: &crucible_api::ProductionExactCheckpointClosure,
+    original: &crucible::owned_decode::DecodeBudget,
+) {
+    use std::io::Read;
+
+    #[derive(serde::Deserialize)]
+    struct Manifest {
+        lifecycle_state: crucible::ContentHash,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Lifecycle {
+        selectable_catalog_plans: Vec<Catalog>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Catalog {
+        node: String,
+        plan: Vec<u8>,
+    }
+
+    let manifest: Manifest = ciborium::from_reader(
+        closure
+            .manifest()
+            .strip_prefix(b"crucible.production-exact-closure.v10\0")
+            .expect("current production manifest"),
+    )
+    .expect("manifest lifecycle identity");
+    let object = closure
+        .objects()
+        .iter()
+        .find(|object| object.identity() == manifest.lifecycle_state)
+        .expect("lifecycle object in the published closure");
+    let length = usize::try_from(object.length()).expect("fixture lifecycle length");
+    let _credit = original
+        .reserve_scratch_array::<u8>(length)
+        .expect("same original lifecycle bytes");
+    let mut bytes = Vec::with_capacity(length);
+    {
+        let mut reader = closure
+            .open_object(object.identity())
+            .expect("actual lifecycle object");
+        bytes.resize(length, 0);
+        reader
+            .read_exact(&mut bytes)
+            .expect("complete lifecycle bytes");
+        let mut extra = [0_u8; 1];
+        assert_eq!(reader.read(&mut extra).expect("lifecycle EOF"), 0);
+    }
+    assert_eq!(bytes.len(), length);
+    assert_eq!(crucible::ContentHash::from_bytes(&bytes), object.identity());
+
+    let lifecycle: Lifecycle =
+        ciborium::from_reader(bytes.as_slice()).expect("actual selectable catalog continuation");
+    assert_eq!(lifecycle.selectable_catalog_plans.len(), 1);
+    let catalog = &lifecycle.selectable_catalog_plans[0];
+    assert_eq!(catalog.node, "vm-a");
+    let plan = &catalog.plan;
+    assert_eq!(&plan[..8], b"CRUCSCP5");
+    assert_eq!(&plan[8..12], &5_u32.to_be_bytes());
+    assert_eq!(&plan[12..16], &136_u32.to_be_bytes());
+    assert_eq!(&plan[112..120], &[0_u8; 8]);
+    assert_eq!(&plan[120..136], &[0_u8; 16]);
+
+    let decoded = crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan::decode(plan)
+        .expect("authenticated v5 catalog plan");
+    assert!(decoded.continuation().abandoned_requests().is_empty());
+    assert_eq!(decoded.continuation().total_abandoned_requests(), 0);
+    assert_eq!(
+        decoded.continuation().last_abandoned_request_sequence(),
+        None
+    );
 }
 
 fn policy(scenario: ScenarioDefId) -> CampaignPolicy {

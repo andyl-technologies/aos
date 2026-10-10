@@ -52,6 +52,7 @@ fn descendant_input_fixture() -> DescendantInputFixture {
             u64::MAX,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     repository
         .publish_scenario_artifact(
@@ -275,6 +276,9 @@ fn authenticated_assertion_observation_stop_produces_a_finding_signature() {
 
 #[test]
 fn automatic_finding_replays_both_passes_under_the_original_budget_and_path() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (input, property, store, retention_basis) = input_fixture();
     let main_calls = Arc::new(AtomicUsize::new(0));
     let replay_calls = Arc::new(AtomicUsize::new(0));
@@ -381,6 +385,9 @@ fn default_runner_does_not_probe_an_ordinary_success() {
 
 #[test]
 fn paired_probe_derives_fingerprint_from_actual_divergence_kind_and_node() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (input, property, store, retention_basis) = input_fixture();
     let main_calls = Arc::new(AtomicUsize::new(0));
     let replay_calls = Arc::new(AtomicUsize::new(0));
@@ -454,6 +461,9 @@ fn paired_probe_derives_fingerprint_from_actual_divergence_kind_and_node() {
 
 #[test]
 fn paired_probe_binds_main_coverage_when_reproduced_coverage_differs() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (input, property, store, retention_basis) = input_fixture();
     let main_result = failed_result_with_stop(&input, &property, StopOutcome::TerminalSuccess);
     let main_coverage = main_result
@@ -566,6 +576,9 @@ fn divergence_reduction_budget_exhaustion_preserves_the_original_result() {
 
 #[test]
 fn incompatible_reduction_trial_does_not_discard_a_later_reproduced_finding() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let (input, property, store, retention_basis) = input_fixture();
     let replay_calls = Arc::new(AtomicUsize::new(0));
     let quarantines = Arc::new(AtomicUsize::new(0));
@@ -713,6 +726,9 @@ fn probe_divergence_with_a_different_original_signature_preserves_the_main_resul
 #[cfg(target_os = "linux")]
 #[test]
 fn descendant_finding_replay_preserves_controls_signature_and_retained_world() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let fixture = descendant_input_fixture();
     let DescendantInputFixture {
         repository,

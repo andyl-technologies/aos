@@ -5,9 +5,9 @@
 //! second log, a command mailbox round trip, or a scheduler-visible mutation.
 
 pub use crucible_session::{
-    EventLogCursor, SESSION_EVENT_LOG_BROADCAST_CAPACITY, SESSION_EVENT_LOG_REPLAY_BATCH_SIZE,
-    SessionEventLog as SessionEventLogHub, SessionEventLogFrame, SessionEventLogSnapshot,
-    SessionEventLogStream, SessionEventLogStreamError,
+    EventLogCursor, SESSION_EVENT_LOG_BROADCAST_CAPACITY, SessionEventLog as SessionEventLogHub,
+    SessionEventLogFrame, SessionEventLogSnapshot, SessionEventLogStream,
+    SessionEventLogStreamError,
 };
 
 /// Control-plane facade for cursor-backed event-log subscriptions.

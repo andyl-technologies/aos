@@ -1,4 +1,4 @@
-//! Checks the RFC-0010 determinism-core coverage floor.
+//! Checks the deterministic execution core coverage floor.
 
 #![forbid(unsafe_code)]
 
@@ -62,6 +62,12 @@ const INSTANTIATE_MARKERS: &[&str] = &[
     "temporal_graph_rejects_mismatched_or_thin_cached_snapshots",
     "temporal_graph_rejects_plain_cached_genesis_snapshot",
     "temporal_graph_rejects_mismatched_or_thin_baked_genesis",
+];
+
+const TYPED_PREEMPTION_MARKERS: &[&str] = &[
+    "preemption_branch_choices",
+    "validate_preemption_branch_schedule",
+    "bare_swap_cannot_detach_a_preemption_from_its_typed_selection",
 ];
 
 const SIM_BACKEND_ERROR_MARKERS: &[&str] = &[
@@ -161,6 +167,16 @@ const DETERMINISM_CORE_COVERAGE_FLOOR: &[CoverageSurface] = &[
         activation_source_roots: &[],
     },
     CoverageSurface {
+        id: "typed-preemption-parent-binding",
+        source_path: "crates/crucible/src/model/runtime.rs",
+        test_path: "crates/crucible/src/model/engine/typed_preemption_por_tests.rs",
+        status: CoverageStatus::Active,
+        instrumentation: COVERAGE_MEASUREMENT_MODE,
+        required_test_markers: TYPED_PREEMPTION_MARKERS,
+        activation_markers: &[],
+        activation_source_roots: &[],
+    },
+    CoverageSurface {
         id: "sim-backend-error-variants",
         source_path: "crates/crucible/src/sim_backend.rs",
         test_path: "crates/crucible/src/sim_backend.rs",
@@ -248,6 +264,7 @@ fn determinism_core_coverage_floor_names_required_surfaces() {
             "scheduler-ordering-keys",
             "error-variant-floor",
             "instantiate-recursion",
+            "typed-preemption-parent-binding",
             "sim-backend-error-variants",
             "content-addressed-digest",
             "replay-oracle-path",
@@ -439,6 +456,7 @@ fn required_surface_regression_failures(surfaces: &[CoverageSurface]) -> Vec<Str
         "scheduler-ordering-keys",
         "error-variant-floor",
         "instantiate-recursion",
+        "typed-preemption-parent-binding",
         "sim-backend-error-variants",
         "decision-rng-and-forking",
         "content-addressed-digest",

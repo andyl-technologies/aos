@@ -23,8 +23,8 @@ fn nonzero_ready_point_source() -> Result<ProductionVmHotForkSourceWorld, Box<dy
 fn source_key(source: &ProductionVmHotForkSourceWorld) -> QemuHotForkSourceWorldKey {
     QemuHotForkSourceWorldKey::new(
         lineage_id(0x32),
-        source.continuation().configuration().def.id(),
-        source.continuation().configuration().id(),
+        source.continuation().unwrap().configuration().def.id(),
+        source.continuation().unwrap().configuration().id(),
         compatibility_profile(),
     )
 }
@@ -32,16 +32,20 @@ fn source_key(source: &ProductionVmHotForkSourceWorld) -> QemuHotForkSourceWorld
 #[test]
 fn canonical_genesis_accepts_the_authenticated_nonzero_ready_point()
 -> Result<(), Box<dyn std::error::Error>> {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let source = nonzero_ready_point_source()?;
     let retained = source
         .continuation()
+        .unwrap()
         .nodes()
         .iter()
         .find(|node| node.physical_time().is_some())
         .ok_or("missing retained source")?;
     assert_eq!(retained.physical_time().map(|time| time.ticks), Some(37));
     assert_eq!(retained.scheduler_time().ticks, 0);
-    assert_eq!(source.continuation().scheduler().quanta(), 0);
+    assert_eq!(source.continuation().unwrap().scheduler().quanta(), 0);
 
     let world = ManagedQemuHotForkSourceWorld::bind(source_key(&source), source)
         .map_err(|failure| failure.into_parts().1)?;
@@ -64,7 +68,7 @@ fn canonical_genesis_accepts_the_authenticated_nonzero_ready_point()
 fn canonical_genesis_rejects_a_physical_counter_foreign_to_its_ready_point()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut source = nonzero_ready_point_source()?;
-    let scenario = source.continuation().configuration().def.clone();
+    let scenario = source.continuation().unwrap().configuration().def.clone();
     let form = crucible::crash_restart_scenario()?.scenario;
     let scheduler = crucible::SingleScheduler::new(
         crucible::SchedulerLivenessScenario::from_runnable_world(
@@ -76,7 +80,7 @@ fn canonical_genesis_rejects_a_physical_counter_foreign_to_its_ready_point()
         )
         .with_scenario_def(scenario),
     )?;
-    source.replace_scheduler_for_test(scheduler.checkpoint()?);
+    source.replace_scheduler_for_test(scheduler.checkpoint()?)?;
 
     let failure = ManagedQemuHotForkSourceWorld::bind(source_key(&source), source)
         .err()
@@ -113,7 +117,9 @@ fn changed_scheduler_quanta(
 fn canonical_genesis_rejects_completed_quanta_and_preserves_its_diagnostic()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut source = nonzero_ready_point_source()?;
-    source.replace_scheduler_for_test(changed_scheduler_quanta(source.continuation().scheduler())?);
+    source.replace_scheduler_for_test(changed_scheduler_quanta(
+        source.continuation().unwrap().scheduler(),
+    )?)?;
     let failure = ManagedQemuHotForkSourceWorld::bind(source_key(&source), source)
         .err()
         .ok_or("completed quantum admitted as genesis")?;
@@ -126,6 +132,9 @@ fn canonical_genesis_rejects_completed_quanta_and_preserves_its_diagnostic()
 #[test]
 fn canonical_genesis_rejects_recorded_events_and_foreign_configuration_keys()
 -> Result<(), Box<dyn std::error::Error>> {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let mut source = nonzero_ready_point_source()?;
     let form = crucible::crash_restart_scenario()?.scenario;
     let node = form
@@ -154,7 +163,7 @@ fn canonical_genesis_rejects_recorded_events_and_foreign_configuration_keys()
             b"event".to_vec(),
         )],
     )?;
-    source.replace_scheduler_for_test(scheduler.checkpoint()?);
+    source.replace_scheduler_for_test(scheduler.checkpoint()?)?;
     let failure = ManagedQemuHotForkSourceWorld::bind(source_key(&source), source)
         .err()
         .ok_or("recorded event admitted as genesis")?;
@@ -165,7 +174,7 @@ fn canonical_genesis_rejects_recorded_events_and_foreign_configuration_keys()
     let source = nonzero_ready_point_source()?;
     let key = QemuHotForkSourceWorldKey::new(
         lineage_id(0x32),
-        source.continuation().configuration().def.id(),
+        source.continuation().unwrap().configuration().def.id(),
         ContentHash::from_bytes(b"foreign configuration"),
         compatibility_profile(),
     );
@@ -202,8 +211,8 @@ fn admission_uses_measured_world_resources_and_charges_only_matching_checkouts()
     .expect("measured resource profile");
     let key = QemuHotForkSourceWorldKey::new(
         lineage_id(0x31),
-        source.continuation().configuration().def.id(),
-        source.continuation().configuration().id(),
+        source.continuation().unwrap().configuration().def.id(),
+        source.continuation().unwrap().configuration().id(),
         compatibility_profile(),
     );
     let template = key.template_key();
@@ -295,8 +304,8 @@ fn resource_decline_retires_the_source_and_keeps_a_cold_fallback() {
     assert!(usage.template_bytes() > 1);
     let key = QemuHotForkSourceWorldKey::new(
         lineage_id(0x34),
-        source.continuation().configuration().def.id(),
-        source.continuation().configuration().id(),
+        source.continuation().unwrap().configuration().def.id(),
+        source.continuation().unwrap().configuration().id(),
         compatibility_profile(),
     );
     let maximum_resources = HotCheckpointResourceProfile::new(
@@ -398,11 +407,11 @@ fn same_configuration_at_an_advanced_frontier_is_rejected() {
             .expect("prepared source world");
     let key = QemuHotForkSourceWorldKey::new(
         lineage_id(0x32),
-        source.continuation().configuration().def.id(),
-        source.continuation().configuration().id(),
+        source.continuation().unwrap().configuration().def.id(),
+        source.continuation().unwrap().configuration().id(),
         compatibility_profile(),
     );
-    source.mark_reuse_boundary_advanced_for_test();
+    source.mark_reuse_boundary_advanced_for_test().unwrap();
 
     let failure = ManagedQemuHotForkSourceWorld::bind(key, source)
         .err()
@@ -423,12 +432,12 @@ fn exact_authenticated_source_admits_an_advanced_boundary_under_its_checkpoint_k
     let (_nodes, mut source) =
         prepared_multi_node_hot_fork_source_world_for_test(vec![source_node])
             .expect("prepared source world");
-    source.mark_reuse_boundary_advanced_for_test();
+    source.mark_reuse_boundary_advanced_for_test().unwrap();
     let checkpoint = exact_checkpoint(0x42);
     let key = QemuHotForkSourceWorldKey::new_exact(
         lineage_id(0x32),
-        source.continuation().configuration().def.id(),
-        source.continuation().configuration().id(),
+        source.continuation().unwrap().configuration().def.id(),
+        source.continuation().unwrap().configuration().id(),
         compatibility_profile(),
         checkpoint,
     );
@@ -495,11 +504,15 @@ fn equal_configurations_with_distinct_exact_checkpoint_identities_are_independen
     let (_second_nodes, mut second_source) =
         prepared_multi_node_hot_fork_source_world_for_test(vec![second_node])
             .expect("second prepared source world");
-    first_source.mark_reuse_boundary_advanced_for_test();
-    second_source.mark_reuse_boundary_advanced_for_test();
+    first_source
+        .mark_reuse_boundary_advanced_for_test()
+        .unwrap();
+    second_source
+        .mark_reuse_boundary_advanced_for_test()
+        .unwrap();
     assert_eq!(
-        first_source.continuation().configuration(),
-        second_source.continuation().configuration()
+        first_source.continuation().unwrap().configuration(),
+        second_source.continuation().unwrap().configuration()
     );
 
     let lineage = lineage_id(0x39);
@@ -507,15 +520,25 @@ fn equal_configurations_with_distinct_exact_checkpoint_identities_are_independen
     let second_checkpoint = exact_checkpoint(0x53);
     let first_key = QemuHotForkSourceWorldKey::new_exact(
         lineage,
-        first_source.continuation().configuration().def.id(),
-        first_source.continuation().configuration().id(),
+        first_source
+            .continuation()
+            .unwrap()
+            .configuration()
+            .def
+            .id(),
+        first_source.continuation().unwrap().configuration().id(),
         compatibility_profile(),
         first_checkpoint,
     );
     let second_key = QemuHotForkSourceWorldKey::new_exact(
         lineage,
-        second_source.continuation().configuration().def.id(),
-        second_source.continuation().configuration().id(),
+        second_source
+            .continuation()
+            .unwrap()
+            .configuration()
+            .def
+            .id(),
+        second_source.continuation().unwrap().configuration().id(),
         compatibility_profile(),
         second_checkpoint,
     );
@@ -598,13 +621,18 @@ fn wrong_world_restore_keeps_the_checked_out_source_authority_pending() {
             .expect("second prepared source world");
     let key = QemuHotForkSourceWorldKey::new(
         lineage_id(0x33),
-        first_source.continuation().configuration().def.id(),
-        first_source.continuation().configuration().id(),
+        first_source
+            .continuation()
+            .unwrap()
+            .configuration()
+            .def
+            .id(),
+        first_source.continuation().unwrap().configuration().id(),
         compatibility_profile(),
     );
     assert_eq!(
-        second_source.continuation().configuration(),
-        first_source.continuation().configuration()
+        second_source.continuation().unwrap().configuration(),
+        first_source.continuation().unwrap().configuration()
     );
 
     let resources = first_source
@@ -642,9 +670,11 @@ fn wrong_world_restore_keeps_the_checked_out_source_authority_pending() {
         .checkout(&key)
         .expect("check out first source")
         .expect("first source available");
+    let identity = QemuHotForkSourceWorldCheckoutIdentity::capture(&second_source).unwrap();
     pool.restore(QemuHotForkSourceWorldLease::exclusive(
         manager_source_key(&key),
         second_source,
+        identity,
     ));
     assert!(matches!(
         pool.checkout(&key),
@@ -679,14 +709,24 @@ fn pressure_demotion_reauthenticates_the_victim_catalog_record() {
             .expect("second prepared source world");
     let first_key = QemuHotForkSourceWorldKey::new(
         lineage_id(0x34),
-        first_source.continuation().configuration().def.id(),
-        first_source.continuation().configuration().id(),
+        first_source
+            .continuation()
+            .unwrap()
+            .configuration()
+            .def
+            .id(),
+        first_source.continuation().unwrap().configuration().id(),
         compatibility_profile(),
     );
     let second_key = QemuHotForkSourceWorldKey::new(
         lineage_id(0x35),
-        second_source.continuation().configuration().def.id(),
-        second_source.continuation().configuration().id(),
+        second_source
+            .continuation()
+            .unwrap()
+            .configuration()
+            .def
+            .id(),
+        second_source.continuation().unwrap().configuration().id(),
         compatibility_profile(),
     );
 

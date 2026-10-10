@@ -86,6 +86,7 @@ fn producer_contract(producer: &str) -> LiveQemuReplayContract {
 }
 
 fn interactive_contract() -> LiveQemuReplayContract {
+    let _scope = crate::tests::component_decode_scope();
     let mut contract = producer_contract("run");
     contract.execution_owner = RunExecutionOwner::Session;
     contract.execution_mode = RunExecutionMode::Interactive;
@@ -93,20 +94,25 @@ fn interactive_contract() -> LiveQemuReplayContract {
     contract.terminal_status = String::from("passed");
     contract.terminal_outcome = String::from("stopped");
     contract.fingerprint_scope = LiveQemuFingerprintScope::TerminalAllNodes;
-    contract.reproduction_commands = vec![crucible_api::ReproductionCommandRecord {
-        sequence: 1,
-        payload: crucible_api::ReproductionCommandPayload {
-            command: SessionCommandKind::Stop,
-            command_payload: String::from("payload=command-kind\ncommand=Stop\n"),
-            scheduler_batch: 0,
-            scheduler_control: None,
-        },
-        virtual_time: crucible::VirtualTime { ticks: 42 },
-        quanta: 7,
-        at_sequence: 11,
-        result: crucible_api::ReproductionCommandResult::Accepted,
-        observational_order: 1,
-    }];
+    contract.reproduction_commands = vec![
+        crucible_api::ReproductionCommandRecord::from_owned_fields(
+            crucible_api::ReproductionCommandRecordFields {
+                sequence: 1,
+                payload: crucible_api::ReproductionCommandPayload {
+                    command: SessionCommandKind::Stop,
+                    command_payload: String::from("payload=command-kind\ncommand=Stop\n"),
+                    scheduler_batch: 0,
+                    scheduler_control: None,
+                },
+                virtual_time: crucible::VirtualTime { ticks: 42 },
+                quanta: 7,
+                at_sequence: 11,
+                result: crucible_api::ReproductionCommandResult::Accepted,
+                observational_order: 1,
+            },
+        )
+        .unwrap_or_else(|error| panic!("component reproduction record: {error}")),
+    ];
     contract
 }
 
@@ -119,6 +125,7 @@ fn rejected_contract(contract: &LiveQemuReplayContract, reason: &str) -> CliErro
 
 #[test]
 fn live_qemu_replay_contract_round_trips_canonically() -> Result<(), CliError> {
+    let _scope = crate::tests::component_decode_scope();
     let contract = campaign_branch_contract();
     let encoded = contract.encode();
     assert_eq!(LiveQemuReplayContract::decode(&encoded)?, contract);
@@ -127,6 +134,7 @@ fn live_qemu_replay_contract_round_trips_canonically() -> Result<(), CliError> {
 
 #[test]
 fn interactive_live_qemu_contract_round_trips_full_control_records() -> Result<(), CliError> {
+    let _scope = crate::tests::component_decode_scope();
     let contract = interactive_contract();
     let encoded = contract.encode();
     assert_eq!(LiveQemuReplayContract::decode(&encoded)?, contract);
@@ -135,6 +143,7 @@ fn interactive_live_qemu_contract_round_trips_full_control_records() -> Result<(
 
 #[test]
 fn live_qemu_contract_rejects_an_unsupported_schema() {
+    let _scope = crate::tests::component_decode_scope();
     let encoded = interactive_contract().encode();
     let unsupported = String::from_utf8(encoded)
         .unwrap_or_else(|error| panic!("contract fixture should be UTF-8: {error}"))
@@ -152,6 +161,7 @@ fn live_qemu_contract_rejects_an_unsupported_schema() {
 
 #[test]
 fn live_qemu_contract_rejects_initial_scenario_identity_mismatch() {
+    let _scope = crate::tests::component_decode_scope();
     let mut contract = interactive_contract();
     contract.initial_configuration = String::from("blake3:wrong-initial-configuration");
     let error = rejected_contract(
@@ -163,9 +173,30 @@ fn live_qemu_contract_rejects_initial_scenario_identity_mismatch() {
 
 #[test]
 fn interactive_live_qemu_contract_rejects_corrupt_record_payload() {
+    let _scope = crate::tests::component_decode_scope();
     let mut contract = interactive_contract();
-    contract.reproduction_commands[0].payload.command_payload =
-        String::from("payload=command-kind\ncommand=Pause\n");
+    let record = &contract.reproduction_commands[0];
+    let corrupt_payload = "payload=command-kind\ncommand=Pause\n";
+    crucible_session::engine::owned_decode::charge_bytes(corrupt_payload.len() as u64)
+        .unwrap_or_else(|error| panic!("admit corrupt fixture payload: {error}"));
+    let replacement = crucible_api::ReproductionCommandRecord::from_owned_fields(
+        crucible_api::ReproductionCommandRecordFields {
+            sequence: record.sequence,
+            payload: crucible_api::ReproductionCommandPayload {
+                command: record.payload.command,
+                command_payload: String::from(corrupt_payload),
+                scheduler_batch: record.payload.scheduler_batch,
+                scheduler_control: None,
+            },
+            virtual_time: record.virtual_time,
+            quanta: record.quanta,
+            at_sequence: record.at_sequence,
+            result: record.result,
+            observational_order: record.observational_order,
+        },
+    )
+    .unwrap_or_else(|error| panic!("construct corrupt fixture record: {error}"));
+    contract.reproduction_commands[0] = replacement;
     let error = rejected_contract(&contract, "mismatched command payload must fail closed");
     assert!(
         error
@@ -176,6 +207,7 @@ fn interactive_live_qemu_contract_rejects_corrupt_record_payload() {
 
 #[test]
 fn live_qemu_replay_contract_accepts_every_closed_producer() -> Result<(), CliError> {
+    let _scope = crate::tests::component_decode_scope();
     for producer in [
         "campaign-run",
         "campaign-search",
@@ -194,6 +226,7 @@ fn live_qemu_replay_contract_accepts_every_closed_producer() -> Result<(), CliEr
 
 #[test]
 fn live_qemu_replay_contract_requires_exact_branch_control_shape() {
+    let _scope = crate::tests::component_decode_scope();
     for startup in [
         vec!["start"],
         vec!["continue", "start"],
@@ -221,6 +254,7 @@ fn live_qemu_replay_contract_requires_exact_branch_control_shape() {
 
 #[test]
 fn live_qemu_replay_contract_round_trips_campaign_resume() -> Result<(), CliError> {
+    let _scope = crate::tests::component_decode_scope();
     let mut contract = campaign_branch_contract();
     contract.branch = LiveQemuReplayBranch::Resume {
         base_decisions: 3,
@@ -235,6 +269,7 @@ fn live_qemu_replay_contract_round_trips_campaign_resume() -> Result<(), CliErro
 
 #[test]
 fn live_qemu_replay_contract_rejects_unsupported_producer() {
+    let _scope = crate::tests::component_decode_scope();
     let mut contract = campaign_branch_contract();
     contract.producer = String::from("unknown");
     let error = rejected_contract(&contract, "unsupported producer must fail closed");
@@ -243,6 +278,7 @@ fn live_qemu_replay_contract_rejects_unsupported_producer() {
 
 #[test]
 fn live_qemu_replay_contract_rejects_duplicate_choice_indices() {
+    let _scope = crate::tests::component_decode_scope();
     let mut contract = campaign_branch_contract();
     contract.network_choice_indices = vec![4, 4];
     let error = rejected_contract(&contract, "duplicate choice indices must fail closed");
@@ -251,6 +287,7 @@ fn live_qemu_replay_contract_rejects_duplicate_choice_indices() {
 
 #[test]
 fn live_qemu_replay_contract_rejects_pre_branch_choices() {
+    let _scope = crate::tests::component_decode_scope();
     let mut contract = campaign_branch_contract();
     contract.network_choice_indices = vec![2, 4];
     let error = rejected_contract(
@@ -262,6 +299,7 @@ fn live_qemu_replay_contract_rejects_pre_branch_choices() {
 
 #[test]
 fn live_qemu_replay_contract_rejects_incompatible_fingerprint_scope() {
+    let _scope = crate::tests::component_decode_scope();
     let mut contract = producer_contract("campaign-search");
     contract.fingerprint_scope = LiveQemuFingerprintScope::FullExecution;
     let error = rejected_contract(
@@ -273,6 +311,7 @@ fn live_qemu_replay_contract_rejects_incompatible_fingerprint_scope() {
 
 #[test]
 fn live_qemu_replay_contract_rejects_unknown_control_commands() {
+    let _scope = crate::tests::component_decode_scope();
     let mut contract = campaign_branch_contract();
     contract.controls[0].command = String::from("unknown");
     let error = rejected_contract(&contract, "unknown control commands must fail closed");
@@ -285,6 +324,7 @@ fn live_qemu_replay_contract_rejects_unknown_control_commands() {
 
 #[test]
 fn live_qemu_replay_contract_rejects_unsupported_startup_controls() {
+    let _scope = crate::tests::component_decode_scope();
     let mut contract = campaign_branch_contract();
     contract.startup_controls[0].command = String::from("pause");
     let error = rejected_contract(&contract, "payload-free startup recipes must remain closed");
@@ -293,6 +333,7 @@ fn live_qemu_replay_contract_rejects_unsupported_startup_controls() {
 
 #[test]
 fn live_qemu_replay_contract_rejects_noncontiguous_initial_controls() {
+    let _scope = crate::tests::component_decode_scope();
     let mut contract = campaign_branch_contract();
     contract.initial_controls[0].sequence = 1;
     let error = rejected_contract(

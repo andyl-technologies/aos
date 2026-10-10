@@ -108,6 +108,7 @@ in
               timeout 30 "$qemu_binary" \
                 $machine_args \
                 -accel sim \
+                -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
                 -icount shift=0,align=off,sleep=off,rr_switch_quantum=256 \
                 -smp 1 \
                 -nographic \
@@ -180,6 +181,7 @@ in
             timeout 60 ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc -m 64M \
               -accel sim \
+              -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
               -icount shift=0,align=off,sleep=off,rr_switch_quantum=256 \
               -smp 1 -nographic -no-reboot -serial none -monitor none \
               -qmp "unix:$source_socket,server=on,wait=off" \
@@ -232,6 +234,7 @@ in
             timeout 60 ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc -m 64M \
               -accel sim \
+              -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
               -icount shift=0,align=off,sleep=off,rr_switch_quantum=256 \
               -smp 1 -nographic -no-reboot -serial none -monitor none \
               -S \

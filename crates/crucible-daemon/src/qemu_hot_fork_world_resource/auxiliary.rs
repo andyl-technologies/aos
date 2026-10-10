@@ -402,6 +402,22 @@ impl<G> QemuAttemptProcessResourceGuard for QemuHotForkWorldAuxiliaryGuard<G>
 where
     G: QemuAttemptProcessResourceGuard,
 {
+    fn native_resource_controller(
+        &mut self,
+    ) -> Result<Option<crucible_qemu::LinuxQemuNativeResourceController>, QemuVmRealizationError>
+    {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.finished || state.terminal || !state.auxiliary_lifecycle_active {
+            return Err(world_resource_error(
+                "native resource controller owner is not operational",
+            ));
+        }
+        state.guard.native_resource_controller()
+    }
+
     fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
         let state = self
             .state
@@ -521,6 +537,28 @@ impl<G> QemuAttemptProcessResourceGuard for QemuHotForkWorldAuxiliaryResourceGua
 where
     G: QemuAttemptProcessResourceGuard,
 {
+    fn native_resource_controller(
+        &mut self,
+    ) -> Result<Option<crucible_qemu::LinuxQemuNativeResourceController>, QemuVmRealizationError>
+    {
+        match self {
+            Self::Fresh(guard) => guard.native_resource_controller(),
+            Self::Retained(guard) => guard.native_resource_controller(),
+        }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn launch_fresh_node(
+        &self,
+        config: &crucible_qemu::QemuLiveNodeStepGateConfig,
+        admission: crucible_qemu::QemuProductionFreshLaunchAdmission<'_>,
+    ) -> Result<crucible_qemu::QemuNode, crucible_qemu::QemuLiveNodeStepGateError> {
+        match self {
+            Self::Fresh(guard) => guard.launch_fresh_node(config, admission),
+            Self::Retained(guard) => guard.launch_fresh_node(config, admission),
+        }
+    }
+
     fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
         match self {
             Self::Fresh(guard) => guard.child_process_contract(),

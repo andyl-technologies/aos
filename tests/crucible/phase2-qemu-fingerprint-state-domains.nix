@@ -104,7 +104,7 @@ in
             # The pristine source has neither Crucible lifecycle domains nor
             # the guest black-box fingerprint export.
             ! grep -Rq 'QEMU_CRUCIBLE_LIFECYCLE_STATE_DEVICE' "$stock/plugins/api.c"
-            ! grep -Rq 'qemu_plugin_crucible_capture_fingerprint_material' "$stock/plugins/api.c"
+            ! grep -Rq 'qemu_plugin_crucible_capture_fingerprint_v2' "$stock/plugins/api.c"
 
             cp "${exactSnapshotRestore}/result" "$out/live-exact-snapshot.result"
             grep -Fxq PASS "$out/live-exact-snapshot.result"

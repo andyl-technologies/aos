@@ -1,7 +1,7 @@
 # schema-name	version	owner	object-kind	compatibility-gates
 crucible.content-envelope	1	crucible-cas::content_envelope	envelope	gate:content-address,gate:campaign-store-equivalence
 crucible.content-id-text	1	crucible-cas::content_store	identity	gate:content-address,gate:campaign-store-equivalence
-crucible.content-store.graph-configuration	11	crucible-cas::content_store	administrative-record	gate:campaign-store-composition
+crucible.content-store.graph-configuration	12	crucible-cas::content_store	administrative-record	gate:campaign-store-composition
 crucible.directory-ref	1	crucible-cas::content_store	mutable-ref	gate:campaign-store-composition
 crucible.content-store.directory-inventory-state	1	crucible-cas::content_store	administrative-record	gate:campaign-store-composition
 crucible.content-store.directory-ref-inventory-state	1	crucible-cas::content_store	administrative-record	gate:campaign-store-composition
@@ -35,17 +35,17 @@ crucible.campaign.selection	1	crucible-campaign::object	campaign-fact	gate:typed
 crucible.guest-selectable.register	1	crucible-protocol::selectable	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.guest-selectable.request	1	crucible-protocol::selectable	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.guest-selectable.reply	1	crucible-protocol::selectable	process-protocol-message	gate:typed-choice,gate:abi-conformance
-crucible.guest-selectable.catalog-plan	4	crucible-protocol::selectable_catalog_plan	process-protocol-message	gate:typed-choice,gate:abi-conformance
+crucible.guest-selectable.catalog-plan	5	crucible-protocol::selectable_catalog_plan	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.guest-selectable.pending-request	2	crucible-protocol::selectable_transport	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.qemu-plugin.setup-plan	2	crucible-protocol::plugin_setup_plan	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.qemu.hot-fork.template	29	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-equivalence,gate:hot-fork-isolation
 crucible.qemu.hot-fork.template-resource-stage	13	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.fork	3	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-equivalence,gate:hot-fork-isolation
 crucible.qemu.hot-fork.plugin-resource-inventory	3	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
-crucible.qemu.hot-fork.plugin-barrier	6	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
+crucible.qemu.hot-fork.plugin-barrier	7	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.child-runtime	4	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.async-worker-barrier	3	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
-crucible.qemu.hot-fork.block-barrier	4	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
+crucible.qemu.hot-fork.block-barrier	5	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.block-source-proof	1	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.block-seal	1	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.cold-stop	1	qemu-patch::hot-fork-cold-stop	process-protocol-message	gate:hot-fork-isolation,gate:abi-conformance
@@ -53,7 +53,7 @@ crucible.qemu.hot-fork.rcu-barrier	1	crucible-qemu::qmp::hot_fork	process-protoc
 crucible.qemu.hot-fork.private-rings	3	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.plugin-endpoints	5	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.child-process	2	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
-crucible.qemu.hot-fork.child-process-contract	3	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
+crucible.qemu.hot-fork.child-process-contract	4	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.child-files	1	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.child-qmp	8	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.child-console	1	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
@@ -85,10 +85,10 @@ crucible.campaign.cancel-attempt-execution-request	3	crucible-campaign::executio
 crucible.campaign.cancel-attempt-execution-response	4	crucible-campaign::execution	component-message	gate:campaign-component-contract
 crucible.campaign.checkpoint-attempt-execution-request	3	crucible-campaign::execution	component-message	gate:campaign-component-contract
 crucible.campaign.checkpoint-attempt-execution-response	4	crucible-campaign::execution	component-message	gate:campaign-component-contract
-crucible.campaign.describe-executor-request	1	crucible-campaign::executor_capability	component-message	gate:campaign-component-contract
-crucible.campaign.executor-description	1	crucible-campaign::executor_capability	component-message	gate:campaign-component-contract
-crucible.campaign.watch-executor-capacity-request	1	crucible-campaign::executor_capability	component-message	gate:campaign-component-contract
-crucible.campaign.executor-capacity-report	1	crucible-campaign::executor_capability	component-message	gate:campaign-component-contract
+crucible.campaign.describe-executor-request	2	crucible-campaign::executor_capability	component-message	gate:campaign-component-contract
+crucible.campaign.executor-description	2	crucible-campaign::executor_capability	component-message	gate:campaign-component-contract
+crucible.campaign.watch-executor-capacity-request	2	crucible-campaign::executor_capability	component-message	gate:campaign-component-contract
+crucible.campaign.executor-capacity-report	2	crucible-campaign::executor_capability	component-message	gate:campaign-component-contract
 crucible.campaign.create-campaign-request	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
 crucible.campaign.create-campaign-response	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
 crucible.campaign.derive-campaign-request	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
@@ -158,15 +158,15 @@ crucible.executor.hot-checkpoint-fallback	1	crucible-daemon::hot_checkpoint_rete
 crucible.qemu.vm-snapshot	4	crucible-qemu::realization	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.qemu.vmstate	1	crucible-daemon::exact_checkpoint_store	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.executor.scheduler-continuation	6	crucible-daemon::exact_checkpoint_store	device-state	gate:content-address,gate:exact-closure-streaming
-crucible.production-exact-closure	9	crucible-api::vm_lifecycle	device-state	gate:content-address,gate:exact-closure-streaming
+crucible.production-exact-closure	10	crucible-api::vm_lifecycle	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.production-network-adapter-checkpoint	11	crucible-api::vm_lifecycle::network_faults	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
 crucible.production-run-lock	1	crucible-api::vm_lifecycle	operational-record	gate:campaign-cold-continuity
 crucible.production-run-state	2	crucible-api::vm_lifecycle::quantum_loop::lifecycle::persistence	operational-record	gate:campaign-cold-continuity,gate:exact-closure-streaming
-crucible.executor.production-checkpoint-object	5	crucible-daemon::exact_checkpoint_store	device-state	gate:content-address,gate:exact-closure-streaming
+crucible.executor.production-checkpoint-object	6	crucible-daemon::exact_checkpoint_store	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.executor.production-checkpoint-index	1	crucible-daemon::exact_checkpoint_store	exact-manifest	gate:content-address,gate:exact-closure-streaming
 crucible.executor.checkpoint-choice-closure	1	crucible-daemon::qemu_campaign_lifecycle::campaign_run::replay_closure	observation	gate:typed-choice,gate:campaign-replay,gate:exact-closure-streaming
 crucible.lifecycle.resume-observation-source	1	crucible-api::lifecycle::session_contract	component-message	gate:campaign-component-contract,gate:campaign-replay
-crucible.executor.exact-checkpoint-root	5	crucible-daemon::exact_checkpoint_store	exact-manifest	gate:content-address,gate:exact-closure-streaming
+crucible.executor.exact-checkpoint-root	6	crucible-daemon::exact_checkpoint_store	exact-manifest	gate:content-address,gate:exact-closure-streaming
 crucible.executor.loopback-frame	5	crucible-daemon::executor_loopback	component-message	gate:campaign-component-contract
 crucible.planner.loopback-frame	1	crucible-daemon::planner_loopback	component-message	gate:campaign-component-contract
 crucible.planner.process-frame	1	crucible-daemon::planner_process	component-message	gate:campaign-component-contract
@@ -181,8 +181,8 @@ crucible.campaign-local-policy	1	crucible-daemon::campaign_policy	deployment-con
 aos.crucible.campaign-runtime	1	modules::services::crucible-campaign	deployment-config	gate:license-boundary
 crucible.campaign-component-authorities	1	crucible-daemon::campaign_bootstrap	deployment-secret	gate:campaign-component-contract
 crucible.campaign-import	1	crucible-cli::campaign_import	deployment-config	gate:campaign-component-contract
-crucible.campaign-repository-store	2	crucible-cli::campaign_store	deployment-config	gate:campaign-store-composition
-crucible.campaign-packaged-executor	2	crucible-cli::verify_serve::packaged_executor	deployment-config	gate:campaign-component-contract
+crucible.campaign-repository-store	3	crucible-cli::campaign_store	deployment-config	gate:campaign-store-composition
+crucible.campaign-packaged-executor	3	crucible-cli::verify_serve::packaged_executor	deployment-config	gate:campaign-component-contract
 crucible.campaign-s3-credentials	1	crucible-cli::campaign_store	deployment-secret	gate:campaign-store-composition
 crucible.cli.packed-repack-journal	1	crucible-cli::campaign::transform	operational-record	gate:campaign-store-composition
 crucible.cli.guest-transcript	1	crucible-cli::cli::triage_debug	operational-record	gate:campaign-component-contract
@@ -217,8 +217,8 @@ crucible.campaign.finding	4	crucible-campaign::finding	finding	gate:campaign-rep
 crucible.campaign.finding-candidate-bundle	7	crucible-campaign::finding_candidate	finding	gate:campaign-replay,gate:content-address
 crucible.campaign.finding-triage-replay-evidence	2	crucible-campaign::finding_triage_evidence	finding	gate:campaign-replay,gate:content-address
 crucible.campaign.finding-triage-replay-evidence-chunk	1	crucible-campaign::finding_triage_evidence	finding	gate:campaign-replay,gate:content-address
-crucible.campaign.archive-manifest	1	crucible-campaign::archive	projection	gate:campaign-store-composition,gate:content-address
-crucible.campaign.archive-inventory-page	1	crucible-campaign::archive	projection	gate:campaign-store-composition,gate:content-address
+crucible.campaign.archive-manifest	2	crucible-campaign::archive	projection	gate:campaign-store-composition,gate:content-address
+crucible.campaign.archive-inventory-page	2	crucible-campaign::archive	projection	gate:campaign-store-composition,gate:content-address
 crucible.campaign.finding-bundle	2	crucible-cli::cli_campaign::finding_bundle	export-directory	gate:campaign-replay,gate:campaign-store-composition
 
 # Current campaign component and retained execution records
@@ -333,9 +333,9 @@ crucible.frontier-node	1	crucible-cas::cas	physical-record	gate:campaign-store-c
 crucible.reduction-fingerprint	1	crucible-cas::cas::campaign_codec	physical-record	gate:campaign-store-composition,gate:content-address
 
 # Crucible guest, control, and shared-memory process protocols
-crucible.api.rpc	8	crucible-api::rpc_abi	process-protocol-message	gate:abi-conformance
+crucible.api.rpc	9	crucible-api::rpc_abi	process-protocol-message	gate:abi-conformance
 crucible.app-random.branch-plan	1	crucible-protocol::app_random_branch_plan	process-protocol-message	gate:typed-choice,gate:abi-conformance
-crucible.control.frame	3	crucible-protocol::control	process-protocol-message	gate:abi-conformance
+crucible.control.frame	4	crucible-protocol::control	process-protocol-message	gate:abi-conformance
 crucible.debug-gateway.frame	1	crucible-protocol::debug_gateway	process-protocol-message	gate:abi-conformance
 crucible.guest-choice.domain	2	crucible-protocol::choice	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.guest-introspection.doorbell	1	crucible-protocol::guest_introspection_doorbell	process-protocol-message	gate:abi-conformance
@@ -367,7 +367,7 @@ crucible.shmem.node-event-envelope	1	crucible-qemu-plugin::fault_command::event_
 crucible.shmem.node-fault-evidence	1	crucible-shmem::fault_node	process-protocol-message	gate:abi-conformance
 crucible.shmem.node-fault-payload	1	crucible-shmem::fault_node	process-protocol-message	gate:abi-conformance
 crucible.shmem.node-fault-policy-json	1	crucible-shmem::fault_node	process-protocol-message	gate:abi-conformance
-crucible.shmem.region	30	crucible-shmem::region	process-protocol-message	gate:abi-conformance
+crucible.shmem.region	31	crucible-shmem::region	process-protocol-message	gate:abi-conformance
 crucible.whitebox-doorbell.frame	3	crucible-protocol::doorbell_frame	process-protocol-message	gate:abi-conformance
 crucible.whitebox-doorbell.instruction	4	crucible-protocol::doorbell_abi	process-protocol-message	gate:abi-conformance
 
@@ -381,7 +381,7 @@ crucible.device.ninep.fs-tree	1	crucible-device::ninep::tree	device-state	gate:e
 crucible.qemu.accelerator-checkpoint	1	crucible-qemu::supervision::accelerator_io_servicer	device-state	gate:exact-closure-streaming
 crucible.qemu.block-wire	4	crucible-device::block::codec	process-protocol-message	gate:abi-conformance
 crucible.qemu.block-transport-continuation	1	crucible-qemu-plugin::block_io	device-state	gate:hot-fork-isolation,gate:abi-conformance
-crucible.qemu.checkpoint-qmp	2	crucible-qemu::qmp::ram_delta	process-protocol-message	gate:campaign-replay,gate:abi-conformance
+crucible.qemu.checkpoint-qmp	3	crucible-qemu::qmp::checkpoint	process-protocol-message	gate:campaign-replay,gate:abi-conformance
 crucible.qemu.checkpoint-ram	1	qemu-patch::checkpoint-ram	device-state	gate:exact-closure-streaming
 crucible.qemu.command-vmstate	1	qemu-patch::command-vmstate	device-state	gate:exact-closure-streaming,gate:abi-conformance
 crucible.qemu.fault-vmstate	1	qemu-patch::fault-vmstate	device-state	gate:exact-closure-streaming,gate:abi-conformance
@@ -462,3 +462,9 @@ aos.crucible.campaign-release-acceptance	2	tests::crucible::phase9_campaign_rele
 aos.crucible.campaign-release-acceptance-contract	2	tests::crucible::campaign_release_acceptance_contract	gate-contract	gate:campaign-release-acceptance
 aos.crucible.campaign-gate-matrix-inventory	2	tests::crucible::campaign_gate_matrix_inventory	gate-contract	gate:campaign-gate-matrix
 crucible.qemu.hot-fork.source-graph	1	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation,gate:abi-conformance
+crucible.qemu.hot-fork.child-ram	1	crucible-qemu::qmp::hot_fork_ram	process-protocol-message	gate:hot-fork-isolation,gate:abi-conformance
+crucible.qemu.paused-cpu	1	crucible-qemu::qmp::paused_cpu	process-protocol-message	gate:abi-conformance
+crucible.ram-control.frame	6	crucible-protocol::ram_control	process-protocol-message	gate:abi-conformance
+crucible.qemu.kernel-swap.admission	1	crucible-qemu::qmp::kernel_swap_residency	process-protocol-message	gate:abi-conformance
+crucible.qemu.kernel-swap.residency	1	crucible-qemu::qmp::kernel_swap_residency	process-protocol-message	gate:abi-conformance
+crucible.qemu.selectable-reset	1	crucible-qemu::qmp::selectable_reset	process-protocol-message	gate:typed-choice,gate:abi-conformance

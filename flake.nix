@@ -304,6 +304,9 @@
           inherit (aos.pkgs) erofs-utils util-linux;
           packageRuntime = aos.pkgs.aos.packageRuntime;
         };
+        cargoSourceWrapper = import ./tools/dev/cargo-source-wrapper.nix {
+          pkgs = aos.pkgs;
+        };
         cargoBuildPackages = [
           aos.pkgs.rust
           aos.pkgs.rust.dev
@@ -335,6 +338,11 @@
           "x86_64-linux" = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS";
           "aarch64-linux" = "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS";
         };
+        cargoHostRustdocflagsVar = builtins.getAttr system {
+          "x86_64-linux" = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTDOCFLAGS";
+          "aarch64-linux" = "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTDOCFLAGS";
+        };
+        nativeLibraryRustflags = "-C link-arg=-Wl,-rpath,${aos.pkgs.openssl}/lib -C link-arg=-Wl,-rpath,${aos.pkgs.sqlite}/lib";
         mkDevShell = name: packages: let
           livePackageRuntime = name == "aos-cargo-dev";
           requestedCheckout = builtins.getEnv "AOS_DEV_ROOT";
@@ -342,7 +350,7 @@
             if requestedCheckout != ""
             then requestedCheckout
             else ./.;
-          binPath = builtins.concatStringsSep ":" (map (p: "${p}/bin") ([devLauncher aos.pkgs.bash aos.pkgs.nix aos.pkgs.alejandra aos.pkgs.acl] ++ packages));
+          binPath = builtins.concatStringsSep ":" (map (p: "${p}/bin") ([cargoSourceWrapper devLauncher aos.pkgs.bash aos.pkgs.nix aos.pkgs.alejandra aos.pkgs.acl] ++ packages));
         in
           builtins.derivation {
             inherit (configurationLowerCargoEnv) AOS_MKFS_EROFS AOS_FSCK_EROFS AOS_MOUNT AOS_UMOUNT;
@@ -392,10 +400,11 @@
                 # OPENSSL_DIR above only lets `openssl-sys` *link* against the AOS
                 # OpenSSL and pkg-config above only let native crates link against
                 # the AOS libraries; the resulting binary still records SONAMEs.
-                # Bake both library directories into native cargo binaries so
-                # they run directly without an LD_LIBRARY_PATH that would poison
-                # the `nix` subprocesses they launch.
-                export ${cargoHostRustflagsVar}="-C link-arg=-Wl,-rpath,${aos.pkgs.openssl}/lib -C link-arg=-Wl,-rpath,${aos.pkgs.sqlite}/lib"
+                # Bake both library directories into native cargo binaries and
+                # rustdoc's separately linked test executables. They run directly
+                # without an LD_LIBRARY_PATH that would poison `nix` subprocesses.
+                export ${cargoHostRustflagsVar}="${nativeLibraryRustflags}"
+                export ${cargoHostRustdocflagsVar}="${nativeLibraryRustflags}"
               '';
           };
       in {

@@ -81,18 +81,21 @@ fn memory_sample(sequence: u64, ticks: u64, value: u64) -> SchedulerEventLogEntr
         value,
     );
     crucible::test_support::condition_observation_entry_for_test(sequence, &event)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn network_entry(sequence: u64, ticks: u64, payload: &[u8]) -> SchedulerEventLogEntry {
     let event = ObservableEvent::network_delivered(time(ticks), None, payload.to_vec());
     crucible::test_support::condition_observation_entry_for_test(sequence, &event)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn online_report(
     properties: &Properties,
     log: &[SchedulerEventLogEntry],
 ) -> crucible::HostAssertionReport {
-    let mut evaluator = HostAssertionEvaluator::new(properties);
+    let mut evaluator = HostAssertionEvaluator::new(properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle = BlackBoxHostOracle;
     if !log.is_empty() {
         for index in 0..log.len() - 1 {
@@ -100,7 +103,9 @@ fn online_report(
                 log[..=index].to_vec(),
             )
             .expect("online proximity prefix should validate");
-            evaluator.observe_prefix(&prefix, &mut oracle);
+            evaluator
+                .observe_prefix(&prefix, &mut oracle)
+                .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
         }
     }
     let terminal = if log.is_empty() {
@@ -109,7 +114,9 @@ fn online_report(
         crucible::test_support::condition_prefix_from_scheduler_entries_for_test(log.to_vec())
             .expect("terminal proximity prefix should validate")
     };
-    evaluator.finalize_prefix(&terminal, &mut oracle)
+    evaluator
+        .finalize_prefix(&terminal, &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"))
 }
 
 fn proximity<'a>(
@@ -124,6 +131,9 @@ fn proximity<'a>(
 
 #[test]
 fn proximity_gradient_folds_minimum_threshold_gap_for_unsatisfied_sometimes() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = properties(vec![assertion(
         "counter-reaches-ten",
         Property::Sometimes {
@@ -158,6 +168,9 @@ fn proximity_gradient_folds_minimum_threshold_gap_for_unsatisfied_sometimes() {
 
 #[test]
 fn proximity_gradient_reports_boolean_unit_for_unreached_boolean_conditions() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = properties(vec![assertion(
         "required-frame",
         Property::Reachable {
@@ -186,6 +199,9 @@ fn proximity_gradient_reports_boolean_unit_for_unreached_boolean_conditions() {
 
 #[test]
 fn proximity_gradient_tracks_armed_eventually_without_changing_verdict() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = properties(vec![assertion(
         "counter-after-trigger",
         Property::Eventually {
@@ -220,6 +236,9 @@ fn proximity_gradient_tracks_armed_eventually_without_changing_verdict() {
 
 #[test]
 fn proximity_gradient_omits_satisfied_and_never_triggered_obligations() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = properties(vec![
         assertion(
             "satisfied-sometimes",

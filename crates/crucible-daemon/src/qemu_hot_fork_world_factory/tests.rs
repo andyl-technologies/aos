@@ -93,6 +93,9 @@ mod native_acceptance;
 #[path = "tests/world_fork_atomicity.rs"]
 mod world_fork_atomicity;
 
+#[path = "tests/operational.rs"]
+mod operational;
+
 #[cfg(feature = "destructive-recovery-faults")]
 const WORLD_FORK_PREFLIGHT_FAILURE_CHILD_ENVIRONMENT: &str =
     "CRUCIBLE_DESTRUCTIVE_RECOVERY_WORLD_FORK_PREFLIGHT_FAILURE_CHILD";
@@ -550,6 +553,7 @@ impl QemuFreshAttemptLifecycleOwner for BranchReplayLifecycle {
             event_log_segment_hash: None,
             event_log_offset: crucible::EventLogOffset::default(),
             scheduler_quiescence: None,
+            event_log_custody: crucible::EventLogOutputCustody::default(),
         })
     }
 
@@ -908,7 +912,7 @@ impl QemuHotForkWorldLifecycleOwner for InheritedBoundaryLifecycle {
             .start_events
             .iter()
             .map(SchedulerEventLogEntry::canonical_material_len)
-            .sum();
+            .sum::<Result<usize, _>>()?;
         Ok(crate::QemuFreshStartMaterialization::from_resume_parts(
             self.configuration.clone(),
             self.start_events.clone(),
@@ -1214,6 +1218,7 @@ impl QemuHotForkSourceWorldProvider for CleanupOrderedSourceWorldProvider {
 
 #[test]
 fn source_provider_failure_preserves_its_diagnostic_chain() {
+    let _metadata_scope = component_metadata_scope();
     let input = execution_input();
     let observations = ScriptedWorldObservations::new();
     let run_state = tempfile::tempdir().expect("run state");
@@ -1267,6 +1272,12 @@ impl CrucibleExecutionRunner for RecordingFallbackRunner {
         self.reconciliations.fetch_add(1, Ordering::SeqCst);
         Ok(AttemptExecutionReconciliationStep::Complete)
     }
+}
+
+/// Keeps one explicit component metadata bank alive through all scripted owners.
+fn component_metadata_scope() -> crucible::test_support::FixtureDecodeScope {
+    crucible::test_support::fixture_decode_scope(128 * 1024 * 1024)
+        .expect("finite scripted World/configuration/output metadata bank")
 }
 
 fn test_realization_error(error: impl std::fmt::Display) -> QemuVmRealizationError {
@@ -1493,14 +1504,10 @@ fn execution_context(
     input: &CrucibleAttemptExecution,
     execution_byte: u8,
 ) -> AttemptExecutionContext {
-    AttemptExecutionContext::new(
+    operational::service_context(
         AttemptResourceLimits::new(8, 8 << 30, 8 << 30, 64).expect("resources"),
-        ExecutionRetentionIntent::Discard,
-        ExecutionCancellation::default(),
-        ExecutionCheckpointRequest::default(),
-        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
+        execution_basis(input, execution_byte),
     )
-    .with_runtime_basis(execution_basis(input, execution_byte))
 }
 
 fn branch_replay_guest_pending(
@@ -1522,3 +1529,6 @@ fn branch_replay_guest_pending(
 mod branch_runner;
 #[path = "tests/reconciliation.rs"]
 mod reconciliation;
+
+pub(crate) use native_acceptance::assert_native_atomic_resources_private;
+pub(crate) use native_acceptance::assert_native_sibling_resources_private;

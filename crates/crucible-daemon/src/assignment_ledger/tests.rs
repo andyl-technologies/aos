@@ -1206,7 +1206,7 @@ fn finding_candidate(byte: u8) -> FindingCandidateBundleId {
 
 fn checkpoint(byte: u8) -> ExactCheckpointId {
     ExactCheckpointId::parse(&format!(
-        "crucible.executor.exact-checkpoint-root@exact-manifest.5.{}",
+        "crucible.executor.exact-checkpoint-root@exact-manifest.6.{}",
         encode_hex(&[byte; 32])
     ))
     .expect("checkpoint")

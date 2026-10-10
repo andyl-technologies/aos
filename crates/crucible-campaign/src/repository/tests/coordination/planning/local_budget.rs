@@ -122,7 +122,11 @@ fn accept(
             output.proposal().usage_claim(),
         )
         .expect("accept page");
-    *repository = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    *repository = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     repository
         .validate_complete_head(result.new_snapshot.content_id())
         .expect("cold validation");

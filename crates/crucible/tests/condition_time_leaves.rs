@@ -54,19 +54,37 @@ impl ConditionLeafOracle for NoLeaves {
 
 #[test]
 fn at_leaf_is_true_only_at_the_exact_virtual_time() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let condition = Predicate::at(time(10));
 
     let mut before = evaluator(9);
     let mut exact = evaluator(10);
     let mut after = evaluator(11);
 
-    assert!(!before.evaluate_assertion_condition(&condition));
-    assert!(exact.evaluate_assertion_condition(&condition));
-    assert!(!after.evaluate_assertion_condition(&condition));
+    assert!(
+        !before
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
+    assert!(
+        exact
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
+    assert!(
+        !after
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
 }
 
 #[test]
 fn after_leaf_is_relative_to_known_event_firing_history() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let anchor = event_id("bootstrap");
     let condition = Predicate::after(duration(5), anchor.clone());
     let mut firings = BTreeMap::new();
@@ -77,14 +95,32 @@ fn after_leaf_is_relative_to_known_event_firing_history() {
     let mut late = evaluator(13).with_event_firings(firings);
     let mut no_history = evaluator(12);
 
-    assert!(due.evaluate_assertion_condition(&condition));
-    assert!(!early.evaluate_assertion_condition(&condition));
-    assert!(!late.evaluate_assertion_condition(&condition));
-    assert!(!no_history.evaluate_assertion_condition(&condition));
+    assert!(
+        due.evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
+    assert!(
+        !early
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
+    assert!(
+        !late
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
+    assert!(
+        !no_history
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
 }
 
 #[test]
 fn timer_leaf_is_true_at_evaluator_supplied_timer_fire_time() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let timer = timer_id("stabilize");
     let condition = Predicate::timer(timer.clone());
     let mut timers = BTreeMap::new();
@@ -95,14 +131,32 @@ fn timer_leaf_is_true_at_evaluator_supplied_timer_fire_time() {
     let mut late = evaluator(31).with_timer_fires(timers);
     let mut no_timer = evaluator(30);
 
-    assert!(due.evaluate_assertion_condition(&condition));
-    assert!(!early.evaluate_assertion_condition(&condition));
-    assert!(!late.evaluate_assertion_condition(&condition));
-    assert!(!no_timer.evaluate_assertion_condition(&condition));
+    assert!(
+        due.evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
+    assert!(
+        !early
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
+    assert!(
+        !late
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
+    assert!(
+        !no_timer
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
 }
 
 #[test]
 fn at_leaf_round_trips_through_properties_serialization() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_nodes(Vec::new()).expect("empty world should build");
     let properties = Properties::from_assertions_for_world(
         &world,
@@ -128,6 +182,9 @@ fn at_leaf_round_trips_through_properties_serialization() {
 
 #[test]
 fn properties_reject_edge_shaped_after_and_timer_leaves() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = World::from_nodes(Vec::new()).expect("empty world should build");
 
     let after = Properties::from_assertions_for_world(
@@ -157,6 +214,9 @@ fn properties_reject_edge_shaped_after_and_timer_leaves() {
 
 #[test]
 fn event_graph_supplies_last_firing_history_to_after_leaves() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let bootstrap = Event::once(
         event_id("bootstrap"),
         None,
@@ -192,6 +252,9 @@ fn event_graph_supplies_last_firing_history_to_after_leaves() {
 
 #[test]
 fn event_graph_validates_after_references_declared_events() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let missing = event_id("missing");
     let event = Event::once(
         event_id("delayed"),
@@ -212,6 +275,9 @@ fn event_graph_validates_after_references_declared_events() {
 
 #[test]
 fn event_graph_validates_timer_references_armable_timers() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let missing = timer_id("missing");
     let event = Event::once(
         event_id("timer-fired"),
@@ -232,6 +298,9 @@ fn event_graph_validates_timer_references_armable_timers() {
 
 #[test]
 fn event_graph_accepts_timer_reference_to_grouped_arm_timer_action() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let timer = timer_id("settled");
     let graph = EventGraph::new(vec![
         Event::once(

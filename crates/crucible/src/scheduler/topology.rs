@@ -642,7 +642,7 @@ pub fn ordered_scheduled_events(events: &[ScheduledEvent]) -> Vec<&ScheduledEven
     ordered
 }
 
-/// Merges frame deliveries with device I/O completions in the §8.6 total order.
+/// Merges frame deliveries and device I/O completions in canonical timeline order.
 ///
 /// Frame (backend-input) deliveries and device [`IoCompletion`] events are both
 /// cross-node happenings resolved at a node's advanced frontier; this folds them

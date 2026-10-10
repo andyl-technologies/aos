@@ -6,7 +6,7 @@ pub(super) fn execute_local_qemu_campaign(
     backend: &ResolvedLocalBackend,
     run_plan: &RunInvocationPlan,
     lifecycle: crucible_api::ProductionVmLifecycleConfig,
-) -> Result<GuardedDefaultCampaignRun, CliError> {
+) -> Result<(GuardedDefaultCampaignRun, DecodeBudget), CliError> {
     if !batch_campaign_run_eligible(run_plan) {
         return Err(backend_error(
             "the requested run shape does not have an exact batch campaign QEMU adapter",
@@ -31,15 +31,14 @@ pub(super) fn execute_local_qemu_campaign(
     let seed = run_plan
         .request_seed
         .unwrap_or_else(|| scenario.scenario_def().seed());
-    let request = GuardedDefaultCampaignRunRequest::new(
+    let request = crate::cli_verify_serve::configured_guarded_campaign_request(
+        &deployment,
         scenario,
         seed,
-        env!("CARGO_PKG_VERSION"),
         qemu_build_id,
         lifecycle,
-        deployment.host,
         resources,
-    )
+    )?
     .with_discovery_stop(guarded_discovery_stop(run_plan)?);
     let request = apply_guarded_campaign_determinism_policy(request, verify_determinism_findings);
     let request = if run_plan.watch_streams_live_status {
@@ -48,6 +47,8 @@ pub(super) fn execute_local_qemu_campaign(
         request
     };
 
-    run_guarded_default_campaign(request)
-        .map_err(|error| campaign_run_error("execute shared campaign owner", error))
+    let decoding = campaign_request_metadata_budget(&request)?;
+    let campaign = run_guarded_default_campaign(request)
+        .map_err(|error| campaign_run_error("execute shared campaign owner", error))?;
+    Ok((campaign, decoding))
 }

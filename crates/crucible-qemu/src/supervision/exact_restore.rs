@@ -1,9 +1,10 @@
 //! Atomic repository-rooted exact-checkpoint launch.
 //!
 //! This module owns the only operation that turns authenticated checkpoint
-//! streams into a live QEMU process. It retains the process contract, prepared
-//! directory, execution relation, and every input stream until all bytes have
-//! been authenticated and sealed. No writable materialization stage escapes.
+//! inputs into a live QEMU process. It retains the process contract, prepared
+//! directory, execution relation, and immutable RAM backing. Non-RAM streams
+//! are authenticated and sealed before launch; RAM pages remain in the source
+//! and are authenticated on demand. No writable staging handle escapes.
 
 use std::fs::File;
 use std::io::Read;
@@ -21,6 +22,81 @@ use crate::{
 use super::node_step_gate::{
     AtomicExactRestoreAdmission, launch_atomic_exact_restore, resume_restored_exact_node,
 };
+
+/// Retains immutable RAM backing and a fresh private page-source namespace.
+///
+/// The backing owns its storage lease for the lifetime of each source service.
+/// Each process admission creates an independent transport and request cursor.
+pub struct QemuPagedRamRestoreSource {
+    backing: std::sync::Arc<dyn crate::ram_source::QemuRamBacking>,
+    binding: crucible_protocol::ram_page::RamPageBinding,
+}
+
+impl std::fmt::Debug for QemuPagedRamRestoreSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("QemuPagedRamRestoreSource")
+            .field("binding", &self.binding)
+            .finish_non_exhaustive()
+    }
+}
+
+impl QemuPagedRamRestoreSource {
+    /// Creates a source with fresh operational identifiers and retained backing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if entropy is unavailable or the source has an incomplete scope.
+    pub fn new(
+        backing: std::sync::Arc<dyn crate::ram_source::QemuRamBacking>,
+    ) -> Result<Self, std::io::Error> {
+        if !matches!(
+            backing.root_record().scope(),
+            crucible_ram::Scope::Exact | crucible_ram::Scope::Lifecycle
+        ) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "RAM backing scope is incomplete",
+            ));
+        }
+        let mut entropy = File::open("/dev/urandom")?;
+        let mut session = [0; 16];
+        let mut owner_incarnation = [0; 16];
+        entropy.read_exact(&mut session)?;
+        entropy.read_exact(&mut owner_incarnation)?;
+        if session == [0; 16] || owner_incarnation == [0; 16] || session == owner_incarnation {
+            return Err(std::io::Error::other(
+                "RAM source namespace entropy was invalid",
+            ));
+        }
+        let binding = crucible_protocol::ram_page::RamPageBinding {
+            session,
+            owner_incarnation,
+            source_generation: 1,
+            root_digest: *backing.root_record().digest().as_bytes(),
+        };
+        Ok(Self { backing, binding })
+    }
+
+    /// Returns the complete immutable root retained by the source.
+    pub fn root_record(&self) -> &crucible_ram::RootRecord {
+        self.backing.root_record()
+    }
+
+    /// Returns the canonical retained storage identity.
+    pub fn root_object_id(&self) -> &str {
+        self.backing.root_object_id()
+    }
+
+    /// Returns the independently owned source namespace.
+    pub const fn binding(&self) -> crucible_protocol::ram_page::RamPageBinding {
+        self.binding
+    }
+
+    pub(crate) fn backing(&self) -> std::sync::Arc<dyn crate::ram_source::QemuRamBacking> {
+        std::sync::Arc::clone(&self.backing)
+    }
+}
 
 /// Complete one-shot input for a repository-rooted exact QEMU restore.
 #[derive(Debug)]
@@ -55,6 +131,18 @@ pub struct QemuProductionExactRestoreProfile {
 }
 
 impl QemuProductionExactRestoreRequest {
+    pub(crate) fn with_replay_ram_registration(
+        mut self,
+        registration: crate::ram_control::RamControlRegistration,
+        supervisor: crucible_linux_resource::host_supervision::HostOperationSupervisor,
+    ) -> Self {
+        self.config = self
+            .config
+            .with_ram_control_registration(registration)
+            .with_host_operation_supervisor(supervisor);
+        self
+    }
+
     pub(crate) fn authenticate_replay_basis(
         &self,
         config: &QemuLiveNodeStepGateConfig,
@@ -89,6 +177,7 @@ impl QemuProductionExactRestoreRequest {
         process_contract: &QemuChildProcessContract,
         target: crucible::exact_checkpoint::ExactCheckpointVerifiedNode,
         streams: crucible::exact_checkpoint::ExactCheckpointRestoreStreams,
+        ram_source: QemuPagedRamRestoreSource,
     ) -> Result<Self, QemuLiveNodeStepGateError> {
         let QemuProductionExactRestoreProfile {
             config,
@@ -120,7 +209,21 @@ impl QemuProductionExactRestoreRequest {
         let process_contract = process_contract
             .try_clone_for_attempt_generation()
             .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
-        let (root_overlay, device_state, ram_layers) = streams.into_readers();
+        let paged = target.paged_ram().map_err(|source| {
+            QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+                reason: format!("decode exact RAM source binding: {source}"),
+            }
+        })?;
+        if paged.root_record() != ram_source.root_record()
+            || paged.object_id().encode() != ram_source.root_object_id()
+        {
+            return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+                reason: String::from(
+                    "retained RAM source differs from the authenticated checkpoint",
+                ),
+            });
+        }
+        let (root_overlay, device_state) = streams.into_readers();
 
         Ok(Self {
             config,
@@ -132,14 +235,14 @@ impl QemuProductionExactRestoreRequest {
             router,
             crash_detector,
             target,
-            source: QemuProductionExactRestoreSource::new(root_overlay, device_state, ram_layers),
+            source: QemuProductionExactRestoreSource::new(root_overlay, device_state, ram_source),
         })
     }
 
-    /// Authenticates all bytes, seals descriptors, and launches one exact node.
+    /// Authenticates non-RAM bytes and retained roots, then launches one exact node.
     ///
     /// No QEMU process is spawned until the overlay, device state, and every
-    /// ordered RAM layer match the repository-rooted execution relation.
+    /// retained RAM root match the repository-rooted execution relation.
     ///
     /// # Errors
     ///

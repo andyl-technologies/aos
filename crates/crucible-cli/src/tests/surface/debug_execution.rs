@@ -4,6 +4,7 @@ use super::*;
 
 #[test]
 pub(super) fn cli_qemu_debug_rejects_unavailable_local_execution() -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let backend = ResolvedLocalBackend::Qemu {
         qemu: PathBuf::from("/test/qemu"),
         plugin: PathBuf::from("/test/plugin"),
@@ -26,7 +27,7 @@ pub(super) fn cli_qemu_debug_rejects_unavailable_local_execution() -> Result<(),
         panic!("debug command should parse");
     };
     let plan = plan_debug_invocation(&cli, args)?;
-    let error = run_local_qemu_debug_workflow(&backend, &plan)
+    let error = run_local_qemu_debug_workflow(&backend, &plan, None)
         .expect_err("local debugger execution must fail instead of emitting a plan");
     assert!(matches!(error, CliError::Backend(_)));
     assert_eq!(error.exit_code(), 4);
@@ -41,6 +42,7 @@ pub(super) fn cli_qemu_debug_rejects_unavailable_local_execution() -> Result<(),
 }
 #[test]
 pub(super) fn cli_qemu_debug_rejects_missing_artifact() -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let backend = ResolvedLocalBackend::Qemu {
         qemu: PathBuf::from("/test/qemu"),
         plugin: PathBuf::from("/test/plugin"),
@@ -63,9 +65,11 @@ pub(super) fn cli_qemu_debug_rejects_missing_artifact() -> Result<(), Box<dyn Er
         panic!("debug command should parse");
     };
     let plan = plan_debug_invocation(&cli, args)?;
-    let error = run_local_qemu_debug_workflow(&backend, &plan)
+    let error = run_local_qemu_debug_workflow(&backend, &plan, None)
         .expect_err("a missing artifact must fail before execution");
 
-    assert!(matches!(error, CliError::Artifact(_)));
+    assert!(
+        matches!(error, CliError::Io(ref source) if source.kind() == std::io::ErrorKind::NotFound)
+    );
     Ok(())
 }

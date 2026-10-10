@@ -20,6 +20,9 @@ use crucible::{
 #[test]
 fn debug_goto_uses_nearest_checkpoint_then_replay_to_exact_coordinate() -> Result<(), Box<dyn Error>>
 {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = single_node_world("debug-goto")?;
     let scenario = world.scenario_def();
     let root = Configuration::genesis(scenario.clone());
@@ -63,6 +66,9 @@ fn debug_goto_uses_nearest_checkpoint_then_replay_to_exact_coordinate() -> Resul
 
 #[test]
 fn debug_goto_coordinate_resolution_stays_on_current_ancestry() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = single_node_world("debug-goto-ancestry")?;
     let scenario = world.scenario_def();
     let root = Configuration::genesis(scenario.clone());
@@ -114,6 +120,9 @@ fn debug_goto_coordinate_resolution_stays_on_current_ancestry() -> Result<(), Bo
 
 #[test]
 fn debug_reverse_step_and_continue_are_realized_by_goto() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = single_node_world("debug-reverse")?;
     let scenario = world.scenario_def();
     let root = Configuration::genesis(scenario.clone());
@@ -144,12 +153,14 @@ fn debug_reverse_step_and_continue_are_realized_by_goto() -> Result<(), Box<dyn 
             0,
             VirtualTime { ticks: 1 },
             crucible::SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             1,
             VirtualTime { ticks: 2 },
             crucible::SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
     let reverse_quantum = graph.debug_reverse_step(
         &attach,
@@ -171,7 +182,8 @@ fn debug_reverse_step_and_continue_are_realized_by_goto() -> Result<(), Box<dyn 
                 node_id("guest-a"),
                 NodeLifecycle::Started,
             ),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_observation_entry_for_test(
             1,
             &ObservableEvent::node_state(
@@ -179,12 +191,14 @@ fn debug_reverse_step_and_continue_are_realized_by_goto() -> Result<(), Box<dyn 
                 node_id("guest-a"),
                 NodeLifecycle::Started,
             ),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             2,
             VirtualTime { ticks: 3 },
             crucible::SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
     let reverse_continue = graph.debug_reverse_continue(
         &attach,
@@ -230,6 +244,9 @@ fn debug_reverse_step_and_continue_are_realized_by_goto() -> Result<(), Box<dyn 
 
 #[test]
 fn debug_goto_replay_oracle_mismatch_carries_bisection_coordinate() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = single_node_world("debug-goto-bisect")?;
     let scenario = world.scenario_def();
     let root = Configuration::genesis(scenario.clone());
@@ -271,6 +288,9 @@ fn debug_goto_replay_oracle_mismatch_carries_bisection_coordinate() -> Result<()
 
 #[test]
 fn debug_per_node_and_whole_world_time_travel_land_coherently() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = two_node_world("debug-scoped")?;
     let scenario = world.scenario_def();
     let root = Configuration::genesis(scenario.clone());
@@ -394,6 +414,9 @@ fn debug_per_node_and_whole_world_time_travel_land_coherently() -> Result<(), Bo
 #[test]
 fn debug_checkpoint_stride_is_performance_only_under_explicit_cache_policy()
 -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = single_node_world("debug-stride")?;
     let scenario = world.scenario_def();
     let root = Configuration::genesis(scenario.clone());

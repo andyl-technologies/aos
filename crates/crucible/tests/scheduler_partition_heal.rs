@@ -14,6 +14,9 @@ use crucible::{
 
 #[test]
 fn partition_removes_one_inbound_edge_and_recomputes_next_minimum() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let fast = scheduler_node("fast-producer");
     let slow = scheduler_node("slow-producer");
     let consumer = scheduler_node("consumer");
@@ -64,6 +67,9 @@ fn partition_removes_one_inbound_edge_and_recomputes_next_minimum() {
 
 #[test]
 fn partition_last_inbound_edge_recomputes_infinite_lookahead() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let producer = scheduler_node("producer");
     let consumer = scheduler_node("consumer");
     let scenario = base_scenario(
@@ -103,6 +109,9 @@ fn partition_last_inbound_edge_recomputes_infinite_lookahead() {
 
 #[test]
 fn heal_restores_edge_over_current_partitioned_graph() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let fast = scheduler_node("fast-producer");
     let slow = scheduler_node("slow-producer");
     let consumer = scheduler_node("consumer");
@@ -158,6 +167,9 @@ fn heal_restores_edge_over_current_partitioned_graph() {
 
 #[test]
 fn partition_removed_edge_blocks_send_until_heal_restores_it() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let producer = scheduler_node("producer");
     let consumer = scheduler_node("consumer");
     let scenario = base_scenario(

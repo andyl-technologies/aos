@@ -1,4 +1,4 @@
-//! Guarded version-nine production-checkpoint resume for campaign attempts.
+//! Guarded authenticated paged production-checkpoint resume for campaign attempts.
 //!
 //! This module keeps durable-root installation, multi-node process launch,
 //! modeled driving, final drain, and result sealing in one linear owner. A
@@ -648,7 +648,9 @@ fn resume_start_materialization<F, D>(
     }
     let bytes = events.iter().try_fold(0usize, |total, entry| {
         total
-            .checked_add(entry.canonical_material_len())
+            .checked_add(entry.canonical_material_len().map_err(|source| {
+                map_resume_checkpoint_capture_failure(SchedulerError::from(source))
+            })?)
             .ok_or_else(|| resume_event_log_limit("campaign-event-log-bytes"))
     })?;
     if bytes > MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES {
@@ -662,7 +664,12 @@ fn resume_start_materialization<F, D>(
             ))?,
         QemuResumeReplayProof::AttemptStart(None) => 0,
         QemuResumeReplayProof::SelectedOrigin(proof) => {
-            if !proof.matches_boundary(&configuration, completed_quanta, frontier, base, &events) {
+            if !proof
+                .matches_boundary(&configuration, completed_quanta, frontier, base, &events)
+                .map_err(|source| {
+                    map_resume_checkpoint_capture_failure(SchedulerError::from(source))
+                })?
+            {
                 return Err(AttemptWorkerFailure::Terminal(
                     QemuProductionExactResumeExecutionRunnerError::SelectedOriginMismatch,
                 ));
@@ -744,14 +751,7 @@ fn map_resume_driver_failure<F, D>(
 fn map_resume_checkpoint_capture_failure<F, D>(
     error: SchedulerError,
 ) -> AttemptWorkerFailure<QemuProductionExactResumeExecutionRunnerError<F, D>> {
-    let class = match &error {
-        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
-        SchedulerError::Backend(_)
-        | SchedulerError::BoundaryViolation { .. }
-        | SchedulerError::ResourceLimit { .. }
-        | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
-    };
+    let class = error.operational_failure_class();
     let error = QemuProductionExactResumeExecutionRunnerError::CheckpointCapture(error);
     match class {
         Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),
@@ -765,15 +765,7 @@ fn map_resume_checkpoint_capture_failure<F, D>(
 fn map_resume_terminal_fingerprint_capture_failure<F, D>(
     error: SchedulerError,
 ) -> AttemptWorkerFailure<QemuProductionExactResumeExecutionRunnerError<F, D>> {
-    let class = match &error {
-        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
-        // crucible-lint: allow host-nondeterminism-state -- this arm only classifies an already-produced scheduler failure as terminal and cannot feed an observation back into resumed execution.
-        SchedulerError::Backend(_)
-        | SchedulerError::BoundaryViolation { .. }
-        | SchedulerError::ResourceLimit { .. }
-        | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
-    };
+    let class = error.operational_failure_class();
     let error = QemuProductionExactResumeExecutionRunnerError::TerminalFingerprintCapture(error);
     match class {
         Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),

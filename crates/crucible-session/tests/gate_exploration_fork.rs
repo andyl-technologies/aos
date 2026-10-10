@@ -556,6 +556,9 @@ impl AppendingLoop {
 
 impl QuantumLoop for AppendingLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        let _quantum_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite quantum fixture scope: {error}"));
+
         self.quanta = self.quanta.saturating_add(1);
         let decision = generated_decision(self.seed, self.quanta);
         let configuration = accepted_step(&request.configuration, decision.clone());
@@ -563,7 +566,8 @@ impl QuantumLoop for AppendingLoop {
             self.event_log_events,
             VirtualTime { ticks: self.quanta },
             crucible::SchedulerEvaluationBoundaryKind::Quantum,
-        );
+        )
+        .unwrap_or_else(|error| panic!("finite fixture event identity: {error}"));
         self.event_log_events = self.event_log_events.saturating_add(1);
         Ok(QuantumOutcome {
             configuration,
@@ -582,6 +586,8 @@ impl QuantumLoop for AppendingLoop {
                 self.event_log_events,
             ),
             scheduler_quiescence: None,
+            event_log_custody: crucible::EventLogOutputCustody::retain_current()
+                .unwrap_or_else(|error| panic!("finite fixture output custody: {error}")),
         })
     }
 }

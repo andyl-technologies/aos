@@ -243,7 +243,7 @@ async fn assert_event_log_replay_is_exact(
         );
         assert_eq!(frame.entry.sequence(), frame.cursor.next_sequence);
         assert_eq!(
-            frame.entry, *expected_entry,
+            &**frame.entry, expected_entry,
             "paused/resumed event-log entry must match uninterrupted entry {expected_sequence}"
         );
     }
@@ -301,6 +301,9 @@ impl AppendingLoop {
 
 impl QuantumLoop for AppendingLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        let _quantum_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite quantum fixture scope: {error}"));
+
         self.quanta = self.quanta.saturating_add(1);
         let decision = generated_decision(self.quanta);
         let configuration = accepted_step(&request.configuration, decision.clone());
@@ -330,6 +333,8 @@ impl QuantumLoop for AppendingLoop {
                 self.event_log_events,
             ),
             scheduler_quiescence: None,
+            event_log_custody: crucible::EventLogOutputCustody::retain_current()
+                .unwrap_or_else(|error| panic!("finite fixture output custody: {error}")),
         })
     }
 }
@@ -386,11 +391,15 @@ fn scheduler_node(name: &str) -> SchedulerNodeId {
 }
 
 fn test_event_log_entry(sequence: u64, ticks: u64) -> crucible::SchedulerEventLogEntry {
+    let _fixture_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite event fixture scope: {error}"));
+
     crucible::test_support::condition_boundary_entry_for_test(
         sequence,
         VirtualTime { ticks },
         crucible::SchedulerEvaluationBoundaryKind::Quantum,
     )
+    .unwrap_or_else(|error| panic!("finite fixture event identity: {error}"))
 }
 
 fn record_control_operations(

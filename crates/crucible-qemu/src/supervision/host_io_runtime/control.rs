@@ -84,6 +84,51 @@ impl QemuLiveHostIoRuntime {
         })
     }
 
+    /// Publishes only the paired capture control, retaining a pending request.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(super) fn publish_paired_fingerprint_control(
+        &mut self,
+        deadline: &OperationPollBudget<'_>,
+        fingerprint_capture_request: u32,
+    ) -> Result<PendingControlBoundary, QemuAsyncDriverRuntimeError> {
+        deadline.remaining("publish paired fingerprint control")?;
+        let fault_command_frontier = self
+            .region
+            .fault_command_write_index(self.vm_slot)
+            .map_err(map_slot_error)?;
+        let generation = self
+            .region
+            .node_slot(self.vm_slot)
+            .map_err(map_slot_error)?
+            .request_control_boundary(fault_command_frontier, Some(fingerprint_capture_request))
+            .map_err(|source| {
+                QemuAsyncDriverRuntimeError::new(
+                    "request plugin control boundary",
+                    source.to_string(),
+                )
+            })?;
+        Ok(PendingControlBoundary {
+            generation,
+            fault_command_frontier,
+            fingerprint_capture_request: Some(fingerprint_capture_request),
+        })
+    }
+
+    /// Rings a paired capture only after rechecking its already-published cut.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(super) fn wake_paired_fingerprint_control(
+        &mut self,
+        deadline: &OperationPollBudget<'_>,
+        request: PendingControlBoundary,
+    ) -> Result<PendingControlBoundary, QemuAsyncDriverRuntimeError> {
+        // Refusal does not retract the published request or pretend that the
+        // plugin consumed it. Its actual phase owner retains that uncertainty.
+        deadline.remaining("wake paired fingerprint control")?;
+        self.write_wake_doorbell()?;
+        deadline.complete("wake paired fingerprint control")?;
+        Ok(request)
+    }
+
     /// Aborts a coordinated pause and wakes both plugin wait mechanisms.
     pub(super) fn abort_checkpoint_pause_with_wake(
         &mut self,
@@ -113,17 +158,23 @@ impl QemuLiveHostIoRuntime {
         }
     }
 
-    /// Releases a failed pause transaction while retaining both diagnostics.
+    /// Releases a failed pause while preserving its typed first cause and both diagnostics.
     pub(super) fn fail_checkpoint_pause(
         &mut self,
         primary: QemuAsyncDriverRuntimeError,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         match self.abort_checkpoint_pause_with_wake() {
             Ok(()) => Err(primary),
-            Err(cleanup) => Err(QemuAsyncDriverRuntimeError::new(
-                "rollback failed checkpoint pause",
-                format!("primary failure: {primary}; pause release failure: {cleanup}"),
-            )),
+            Err(cleanup) => {
+                let message =
+                    format!("primary failure: {primary}; pause release failure: {cleanup}");
+                // The initiating original refusal remains the actual source;
+                // a secondary wake failure must not reclassify it as Message.
+                let mut primary = primary;
+                primary.operation = "rollback failed checkpoint pause";
+                primary.message = message;
+                Err(primary)
+            }
         }
     }
 
@@ -163,6 +214,22 @@ impl QemuLiveHostIoRuntime {
         snapshot: &crucible_shmem::NodeSlotSnapshot,
         timeout: Duration,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.clamp_completed_quantum_with_original(snapshot, timeout, None)
+    }
+
+    pub(super) fn clamp_completed_quantum_with_original(
+        &mut self,
+        snapshot: &crucible_shmem::NodeSlotSnapshot,
+        timeout: Duration,
+        original: Option<&crucible_linux_resource::host_supervision::HostOperationGuard>,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        // Original-bound work admits before effects; ordinary work retains its
+        // existing separate clamp admission after boundary revocation.
+        let original_deadline = original
+            .map(|guard| {
+                OperationPollBudget::borrow_original(guard, "acknowledge completed-quantum clamp")
+            })
+            .transpose()?;
         self.performance.boundary(self.vm_slot);
         let ceiling =
             authorize_advance_ceiling(snapshot.current_icount, snapshot.current_icount, None)
@@ -187,6 +254,9 @@ impl QemuLiveHostIoRuntime {
         // post-device publication. This makes the later read-only checkpoint
         // readiness observation stable: any newly submitted coroutine is
         // already represented by `device_io_active` before the quantum returns.
+        if let Some(deadline) = &original_deadline {
+            deadline.complete("acknowledge completed-quantum clamp")?;
+        }
         let request = self.signal_wake(None)?;
         // Boundary discovery and revocation acknowledgement are distinct
         // liveness phases. A quantum may consume nearly all of its discovery
@@ -195,7 +265,16 @@ impl QemuLiveHostIoRuntime {
         // correct guest outcome depend on host contention. Give the handshake
         // its own bounded policy interval. Neither interval enters canonical
         // state or changes the exact guest coordinate.
-        let deadline = HostSupervisionDeadline::start(timeout);
+
+        let deadline = match original_deadline {
+            Some(deadline) => deadline,
+            None => OperationPollBudget::begin(
+                self.host_operation_supervisor.as_ref(),
+                HostOperationClass::Quiescence,
+                timeout,
+                "acknowledge completed-quantum clamp",
+            )?,
+        };
         self.wait_observation.begin_clamp(timeout);
         let mut last_observed_state;
         let mut boundary_acknowledged = false;
@@ -209,7 +288,10 @@ impl QemuLiveHostIoRuntime {
         };
         let mut device_progress_observed = false;
         loop {
-            drained_fault_events += self.drain_fault_events_for_pump(
+            if original.is_some() {
+                deadline.complete("acknowledge completed-quantum clamp")?;
+            }
+            drained_fault_events += self.drain_fault_events_for_operation(
                 self.fault_event_staging_limit,
                 &deadline,
                 timeout,
@@ -222,8 +304,17 @@ impl QemuLiveHostIoRuntime {
                 .node_slot(self.vm_slot)
                 .map_err(map_slot_error)?
                 .snapshot();
+            if original.is_some() {
+                deadline.complete("acknowledge completed-quantum clamp")?;
+            }
             let block_progress = self.service_block_io(&observed)?;
+            if original.is_some() {
+                deadline.complete("acknowledge completed-quantum clamp")?;
+            }
             let ninep_progress = self.service_ninep_io(&observed)?;
+            if original.is_some() {
+                deadline.complete("acknowledge completed-quantum clamp")?;
+            }
             let accelerator_progress = self.service_accelerator_io(&observed)?;
             let device_progress = block_progress || ninep_progress || accelerator_progress;
             device_progress_observed |= device_progress;
@@ -234,6 +325,9 @@ impl QemuLiveHostIoRuntime {
             };
             last_observed_state = (observed, device_progress);
             if device_progress {
+                if original.is_some() {
+                    deadline.complete("acknowledge completed-quantum clamp")?;
+                }
                 self.publish_device_completion_deadline()?;
             }
             let request_acknowledged = control_boundary_request_is_acknowledged(request, &observed);
@@ -258,10 +352,11 @@ impl QemuLiveHostIoRuntime {
                 device_progress,
                 &observed,
             ) {
+                deadline.complete("acknowledge completed-quantum clamp")?;
                 self.performance.finish(self.vm_slot, "acknowledged");
                 return Ok(());
             }
-            let Some(remaining) = deadline.remaining() else {
+            let Some(remaining) = deadline.remaining("acknowledge completed-quantum clamp")? else {
                 break;
             };
             self.observe_pending_wait(
@@ -276,7 +371,8 @@ impl QemuLiveHostIoRuntime {
                 }),
                 remaining,
             );
-            self.wait_for_poll_interval(remaining);
+            self.performance.pending_sleep();
+            deadline.wait(self.poll_interval, "acknowledge completed-quantum clamp")?;
         }
 
         let fault_command_indices = match self.region.fault_command_transport_mut(self.vm_slot) {

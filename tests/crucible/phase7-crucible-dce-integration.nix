@@ -263,7 +263,7 @@
         needle = "shared_seam=SharedDagStore+InvalidationQuery::evaluate";
       }
       {
-        label = "no RFC-0007 dependency";
+        label = "no shared-store dependency";
         needle = "no_rfc_0007_dependency=true";
       }
     ]

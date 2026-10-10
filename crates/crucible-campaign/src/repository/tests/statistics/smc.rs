@@ -666,6 +666,7 @@ fn two_stage_smc_executes_and_replays_the_same_estimate_after_restart() {
     let restarted = CampaignRepository::with_component_authorities(
         fixture.repository.blobs.clone(),
         fixture.repository.refs.clone(),
+        fixture.repository.ram_admission().clone(),
         fixture.planner_authority,
         fixture.debugger_authority,
     )
@@ -858,6 +859,7 @@ fn forced_resampling_executes_duplicate_ancestry_and_replays_after_restart() {
     let restarted = CampaignRepository::with_component_authorities(
         fixture.repository.blobs.clone(),
         fixture.repository.refs.clone(),
+        fixture.repository.ram_admission().clone(),
         fixture.planner_authority,
         fixture.debugger_authority,
     )

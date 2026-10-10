@@ -15,6 +15,9 @@ use crucible::{
 
 #[test]
 fn fixed_rendezvous_caps_do_not_deliver_future_event() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("consumer");
     let producer = scheduler_node("producer");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
@@ -58,6 +61,9 @@ fn fixed_rendezvous_caps_do_not_deliver_future_event() {
 
 #[test]
 fn topology_swap_rendezvous_records_zero_skew_and_resumes_independently() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let producer = scheduler_node("producer");
     let alpha = scheduler_node("alpha");
     let beta = scheduler_node("beta");
@@ -142,6 +148,9 @@ fn topology_swap_rendezvous_records_zero_skew_and_resumes_independently() {
 
 #[test]
 fn topology_swap_rendezvous_membership_excludes_terminal_nodes() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let producer = scheduler_node("producer");
     let alpha = scheduler_node("alpha");
     let beta = scheduler_node("beta");

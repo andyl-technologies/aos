@@ -4,6 +4,8 @@
 //! this module premeasure canonical CBOR, reserve its exact output allocation
 //! fallibly, and bound sequence allocation while decoding hostile input.
 
+pub(crate) mod seed;
+
 use std::io::{self, Write};
 
 use serde::de::{IgnoredAny, SeqAccess, Visitor};
@@ -140,12 +142,13 @@ pub(crate) fn map_decode_error<T>(error: ciborium::de::Error<T>) -> Option<Snaps
     parse_resource_message(&message)
 }
 
-pub(crate) fn encode_prefixed<T: Serialize>(
+pub(crate) fn encode_prefixed_with_admission<T: Serialize>(
     value: &T,
     magic: &[u8],
     field: &'static str,
     configured: u64,
     hard: u64,
+    admit_output: &mut dyn FnMut(u64) -> Result<(), &'static str>,
 ) -> Result<Vec<u8>, SnapshotEncodeError> {
     let configured = configured.min(hard);
     let mut counter = CountingWriter::new(field, configured, hard);
@@ -162,6 +165,9 @@ pub(crate) fn encode_prefixed<T: Serialize>(
         .map_err(SnapshotEncodeError::Resource)?;
     let total_usize = usize::try_from(total)
         .map_err(|_| SnapshotEncodeError::Resource(resource(field, 0, total, configured, hard)))?;
+    // The output remains distinct from decoded containers and nested outputs.
+    // Its exact measured extent is paid before creating the owning buffer.
+    admit_output(total).map_err(|_| SnapshotEncodeError::Malformed)?;
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(total_usize)
@@ -378,3 +384,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod output_tests;

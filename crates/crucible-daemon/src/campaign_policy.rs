@@ -16,6 +16,11 @@ use serde::Deserialize;
 
 use crate::{UnixPeerCampaignCredentials, UnixPeerCampaignPrincipalResolver};
 
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+mod original;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub(crate) use original::{OriginalCampaignPolicyError, OriginalCampaignPolicyOwner};
+
 /// Maximum exact Unix credential bindings retained by one local policy.
 pub const MAX_CAMPAIGN_PEER_BINDINGS: usize = 4_096;
 /// Maximum exact operation/campaign grants retained by one local policy.
@@ -158,6 +163,17 @@ impl UnixPeerCampaignPolicy {
             .get(&identity)
             .cloned()
             .ok_or(CampaignAuthorizationError::Unauthorized)
+    }
+
+    // Original in-process requests compare the actual inherited identity
+    // without allocating a clone or manufacturing socket peer credentials.
+    #[cfg(any(test, feature = "private-measurement-domain"))]
+    pub(crate) fn matches_identity(
+        &self,
+        identity: UnixPeerCampaignIdentity,
+        principal: &CampaignPrincipal,
+    ) -> bool {
+        self.principals.get(&identity) == Some(principal)
     }
 
     /// Builds one closed policy from bounded binding and grant iterators.

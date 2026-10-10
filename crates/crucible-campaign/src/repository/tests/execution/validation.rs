@@ -315,7 +315,11 @@ fn strict_observations_commit_in_global_admission_order() {
         second_published.disposition,
         ObservationDisposition::Canonical
     );
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     assert_eq!(
         restarted
             .head("observation-order")

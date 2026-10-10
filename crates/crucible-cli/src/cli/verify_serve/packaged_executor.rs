@@ -1,4 +1,14 @@
 //! Strict deployment-file adapter for the packaged campaign QEMU executor.
+//!
+//! The TOML envelope is versioned independently of modeled campaign identities:
+//!
+//! ```toml
+//! schema = "crucible.campaign-packaged-executor"
+//! version = 3
+//! ```
+//!
+//! The complete required resource tables, finite operation budgets and kernel
+//! quota setup are documented in `docs/users/crucible/campaigns.md`.
 
 use std::fs::{self, File};
 use std::io::{Read, Take};
@@ -12,7 +22,7 @@ use serde::Deserialize;
 use super::*;
 
 const PACKAGED_EXECUTOR_SCHEMA: &str = "crucible.campaign-packaged-executor";
-const PACKAGED_EXECUTOR_VERSION: u32 = 2;
+const PACKAGED_EXECUTOR_VERSION: u32 = 3;
 const MAX_PACKAGED_EXECUTOR_CONFIG_BYTES: usize = 64 * 1024;
 const OS_ENTROPY_DEVICE: &str = "/dev/urandom";
 const DEFAULT_PACKAGED_RUN_INTERVAL_ICOUNT: u64 = 1_000_000;
@@ -45,22 +55,72 @@ struct PackagedExecutorDeployment {
     child_user_id: u32,
     child_group_id: u32,
     maximum_tasks: u32,
+    maximum_file_descriptors: u64,
+    maximum_locked_bytes: u64,
+    maximum_node_host_service_tasks: u64,
+    maximum_node_host_service_file_descriptors: u64,
+    maximum_node_host_service_resident_bytes: u64,
+    watcher_service_resident_bytes: u64,
     maximum_inodes: u64,
     finish_timeout_ms: u64,
     maximum_slots: u32,
+    maximum_paging_io_slots: u64,
+    maximum_host_task_slots: u64,
+    maximum_host_file_descriptors: u64,
+    maximum_host_metadata_bytes: u64,
+    maximum_host_staging_bytes: u64,
     maximum_vcpus: u32,
     maximum_resident_bytes: u64,
     maximum_disk_bytes: u64,
     maximum_execution_quanta: u64,
+    assignment_limits: AssignmentLimitsDeployment,
+    ram_catalog_root: PathBuf,
+    ram_catalog_project_id: u32,
+    maximum_ram_catalog_inodes: u64,
+    maximum_ram_catalog_sqlite_heap_bytes: u64,
+    ram_catalog_resources: HostOwnerResourcesDeployment,
+    operational_registry_resources: HostOwnerResourcesDeployment,
+    operational_registry_root: PathBuf,
+    operational_registry_project_id: u32,
+    operational_registry_maximum_inodes: u64,
+    assignment_resources: HostOwnerResourcesDeployment,
     maximum_checkpoint_bytes: u64,
     worker_count: usize,
     host_architecture: String,
     qemu_profile: String,
     operations: PackagedExecutorOperationsDeployment,
+    host_operation_budgets:
+        std::collections::BTreeMap<String, host_operation_budgets::OperationBudgetDeployment>,
     hot_fork: Option<PackagedHotForkDeployment>,
+    retained_template_resources: HostOwnerResourcesDeployment,
     guest_selectable_boundary_diagnostics: Option<GuestSelectableBoundaryDiagnosticsDeployment>,
     #[serde(default)]
     verify_determinism_findings: bool,
+}
+
+#[path = "host_operation_budgets.rs"]
+pub(super) mod host_operation_budgets;
+
+/// Independently authored modeled request limits, separate from physical backing.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AssignmentLimitsDeployment {
+    vcpus: u32,
+    resident_bytes: u64,
+    disk_bytes: u64,
+    execution_quanta: u64,
+}
+
+impl AssignmentLimitsDeployment {
+    fn limits(&self) -> Result<crucible_campaign::AttemptResourceLimits, CliError> {
+        crucible_campaign::AttemptResourceLimits::new(
+            self.vcpus,
+            self.resident_bytes,
+            self.disk_bytes,
+            self.execution_quanta,
+        )
+        .map_err(|error| serve_error(format!("campaign assignment limits error: {error}")))
+    }
 }
 
 /// Required fixed bounds for coordinator and executor service work.
@@ -98,6 +158,49 @@ struct PackagedHotForkDeployment {
     host_io_timeout_ms: u64,
 }
 
+/// Complete independently authored native and host resource entitlement.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct HostOwnerResourcesDeployment {
+    resident_peak_bytes: u64,
+    backing_peak_bytes: u64,
+    metadata_bytes: u64,
+    staging_bytes: u64,
+    paging_io_slots: u64,
+    cpu_slots: u64,
+    task_slots: u64,
+    file_descriptors: u64,
+}
+
+impl HostOwnerResourcesDeployment {
+    fn portable_resources(&self) -> crucible_campaign::ExecutorHostResources {
+        crucible_campaign::ExecutorHostResources {
+            resident_peak_bytes: self.resident_peak_bytes,
+            backing_peak_bytes: self.backing_peak_bytes,
+            metadata_bytes: self.metadata_bytes,
+            staging_bytes: self.staging_bytes,
+            paging_io_slots: self.paging_io_slots,
+            cpu_slots: self.cpu_slots,
+            task_slots: self.task_slots,
+            file_descriptors: self.file_descriptors,
+        }
+    }
+
+    /// Projects the complete authored entitlement without inferred suballocations.
+    pub(crate) fn resources(&self) -> crucible_api::host_operational::HostResourceVector {
+        crucible_api::host_operational::HostResourceVector {
+            resident_peak_bytes: self.resident_peak_bytes,
+            backing_peak_bytes: self.backing_peak_bytes,
+            metadata_bytes: self.metadata_bytes,
+            staging_bytes: self.staging_bytes,
+            paging_io_slots: self.paging_io_slots,
+            cpu_slots: self.cpu_slots,
+            task_slots: self.task_slots,
+            file_descriptors: self.file_descriptors,
+        }
+    }
+}
+
 /// Optional bounded emission for guest-selectable source and replay coordinates.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -107,6 +210,7 @@ struct GuestSelectableBoundaryDiagnosticsDeployment {
 
 /// Guarded host capability loaded for one campaign run.
 pub(crate) struct GuardedCampaignRunDeployment {
+    policy: PackagedExecutorDeployment,
     pub(crate) host: crucible_daemon::LinuxQemuAttemptHostConfig,
     pub(crate) resources: crucible_campaign::AttemptResourceLimits,
     pub(crate) verify_determinism_findings: bool,
@@ -115,6 +219,7 @@ pub(crate) struct GuardedCampaignRunDeployment {
 /// Prepared packaged executor and its authenticated coordinator tuning.
 pub(super) struct PreparedCliPackagedExecutor {
     pub(super) executor: crucible_daemon::AttachedPackagedQemuExecutor,
+    pub(super) verify_determinism_findings: bool,
     operations: PackagedExecutorOperations,
 }
 
@@ -206,11 +311,11 @@ fn resolve_campaign_deployment_path(
     )))
 }
 
-/// Loads the exact process and storage ceilings for a guarded campaign run.
+/// Loads the complete deployed resource policy for a guarded campaign owner.
 ///
 /// The deployment uses the same strict schema, ownership, cgroup, and project
-/// quota policy as the packaged executor. The returned host config still opens
-/// and authenticates both kernel resource namespaces before guest launch.
+/// quota policy as the packaged executor. Projection preserves physical host
+/// entitlements independently of the original semantic execution limits.
 ///
 /// # Errors
 ///
@@ -233,23 +338,25 @@ pub(crate) fn load_campaign_run_deployment(
             deployment.qemu_profile,
         )));
     }
-    // Worker and checkpoint fields remain part of the shared, strictly
-    // validated schema, although this ephemeral path owns one synchronous slot
-    // and does not publish checkpoints.
     let host = deployment_host(&deployment)?;
     let capacity = deployment_capacity(&deployment)?;
-    let resources = crucible_campaign::AttemptResourceLimits::new(
-        capacity.maximum_vcpus(),
-        capacity.maximum_resident_bytes(),
-        capacity.maximum_disk_bytes(),
-        capacity.maximum_execution_quanta(),
-    )
-    .map_err(|error| serve_error(format!("campaign executor resource limits error: {error}")))?;
+    let resources = deployment.assignment_limits.limits()?;
+    if resources.maximum_vcpus() > capacity.maximum_vcpus()
+        || resources.maximum_resident_bytes() > capacity.maximum_resident_bytes()
+        || resources.maximum_disk_bytes() > capacity.maximum_disk_bytes()
+        || resources.maximum_execution_quanta() > capacity.maximum_execution_quanta()
+    {
+        return Err(serve_error(
+            "campaign assignment resources exceed aggregate deployment capacity",
+        ));
+    }
 
+    let verify_determinism_findings = deployment.verify_determinism_findings;
     Ok(GuardedCampaignRunDeployment {
+        policy: deployment,
         host,
         resources,
-        verify_determinism_findings: deployment.verify_determinism_findings,
+        verify_determinism_findings,
     })
 }
 
@@ -259,12 +366,26 @@ pub(super) fn prepare_cli_packaged_executor(
     campaigns: std::collections::BTreeSet<crucible_campaign::CampaignName>,
     executor_socket: &Path,
     deployment_path: &Path,
-    lifecycle: &crucible_api::ProductionVmLifecycleConfig,
+    lifecycle: crucible_api::ProductionVmLifecycleConfig,
+    process_heap: &crucible_daemon::campaign_store_composition::SqliteProcessHeap,
 ) -> Result<PreparedCliPackagedExecutor, CliError> {
     let deployment = load_validated_deployment(deployment_path)?;
     let operations = deployment_operations(&deployment)?;
     let host = deployment_host(&deployment)?;
     let capacity = deployment_capacity(&deployment)?;
+    let host_operational_capacity = crucible_daemon::HostOperationalCapacity::new(
+        args.host_paging_io_slots
+            .unwrap_or(deployment.maximum_paging_io_slots),
+        args.host_task_slots
+            .unwrap_or(deployment.maximum_host_task_slots),
+        args.host_file_descriptors
+            .unwrap_or(deployment.maximum_host_file_descriptors),
+        args.host_metadata_bytes
+            .unwrap_or(deployment.maximum_host_metadata_bytes),
+        args.host_staging_bytes
+            .unwrap_or(deployment.maximum_host_staging_bytes),
+    )
+    .map_err(|error| serve_error(format!("campaign host operational capacity error: {error}")))?;
     let user_id = rustix::process::geteuid().as_raw();
     let group_id = rustix::process::getegid().as_raw();
     let endpoint = crucible_daemon::ExecutorLoopbackEndpointConfig::new(
@@ -278,36 +399,22 @@ pub(super) fn prepare_cli_packaged_executor(
         .campaign_state
         .as_ref()
         .ok_or_else(|| serve_error("campaign packaged executor has no state directory"))?;
-    let store_namespace = packaged_store_namespace(state);
-    let daemon_epoch = fresh_daemon_epoch()?;
-    let hot_fork = deployment_hot_fork_policy(&deployment, lifecycle)?;
-    let guest_selectable_diagnostics =
-        deployment_guest_selectable_boundary_diagnostics(&deployment)?;
-    let mut config = crucible_daemon::PackagedQemuExecutorConfig::new(
-        campaigns,
-        endpoint,
-        operations.server,
-        state.join("executor-ledger"),
-        deployment.maximum_checkpoint_bytes,
-        daemon_epoch,
-        capacity,
-        deployment.worker_count,
-        deployment.host_architecture,
-        deployment.qemu_profile,
-        store_namespace,
-        lifecycle.clone(),
-        host,
-    )
-    .map_err(|error| serve_error(format!("campaign executor configuration error: {error}")))?;
-    if let Some(hot_fork) = hot_fork {
-        config = config.with_hot_fork_sources(hot_fork);
-    }
-    if let Some(diagnostics) = guest_selectable_diagnostics {
-        config = config.with_guest_selectable_boundary_diagnostics(diagnostics);
-    }
-    if deployment.verify_determinism_findings {
-        config = config.with_determinism_finding_verification();
-    }
+    let config = build_packaged_executor_config(
+        &deployment,
+        PackagedExecutorBinding {
+            campaigns,
+            endpoint,
+            state,
+            lifecycle,
+            host,
+            capacity,
+            host_operational_capacity,
+            assignment_limits: deployment.assignment_limits.limits()?,
+        },
+    )?;
+    let config = config
+        .with_sqlite_process_heap(process_heap)
+        .map_err(|error| serve_error(format!("campaign process heap binding: {error}")))?;
     let executor = prepared
         .prepare_packaged_executor(config)
         .map_err(|error| {
@@ -320,8 +427,205 @@ pub(super) fn prepare_cli_packaged_executor(
         .map_err(|error| serve_error(format!("campaign executor startup error: {error}")))?;
     Ok(PreparedCliPackagedExecutor {
         executor,
+        verify_determinism_findings: deployment.verify_determinism_findings,
         operations,
     })
+}
+
+/// Local execution binds the complete deployed policy before admission.
+impl GuardedCampaignRunDeployment {
+    /// Admits the deployed namespace for input and remote-control metadata.
+    ///
+    /// No guest process is created. The existing project quota and independent
+    /// service vector retain every decoder loan under the original supervisor.
+    ///
+    /// # Errors
+    /// Refuses invalid supervision, unavailable service credit, a busy namespace,
+    /// or an operator quota that differs from the authored physical bounds.
+    pub(crate) fn input_metadata_resources(
+        &self,
+    ) -> Result<
+        std::sync::Arc<dyn crucible_daemon::campaign_store_composition::StorePhysicalQuotaGuard>,
+        CliError,
+    > {
+        use crucible_daemon::campaign_store_composition::StorePhysicalQuotaBinder;
+
+        let resources = self.policy.ram_catalog_resources.resources();
+        let binder = crucible_daemon::LinuxProjectQuotaBinder::new(
+            host_operation_budgets::deployed_budgets(&self.policy.host_operation_budgets)?,
+            None,
+            resources,
+        )
+        .map_err(CliError::ProviderAdmission)?;
+        binder
+            .bind(
+                &self.policy.ram_catalog_root,
+                self.policy.ram_catalog_project_id,
+                resources.backing_peak_bytes,
+                self.policy.maximum_ram_catalog_inodes,
+            )
+            .map_err(|source| CliError::InputAuthority(Box::new(source)))
+    }
+
+    /// Projects the deployed physical policy and an admitted semantic subset.
+    ///
+    /// # Errors
+    /// Refuses semantic limits above the authored deployment, invalid endpoint
+    /// ownership, or a complete physical/configuration contract that cannot fit.
+    pub(crate) fn execution_config(
+        &self,
+        lifecycle: crucible_api::ProductionVmLifecycleConfig,
+        campaign: crucible_campaign::CampaignName,
+        state: &Path,
+        limits: crucible_campaign::AttemptResourceLimits,
+    ) -> Result<crucible_daemon::PackagedQemuExecutorConfig, CliError> {
+        if limits.maximum_vcpus() > self.resources.maximum_vcpus()
+            || limits.maximum_resident_bytes() > self.resources.maximum_resident_bytes()
+            || limits.maximum_disk_bytes() > self.resources.maximum_disk_bytes()
+            || limits.maximum_execution_quanta() > self.resources.maximum_execution_quanta()
+        {
+            return Err(serve_error(
+                "guarded execution exceeds authored semantic limits",
+            ));
+        }
+        let endpoint = crucible_daemon::ExecutorLoopbackEndpointConfig::new(
+            state.join("guarded-executor.sock"),
+            rustix::process::geteuid().as_raw(),
+            rustix::process::getegid().as_raw(),
+            0o600,
+        )
+        .map_err(|error| serve_error(format!("guarded executor endpoint error: {error}")))?;
+        let host_operational_capacity = crucible_daemon::HostOperationalCapacity::new(
+            self.policy.maximum_paging_io_slots,
+            self.policy.maximum_host_task_slots,
+            self.policy.maximum_host_file_descriptors,
+            self.policy.maximum_host_metadata_bytes,
+            self.policy.maximum_host_staging_bytes,
+        )
+        .map_err(|error| {
+            serve_error(format!("guarded host operational capacity error: {error}"))
+        })?;
+        build_packaged_executor_config(
+            &self.policy,
+            PackagedExecutorBinding {
+                campaigns: std::collections::BTreeSet::from([campaign]),
+                endpoint,
+                state,
+                lifecycle,
+                host: self.host.clone(),
+                capacity: deployment_capacity(&self.policy)?,
+                host_operational_capacity,
+                assignment_limits: limits,
+            },
+        )
+    }
+}
+
+struct PackagedExecutorBinding<'a> {
+    campaigns: std::collections::BTreeSet<crucible_campaign::CampaignName>,
+    endpoint: crucible_daemon::ExecutorLoopbackEndpointConfig,
+    state: &'a Path,
+    lifecycle: crucible_api::ProductionVmLifecycleConfig,
+    host: crucible_daemon::LinuxQemuAttemptHostConfig,
+    capacity: crucible_daemon::ExecutorCapacity,
+    host_operational_capacity: crucible_daemon::HostOperationalCapacity,
+    assignment_limits: crucible_campaign::AttemptResourceLimits,
+}
+
+fn build_packaged_executor_config(
+    deployment: &PackagedExecutorDeployment,
+    binding: PackagedExecutorBinding<'_>,
+) -> Result<crucible_daemon::PackagedQemuExecutorConfig, CliError> {
+    let PackagedExecutorBinding {
+        campaigns,
+        endpoint,
+        state,
+        lifecycle,
+        host,
+        capacity,
+        host_operational_capacity,
+        assignment_limits,
+    } = binding;
+    let operations = deployment_operations(deployment)?;
+    let store_namespace = packaged_store_namespace(state);
+    let daemon_epoch = fresh_daemon_epoch()?;
+    // This durable namespace is prepared only by the admitted catalog provider.
+    // A caller's temporary workspace never owns or automatically deletes it.
+    let lifecycle = lifecycle.with_run_state_root(
+        deployment
+            .ram_catalog_root
+            .join("workers")
+            .join(store_namespace.to_hex()),
+    );
+    let hot_fork = deployment_hot_fork_policy(deployment, &lifecycle)?;
+    let retained_template_resources = deployment.retained_template_resources.resources();
+    let ram_catalog = deployment_ram_catalog(deployment)?;
+    let assignment_resources = deployment.assignment_resources.resources();
+    let operational_registry_resources = deployment.operational_registry_resources.resources();
+    let guest_selectable_diagnostics =
+        deployment_guest_selectable_boundary_diagnostics(deployment)?;
+    let mut config = crucible_daemon::PackagedQemuExecutorConfig::new(
+        campaigns,
+        endpoint,
+        operations.server,
+        deployment.operational_registry_root.clone(),
+        deployment.maximum_checkpoint_bytes,
+        daemon_epoch,
+        capacity,
+        host_operational_capacity,
+        deployment.worker_count,
+        deployment.host_architecture.clone(),
+        deployment.qemu_profile.clone(),
+        store_namespace,
+        lifecycle,
+        host,
+    )
+    .map_err(|error| serve_error(format!("campaign executor configuration error: {error}")))?;
+    config = config
+        .with_ram_catalog(ram_catalog)
+        .map_err(|error| serve_error(format!("campaign RAM catalog error: {error}")))?;
+    config = config
+        .with_operational_registry_resources(operational_registry_resources)
+        .map_err(|error| {
+            serve_error(format!(
+                "campaign operational registry resource error: {error}"
+            ))
+        })?;
+    config = config
+        .with_operational_registry_quota(
+            deployment.operational_registry_project_id,
+            deployment.operational_registry_maximum_inodes,
+        )
+        .map_err(|error| {
+            serve_error(format!(
+                "campaign operational registry quota error: {error}"
+            ))
+        })?;
+    config = config
+        .with_assignment_resources(assignment_resources, assignment_limits)
+        .map_err(|error| serve_error(format!("campaign assignment resource error: {error}")))?;
+    config = config
+        .with_host_operation_budgets(host_operation_budgets::deployed_budgets(
+            &deployment.host_operation_budgets,
+        )?)
+        .map_err(|error| serve_error(format!("campaign host operation budget error: {error}")))?;
+    config = config
+        .with_retained_template_resources(retained_template_resources)
+        .map_err(|error| {
+            serve_error(format!(
+                "campaign retained-template resource error: {error}"
+            ))
+        })?;
+    if let Some(hot_fork) = hot_fork {
+        config = config.with_hot_fork_sources(hot_fork);
+    }
+    if let Some(diagnostics) = guest_selectable_diagnostics {
+        config = config.with_guest_selectable_boundary_diagnostics(diagnostics);
+    }
+    if deployment.verify_determinism_findings {
+        config = config.with_determinism_finding_verification();
+    }
+    Ok(config)
 }
 
 fn deployment_operations(
@@ -467,9 +771,54 @@ fn load_validated_deployment(path: &Path) -> Result<PackagedExecutorDeployment, 
             "campaign packaged-executor deployment has an unsupported schema or version",
         ));
     }
+    host_operation_budgets::deployed_budgets(&deployment.host_operation_budgets)?;
+    let registry_project = deployment.operational_registry_project_id;
+    let native_project_end = deployment
+        .first_project_id
+        .checked_add(deployment.project_id_count)
+        .ok_or_else(|| serve_error("campaign native project-ID range overflows"))?;
+    if !deployment.operational_registry_root.is_absolute()
+        || deployment.operational_registry_root == deployment.ram_catalog_root
+        || deployment
+            .operational_registry_root
+            .starts_with(&deployment.ram_catalog_root)
+        || deployment
+            .ram_catalog_root
+            .starts_with(&deployment.operational_registry_root)
+        || !(1..0x8000_0000).contains(&registry_project)
+        || registry_project == deployment.ram_catalog_project_id
+        || (deployment.first_project_id..native_project_end).contains(&registry_project)
+        || deployment.operational_registry_resources.backing_peak_bytes == 0
+        || deployment.operational_registry_maximum_inodes == 0
+    {
+        return Err(serve_error(
+            "campaign operational registry quota is invalid or overlaps another owner",
+        ));
+    }
     if deployment.project_id_count < deployment.maximum_slots {
         return Err(serve_error(
             "campaign packaged-executor project-ID count is below its slot ceiling",
+        ));
+    }
+    crucible_daemon::HostOperationalCapacity::new(
+        deployment.maximum_paging_io_slots,
+        deployment.maximum_host_task_slots,
+        deployment.maximum_host_file_descriptors,
+        deployment.maximum_host_metadata_bytes,
+        deployment.maximum_host_staging_bytes,
+    )
+    .map_err(|error| serve_error(format!("campaign host operational capacity error: {error}")))?;
+    if deployment.maximum_file_descriptors == 0 {
+        return Err(serve_error("campaign node descriptor capacity is zero"));
+    }
+    if deployment
+        .maximum_host_metadata_bytes
+        .checked_add(deployment.maximum_host_staging_bytes)
+        .is_none_or(|bytes| bytes > deployment.maximum_resident_bytes)
+        || deployment.maximum_host_staging_bytes > deployment.maximum_disk_bytes
+    {
+        return Err(serve_error(
+            "campaign aggregate host subsets exceed complete resident or backing capacity",
         ));
     }
     if deployment.maximum_checkpoint_bytes > deployment.maximum_disk_bytes {
@@ -489,6 +838,66 @@ fn load_validated_deployment(path: &Path) -> Result<PackagedExecutorDeployment, 
             "campaign packaged-executor worker count is outside its slot ceiling",
         ));
     }
+    let aggregate = crucible_campaign::ExecutorHostResources {
+        resident_peak_bytes: deployment.maximum_resident_bytes,
+        backing_peak_bytes: deployment.maximum_disk_bytes,
+        metadata_bytes: deployment.maximum_host_metadata_bytes,
+        staging_bytes: deployment.maximum_host_staging_bytes,
+        paging_io_slots: deployment.maximum_paging_io_slots,
+        cpu_slots: u64::from(deployment.maximum_vcpus),
+        task_slots: deployment.maximum_host_task_slots,
+        file_descriptors: deployment.maximum_host_file_descriptors,
+    };
+    let physical_assignment = deployment.assignment_resources.portable_resources();
+    for (name, resources) in [
+        ("assignment", physical_assignment),
+        (
+            "retained-template replay",
+            deployment.retained_template_resources.portable_resources(),
+        ),
+        (
+            "RAM catalog",
+            deployment.ram_catalog_resources.portable_resources(),
+        ),
+        (
+            "operational registry",
+            deployment
+                .operational_registry_resources
+                .portable_resources(),
+        ),
+    ] {
+        if [
+            resources.resident_peak_bytes,
+            resources.backing_peak_bytes,
+            resources.metadata_bytes,
+            resources.staging_bytes,
+            resources.paging_io_slots,
+            resources.cpu_slots,
+            resources.task_slots,
+            resources.file_descriptors,
+        ]
+        .contains(&0)
+            || resources
+                .metadata_bytes
+                .checked_add(resources.staging_bytes)
+                .is_none_or(|bytes| bytes > resources.resident_peak_bytes)
+            || resources.staging_bytes > resources.backing_peak_bytes
+            || !resources.fits(aggregate)
+        {
+            return Err(serve_error(format!(
+                "campaign {name} has invalid resources or exceeds aggregate capacity"
+            )));
+        }
+    }
+    let limits = deployment.assignment_limits.limits()?;
+    crucible_campaign::ExecutorResourceBounds::new(aggregate, physical_assignment, limits)
+        .map_err(|error| serve_error(format!("campaign resource bounds error: {error}")))?;
+    if limits.maximum_execution_quanta() > deployment.maximum_execution_quanta {
+        return Err(serve_error(
+            "campaign assignment modeled work exceeds aggregate capacity",
+        ));
+    }
+    deployment_ram_catalog(&deployment)?;
     deployment_guest_selectable_boundary_diagnostics(&deployment)?;
     deployment_operations(&deployment)?;
     let finish_timeout = Duration::from_millis(deployment.finish_timeout_ms);
@@ -499,6 +908,19 @@ fn load_validated_deployment(path: &Path) -> Result<PackagedExecutorDeployment, 
     }
 
     Ok(deployment)
+}
+
+fn deployment_ram_catalog(
+    deployment: &PackagedExecutorDeployment,
+) -> Result<crucible_daemon::PackagedRamCatalogConfig, CliError> {
+    crucible_daemon::PackagedRamCatalogConfig::new(
+        &deployment.ram_catalog_root,
+        deployment.ram_catalog_project_id,
+        deployment.maximum_ram_catalog_inodes,
+        deployment.ram_catalog_resources.resources(),
+        deployment.maximum_ram_catalog_sqlite_heap_bytes,
+    )
+    .map_err(|error| serve_error(format!("campaign RAM catalog configuration error: {error}")))
 }
 
 fn deployment_host(
@@ -514,9 +936,15 @@ fn deployment_host(
         deployment.child_user_id,
         deployment.child_group_id,
         deployment.maximum_tasks,
+        deployment.maximum_file_descriptors,
+        deployment.maximum_node_host_service_tasks,
+        deployment.maximum_node_host_service_file_descriptors,
+        deployment.maximum_node_host_service_resident_bytes,
+        deployment.watcher_service_resident_bytes,
         deployment.maximum_inodes,
         finish_timeout,
     )
+    .and_then(|host| host.with_maximum_locked_bytes(deployment.maximum_locked_bytes))
     .map_err(|error| serve_error(format!("campaign executor host policy error: {error}")))
 }
 
@@ -674,9 +1102,9 @@ mod tests {
     }
 
     fn authored_without_operations() -> String {
-        String::from(
+        let policy = String::from(
             r#"schema = "crucible.campaign-packaged-executor"
-version = 2
+version = 3
 cgroup_root = "/sys/fs/cgroup/crucible"
 run_root = "/var/lib/crucible/attempts"
 attempt_namespace = "campaign-local"
@@ -685,24 +1113,93 @@ project_id_count = 4
 child_user_id = 2000
 child_group_id = 2000
 maximum_tasks = 64
+maximum_file_descriptors = 1024
+maximum_locked_bytes = 0
+maximum_node_host_service_tasks = 4
+maximum_node_host_service_file_descriptors = 32
+maximum_node_host_service_resident_bytes = 8388608
+watcher_service_resident_bytes = 1048576
 maximum_inodes = 4096
 finish_timeout_ms = 30000
 maximum_slots = 2
-maximum_vcpus = 4
-maximum_resident_bytes = 1073741824
-maximum_disk_bytes = 2147483648
+maximum_paging_io_slots = 8
+maximum_host_task_slots = 1024
+maximum_host_file_descriptors = 8192
+maximum_host_metadata_bytes = 1073741824
+maximum_host_staging_bytes = 134217728
+maximum_vcpus = 8
+maximum_resident_bytes = 3221225472
+maximum_disk_bytes = 6442450944
 maximum_execution_quanta = 100000
+ram_catalog_root = "/var/lib/crucible/ram-catalogs"
+ram_catalog_project_id = 30000
+operational_registry_root = "/var/lib/crucible/executor-ledger"
+operational_registry_project_id = 31000
+operational_registry_maximum_inodes = 262144
+maximum_ram_catalog_inodes = 262144
+maximum_ram_catalog_sqlite_heap_bytes = 8388608
 verify_determinism_findings = false
 maximum_checkpoint_bytes = 1073741824
 worker_count = 2
 host_architecture = "x86_64"
 qemu_profile = "deterministic-tcg-v1"
+
+[operational_registry_resources]
+resident_peak_bytes = 134217728
+backing_peak_bytes = 16777216
+metadata_bytes = 67108864
+staging_bytes = 8388608
+paging_io_slots = 1
+cpu_slots = 1
+task_slots = 1
+file_descriptors = 128
+
+[ram_catalog_resources]
+resident_peak_bytes = 134217728
+backing_peak_bytes = 536870912
+metadata_bytes = 67108864
+staging_bytes = 8388608
+paging_io_slots = 1
+cpu_slots = 1
+task_slots = 1
+file_descriptors = 128
+
+[assignment_limits]
+vcpus = 1
+resident_bytes = 536870912
+disk_bytes = 1073741824
+execution_quanta = 50000
+
+[assignment_resources]
+resident_peak_bytes = 536870912
+backing_peak_bytes = 1073741824
+metadata_bytes = 134217728
+staging_bytes = 16777216
+paging_io_slots = 1
+cpu_slots = 1
+task_slots = 69
+file_descriptors = 1056
+
+[retained_template_resources]
+resident_peak_bytes = 536870912
+backing_peak_bytes = 1073741824
+metadata_bytes = 134217728
+staging_bytes = 16777216
+paging_io_slots = 1
+cpu_slots = 1
+task_slots = 69
+file_descriptors = 1056
 "#,
         )
         .replace(
             "host_architecture = \"x86_64\"",
             &format!("host_architecture = \"{}\"", std::env::consts::ARCH),
-        )
+        );
+        let budgets = host_operation_budgets::CLASS_NAMES
+            .iter()
+            .map(|name| format!("\n[host_operation_budgets.{name}]\npoll_interval_ms = 10\ntotal_timeout_ms = 60000\n"))
+            .collect::<String>();
+        format!("{policy}{budgets}")
     }
 
     fn authored() -> String {
@@ -737,7 +1234,8 @@ qemu_profile = "deterministic-tcg-v1"
              maximum_forks_per_window = 8\n\
              fork_rate_window_ms = 1000\n\
              shutdown_step_timeout_ms = 1000\n\
-             host_io_timeout_ms = 30000\n",
+             host_io_timeout_ms = 30000\n\
+             ",
             authored()
         )
     }
@@ -798,6 +1296,48 @@ qemu_profile = "deterministic-tcg-v1"
     }
 
     #[test]
+    fn registry_quota_requires_a_distinct_persistent_namespace()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("executor.toml");
+        fs::write(&path, authored())?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        let valid = load_validated_deployment(&path)?;
+        assert_eq!(valid.operational_registry_project_id, 31000);
+        assert_eq!(valid.operational_registry_maximum_inodes, 262144);
+
+        for (needle, replacement) in [
+            (
+                "operational_registry_project_id = 31000",
+                "operational_registry_project_id = 30000",
+            ),
+            (
+                "operational_registry_project_id = 31000",
+                "operational_registry_project_id = 10000",
+            ),
+            (
+                "operational_registry_maximum_inodes = 262144",
+                "operational_registry_maximum_inodes = 0",
+            ),
+            (
+                "operational_registry_root = \"/var/lib/crucible/executor-ledger\"",
+                "operational_registry_root = \"/var/lib/crucible/ram-catalogs/nested\"",
+            ),
+            (
+                "operational_registry_root = \"/var/lib/crucible/executor-ledger\"",
+                "operational_registry_root = \"relative-ledger\"",
+            ),
+        ] {
+            fs::write(&path, authored().replace(needle, replacement))?;
+            assert!(
+                load_validated_deployment(&path).is_err(),
+                "accepted {replacement}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn packaged_executor_deployment_is_strict_and_owner_only() {
         let directory = tempfile::tempdir().expect("deployment directory");
         let path = directory.path().join("executor.toml");
@@ -816,20 +1356,99 @@ qemu_profile = "deterministic-tcg-v1"
         );
         assert_eq!(operations.worker_slots_per_campaign, Some(2));
         let guarded = load_campaign_run_deployment(&path).expect("load guarded run deployment");
-        assert_eq!(guarded.resources.maximum_vcpus(), 4);
-        assert_eq!(guarded.resources.maximum_disk_bytes(), 2_147_483_648);
+        assert_eq!(guarded.resources.maximum_vcpus(), 1);
+        assert_eq!(guarded.resources.maximum_disk_bytes(), 1_073_741_824);
         assert!(!guarded.verify_determinism_findings);
 
         assert!(
             toml::from_str::<PackagedExecutorDeployment>(&authored_without_operations()).is_err()
         );
-        fs::write(&path, authored().replace("version = 2", "version = 1"))
+        fs::write(&path, authored().replace("version = 3", "version = 2"))
             .expect("write superseded deployment");
         assert!(load_validated_deployment(&path).is_err());
 
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
             .expect("weaken deployment mode");
         assert!(load_deployment(&path).is_err());
+    }
+
+    #[test]
+    fn guarded_projection_narrows_semantics_without_changing_physical_entitlement() {
+        let directory = tempfile::tempdir().expect("deployment directory");
+        let path = directory.path().join("executor.toml");
+        fs::write(&path, authored()).expect("write deployment");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("secure deployment");
+        let deployment = load_campaign_run_deployment(&path).expect("guarded deployment");
+        let lifecycle = hot_fork_artifacts(directory.path());
+        let campaign =
+            crucible_campaign::CampaignName::new("guarded-projection").expect("campaign identity");
+        let limits = crucible_campaign::AttemptResourceLimits::new(1, 268_435_456, 0, 100)
+            .expect("narrow original request");
+
+        let projected = deployment
+            .execution_config(lifecycle, campaign.clone(), directory.path(), limits)
+            .expect("project complete policy");
+
+        assert_eq!(projected.assignment_limits(), Some(limits));
+        assert_eq!(
+            projected.assignment_resources(),
+            Some(deployment.policy.assignment_resources.resources()),
+        );
+        assert_eq!(
+            projected.operational_registry_resources(),
+            Some(deployment.policy.operational_registry_resources.resources()),
+        );
+        assert_eq!(
+            projected
+                .ram_catalog()
+                .expect("catalog entitlement")
+                .resources(),
+            deployment.policy.ram_catalog_resources.resources(),
+        );
+        let excessive = crucible_campaign::AttemptResourceLimits::new(
+            deployment.resources.maximum_vcpus() + 1,
+            deployment.resources.maximum_resident_bytes(),
+            deployment.resources.maximum_disk_bytes(),
+            deployment.resources.maximum_execution_quanta(),
+        )
+        .expect("well-formed excessive request");
+        assert!(
+            deployment
+                .execution_config(
+                    hot_fork_artifacts(directory.path()),
+                    campaign,
+                    directory.path(),
+                    excessive
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn semantic_disk_and_physical_backing_have_independent_limits() {
+        let directory = tempfile::tempdir().expect("deployment directory");
+        let path = directory.path().join("executor.toml");
+        let authored = authored().replace("disk_bytes = 1073741824", "disk_bytes = 0");
+        fs::write(&path, &authored).expect("write deployment");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("secure deployment");
+
+        let deployment = load_validated_deployment(&path).expect("independent limits");
+        assert_eq!(
+            deployment
+                .assignment_limits
+                .limits()
+                .expect("valid independent limits")
+                .maximum_disk_bytes(),
+            0
+        );
+        assert_eq!(
+            deployment.assignment_resources.backing_peak_bytes,
+            1073741824
+        );
+
+        fs::write(&path, authored.replace("cpu_slots = 1", "cpu_slots = 9"))
+            .expect("write invalid physical ceiling");
+        assert!(load_validated_deployment(&path).is_err());
     }
 
     #[test]
@@ -935,6 +1554,31 @@ qemu_profile = "deterministic-tcg-v1"
         assert_eq!(policy.limits().maximum_templates(), 2);
         assert_eq!(policy.limits().maximum_forks_per_window(), 8);
         assert_eq!(policy.limits().fork_rate_window_nanos(), 1_000_000_000);
+        let resources = deployment.retained_template_resources.resources();
+        assert_eq!(resources.resident_peak_bytes, 512 * 1024 * 1024);
+        assert_eq!(resources.task_slots, 69);
+        assert_eq!(resources.file_descriptors, 1056);
+    }
+
+    #[test]
+    fn retained_template_entitlement_is_required_for_checkpoint_replay() {
+        let directory = tempfile::tempdir().expect("deployment directory");
+        let path = directory.path().join("executor.toml");
+        let authored = authored();
+        let start = authored
+            .find("[retained_template_resources]")
+            .expect("authored replay entitlement");
+        let suffix = authored[start..]
+            .find("[operations]")
+            .expect("following table")
+            + start;
+        let missing = format!("{}{}", &authored[..start], &authored[suffix..]);
+        fs::write(&path, missing).expect("write deployment without replay entitlement");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("secure deployment");
+        assert!(load_validated_deployment(&path).is_err());
+
+        fs::write(&path, authored).expect("write cold-replay deployment");
+        assert!(load_validated_deployment(&path).is_ok());
     }
 
     #[test]

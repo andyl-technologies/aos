@@ -5,13 +5,18 @@
 //! capability separately at construction. The capability remains operational:
 //! its policy and credentials do not enter content or graph identity.
 
+use super::CheckedPublicationMetadata;
+use super::batch::admission_under;
+
+use super::ObjectKind;
+
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::sync::Arc;
 
 use super::{
-    BackendCapabilities, BlobHandle, ByteRange, ContentId, ImmutableBlobBackend, PutReceipt,
-    StoreError,
+    BackendCapabilities, BlobHandle, ByteRange, ContentId, ImmutableBlobBackend, PutBatchReceipt,
+    PutReceipt, StoreError,
 };
 
 const MAX_NAMESPACE_ID_BYTES: usize = 512;
@@ -166,17 +171,74 @@ impl NamespacedStore {
 }
 
 impl ImmutableBlobBackend for NamespacedStore {
+    fn checked_publication_metadata(
+        &self,
+        kind: ObjectKind,
+    ) -> Result<CheckedPublicationMetadata, StoreError> {
+        self.child.checked_publication_metadata(kind)
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PutBatchReceipt, StoreError> {
+        original
+            .verify_live()
+            .map_err(|error| admission_under(original, error))?;
+        for (id, _) in objects {
+            boundary()?;
+            original
+                .verify_live()
+                .map_err(|error| admission_under(original, error))?;
+            self.authorize(StoreNamespaceOperation::Put, *id)?;
+        }
+        let mut check = || {
+            boundary()?;
+            original
+                .verify_live()
+                .map_err(|error| admission_under(original, error))?;
+            for (id, _) in objects {
+                self.authorize(StoreNamespaceOperation::Put, *id)?;
+            }
+            Ok(())
+        };
+        self.child
+            .put_many_if_absent_with_boundary(original, objects, &mut check)
+    }
+
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn metadata_resources(&self) -> Result<Arc<dyn super::StorePhysicalQuotaGuard>, StoreError> {
+        self.child.metadata_resources()
     }
 
     fn capabilities(&self) -> BackendCapabilities {
         self.child.capabilities()
     }
 
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        self.child.admit_object_graph(objects)
+    }
+
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
         self.authorize(StoreNamespaceOperation::Contains, id)?;
         self.child.contains(id)
+    }
+
+    fn read_with_boundary(
+        &self,
+        account: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        boundary()?;
+        self.authorize(StoreNamespaceOperation::Read, id)?;
+        self.child.read_with_boundary(account, id, range, boundary)
     }
 
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {

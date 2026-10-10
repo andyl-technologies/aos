@@ -63,17 +63,20 @@ impl TemporalGraph {
     /// The report captures graph/checkpoint/runtime footprints before and after
     /// building the debugger event-log view, then compares canonical causal
     /// projections of the supplied no-debug log and the debug-observed log.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns the original metadata admission or canonical rendering refusal.
     pub fn read_only_debug_inspection(
         &self,
         attach: &DebugAttachReport,
         request: &DebugReadOnlyInspectionRequest,
         event_log: &[SchedulerEventLogEntry],
-    ) -> DebugReadOnlyInspectionReport {
+    ) -> Result<DebugReadOnlyInspectionReport, EngineError> {
         let footprint_before =
             DebugReadOnlyInspectionFootprint::capture(self, attach, request.virtual_time);
         let observation_time = footprint_before.virtual_time;
-        let causal_event_log_before = event_log_causal_projection(event_log);
+        let causal_event_log_before = event_log_causal_projection(event_log)?;
         let mut event_log_with_observations = event_log.to_vec();
         let mut observational_entries = Vec::with_capacity(request.inspections.len() + 2);
         let mut sequence = u64::try_from(event_log.len()).unwrap_or(u64::MAX);
@@ -83,7 +86,7 @@ impl TemporalGraph {
             observation_time,
             DebugReadOnlyInspectionEvent::Attach,
             attach,
-        ));
+        )?);
         sequence = sequence.saturating_add(1);
         for inspection in &request.inspections {
             observational_entries.push(debug_read_only_observation_entry(
@@ -91,7 +94,7 @@ impl TemporalGraph {
                 observation_time,
                 DebugReadOnlyInspectionEvent::Inspect(*inspection),
                 attach,
-            ));
+            )?);
             sequence = sequence.saturating_add(1);
         }
         observational_entries.push(debug_read_only_observation_entry(
@@ -99,14 +102,14 @@ impl TemporalGraph {
             observation_time,
             DebugReadOnlyInspectionEvent::Detach,
             attach,
-        ));
+        )?);
 
         event_log_with_observations.extend(observational_entries.iter().cloned());
-        let causal_event_log_after = event_log_causal_projection(&event_log_with_observations);
+        let causal_event_log_after = event_log_causal_projection(&event_log_with_observations)?;
         let footprint_after =
             DebugReadOnlyInspectionFootprint::capture(self, attach, request.virtual_time);
 
-        DebugReadOnlyInspectionReport {
+        Ok(DebugReadOnlyInspectionReport {
             footprint_before,
             footprint_after,
             requested_virtual_time: request.virtual_time,
@@ -114,7 +117,7 @@ impl TemporalGraph {
             causal_event_log_after,
             observational_entries,
             event_log_with_observations,
-        }
+        })
     }
 
     /// Resolves a canonical debugger breakpoint without guest-memory mutation.
@@ -209,13 +212,13 @@ impl TemporalGraph {
 
         let footprint_before = DebugReadOnlyInspectionFootprint::capture(self, attach, request.at);
         let causal_event_log_before =
-            canonical_run_event_log_projection_without_debug_branches(event_log);
+            canonical_run_event_log_projection_without_debug_branches(event_log)?;
         let marker_sequence = next_event_log_sequence(event_log);
-        let branch = DebugNonCanonicalBranch::from_request(attach, request, marker_sequence);
+        let branch = DebugNonCanonicalBranch::from_request(attach, request, marker_sequence)?;
         let mut event_log_with_fork_marker = event_log.to_vec();
         event_log_with_fork_marker.push(branch.fork_marker.entry.clone());
         let causal_event_log_after =
-            canonical_run_event_log_projection_without_debug_branches(&event_log_with_fork_marker);
+            canonical_run_event_log_projection_without_debug_branches(&event_log_with_fork_marker)?;
         self.non_canonical_debug_branches
             .insert(branch.id, branch.clone());
         let footprint_after = DebugReadOnlyInspectionFootprint::capture(self, attach, request.at);
@@ -505,7 +508,7 @@ impl TemporalGraph {
                 leaf_oracle: &mut leaf_oracle,
             };
             let mut pass = ConditionEvaluationPass::from_log_prefix(prefix, oracle);
-            if pass.evaluate_assertion_condition(&request.condition) {
+            if pass.evaluate_assertion_condition(&request.condition)? {
                 let target = request
                     .event_coordinates
                     .get(&entry.sequence())

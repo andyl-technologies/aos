@@ -15,9 +15,9 @@ use crate::qmp::{QmpCommandKind, QmpDescriptorName, QmpError};
 pub const QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_COMMAND: &str =
     "crucible-hot-fork-child-process-contract";
 /// Version of the child process contract status.
-pub const QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_SCHEMA_VERSION: u32 = 3;
+pub const QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_SCHEMA_VERSION: u32 = 4;
 
-/// Exact kernel identities, one-based eventfd token, and file-size ceiling.
+/// Exact kernel identities, eventfd token, and independent resource ceilings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QmpHotForkChildProcessContractIdentity {
     cgroup_device: u64,
@@ -25,6 +25,7 @@ pub struct QmpHotForkChildProcessContractIdentity {
     cgroup_procs_inode: u64,
     cancellation_eventfd_id: u64,
     maximum_file_bytes: u64,
+    maximum_locked_bytes: u64,
 }
 
 impl QmpHotForkChildProcessContractIdentity {
@@ -33,13 +34,15 @@ impl QmpHotForkChildProcessContractIdentity {
     /// # Errors
     ///
     /// Returns [`QmpError::InvalidHotForkChildProcessContract`] when any
-    /// identity field or the file-size ceiling is zero.
+    /// identity field or the file-size ceiling is zero, or either resource
+    /// ceiling represents an unlimited allowance. Zero locked bytes is valid.
     pub fn new(
         cgroup_device: u64,
         cgroup_inode: u64,
         cgroup_procs_inode: u64,
         cancellation_eventfd_id: u64,
         maximum_file_bytes: u64,
+        maximum_locked_bytes: u64,
     ) -> Result<Self, QmpError> {
         if cgroup_device == 0
             || cgroup_inode == 0
@@ -47,6 +50,7 @@ impl QmpHotForkChildProcessContractIdentity {
             || cancellation_eventfd_id == 0
             || maximum_file_bytes == 0
             || maximum_file_bytes == u64::MAX
+            || maximum_locked_bytes == u64::MAX
         {
             return Err(QmpError::InvalidHotForkChildProcessContract);
         }
@@ -56,6 +60,7 @@ impl QmpHotForkChildProcessContractIdentity {
             cgroup_procs_inode,
             cancellation_eventfd_id,
             maximum_file_bytes,
+            maximum_locked_bytes,
         })
     }
 
@@ -87,6 +92,12 @@ impl QmpHotForkChildProcessContractIdentity {
     #[must_use]
     pub const fn maximum_file_bytes(self) -> u64 {
         self.maximum_file_bytes
+    }
+
+    /// Returns the independently authored finite `RLIMIT_MEMLOCK` ceiling.
+    #[must_use]
+    pub const fn maximum_locked_bytes(self) -> u64 {
+        self.maximum_locked_bytes
     }
 }
 
@@ -279,6 +290,7 @@ pub(crate) fn parse_hot_fork_child_process_contract_state(
         "cgroup-procs-inode",
         "cancellation-eventfd-id",
         "maximum-file-bytes",
+        "maximum-locked-bytes",
         "cgroup-placement-bound",
     ];
     let has_cgroup_name = object.contains_key("cgroup-fdname");
@@ -331,6 +343,7 @@ pub(crate) fn parse_hot_fork_child_process_contract_state(
     let cgroup_procs_inode = unsigned("cgroup-procs-inode")?;
     let cancellation_eventfd_id = unsigned("cancellation-eventfd-id")?;
     let maximum_file_bytes = unsigned("maximum-file-bytes")?;
+    let maximum_locked_bytes = unsigned("maximum-locked-bytes")?;
     let placement_bound = boolean("cgroup-placement-bound")?;
 
     let identity = if staged {
@@ -340,6 +353,7 @@ pub(crate) fn parse_hot_fork_child_process_contract_state(
             cgroup_procs_inode,
             cancellation_eventfd_id,
             maximum_file_bytes,
+            maximum_locked_bytes,
         )?)
     } else {
         None
@@ -362,6 +376,7 @@ pub(crate) fn parse_hot_fork_child_process_contract_state(
         && cgroup_procs_inode == 0
         && cancellation_eventfd_id == 0
         && maximum_file_bytes == 0
+        && maximum_locked_bytes == 0
         && !placement_bound
         && !consumed;
     if schema_version != u64::from(QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_SCHEMA_VERSION)
@@ -394,7 +409,7 @@ mod tests {
     #[test]
     fn process_contract_requires_exact_staged_or_absent_shape() {
         let staged = json!({
-            "schema-version": 3,
+            "schema-version": 4,
             "generation": 7,
             "template-generation": 3,
             "staged": true,
@@ -407,6 +422,7 @@ mod tests {
             "cgroup-procs-inode": 14,
             "cancellation-eventfd-id": 13,
             "maximum-file-bytes": 4096,
+            "maximum-locked-bytes": 8192,
             "cgroup-placement-bound": true,
         });
         let parsed = parse_hot_fork_child_process_contract_state(&staged)
@@ -416,17 +432,35 @@ mod tests {
         assert_eq!(
             parsed
                 .identity()
+                .map(|identity| identity.maximum_locked_bytes()),
+            Some(8192)
+        );
+        assert_eq!(
+            parsed
+                .identity()
                 .map(|identity| identity.cgroup_procs_inode()),
             Some(14)
         );
 
         let mut legacy = staged.clone();
-        legacy["schema-version"] = json!(2);
+        legacy["schema-version"] = json!(3);
         assert!(parse_hot_fork_child_process_contract_state(&legacy).is_err());
 
         let mut invalid = staged.clone();
         invalid["cgroup-placement-bound"] = json!(false);
         assert!(parse_hot_fork_child_process_contract_state(&invalid).is_err());
+        let mut unlimited = staged.clone();
+        unlimited["maximum-locked-bytes"] = json!(u64::MAX);
+        assert!(parse_hot_fork_child_process_contract_state(&unlimited).is_err());
+        let mut ordinary = staged.clone();
+        ordinary["maximum-locked-bytes"] = json!(0);
+        assert!(parse_hot_fork_child_process_contract_state(&ordinary).is_ok());
+        let mut missing_locked = staged.clone();
+        missing_locked
+            .as_object_mut()
+            .expect("staged fixture is an object")
+            .remove("maximum-locked-bytes");
+        assert!(parse_hot_fork_child_process_contract_state(&missing_locked).is_err());
         let mut missing_procs = staged;
         missing_procs
             .as_object_mut()
@@ -435,7 +469,7 @@ mod tests {
         assert!(parse_hot_fork_child_process_contract_state(&missing_procs).is_err());
 
         let absent = json!({
-            "schema-version": 3,
+            "schema-version": 4,
             "generation": 7,
             "template-generation": 0,
             "staged": false,
@@ -445,6 +479,7 @@ mod tests {
             "cgroup-procs-inode": 0,
             "cancellation-eventfd-id": 0,
             "maximum-file-bytes": 0,
+            "maximum-locked-bytes": 0,
             "cgroup-placement-bound": false,
         });
         assert!(

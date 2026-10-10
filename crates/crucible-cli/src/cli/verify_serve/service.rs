@@ -4,13 +4,9 @@
 //! module. This module owns host service setup and cleanup, including the
 //! packaged campaign executor and its separate operational watchdog.
 
-use super::packaged_executor::{
-    load_campaign_run_deployment, prepare_cli_packaged_executor,
-    resolve_guarded_campaign_deployment_path,
-};
+use super::packaged_executor::prepare_cli_packaged_executor;
 use super::*;
 use crate::cli_campaign_import::apply_campaign_import_manifests;
-use crate::cli_campaign_store::load_campaign_repository_store;
 
 const DEFAULT_CAMPAIGN_MAINTENANCE_WRITE_BACK_TRANSFERS: u32 = 64;
 const DEFAULT_CAMPAIGN_MAINTENANCE_S3_NODES: u16 = 8;
@@ -23,7 +19,41 @@ pub(crate) fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), Cl
         ));
     }
     validate_serve_invocation(args)?;
+    let process =
+        crucible_daemon::campaign_process::CampaignProcessOwner::admit().map_err(|error| {
+            match error {
+                crucible_daemon::campaign_process::CampaignProcessAdmissionError::Policy(
+                    message,
+                ) => serve_error(message),
+                crucible_daemon::campaign_process::CampaignProcessAdmissionError::Io(source) => {
+                    CliError::Io(source)
+                }
+                crucible_daemon::campaign_process::CampaignProcessAdmissionError::Store(source) => {
+                    CliError::SqliteStartup(source)
+                }
+                #[cfg(feature = "private-parent-fixture")]
+                source @ (crucible_daemon::campaign_process::CampaignProcessAdmissionError::ParentAdmission(_)
+                | crucible_daemon::campaign_process::CampaignProcessAdmissionError::Parent(_)) => {
+                    serve_error(source.to_string())
+                }
+            }
+        })?;
+    #[cfg(feature = "private-parent-fixture")]
+    if args.production_qemu {
+        // The fixed private fixture accepts its one attempt in this already
+        // authenticated process, before ordinary runtime or request preparation.
+        if process.run_original_parent().is_err() {
+            // The actual cause remains in its permanent owner. Enter retained
+            // quarantine directly: no admitted bounded reporting sink exists,
+            // and stderr must not block before custody is preserved.
+            process.retain_failed_original_parent();
+        }
+        return Ok(());
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(process.worker_threads())
+        .max_blocking_threads(process.blocking_threads())
+        .thread_stack_size(process.thread_stack_bytes())
         .enable_all()
         .build()
         .map_err(|error| serve_error(format!("serve runtime error: {error}")))?;
@@ -32,13 +62,29 @@ pub(crate) fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), Cl
         let _runtime = runtime.enter();
         serve_shutdown_signal()?
     };
-    runtime.block_on(run_serve_invocation_until_shutdown(cli, args, shutdown))
+    if args.production_qemu {
+        runtime.block_on(run_serve_with_process_heap_until_shutdown(
+            cli,
+            args,
+            shutdown,
+            process.heap(),
+        ))
+    } else {
+        let decoding = crate::cli_input_resources::original_budget()?;
+        let admitted = crucible_api::admit_future(
+            run_serve_with_process_heap_until_shutdown(cli, args, shutdown, process.heap()),
+            decoding,
+        )
+        .map_err(|source| CliError::LifecycleAdmission(Box::new(source)))?;
+        runtime.block_on(admitted)
+    }
 }
 
-pub(crate) async fn run_serve_invocation_until_shutdown<S>(
+async fn run_serve_with_process_heap_until_shutdown<S>(
     cli: &Cli,
     args: &ServeArgs,
     shutdown: S,
+    process_heap: &crucible_daemon::campaign_store_composition::SqliteProcessHeap,
 ) -> Result<(), CliError>
 where
     S: Future<Output = Result<(), CliError>> + Send + 'static,
@@ -107,12 +153,14 @@ where
             .take()
             .ok_or_else(|| serve_error("production QEMU configuration disappeared"))?;
         let config = production_session_lifecycle_config(campaign_config, &debug_authorization);
-        let packaged_campaign_config = config.clone();
-        let observation_config = config.clone();
+        let packaged_campaign_config = config;
         let observation_qemu_build_id = production_qemu_build_id
             .take()
             .ok_or_else(|| serve_error("production QEMU identity disappeared"))?;
-        let observation_deployment = cli.campaign_deployment.clone();
+        let observation_factory = Arc::new(std::sync::OnceLock::<
+            crucible_daemon::qemu_campaign_lifecycle::RemoteObservationResumeFactory,
+        >::new());
+        let resume_factory = Arc::clone(&observation_factory);
         let mut control_plane = LifecycleControlPlane::new_with_fallible_source_factory(
             "crucible-cli-qemu-daemon",
             Vec::new(),
@@ -128,29 +176,15 @@ where
             },
         )
         .with_resume_observation_loop_factory(move |request, configuration, context| {
-            let deployment_path =
-                resolve_guarded_campaign_deployment_path(observation_deployment.as_deref())
-                    .map_err(
-                        |error| crucible_api::LifecycleApiError::ResumeObservationSource {
-                            message: format!("resolve guarded campaign deployment: {error}"),
-                        },
-                    )?;
-            let deployment = load_campaign_run_deployment(&deployment_path).map_err(|error| {
-                crucible_api::LifecycleApiError::ResumeObservationSource {
-                    message: format!("load guarded campaign deployment: {error}"),
-                }
-            })?;
-            crucible_daemon::qemu_campaign_lifecycle::RemoteObservationResumeFactory::new(
-                env!("CARGO_PKG_VERSION"),
-                observation_qemu_build_id.clone(),
-                observation_config.clone(),
-                deployment.host,
-                deployment.resources,
-                deployment.verify_determinism_findings,
-            )
-            .resume_loop(request, configuration, context)
+            resume_factory
+                .get()
+                .ok_or_else(|| crucible_api::LifecycleApiError::ResumeObservationSource {
+                    message: String::from("observation resume requires an attached campaign owner"),
+                })?
+                .resume_loop(request, configuration, context)
         })
-        .with_resume_replay_closure_validator(validate_remote_resume_replay_closure);
+        .with_resume_replay_closure_validator(validate_remote_resume_replay_closure)
+    .with_decode_budget(crate::cli_input_resources::original_budget()?);
         if let Some(max_sessions) = args.max_sessions {
             control_plane = control_plane.with_max_sessions(max_sessions);
         }
@@ -162,12 +196,38 @@ where
                 lifecycle,
                 runtime: tokio::runtime::Handle::current(),
             });
-        let campaign_service = open_local_campaign_service(
+        let campaign_service = open_local_campaign_service_with_heap(
             args,
-            Some(&packaged_campaign_config),
+            Some(packaged_campaign_config),
             Some(campaign_debug_lifecycle),
             None,
+            Some(process_heap),
         )?;
+        if let Some((owner, verify_findings)) = campaign_service
+            .as_ref()
+            .and_then(|service| service.guarded_owner.clone())
+        {
+            let factory =
+                crucible_daemon::qemu_campaign_lifecycle::RemoteObservationResumeFactory::new(
+                    env!("CARGO_PKG_VERSION"),
+                    observation_qemu_build_id,
+                    owner,
+                    verify_findings,
+                )
+                .map_err(|error| serve_error(format!("observation resume owner error: {error}")))?;
+            observation_factory
+                .set(factory)
+                .map_err(|_| serve_error("observation resume owner was already installed"))?;
+        }
+        if let Some(control) = campaign_service
+            .as_ref()
+            .and_then(|service| service.host_operational_control.clone())
+        {
+            control_plane
+                .lock()
+                .await
+                .set_host_operational_control(control);
+        }
         announce_campaign_service(cli, campaign_service.as_ref());
         return run_bound_daemon_services(
             listener,
@@ -190,7 +250,8 @@ where
         control_plane = control_plane.with_max_sessions(max_sessions);
     }
     let control_plane = Arc::new(tokio::sync::Mutex::new(control_plane));
-    let campaign_service = open_local_campaign_service(args, None, None, None)?;
+    let campaign_service =
+        open_local_campaign_service_with_heap(args, None, None, None, Some(process_heap))?;
     announce_campaign_service(cli, campaign_service.as_ref());
     run_bound_daemon_services(
         listener,
@@ -225,6 +286,11 @@ pub(crate) fn production_session_lifecycle_config(
 pub(crate) struct PreparedLocalCampaignService {
     service: crucible_daemon::CampaignLocalService,
     socket_path: PathBuf,
+    host_operational_control: Option<crucible_api::host_operational::SharedHostOperationalControl>,
+    guarded_owner: Option<(
+        crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignOwner,
+        bool,
+    )>,
 }
 
 struct CliCampaignDebugLifecycleAdmission<F> {
@@ -264,11 +330,12 @@ impl PreparedLocalCampaignService {
     }
 }
 
-pub(crate) fn open_local_campaign_service(
+fn open_local_campaign_service_with_heap(
     args: &ServeArgs,
-    production_qemu: Option<&crucible_api::ProductionVmLifecycleConfig>,
+    production_qemu: Option<crucible_api::ProductionVmLifecycleConfig>,
     campaign_debug_lifecycle: Option<Arc<dyn crucible_daemon::CampaignDebugLifecycleAdmission>>,
     private_target_attempt: Option<crucible_campaign::AttemptId>,
+    process_heap: Option<&crucible_daemon::campaign_store_composition::SqliteProcessHeap>,
 ) -> Result<Option<PreparedLocalCampaignService>, CliError> {
     validate_campaign_runtime_attachments(args)?;
     let (Some(socket), Some(state), Some(policy)) = (
@@ -305,8 +372,15 @@ pub(crate) fn open_local_campaign_service(
             })?;
     }
     let mut prepared = match args.campaign_store.as_deref() {
-        Some(path) => config.prepare_with_store(load_campaign_repository_store(path)?),
-        None => config.prepare(),
+        Some(path) => config.prepare_with_store(
+            crate::cli_campaign_store::load_campaign_repository_store_with_heap(
+                path,
+                process_heap,
+            )?,
+        ),
+        None => config.prepare(process_heap.ok_or_else(|| {
+            serve_error("builtin campaign storage requires the original process heap")
+        })?),
     }
     .map_err(|error| serve_error(format!("campaign service bootstrap error: {error}")))?;
     if let Some(maintenance) = campaign_store_maintenance_config(args)? {
@@ -359,6 +433,9 @@ pub(crate) fn open_local_campaign_service(
                 deployment,
                 production_qemu.ok_or_else(|| {
                     serve_error("--campaign-packaged-executor requires --production-qemu")
+                })?,
+                process_heap.ok_or_else(|| {
+                    serve_error("packaged catalog requires the original process heap")
                 })?,
             )?)
         }
@@ -422,6 +499,26 @@ pub(crate) fn open_local_campaign_service(
     if let Some(lifecycle) = campaign_debug_lifecycle {
         prepared = prepared.with_campaign_debug_lifecycle(lifecycle);
     }
+    let guarded_owner = packaged_executor
+        .as_ref()
+        .map(|packaged| {
+            prepared
+                .guarded_campaign_owner(&packaged.executor)
+                .map(|owner| (owner, packaged.verify_determinism_findings))
+                .map_err(|error| serve_error(format!("guarded resume owner error: {error}")))
+        })
+        .transpose()?;
+    let host_operational_control = if let Some(packaged) = packaged_executor.as_ref() {
+        let registry = packaged.executor.host_operational_registry();
+        for principal in &args.host_operator_certificate {
+            registry.grant_principal(principal).map_err(|error| {
+                serve_error(format!("host operational authorization error: {error}"))
+            })?;
+        }
+        Some(Arc::new(registry) as crucible_api::host_operational::SharedHostOperationalControl)
+    } else {
+        None
+    };
     let service = if let Some(packaged) = packaged_executor {
         prepared.bind_with_runtimes_and_executor(runtimes, packaged.executor)
     } else if runtimes.is_empty() {
@@ -433,101 +530,9 @@ pub(crate) fn open_local_campaign_service(
     Ok(Some(PreparedLocalCampaignService {
         service,
         socket_path: socket.clone(),
+        host_operational_control,
+        guarded_owner,
     }))
-}
-
-/// Private packaged campaign execution without an unrelated TCP control listener.
-pub(crate) struct PrivatePackagedCampaignRun<'a> {
-    pub(crate) state: &'a Path,
-    pub(crate) policy: &'a Path,
-    pub(crate) authority: &'a Path,
-    pub(crate) campaign_socket: &'a Path,
-    pub(crate) executor_socket: &'a Path,
-    pub(crate) deployment: &'a Path,
-    pub(crate) campaign: &'a str,
-    pub(crate) target_attempt: crucible_campaign::AttemptId,
-    pub(crate) lifecycle: &'a crucible_api::ProductionVmLifecycleConfig,
-    pub(crate) timeout: Duration,
-}
-
-/// Runs one imported campaign until its authenticated completion becomes visible.
-///
-/// # Errors
-///
-/// Returns an error if the private service fails, the completion check fails,
-/// or the bounded execution deadline expires.
-pub(crate) fn run_private_packaged_campaign_until<F>(
-    run: PrivatePackagedCampaignRun<'_>,
-    mut completed: F,
-) -> Result<(), CliError>
-where
-    F: FnMut() -> Result<bool, CliError>,
-{
-    let args = ServeArgs {
-        listen: String::from("127.0.0.1:0"),
-        max_sessions: None,
-        production_qemu: true,
-        qemu_rendezvous_ticks: None,
-        qemu_quantum_budget: None,
-        read_only: false,
-        tls_cert: None,
-        tls_key: None,
-        client_ca: None,
-        trusted_unauthenticated_bind: false,
-        debug_role: Vec::new(),
-        campaign_socket: Some(run.campaign_socket.to_path_buf()),
-        campaign_state: Some(run.state.to_path_buf()),
-        campaign_policy: Some(run.policy.to_path_buf()),
-        campaign_store: None,
-        campaign_maintenance_interval_ms: None,
-        campaign_maintenance_write_back_transfers: None,
-        campaign_maintenance_s3_nodes: None,
-        campaign_maintenance_s3_uploads: None,
-        campaign_component_authority: Some(run.authority.to_path_buf()),
-        campaign_import_manifest: Vec::new(),
-        campaign_runtime: vec![run.campaign.to_owned()],
-        campaign_runtime_all: false,
-        campaign_executor_socket: vec![run.executor_socket.to_path_buf()],
-        campaign_packaged_executor: Some(run.deployment.to_path_buf()),
-        campaign_socket_mode: 0o600,
-    };
-    let prepared =
-        open_local_campaign_service(&args, Some(run.lifecycle), None, Some(run.target_attempt))?
-            .ok_or_else(|| serve_error("private packaged campaign service was not prepared"))?;
-    let shutdown = prepared.service.shutdown_handle();
-    let thread = std::thread::Builder::new()
-        .name(String::from("crucible-private-campaign"))
-        .spawn(move || prepared.service.serve().map_err(Box::new))
-        .map_err(|error| serve_error(format!("private campaign service thread error: {error}")))?;
-    let deadline = crate::host_boundary::HostWaitDeadline::after(run.timeout);
-    let result = loop {
-        match completed() {
-            Ok(true) => break Ok(()),
-            Ok(false) if thread.is_finished() => {
-                break Err(serve_error(
-                    "private packaged campaign service stopped early",
-                ));
-            }
-            Ok(false) if !deadline.expired() => {
-                deadline.pause(Duration::from_millis(100));
-            }
-            Ok(false) => break Err(serve_error("private packaged campaign execution timed out")),
-            Err(error) => break Err(error),
-        }
-    };
-    shutdown.shutdown();
-    let joined = thread
-        .join()
-        .map_err(|_| serve_error("private packaged campaign service thread panicked"))?
-        .map_err(|error| campaign_service_join_error(&error));
-    // A branch failure must not hide a separate failure to reap its executor.
-    match (result, joined) {
-        (Ok(()), Ok(_)) => Ok(()),
-        (Err(error), Ok(_)) | (Ok(()), Err(error)) => Err(error),
-        (Err(error), Err(cleanup)) => Err(serve_error(format!(
-            "{error}; private packaged campaign cleanup also failed: {cleanup}"
-        ))),
-    }
 }
 
 pub(crate) fn campaign_executor_endpoint(
@@ -857,6 +862,18 @@ pub(crate) fn serve_shutdown_signal() -> Result<impl Future<Output = Result<(), 
     })
 }
 
+fn validate_listen_endpoint(listen: &str) -> Result<(), CliError> {
+    let invalid = || serve_error("serve bind error: invalid listen host or port");
+    let (host, port) = listen.rsplit_once(':').ok_or_else(invalid)?;
+    port.parse::<u16>().map_err(|_| invalid())?;
+    if host.is_empty() {
+        return Err(invalid());
+    }
+    // Tokio retains its original host interpretation, including numeric IPv6
+    // and scoped forms. This check performs no resolution, DNS or IO.
+    Ok(())
+}
+
 pub(crate) fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError> {
     if args.max_sessions == Some(0) {
         return Err(usage_error("--max-sessions must be greater than zero"));
@@ -935,7 +952,28 @@ pub(crate) fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError
         ));
     }
     let _ = debug_authorization_policy(args)?;
-    Ok(())
+    if !args.host_operator_certificate.is_empty() {
+        if tls_file_count != 3 || args.campaign_packaged_executor.is_none() {
+            return Err(usage_error(
+                "--host-operator-certificate requires mutual TLS and a packaged campaign executor",
+            ));
+        }
+        let mut unique = std::collections::BTreeSet::new();
+        for fingerprint in &args.host_operator_certificate {
+            if fingerprint.len() != 64
+                || !fingerprint
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                || !unique.insert(fingerprint)
+            {
+                return Err(usage_error(
+                    "host operator certificates must be unique lowercase 64-digit fingerprints",
+                ));
+            }
+        }
+    }
+    // Preserve the original usage-error priority before checking bind syntax.
+    validate_listen_endpoint(&args.listen)
 }
 
 fn campaign_store_maintenance_config(
@@ -1078,4 +1116,72 @@ pub(crate) fn debug_authorization_policy(
             .map_err(|error| usage_error(error.to_string()))?;
     }
     Ok(policy)
+}
+
+#[cfg(test)]
+pub(crate) async fn run_serve_invocation_until_shutdown<S>(
+    cli: &Cli,
+    args: &ServeArgs,
+    shutdown: S,
+) -> Result<(), CliError>
+where
+    S: Future<Output = Result<(), CliError>> + Send + 'static,
+{
+    let heap = crucible_cas::content_store::fixture_sqlite_heap()
+        .map_err(|error| serve_error(format!("test process heap: {error}")))?;
+    run_serve_with_process_heap_until_shutdown(cli, args, shutdown, &heap).await
+}
+
+#[cfg(test)]
+pub(crate) fn open_local_campaign_service(
+    args: &ServeArgs,
+    production_qemu: Option<crucible_api::ProductionVmLifecycleConfig>,
+    campaign_debug_lifecycle: Option<Arc<dyn crucible_daemon::CampaignDebugLifecycleAdmission>>,
+    private_target_attempt: Option<crucible_campaign::AttemptId>,
+) -> Result<Option<PreparedLocalCampaignService>, CliError> {
+    let heap = crucible_cas::content_store::fixture_sqlite_heap()
+        .map_err(|error| serve_error(format!("test process heap: {error}")))?;
+    open_local_campaign_service_with_heap(
+        args,
+        production_qemu,
+        campaign_debug_lifecycle,
+        private_target_attempt,
+        Some(&heap),
+    )
+}
+
+#[cfg(test)]
+mod listen_endpoint_tests {
+    use super::validate_listen_endpoint;
+
+    #[test]
+    fn host_interpretation_remains_with_the_original_resolver() {
+        for endpoint in [
+            "localhost:0",
+            "service.example:8443",
+            "127.0.0.1:80",
+            "[::1]:65535",
+            "::1:80",
+            "[fe80::1%2]:80",
+            "fe80::1%2:80",
+            "[invalid]:80",
+        ] {
+            assert!(validate_listen_endpoint(endpoint).is_ok(), "{endpoint}");
+        }
+    }
+
+    #[test]
+    fn malformed_port_and_host_fail_without_bootstrap() {
+        for endpoint in [
+            "127.0.0.1:70000",
+            "localhost:abc",
+            ":80",
+            "localhost:",
+            "localhost",
+        ] {
+            let error = validate_listen_endpoint(endpoint).expect_err("invalid bind input");
+            assert_eq!(error.exit_code(), 3);
+            assert!(error.to_string().contains("serve bind error"));
+        }
+    }
 }

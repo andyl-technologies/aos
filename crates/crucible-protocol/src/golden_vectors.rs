@@ -14,7 +14,7 @@ use crate::{
 /// This constant is intentionally a literal. Tests assert it equals
 /// [`CONTROL_PROTOCOL_VERSION`] so a version bump fails until these vectors are
 /// regenerated and this constant is updated.
-pub const GOLDEN_VECTOR_PROTOCOL_VERSION: u32 = 3;
+pub const GOLDEN_VECTOR_PROTOCOL_VERSION: u32 = 5;
 
 /// Regeneration rule for the protocol golden-vector corpus.
 pub const GOLDEN_VECTOR_REGENERATION_RULE: &str =
@@ -109,7 +109,11 @@ impl ControlGoldenVectorMessage {
                 slot_index,
                 node_count,
             }),
-            Self::SetupPayload { region_len } => Some(HostMsg::Setup { region_len }),
+            Self::SetupPayload { region_len } => Some(HostMsg::Setup {
+                process_generation: 1,
+                device_digest_workspace: None,
+                region_len,
+            }),
             Self::Quit => Some(HostMsg::Quit),
             Self::Hello { .. } | Self::SetupAck { .. } => None,
         }
@@ -127,7 +131,7 @@ pub const GOLDEN_CONTROL_VECTORS: [ControlGoldenVector; 5] = [
             proto_version: GOLDEN_VECTOR_PROTOCOL_VERSION,
             abi_version: GOLDEN_VECTOR_ABI_VERSION,
         },
-        frame: &[0, 0, 0, 9, 0xF0, 0, 0, 0, 3, 0, 0, 0, 1],
+        frame: &[0, 0, 0, 9, 0xF0, 0, 0, 0, 5, 0, 0, 0, 1],
     },
     ControlGoldenVector {
         name: "hello-ack",
@@ -141,7 +145,7 @@ pub const GOLDEN_CONTROL_VECTORS: [ControlGoldenVector; 5] = [
             node_count: GOLDEN_VECTOR_NODE_COUNT,
         },
         frame: &[
-            0, 0, 0, 17, 0xF1, 0, 0, 0, 3, 0, 0, 0, 1, 0, 0, 0, 7, 0, 0, 0, 32,
+            0, 0, 0, 17, 0xF1, 0, 0, 0, 5, 0, 0, 0, 1, 0, 0, 0, 7, 0, 0, 0, 32,
         ],
     },
     ControlGoldenVector {
@@ -152,7 +156,11 @@ pub const GOLDEN_CONTROL_VECTORS: [ControlGoldenVector; 5] = [
         message: ControlGoldenVectorMessage::SetupPayload {
             region_len: GOLDEN_VECTOR_REGION_LEN,
         },
-        frame: &[0, 0, 0, 9, 0x01, 0, 0, 0, 0, 0, 6, 0xE0, 0],
+        frame: &[
+            0, 0, 0, 57, 1, 0, 0, 0, 0, 0, 6, 224, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0,
+        ],
     },
     ControlGoldenVector {
         name: "setup-ack",

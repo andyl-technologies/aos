@@ -116,7 +116,7 @@
       }
       {
         label = "event-log payload equality";
-        needle = "frame.entry, *expected_entry";
+        needle = "&**frame.entry, expected_entry";
       }
       {
         label = "resume does not append canonical entries";

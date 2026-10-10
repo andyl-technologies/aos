@@ -1,6 +1,6 @@
 //! Built-in worked-example scenario corpus.
 //!
-//! This module owns the shipped RFC-0010 example artifacts that double as
+//! This module owns the shipped deterministic example artifacts that double as
 //! determinism fixtures. Each fixture is a regular content-addressed
 //! [`ScenarioDefForm`] plus a deterministic
 //! double-backed run script that proves the scenario can pass and reproduce.
@@ -51,16 +51,16 @@ use crate::trigger::{
 /// Version label for the built-in worked-example corpus.
 pub const BUILT_IN_EXAMPLE_CORPUS_VERSION: &str = "crucible.example-corpus.v2";
 
-/// Stable corpus name for the RFC-0010 A.1 happy-path example.
+/// Stable corpus name for the built-in happy-path example.
 pub const HAPPY_PATH_SCENARIO_NAME: &str = "happy-path.scn";
 
-/// Stable corpus name for the RFC-0010 A.2 partition-recovery example.
+/// Stable corpus name for the built-in partition-recovery example.
 pub const PARTITION_RECOVERY_SCENARIO_NAME: &str = "partition-recovery.scn";
 
-/// Stable corpus name for the RFC-0010 A.3 crash+restart example.
+/// Stable corpus name for the built-in crash-and-restart example.
 pub const CRASH_RESTART_SCENARIO_NAME: &str = "crash-restart.scn";
 
-/// Stable built-in family name for the RFC-0010 A.4 fault-campaign example.
+/// Stable built-in family name for the built-in fault-campaign example.
 pub const FAULT_CAMPAIGN_FAMILY_NAME: &str = "fault-campaign.fam";
 
 /// Whether the built-in example corpus requires a Crucible guest-side component.
@@ -125,7 +125,7 @@ pub struct ExampleScenarioRunReport {
     /// Deterministic fingerprint stream derived from the scenario and log.
     pub fingerprint_stream: Vec<u8>,
     /// Final host-side assertion report produced from the checked log prefix.
-    pub assertion_report: HostAssertionReport,
+    pub assertion_report: std::sync::Arc<HostAssertionReport>,
     /// Self-contained reproduction artifact for the run.
     pub reproduction: ReproductionArtifact,
     /// Canonical event-log bytes re-derived from the reproduction artifact.
@@ -151,7 +151,7 @@ pub struct ExampleScenarioVerifyReport {
     pub fingerprint_stream: Vec<u8>,
 }
 
-/// Deterministic proof report for the RFC-0010 A.4 fault-campaign example.
+/// Deterministic proof report for the built-in fault-campaign example.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FaultCampaignExampleReport {
     /// Stable built-in family name used by the CLI and corpus checks.
@@ -169,7 +169,7 @@ pub struct FaultCampaignExampleReport {
     /// Unified event-log bytes that carry the planted violation observations.
     pub violation_event_log: Vec<u8>,
     /// Host-side assertion report proving the planted violation was evaluated.
-    pub violation_report: HostAssertionReport,
+    pub violation_report: std::sync::Arc<HostAssertionReport>,
     /// Assertion-violation replay report proving the finding reproduces the violation.
     pub violation_replay: AssertionViolationReplayReport,
     /// Self-contained reduced finding artifact for the discovered failure.
@@ -363,7 +363,7 @@ pub fn built_in_example_corpus() -> Result<Vec<ExampleScenarioFixture>, ExampleC
     ])
 }
 
-/// Builds the RFC-0010 A.1 happy-path client/server scenario fixture.
+/// Builds the built-in happy-path client/server scenario fixture.
 ///
 /// # Errors
 ///
@@ -446,7 +446,7 @@ pub fn happy_path_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusErro
     })
 }
 
-/// Builds the RFC-0010 A.2 three-node partition-recovery scenario fixture.
+/// Builds the built-in three-node partition-recovery scenario fixture.
 ///
 /// # Errors
 ///
@@ -489,7 +489,7 @@ pub fn partition_recovery_scenario() -> Result<ExampleScenarioFixture, ExampleCo
     })
 }
 
-/// Builds the RFC-0010 A.3 node crash+restart scenario fixture.
+/// Builds the built-in node crash-and-restart scenario fixture.
 ///
 /// # Errors
 ///
@@ -532,7 +532,7 @@ pub fn crash_restart_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusE
     })
 }
 
-/// Builds the RFC-0010 A.4 fault-campaign scenario family.
+/// Builds the built-in fault-campaign scenario family.
 ///
 /// # Errors
 ///
@@ -555,7 +555,7 @@ pub fn fault_campaign_family() -> Result<ScenarioFamily, ExampleCorpusError> {
     )
 }
 
-/// Runs the RFC-0010 A.4 fault-campaign proof with the default fuzz budget.
+/// Runs the built-in fault-campaign proof with the default fuzz budget.
 ///
 /// # Errors
 ///
@@ -568,7 +568,7 @@ pub fn run_fault_campaign_example_default() -> Result<FaultCampaignExampleReport
     ))
 }
 
-/// Runs the RFC-0010 A.4 fault-campaign proof.
+/// Runs the built-in fault-campaign proof.
 ///
 /// # Errors
 ///
@@ -681,7 +681,7 @@ pub fn run_fault_campaign_example(
         discovered_iteration,
         violation_observations: violation.observations,
         violation_event_log: violation.event_log,
-        violation_report: violation_replay.reproduced.clone(),
+        violation_report: std::sync::Arc::clone(&violation_replay.reproduced),
         violation_replay,
         finding,
         fuzz_report,
@@ -736,7 +736,7 @@ pub fn run_example_scenario(
         outcome: ExampleScenarioRunOutcome::Passed,
         canonical_event_log: primary.canonical_event_log,
         fingerprint_stream: primary.fingerprint_stream,
-        assertion_report: primary.assertion_report,
+        assertion_report: primary.assertion_report.into_shared()?,
         reproduction,
         replayed_canonical_event_log: replayed.canonical_event_log,
         replayed_fingerprint_stream: replayed.fingerprint_stream,
@@ -1266,7 +1266,7 @@ fn fault_campaign_coverage_feedback() -> Result<Vec<EventLogCoverageFeedback>, S
     ])
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 struct FaultCampaignViolationEvidence {
     observations: Vec<ObservableEvent>,
     event_log: Vec<u8>,
@@ -1291,9 +1291,9 @@ fn fault_campaign_violation_evidence(
     let recorded_log = RecordedAssertionLog::from_segments(vec![append.entries.clone()])
         .map_err(ExampleCorpusError::FaultCampaignViolationLog)?;
     let mut oracle = BlackBoxHostOracle;
-    let mut evaluator = HostAssertionEvaluator::new(scenario.properties())
-        .with_world_white_box_policies(scenario.world());
-    let report = evaluator.finalize_prefix(event_log.condition_prefix(), &mut oracle);
+    let mut evaluator = HostAssertionEvaluator::new(scenario.properties())?
+        .with_world_white_box_policies(scenario.world())?;
+    let report = evaluator.finalize_prefix(event_log.condition_prefix(), &mut oracle)?;
     let no_split_brain_violated = report.outcomes().iter().any(|outcome| {
         outcome.assertion.name == "no-split-brain"
             && outcome.kind == HostAssertionOutcomeKind::Violated
@@ -1473,7 +1473,7 @@ fn partition_heal_timer() -> TimerId {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 struct ExampleScenarioRunCore {
     canonical_event_log: Vec<u8>,
     fingerprint_stream: Vec<u8>,
@@ -1511,8 +1511,8 @@ fn run_example_scenario_material(
     )?;
     let mut canonical_event_log = Vec::new();
     let mut assertion_oracle = BlackBoxHostOracle;
-    let mut assertion_evaluator = HostAssertionEvaluator::new(scenario.properties())
-        .with_world_white_box_policies(scenario.world());
+    let mut assertion_evaluator = HostAssertionEvaluator::new(scenario.properties())?
+        .with_world_white_box_policies(scenario.world())?;
     let mut state = EventGraphState::new();
     let mut observed_trigger_actions = 0;
     let mut pass_firings = None;
@@ -1550,7 +1550,7 @@ fn run_example_scenario_material(
     let assertion_report = assertion_evaluator.finalize_prefix(
         scheduler.condition_event_log_prefix(),
         &mut assertion_oracle,
-    );
+    )?;
     if assertion_report.verdict().is_failed() {
         return Err(ExampleCorpusError::AssertionsFailed {
             scenario: scenario_name.to_owned(),
@@ -1654,7 +1654,7 @@ fn observe_assertions_and_append_state_events(
     assertion_oracle: &mut BlackBoxHostOracle,
 ) -> Result<(), ExampleCorpusError> {
     let outcomes = assertion_evaluator
-        .observe_prefix(scheduler.condition_event_log_prefix(), assertion_oracle);
+        .observe_prefix(scheduler.condition_event_log_prefix(), assertion_oracle)?;
     let events = outcomes
         .iter()
         .filter_map(assertion_state_event_from_outcome)
@@ -1664,7 +1664,7 @@ fn observe_assertions_and_append_state_events(
     }
     let append = scheduler.append_observable_events(events)?;
     canonical_event_log.extend_from_slice(&append.segment_bytes);
-    assertion_evaluator.observe_prefix(scheduler.condition_event_log_prefix(), assertion_oracle);
+    assertion_evaluator.observe_prefix(scheduler.condition_event_log_prefix(), assertion_oracle)?;
     Ok(())
 }
 
@@ -1695,11 +1695,11 @@ fn evaluate_example_graph(
     let mut pass = ConditionEvaluationPass::from_log_prefix_ref(
         scheduler.condition_event_log_prefix(),
         NoNamedLeaves,
-    )
+    )?
     .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
     .with_scheduler_quiescence(scheduler.quiescence()?)
     .with_world_white_box_policies(world);
-    Ok(pass.evaluate_event_graph(graph, state))
+    Ok(pass.evaluate_event_graph(graph, state)?)
 }
 
 fn scenario_run_time_limit(steps: &[ExampleReplayStep]) -> u64 {

@@ -133,6 +133,7 @@ fn terminal_lifecycle_capture_uses_the_existing_qemu_stop_fence() -> Result<(), 
 
 #[test]
 fn qemu_node_appends_quantum_coverage_to_the_unified_event_log() -> Result<(), Box<dyn Error>> {
+    let decode_scope = crucible::test_support::fixture_decode_scope(4 * 1024 * 1024)?;
     let log = shared_log();
     let event = ObservableEvent::coverage_block(Icount { retired: 17 }, node_id("vm-a"), 0x4010, 4);
     let mut node = scripted_node_with_coverage(
@@ -165,6 +166,7 @@ fn qemu_node_appends_quantum_coverage_to_the_unified_event_log() -> Result<(), B
     );
     let (shutdown, _final_append) = node.shutdown_child_with_event_log(&mut event_log)?;
     assert!(shutdown.reaped);
+    decode_scope.check()?;
     Ok(())
 }
 
@@ -235,6 +237,7 @@ fn qemu_node_discards_pre_authoritative_observations_after_coverage_generation_r
 #[test]
 fn qemu_node_generic_backend_drains_coverage_without_a_local_side_record()
 -> Result<(), Box<dyn Error>> {
+    let decode_scope = crucible::test_support::fixture_decode_scope(4 * 1024 * 1024)?;
     let log = shared_log();
     let event = ObservableEvent::coverage_block(Icount { retired: 17 }, node_id("vm-a"), 0x4010, 4);
     let mut node = scripted_node_with_coverage(
@@ -256,6 +259,7 @@ fn qemu_node_generic_backend_drains_coverage_without_a_local_side_record()
     assert_eq!(event_log_coverage_projection(&append.entries).len(), 1);
     SimulationBackend::shutdown(&mut node)?;
     assert!(node.child_reaped());
+    decode_scope.check()?;
     SimulationBackend::shutdown(&mut node)?;
     assert!(node.child_reaped());
     Ok(())
@@ -286,6 +290,7 @@ fn qemu_node_stamps_polled_console_at_the_scheduler_boundary() -> Result<(), Box
 
 #[test]
 fn qemu_node_drains_final_coverage_before_teardown() -> Result<(), Box<dyn Error>> {
+    let decode_scope = crucible::test_support::fixture_decode_scope(4 * 1024 * 1024)?;
     let log = shared_log();
     let event = ObservableEvent::coverage_block(Icount { retired: 17 }, node_id("vm-a"), 0x4010, 4);
     let mut node = scripted_node_with_coverage(
@@ -307,6 +312,7 @@ fn qemu_node_drains_final_coverage_before_teardown() -> Result<(), Box<dyn Error
         projection.entries()[0].at.retired,
         Some(Icount { retired: 17 })
     );
+    decode_scope.check()?;
     Ok(())
 }
 

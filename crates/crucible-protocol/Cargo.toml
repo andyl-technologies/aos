@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 blake3 = { workspace = true }
+crucible-ram = { path = "../crucible-ram" }
 libc = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }

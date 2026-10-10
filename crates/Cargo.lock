@@ -2513,12 +2513,17 @@ dependencies = [
  "crucible-cas",
  "crucible-device",
  "crucible-harness",
+ "crucible-linux-resource",
  "crucible-protocol",
+ "crucible-ram",
  "crucible-shmem",
  "crucible-sim",
  "regex",
+ "regex-automata",
+ "regex-syntax",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "toml 0.8.23",
  "tracing",
@@ -2534,14 +2539,18 @@ dependencies = [
  "ciborium",
  "crucible",
  "crucible-campaign",
+ "crucible-cas",
  "crucible-device",
+ "crucible-linux-resource",
  "crucible-protocol",
  "crucible-qemu",
+ "crucible-ram",
  "crucible-session",
  "crucible-shmem",
  "futures-util",
  "hyper-util",
  "reqwest",
+ "rusqlite",
  "rustix 1.1.4",
  "rustls",
  "rustls-pemfile",
@@ -2569,6 +2578,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "crucible-cas",
+ "crucible-ram",
  "ed25519-dalek",
  "num-bigint",
  "num-integer",
@@ -2586,6 +2596,11 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "blake3",
+ "crucible-cas",
+ "crucible-linux-resource",
+ "crucible-protocol",
+ "crucible-ram",
+ "crucible-sqlite-heap",
  "rusqlite",
  "rustix 1.1.4",
  "tempfile",
@@ -2610,6 +2625,7 @@ dependencies = [
  "crucible-device",
  "crucible-guest",
  "crucible-harness",
+ "crucible-linux-resource",
  "crucible-protocol",
  "crucible-qemu",
  "crucible-session",
@@ -2639,22 +2655,27 @@ dependencies = [
  "crucible-api",
  "crucible-campaign",
  "crucible-cas",
+ "crucible-device",
  "crucible-guest",
  "crucible-linux-resource",
  "crucible-protocol",
  "crucible-qemu",
+ "crucible-ram",
  "crucible-s3-store",
  "crucible-session",
  "crucible-shmem",
  "ed25519-dalek",
  "rand 0.9.4",
+ "rusqlite",
  "rustix 1.1.4",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "toml 0.8.23",
+ "zbus",
 ]
 
 [[package]]
@@ -2705,9 +2726,16 @@ dependencies = [
 name = "crucible-linux-resource"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "crucible-linux-resource",
+ "crucible-ram",
  "libc",
  "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
+ "zbus",
 ]
 
 [[package]]
@@ -2715,6 +2743,7 @@ name = "crucible-protocol"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "crucible-ram",
  "libc",
  "sha2 0.10.9",
  "thiserror 2.0.18",
@@ -2728,9 +2757,11 @@ dependencies = [
  "blake3",
  "ciborium",
  "crucible",
+ "crucible-cas",
  "crucible-device",
  "crucible-linux-resource",
  "crucible-protocol",
+ "crucible-ram",
  "crucible-shmem",
  "libc",
  "rustix 1.1.4",
@@ -2749,9 +2780,21 @@ dependencies = [
  "blake3",
  "crucible",
  "crucible-protocol",
+ "crucible-ram",
  "crucible-shmem",
  "hex",
  "libc",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "crucible-ram"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "crucible-linux-resource",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.18",
@@ -2773,6 +2816,7 @@ name = "crucible-session"
 version = "0.1.0"
 dependencies = [
  "crucible",
+ "crucible-cas",
  "crucible-protocol",
  "thiserror 2.0.18",
  "tokio",
@@ -2784,6 +2828,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "crucible-protocol",
+ "crucible-ram",
  "libc",
  "serde",
  "serde_json",
@@ -2795,6 +2840,14 @@ dependencies = [
 name = "crucible-sim"
 version = "0.1.0"
 dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "crucible-sqlite-heap"
+version = "0.1.0"
+dependencies = [
+ "libsqlite3-sys",
  "thiserror 2.0.18",
 ]
 

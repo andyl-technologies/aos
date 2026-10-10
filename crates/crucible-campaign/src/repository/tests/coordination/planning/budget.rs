@@ -276,6 +276,7 @@ fn both_planners_pass_unaffordable_frontiers_to_reuse_an_attempt_across_pages() 
             let cold = CampaignRepository::new(
                 fixture.repository.blobs.clone(),
                 fixture.repository.refs.clone(),
+                fixture.repository.ram_admission().clone(),
             );
             cold.validate_complete_head(result.new_snapshot.content_id())
                 .expect("cold owner validation");
@@ -322,6 +323,7 @@ fn both_planners_pass_unaffordable_frontiers_to_reuse_an_attempt_across_pages() 
             fixture.repository = CampaignRepository::new(
                 fixture.repository.blobs.clone(),
                 fixture.repository.refs.clone(),
+                fixture.repository.ram_admission().clone(),
             );
             fixture
                 .repository
@@ -528,6 +530,7 @@ fn restarted_driver_retains_cross_page_blockers_without_settling_the_frontier() 
             CampaignRepository::with_component_authorities(
                 fixture.repository.blobs.clone(),
                 fixture.repository.refs.clone(),
+                fixture.repository.ram_admission().clone(),
                 authority.clone(),
                 debugger.clone(),
             )

@@ -8,6 +8,10 @@ use super::{SignalDomain, SignalId};
 /// Admission error for a typed signal program.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SignalProgramError {
+    /// Exact canonical text could not be rendered under its original account.
+    CanonicalMaterial(Box<crate::model::EngineError>),
+    /// Original artifact authority refused an allocation.
+    OriginalAdmission(crate::owned_decode::DecodeAdmissionError),
     /// An author-supplied identifier is not canonical.
     InvalidId {
         /// Rejected text.
@@ -197,6 +201,12 @@ pub enum SignalProgramError {
 impl fmt::Display for SignalProgramError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::CanonicalMaterial(source) => {
+                write!(formatter, "signal program canonical material: {source}")
+            }
+            Self::OriginalAdmission(source) => {
+                write!(formatter, "signal program resource admission: {source}")
+            }
             Self::InvalidId { value } => write!(formatter, "invalid signal identifier {value:?}"),
             Self::InvalidRatio {
                 numerator,
@@ -332,4 +342,12 @@ impl fmt::Display for SignalProgramError {
     }
 }
 
-impl Error for SignalProgramError {}
+impl Error for SignalProgramError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::CanonicalMaterial(source) => Some(source.as_ref()),
+            Self::OriginalAdmission(source) => Some(source),
+            _ => None,
+        }
+    }
+}

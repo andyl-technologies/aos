@@ -97,8 +97,9 @@ where
         context: &AttemptExecutionContext,
         target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
     ) -> Result<crate::QemuSavepointReplayProof, QemuCheckpointReplayFailure<F::Error>> {
+        let _decode_scope = input.enter_decode_scope();
         let continuations = validated_attempt_continuations(input).map_err(|()| {
-            Box::new(AttemptWorkerFailure::Terminal(
+            Box::new(fresh_metadata_failure(
                 QemuFreshExecutionRunnerError::InvalidContinuationInput,
             ))
         })?;
@@ -106,7 +107,7 @@ where
             .lifecycles
             .configure_attempt_continuations(&continuations)
         {
-            return Err(Box::new(AttemptWorkerFailure::Terminal(
+            return Err(Box::new(fresh_metadata_failure(
                 QemuFreshExecutionRunnerError::ContinuationInputUnsupported,
             )));
         }
@@ -267,7 +268,9 @@ pub(super) fn production_continuation_plan(
     match input {
         AttemptContinuationInput::SchedulerReseed { seed, .. } => {
             Ok(ProductionContinuationPlan::Reseed {
-                base: continuation.source.clone(),
+                base: continuation.source.try_clone_admitted().map_err(|source| {
+                    QemuAttemptProductionVmLifecycleError::ModelCopy(Box::new(source))
+                })?,
                 frontier,
                 seed: Seed::from_bytes(*seed),
             })
@@ -277,14 +280,17 @@ pub(super) fn production_continuation_plan(
             ..
         } => {
             let mut selections = Vec::new();
-            selections
-                .try_reserve(records.len())
-                .map_err(|_| QemuAttemptProductionVmLifecycleError::InvalidContinuationInput)?;
+            crucible::owned_decode::reserve_vec(&mut selections, records.len()).map_err(
+                |source| QemuAttemptProductionVmLifecycleError::ModelCopy(Box::new(source)),
+            )?;
             let mut opportunities = BTreeSet::new();
             for bytes in records {
                 let schedule = Schedule::from_compact_binary(bytes)
-                    .map_err(|_| QemuAttemptProductionVmLifecycleError::InvalidContinuationInput)?;
-                if schedule.to_compact_binary() != *bytes {
+                    .map_err(|_| continuation_validation_failure())?;
+                let encoded = schedule.to_compact_binary_admitted().map_err(|source| {
+                    QemuAttemptProductionVmLifecycleError::ModelCopy(Box::new(source))
+                })?;
+                if encoded != *bytes {
                     return Err(QemuAttemptProductionVmLifecycleError::InvalidContinuationInput);
                 }
                 let [Decision::Selection(decision)] = schedule.decisions() else {
@@ -292,17 +298,27 @@ pub(super) fn production_continuation_plan(
                 };
                 let selection = decision
                     .selection()
-                    .map_err(|_| QemuAttemptProductionVmLifecycleError::InvalidContinuationInput)?;
+                    .map_err(|_| continuation_validation_failure())?;
+                crucible::owned_decode::charge_btree_set_entry::<
+                    crucible_campaign::ChoiceOpportunityId,
+                >()
+                .map_err(|source| {
+                    QemuAttemptProductionVmLifecycleError::ModelCopy(Box::new(source))
+                })?;
                 if !decision.is_campaign_branch()
                     || !crucible::is_live_world_network_selection(&selection)
                     || !opportunities.insert(selection.opportunity())
                 {
                     return Err(QemuAttemptProductionVmLifecycleError::InvalidContinuationInput);
                 }
-                selections.push(decision.clone());
+                selections.push(decision.try_clone_admitted().map_err(|source| {
+                    QemuAttemptProductionVmLifecycleError::ModelCopy(Box::new(source))
+                })?);
             }
             Ok(ProductionContinuationPlan::NetworkSelections {
-                base: continuation.source.clone(),
+                base: continuation.source.try_clone_admitted().map_err(|source| {
+                    QemuAttemptProductionVmLifecycleError::ModelCopy(Box::new(source))
+                })?,
                 frontier,
                 selections,
             })
@@ -333,14 +349,13 @@ pub(super) fn production_lifecycle_config_for_start(
         );
     }
     let mut config = config
-        .clone()
+        .try_clone_admitted()
+        .map_err(|source| QemuAttemptProductionVmLifecycleError::ModelCopy(Box::new(source)))?
         .with_app_random_branch_replay(selections, plans);
     for selection in authenticated_network_selections {
-        if !start
-            .schedule
-            .decisions()
-            .contains(&Decision::Selection(selection.clone()))
-        {
+        if !start.schedule.decisions().iter().any(
+            |decision| matches!(decision, Decision::Selection(recorded) if recorded == selection),
+        ) {
             return Err(
                 QemuAttemptProductionVmLifecycleError::InvalidNetworkBranchReplay(String::from(
                     "authenticated live-network selection is absent from the start",
@@ -348,7 +363,17 @@ pub(super) fn production_lifecycle_config_for_start(
             );
         }
     }
-    let network_selections = authenticated_network_selections.to_vec();
+    let mut network_selections = Vec::new();
+    crucible::owned_decode::reserve_vec(
+        &mut network_selections,
+        authenticated_network_selections.len(),
+    )
+    .map_err(|source| QemuAttemptProductionVmLifecycleError::ModelCopy(Box::new(source)))?;
+    for selection in authenticated_network_selections {
+        network_selections.push(selection.try_clone_admitted().map_err(|source| {
+            QemuAttemptProductionVmLifecycleError::ModelCopy(Box::new(source))
+        })?);
+    }
     config = config.with_branch_network_choices(network_selections);
     if let Some(replay) = signal_fault_replay {
         if replay.target() != start {
@@ -360,7 +385,9 @@ pub(super) fn production_lifecycle_config_for_start(
                 ),
             );
         }
-        config = config.with_signal_fault_campaign_replay(replay.clone());
+        config = config.with_signal_fault_campaign_replay(replay.try_clone_admitted().map_err(
+            |source| QemuAttemptProductionVmLifecycleError::ModelCopy(Box::new(source)),
+        )?);
     }
     Ok(config)
 }
@@ -377,14 +404,15 @@ where
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
     ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+        let _decode_scope = input.enter_decode_scope();
         let continuations = validated_attempt_continuations(input).map_err(|()| {
-            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::InvalidContinuationInput)
+            fresh_metadata_failure(QemuFreshExecutionRunnerError::InvalidContinuationInput)
         })?;
         if !self
             .lifecycles
             .configure_attempt_continuations(&continuations)
         {
-            return Err(AttemptWorkerFailure::Terminal(
+            return Err(fresh_metadata_failure(
                 QemuFreshExecutionRunnerError::ContinuationInputUnsupported,
             ));
         }
@@ -641,6 +669,7 @@ pub(super) fn validated_attempt_continuations(
     let mut source = None;
     for origin in origins.iter() {
         if let Some(continuation_input) = origin.attempt().continuation_input() {
+            crucible::owned_decode::reserve_vec(&mut continuations, 1).map_err(|_| ())?;
             continuations.push(validated_attempt_continuation(
                 continuation_input,
                 source.ok_or(())?,
@@ -649,6 +678,7 @@ pub(super) fn validated_attempt_continuations(
         source = Some(origin);
     }
     if let Some(continuation_input) = terminal_input {
+        crucible::owned_decode::reserve_vec(&mut continuations, 1).map_err(|_| ())?;
         continuations.push(validated_attempt_continuation(
             continuation_input,
             source.ok_or(())?,
@@ -704,8 +734,9 @@ where
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
     ) -> Result<QemuAttemptStartReplayProof, AttemptWorkerFailure<Self::Error>> {
+        let _decode_scope = input.enter_decode_scope();
         if !self.lifecycles.configure_attempt_continuations(&[]) {
-            return Err(AttemptWorkerFailure::Terminal(
+            return Err(fresh_metadata_failure(
                 QemuFreshExecutionRunnerError::ContinuationInputUnsupported,
             ));
         }
@@ -777,14 +808,15 @@ where
         context: &AttemptExecutionContext,
         target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
     ) -> Result<QemuSavepointReplayProof, AttemptWorkerFailure<Self::Error>> {
+        let _decode_scope = input.enter_decode_scope();
         let continuations = validated_attempt_continuations(input).map_err(|()| {
-            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::InvalidContinuationInput)
+            fresh_metadata_failure(QemuFreshExecutionRunnerError::InvalidContinuationInput)
         })?;
         if !self
             .lifecycles
             .configure_attempt_continuations(&continuations)
         {
-            return Err(AttemptWorkerFailure::Terminal(
+            return Err(fresh_metadata_failure(
                 QemuFreshExecutionRunnerError::ContinuationInputUnsupported,
             ));
         }
@@ -904,13 +936,26 @@ pub(super) fn replay_selected_origins<F, D>(
     else {
         return Ok(materialization);
     };
+    let _scope = input.enter_decode_scope();
     let replay_context = context.for_origin_replay();
-    let mut segment_start = base.as_ref().clone();
-    let mut signal_fault_replay = base_signal_fault_replay.clone();
+    let mut segment_start = base.clone_admitted().map_err(origin_copy_failure)?;
+    let mut signal_fault_replay = base_signal_fault_replay
+        .try_clone_admitted()
+        .map_err(crate::CrucibleArtifactError::from)
+        .map_err(origin_copy_failure)?;
 
     for origin in origins.iter() {
-        let segment =
-            input.for_origin_replay(origin.attempt().clone(), segment_start, signal_fault_replay);
+        let segment = input
+            .for_origin_replay(
+                origin
+                    .attempt()
+                    .clone_admitted()
+                    .map_err(crate::CrucibleArtifactError::from)
+                    .map_err(origin_copy_failure)?,
+                segment_start,
+                signal_fault_replay,
+            )
+            .map_err(origin_copy_failure)?;
         let mut facade = QemuFreshAttemptLifecycle::new(lifecycle);
         let outcome = crate::qemu_campaign_driver::drive_modeled_attempt(
             &mut facade,
@@ -945,9 +990,27 @@ pub(super) fn replay_selected_origins<F, D>(
         segment_start = CrucibleResolvedAttemptStart::Discover {
             configuration: reached,
         };
-        signal_fault_replay = origin.signal_fault_replay().clone();
+        signal_fault_replay = origin
+            .signal_fault_replay()
+            .try_clone_admitted()
+            .map_err(crate::CrucibleArtifactError::from)
+            .map_err(origin_copy_failure)?;
     }
     Ok(materialization)
+}
+
+fn origin_copy_failure<F, D>(
+    error: crate::CrucibleArtifactError,
+) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
+    let retryable = error.is_decode_admission_refusal();
+    let error = QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Origin(
+        Box::new(error.into()),
+    ));
+    if retryable {
+        AttemptWorkerFailure::Retryable(error)
+    } else {
+        AttemptWorkerFailure::Terminal(error)
+    }
 }
 
 pub(super) fn map_selected_origin_replay_failure<F, D>(
@@ -995,4 +1058,28 @@ pub(super) fn unsupported_fresh_replay_decision(
                 .then_some(index),
             Decision::DeliveryOrder(_) | Decision::RngDraw(_) | Decision::Preemption(_) => None,
         })
+}
+
+// Infallible trait configuration can report unsupported input only after its
+// owning fallible boundary gives any recorded metadata refusal precedence.
+pub(super) fn fresh_metadata_failure<F, D>(
+    fallback: QemuFreshExecutionRunnerError<F, D>,
+) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
+    if let Some(account) = crucible::owned_decode::current_budget()
+        && let Err(source) = account.check()
+    {
+        return AttemptWorkerFailure::Retryable(QemuFreshExecutionRunnerError::ArtifactAdmission(
+            source,
+        ));
+    }
+    AttemptWorkerFailure::Terminal(fallback)
+}
+
+fn continuation_validation_failure() -> QemuAttemptProductionVmLifecycleError {
+    if let Some(account) = crucible::owned_decode::current_budget()
+        && let Err(source) = account.check()
+    {
+        return QemuAttemptProductionVmLifecycleError::ModelCopy(Box::new(source));
+    }
+    QemuAttemptProductionVmLifecycleError::InvalidContinuationInput
 }

@@ -139,6 +139,7 @@ in
                   $machine_args \
                   -nodefaults -no-user-config \
                   -accel sim,thread=single \
+                  -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
                   -icount shift=0,sleep=off,align=off,rr_switch_quantum=256 \
                   -smp 1 \
                   -nographic \
@@ -233,6 +234,7 @@ in
                 $machine_args \
                 -nodefaults -no-user-config \
                 -accel sim,thread=single \
+                -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
                 -icount shift=0,sleep=off,align=off,rr_switch_quantum=256 \
                 -smp 1 \
                 -nographic \
@@ -354,6 +356,7 @@ in
                   $machine_args \
                   -nodefaults -no-user-config \
                   -accel sim,thread=single \
+                  -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
                   -icount shift=0,sleep=off,align=off,rr_switch_quantum=256 \
                   -smp "$smp" \
                   -nographic \

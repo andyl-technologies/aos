@@ -80,6 +80,83 @@ pub(crate) fn connect(path: &Path) -> io::Result<UnixStream> {
     UnixStream::connect(&resolved.path)
 }
 
+/// Connects without allowing a saturated local backlog to bypass supervision.
+#[cfg(target_os = "linux")]
+pub(crate) fn connect_supervised(
+    path: &Path,
+    guard: &crucible_linux_resource::host_supervision::HostOperationGuard,
+) -> Result<UnixStream, crate::qmp::QmpError> {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType, socket_with};
+
+    const OPERATION: &str = "connect QMP Unix socket";
+    let supervision_error =
+        |source: crucible_linux_resource::host_supervision::HostSupervisionError| {
+            crate::qmp::QmpError::OperationalSupervision {
+                operation: OPERATION,
+                message: source.to_string(),
+            }
+        };
+    guard.wait_slice().map_err(supervision_error)?;
+    let resolved = ResolvedSocketPath::new(path)
+        .map_err(|source| crate::qmp::QmpError::from_io(OPERATION, source))?;
+    let address = SocketAddrUnix::new(&resolved.path)
+        .map_err(|source| crate::qmp::QmpError::from_io(OPERATION, source.into()))?;
+    let socket = socket_with(
+        AddressFamily::UNIX,
+        SocketType::STREAM,
+        SocketFlags::NONBLOCK | SocketFlags::CLOEXEC,
+        None,
+    )
+    .map_err(|source| crate::qmp::QmpError::from_io(OPERATION, source.into()))?;
+
+    loop {
+        guard.wait_slice().map_err(supervision_error)?;
+        match rustix::net::connect(&socket, &address) {
+            Ok(()) | Err(rustix::io::Errno::ISCONN) => break,
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(rustix::io::Errno::AGAIN) => {
+                // Unix backlog saturation has no in-flight connect to poll.
+                guard.wait_for_change().map_err(supervision_error)?;
+            }
+            Err(rustix::io::Errno::INPROGRESS | rustix::io::Errno::ALREADY) => {
+                loop {
+                    let slice = guard
+                        .wait_slice()
+                        .map_err(supervision_error)?
+                        .min(std::time::Duration::from_millis(25));
+                    let timeout = Timespec::try_from(slice).map_err(|source| {
+                        crate::qmp::QmpError::from_io(OPERATION, io::Error::other(source))
+                    })?;
+                    let mut descriptors = [PollFd::new(&socket, PollFlags::OUT)];
+                    match poll(&mut descriptors, Some(&timeout)) {
+                        Ok(0) | Err(rustix::io::Errno::INTR) => continue,
+                        Ok(_) => {
+                            rustix::net::sockopt::socket_error(&socket)
+                                .and_then(|status| status)
+                                .map_err(|source| {
+                                    crate::qmp::QmpError::from_io(OPERATION, source.into())
+                                })?;
+                            break;
+                        }
+                        Err(source) => {
+                            return Err(crate::qmp::QmpError::from_io(OPERATION, source.into()));
+                        }
+                    }
+                }
+                break;
+            }
+            Err(source) => return Err(crate::qmp::QmpError::from_io(OPERATION, source.into())),
+        }
+    }
+    guard.complete().map_err(supervision_error)?;
+    let stream = UnixStream::from(socket);
+    stream
+        .set_nonblocking(false)
+        .map_err(|source| crate::qmp::QmpError::from_io(OPERATION, source))?;
+    Ok(stream)
+}
+
 /// Binds a filesystem Unix socket without embedding a long parent path.
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) fn bind(path: &Path) -> io::Result<UnixListener> {
@@ -374,6 +451,55 @@ mod tests {
     use std::process::{Child, Command, ExitStatus};
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn supervised_connect_cancels_a_saturated_unix_backlog()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crucible_linux_resource::host_supervision::{
+            HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+        };
+        use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
+
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("blocked-qmp.sock");
+        let address = SocketAddrUnix::new(&path)?;
+        let listener = rustix::net::socket(AddressFamily::UNIX, SocketType::STREAM, None)?;
+        rustix::net::bind(&listener, &address)?;
+        rustix::net::listen(&listener, 0)?;
+        let _queued_connection = UnixStream::connect(&path)?;
+        let probe = rustix::net::socket_with(
+            AddressFamily::UNIX,
+            SocketType::STREAM,
+            SocketFlags::NONBLOCK | SocketFlags::CLOEXEC,
+            None,
+        )?;
+        assert_eq!(
+            rustix::net::connect(&probe, &address),
+            Err(rustix::io::Errno::AGAIN)
+        );
+        let supervisor = HostOperationSupervisor::new(
+            HostOperationBudgets::default(),
+            Some(Duration::from_secs(2)),
+        )?;
+        let guard = supervisor.begin(HostOperationClass::Preparation)?;
+        let worker = thread::spawn(move || connect_supervised(&path, &guard));
+        thread::sleep(Duration::from_millis(25));
+        assert!(
+            !worker.is_finished(),
+            "backlog must retain the pending admission"
+        );
+
+        supervisor.cancel()?;
+
+        let result = worker
+            .join()
+            .map_err(|_| "socket admission worker panicked")?;
+        assert!(matches!(
+            result,
+            Err(crate::qmp::QmpError::OperationalSupervision { .. })
+        ));
+        Ok(())
+    }
 
     const CHILD_CONNECT_PATH_ENV: &str = "CRUCIBLE_SOCKET_OWNER_TEST_PATH";
 

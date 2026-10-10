@@ -1,8 +1,8 @@
-//! Checks the RFC-0010 file/module, layer-boundary, and commit-hygiene rules.
+//! Checks module cohesion, dependency boundaries, and commit hygiene.
 //!
 //! The crate layer DAG is checked by `crate_layer_graph`; this test owns the
-//! adjacent source-shape and review-policy rules from RFC-0010 file 28 section
-//! 5 so drift is caught before those standards become prose-only guidance.
+//! adjacent source-shape and review-policy rules so drift is caught before
+//! those standards become prose-only guidance.
 
 #![forbid(unsafe_code)]
 
@@ -337,6 +337,14 @@ fn engineering_hygiene_rules_reject_shape_and_boundary_drift() {
     assert_eq!(cfg_expression_counts.implementation, 2);
     assert_eq!(cfg_expression_counts.tests, 6);
 
+    let cfg_nested_expression_counts = source_role_line_counts(
+        Path::new("crates/crucible-example"),
+        Path::new("crates/crucible-example/src/synthetic.rs"),
+        "//! synthetic\n#[cfg(test)]\nif matches!(\n    input,\n    Some(Value {\n        field: 1,\n    })\n) && let Some(output) = input\n{\n    consume(output);\n}\nfn production() {}\n",
+    );
+    assert_eq!(cfg_nested_expression_counts.implementation, 2);
+    assert_eq!(cfg_nested_expression_counts.tests, 10);
+
     let fake_crate_cfg = "//! synthetic\nconst TEXT: &str = r###\"\n#![cfg(test)]\n\"quoted raw content\"\n\"###;\n/* #![cfg(test)] */\nfn production() {}\n";
     assert!(!is_test_support_only_source(fake_crate_cfg));
 
@@ -400,6 +408,65 @@ fn engineering_hygiene_rules_reject_shape_and_boundary_drift() {
         allowed_manifest_findings.is_empty(),
         "{allowed_manifest_findings:?}"
     );
+}
+
+#[test]
+fn extracted_host_replay_bridge_exceptions_remain_path_package_and_token_specific()
+-> Result<(), Box<dyn Error>> {
+    let root = repo_root();
+    let baseline = HygieneBaseline::load(&root)?;
+    let paths = [
+        (
+            "crates/crucible-api/src/vm_lifecycle/checkpoint_store/replay/boundary.rs",
+            &["qemu", "Qemu", "crucible_qemu"][..],
+        ),
+        (
+            "crates/crucible-api/src/vm_lifecycle/checkpoint_store/replay/boundary/tests.rs",
+            &["Qemu"][..],
+        ),
+        (
+            "crates/crucible-api/src/vm_lifecycle/checkpoint_store/replay/boundary/tests/sqlite_scope.rs",
+            &["Qemu"][..],
+        ),
+    ];
+
+    for (relative, tokens) in paths {
+        let path = root.join(relative);
+        let content = fs::read_to_string(&path)?;
+        let findings = qemu_specific_boundary_failures("crucible-api", &path, &content);
+        assert_eq!(findings.len(), tokens.len(), "{relative}: {findings:?}");
+        assert!(findings.iter().all(|finding| baseline.allows_qemu_token(
+            "crucible-api",
+            &path,
+            finding
+        )));
+
+        for token in tokens {
+            let finding = format!("QEMU-specific token `{token}`");
+            assert!(baseline.allows_qemu_token("crucible-api", &path, &finding));
+            assert!(!baseline.allows_qemu_token("crucible", &path, &finding));
+            assert!(!baseline.allows_qemu_token(
+                "crucible-api",
+                &root.join("crates/crucible-api/src/other.rs"),
+                &finding
+            ));
+        }
+
+        for token in ["QEMU", "qmp", "Qmp", "savevm", "loadvm"] {
+            let changed = format!("{content}\nfn unreviewed() {{ let _ = {token}; }}");
+            let findings = qemu_specific_boundary_failures("crucible-api", &path, &changed);
+            assert!(
+                findings.iter().any(|finding| !baseline.allows_qemu_token(
+                    "crucible-api",
+                    &path,
+                    finding
+                )),
+                "{relative}: {token}"
+            );
+        }
+    }
+
+    Ok(())
 }
 
 impl HygieneBaseline {

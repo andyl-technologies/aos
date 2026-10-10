@@ -40,11 +40,15 @@ fn icount(retired: u64) -> Icount {
 
 #[test]
 fn event_class_is_derived_from_payload_kind_catalog() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let causal = crucible::test_support::condition_payload_entry_for_test(
         0,
         time(0),
         rng_decision("class-catalog-causal", 9),
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let observational = crucible::test_support::condition_payload_entry_for_test(
         1,
         time(1),
@@ -53,7 +57,8 @@ fn event_class_is_derived_from_payload_kind_catalog() {
             EventLevel::Info,
             BTreeMap::new(),
         )),
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
 
     assert_eq!(causal.event_payload().kind(), "rng_draw");
     assert_eq!(causal.class(), SchedulerEventLogClass::Causal);
@@ -65,13 +70,17 @@ fn event_class_is_derived_from_payload_kind_catalog() {
 
 #[test]
 fn assertion_and_guest_marker_kinds_follow_rfc_catalog_classes() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let assertion_state = ObservableEvent::assertion_state_changed(
         time(3),
         assertion_id("catalog-assertion"),
         AssertionPhase::Satisfied,
     );
     let assertion_entry =
-        crucible::test_support::condition_observation_entry_for_test(0, &assertion_state);
+        crucible::test_support::condition_observation_entry_for_test(0, &assertion_state)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     assert_eq!(
         assertion_entry.event_payload().kind(),
         "assertion_state_changed"
@@ -96,7 +105,8 @@ fn assertion_and_guest_marker_kinds_follow_rfc_catalog_classes() {
         vec![GuestAssertionDetail::new("case", "catalog")],
     );
     let evaluated_entry =
-        crucible::test_support::condition_observation_entry_for_test(1, &assertion_evaluated);
+        crucible::test_support::condition_observation_entry_for_test(1, &assertion_evaluated)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     assert_eq!(
         evaluated_entry.event_payload().kind(),
         "assertion_evaluated"
@@ -128,7 +138,8 @@ fn assertion_and_guest_marker_kinds_follow_rfc_catalog_classes() {
     let guest_marker =
         ObservableEvent::guest_assertion_marker(icount(7), node("guest"), assertion_marker);
     let guest_marker_entry =
-        crucible::test_support::condition_observation_entry_for_test(2, &guest_marker);
+        crucible::test_support::condition_observation_entry_for_test(2, &guest_marker)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     assert_eq!(guest_marker_entry.event_payload().kind(), "guest_marker");
     assert_eq!(
         guest_marker_entry.event_payload().string("marker_kind"),

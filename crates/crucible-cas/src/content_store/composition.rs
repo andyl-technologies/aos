@@ -3,6 +3,16 @@
 //! These types enforce their local invariants. The complete closed-graph
 //! admission validator remains required before the module becomes public.
 
+mod checked_cache;
+
+#[cfg(test)]
+mod checked_dispatch_tests;
+
+#[cfg(test)]
+mod checked_mirror_tests;
+
+use super::batch::{admission_under, allocation_under};
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,16 +38,71 @@ impl VerifiedStore {
 }
 
 impl ImmutableBlobBackend for VerifiedStore {
+    fn checked_publication_metadata(
+        &self,
+        kind: ObjectKind,
+    ) -> Result<CheckedPublicationMetadata, StoreError> {
+        self.child.checked_publication_metadata(kind)
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        account: &crate::owned_decode::DecodeBudget,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PutBatchReceipt, StoreError> {
+        account
+            .verify_live()
+            .map_err(|error| admission_under(account, error))?;
+        boundary()?;
+        account
+            .verify_live()
+            .map_err(|error| admission_under(account, error))?;
+        let _verified_credit = account
+            .reserve_scratch_array::<(ContentId, BlobHandle)>(objects.len())
+            .map_err(|error| admission_under(account, error))?;
+        let mut verified = Vec::new();
+        verified
+            .try_reserve_exact(objects.len())
+            .map_err(|error| allocation_under(account, error))?;
+        for (id, source) in objects {
+            let source = super::batch::verify_source(account, *id, source, boundary)?;
+            verified.push((*id, source));
+        }
+        self.child
+            .put_many_if_absent_with_boundary(account, &verified, boundary)
+    }
+
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn metadata_resources(&self) -> Result<Arc<dyn super::StorePhysicalQuotaGuard>, StoreError> {
+        self.child.metadata_resources()
     }
 
     fn capabilities(&self) -> BackendCapabilities {
         self.child.capabilities()
     }
 
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        self.child.admit_object_graph(objects)
+    }
+
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
         self.child.contains(id)
+    }
+
+    fn read_with_boundary(
+        &self,
+        account: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        let blob = self.child.read_with_boundary(account, id, None, boundary)?;
+        let verified = super::batch::verify_source(account, id, &blob, boundary)?;
+        super::checked_reader::slice_handle(verified, range, account, boundary)
     }
 
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
@@ -52,6 +117,10 @@ impl ImmutableBlobBackend for VerifiedStore {
 }
 
 /// Routes logical object kinds to explicitly configured child stores.
+///
+/// Checked batches preserve a single child's original outcome when every
+/// input selects that same child. Empty batches and batches spanning children
+/// refuse before publication because they need a distinct aggregate owner.
 pub struct RoutedStore {
     name: String,
     routes: BTreeMap<ObjectKind, Arc<dyn ImmutableBlobBackend>>,
@@ -87,9 +156,89 @@ impl RoutedStore {
     }
 }
 
+struct RoutedObjectAdmission {
+    backend: Arc<dyn ImmutableBlobBackend>,
+    counts: Vec<(ObjectKind, u64)>,
+}
+
 impl ImmutableBlobBackend for RoutedStore {
+    fn read_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        super::checked_reader::check(original, boundary)?;
+        self.route(id)?
+            .read_with_boundary(original, id, range, boundary)
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PutBatchReceipt, StoreError> {
+        super::checked_reader::check(original, boundary)?;
+        if objects.len() > 64 {
+            return Err(StoreError::Quota);
+        }
+        let Some((first_id, _)) = objects.first() else {
+            return Err(StoreError::Unsupported {
+                capability: "checked-empty-routed-batch",
+            });
+        };
+        let selected = self.route(*first_id)?;
+        for (id, _) in objects {
+            let child = self.route(*id)?;
+            if !Arc::ptr_eq(selected, child) {
+                // Different leaves require prepaid aggregate outcome custody.
+                // Refuse the whole batch before either leaf publishes anything.
+                return Err(StoreError::Unsupported {
+                    capability: "checked-mixed-routed-batch",
+                });
+            }
+            child.checked_publication_metadata(id.kind())?;
+        }
+        // Ordinary routed publication verifies the input before selecting a
+        // writer. The checked route retains that guarantee with the same
+        // original account and a prepaid vector of authenticated handles.
+        let _verified_credit = original
+            .reserve_scratch_array::<(ContentId, BlobHandle)>(objects.len())
+            .map_err(|error| admission_under(original, error))?;
+        let mut verified = Vec::new();
+        verified
+            .try_reserve_exact(objects.len())
+            .map_err(|error| allocation_under(original, error))?;
+        for (id, source) in objects {
+            let source =
+                super::composite_publication::checked_read(original, boundary, |boundary| {
+                    super::batch::verify_source(original, *id, source, boundary)
+                })?;
+            verified.push((*id, source));
+        }
+        selected.put_many_if_absent_with_boundary(original, &verified, boundary)
+    }
+
+    fn checked_publication_metadata(
+        &self,
+        kind: ObjectKind,
+    ) -> Result<CheckedPublicationMetadata, StoreError> {
+        self.routes
+            .get(&kind)
+            .ok_or(StoreError::InvalidComposition {
+                reason: "no child route exists for the logical object kind",
+            })?
+            .checked_publication_metadata(kind)
+    }
+
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn metadata_resources(&self) -> Result<Arc<dyn StorePhysicalQuotaGuard>, StoreError> {
+        common_metadata_resources(self.routes.values().map(Arc::as_ref))
     }
 
     fn capabilities(&self) -> BackendCapabilities {
@@ -115,6 +264,34 @@ impl ImmutableBlobBackend for RoutedStore {
             capabilities.planned_delete &= child.planned_delete;
         }
         capabilities
+    }
+
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        graph_object_count(objects)?;
+        let mut routed: Vec<RoutedObjectAdmission> = Vec::new();
+        for &(kind, count) in objects {
+            let child = self
+                .routes
+                .get(&kind)
+                .ok_or(StoreError::InvalidComposition {
+                    reason: "no child route exists for the logical object kind",
+                })?;
+            if let Some(admission) = routed
+                .iter_mut()
+                .find(|admission| Arc::ptr_eq(&admission.backend, child))
+            {
+                admission.counts.push((kind, count));
+            } else {
+                routed.push(RoutedObjectAdmission {
+                    backend: Arc::clone(child),
+                    counts: vec![(kind, count)],
+                });
+            }
+        }
+        for admission in routed {
+            admission.backend.admit_object_graph(&admission.counts)?;
+        }
+        Ok(())
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
@@ -168,12 +345,148 @@ impl DurabilityPolicyStore {
 }
 
 impl ImmutableBlobBackend for DurabilityPolicyStore {
+    fn read_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        super::composite_publication::checked_read(original, boundary, |boundary| {
+            super::checked_reader::check(original, boundary)?;
+            self.requirement(id)?;
+            let handle = self
+                .child
+                .read_with_boundary(original, id, range, boundary)?;
+            original
+                .verify_live()
+                .map_err(|error| admission_under(original, error))?;
+            Ok(handle)
+        })
+    }
+
+    fn checked_publication_metadata(
+        &self,
+        kind: ObjectKind,
+    ) -> Result<CheckedPublicationMetadata, StoreError> {
+        self.child.checked_publication_metadata(kind)
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        account: &crate::owned_decode::DecodeBudget,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PutBatchReceipt, StoreError> {
+        account
+            .verify_live()
+            .map_err(|error| admission_under(account, error))?;
+        if objects.len() > 64 {
+            return Err(StoreError::Quota);
+        }
+        for (id, _) in objects {
+            boundary()?;
+            account
+                .verify_live()
+                .map_err(|error| admission_under(account, error))?;
+            self.requirement(*id)?;
+        }
+        let mut bounds = [CheckedPublicationMetadata::default(); 64];
+        let mut maximum_placements = 0;
+        for ((id, _), bound) in objects.iter().zip(&mut bounds) {
+            *bound = self.child.checked_publication_metadata(id.kind())?;
+            maximum_placements = maximum_placements.max(bound.maximum_placements);
+        }
+        // Durable uniqueness uses a temporary tree over borrowed labels. Admit
+        // its declared peak before any child publishes a placement.
+        let placement_bytes = crate::owned_decode::btree_entry_bytes::<&str, ()>()
+            .map_err(|error| admission_under(account, error))?;
+        let _placement_credit = account
+            .reserve_scratch_bytes(
+                placement_bytes
+                    .checked_mul(maximum_placements as u64)
+                    .ok_or(StoreError::Quota)?,
+            )
+            .map_err(|error| admission_under(account, error))?;
+        let receipts = self
+            .child
+            .put_many_if_absent_with_boundary(account, objects, boundary)?;
+        receipts.check(|receipts| {
+            if receipts.len() != objects.len() {
+                return Err(StoreError::InvalidComposition {
+                    reason: "batch receipt count differs from input",
+                });
+            }
+            for (((id, source), receipt), bound) in objects.iter().zip(receipts.iter()).zip(bounds)
+            {
+                boundary()?;
+                if receipt.id != *id
+                    || receipt
+                        .placements
+                        .iter()
+                        .any(|placement| placement.logical_length != source.logical_length())
+                {
+                    return Err(StoreError::Corrupt { id: *id });
+                }
+                let backend_name_bytes =
+                    receipt
+                        .placements
+                        .iter()
+                        .try_fold(0_usize, |bytes, placement| {
+                            bytes
+                                .checked_add(placement.backend.len())
+                                .ok_or(StoreError::Quota)
+                        })?;
+                if receipt.placements.len() > bound.maximum_placements
+                    || backend_name_bytes > bound.maximum_backend_name_bytes
+                {
+                    return Err(StoreError::InvalidComposition {
+                        reason: "checked durability receipt exceeds declared metadata",
+                    });
+                }
+                let requirement = self.requirement(*id)?;
+                let observed = receipt.durable_placements();
+                if observed < usize::from(requirement.minimum_durable_placements()) {
+                    return Err(StoreError::DurabilityUnsatisfied {
+                        id: *id,
+                        minimum_durable_placements: requirement.minimum_durable_placements(),
+                        observed_durable_placements: u16::try_from(observed).map_err(|_| {
+                            StoreError::InvalidComposition {
+                                reason: "durable placement count exceeds the graph bound",
+                            }
+                        })?,
+                    });
+                }
+            }
+            boundary()?;
+            account
+                .verify_live()
+                .map_err(|error| admission_under(account, error))
+        })
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
 
+    fn metadata_resources(&self) -> Result<Arc<dyn super::StorePhysicalQuotaGuard>, StoreError> {
+        self.child.metadata_resources()
+    }
+
     fn capabilities(&self) -> BackendCapabilities {
         self.child.capabilities()
+    }
+
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        if objects
+            .iter()
+            .any(|(kind, _)| !self.requirements.contains_key(kind))
+        {
+            return Err(StoreError::InvalidComposition {
+                reason: "durability policy has no requirement for the logical object kind",
+            });
+        }
+        self.child.admit_object_graph(objects)
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
@@ -279,8 +592,57 @@ impl TieredStore {
 }
 
 impl ImmutableBlobBackend for TieredStore {
+    fn checked_publication_metadata(
+        &self,
+        kind: ObjectKind,
+    ) -> Result<CheckedPublicationMetadata, StoreError> {
+        super::composite_publication::metadata(
+            self.tiers
+                .iter()
+                .filter(|tier| tier.writable)
+                .map(|tier| tier.backend.as_ref()),
+            kind,
+        )
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PutBatchReceipt, StoreError> {
+        super::composite_publication::publish(
+            self.tiers
+                .iter()
+                .filter(|tier| tier.writable)
+                .map(|tier| tier.backend.as_ref()),
+            original,
+            objects,
+            boundary,
+        )
+    }
+
+    fn read_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        checked_cache::tiered(self, original, id, range, boundary)
+    }
+
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn metadata_resources(&self) -> Result<Arc<dyn StorePhysicalQuotaGuard>, StoreError> {
+        common_metadata_resources(
+            self.tiers
+                .iter()
+                .filter(|tier| tier.readable)
+                .map(|tier| tier.backend.as_ref()),
+        )
     }
 
     fn capabilities(&self) -> BackendCapabilities {
@@ -320,6 +682,14 @@ impl ImmutableBlobBackend for TieredStore {
                 .filter(|tier| tier.promote_reads)
                 .all(|tier| tier.backend.capabilities().streaming_put);
         capabilities
+    }
+
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        graph_object_count(objects)?;
+        for tier in self.tiers.iter().filter(|tier| tier.writable) {
+            tier.backend.admit_object_graph(objects)?;
+        }
+        Ok(())
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
@@ -391,16 +761,51 @@ impl ReadThroughStore {
 }
 
 impl ImmutableBlobBackend for ReadThroughStore {
+    fn checked_publication_metadata(
+        &self,
+        kind: ObjectKind,
+    ) -> Result<CheckedPublicationMetadata, StoreError> {
+        self.source.checked_publication_metadata(kind)
+    }
+
+    fn read_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        checked_cache::read_through(self, original, id, range, boundary)
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        account: &crate::owned_decode::DecodeBudget,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PutBatchReceipt, StoreError> {
+        self.source
+            .put_many_if_absent_with_boundary(account, objects, boundary)
+    }
+
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn metadata_resources(&self) -> Result<Arc<dyn StorePhysicalQuotaGuard>, StoreError> {
+        common_metadata_resources([self.cache.as_ref(), self.source.as_ref()])
     }
 
     fn capabilities(&self) -> BackendCapabilities {
         let cache = self.cache.capabilities();
         let mut capabilities = self.source.capabilities();
         capabilities.range_read &= cache.range_read;
-        capabilities.streaming_read &= cache.streaming_read && cache.streaming_put;
+        capabilities.streaming_read &= cache.streaming_read;
         capabilities
+    }
+
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        self.source.admit_object_graph(objects)
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
@@ -594,6 +999,10 @@ impl Drop for MetricsBlobReader {
 }
 
 /// Operational counters around one immutable child store.
+///
+/// Checked dispatch observes lookup and publication attempts while returning
+/// the child's actual source and outcome owners. Deferred stream counters
+/// describe ordinary reads; checked streams retain the child's reader directly.
 pub struct MetricsStore {
     name: String,
     child: Arc<dyn ImmutableBlobBackend>,
@@ -621,12 +1030,105 @@ impl MetricsStore {
 }
 
 impl ImmutableBlobBackend for MetricsStore {
+    fn checked_publication_metadata(
+        &self,
+        kind: ObjectKind,
+    ) -> Result<CheckedPublicationMetadata, StoreError> {
+        self.child.checked_publication_metadata(kind)
+    }
+
+    fn read_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        super::checked_reader::check(original, boundary)?;
+        MetricsState::increment(&self.state.read_calls, 1);
+        let started = metrics_now();
+        let result = self
+            .child
+            .read_with_boundary(original, id, range, boundary)
+            .and_then(|blob| {
+                original
+                    .verify_live()
+                    .map_err(|error| admission_under(original, error))?;
+                Ok(blob)
+            });
+        MetricsState::record_elapsed(&self.state.read_elapsed_nanoseconds, started);
+        match result {
+            Ok(blob) => {
+                MetricsState::increment(&self.state.read_logical_bytes, blob.logical_length());
+                Ok(blob)
+            }
+            Err(error) => {
+                MetricsState::increment(&self.state.failures, 1);
+                Err(error)
+            }
+        }
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PutBatchReceipt, StoreError> {
+        if objects.len() > 64 {
+            original
+                .verify_live()
+                .map_err(|error| admission_under(original, error))?;
+            return Err(StoreError::Quota);
+        }
+
+        super::checked_reader::check(original, boundary)?;
+        for (id, _) in objects {
+            self.child.checked_publication_metadata(id.kind())?;
+        }
+        // Every input counts as an attempted put. Logical bytes count only a
+        // successful batch; failures do not imply absence or count a commit.
+        MetricsState::increment(&self.state.put_calls, objects.len() as u64);
+        let started = metrics_now();
+        let result = self
+            .child
+            .put_many_if_absent_with_boundary(original, objects, boundary)
+            .and_then(|receipt| {
+                receipt.check(|_| {
+                    original
+                        .verify_live()
+                        .map_err(|error| admission_under(original, error))
+                })
+            });
+        MetricsState::record_elapsed(&self.state.put_elapsed_nanoseconds, started);
+        match result {
+            Ok(receipt) => {
+                for (_, source) in objects {
+                    MetricsState::increment(&self.state.put_logical_bytes, source.logical_length());
+                }
+                Ok(receipt)
+            }
+            Err(error) => {
+                MetricsState::increment(&self.state.failures, 1);
+                Err(error)
+            }
+        }
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
 
+    fn metadata_resources(&self) -> Result<Arc<dyn super::StorePhysicalQuotaGuard>, StoreError> {
+        self.child.metadata_resources()
+    }
+
     fn capabilities(&self) -> BackendCapabilities {
         self.child.capabilities()
+    }
+
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        self.child.admit_object_graph(objects)
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
@@ -656,10 +1158,10 @@ impl ImmutableBlobBackend for MetricsStore {
         match result {
             Ok(blob) => {
                 MetricsState::increment(&self.state.read_logical_bytes, blob.logical_length());
-                let source = Arc::new(MetricsBlobSource {
+                let source = MetricsBlobSource {
                     source: blob.clone(),
                     state: Arc::clone(&self.state),
-                });
+                };
                 Ok(blob.with_observed_source(source))
             }
             Err(error) => {
@@ -728,8 +1230,64 @@ impl WriteThroughStore {
 }
 
 impl ImmutableBlobBackend for WriteThroughStore {
+    fn read_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        super::composite_publication::checked_read(original, boundary, |boundary| {
+            for child in &self.children {
+                super::checked_reader::check(original, boundary)?;
+                match child.read_with_boundary(original, id, range, boundary) {
+                    Ok(handle) => {
+                        original
+                            .verify_live()
+                            .map_err(|error| admission_under(original, error))?;
+                        return Ok(handle);
+                    }
+                    Err(error) if error.confirmed_absence(id) => {
+                        // A clean absence has no outcome to retain. Recheck
+                        // this original before considering another mirror.
+                        original
+                            .verify_live()
+                            .map_err(|error| admission_under(original, error))?;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(StoreError::NotFound { id })
+        })
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PutBatchReceipt, StoreError> {
+        super::composite_publication::publish(
+            self.children.iter().map(Arc::as_ref),
+            original,
+            objects,
+            boundary,
+        )
+    }
+
+    fn checked_publication_metadata(
+        &self,
+        kind: ObjectKind,
+    ) -> Result<CheckedPublicationMetadata, StoreError> {
+        super::composite_publication::metadata(self.children.iter().map(Arc::as_ref), kind)
+    }
+
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn metadata_resources(&self) -> Result<Arc<dyn StorePhysicalQuotaGuard>, StoreError> {
+        common_metadata_resources(self.children.iter().map(Arc::as_ref))
     }
 
     fn capabilities(&self) -> BackendCapabilities {
@@ -746,6 +1304,14 @@ impl ImmutableBlobBackend for WriteThroughStore {
             capabilities.planned_delete &= child.planned_delete;
         }
         capabilities
+    }
+
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        graph_object_count(objects)?;
+        for child in &self.children {
+            child.admit_object_graph(objects)?;
+        }
+        Ok(())
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
@@ -778,4 +1344,25 @@ impl ImmutableBlobBackend for WriteThroughStore {
         }
         Ok(PutReceipt { id, placements })
     }
+}
+
+/// Projects a shared original owner only when every possible read path agrees.
+pub(super) fn common_metadata_resources<'a>(
+    children: impl IntoIterator<Item = &'a dyn ImmutableBlobBackend>,
+) -> Result<Arc<dyn StorePhysicalQuotaGuard>, StoreError> {
+    let mut children = children.into_iter();
+    let authority = children
+        .next()
+        .ok_or(StoreError::Unsupported {
+            capability: "decoded-metadata-resources",
+        })?
+        .metadata_resources()?;
+    for child in children {
+        if !Arc::ptr_eq(&authority, &child.metadata_resources()?) {
+            return Err(StoreError::Unsupported {
+                capability: "shared-decoded-metadata-resources",
+            });
+        }
+    }
+    Ok(authority)
 }

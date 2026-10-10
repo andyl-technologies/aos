@@ -319,22 +319,25 @@ impl CampaignRepository {
         cache: &mut ChoiceValidationCache,
     ) -> Result<Attempt, CampaignRepositoryError> {
         if let Some(validated) = cache.validated_attempts.get(&id) {
-            return Ok(validated.attempt.clone());
+            return Ok(validated.attempt.clone_admitted()?);
         }
 
         let attempt = self.read_attempt_record(id)?;
         let path = self.read_branch_path(attempt.path().content_id())?;
-        let mut current = Some(attempt.clone());
+        let mut current = Some(attempt.clone_admitted()?);
         let mut current_id = id;
         let mut visited = BTreeSet::new();
         let mut pending = Vec::new();
 
         loop {
+            crucible_cas::owned_decode::charge_btree_set_entry::<ContentId>()
+                .map_err(CampaignCodecError::from)?;
             if !visited.insert(current_id) {
                 return Err(integrity("attempt-continuation-origin-cycle"));
             }
 
-            if let Some(validated) = cache.validated_attempts.get(&current_id).cloned() {
+            if let Some(validated) = cache.validated_attempts.get(&current_id) {
+                let validated = validated.clone_admitted()?;
                 if validated.path != attempt.path() {
                     return Err(integrity("attempt-continuation-path-mismatch"));
                 }
@@ -400,6 +403,8 @@ impl CampaignRepository {
                 }
                 AttemptStart::AfterAttempt { origin, reached } => {
                     let reached = self.read_configuration_artifact(reached.content_id())?;
+                    crucible_cas::owned_decode::reserve_vec(&mut pending, 1)
+                        .map_err(CampaignCodecError::from)?;
                     pending.push((
                         current_id,
                         current,
@@ -413,9 +418,11 @@ impl CampaignRepository {
                 }
             };
 
+            crucible_cas::owned_decode::charge_btree_entry::<ContentId, ValidatedAttempt>()
+                .map_err(CampaignCodecError::from)?;
             cache
                 .validated_attempts
-                .insert(current_id, validated.clone());
+                .insert(current_id, validated.clone_admitted()?);
             return cache_attempt_continuation_prefix(cache, id, pending, validated);
         }
     }

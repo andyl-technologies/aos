@@ -287,12 +287,35 @@ where
             .map_err(|source| {
                 ProductionQemuHotForkExactSourceCaptureError::Preparation(Box::new(source))
             })?;
-        let continuation = source.continuation();
+        let continuation = match source.continuation() {
+            Ok(continuation) => continuation,
+            Err(cause) => {
+                // A missing complete identity cannot authorize cleanup. Keep
+                // this existing owner intact without a new diagnostic allocation.
+                std::mem::forget(source);
+                return Err(ProductionQemuHotForkExactSourceCaptureError::Continuation(
+                    cause,
+                ));
+            }
+        };
         let actual_configuration = continuation.configuration().id();
+        let proof_matches = match boundary
+            .proof()
+            .matches_checkpoint(continuation.configuration(), continuation.scheduler())
+        {
+            Ok(matches) => matches,
+            Err(source_error) => {
+                let retirement = source.retire().err().map(Box::new);
+                return Err(
+                    ProductionQemuHotForkExactSourceCaptureError::EventIdentity {
+                        source: Box::new(source_error),
+                        retirement,
+                    },
+                );
+            }
+        };
         let prepared_boundary_matches = boundary.configuration() == continuation.configuration()
-            && boundary
-                .proof()
-                .matches_checkpoint(continuation.configuration(), continuation.scheduler())
+            && proof_matches
             && production_boundary.matches(continuation);
         if actual_configuration != requested_configuration.id() || !prepared_boundary_matches {
             let retirement = source.retire().err().map(Box::new);
@@ -357,6 +380,14 @@ pub struct AuthenticatedExactQemuHotForkSource {
 }
 
 impl AuthenticatedExactQemuHotForkSource {
+    pub(crate) fn with_cleanup_observer(
+        mut self,
+        observer: std::sync::Arc<dyn crucible_api::vm_lifecycle::ProductionHotForkCleanupObserver>,
+    ) -> Self {
+        self.source = self.source.with_cleanup_observer(observer);
+        self
+    }
+
     pub(crate) fn into_parts(
         self,
     ) -> (
@@ -382,13 +413,16 @@ impl AuthenticatedExactQemuHotForkSource {
 }
 
 impl AuthenticatedCanonicalQemuHotForkSource {
-    pub(crate) fn into_parts(self) -> (QemuHotForkSourceWorldKey, ProductionVmHotForkSourceWorld) {
-        (self.key, self.source)
+    pub(crate) fn with_cleanup_observer(
+        mut self,
+        observer: std::sync::Arc<dyn crucible_api::vm_lifecycle::ProductionHotForkCleanupObserver>,
+    ) -> Self {
+        self.source = self.source.with_cleanup_observer(observer);
+        self
     }
 
-    #[cfg(test)]
-    pub(crate) const fn source_world_for_test(&self) -> &ProductionVmHotForkSourceWorld {
-        &self.source
+    pub(crate) fn into_parts(self) -> (QemuHotForkSourceWorldKey, ProductionVmHotForkSourceWorld) {
+        (self.key, self.source)
     }
 
     #[cfg(test)]
@@ -444,6 +478,9 @@ pub enum ProductionQemuHotForkSourceCaptureError {
 /// Failure while restoring an authenticated exact source world.
 #[derive(Debug, Error)]
 pub enum ProductionQemuHotForkExactSourceCaptureError {
+    /// The prepared continuation is unavailable; its complete source remains retained.
+    #[error("authenticate prepared exact source continuation; source retained")]
+    Continuation(#[source] crucible_api::vm_lifecycle::ProductionVmHotForkContinuationUnavailable),
     /// Exact capture requires an authenticated checkpoint execution origin.
     #[error("exact hot-fork source capture has no resume checkpoint")]
     MissingCheckpoint,
@@ -462,6 +499,15 @@ pub enum ProductionQemuHotForkExactSourceCaptureError {
     /// Atomic source-world preparation failed while retaining its lifecycle.
     #[error("prepare exact production hot-fork source")]
     Preparation(#[source] Box<ProductionVmHotForkSourceWorldPreparationFailure>),
+    /// Canonical event evidence authentication failed while preserving source cleanup proof.
+    #[error("authenticate exact hot-fork event identity: {source}")]
+    EventIdentity {
+        /// Original model authentication or metadata refusal.
+        #[source]
+        source: Box<crucible::EngineError>,
+        /// Cleanup failure retaining the actual source, if retirement failed.
+        retirement: Option<Box<crucible_api::LifecycleApiError>>,
+    },
     /// Prepared source differs from the authenticated scheduler or device boundary.
     #[error("prepared exact hot-fork source boundary differs from the authenticated request")]
     PreparedBoundaryMismatch {
@@ -481,9 +527,14 @@ impl ProductionQemuHotForkExactSourceCaptureError {
                 AttemptWorkerFailure::Canceled(_) => SchedulerOperationalFailureClass::Canceled,
                 AttemptWorkerFailure::Terminal(_) => SchedulerOperationalFailureClass::Terminal,
             },
-            Self::Preparation(_) if canceled => SchedulerOperationalFailureClass::Canceled,
-            Self::Preparation(_) => SchedulerOperationalFailureClass::Retryable,
-            Self::MissingCheckpoint
+            Self::Preparation(_) | Self::EventIdentity { .. } if canceled => {
+                SchedulerOperationalFailureClass::Canceled
+            }
+            Self::Preparation(_) | Self::EventIdentity { .. } => {
+                SchedulerOperationalFailureClass::Retryable
+            }
+            Self::Continuation(_)
+            | Self::MissingCheckpoint
             | Self::Lineage(_)
             | Self::BasisMismatch
             | Self::PreparedBoundaryMismatch { .. } => SchedulerOperationalFailureClass::Terminal,

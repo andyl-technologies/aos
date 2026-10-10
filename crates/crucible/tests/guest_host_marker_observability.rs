@@ -22,6 +22,9 @@ use crucible_protocol::{
 
 #[test]
 fn whitebox_marker_payloads_append_as_observational_icount_stamped_entries() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let marker_node = node("db-0");
     let marker_payloads = observational_marker_payloads();
     let entries = marker_payloads
@@ -56,7 +59,11 @@ fn whitebox_marker_payloads_append_as_observational_icount_stamped_entries() {
             entry.source(),
             EventSource::Guest { node } if node == &marker_node
         ));
-        assert!(entry.has_valid_content_hash());
+        assert!(
+            entry
+                .has_valid_content_hash()
+                .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+        );
         assert!(matches!(
             entry.payload(),
             SchedulerEventLogPayload::Observable(
@@ -71,7 +78,11 @@ fn whitebox_marker_payloads_append_as_observational_icount_stamped_entries() {
 
     let append = append_event_log(entries.clone());
     assert_eq!(append, entries);
-    assert!(event_log_causal_projection(&append).is_empty());
+    assert!(
+        event_log_causal_projection(&append)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+            .is_empty()
+    );
 
     let random_request = WhiteboxMarkerPayload::RandomRequest(WhiteboxRandomRequestBody {
         request_id: 7,
@@ -86,6 +97,9 @@ fn whitebox_marker_payloads_append_as_observational_icount_stamped_entries() {
 
 #[test]
 fn whitebox_marker_entries_do_not_move_determinism_or_backend_fingerprint() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let baseline = run_material(
         vec![
             rng_entry(0, 10, "marker-neutrality", 17),
@@ -170,9 +184,11 @@ fn whitebox_marker_entries_do_not_move_determinism_or_backend_fingerprint() {
         marker_entry(3, 21, node("db-0"), &assertion_payload("guest.ready")),
     ]);
 
-    let marked_comparison = compare_event_log_determinism(&baseline_log, &marked_log);
+    let marked_comparison = compare_event_log_determinism(&baseline_log, &marked_log)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let differently_marked_comparison =
-        compare_event_log_determinism(&marked_log, &differently_marked_log);
+        compare_event_log_determinism(&marked_log, &differently_marked_log)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
 
     assert!(marked_comparison.passes());
     assert!(differently_marked_comparison.passes());
@@ -210,7 +226,9 @@ fn run_material(
         value: rng_value,
     })];
     let event_log = append_event_log(event_log_entries);
-    let causal_event_log_fingerprint = event_log_causal_projection(&event_log).content_hash();
+    let causal_event_log_fingerprint = event_log_causal_projection(&event_log)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+        .content_hash();
 
     let mut backend = SimBackend::new();
     backend
@@ -244,6 +262,7 @@ fn marker_entry(
     let event = observable_event_from_whitebox_marker_payload(icount(marker_icount), node, payload)
         .expect("observational marker payload should map to an event-log observation");
     crucible::test_support::condition_observation_entry_for_test(sequence, &event)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn rng_entry(sequence: u64, ticks: u64, stream: &str, value: u64) -> SchedulerEventLogEntry {
@@ -255,6 +274,7 @@ fn rng_entry(sequence: u64, ticks: u64, stream: &str, value: u64) -> SchedulerEv
             value,
         })),
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
@@ -263,6 +283,7 @@ fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
         time(ticks),
         SchedulerEvaluationBoundaryKind::Quantum,
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn observational_marker_payloads() -> Vec<WhiteboxMarkerPayload> {

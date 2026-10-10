@@ -53,6 +53,7 @@ use admission::{
 #[derive(Debug)]
 pub struct QemuHostPluginSetup {
     control: ControlLifecycleStream<UnixStream>,
+    _service_lease: Option<crucible_linux_resource::host_services::HostServiceLease>,
     shmem_fd: OwnedFd,
     wake_fd: OwnedFd,
     negotiated: NegotiatedHandshake,
@@ -69,6 +70,7 @@ pub struct QemuHostPluginSetup {
     system_manifest: FaultSystemCapabilityManifestV1,
     ready_markers: std::collections::BTreeSet<crucible::model::FaultObjectId>,
     selectable_catalog_plan: SelectableCatalogPlan,
+    _launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
 }
 
 impl QemuHostPluginSetup {
@@ -299,6 +301,19 @@ impl QemuHostPluginSetup {
 }
 
 impl QemuPluginIpcControlChannel for QemuHostPluginSetup {
+    fn send_quit_supervised(
+        &mut self,
+        guard: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.control
+            .host_send_quit_with_writer(|stream, frame| {
+                crate::plugin_control::write_supervised_control_frame(stream, frame, guard)
+            })
+            .map_err(|source| {
+                QemuNodeChannelError::new("send supervised plugin Quit", source.to_string())
+            })
+    }
+
     fn send_quit(&mut self) -> Result<(), QemuNodeChannelError> {
         self.control.host_send_quit().map_err(|source| {
             QemuNodeChannelError::new("send plugin control Quit", source.to_string())
@@ -346,8 +361,12 @@ pub fn complete_qemu_host_plugin_setup(
 
 /// Completes setup with one current-version composite plugin plan.
 ///
-/// Control protocol v3 sends the complete composite setup plan in the third
-/// descriptor.
+/// Control protocol v5 sends the complete composite setup plan in the third
+/// descriptor and the same process generation as the validated launch arguments.
+/// A fourth descriptor is sent only from the retained issued body carried by
+/// the actual fresh-launch route. Its complete purpose record and generation
+/// must match this same sealed plan. A scalar plan cannot supply that owner;
+/// fingerprint-enabled installation still refuses absent workspace custody.
 ///
 /// # Errors
 ///
@@ -361,6 +380,38 @@ pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
     required_capabilities: &QemuFaultCapabilityRequirement,
     plugin_setup_plan: &PluginSetupPlan,
 ) -> Result<QemuHostPluginSetup, QemuHostPluginSetupError> {
+    let process_generation = resources.process_generation();
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    let mut resources = resources;
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    let workspace_body = resources.take_device_digest_workspace();
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    let workspace_descriptor = match (
+        workspace_body.as_ref(),
+        plugin_setup_plan.device_digest_purpose(),
+    ) {
+        (None, None) => None,
+        (Some(body), Some(record)) => {
+            let owned_record = body
+                .record()
+                .map_err(|_| QemuHostPluginSetupError::DeviceDigestWorkspaceMismatch)?;
+            if owned_record != record || record.fields().process_generation != process_generation {
+                return Err(QemuHostPluginSetupError::DeviceDigestWorkspaceMismatch);
+            }
+            Some(
+                body.descriptor()
+                    .map_err(|_| QemuHostPluginSetupError::DeviceDigestWorkspaceMismatch)?,
+            )
+        }
+        _ => return Err(QemuHostPluginSetupError::DeviceDigestWorkspaceMismatch),
+    };
+    #[cfg(not(all(target_os = "linux", feature = "private-measurement-domain")))]
+    let workspace_descriptor = {
+        if plugin_setup_plan.device_digest_purpose().is_some() {
+            return Err(QemuHostPluginSetupError::DeviceDigestWorkspaceMismatch);
+        }
+        None
+    };
     let allocation = RegionAllocation::new(config)
         .map_err(|source| QemuHostPluginSetupError::RegionLayout { source })?;
     let layout = allocation.layout();
@@ -374,7 +425,11 @@ pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
     let bytes = allocation
         .setup_region_bytes()
         .map_err(|source| QemuHostPluginSetupError::RegionSerialization { source })?;
-    let (control_socket, shmem_fd, wake_fd, region_len, fault_node_hash) = resources.into_parts();
+    // Declare custody before bare descriptors so every error drops it last.
+    let launch_cleanup = resources.launch_cleanup();
+    let service_lease = resources.host_service_lease().cloned();
+    let (control_socket, shmem_fd, wake_fd, region_len, fault_node_hash, _) =
+        resources.into_parts();
     if required_capabilities
         .target_manifest()
         .is_some_and(|required| required.node_hash() != fault_node_hash)
@@ -464,6 +519,8 @@ pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
                 shmem_fd: shmem_fd.as_raw_fd(),
                 wake_fd: wake_fd.as_raw_fd(),
                 plugin_setup_plan_fd: plugin_setup_plan_fd.as_raw_fd(),
+                process_generation,
+                device_digest_workspace: workspace_descriptor,
             },
         )
         .map_err(|source| QemuHostPluginSetupError::Control { source })?;
@@ -549,6 +606,7 @@ pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
 
     Ok(QemuHostPluginSetup {
         control,
+        _service_lease: service_lease,
         shmem_fd,
         wake_fd,
         negotiated,
@@ -565,6 +623,7 @@ pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
         system_manifest,
         ready_markers: required_capabilities.ready_markers().clone(),
         selectable_catalog_plan: plugin_setup_plan.selectable_catalog_plan().clone(),
+        _launch_cleanup: launch_cleanup,
     })
 }
 
@@ -682,6 +741,9 @@ fn setup_io_error(operation: &'static str, source: io::Error) -> QemuHostPluginS
 /// An error produced while running host-side plugin setup.
 #[derive(Debug, Error)]
 pub enum QemuHostPluginSetupError {
+    /// The fourth descriptor lacks the same issued body, record or generation.
+    #[error("device workspace custody differs from the sealed setup plan")]
+    DeviceDigestWorkspaceMismatch,
     /// The requested shared-memory layout could not be allocated.
     #[error("setup shared-memory layout failed")]
     RegionLayout {
@@ -861,7 +923,7 @@ pub(crate) mod tests {
 
     #[test]
     fn qemu_host_rejects_an_unsupported_plugin_abi() {
-        assert_eq!(ABI_VERSION, 30);
+        assert_eq!(ABI_VERSION, 31);
         let unsupported_abi = u32::MAX;
         let config = HostHandshakeConfig {
             proto_version: CONTROL_PROTOCOL_VERSION,
@@ -1141,6 +1203,15 @@ pub(crate) mod tests {
         plugin_socket: UnixStream,
         rows: &[FaultCapabilityRowV1],
     ) -> Result<ValidatedSetupRegion, String> {
+        plugin_peer_complete_setup_after_ack(plugin_socket, rows, |_| Ok(()))
+    }
+
+    /// Executes a peer action after real descriptor handoff and SetupAck.
+    pub(crate) fn plugin_peer_complete_setup_after_ack(
+        plugin_socket: UnixStream,
+        rows: &[FaultCapabilityRowV1],
+        after_ack: impl FnOnce(&crucible_shmem::MappedSetupRegion) -> Result<(), String>,
+    ) -> Result<ValidatedSetupRegion, String> {
         let mut plugin = ControlLifecycleStream::connected_unix_stream(plugin_socket)
             .map_err(|error| error.to_string())?;
         let negotiated = plugin
@@ -1182,6 +1253,7 @@ pub(crate) mod tests {
         plugin
             .enter_run_via_shared_memory()
             .map_err(|error| error.to_string())?;
+        after_ack(&mapped)?;
         plugin
             .plugin_read_run_control_frame()
             .map_err(|error| error.to_string())?;

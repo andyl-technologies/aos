@@ -11,7 +11,7 @@ pub struct StreamingCommandCapability {
     pub command_kind: SessionCommandKind,
 }
 /// Command capabilities advertised by one streaming command path.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct StreamingCapabilitySet {
     /// Command kinds accepted by the path.
     pub commands: Vec<StreamingCommandCapability>,
@@ -45,7 +45,7 @@ impl StreamingCapabilitySet {
 }
 
 /// Successful evidence that `Control` and `Watch`+`Send` expose the same command set.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct StreamingEquivalenceReport {
     /// Number of command kinds exposed by each command path.
     pub command_count: usize,

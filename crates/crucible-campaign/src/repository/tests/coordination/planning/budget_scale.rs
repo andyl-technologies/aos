@@ -103,7 +103,11 @@ fn ten_thousand_budget_transitions_preserve_exact_spending_and_cold_replay() {
     let before_restart = repository
         .budget_projection(CAMPAIGN)
         .expect("final ledger");
-    let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let cold = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     assert_eq!(
         cold.budget_projection(CAMPAIGN).expect("cold ledger"),
         before_restart

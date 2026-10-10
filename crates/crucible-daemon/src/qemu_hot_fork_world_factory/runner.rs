@@ -34,6 +34,12 @@ where
         }
     }
 
+    /// Lends the actual factory to native ownership assertions after reconciliation.
+    #[cfg(test)]
+    pub(crate) fn factory_mut_for_test(&mut self) -> &mut F {
+        &mut self.factory
+    }
+
     /// Transfers a pending retained world to the factory's quarantine owner.
     pub(crate) fn quarantine_pending_execution(&mut self) {
         if let Some(lifecycle) = self.pending.take() {

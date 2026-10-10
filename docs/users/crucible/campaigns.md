@@ -80,6 +80,13 @@ campaign-owned artifact carries its authenticated replay closure; a missing
 closure fails closed. Distinct current `verify`, `search`, and `fuzz` producers
 retain their declared execution owner.
 
+Plain artifact replay and remote HTTP control also resolve this deployment
+before reading or decoding input. They acquire the existing catalog project
+quota and its independently authored metadata and descriptor limits without
+starting a VM. Configure a local quota namespace for the CLI; a namespace
+already exclusively held by another service is refused. Native replay instead
+retains its original campaign owner through all replay and bisection runs.
+
 Campaign findings can also enter the shared daemon session lifecycle directly.
 The default command restores the cheapest complete retained checkpoint as an
 exclusive read-only session and opens the mediated GDB relay:
@@ -506,6 +513,15 @@ record ID and must already occur in the daemon's verified import closure.
 
 ## Start the single-host owner
 
+Production `serve` starts through the generated `crucible-campaign.service`
+with an explicit original process resource contract. The service installs its
+limits before exec and lends the same native SQLite heap to every campaign
+store. Configure and qualify the
+[campaign process partitions](../../maintainers/crucible-campaign-process-resources.md)
+before enabling it. A direct shell launch without that authenticated service
+birth is refused before the runtime or listener starts. The launch arguments
+shown below belong in the managed service invocation.
+
 The campaign endpoint is a managed Unix socket. Its state directory, peer
 policy, optional component authority keys, and any initial imports must be fixed
 before the socket becomes visible. Without `--campaign-store`, the owner keeps
@@ -808,12 +824,12 @@ settings stable when replaying a campaign. A larger interval trades fewer host
 handshakes for slower boundary-level control. Existing quantum budgets still
 apply; this is a virtual-time bound, not a wall-clock response guarantee.
 
-The version-2 deployment file is strict TOML, must be an exact-owner regular
+The version-3 deployment file is strict TOML, must be an exact-owner regular
 file with mode `0600`, and is bounded to 64 KiB:
 
 ```toml
 schema = "crucible.campaign-packaged-executor"
-version = 2
+version = 3
 cgroup_root = "/sys/fs/cgroup/crucible"
 run_root = "/var/lib/crucible/attempts"
 attempt_namespace = "campaign-local"
@@ -822,18 +838,82 @@ project_id_count = 4
 child_user_id = 2000
 child_group_id = 2000
 maximum_tasks = 64
+maximum_file_descriptors = 1024
+maximum_locked_bytes = 0
+maximum_node_host_service_tasks = 4
+maximum_node_host_service_file_descriptors = 32
+maximum_node_host_service_resident_bytes = 8388608
+watcher_service_resident_bytes = 1048576
 maximum_inodes = 4096
 finish_timeout_ms = 30000
 maximum_slots = 2
-maximum_vcpus = 4
-maximum_resident_bytes = 1073741824
-maximum_disk_bytes = 2147483648
+maximum_paging_io_slots = 16
+maximum_host_task_slots = 1024
+maximum_host_file_descriptors = 16384
+maximum_host_metadata_bytes = 1073741824
+maximum_host_staging_bytes = 134217728
+maximum_vcpus = 8
+maximum_resident_bytes = 3221225472
+maximum_disk_bytes = 6442450944
 maximum_execution_quanta = 100000
+ram_catalog_root = "/var/lib/crucible/ram-catalogs"
+ram_catalog_project_id = 30000
+operational_registry_root = "/var/lib/crucible/executor-ledger"
+operational_registry_project_id = 31000
+operational_registry_maximum_inodes = 262144
+maximum_ram_catalog_inodes = 262144
+maximum_ram_catalog_sqlite_heap_bytes = 8388608
 verify_determinism_findings = true
 maximum_checkpoint_bytes = 1073741824
 worker_count = 2
 host_architecture = "x86_64"
 qemu_profile = "deterministic-tcg-v1"
+
+[operational_registry_resources]
+resident_peak_bytes = 134217728
+backing_peak_bytes = 16777216
+metadata_bytes = 67108864
+staging_bytes = 8388608
+paging_io_slots = 1
+cpu_slots = 1
+task_slots = 1
+file_descriptors = 128
+
+[ram_catalog_resources]
+resident_peak_bytes = 134217728
+backing_peak_bytes = 536870912
+metadata_bytes = 67108864
+staging_bytes = 8388608
+paging_io_slots = 1
+cpu_slots = 1
+task_slots = 1
+file_descriptors = 128
+
+[assignment_limits]
+vcpus = 1
+resident_bytes = 536870912
+disk_bytes = 1073741824
+execution_quanta = 50000
+
+[assignment_resources]
+resident_peak_bytes = 536870912
+backing_peak_bytes = 1073741824
+metadata_bytes = 134217728
+staging_bytes = 16777216
+paging_io_slots = 1
+cpu_slots = 1
+task_slots = 69
+file_descriptors = 1056
+
+[retained_template_resources]
+resident_peak_bytes = 536870912
+backing_peak_bytes = 1073741824
+metadata_bytes = 134217728
+staging_bytes = 16777216
+paging_io_slots = 1
+cpu_slots = 1
+task_slots = 69
+file_descriptors = 1056
 
 [operations]
 listener_workers = 4
@@ -848,10 +928,102 @@ planner_input_bytes = 16777216
 planner_fuel = 1025
 executor_scan_limit = 1024
 worker_slots_per_campaign = 2
+
+[host_operation_budgets]
+setup = { poll_interval_ms = 10, total_timeout_ms = 60000 }
+quantum = { poll_interval_ms = 10 }
+page_in = { poll_interval_ms = 10, total_timeout_ms = 60000 }
+writeback = { poll_interval_ms = 10, total_timeout_ms = 60000 }
+fingerprint_initialization = { poll_interval_ms = 10, total_timeout_ms = 60000 }
+fingerprint_update = { poll_interval_ms = 10, total_timeout_ms = 60000 }
+quiescence = { poll_interval_ms = 10, total_timeout_ms = 60000 }
+checkpoint_capture = { poll_interval_ms = 10, total_timeout_ms = 60000 }
+checkpoint_publication = { poll_interval_ms = 10, total_timeout_ms = 60000 }
+restore = { poll_interval_ms = 10, total_timeout_ms = 60000 }
+fork_rearm = { poll_interval_ms = 10, total_timeout_ms = 60000 }
+transfer = { poll_interval_ms = 10, total_timeout_ms = 60000 }
+preparation = { poll_interval_ms = 10, total_timeout_ms = 60000 }
+cleanup = { poll_interval_ms = 10, total_timeout_ms = 15000 }
 ```
+
+The required `host_operation_budgets` roster covers all fourteen host classes.
+Each class supplies a positive `poll_interval_ms` and may supply positive
+`progress_timeout_ms` and `total_timeout_ms` allowances. Infrastructure requires
+at least one finite allowance; the quantum class may wait indefinitely under
+its separate assignment cap. These are independent operational limits, not
+guest time or modeled execution quanta. Startup and each admitted owner use the
+authored roster from their original starts. Runtime revisions preserve those
+starts and meaningful-progress coordinates rather than renewing deadlines.
 
 The project-ID count must cover every slot, the worker count cannot exceed the
 slot ceiling, and the checkpoint ceiling cannot exceed writable-disk capacity.
+The aggregate paging, task, descriptor, metadata and staging capacities bound retained host
+ownership across executions. Node task and descriptor ceilings are reserved
+before process launch; the descriptor ceiling is also enforced on the child.
+The `maximum_node_host_service_*` fields separately retain host-side tasks,
+descriptors and resident bytes for node control and immutable page-source services. These
+resources are outside the child's cgroup and descriptor limit, and are added
+to the node's complete reservation before launch.
+The independent `watcher_service_resident_bytes` retains watchdog stack,
+TLS and supervisor ownership for both assignments and genuine preparation
+service accounts. It must exceed its fixed 256 KiB stack and fits within the
+same authored aggregate resident capacity.
+Authenticated native startup inventory must fit these entitlements, including
+prospective pager service resources. It cannot increase their peaks after spawn.
+The `serve` flags `--host-paging-io-slots`, `--host-task-slots`, and
+`--host-file-descriptors`, `--host-metadata-bytes` and `--host-staging-bytes`
+explicitly override the corresponding aggregate
+deployment values. They have no numeric defaults. Version-2 files are refused.
+The required `assignment_resources` table bounds one sealed assignment
+independently of the pool's aggregate capacities. Its eight resource dimensions
+include native processes and retained host services. The separate required
+`assignment_limits` table retains the original modeled request bounds for CPU,
+resident bytes, writable guest disk and execution quanta. Zero guest disk does
+not remove physical spill or immutable page-storage reservations. Retained
+sources and live assignments must fit together in the pool before capture or
+execution starts.
+The required absolute `operational_registry_root`, `operational_registry_project_id`, and
+`operational_registry_maximum_inodes` bind the durable executor ledger and
+operational history to a distinct operator-installed ext4 project quota. Its
+exact byte ceiling is `operational_registry_resources.backing_peak_bytes`;
+startup authenticates it before opening durable files. The project must be
+outside the native process project pool and differ from the RAM catalog project.
+
+The required `operational_registry_resources` table reserves the durable host
+control registry separately from guest assignments and RAM catalogs. Its
+resident, metadata, staging, descriptor and history-backing entitlements remain
+charged while operational owners or durable records survive. The history store
+uses this service's backing entitlement; it does not consume an additional
+inferred fraction of the pool's disk ceiling.
+The required `maximum_ram_catalog_sqlite_heap_bytes` is a positive, explicit
+subset of catalog metadata. Rust cache entries, decoded RAM roots, deferred
+sources and readers draw from the remaining metadata allowance before their
+allocations; neither allocator borrows staging or increases the complete peak.
+
+The required `ram_catalog_resources` table separately reserves the physical
+RAM catalog service. Its backing peak is an actual hard project quota covering
+SQLite tables, indexes, rollback journals and every descendant, independently
+of canonical encoded page sizes. Install the inherited project quota at `ram_catalog_root`
+with `ram_catalog_project_id` and `maximum_ram_catalog_inodes` before startup.
+The service reconciles that same physical identity across daemon restarts.
+Persisted catalogs keep their charge and quota until authenticated retirement
+and deletion; closing the last reader does not free persistent backing.
+The private catalog backend uses DELETE journals and a process-wide hard SQLite
+heap limit from `maximum_ram_catalog_sqlite_heap_bytes`. Its independently
+reserved `staging_bytes` covers bounded source authentication, SQL read chunks and the secure namespace
+walk. WAL or SHM predecessor files are refused before opening SQLite. The
+descriptor entitlement must cover the 36-descriptor namespace peak plus nine
+descriptors for each cached catalog; the provider reuses one backend and fence
+per catalog and retains them through readers and authenticated deletion.
+CPU slots describe nominal host admission. QEMU's native CPU limit uses the
+exact guest topology sum; unused host CPU entitlement does not widen that
+native limit.
+The required `retained_template_resources` table uses the same eight keys and
+defines the complete native and host entitlement for each retained source lineage. Its actual RAM inventory must fit
+before capture, and its charge remains until cleanup proves every borrower has
+retired. Checkpoint replay uses this entitlement independently of an optional
+`hot_fork` policy. It never substitutes the pool's full capacity or an inferred
+sparse working set.
 The required `operations` table defines the complete operational profile for
 this pool. It bounds listener workers and backlog, requests per connection,
 accept polling, read/write deadlines retained across reconnect, runtime
@@ -1128,7 +1300,10 @@ authorization before it is disclosed.
 Garbage collection is a stopped-owner operation. Stop the campaign daemon and
 packaged executor cleanly, retain the state directory and store deployment
 unchanged, and place the journal outside every configured store leaf. Plan
-first; inspect and preserve its exact plan identity before apply:
+first; inspect and preserve its exact plan identity before apply. Select the
+physical-quota node that owns scratch in the same store namespace, and author
+one finite timeout covering marking and journal publication. An unguarded leaf
+cannot provide scratch authority:
 
 ```sh
 crucible --format json store gc \
@@ -1136,6 +1311,8 @@ crucible --format json store gc \
   --policy "$CAMPAIGN_POLICY" \
   --store "$STORE" \
   --journal "$GC_JOURNAL" \
+  --mark-store-node "$GUARDED_STORE_NODE" \
+  --host-maintenance-timeout-ms 300000 \
   plan
 
 crucible --format json store gc \
@@ -1143,6 +1320,8 @@ crucible --format json store gc \
   --policy "$CAMPAIGN_POLICY" \
   --store "$STORE" \
   --journal "$GC_JOURNAL" \
+  --mark-store-node "$GUARDED_STORE_NODE" \
+  --host-maintenance-timeout-ms 300000 \
   apply
 ```
 
@@ -1155,6 +1334,8 @@ crucible --format json store gc \
   --policy "$CAMPAIGN_POLICY" \
   --store "$STORE" \
   --journal "$GC_JOURNAL" \
+  --mark-store-node "$GUARDED_STORE_NODE" \
+  --host-maintenance-timeout-ms 300000 \
   cancel
 ```
 

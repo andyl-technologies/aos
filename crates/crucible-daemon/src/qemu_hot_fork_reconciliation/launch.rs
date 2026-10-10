@@ -345,12 +345,54 @@ where
         let configuration = source.configuration();
         let event_log = source.fork_event_log();
         let launch_resources = source.launch_resources();
-        let launched = fork_seal_and_rearm_prepared_source(
-            &mut source,
-            &mut run_directory,
-            launch_resources,
-            &mut target,
-        );
+        #[cfg(test)]
+        let component_ram_facts = target.component_ram_facts;
+        #[cfg(not(test))]
+        let component_ram_facts = false;
+        let ram_prepared = match (
+            target.host_ram_registration(),
+            target.host_operation_supervisor(),
+            target.host_ram_custody(),
+        ) {
+            (Some(registration), Some(supervisor), Some(custody)) => run_directory
+                .retain_ram_launch_custody(custody.clone())
+                .map_err(|error| {
+                    QemuNodeChannelError::new(
+                        "retain child RAM directory custody",
+                        error.to_string(),
+                    )
+                })
+                .and_then(|()| {
+                    if component_ram_facts {
+                        // Scripted state-machine fixtures admit real node budgets
+                        // but make no claim about a kernel pager or native stage.
+                        return Ok(());
+                    }
+                    source.prepare_child_ram(
+                        registration.clone(),
+                        supervisor.clone(),
+                        &run_directory,
+                        custody.clone(),
+                    )
+                }),
+            (None, None, None) => Ok(()),
+            _ => Err(QemuNodeChannelError::new(
+                "prepare child RAM",
+                "target RAM admission and supervisor disagree",
+            )),
+        };
+        let launched = ram_prepared
+            .map_err(|source| {
+                SourceWorldChildLaunchError::Fork(QemuHotForkLaunchError::Rejected { source })
+            })
+            .and_then(|()| {
+                fork_seal_and_rearm_prepared_source(
+                    &mut source,
+                    &mut run_directory,
+                    launch_resources,
+                    &mut target,
+                )
+            });
         let (launch, detached_resources) = match launched {
             Ok(launched) => launched,
             Err(SourceWorldChildLaunchError::Fork(

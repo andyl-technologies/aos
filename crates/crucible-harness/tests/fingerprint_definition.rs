@@ -12,7 +12,7 @@ use crucible_harness::fingerprint::{
 };
 
 const CANONICAL_DEFINITION_DIGEST_HEX: &str =
-    "8a1510a06faa6a12dd3a784bf0b9a8434ccf5228ed1d591b315d245cc5169f11";
+    "686d098bc51dc698b95bd080dc70dbc1d077a31b8f8de69154660c40befff843";
 const SAMPLE_TARGET_ICOUNT: u64 = 4_096;
 
 #[test]
@@ -22,6 +22,11 @@ fn fingerprint_definition_digest_is_stable_and_content_addressed() {
 
     assert_eq!(first.digest(), second.digest());
     assert_eq!(hex(&first.digest()), CANONICAL_DEFINITION_DIGEST_HEX);
+    assert_eq!(first.version(), "crucible-execution-fingerprint-v3");
+    assert_eq!(
+        first.memory_digest_algorithm(),
+        "host-observed-logical-ram-blake3-execution-root-v1"
+    );
     assert!(first.include_device_state());
     assert!(first.include_rr_scheduler_state());
 }

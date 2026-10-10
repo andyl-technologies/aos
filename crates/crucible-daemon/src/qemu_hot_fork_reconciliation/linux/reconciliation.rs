@@ -51,6 +51,16 @@ where
 
     fn observe_child(&mut self) -> Result<QemuHotForkChildObservation, Self::Error> {
         let state = self.process_owner.observe_child()?;
+        if let Some(custody) = &self.ram_custody {
+            custody
+                .observe_process_disposition(&self.node_process_control())
+                .map_err(|source| {
+                    LinuxQemuHotForkReconciliationError::Source(QemuNodeChannelError::new(
+                        "observe retained RAM process disposition",
+                        source.to_string(),
+                    ))
+                })?;
+        }
         qmp_child_observation(state)
     }
 

@@ -1,6 +1,8 @@
 //! Authenticated streaming replay views over exact-checkpoint closures.
 
 use super::*;
+use crucible_cas::content_store::StoreError;
+use crucible_cas::ram::RamStoreError;
 
 /// One immutable object in a portable production exact-checkpoint closure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,7 +34,7 @@ impl ProductionExactCheckpointObject {
 /// Read-only portable view of one complete production exact-checkpoint closure.
 ///
 /// The value exposes no directory or mutation authority. Its manifest is the
-/// canonical `crucible.production-exact-closure.v9` body, and its object list
+/// canonical `crucible.production-exact-closure.v10` body, and its object list
 /// is the exact deduplicated set named by that manifest. Large overlay and
 /// VMState artifacts remain represented by their bounded content-addressed
 /// chunks rather than by RAM-sized buffers.
@@ -46,6 +48,249 @@ pub struct ProductionExactCheckpointClosure {
     pub(super) source: ScenarioDefForm,
     pub(super) object_directory: PathBuf,
     pub(super) objects: Vec<ProductionExactCheckpointObject>,
+    pub(super) ram_sources: Vec<ProductionPagedRamSource>,
+    pub(super) ram_catalog_provider: Option<Arc<dyn ProductionRamCatalogProvider>>,
+}
+
+/// One complete authenticated RAM source retained during checkpoint publication.
+///
+/// The source exposes bounded tree transfer and authenticated page lookup. Its
+/// live retention owner remains attached; callers never receive a flat RAM
+/// object inventory or a mutable backing path.
+#[derive(Clone)]
+pub struct ProductionPagedRamSource {
+    pub(super) node: Arc<NodeId>,
+    pub(super) store: crucible_cas::ram::RamStore,
+    pub(super) root: crucible_cas::ram::LeasedRamRoot,
+    pub(super) object_id: Arc<String>,
+    pub(super) original: crucible_cas::owned_decode::DecodeBudget,
+}
+
+impl std::fmt::Debug for ProductionPagedRamSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProductionPagedRamSource")
+            .field("node", &self.node)
+            .field("root", &self.root)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ProductionPagedRamSource {
+    /// Admits a complete local image under an externally established root lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for the wrong coverage scope, missing or corrupt
+    /// descendants, cancellation, or exhausted verification bounds.
+    pub fn new(
+        node: NodeId,
+        store: crucible_cas::ram::RamStore,
+        root: crucible_cas::ram::LeasedRamRoot,
+        original: crucible_cas::owned_decode::DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
+    ) -> Result<Self, crucible_cas::ram::RamStoreError> {
+        if root.record().scope() != crucible_ram::Scope::Exact {
+            return Err(crucible_cas::ram::RamStoreError::Invalid(
+                "exact source coverage scope",
+            ));
+        }
+        let account = original
+            .child()
+            .map_err(|source| RamStoreError::from_admission(&original, source))?;
+        store.verify(&root, &account, boundary)?;
+        let object_id = root.object_id().encode();
+        Ok(Self {
+            node: Arc::new(node),
+            store,
+            root,
+            object_id: Arc::new(object_id),
+            original,
+        })
+    }
+
+    /// Returns the node bound to this complete image.
+    #[must_use]
+    pub fn node(&self) -> &NodeId {
+        &self.node
+    }
+
+    /// Returns the leased authenticated logical image.
+    #[must_use]
+    pub fn root(&self) -> &crucible_cas::ram::LeasedRamRoot {
+        &self.root
+    }
+
+    /// Returns the authenticated store while retaining its catalog owner.
+    #[must_use]
+    pub fn store(&self) -> &crucible_cas::ram::RamStore {
+        &self.store
+    }
+
+    /// Copies required authenticated descendants into a retained destination.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for cancellation, missing or corrupt source bytes,
+    /// exhausted operation bounds, durability failure, or lost retention.
+    pub fn transfer_to(
+        &self,
+        destination: &crucible_cas::ram::RamStore,
+        retention: &dyn crucible_cas::ram::RamRetention,
+        destination_original: &crucible_cas::owned_decode::DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
+    ) -> Result<crucible_cas::ram::RamClosureStored, crucible_cas::ram::RamStoreError> {
+        let source_account = self
+            .original
+            .child()
+            .map_err(|source| RamStoreError::from_admission(&self.original, source))?;
+        let destination_account = destination_original
+            .child()
+            .map_err(|source| RamStoreError::from_admission(destination_original, source))?;
+        self.store.transfer_to(
+            &self.root,
+            destination,
+            retention,
+            &source_account,
+            &destination_account,
+            boundary,
+        )
+    }
+}
+
+impl crucible_qemu::ram_source::QemuRamBacking for ProductionPagedRamSource {
+    fn root_object_id(&self) -> &str {
+        &self.object_id
+    }
+
+    fn root_record(&self) -> &crucible_ram::RootRecord {
+        self.root.record()
+    }
+
+    fn with_page_response(
+        &self,
+        region_id: &str,
+        page_index: u64,
+        boundary: &mut dyn FnMut()
+            -> Result<(), crucible_qemu::ram_source::QemuRamReadBoundaryError>,
+        consumer: &mut crucible_qemu::ram_source::QemuRamResponseConsumer<'_>,
+    ) -> Result<(), crucible_qemu::ram_source::QemuRamSourceError> {
+        let mut response = boundary::read_with_boundary(boundary, |ram_boundary| {
+            ram_boundary()?;
+            let account = self
+                .original
+                .child()
+                .map_err(|source| RamStoreError::from_admission(&self.original, source))?;
+            self.store.read_page_with_proof(
+                &self.root,
+                region_id,
+                page_index,
+                &account,
+                ram_boundary,
+            )
+        })?;
+        consumer(response.borrow_response(), boundary);
+        Ok(())
+    }
+}
+
+mod boundary;
+
+fn ram_backing_failure_kind(error: &RamStoreError) -> crucible::BackendOperationalFailureKind {
+    use crucible::BackendOperationalFailureKind as Kind;
+    use crucible_linux_resource::host_supervision::{HostOperationState, HostSupervisionError};
+
+    // Wrapping through SQLite, stream I/O or RAM authentication must preserve
+    // the actionable category of the original supervision failure.
+    // A bounded walk cannot stall cleanup on an erroneous source cycle.
+    // crucible-lint: allow erased-error -- this borrows the standard Error source chain to classify retained typed supervision; it creates no erased owner or diagnostic replacement.
+    let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    for _ in 0..64 {
+        let Some(current) = cause else {
+            break;
+        };
+        if let Some(supervision) = current.downcast_ref::<HostSupervisionError>() {
+            return match supervision {
+                HostSupervisionError::InvalidBudget
+                | HostSupervisionError::UnboundedInfrastructure { .. } => Kind::InvalidPolicy,
+                HostSupervisionError::RevisionConflict { .. } => Kind::RevisionConflict,
+                HostSupervisionError::Terminal {
+                    state: HostOperationState::Canceled,
+                } => Kind::Canceled,
+                HostSupervisionError::Terminal {
+                    state: HostOperationState::Expired,
+                } => Kind::Expired,
+                HostSupervisionError::Terminal { .. } => Kind::Terminal,
+                HostSupervisionError::DeadlineExpired { .. } => Kind::Expired,
+                HostSupervisionError::CapacityExhausted => Kind::CapacityExhausted,
+                HostSupervisionError::IdentityExhausted => Kind::IdentityExhausted,
+                HostSupervisionError::ProgressRegressed => Kind::ProgressRegressed,
+                HostSupervisionError::Unavailable => Kind::Unavailable,
+            };
+        }
+        if let Some(store) = current.downcast_ref::<StoreError>()
+            && matches!(store.original_failure(), StoreError::Quota)
+        {
+            return Kind::CapacityExhausted;
+        }
+        if let Some(resources) =
+            current.downcast_ref::<crucible_linux_resource::host_services::HostServiceError>()
+        {
+            return match resources {
+                crucible_linux_resource::host_services::HostServiceError::InvalidContract => {
+                    Kind::InvalidPolicy
+                }
+                crucible_linux_resource::host_services::HostServiceError::CapacityExhausted => {
+                    Kind::CapacityExhausted
+                }
+                crucible_linux_resource::host_services::HostServiceError::Unavailable => {
+                    Kind::Unavailable
+                }
+            };
+        }
+        if let Some(source) = current.downcast_ref::<RamStoreError>() {
+            match source {
+                RamStoreError::Canceled => return Kind::Canceled,
+                RamStoreError::Limit(_) => return Kind::CapacityExhausted,
+                _ => {}
+            }
+        }
+        cause = current.source();
+    }
+    match error {
+        RamStoreError::Canceled => Kind::Canceled,
+        RamStoreError::Limit(_) | RamStoreError::Store(StoreError::Quota) => {
+            Kind::CapacityExhausted
+        }
+        RamStoreError::Boundary(_)
+        | RamStoreError::Store(_)
+        | RamStoreError::Invalid(_)
+        | RamStoreError::Logical(_)
+        | RamStoreError::LogicalValidation(_)
+        | RamStoreError::Envelope(_)
+        | RamStoreError::Retention(_)
+        | RamStoreError::Transfer(_) => Kind::Unavailable,
+    }
+}
+
+#[cfg(test)]
+mod typed_validation_tests {
+    use super::*;
+
+    #[test]
+    fn owned_logical_validation_preserves_backing_failure_classification() {
+        let previous = RamStoreError::Logical(crucible_ram::RamError::OutOfRange.to_string());
+        let retained = RamStoreError::LogicalValidation(crucible_ram::RamError::OutOfRange);
+
+        assert_eq!(
+            ram_backing_failure_kind(&previous),
+            ram_backing_failure_kind(&retained)
+        );
+        assert_eq!(
+            ram_backing_failure_kind(&retained),
+            crucible::BackendOperationalFailureKind::Unavailable
+        );
+    }
 }
 
 /// Random-access catalog of modeled snapshots in one authenticated closure.
@@ -195,6 +440,12 @@ impl PreparedProductionReplayOraclePromotion {
 }
 
 impl ProductionExactCheckpointClosure {
+    /// Returns the bounded node catalog of complete leased RAM image roots.
+    #[must_use]
+    pub fn ram_sources(&self) -> &[ProductionPagedRamSource] {
+        &self.ram_sources
+    }
+
     /// Returns the authenticated production closure identity.
     #[must_use]
     pub const fn identity(&self) -> ContentHash {
@@ -213,7 +464,7 @@ impl ProductionExactCheckpointClosure {
         self.configuration
     }
 
-    /// Returns the canonical version-nine production closure manifest bytes.
+    /// Returns the canonical paged production closure manifest bytes.
     #[must_use]
     pub fn manifest(&self) -> &[u8] {
         &self.manifest
@@ -233,7 +484,11 @@ impl ProductionExactCheckpointClosure {
     /// teardown, not for ordinary replay consumers.
     #[must_use]
     pub fn native_retirement(&self) -> ProductionExactCheckpointRetirement {
-        ProductionExactCheckpointRetirement::new(self.run_state_root.clone(), self.scenario)
+        ProductionExactCheckpointRetirement::new(
+            self.run_state_root.clone(),
+            self.scenario,
+            self.ram_catalog_provider.clone(),
+        )
     }
 
     /// Builds a modeled-snapshot catalog under an operational boundary callback.
@@ -349,6 +604,7 @@ impl ProductionExactCheckpointClosure {
             &self.source.scenario_def(),
             &self.source,
             self.identity,
+            self.ram_catalog_provider.as_ref(),
             boundary,
         )?;
         boundary()?;

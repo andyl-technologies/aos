@@ -80,13 +80,16 @@ fn event_log() -> Vec<SchedulerEventLogEntry> {
     let decoy = ObservableEvent::guest_marker(icount(7), node("decoy"), marker_id("decoy"));
     let forbidden = ObservableEvent::guest_marker(icount(7), node("guest"), marker_id("forbidden"));
     vec![
-        crucible::test_support::condition_observation_entry_for_test(0, &decoy),
-        crucible::test_support::condition_observation_entry_for_test(1, &forbidden),
+        crucible::test_support::condition_observation_entry_for_test(0, &decoy)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+        crucible::test_support::condition_observation_entry_for_test(1, &forbidden)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible::test_support::condition_boundary_entry_for_test(
             2,
             time(7),
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ]
 }
 
@@ -97,6 +100,9 @@ fn prefix(entries: Vec<SchedulerEventLogEntry>) -> crucible::ConditionEventLogPr
 
 #[test]
 fn violation_records_are_derived_from_retained_log_and_reproduction_artifact() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world();
     let properties = properties(&world);
     let event_log = event_log();
@@ -108,10 +114,16 @@ fn violation_records_are_derived_from_retained_log_and_reproduction_artifact() {
         .content_hash();
 
     let mut oracle = BlackBoxHostOracle;
-    let mut evaluator =
-        HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
-    evaluator.observe_prefix(&prefix(event_log[..1].to_vec()), &mut oracle);
-    let online = evaluator.finalize_prefix(&prefix(event_log.clone()), &mut oracle);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"))
+        .with_world_white_box_policies(&world)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
+    evaluator
+        .observe_prefix(&prefix(event_log[..1].to_vec()), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
+    let online = evaluator
+        .finalize_prefix(&prefix(event_log.clone()), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     let offline = OfflineAssertionChecker::new()
         .with_world_white_box_policies(&world)

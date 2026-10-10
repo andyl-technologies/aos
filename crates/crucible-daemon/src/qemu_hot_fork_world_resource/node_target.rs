@@ -17,12 +17,19 @@ pub(crate) struct QemuHotForkWorldNodeTarget<G>
 where
     G: QemuAttemptResourceGuard,
 {
+    #[cfg(test)]
+    pub(crate) component_ram_facts: bool,
     pub(super) state: Arc<Mutex<QemuHotForkWorldResourceState<G>>>,
     pub(super) identity: ProductionVmNodeGeneration,
     pub(super) resources: AttemptResourceLimits,
     pub(super) cancellation: ExecutionCancellation,
     pub(super) released: bool,
     pub(super) process_contract: Option<QemuChildProcessContract>,
+    pub(super) host_ram: Option<(
+        crucible_qemu::ram_control::RamControlRegistration,
+        crucible_linux_resource::host_supervision::HostOperationSupervisor,
+        crucible_qemu::QemuRamLaunchCustody,
+    )>,
 }
 
 impl<G> fmt::Debug for QemuHotForkWorldNodeTarget<G>
@@ -48,7 +55,51 @@ where
         &self.identity
     }
 
+    pub(crate) fn install_host_ram_registration(
+        &mut self,
+        registration: crucible_qemu::ram_control::RamControlRegistration,
+        supervisor: crucible_linux_resource::host_supervision::HostOperationSupervisor,
+    ) -> Result<(), QemuVmRealizationError> {
+        if self.host_ram.is_some()
+            || registration.target.owner_generation != self.identity.generation()
+        {
+            return Err(world_resource_error(
+                "hot-fork RAM ownership was reused or names another node generation",
+            ));
+        }
+        let custody = crucible_qemu::QemuRamLaunchCustody::new(&registration);
+        self.host_ram = Some((registration, supervisor, custody));
+        Ok(())
+    }
+
+    pub(crate) fn host_ram_registration(
+        &self,
+    ) -> Option<&crucible_qemu::ram_control::RamControlRegistration> {
+        self.host_ram
+            .as_ref()
+            .map(|(registration, _, _)| registration)
+    }
+
+    pub(crate) fn host_operation_supervisor(
+        &self,
+    ) -> Option<&crucible_linux_resource::host_supervision::HostOperationSupervisor> {
+        self.host_ram.as_ref().map(|(_, supervisor, _)| supervisor)
+    }
+
+    pub(crate) fn host_ram_custody(&self) -> Option<&crucible_qemu::QemuRamLaunchCustody> {
+        self.host_ram.as_ref().map(|(_, _, custody)| custody)
+    }
+
     pub(crate) fn abort_without_child(mut self) -> Result<(), QemuVmRealizationError> {
+        #[cfg(test)]
+        if self.component_ram_facts
+            && let Some((registration, _, _)) = &self.host_ram
+        {
+            registration
+                .registrar
+                .retire_unpublished_after_cleanup(registration.target, registration.resources)
+                .map_err(|error| world_resource_error(error.to_string()))?;
+        }
         let mut state = self
             .state
             .lock()
@@ -81,6 +132,17 @@ where
             return Err(world_resource_error(
                 "hot-fork node target is not active in its aggregate owner",
             ));
+        }
+        #[cfg(test)]
+        if self.component_ram_facts
+            && let Some((registration, _, _)) = &self.host_ram
+        {
+            // The scripted reconciliation owner calls this only after its
+            // real child process is reaped. It has no native pager stage.
+            registration
+                .registrar
+                .retire_unpublished_after_cleanup(registration.target, registration.resources)
+                .map_err(|error| world_resource_error(error.to_string()))?;
         }
         state.released.insert(self.identity.clone());
         self.released = true;
@@ -147,6 +209,22 @@ impl<G> QemuAttemptProcessResourceGuard for QemuHotForkWorldNodeTarget<G>
 where
     G: QemuAttemptProcessResourceGuard,
 {
+    fn native_resource_controller(
+        &mut self,
+    ) -> Result<Option<crucible_qemu::LinuxQemuNativeResourceController>, QemuVmRealizationError>
+    {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.released || state.terminal || !state.issued.contains(&self.identity) {
+            return Err(world_resource_error(
+                "native resource controller owner is not operational",
+            ));
+        }
+        state.guard.native_resource_controller()
+    }
+
     fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
         if self.released {
             return Err(world_resource_error(

@@ -150,7 +150,11 @@ fn campaign_executor_driver_closes_stable_rejection_and_retries_transient_basis(
         .expect("post-closure projection");
     assert!(page.attempts().is_empty());
 
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     assert_eq!(
         restarted
             .head("executor-driver-rejection")

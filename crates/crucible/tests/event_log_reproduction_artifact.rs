@@ -53,6 +53,7 @@ fn decision_payload_entry(sequence: u64, ticks: u64, decision: Decision) -> Sche
         VirtualTime { ticks },
         SchedulerEventLogPayload::Decision(decision),
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
@@ -61,6 +62,7 @@ fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
         VirtualTime { ticks },
         SchedulerEvaluationBoundaryKind::Quantum,
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn artifact_decision(artifact: &ReproductionArtifact) -> Decision {
@@ -107,10 +109,14 @@ fn diagnostic_entry(sequence: u64, ticks: u64, name: &str) -> SchedulerEventLogE
             BTreeMap::new(),
         )),
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 #[test]
 fn reproduction_artifact_replay_reconstructs_byte_identical_causal_log_from_metadata() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world("causal-log-metadata");
     let scenario = reproduction_scenario(&world).expect("scenario form should build");
     let schedule = crucible::Schedule::empty().appended(replay_decision(17));
@@ -124,11 +130,9 @@ fn reproduction_artifact_replay_reconstructs_byte_identical_causal_log_from_meta
     let segment = append
         .segment_hash
         .expect("non-empty event log append should have a segment key");
-    let debug_artifact = artifact.event_log_debug_artifact_with_segments(
-        append.offset,
-        &original_log,
-        Some(segment),
-    );
+    let debug_artifact = artifact
+        .event_log_debug_artifact_with_segments(append.offset, &original_log, Some(segment))
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
 
     let replay = artifact
         .verify_event_log_replay_with(&debug_artifact, replay_log_from_artifact)
@@ -139,7 +143,9 @@ fn reproduction_artifact_replay_reconstructs_byte_identical_causal_log_from_meta
     assert_eq!(debug_artifact.shared_store_segments, vec![segment]);
     assert_eq!(
         debug_artifact.causal_subsequence,
-        event_log_causal_projection(&original_log).content_hash()
+        event_log_causal_projection(&original_log)
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+            .content_hash()
     );
     assert!(replay.passes());
     assert_eq!(replay.reduction.artifact, artifact.id());
@@ -151,14 +157,18 @@ fn reproduction_artifact_replay_reconstructs_byte_identical_causal_log_from_meta
 
 #[test]
 fn reproduction_artifact_replay_rejects_causal_log_drift_without_original_full_log() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world("causal-log-drift");
     let scenario = reproduction_scenario(&world).expect("scenario form should build");
     let schedule = crucible::Schedule::empty().appended(replay_decision(23));
     let artifact = ReproductionArtifact::capture(&scenario, &schedule)
         .expect("reproduction artifact should reduce");
     let original_log = recorded_log_from_artifact(&artifact);
-    let debug_artifact =
-        artifact.event_log_debug_artifact(crucible::EventLogOffset::default(), &original_log);
+    let debug_artifact = artifact
+        .event_log_debug_artifact(crucible::EventLogOffset::default(), &original_log)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
 
     let replay = artifact
         .verify_event_log_replay_with(&debug_artifact, corrupted_replay_log_from_artifact)
@@ -177,6 +187,9 @@ fn reproduction_artifact_replay_rejects_causal_log_drift_without_original_full_l
 
 #[test]
 fn dag_reproduction_artifact_references_shared_event_log_segments_by_content_key() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world("shared-store-segment");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());

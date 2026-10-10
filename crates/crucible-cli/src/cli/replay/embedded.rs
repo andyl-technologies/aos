@@ -178,9 +178,15 @@ fn embedded_terminal_savepoint_evidence(
     )?;
     let model = crucible::ReproductionArtifact::from_compact_binary(model_bytes)
         .map_err(|error| artifact_error(format!("decode replay --to embedded model: {error}")))?;
-    let scenario_form = model.scenario_form().clone();
+    let scenario_form = model
+        .scenario_form()
+        .try_clone_admitted()
+        .map_err(|error| artifact_error(format!("admit replay scenario copy: {error}")))?;
     let scenario = model.scenario_def();
-    let schedule = model.schedule().clone();
+    let schedule = model
+        .schedule()
+        .try_clone_admitted()
+        .map_err(|error| artifact_error(format!("admit replay schedule copy: {error}")))?;
     let replay_closure_bytes = optional_single_component_payload(
         artifact,
         CAMPAIGN_REPLAY_CLOSURE_MEDIA_TYPE,
@@ -194,7 +200,9 @@ fn embedded_terminal_savepoint_evidence(
     )?;
     let configuration = crucible::Configuration {
         def: scenario.clone(),
-        schedule: schedule.clone(),
+        schedule: schedule
+            .try_clone_admitted()
+            .map_err(|error| artifact_error(format!("admit replay schedule copy: {error}")))?,
     };
     if configuration.id() != *target {
         return Err(CliError::Identity(format!(

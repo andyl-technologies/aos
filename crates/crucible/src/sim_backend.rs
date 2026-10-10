@@ -322,7 +322,13 @@ impl SimDouble {
                 });
                 Ok(None)
             }
-            HostMsg::Setup { region_len } => {
+            HostMsg::Setup {
+                region_len,
+                process_generation: _,
+                device_digest_workspace: _,
+            } => {
+                // The double models shared-memory lifecycle only. These native
+                // resource identities do not issue workspace ownership here.
                 self.control_lifecycle
                     .observe(ControlLifecycleEvent::HostSetup)?;
                 validate_setup_region_header(self.shmem.header_snapshot(), region_len)?;
@@ -1195,6 +1201,8 @@ mod tests {
         assert_eq!(double.accept_host_control_frame(&hello_ack), Ok(None));
 
         let setup = crucible_protocol::control_encode_host_msg(&HostMsg::Setup {
+            process_generation: 1,
+            device_digest_workspace: None,
             region_len: double.shmem_layout().region_size,
         });
         let setup_ack = match double.accept_host_control_frame(&setup) {
@@ -1341,6 +1349,8 @@ mod tests {
         };
         accept_hello_ack(&mut double);
         let setup = crucible_protocol::control_encode_host_msg(&HostMsg::Setup {
+            process_generation: 1,
+            device_digest_workspace: None,
             region_len: double.shmem_layout().region_size + 1,
         });
         assert!(matches!(
@@ -1366,6 +1376,8 @@ mod tests {
             Err(error) => panic!("sim double should construct: {error}"),
         };
         let setup = crucible_protocol::control_encode_host_msg(&HostMsg::Setup {
+            process_generation: 1,
+            device_digest_workspace: None,
             region_len: double.shmem_layout().region_size,
         });
 
@@ -1708,6 +1720,8 @@ mod tests {
     fn complete_sim_double_setup(double: &mut SimDouble) {
         accept_hello_ack(double);
         let setup = crucible_protocol::control_encode_host_msg(&HostMsg::Setup {
+            process_generation: 1,
+            device_digest_workspace: None,
             region_len: double.shmem_layout().region_size,
         });
         match double.accept_host_control_frame(&setup) {

@@ -23,7 +23,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 #define MAX_TRACKED_VCPUS 256U
 #define RAW_COPY_CHUNK_BYTES (1024U * 1024U)
 #define RR_SWITCH_FLUSH_INTERVAL 256U
-#define TRACE_FINGERPRINT_SCHEMA "crucible.qemu.trace-fingerprint.v7"
+#define TRACE_FINGERPRINT_SCHEMA "crucible.qemu.trace-fingerprint.v8"
 #define ZERO_SHA256_HEX \
   "0000000000000000000000000000000000000000000000000000000000000000"
 
@@ -518,7 +518,7 @@ diagnostic_register_fnv(const struct register_digest_summary *summary)
 }
 
 static int
-hash_fingerprint_material_fd(
+hash_device_projection_fd(
     int fd,
     uint64_t material_length,
     uint64_t observed_bytes,
@@ -576,26 +576,21 @@ static struct fingerprint_component_summary
 capture_fingerprint_components(void)
 {
   struct fingerprint_component_summary summary = {0};
-  struct qemu_plugin_crucible_fingerprint_material material = {
-      .ram_fd = -1,
+  struct qemu_plugin_crucible_fingerprint_v2 material = {
       .device_fd = -1,
   };
-  struct stat ram_metadata;
-  struct stat device_metadata;
 
   summary.ram_status =
-      qemu_plugin_crucible_capture_fingerprint_material(&material);
+      qemu_plugin_crucible_capture_fingerprint_v2(&material);
   summary.device_state.status = summary.ram_status;
   summary.device_state.schema_status = summary.ram_status;
   if (summary.ram_status == 0 &&
-      (material.ram_fd < 0 || material.device_fd < 0 ||
-       material.ram_fd == material.device_fd || material.ram_bytes == 0 ||
+      (material.schema != 2 || material.logical_edition != 1 ||
+       material.ram_scope != 0 || material.reserved != 0 ||
+       digest_is_zero(material.ram_digest) || material.device_fd < 0 ||
+       material.ram_bytes == 0 ||
        material.device_bytes == 0 || material.device_schema_sections == 0 ||
-       digest_is_zero(material.device_schema_digest) ||
-       fstat(material.ram_fd, &ram_metadata) != 0 ||
-       fstat(material.device_fd, &device_metadata) != 0 ||
-       (ram_metadata.st_dev == device_metadata.st_dev &&
-        ram_metadata.st_ino == device_metadata.st_ino))) {
+       digest_is_zero(material.device_schema_digest))) {
     summary.ram_status = -EINVAL;
     summary.device_state.status = -EINVAL;
     summary.device_state.schema_status = -EINVAL;
@@ -608,12 +603,8 @@ capture_fingerprint_components(void)
         summary.device_state.schema_digest,
         material.device_schema_digest,
         sizeof(summary.device_state.schema_digest));
-    summary.ram_status = hash_fingerprint_material_fd(
-        material.ram_fd,
-        material.ram_material_length,
-        material.ram_bytes,
-        summary.ram_digest);
-    summary.device_state.status = hash_fingerprint_material_fd(
+    memcpy(summary.ram_digest, material.ram_digest, sizeof(summary.ram_digest));
+    summary.device_state.status = hash_device_projection_fd(
         material.device_fd,
         material.device_material_length,
         material.device_bytes,
@@ -621,10 +612,7 @@ capture_fingerprint_components(void)
     summary.device_state.schema_status =
         digest_is_zero(summary.device_state.schema_digest) ? -EINVAL : 0;
   }
-  if (material.ram_fd >= 0) {
-    close(material.ram_fd);
-  }
-  if (material.device_fd >= 0 && material.device_fd != material.ram_fd) {
+  if (material.device_fd >= 0) {
     close(material.device_fd);
   }
   if (summary.ram_status != 0 || summary.ram_bytes == 0 ||
@@ -819,6 +807,9 @@ record_sample(unsigned int vcpu_index, bool final)
       "]"
       ",\"memory_event_hash\":\"%016" PRIx64 "\""
       ",\"ram_digest\":\"%s\""
+      ",\"ram_logical_edition\":1"
+      ",\"ram_scope\":0"
+      ",\"ram_digest_algorithm\":\"blake3\""
       ",\"ram_status\":%d"
       ",\"device_state_digest\":\"%s\""
       ",\"device_state_schema_digest\":\"%s\""

@@ -136,6 +136,9 @@ fn exact_boundary_from_continuation(
 
 #[test]
 fn exact_boundary_rejects_extra_active_and_failed_host_io_owners() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let (_source, continuation) = permanently_failed_continuation();
     let boundary = exact_boundary_from_continuation(&continuation);
     assert!(boundary.matches(&continuation));
@@ -163,6 +166,9 @@ fn exact_boundary_rejects_extra_active_and_failed_host_io_owners() {
 
 #[test]
 fn sibling_continuations_share_captured_backing_until_one_branch_changes() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let (_source, mut captured) = permanently_failed_continuation();
     let original_bytes = vec![7; 4096];
     let original = ContentHash::from_bytes(&original_bytes);
@@ -208,6 +214,33 @@ fn sibling_continuations_share_captured_backing_until_one_branch_changes() {
 
 #[test]
 fn host_continuation_clone_cost_is_bounded_across_siblings() {
+    const CHILD_MARKER: &str = "CRUCIBLE_HOST_CONTINUATION_MEASUREMENT_CHILD";
+    const TEST_NAME: &str =
+        "vm_lifecycle::hot_fork::tests::host_continuation_clone_cost_is_bounded_across_siblings";
+    if std::env::var_os(CHILD_MARKER).is_none() {
+        // Private_Dirty is process-wide. Keep unrelated parallel test allocations
+        // outside the measurement while preserving its original physical bound.
+        let executable = std::env::current_exe()
+            .unwrap_or_else(|error| panic!("locate host continuation test executable: {error}"));
+        let status = std::process::Command::new(executable)
+            .arg("--exact")
+            .arg(TEST_NAME)
+            .arg("--nocapture")
+            .env(CHILD_MARKER, "1")
+            .status()
+            .unwrap_or_else(|error| {
+                panic!("launch isolated host continuation measurement: {error}")
+            });
+        assert!(
+            status.success(),
+            "isolated host continuation measurement failed"
+        );
+        return;
+    }
+
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     const SIBLINGS: usize = 64;
     const OBJECT_BYTES: usize = 16 * 1024 * 1024;
     const MAX_PRIVATE_GROWTH_KIB: u64 = 64 * 1024;
@@ -319,6 +352,9 @@ fn time_host_clone<T>(clone: impl FnOnce() -> T) -> (T, u128) {
 
 #[test]
 fn child_materialization_retains_immutable_scheduler_and_closure_backing() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let (_source, mut captured) = permanently_failed_continuation();
     let event_bytes = vec![3; 4 * 1024 * 1024];
     let event = ContentHash::from_bytes(&event_bytes);
@@ -331,7 +367,9 @@ fn child_materialization_retains_immutable_scheduler_and_closure_backing() {
         .try_clone_for_branch()
         .unwrap_or_else(|error| panic!("clone child host branch: {error}"));
     let generations = child.node_generations.clone();
-    let restored = child.into_restore_parts(generations, "child-run-state");
+    let restored = child
+        .into_restore_parts(generations, "child-run-state")
+        .unwrap_or_else(|error| panic!("admitted child configuration: {error}"));
 
     assert!(Arc::ptr_eq(
         &captured.scheduler,
@@ -385,7 +423,9 @@ fn hot_fork_preserves_failed_node_fingerprint_authority() {
         .collect::<BTreeMap<_, _>>();
     let generations = continuation.node_generations.clone();
 
-    let restore = continuation.into_restore_parts(generations, "child-run-state");
+    let restore = continuation
+        .into_restore_parts(generations, "child-run-state")
+        .unwrap_or_else(|error| panic!("admitted child configuration: {error}"));
     let observed = restore
         .checkpoint
         .failed_host_io
@@ -506,12 +546,19 @@ fn permanently_failed_world_prepares_without_source_processes() {
         .unwrap_or_else(|error| panic!("permanently failed world should prepare: {error}"));
 
     assert_eq!(
-        source_world.continuation().nodes().len(),
+        source_world.continuation().unwrap().nodes().len(),
         source.world().vm_nodes().len()
     );
-    assert!(source_world.continuation().nodes().iter().all(|boundary| {
-        boundary.service_state() == ProductionVmHotForkNodeServiceState::PermanentlyFailed
-    }));
+    assert!(
+        source_world
+            .continuation()
+            .unwrap()
+            .nodes()
+            .iter()
+            .all(|boundary| {
+                boundary.service_state() == ProductionVmHotForkNodeServiceState::PermanentlyFailed
+            })
+    );
 
     let recovered = source_world
         .recover()
@@ -521,6 +568,9 @@ fn permanently_failed_world_prepares_without_source_processes() {
 
 #[test]
 fn source_world_forks_independent_process_neutral_continuations() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let (_source, lifecycle) = permanently_failed_loop();
     let mut source_world = lifecycle
         .prepare_hot_fork_source_world()
@@ -531,7 +581,7 @@ fn source_world_forks_independent_process_neutral_continuations() {
         .unwrap_or_else(|error| panic!("process-neutral continuation should fork: {error}"));
     assert!(Arc::ptr_eq(
         &sibling.scheduler,
-        &source_world.continuation().scheduler
+        &source_world.continuation().unwrap().scheduler
     ));
     let node = sibling
         .nodes
@@ -541,6 +591,7 @@ fn source_world_forks_independent_process_neutral_continuations() {
         .clone();
     let original_generation = source_world
         .continuation()
+        .unwrap()
         .node_generations
         .get(&node)
         .copied();
@@ -549,6 +600,7 @@ fn source_world_forks_independent_process_neutral_continuations() {
     assert_eq!(
         source_world
             .continuation()
+            .unwrap()
             .node_generations
             .get(&node)
             .copied(),
@@ -556,7 +608,10 @@ fn source_world_forks_independent_process_neutral_continuations() {
     );
     assert_eq!(
         sibling.fault_checkpoint_identity(),
-        source_world.continuation().fault_checkpoint_identity()
+        source_world
+            .continuation()
+            .unwrap()
+            .fault_checkpoint_identity()
     );
     assert!(source_world.recover().is_ok());
 }
@@ -889,7 +944,9 @@ fn hot_fork_restore_replaces_only_the_durable_run_root() {
         block_bindings: blocks,
         ninep_bindings: ninep,
         active_host_io,
-    } = continuation.into_restore_parts(generations.clone(), "child-run-state");
+    } = continuation
+        .into_restore_parts(generations.clone(), "child-run-state")
+        .unwrap_or_else(|error| panic!("admitted child configuration: {error}"));
 
     assert_eq!(config.run_state_root(), Path::new("child-run-state"));
     assert_eq!(checkpoint.node_generations, generations);
@@ -899,3 +956,6 @@ fn hot_fork_restore_replaces_only_the_durable_run_root() {
     assert!(ninep.is_empty());
     assert!(active_host_io.is_empty());
 }
+
+#[path = "tests/retained_continuation.rs"]
+mod retained_continuation;

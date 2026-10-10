@@ -14,6 +14,8 @@
   cargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
   expectedCargoDepsHash = "sha256-Rax7Te32Xr+wazk4vF63nEGuFDBKHxAJ+lCXkRo/bxw=";
   packageInventory = import ../../pkgs/tools/crucible/_packages.nix;
+  nativeCliTests = import ../../pkgs/tools/crucible/_native-cli-tests.nix {inherit lib;};
+  nativeCliAssignmentKeys = map (execution: "${execution.binary}:${execution.selector}") nativeCliTests.assignments;
   workspaceManifest = builtins.fromTOML (builtins.readFile ../../crates/Cargo.toml);
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -106,7 +108,15 @@
       }
       {
         label = "bounded controller Nextest failure diagnostics";
-        needle = ''nextestFlags = "--color=never --status-level=fail --final-status-level=fail --failure-output=final";'';
+        needle = ''nextestDiagnostics = "--color=never --status-level=fail --final-status-level=fail --failure-output=final";'';
+      }
+      {
+        label = "exact kernel test assignments consumed by controller check";
+        needle = ''nextestFlags = "'' + "$" + ''{nextestDiagnostics} --filter-expr '' + "$" + ''{lib.escapeShellArg nativeCliTests.nextestFilter}";'';
+      }
+      {
+        label = "shared native assignment inventory exposed for workspace validation";
+        needle = "nativeCliCargoSkipFlags = nativeCliTests.cargoSkipFlags;";
       }
       {
         label = "bounded Nextest ceiling recorded in build metadata";
@@ -214,6 +224,8 @@
     ++ lib.optional (hasInfix "ulimit -S -n" nullNextestCheckScript) "stdenv/phases.nix: null Nextest open-file limit unexpectedly changes the shell limit"
     ++ lib.optional (!hasInfix "ulimit -S -n 4096" boundedNextestCheckScript) "stdenv/phases.nix: generated 4096-limit check phase does not install the requested bound"
     ++ lib.optional (!hasInfix ''nextestOpenFilesLimit=$(ulimit -S -n)'' boundedNextestCheckScript) "stdenv/phases.nix: generated 4096-limit check phase does not verify the installed limit"
+    ++ lib.optional (map builtins.length (map (name: nativeCliTests.byGate.${name}) ["finding" "gc" "offline" "planning"]) != [8 14 11 2]) "pkgs/tools/crucible/_native-cli-tests.nix: required kernel gate assignments must preserve the 8/14/11/2 execution census"
+    ++ lib.optional (builtins.length (lib.unique nativeCliAssignmentKeys) != 35) "pkgs/tools/crucible/_native-cli-tests.nix: kernel assignments must name 35 distinct binary/test identities"
     ++ inventoryFailures;
 in
   if failures != []

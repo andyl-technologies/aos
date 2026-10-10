@@ -615,6 +615,9 @@ fn directional_availability_has_a_closed_lattice() {
 
 #[test]
 fn production_boundary_drops_a_preexisting_world_link_frame() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let (world, segment) = availability_world();
     let scenario = SchedulerLivenessScenario::from_runnable_world(
         "production-availability-drop",
@@ -964,6 +967,9 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
 
 #[test]
 fn production_preserve_keeps_queued_and_inflight_frames_on_the_old_profile() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let (world, segment) = availability_world();
     let scenario = SchedulerLivenessScenario::from_runnable_world(
         "production-preserve-availability",
@@ -1079,6 +1085,9 @@ fn production_preserve_keeps_queued_and_inflight_frames_on_the_old_profile() {
 
 #[test]
 fn production_reevaluate_retains_work_until_the_next_declared_phase() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let (world, segment) = availability_world();
     let scenario = SchedulerLivenessScenario::from_runnable_world(
         "production-reevaluate-availability",

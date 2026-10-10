@@ -60,13 +60,17 @@ fn replay_capture_limits() -> crate::FindingProductionReplayCaptureLimits {
 
 #[test]
 fn policy_timeout_capture_authenticates_host_marker_after_native_qemu_log() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     use crucible::{FailureTimeoutBudgetKind, FailureTimeoutRecord};
     use crucible_campaign::{BoundedStopProof, PolicyTimeoutKind};
 
     let frontier = VirtualTime { ticks: 2_000_000 };
     let native =
-        SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "execution-quanta");
-    let marker = SchedulerEventLogEntry::execution_budget_exhausted(1, frontier, "virtual-time");
+        SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "execution-quanta")
+            .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
+    let marker = SchedulerEventLogEntry::execution_budget_exhausted(1, frontier, "virtual-time")
+        .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
     let snapshot = crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot::for_replay_capture_test(
         1,
         frontier,
@@ -97,7 +101,11 @@ fn policy_timeout_capture_authenticates_host_marker_after_native_qemu_log() {
         serde_json::to_value(ContentHash::default()).expect("encode mismatched hash");
     let forged_hash: SchedulerEventLogEntry =
         serde_json::from_value(forged_material).expect("decode forged marker fixture");
-    assert!(!forged_hash.has_valid_content_hash());
+    assert!(
+        !forged_hash
+            .has_valid_content_hash()
+            .unwrap_or_else(|source| panic!("fixture identity admission: {source}"))
+    );
 
     let captured = capture_qemu_finding_replay_side(
         timeout,
@@ -115,13 +123,16 @@ fn policy_timeout_capture_authenticates_host_marker_after_native_qemu_log() {
     ));
 
     for forged in [
-        SchedulerEventLogEntry::execution_budget_exhausted(1, frontier, "execution-quanta"),
+        SchedulerEventLogEntry::execution_budget_exhausted(1, frontier, "execution-quanta")
+            .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
         SchedulerEventLogEntry::execution_budget_exhausted(
             1,
             VirtualTime { ticks: 1 },
             "virtual-time",
-        ),
-        SchedulerEventLogEntry::execution_budget_exhausted(2, frontier, "virtual-time"),
+        )
+        .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
+        SchedulerEventLogEntry::execution_budget_exhausted(2, frontier, "virtual-time")
+            .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
         forged_hash,
     ] {
         assert!(matches!(
@@ -151,9 +162,12 @@ fn policy_timeout_capture_authenticates_host_marker_after_native_qemu_log() {
 
 #[test]
 fn ordinary_replay_capture_preserves_exact_native_snapshot_suffix() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let frontier = VirtualTime { ticks: 7 };
     let native =
-        SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "execution-quanta");
+        SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "execution-quanta")
+            .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
     let snapshot = crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot::for_replay_capture_test(
         1,
         frontier,
@@ -174,7 +188,8 @@ fn ordinary_replay_capture_preserves_exact_native_snapshot_suffix() {
             if side.event_log() == [native]
     ));
     let changed_native =
-        SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "virtual-time");
+        SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "virtual-time")
+            .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
     assert!(matches!(
         capture_qemu_finding_replay_side(
             passed,
@@ -334,9 +349,11 @@ fn divergence_replay_logs_for_node(
         0,
         at.clone(),
         "execution-quanta",
-    );
+    )
+    .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
     let reproduced =
-        SchedulerEventLogEntry::execution_budget_exhausted_with_time(0, at, "virtual-time");
+        SchedulerEventLogEntry::execution_budget_exhausted_with_time(0, at, "virtual-time")
+            .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
     (vec![expected], vec![reproduced])
 }
 
@@ -389,7 +406,8 @@ impl PrivateFindingReplayRunner for DivergenceReplayRunner {
             )));
         }
         let (expected, reproduced) = divergence_replay_logs();
-        let comparison = crucible::compare_event_log_determinism(&expected, &reproduced);
+        let comparison = crucible::compare_event_log_determinism(&expected, &reproduced)
+            .map_err(|source| AttemptWorkerFailure::Terminal(io::Error::other(source)))?;
         let mismatch = comparison.mismatch().ok_or_else(|| {
             AttemptWorkerFailure::Terminal(io::Error::other(
                 "divergence probe fixture did not diverge",
@@ -936,6 +954,7 @@ fn input_fixture() -> (
             u64::MAX,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     repository
         .publish_scenario_artifact(
@@ -1104,7 +1123,7 @@ fn select_controlled_continuation(request: ControlledContinuationRequest<'_>) ->
     .expect("capture status request");
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         &[request.marker; 32],
     ))
     .expect("capture checkpoint");

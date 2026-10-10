@@ -6,6 +6,10 @@
         {
           aos.services.crucibleCampaign = {
             enable = enabled;
+            processResources =
+              if enabled
+              then import ./campaign-process-resources-fixture.nix
+              else null;
           };
         }
       ];

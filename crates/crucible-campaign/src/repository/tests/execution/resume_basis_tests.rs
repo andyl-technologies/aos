@@ -80,7 +80,7 @@ fn campaign_executor_driver_resumes_the_exact_paused_root() {
     let prior_execution = ExecutionId::from_bytes([0x94; 16]).expect("prior execution");
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         b"executor-driver-resume-root",
     ))
     .expect("checkpoint");

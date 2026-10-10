@@ -16,10 +16,7 @@ use crucible_campaign::{
     ObservationCandidate, ObservationId, ResolvedSelection, ScenarioArtifact, StopOutcome,
     SubmitAttemptRequest,
 };
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Arc;
 use std::time::Duration;
 
 const MAX_SELECTED_ORIGIN_ARTIFACT_BYTES: u64 = 256 * 1024 * 1024;
@@ -31,7 +28,8 @@ use crate::executor_supervisor::ExecutionCheckpointHandoff;
 use crate::guest_selectable::{
     GuestSelectableBoundaryDiagnosticEvent, GuestSelectableBoundaryDiagnosticRecorder,
 };
-use crate::supervision::{AssignmentHostWatchdog, AssignmentHostWatchdogGuard};
+#[cfg(test)]
+use crate::supervision::AssignmentHostWatchdogGuard;
 use crate::{
     AssignmentLedger, AttemptAdmissionValidator, AttemptCheckpointResult, AttemptExecutionOrigin,
     CancellationOutcome, CapturedAttemptCheckpoint, CheckpointCompletionOutcome,
@@ -45,9 +43,17 @@ use crate::{
     TerminalFailureOutcome,
 };
 
+mod assignment_supervision;
+pub(crate) use assignment_supervision::start_original_assignment;
+mod context;
 mod result;
 
+pub use context::{AttemptExecutionContext, ExecutionQuantumBudgetError};
 pub use result::*;
+pub(crate) use result::{
+    AdmittedPreparedResultFailure, SemanticReplayCaptureBindingError,
+    bind_admitted_semantic_replay_captures, stage_admitted_prepared_result,
+};
 
 /// Fully authenticated discovery or branch start supplied to an execution model.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -166,6 +172,7 @@ pub struct AttemptExecutionInput {
     attempt: Attempt,
     path: BranchPath,
     start: ResolvedAttemptStart,
+    _decode_custody: crucible::owned_decode::DecodeCustody,
 }
 
 /// Exact process-local reservation basis for one operational execution.
@@ -205,6 +212,10 @@ impl AttemptExecutionInput {
     #[must_use]
     pub const fn lineage(&self) -> &CampaignLineage {
         &self.lineage
+    }
+
+    pub(crate) fn enter_decode_scope(&self) -> Option<crucible::owned_decode::DecodeScope> {
+        self._decode_custody.enter()
     }
 
     /// Returns the exact canonical execution-model scenario payload.
@@ -278,15 +289,49 @@ fn resolve_attempt_execution_input_with_origin_limit(
     key: crate::AttemptExecutionKey,
     maximum_resident_bytes: u64,
 ) -> Result<AttemptExecutionInput, CampaignRepositoryError> {
+    let budget = if crucible::owned_decode::current_budget().is_some() {
+        None
+    } else {
+        match store.metadata_resources() {
+            Ok(authority) => Some(
+                crucible::owned_decode::DecodeBudget::for_store(authority).map_err(|source| {
+                    crucible_cas::content_store::StoreError::Supervision {
+                        source: Box::new(source),
+                    }
+                })?,
+            ),
+            Err(crucible_cas::content_store::StoreError::Unsupported { .. }) => None,
+            Err(error) => return Err(error.into()),
+        }
+    };
+    let _scope = budget
+        .as_ref()
+        .map(crucible::owned_decode::DecodeBudget::enter);
+    let result = resolve_owned_attempt_input(store, key, maximum_resident_bytes);
+    if let Some(account) = crucible::owned_decode::current_budget() {
+        account.check().map_err(
+            |source| crucible_cas::content_store::StoreError::Supervision {
+                source: Box::new(source),
+            },
+        )?;
+    }
+    result
+}
+
+fn resolve_owned_attempt_input(
+    store: &CampaignExecutorStore,
+    key: crate::AttemptExecutionKey,
+    maximum_resident_bytes: u64,
+) -> Result<AttemptExecutionInput, CampaignRepositoryError> {
     let lineage = store.load_lineage(key.lineage())?;
     let scenario = store.load_scenario_artifact(lineage.scenario_content())?;
     let mut attempt_chain = store.load_attempt_origin_chain(key.attempt())?;
     let attempt = attempt_chain
         .first()
-        .cloned()
         .ok_or(CampaignRepositoryError::Integrity {
             reason: "attempt-origin-chain-is-empty",
-        })?;
+        })?
+        .clone_admitted()?;
     let path = store.load_branch_path(attempt.path())?;
     let mut origin_bytes = 0_u64;
     let start = match attempt.start() {
@@ -300,7 +345,11 @@ fn resolve_attempt_execution_input_with_origin_limit(
             let parent = store.load_configuration_artifact(parent)?;
             ResolvedAttemptStart::Branch {
                 parent,
-                selection: Box::new(store.resolve_selection(selection)?),
+                selection: {
+                    crucible::owned_decode::charge_array::<crucible_campaign::ResolvedSelection>(1)
+                        .map_err(crucible_campaign::CampaignCodecError::from)?;
+                    Box::new(store.resolve_selection(selection)?)
+                },
             }
         }
         AttemptStart::AfterAttempt { .. } => {
@@ -332,7 +381,13 @@ fn resolve_attempt_execution_input_with_origin_limit(
                     account_origin_artifact(&parent, &mut origin_bytes, maximum_origin_bytes)?;
                     ResolvedAttemptStart::Branch {
                         parent,
-                        selection: Box::new(store.resolve_selection(selection)?),
+                        selection: {
+                            crucible::owned_decode::charge_array::<
+                                crucible_campaign::ResolvedSelection,
+                            >(1)
+                            .map_err(crucible_campaign::CampaignCodecError::from)?;
+                            Box::new(store.resolve_selection(selection)?)
+                        },
                     }
                 }
                 AttemptStart::AfterAttempt { .. } => {
@@ -341,6 +396,8 @@ fn resolve_attempt_execution_input_with_origin_limit(
                     });
                 }
             };
+            crucible::owned_decode::charge_array::<ResolvedAttemptOrigin>(attempt_chain.len())
+                .map_err(crucible_campaign::CampaignCodecError::from)?;
             let mut origins = Vec::with_capacity(attempt_chain.len());
             let mut origin_attempt = base_attempt;
             for descendant in attempt_chain.into_iter().rev() {
@@ -386,6 +443,12 @@ fn resolve_attempt_execution_input_with_origin_limit(
             let first = origins.next().ok_or(CampaignRepositoryError::Integrity {
                 reason: "attempt-origin-chain-has-no-boundary",
             })?;
+            crucible::owned_decode::charge_array::<ResolvedAttemptStart>(1)
+                .map_err(crucible_campaign::CampaignCodecError::from)?;
+            crucible::owned_decode::charge_array::<ResolvedAttemptOrigins>(1)
+                .map_err(crucible_campaign::CampaignCodecError::from)?;
+            crucible::owned_decode::charge_array::<ResolvedAttemptOrigin>(origins.len())
+                .map_err(crucible_campaign::CampaignCodecError::from)?;
             ResolvedAttemptStart::AfterAttempt {
                 base: Box::new(base),
                 origins: Box::new(ResolvedAttemptOrigins::new(first, origins.collect())),
@@ -442,6 +505,7 @@ fn resolve_attempt_execution_input_with_origin_limit(
         attempt,
         path,
         start,
+        _decode_custody: crucible::owned_decode::current_custody().unwrap_or_default(),
     })
 }
 
@@ -502,7 +566,7 @@ fn resolve_continuation_source_stop(
     }
 
     let bytes = observation.canonical_bytes().len();
-    Ok((observation.stop().clone(), bytes))
+    Ok((observation.stop().clone_admitted()?, bytes))
 }
 
 fn account_origin_bytes(
@@ -529,66 +593,7 @@ fn account_origin_bytes(
     Ok(())
 }
 
-/// Operational limits, control state, and restore root for one guest execution.
-///
-/// This context is deliberately separate from [`AttemptExecutionInput`]. It
-/// contains no assignment ID or daemon epoch and must not influence canonical
-/// child or observation bytes. The runner uses it only to enforce local
-/// resource ceilings, interrupt work, and select the exact durable checkpoint
-/// for a resumed incarnation. The packaged QEMU runner also receives an opaque
-/// pool-owned handoff that can prepare and durably stage a captured root; it is
-/// not exposed as modeled input and cannot affect canonical evidence. A model
-/// MUST either restore
-/// [`Self::resume_checkpoint`] exactly or fail before beginning guest work; it
-/// must never silently restart a resumed attempt from its original
-/// configuration.
-#[derive(Debug)]
-pub struct AttemptExecutionContext {
-    runtime_basis: Option<AttemptExecutionRuntimeBasis>,
-    start_mode: AttemptStartMode,
-    resources: AttemptResourceLimits,
-    retention: ExecutionRetentionIntent,
-    retention_policy: AttemptRetentionPolicyDisposition,
-    cancellation: ExecutionCancellation,
-    checkpoint_request: ExecutionCheckpointRequest,
-    resume_checkpoint: Option<ExactCheckpointId>,
-    checkpoint_scenario: Option<ContentHash>,
-    checkpoint_handoff: Option<ExecutionCheckpointHandoff>,
-    execution_quanta: ExecutionQuantumBudget,
-    host_watchdog: Option<AssignmentHostWatchdog>,
-    origin: AttemptExecutionOrigin,
-    guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder,
-    selected_checkpoint: Mutex<Option<crate::executor_supervisor::SelectedExactCheckpointRoot>>,
-}
-
-impl Clone for AttemptExecutionContext {
-    fn clone(&self) -> Self {
-        Self {
-            runtime_basis: self.runtime_basis,
-            start_mode: self.start_mode,
-            resources: self.resources,
-            retention: self.retention,
-            retention_policy: self.retention_policy,
-            cancellation: self.cancellation.clone(),
-            checkpoint_request: self.checkpoint_request.clone(),
-            resume_checkpoint: self.resume_checkpoint,
-            checkpoint_scenario: self.checkpoint_scenario,
-            checkpoint_handoff: self.checkpoint_handoff.clone(),
-            execution_quanta: self.execution_quanta.clone(),
-            host_watchdog: self.host_watchdog.clone(),
-            origin: self.origin,
-            guest_selectable_diagnostics: self.guest_selectable_diagnostics.clone(),
-            selected_checkpoint: Mutex::new(None),
-        }
-    }
-}
-
-/// Clone-shared physical-work budget for one execution incarnation.
-#[derive(Clone, Debug)]
-struct ExecutionQuantumBudget {
-    consumed: Arc<AtomicU64>,
-}
-
+#[cfg(test)]
 fn complete_host_watchdog<T, E>(
     result: Result<T, AttemptWorkerFailure<RepositoryAttemptWorkerError<E>>>,
     watchdog: Option<&mut AssignmentHostWatchdogGuard>,
@@ -602,363 +607,6 @@ fn complete_host_watchdog<T, E>(
         ));
     }
     result
-}
-
-impl ExecutionQuantumBudget {
-    fn new() -> Self {
-        Self {
-            consumed: Arc::new(AtomicU64::new(0)),
-        }
-    }
-
-    fn consumed(&self) -> u64 {
-        self.consumed.load(Ordering::Acquire)
-    }
-
-    fn try_charge(&self, maximum: u64) -> Result<(), ExecutionQuantumBudgetError> {
-        self.consumed
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |consumed| {
-                (consumed < maximum)
-                    .then(|| consumed.checked_add(1))
-                    .flatten()
-            })
-            .map(|_| ())
-            .map_err(|_| ExecutionQuantumBudgetError)
-    }
-}
-
-/// The execution has no physical replay or driving quantum remaining.
-#[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
-#[error("execution exhausted its admitted physical quantum budget")]
-pub struct ExecutionQuantumBudgetError;
-
-impl AttemptExecutionContext {
-    /// Creates an operational context without coordinator assignment identity.
-    #[must_use]
-    pub fn new(
-        resources: AttemptResourceLimits,
-        retention: ExecutionRetentionIntent,
-        cancellation: ExecutionCancellation,
-        checkpoint_request: ExecutionCheckpointRequest,
-        retention_policy: AttemptRetentionPolicyDisposition,
-    ) -> Self {
-        Self {
-            runtime_basis: None,
-            start_mode: AttemptStartMode::Execute,
-            resources,
-            retention,
-            retention_policy,
-            cancellation,
-            checkpoint_request,
-            resume_checkpoint: None,
-            checkpoint_scenario: None,
-            checkpoint_handoff: None,
-            execution_quanta: ExecutionQuantumBudget::new(),
-            host_watchdog: None,
-            origin: AttemptExecutionOrigin::Initial,
-            guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder::default(),
-            selected_checkpoint: Mutex::new(None),
-        }
-    }
-
-    pub(crate) fn install_selected_checkpoint(
-        mut self,
-        selected: Option<crate::executor_supervisor::SelectedExactCheckpointRoot>,
-    ) -> Self {
-        self.selected_checkpoint = Mutex::new(selected);
-        self
-    }
-
-    pub(crate) const fn retention_policy(&self) -> AttemptRetentionPolicyDisposition {
-        self.retention_policy
-    }
-
-    pub(crate) fn take_selected_checkpoint(
-        &self,
-    ) -> Option<crate::executor_supervisor::SelectedExactCheckpointRoot> {
-        self.selected_checkpoint.lock().ok()?.take()
-    }
-
-    pub(crate) fn selected_checkpoint_authorizes(&self, checkpoint: ExactCheckpointId) -> bool {
-        self.selected_checkpoint
-            .lock()
-            .map(|selected| {
-                selected
-                    .as_ref()
-                    .is_some_and(|selected| selected.authorizes(checkpoint))
-            })
-            .unwrap_or(false)
-    }
-
-    pub(crate) fn restore_selected_checkpoint(
-        &self,
-        selected: crate::executor_supervisor::SelectedExactCheckpointRoot,
-    ) {
-        if let Ok(mut slot) = self.selected_checkpoint.lock() {
-            *slot = Some(selected);
-        }
-    }
-
-    /// Derives a non-capturing context for mandatory resume-basis replay.
-    ///
-    /// Cancellation and resource ceilings remain shared with the assignment.
-    /// A sticky checkpoint request is deferred until the semantic continuation
-    /// boundary has been independently reconstructed. The same context also
-    /// authenticates an ordinary EventCount attempt's immutable start prefix.
-    pub(crate) fn for_origin_replay(&self) -> Self {
-        let mut context = self.clone();
-        context.start_mode = AttemptStartMode::Execute;
-        context.checkpoint_request = ExecutionCheckpointRequest::default();
-        context.resume_checkpoint = None;
-        context.checkpoint_handoff = None;
-        context
-    }
-
-    /// Derives a cold execution context when the preferred selected source is absent.
-    ///
-    /// Only the physical restore input is cleared. The immutable selected-source
-    /// certificate remains available for provenance and retention, while the
-    /// cancellation signal, sticky checkpoint request, handoff, and physical
-    /// quantum budget remain shared with the accepted execution.
-    pub(crate) fn for_absent_selected_source(&self) -> Self {
-        let mut context = self.clone();
-        context.resume_checkpoint = None;
-        context
-    }
-
-    /// Charges one physical scheduler quantum to this execution incarnation.
-    pub(crate) fn charge_execution_quantum(&self) -> Result<(), ExecutionQuantumBudgetError> {
-        self.execution_quanta
-            .try_charge(self.resources.maximum_execution_quanta())
-    }
-
-    /// Returns physical work consumed across every lifecycle in this execution.
-    #[must_use]
-    pub(crate) fn consumed_execution_quanta(&self) -> u64 {
-        self.execution_quanta.consumed()
-    }
-
-    /// Returns the remaining host budget for this execution incarnation.
-    #[must_use]
-    pub(crate) fn remaining_host_watchdog(&self) -> Option<Duration> {
-        self.host_watchdog
-            .as_ref()
-            .map(AssignmentHostWatchdog::remaining)
-    }
-
-    fn with_host_watchdog(mut self, watchdog: AssignmentHostWatchdog) -> Self {
-        self.host_watchdog = Some(watchdog);
-        self
-    }
-
-    /// Returns whether another physical replay can begin within this reservation.
-    #[must_use]
-    pub(crate) fn has_remaining_execution_quanta(&self) -> bool {
-        self.consumed_execution_quanta() < self.resources.maximum_execution_quanta()
-    }
-
-    pub(crate) fn record_guest_selectable_boundary_diagnostic(
-        &self,
-        event: &GuestSelectableBoundaryDiagnosticEvent,
-    ) {
-        self.guest_selectable_diagnostics.record(event);
-    }
-
-    pub(crate) const fn guest_selectable_boundary_diagnostics_enabled(&self) -> bool {
-        self.guest_selectable_diagnostics.is_enabled()
-    }
-
-    pub(crate) fn guest_selectable_boundary_diagnostic_sample_permitted(&self) -> bool {
-        self.guest_selectable_diagnostics.sample_permitted()
-    }
-
-    pub(crate) const fn diagnostic_execution_id(&self) -> Option<ExecutionId> {
-        match self.runtime_basis {
-            Some(basis) => Some(basis.execution()),
-            None => None,
-        }
-    }
-
-    #[must_use]
-    pub(crate) fn with_guest_selectable_boundary_diagnostics(
-        mut self,
-        diagnostics: GuestSelectableBoundaryDiagnosticRecorder,
-    ) -> Self {
-        self.guest_selectable_diagnostics = diagnostics;
-        self
-    }
-
-    /// Returns the resource limits available to a newly launched process owner.
-    ///
-    /// The semantic ceiling remains available through [`Self::resources`]. A
-    /// second lifecycle used after independent replay receives only the
-    /// unspent quantum allowance.
-    pub(crate) fn process_resources(
-        &self,
-    ) -> Result<AttemptResourceLimits, ExecutionQuantumBudgetError> {
-        let remaining_quanta = self
-            .resources
-            .maximum_execution_quanta()
-            .checked_sub(self.consumed_execution_quanta())
-            .filter(|remaining| *remaining != 0)
-            .ok_or(ExecutionQuantumBudgetError)?;
-        AttemptResourceLimits::new(
-            self.resources.maximum_vcpus(),
-            self.resources.maximum_resident_bytes(),
-            self.resources.maximum_disk_bytes(),
-            remaining_quanta,
-        )
-        .map_err(|_| ExecutionQuantumBudgetError)
-    }
-
-    /// Attaches the exact process-local reservation owned by this execution.
-    #[must_use]
-    pub(crate) const fn with_runtime_basis(mut self, basis: AttemptExecutionRuntimeBasis) -> Self {
-        self.runtime_basis = Some(basis);
-        self
-    }
-
-    /// Attaches the authenticated behavior requested at start materialization.
-    #[must_use]
-    pub(crate) const fn with_start_mode(mut self, start_mode: AttemptStartMode) -> Self {
-        self.start_mode = start_mode;
-        self
-    }
-
-    /// Returns the authenticated behavior requested at start materialization.
-    #[must_use]
-    pub const fn start_mode(&self) -> AttemptStartMode {
-        self.start_mode
-    }
-
-    /// Returns the process-local reservation basis when this is worker work.
-    ///
-    /// Standalone checkpoint preparation contexts intentionally have no
-    /// supervisor reservation and therefore return `None`.
-    #[must_use]
-    pub const fn runtime_basis(&self) -> Option<AttemptExecutionRuntimeBasis> {
-        self.runtime_basis
-    }
-
-    /// Attaches the exact durable root from which this execution must resume.
-    #[must_use]
-    pub(crate) const fn with_resume_checkpoint(
-        mut self,
-        checkpoint: Option<ExactCheckpointId>,
-    ) -> Self {
-        self.resume_checkpoint = checkpoint;
-        self
-    }
-
-    /// Attaches the durable initial-source or later-resume certificate.
-    #[must_use]
-    pub(crate) const fn with_execution_origin(mut self, origin: AttemptExecutionOrigin) -> Self {
-        self.resume_checkpoint = origin.checkpoint();
-        self.origin = origin;
-        self
-    }
-
-    /// Returns the durable execution origin for routing and source validation.
-    #[must_use]
-    pub const fn execution_origin(&self) -> AttemptExecutionOrigin {
-        self.origin
-    }
-
-    pub(crate) fn with_checkpoint_handoff(
-        mut self,
-        scenario: ContentHash,
-        handoff: Option<ExecutionCheckpointHandoff>,
-    ) -> Self {
-        self.checkpoint_scenario = Some(scenario);
-        self.checkpoint_handoff = handoff;
-        self
-    }
-
-    /// Returns the hard resource ceilings admitted for this execution.
-    #[must_use]
-    pub const fn resources(&self) -> AttemptResourceLimits {
-        self.resources
-    }
-
-    /// Returns the operational artifact-retention intent.
-    #[must_use]
-    pub const fn retention(&self) -> ExecutionRetentionIntent {
-        self.retention
-    }
-
-    /// Returns the process-local cancellation signal.
-    #[must_use]
-    pub const fn cancellation(&self) -> &ExecutionCancellation {
-        &self.cancellation
-    }
-
-    /// Returns the process-local exact-checkpoint request signal.
-    #[must_use]
-    pub const fn checkpoint_request(&self) -> &ExecutionCheckpointRequest {
-        &self.checkpoint_request
-    }
-
-    /// Returns the exact restore root for a resumed execution incarnation.
-    #[must_use]
-    pub const fn resume_checkpoint(&self) -> Option<ExactCheckpointId> {
-        self.resume_checkpoint
-    }
-
-    pub(crate) fn prepare_and_stage_checkpoint(
-        &self,
-        capture: CapturedAttemptCheckpoint,
-    ) -> Result<AttemptCheckpointResult, AttemptWorkerFailure<CheckpointHandoffFailure>> {
-        if self.cancellation.is_canceled() {
-            return Err(AttemptWorkerFailure::Canceled(
-                CheckpointHandoffFailure::Canceled,
-            ));
-        }
-        if self
-            .checkpoint_scenario
-            .is_some_and(|scenario| capture.scenario() != scenario)
-        {
-            return Err(AttemptWorkerFailure::Terminal(
-                CheckpointHandoffFailure::Terminal,
-            ));
-        }
-        let Some(handoff) = &self.checkpoint_handoff else {
-            return Ok(capture.into());
-        };
-        match handoff.prepare_and_stage(&capture) {
-            Ok(prepared) => Ok(AttemptCheckpointResult::from_prepared(prepared)),
-            Err(CheckpointHandoffFailure::Retryable) => Err(AttemptWorkerFailure::Retryable(
-                CheckpointHandoffFailure::Retryable,
-            )),
-            Err(CheckpointHandoffFailure::Canceled) => Err(AttemptWorkerFailure::Canceled(
-                CheckpointHandoffFailure::Canceled,
-            )),
-            Err(CheckpointHandoffFailure::Terminal) => Err(AttemptWorkerFailure::Terminal(
-                CheckpointHandoffFailure::Terminal,
-            )),
-        }
-    }
-
-    /// Returns whether another context names the exact same execution contract.
-    #[must_use]
-    pub fn matches(&self, other: &Self) -> bool {
-        self.runtime_basis == other.runtime_basis
-            && self.start_mode == other.start_mode
-            && self.resources == other.resources
-            && self.retention == other.retention
-            && self.resume_checkpoint == other.resume_checkpoint
-            && self.consumed_execution_quanta() == other.consumed_execution_quanta()
-            && self.origin == other.origin
-            && self.checkpoint_scenario == other.checkpoint_scenario
-            && self.cancellation.same_incarnation(&other.cancellation)
-            && self
-                .checkpoint_request
-                .same_incarnation(&other.checkpoint_request)
-            && match (&self.checkpoint_handoff, &other.checkpoint_handoff) {
-                (Some(left), Some(right)) => left.same_incarnation(right),
-                (None, None) => true,
-                (Some(_), None) | (None, Some(_)) => false,
-            }
-    }
 }
 
 /// Execution-model boundary used by the local campaign worker.
@@ -1180,6 +828,9 @@ pub enum RepositoryAttemptWorkerError<E> {
     /// The assignment's host safety timer could not be installed.
     #[error("install attempt infrastructure host watchdog: {0}")]
     HostWatchdogStart(#[source] std::io::Error),
+    /// Existing live operational ownership could not be registered safely.
+    #[error("register attempt host operational authority: {0}")]
+    HostOperational(#[source] crucible_api::host_operational::HostOperationalError),
 }
 
 /// Local worker that resolves campaign records and publishes immutable results.
@@ -1261,18 +912,23 @@ where
         let expected_scenario = ContentHash {
             bytes: input.lineage().scenario().as_hash().as_bytes(),
         };
-        let host_watchdog_ms = match queued.request().retention_policy() {
-            AttemptRetentionPolicyDisposition::Required(basis) => self
-                .store
-                .load_attempt_timeout_policy(
-                    queued.request().lineage(),
-                    queued.request().attempt(),
-                    basis,
-                )
-                .map_err(repository_worker_failure)?
-                .and_then(|policy| policy.host_completion_watchdog_ms()),
-            AttemptRetentionPolicyDisposition::Disabled => None,
-        };
+        let _decode_scope = input.enter_decode_scope();
+        let (watchdog, host_watchdog_ms) =
+            start_original_assignment(queued, &self.store).map_err(|error| {
+                use assignment_supervision::AssignmentSupervisionError;
+                let error = match error {
+                    AssignmentSupervisionError::Repository(error) => {
+                        return repository_worker_failure(error);
+                    }
+                    AssignmentSupervisionError::Watchdog(error) => {
+                        RepositoryAttemptWorkerError::HostWatchdogStart(error)
+                    }
+                    AssignmentSupervisionError::Registry(error) => {
+                        RepositoryAttemptWorkerError::HostOperational(error)
+                    }
+                };
+                AttemptWorkerFailure::Terminal(error)
+            })?;
         let mut context = AttemptExecutionContext::new(
             queued.request().resources(),
             queued.request().retention(),
@@ -1288,20 +944,19 @@ where
         .with_execution_origin(queued.origin())
         .with_checkpoint_handoff(expected_scenario, queued.checkpoint_handoff().cloned())
         .with_guest_selectable_boundary_diagnostics(self.guest_selectable_diagnostics.clone());
-        let mut host_watchdog = host_watchdog_ms
-            .map(|milliseconds| {
-                AssignmentHostWatchdogGuard::start(milliseconds, context.cancellation().clone())
-                    .map_err(|error| {
-                        AttemptWorkerFailure::Terminal(
-                            RepositoryAttemptWorkerError::HostWatchdogStart(error),
-                        )
-                    })
-            })
-            .transpose()?;
-        if let Some(watchdog) = &host_watchdog {
-            context = context.with_host_watchdog(watchdog.state.clone());
-        }
+        context = context.with_host_watchdog(watchdog.clone());
+        context.host_operational_registry = Some(queued.host_operational_registry());
+        context.host_outer_cap_owner = Some(
+            crucible_api::host_operational::HostOuterCapOwner::Execution(
+                crate::host_operational_registry::operational_identity(
+                    queued.execution().as_bytes(),
+                ),
+            ),
+        );
+        context.host_daemon_epoch = queued.host_daemon_epoch();
         context = context.install_selected_checkpoint(queued.take_selected_checkpoint());
+        // Every model launch and copy shares the already authenticated input's
+        // original account; the input retains its credits through reconciliation.
         let product = self
             .model
             .execute(&input, &context)
@@ -1310,7 +965,14 @@ where
             queued.restore_selected_checkpoint(selected);
         }
         // Expiry wins even if guest work returned a candidate concurrently.
-        let product = complete_host_watchdog(product, host_watchdog.as_mut(), host_watchdog_ms)?;
+        if watchdog.expired() {
+            return Err(AttemptWorkerFailure::Terminal(
+                RepositoryAttemptWorkerError::HostWatchdogExpired {
+                    milliseconds: host_watchdog_ms.unwrap_or_default(),
+                },
+            ));
+        }
+        let product = product?;
         match &product {
             AttemptExecutionProduct::PreparedSemantic(result) => {
                 let candidate = result.observation();
@@ -1358,6 +1020,16 @@ where
             }
         }
 
+        queued
+            .retain_publication_metadata(input._decode_custody.clone())
+            .map_err(|error| {
+                AttemptWorkerFailure::Terminal(RepositoryAttemptWorkerError::HostWatchdogStart(
+                    error,
+                ))
+            })?;
+        queued.begin_publication().map_err(|error| {
+            AttemptWorkerFailure::Terminal(RepositoryAttemptWorkerError::HostWatchdogStart(error))
+        })?;
         Ok(product)
     }
 
@@ -1473,9 +1145,8 @@ fn repository_worker_failure<E>(
         | RepositoryAttemptWorkerError::ResourceRefusal { .. }
         | RepositoryAttemptWorkerError::IncompatibleResult { .. }
         | RepositoryAttemptWorkerError::HostWatchdogExpired { .. }
-        | RepositoryAttemptWorkerError::HostWatchdogStart(_) => {
-            AttemptWorkerFailure::Terminal(error)
-        }
+        | RepositoryAttemptWorkerError::HostWatchdogStart(_)
+        | RepositoryAttemptWorkerError::HostOperational(_) => AttemptWorkerFailure::Terminal(error),
     }
 }
 

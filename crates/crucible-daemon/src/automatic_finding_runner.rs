@@ -52,6 +52,7 @@ pub(crate) fn test_finding_exact_retention_source() -> Arc<dyn FindingExactReten
             u64::MAX,
         )),
         Arc::new(crucible_cas::content_store::MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let checkpoint_directory = match tempfile::tempdir() {
         Ok(directory) => directory.keep(),
@@ -63,8 +64,16 @@ pub(crate) fn test_finding_exact_retention_source() -> Arc<dyn FindingExactReten
             checkpoint_directory,
         )),
         u64::MAX,
+        repository.ram_retention_authority(),
     ) {
-        Ok(checkpoints) => checkpoints,
+        Ok(checkpoints) => {
+            let resources =
+                match crate::exact_checkpoint_store::test_support::fixture_ram_root_resources() {
+                    Ok(resources) => resources,
+                    Err(error) => panic!("test checkpoint metadata credit: {error}"),
+                };
+            checkpoints.with_ram_root_resources(resources)
+        }
         Err(error) => panic!("test exact checkpoint store: {error}"),
     };
     Arc::new(CampaignRunFindingExactRetentionSource::new(
@@ -88,7 +97,7 @@ mod private {
 
 /// Owns immutable deployment inputs and process-local evidence for private replay capture.
 pub(crate) struct QemuFindingReplayCaptureProducer {
-    lifecycle: crucible_api::ProductionVmLifecycleConfig,
+    lifecycle: Arc<crucible_api::ProductionVmLifecycleConfig>,
     evidence: crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidence,
     static_byte_limit: u64,
     shared_context: OneEntryCache<
@@ -154,13 +163,13 @@ impl<K: PartialEq, V: Clone> OneEntryCache<K, V> {
 
 impl QemuFindingReplayCaptureProducer {
     /// Creates a capture owner before the production replay runner takes lifecycle authority.
-    pub(crate) const fn new(
-        lifecycle: crucible_api::ProductionVmLifecycleConfig,
+    pub(crate) fn new(
+        lifecycle: impl Into<Arc<crucible_api::ProductionVmLifecycleConfig>>,
         evidence: crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidence,
         static_byte_limit: u64,
     ) -> Self {
         Self {
-            lifecycle,
+            lifecycle: lifecycle.into(),
             evidence,
             static_byte_limit,
             shared_context: OneEntryCache::new(),
@@ -704,7 +713,9 @@ fn authenticate_timeout_capture(
             terminal_entry.sequence(),
             snapshot.frontier(),
             budget_kind,
-        );
+        ).map_err(|error| crate::FindingProductionReplayCaptureError::Model {
+            operation: "terminal-event-identity", error: Box::new(error),
+        })?;
         if *terminal_entry != expected {
             return Err(InvalidEventLog);
         }
@@ -947,10 +958,6 @@ where
         }
 
         let result = *result;
-        #[expect(
-            clippy::result_large_err,
-            reason = "the execution-runner trait fixes the classified failure type for this scoped transaction"
-        )]
         let preparation = (|| {
             let mut probe_originated_divergence = false;
             let signature = automatic_finding_signature(input, result.observation())
@@ -1146,6 +1153,7 @@ where
             },
         ));
     }
+    let _decode_scope = original_input.enter_decode_scope();
     let scenario = encode_crucible_scenario_artifact(candidate.artifact.scenario_form())
         .map_err(CandidateReplayFailure::Artifact)?;
     if scenario.id().map_err(CandidateReplayFailure::Campaign)?
@@ -1173,14 +1181,23 @@ where
         .map_err(CandidateReplayFailure::Artifact)?;
     let replay_input = original_input
         .for_finding_replay(
-            candidate.artifact.scenario_form().clone(),
+            candidate
+                .artifact
+                .scenario_form()
+                .try_clone_admitted()
+                .map_err(|source| {
+                    CandidateReplayFailure::Artifact(CrucibleArtifactError::InvalidPayload {
+                        artifact: "finding scenario copy",
+                        source: Box::new(source),
+                    })
+                })?,
             configuration
                 .id()
                 .map_err(CandidateReplayFailure::Campaign)?,
             decoded,
             signal_fault_replay,
         )
-        .map_err(CandidateReplayFailure::Campaign)?;
+        .map_err(CandidateReplayFailure::Artifact)?;
     let replay_context = context.for_origin_replay();
     let replay_closure =
         crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_resolved_selections(

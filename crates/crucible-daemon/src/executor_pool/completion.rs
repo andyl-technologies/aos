@@ -95,8 +95,36 @@ impl PoolCompletionState {
         }
     }
 
-    fn is_finished(&self) -> bool {
+    /// Reports the published completion of every fixed worker.
+    pub(super) fn is_finished(&self) -> bool {
         self.finished_workers.load(Ordering::Acquire) >= self.worker_count
+    }
+
+    /// Reports cleanup containment without transferring its resources.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(super) fn is_retained(&self) -> bool {
+        self.retained.load(Ordering::Acquire)
+    }
+
+    /// Commits quiescent stopping while holding the actual completion lock.
+    ///
+    /// # Errors
+    /// Refuses an occupied or poisoned completion lock before state mutation.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(super) fn try_signal_quiescent_stop(
+        &self,
+        state: &std::sync::atomic::AtomicU8,
+    ) -> Result<(), ()> {
+        let _wait = self.wait.try_lock().map_err(|_| ())?;
+        let _ = state.compare_exchange(
+            super::POOL_RUNNING,
+            super::POOL_SHUTTING_DOWN,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        self.stopping.store(true, Ordering::Release);
+        self.changed.notify_all();
+        Ok(())
     }
 
     fn worker_finished(&self) {

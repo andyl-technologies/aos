@@ -1,7 +1,17 @@
 //! Reproduction artifact schema, codec, identity, and validation.
+//!
+//! The canonical text consists of tab-separated escaped fields and newline
+//! terminated records. Owned decoding uses the input owner's metadata account.
+//!
+//! ```text
+//! schema\tcrucible.reproduction-artifact.v4
+//! seed\t42
+//! ```
 
 use super::*;
-#[derive(Clone, Debug)]
+use crucible_session::engine::owned_decode::{self, DecodeCustody};
+
+#[derive(Debug)]
 pub(super) struct CliReproductionArtifact {
     pub(super) seed: u64,
     pub(super) identity: CliIdentity,
@@ -12,6 +22,8 @@ pub(super) struct CliReproductionArtifact {
     pub(super) decisions: Vec<CliDecision>,
     pub(super) fingerprints: Vec<CliFingerprint>,
     pub(super) sampling: CliSamplingConfig,
+    _input_custody: DecodeCustody,
+    _source_custody: DecodeCustody,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,24 +43,34 @@ pub(super) struct CliIdentity {
 pub(super) fn validate_replayable_reproduction_artifact(
     cli: &Cli,
     bytes: &[u8],
+    read_input: &mut dyn FnMut(&Path) -> Result<Vec<u8>, CliError>,
 ) -> Result<CliReproductionArtifact, CliError> {
     let mut artifact = decode_reproduction_artifact(bytes)?;
     verify_replay_identity(&artifact.identity, &expected_replay_identity(cli)?)?;
-    hydrate_replay_artifact_components(&mut artifact, &default_run_store_root(cli))?;
+    hydrate_replay_artifact_components(&mut artifact, &default_run_store_root(cli), read_input)?;
     Ok(artifact)
 }
 
 pub(super) fn hydrate_replay_artifact_components(
     artifact: &mut CliReproductionArtifact,
     store_root: &Path,
+    read_input: &mut dyn FnMut(&Path) -> Result<Vec<u8>, CliError>,
 ) -> Result<(), CliError> {
+    let _scope = artifact._input_custody.enter();
+    owned_decode::charge_bytes(store_root.as_os_str().len() as u64)
+        .map_err(CliError::MetadataAdmission)?;
     let store = crucible::LocalDagStore::new(store_root.to_path_buf());
-    for component in artifact.components.clone() {
+    for component in &artifact.components {
         let embedded = artifact
             .payloads
             .iter()
             .find(|payload| payload.digest == component.digest);
-        let Some(bytes) = replay_component_payload_bytes(&store, &component, embedded)? else {
+        // Embedded payloads already retain their decode receipt.
+        if component.store_uri.strip_prefix("cas:") == Some(component.digest.as_str()) {
+            continue;
+        }
+        let Some(bytes) = replay_component_payload_bytes(&store, component, embedded, read_input)?
+        else {
             continue;
         };
         let actual_digest = content_address_bytes(&bytes);
@@ -71,8 +93,10 @@ pub(super) fn hydrate_replay_artifact_components(
             )));
         }
         if embedded.is_none() {
+            owned_decode::reserve_vec(&mut artifact.payloads, 1)
+                .map_err(CliError::MetadataAdmission)?;
             artifact.payloads.push(CliPayload {
-                digest: component.digest,
+                digest: copy_artifact_field(&component.digest)?,
                 bytes,
             });
         }
@@ -84,19 +108,41 @@ pub(super) fn replay_component_payload_bytes(
     store: &crucible::LocalDagStore,
     component: &CliComponent,
     embedded: Option<&CliPayload>,
+    read_input: &mut dyn FnMut(&Path) -> Result<Vec<u8>, CliError>,
 ) -> Result<Option<Vec<u8>>, CliError> {
-    if component.store_uri == format!("cas:{}", component.digest) {
-        return Ok(embedded.map(|payload| payload.bytes.clone()));
-    }
     let key = parse_blake3_content_hash("component store URI", &component.store_uri)?;
-    let bytes = store.get(&key).map_err(|error| {
-        artifact_error(format!(
-            "component `{}` ({}) could not be resolved from DAG store {}: {error}",
-            component.name,
-            component.store_uri,
-            store.root().display()
-        ))
+    // The public DAG layout is read through the input owner's bounded file
+    // reader rather than its unmetered convenience `get` implementation.
+    let mut hex = [0_u8; 64];
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    for (index, byte) in key.bytes.iter().enumerate() {
+        hex[index * 2] = DIGITS[usize::from(byte >> 4)];
+        hex[index * 2 + 1] = DIGITS[usize::from(byte & 15)];
+    }
+    let hex = std::str::from_utf8(&hex)
+        .map_err(|_| artifact_error("content key hexadecimal encoding is invalid"))?;
+    let capacity = store
+        .root()
+        .as_os_str()
+        .len()
+        .checked_add(2 + 2 + hex.len())
+        .ok_or_else(|| artifact_error("component object path size overflow"))?;
+    owned_decode::charge_bytes(capacity as u64).map_err(CliError::MetadataAdmission)?;
+    let mut object_path = PathBuf::new();
+    object_path.try_reserve_exact(capacity).map_err(|error| {
+        artifact_error(format!("component object path allocation refused: {error}"))
     })?;
+    object_path.push(store.root());
+    object_path.push(&hex[..2]);
+    object_path.push(hex);
+    let bytes = read_input(&object_path)?;
+    let actual = crucible::ContentHash::from_bytes(&bytes);
+    if actual != key {
+        return Err(CliError::Store(crucible::DagStoreError::ContentMismatch {
+            expected: key,
+            actual,
+        }));
+    }
     if let Some(payload) = embedded
         && payload.bytes != bytes
     {
@@ -266,6 +312,11 @@ pub(super) struct CliSamplingConfig {
 pub(super) fn decode_reproduction_artifact(
     bytes: &[u8],
 ) -> Result<CliReproductionArtifact, CliError> {
+    let source_custody =
+        owned_decode::require_current_custody().map_err(CliError::MetadataAdmission)?;
+    let budget =
+        owned_decode::require_current_child_budget().map_err(CliError::MetadataAdmission)?;
+    let _scope = budget.enter();
     let text = std::str::from_utf8(bytes)
         .map_err(|error| artifact_error(format!("artifact is not UTF-8: {error}")))?;
     let mut schema_version = None;
@@ -288,7 +339,12 @@ pub(super) fn decode_reproduction_artifact(
         match tag {
             "schema" => {
                 require_field_count(line_index, tag, &fields, 2)?;
-                set_once(&mut schema_version, line_index, tag, fields[1].clone())?;
+                set_once(
+                    &mut schema_version,
+                    line_index,
+                    tag,
+                    copy_artifact_field(&fields[1])?,
+                )?;
             }
             "seed" => {
                 require_field_count(line_index, tag, &fields, 2)?;
@@ -318,16 +374,16 @@ pub(super) fn decode_reproduction_artifact(
                     line_index,
                     tag,
                     CliIdentity {
-                        engine_version: fields[1].clone(),
-                        engine_abi: fields[2].clone(),
-                        artifact_abi: fields[3].clone(),
-                        qemu_build_id: fields[4].clone(),
-                        qemu_atomic_patch_hash: fields[5].clone(),
-                        shmem_abi_version: fields[6].clone(),
-                        guest_host_protocol_version: fields[7].clone(),
-                        rpc_abi_version: fields[8].clone(),
-                        rpc_abi_build: fields[9].clone(),
-                        plugin_abi: fields[10].clone(),
+                        engine_version: copy_artifact_field(&fields[1])?,
+                        engine_abi: copy_artifact_field(&fields[2])?,
+                        artifact_abi: copy_artifact_field(&fields[3])?,
+                        qemu_build_id: copy_artifact_field(&fields[4])?,
+                        qemu_atomic_patch_hash: copy_artifact_field(&fields[5])?,
+                        shmem_abi_version: copy_artifact_field(&fields[6])?,
+                        guest_host_protocol_version: copy_artifact_field(&fields[7])?,
+                        rpc_abi_version: copy_artifact_field(&fields[8])?,
+                        rpc_abi_build: copy_artifact_field(&fields[9])?,
+                        plugin_abi: copy_artifact_field(&fields[10])?,
                     },
                 )?;
             }
@@ -343,15 +399,19 @@ pub(super) fn decode_reproduction_artifact(
                 set_once(&mut scenario, line_index, tag, parsed)?;
             }
             "component" => {
+                owned_decode::reserve_vec(&mut components, 1)
+                    .map_err(CliError::MetadataAdmission)?;
                 components.push(parse_component(line_index, tag, &fields)?);
             }
             "payload" => {
                 require_field_count(line_index, tag, &fields, 3)?;
                 let payload = CliPayload {
-                    digest: fields[1].clone(),
+                    digest: copy_artifact_field(&fields[1])?,
                     bytes: parse_hex_bytes(line_index, tag, &fields[2])?,
                 };
                 validate_digest("payload.digest", &payload.digest)?;
+                owned_decode::charge_bytes((CONTENT_ADDRESS_PREFIX.len() + 128) as u64)
+                    .map_err(CliError::MetadataAdmission)?;
                 let actual = content_address_bytes(&payload.bytes);
                 if payload.digest != actual {
                     return Err(artifact_line_error(
@@ -360,13 +420,19 @@ pub(super) fn decode_reproduction_artifact(
                         "payload digest does not match bytes",
                     ));
                 }
+                owned_decode::reserve_vec(&mut payloads, 1).map_err(CliError::MetadataAdmission)?;
                 payloads.push(payload);
             }
             "schedule" => {
                 require_field_count(line_index, tag, &fields, 3)?;
                 validate_digest("schedule.digest", &fields[1])?;
                 let parsed_len = parse_usize(line_index, tag, &fields[2])?;
-                set_once(&mut schedule_digest, line_index, tag, fields[1].clone())?;
+                set_once(
+                    &mut schedule_digest,
+                    line_index,
+                    tag,
+                    copy_artifact_field(&fields[1])?,
+                )?;
                 set_once(&mut schedule_len, line_index, tag, parsed_len)?;
             }
             "decision" => {
@@ -374,13 +440,15 @@ pub(super) fn decode_reproduction_artifact(
                 let decision = CliDecision {
                     sequence: parse_u64(line_index, tag, &fields[1])?,
                     virtual_time_ticks: parse_u64(line_index, tag, &fields[2])?,
-                    node: fields[3].clone(),
-                    kind: fields[4].clone(),
-                    payload_digest: fields[5].clone(),
+                    node: copy_artifact_field(&fields[3])?,
+                    kind: copy_artifact_field(&fields[4])?,
+                    payload_digest: copy_artifact_field(&fields[5])?,
                 };
                 validate_required_field("decision.node", &decision.node)?;
                 validate_required_field("decision.kind", &decision.kind)?;
                 validate_digest("decision.payload_digest", &decision.payload_digest)?;
+                owned_decode::reserve_vec(&mut decisions, 1)
+                    .map_err(CliError::MetadataAdmission)?;
                 decisions.push(decision);
             }
             "fingerprint" => {
@@ -389,11 +457,13 @@ pub(super) fn decode_reproduction_artifact(
                 let instruction = parse_u64(line_index, tag, &fields[2])?;
                 validate_required_field("fingerprint.node", &fields[3])?;
                 validate_digest("fingerprint.digest", &fields[4])?;
+                owned_decode::reserve_vec(&mut fingerprints, 1)
+                    .map_err(CliError::MetadataAdmission)?;
                 fingerprints.push(CliFingerprint {
                     index,
                     instruction,
-                    node: fields[3].clone(),
-                    digest: fields[4].clone(),
+                    node: copy_artifact_field(&fields[3])?,
+                    digest: copy_artifact_field(&fields[4])?,
                 });
             }
             "sampling" => {
@@ -429,9 +499,9 @@ pub(super) fn decode_reproduction_artifact(
                     line_index,
                     tag,
                     CliSamplingConfig {
-                        fine: fields[1].clone(),
-                        coarse: fields[2].clone(),
-                        regions: fields[4..].to_vec(),
+                        fine: copy_artifact_field(&fields[1])?,
+                        coarse: copy_artifact_field(&fields[2])?,
+                        regions: copy_artifact_regions(&fields[4..])?,
                     },
                 )?;
             }
@@ -490,8 +560,12 @@ pub(super) fn decode_reproduction_artifact(
         decisions,
         fingerprints,
         sampling,
+        _input_custody: budget.custody(),
+        _source_custody: source_custody,
     };
-    if canonical_artifact_text(&artifact) != text {
+    let canonical = owned_decode::display_string(&CanonicalArtifact(&artifact))
+        .map_err(CliError::MetadataAdmission)?;
+    if canonical != text {
         return Err(artifact_error("non-canonical artifact encoding"));
     }
 
@@ -505,17 +579,17 @@ pub(super) fn parse_component(
 ) -> Result<CliComponent, CliError> {
     require_field_count(line_index, tag, fields, 7)?;
     let component = CliComponent {
-        kind: fields[1].clone(),
-        name: fields[2].clone(),
-        digest: fields[3].clone(),
-        store_uri: fields[4].clone(),
-        media_type: fields[5].clone(),
+        kind: copy_artifact_field(&fields[1])?,
+        name: copy_artifact_field(&fields[2])?,
+        digest: copy_artifact_field(&fields[3])?,
+        store_uri: copy_artifact_field(&fields[4])?,
+        media_type: copy_artifact_field(&fields[5])?,
         size_bytes: parse_u64(line_index, tag, &fields[6])?,
     };
     validate_required_field("component.name", &component.name)?;
     validate_required_field("component.media_type", &component.media_type)?;
     validate_digest("component.digest", &component.digest)?;
-    if component.store_uri != format!("cas:{}", component.digest)
+    if component.store_uri.strip_prefix("cas:") != Some(component.digest.as_str())
         && crucible::ContentAddressedBlobRef::parse("component store_uri", &component.store_uri)
             .is_err()
     {
@@ -540,7 +614,11 @@ pub(super) fn validate_schedule(decisions: &[CliDecision], digest: &str) -> Resu
             )));
         }
     }
-    let expected = schedule_digest(decisions);
+    let material = owned_decode::display_string(&CanonicalDecisions(decisions))
+        .map_err(CliError::MetadataAdmission)?;
+    owned_decode::charge_bytes((CONTENT_ADDRESS_PREFIX.len() + 128) as u64)
+        .map_err(CliError::MetadataAdmission)?;
+    let expected = content_address_bytes(material.as_bytes());
     if digest != expected {
         return Err(artifact_error(format!(
             "schedule digest mismatch: expected {expected}, got {digest}"
@@ -549,84 +627,139 @@ pub(super) fn validate_schedule(decisions: &[CliDecision], digest: &str) -> Resu
     Ok(())
 }
 
+struct CanonicalArtifact<'a>(&'a CliReproductionArtifact);
+
+impl fmt::Display for CanonicalArtifact<'_> {
+    fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let artifact = self.0;
+        write_artifact_fields(output, &["schema", REPRODUCTION_ARTIFACT_SCHEMA])?;
+        writeln!(output, "seed\t{}", artifact.seed)?;
+        write_artifact_fields(
+            output,
+            &[
+                "identity",
+                &artifact.identity.engine_version,
+                &artifact.identity.engine_abi,
+                &artifact.identity.artifact_abi,
+                &artifact.identity.qemu_build_id,
+                &artifact.identity.qemu_atomic_patch_hash,
+                &artifact.identity.shmem_abi_version,
+                &artifact.identity.guest_host_protocol_version,
+                &artifact.identity.rpc_abi_version,
+                &artifact.identity.rpc_abi_build,
+                &artifact.identity.plugin_abi,
+            ],
+        )?;
+        write_canonical_component(output, "scenario", &artifact.scenario)?;
+        for component in &artifact.components {
+            write_canonical_component(output, "component", component)?;
+        }
+        for payload in &artifact.payloads {
+            output.write_str("payload\t")?;
+            write_escaped_artifact_field(output, &payload.digest)?;
+            output.write_str("\t")?;
+            for byte in &payload.bytes {
+                write!(output, "{byte:02x}")?;
+            }
+            output.write_str("\n")?;
+        }
+        output.write_str("schedule\t")?;
+        write_escaped_artifact_field(output, &artifact.schedule_digest)?;
+        writeln!(output, "\t{}", artifact.decisions.len())?;
+        write!(output, "{}", CanonicalDecisions(&artifact.decisions))?;
+        for fingerprint in &artifact.fingerprints {
+            write!(
+                output,
+                "fingerprint\t{}\t{}\t",
+                fingerprint.index, fingerprint.instruction
+            )?;
+            write_escaped_artifact_field(output, &fingerprint.node)?;
+            output.write_str("\t")?;
+            write_escaped_artifact_field(output, &fingerprint.digest)?;
+            output.write_str("\n")?;
+        }
+        output.write_str("sampling\t")?;
+        write_escaped_artifact_field(output, &artifact.sampling.fine)?;
+        output.write_str("\t")?;
+        write_escaped_artifact_field(output, &artifact.sampling.coarse)?;
+        write!(output, "\t{}", artifact.sampling.regions.len())?;
+        for region in &artifact.sampling.regions {
+            output.write_str("\t")?;
+            write_escaped_artifact_field(output, region)?;
+        }
+        output.write_str("\n")
+    }
+}
+
+struct CanonicalDecisions<'a>(&'a [CliDecision]);
+
+impl fmt::Display for CanonicalDecisions<'_> {
+    fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for decision in self.0 {
+            write!(
+                output,
+                "decision\t{}\t{}\t",
+                decision.sequence, decision.virtual_time_ticks
+            )?;
+            write_escaped_artifact_field(output, &decision.node)?;
+            output.write_str("\t")?;
+            write_escaped_artifact_field(output, &decision.kind)?;
+            output.write_str("\t")?;
+            write_escaped_artifact_field(output, &decision.payload_digest)?;
+            output.write_str("\n")?;
+        }
+        Ok(())
+    }
+}
+
+fn write_canonical_component(
+    output: &mut fmt::Formatter<'_>,
+    tag: &str,
+    component: &CliComponent,
+) -> fmt::Result {
+    for field in [
+        tag,
+        &component.kind,
+        &component.name,
+        &component.digest,
+        &component.store_uri,
+        &component.media_type,
+    ] {
+        write_escaped_artifact_field(output, field)?;
+        output.write_str("\t")?;
+    }
+    writeln!(output, "{}", component.size_bytes)
+}
+
+fn write_artifact_fields(output: &mut fmt::Formatter<'_>, fields: &[&str]) -> fmt::Result {
+    for (index, field) in fields.iter().enumerate() {
+        if index != 0 {
+            output.write_str("\t")?;
+        }
+        write_escaped_artifact_field(output, field)?;
+    }
+    output.write_str("\n")
+}
+
+pub(super) fn write_escaped_artifact_field(
+    output: &mut fmt::Formatter<'_>,
+    value: &str,
+) -> fmt::Result {
+    for byte in value.bytes() {
+        match byte {
+            b'%' => output.write_str("%25")?,
+            b'\t' => output.write_str("%09")?,
+            b'\n' => output.write_str("%0A")?,
+            b'\r' => output.write_str("%0D")?,
+            _ => write!(output, "{}", char::from(byte))?,
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 pub(super) fn canonical_artifact_text(artifact: &CliReproductionArtifact) -> String {
-    let mut text = String::new();
-    artifact_line(&mut text, &["schema", REPRODUCTION_ARTIFACT_SCHEMA]);
-    artifact_line(&mut text, &["seed", &artifact.seed.to_string()]);
-    artifact_line(
-        &mut text,
-        &[
-            "identity",
-            &artifact.identity.engine_version,
-            &artifact.identity.engine_abi,
-            &artifact.identity.artifact_abi,
-            &artifact.identity.qemu_build_id,
-            &artifact.identity.qemu_atomic_patch_hash,
-            &artifact.identity.shmem_abi_version,
-            &artifact.identity.guest_host_protocol_version,
-            &artifact.identity.rpc_abi_version,
-            &artifact.identity.rpc_abi_build,
-            &artifact.identity.plugin_abi,
-        ],
-    );
-    artifact_component_line(&mut text, "scenario", &artifact.scenario);
-    for component in &artifact.components {
-        artifact_component_line(&mut text, "component", component);
-    }
-    for payload in &artifact.payloads {
-        artifact_line(
-            &mut text,
-            &["payload", &payload.digest, &hex_bytes(&payload.bytes)],
-        );
-    }
-    artifact_line(
-        &mut text,
-        &[
-            "schedule",
-            &artifact.schedule_digest,
-            &artifact.decisions.len().to_string(),
-        ],
-    );
-    for decision in &artifact.decisions {
-        artifact_line(
-            &mut text,
-            &[
-                "decision",
-                &decision.sequence.to_string(),
-                &decision.virtual_time_ticks.to_string(),
-                &decision.node,
-                &decision.kind,
-                &decision.payload_digest,
-            ],
-        );
-    }
-    for fingerprint in &artifact.fingerprints {
-        artifact_line(
-            &mut text,
-            &[
-                "fingerprint",
-                &fingerprint.index.to_string(),
-                &fingerprint.instruction.to_string(),
-                &fingerprint.node,
-                &fingerprint.digest,
-            ],
-        );
-    }
-    let mut sampling_fields = vec![
-        String::from("sampling"),
-        artifact.sampling.fine.clone(),
-        artifact.sampling.coarse.clone(),
-        artifact.sampling.regions.len().to_string(),
-    ];
-    sampling_fields.extend(artifact.sampling.regions.iter().cloned());
-    artifact_line(
-        &mut text,
-        &sampling_fields
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
-    );
-    text
+    CanonicalArtifact(artifact).to_string()
 }
 
 pub(super) fn artifact_component_line(text: &mut String, tag: &str, component: &CliComponent) {
@@ -864,12 +997,21 @@ pub(super) fn escape_artifact_field(value: &str) -> String {
 }
 
 pub(super) fn parse_artifact_fields(line_text: &str) -> Result<Vec<String>, CliError> {
-    line_text.split('\t').map(unescape_artifact_field).collect()
+    let mut fields = Vec::new();
+    owned_decode::reserve_vec(&mut fields, line_text.split('\t').count())
+        .map_err(CliError::MetadataAdmission)?;
+    for field in line_text.split('\t') {
+        fields.push(unescape_artifact_field(field)?);
+    }
+    Ok(fields)
 }
 
 pub(super) fn unescape_artifact_field(value: &str) -> Result<String, CliError> {
     let bytes = value.as_bytes();
+    let length = decoded_artifact_field_length(value)?;
+    owned_decode::charge_bytes(length as u64).map_err(CliError::MetadataAdmission)?;
     let mut output = String::new();
+    output.try_reserve_exact(length).map_err(io::Error::other)?;
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] != b'%' {
@@ -895,6 +1037,51 @@ pub(super) fn unescape_artifact_field(value: &str) -> Result<String, CliError> {
         index += 3;
     }
     Ok(output)
+}
+
+fn decoded_artifact_field_length(value: &str) -> Result<usize, CliError> {
+    let bytes = value.as_bytes();
+    let mut length = 0usize;
+    let mut index = 0;
+    while index < bytes.len() {
+        let width = if bytes[index] == b'%' {
+            let escape = bytes
+                .get(index + 1..index + 3)
+                .ok_or_else(|| artifact_error("truncated artifact field escape"))?;
+            if !matches!(escape, b"25" | b"09" | b"0A" | b"0D") {
+                return Err(artifact_error("unknown artifact field escape"));
+            }
+            index += 3;
+            1
+        } else {
+            let width = char::from(bytes[index]).len_utf8();
+            index += 1;
+            width
+        };
+        length = length
+            .checked_add(width)
+            .ok_or_else(|| artifact_error("artifact field length overflow"))?;
+    }
+    Ok(length)
+}
+
+pub(super) fn copy_artifact_field(value: &str) -> Result<String, CliError> {
+    owned_decode::charge_bytes(value.len() as u64).map_err(CliError::MetadataAdmission)?;
+    let mut output = String::new();
+    output
+        .try_reserve_exact(value.len())
+        .map_err(io::Error::other)?;
+    output.push_str(value);
+    Ok(output)
+}
+
+fn copy_artifact_regions(values: &[String]) -> Result<Vec<String>, CliError> {
+    let mut regions = Vec::new();
+    owned_decode::reserve_vec(&mut regions, values.len()).map_err(CliError::MetadataAdmission)?;
+    for value in values {
+        regions.push(copy_artifact_field(value)?);
+    }
+    Ok(regions)
 }
 
 pub(super) fn require_field_count(
@@ -958,7 +1145,8 @@ pub(super) fn parse_hex_bytes(
             "hex payload has odd length",
         ));
     }
-    let mut bytes = Vec::with_capacity(value.len() / 2);
+    let mut bytes = Vec::new();
+    owned_decode::reserve_vec(&mut bytes, value.len() / 2).map_err(CliError::MetadataAdmission)?;
     for chunk in value.as_bytes().chunks(2) {
         let high = hex_nibble(chunk[0])
             .ok_or_else(|| artifact_line_error(line_index, tag, "hex payload is malformed"))?;

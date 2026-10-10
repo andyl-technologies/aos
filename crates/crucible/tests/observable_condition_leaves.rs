@@ -88,6 +88,9 @@ impl ConditionLeafOracle for NoNamedLeaves {
 
 #[test]
 fn network_match_observes_delivered_frame_payload_at_the_evaluation_point() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let condition = Predicate::network_match(
         Some(link("client-server")),
         FramePredicate::contains(b"transport-ack".to_vec()),
@@ -111,6 +114,7 @@ fn network_match_observes_delivered_frame_payload_at_the_evaluation_point() {
     assert!(
         evaluator(20, vec![wrong_time, wrong_link, matching])
             .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
     );
     let future = ObservableEvent::network_delivered(
         time(20),
@@ -119,12 +123,14 @@ fn network_match_observes_delivered_frame_payload_at_the_evaluation_point() {
     );
     assert_eq!(
         crucible::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
-            crucible::test_support::condition_observation_entry_for_test(0, &future),
+            crucible::test_support::condition_observation_entry_for_test(0, &future)
+                .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
             crucible::test_support::condition_boundary_entry_for_test(
                 1,
                 time(19),
                 SchedulerEvaluationBoundaryKind::Quantum,
-            ),
+            )
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         ]),
         Err(ConditionEvaluationError::FutureEventLogEntry {
             point: time(19),
@@ -136,6 +142,9 @@ fn network_match_observes_delivered_frame_payload_at_the_evaluation_point() {
 
 #[test]
 fn network_match_can_observe_any_link() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let condition = Predicate::network_match(None, FramePredicate::prefix(b"raft".to_vec()));
     let event = ObservableEvent::network_delivered(
         time(3),
@@ -143,11 +152,18 @@ fn network_match_can_observe_any_link() {
         b"raft-append-entries".to_vec(),
     );
 
-    assert!(evaluator(3, vec![event]).evaluate_assertion_condition(&condition));
+    assert!(
+        evaluator(3, vec![event])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
 }
 
 #[test]
 fn console_match_uses_host_side_regex_over_captured_console_bytes() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let condition = Predicate::console_match(
         node("server"),
         RegexProgram::from_pattern("ready to accept connections"),
@@ -163,11 +179,18 @@ fn console_match_uses_host_side_regex_over_captured_console_bytes() {
         b"ready to accept connections\n".to_vec(),
     );
 
-    assert!(evaluator(9, vec![wrong_node, event]).evaluate_assertion_condition(&condition));
+    assert!(
+        evaluator(9, vec![wrong_node, event])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
 }
 
 #[test]
 fn console_match_spans_chunks_and_fires_when_match_completes_at_point() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let condition = Predicate::console_match(
         node("server"),
         RegexProgram::from_pattern("ready to accept"),
@@ -175,15 +198,28 @@ fn console_match_spans_chunks_and_fires_when_match_completes_at_point() {
     let first = ObservableEvent::console_output(time(8), node("server"), b"ready to ".to_vec());
     let second = ObservableEvent::console_output(time(9), node("server"), b"accept\n".to_vec());
 
-    assert!(!evaluator(8, vec![first.clone()]).evaluate_assertion_condition(&condition));
     assert!(
-        evaluator(9, vec![first.clone(), second.clone()]).evaluate_assertion_condition(&condition)
+        !evaluator(8, vec![first.clone()])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
     );
-    assert!(!evaluator(10, vec![first, second]).evaluate_assertion_condition(&condition));
+    assert!(
+        evaluator(9, vec![first.clone(), second.clone()])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
+    assert!(
+        !evaluator(10, vec![first, second])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
 }
 
 #[test]
 fn invalid_console_regex_is_rejected_by_graph_and_properties() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let invalid = RegexProgram::from_pattern("[");
     let event_id = crucible::EventId::from_name("bad-console-regex");
     let graph = EventGraph::new_for_world(
@@ -219,6 +255,9 @@ fn invalid_console_regex_is_rejected_by_graph_and_properties() {
 
 #[test]
 fn io_pattern_observes_deterministic_io_completion_kind() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let condition = Predicate::io_pattern(node("db-0"), IoEventKind::Fsync);
     let event =
         ObservableEvent::io_completion(time(11), node("db-0"), IoEventKind::Fsync, b"ok".to_vec());
@@ -229,11 +268,18 @@ fn io_pattern_observes_deterministic_io_completion_kind() {
         b"ok".to_vec(),
     );
 
-    assert!(evaluator(11, vec![wrong_kind, event]).evaluate_assertion_condition(&condition));
+    assert!(
+        evaluator(11, vec![wrong_kind, event])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
 }
 
 #[test]
 fn io_pattern_any_matches_any_completion_kind_for_the_node() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let condition = Predicate::io_pattern(node("db-0"), IoEventKind::Any);
     let event = ObservableEvent::io_completion(
         time(12),
@@ -242,20 +288,34 @@ fn io_pattern_any_matches_any_completion_kind_for_the_node() {
         b"sector=12".to_vec(),
     );
 
-    assert!(evaluator(12, vec![event]).evaluate_assertion_condition(&condition));
+    assert!(
+        evaluator(12, vec![event])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
 }
 
 #[test]
 fn node_state_observes_lifecycle_transition() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let condition = Predicate::node_state(node("worker"), NodeLifecycle::Exited);
     let event = ObservableEvent::node_state(time(14), node("worker"), NodeLifecycle::Exited);
     let earlier = ObservableEvent::node_state(time(13), node("worker"), NodeLifecycle::Exited);
 
-    assert!(evaluator(14, vec![earlier, event]).evaluate_assertion_condition(&condition));
+    assert!(
+        evaluator(14, vec![earlier, event])
+            .evaluate_assertion_condition(&condition)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
 }
 
 #[test]
 fn event_graph_fires_from_observable_condition_without_guest_marker_support() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let graph = EventGraph::new_for_world(
         vec![Event::once(
             crucible::EventId::from_name("pass-on-console-ready"),
@@ -289,6 +349,9 @@ fn event_graph_fires_from_observable_condition_without_guest_marker_support() {
 
 #[test]
 fn observable_leaves_round_trip_through_properties_serialization() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = observable_world();
     let predicate = Predicate::all_of(vec![
         Predicate::network_match(None, FramePredicate::contains(b"transport-ack".to_vec())),
@@ -321,6 +384,9 @@ fn observable_leaves_round_trip_through_properties_serialization() {
 
 #[test]
 fn observable_leaf_material_distinguishes_predicate_payloads() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let network_ok = properties_for(Predicate::network_match(
         None,
         FramePredicate::contains(b"ok".to_vec()),

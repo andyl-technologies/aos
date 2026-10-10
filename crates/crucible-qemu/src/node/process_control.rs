@@ -175,3 +175,74 @@ impl QemuNodeProcessControl {
         }
     }
 }
+
+#[cfg(target_os = "linux")]
+pub(super) fn retain_external_launch_cleanup(
+    process: Box<dyn QemuNodeExternalProcessControl>,
+    cleanup: crate::launch_cleanup::LaunchCleanup,
+) -> Box<dyn QemuNodeExternalProcessControl> {
+    Box::new(ExternalLaunchCleanup { process, cleanup })
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct ExternalLaunchCleanup {
+    process: Box<dyn QemuNodeExternalProcessControl>,
+    cleanup: crate::launch_cleanup::LaunchCleanup,
+}
+
+#[cfg(target_os = "linux")]
+impl ExternalLaunchCleanup {
+    fn observe_terminal(&self) {
+        let _ = self.cleanup.observe_external_process(self.process.as_ref());
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl QemuNodeExternalProcessControl for ExternalLaunchCleanup {
+    fn hot_fork_process_basis(&self) -> QemuHotForkChildProcessBasis {
+        self.process.hot_fork_process_basis()
+    }
+    fn process_id(&self) -> u32 {
+        self.process.process_id()
+    }
+    fn reaped(&self) -> bool {
+        self.observe_terminal();
+        self.process.reaped()
+    }
+    fn try_wait_natural_exit(&mut self) -> Result<Option<ExitStatus>, QemuShutdownTargetError> {
+        let status = self.process.try_wait_natural_exit()?;
+        self.observe_terminal();
+        Ok(status)
+    }
+    fn send_sigterm(&mut self) -> Result<(), QemuShutdownTargetError> {
+        self.process.send_sigterm()
+    }
+    fn send_sigkill(&mut self) -> Result<(), QemuShutdownTargetError> {
+        self.process.send_sigkill()
+    }
+    fn wait_for_exit(
+        &mut self,
+        rung: QemuShutdownRung,
+        timeout: Duration,
+    ) -> Result<QemuChildWait, QemuShutdownTargetError> {
+        let status = self.process.wait_for_exit(rung, timeout)?;
+        self.observe_terminal();
+        Ok(status)
+    }
+    fn reap(&mut self, timeout: Duration) -> Result<QemuReap, QemuShutdownTargetError> {
+        let status = self.process.reap(timeout)?;
+        self.observe_terminal();
+        Ok(status)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for ExternalLaunchCleanup {
+    fn drop(&mut self) {
+        self.observe_terminal();
+        if !self.cleanup.cleanup_proven() {
+            self.cleanup.quarantine();
+        }
+    }
+}

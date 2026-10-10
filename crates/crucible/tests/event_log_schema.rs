@@ -13,6 +13,9 @@ use crucible::{
 
 #[test]
 fn event_log_entries_carry_source_level_class_and_typed_time_stamp() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = NodeId {
         name: String::from("guest-a"),
     };
@@ -21,7 +24,8 @@ fn event_log_entries_carry_source_level_class_and_typed_time_stamp() {
         node.clone(),
         MarkerId::from_name("ready"),
     );
-    let entry = crucible::test_support::condition_observation_entry_for_test(0, &marker);
+    let entry = crucible::test_support::condition_observation_entry_for_test(0, &marker)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
 
     assert_eq!(entry.sequence(), 0);
     assert_eq!(entry.at(), VirtualTime { ticks: 99 });
@@ -52,6 +56,9 @@ fn event_log_entries_carry_source_level_class_and_typed_time_stamp() {
 
 #[test]
 fn command_caused_entries_preserve_command_correlation_source() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let command_id = 12;
     let control_node = SchedulerNodeId {
         node: NodeId {
@@ -78,13 +85,18 @@ fn command_caused_entries_preserve_command_correlation_source() {
         0,
         VirtualTime { ticks: 12 },
         SchedulerEventLogPayload::ResolvedHappening(event),
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
 
     assert_eq!(entry.source(), &EventSource::Command { command_id });
     assert_eq!(entry.time().stamp.tick, SimInstant { ticks: 12 });
     assert_eq!(entry.time().stamp.retired, None);
     assert_eq!(entry.class(), SchedulerEventLogClass::Causal);
-    assert!(entry.has_valid_content_hash());
+    assert!(
+        entry
+            .has_valid_content_hash()
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
+    );
 
     let mut log = EventLog::new();
     let append = log

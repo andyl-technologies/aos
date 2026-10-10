@@ -464,7 +464,30 @@ fn description() -> ExecutorDescription {
         BTreeSet::from([String::from("deterministic-tcg")]),
         BTreeSet::from([ExecutorMaterializationCapability::ThinReplay]),
         2,
-        resources,
+        crucible_campaign::ExecutorResourceBounds::new(
+            crucible_campaign::ExecutorHostResources {
+                resident_peak_bytes: 4194304,
+                backing_peak_bytes: 2097152,
+                metadata_bytes: 256,
+                staging_bytes: 256,
+                paging_io_slots: 2,
+                cpu_slots: 4,
+                task_slots: 130,
+                file_descriptors: 256,
+            },
+            crucible_campaign::ExecutorHostResources {
+                resident_peak_bytes: 2097152,
+                backing_peak_bytes: 1048576,
+                metadata_bytes: 128,
+                staging_bytes: 128,
+                paging_io_slots: 1,
+                cpu_slots: 2,
+                task_slots: 65,
+                file_descriptors: 128,
+            },
+            resources,
+        )
+        .expect("authored complete fixture resource bounds"),
         BTreeSet::from([CampaignHash::derive("test", b"store")]),
     )
     .expect("executor capabilities");

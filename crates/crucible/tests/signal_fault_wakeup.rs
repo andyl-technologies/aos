@@ -12,6 +12,9 @@ use crucible::{
 
 #[test]
 fn signal_fault_wakeup_advances_idle_shared_frontier_exactly() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = SingleScheduler::new(scenario(vec![idle_node("b"), idle_node("a")]))
         .expect("scenario should build");
     scheduler
@@ -48,6 +51,9 @@ fn signal_fault_wakeup_advances_idle_shared_frontier_exactly() {
 
 #[test]
 fn signal_fault_wakeup_rejects_current_or_past_coordinates() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler =
         SingleScheduler::new(scenario(vec![idle_node("a")])).expect("scenario should build");
 
@@ -57,6 +63,9 @@ fn signal_fault_wakeup_rejects_current_or_past_coordinates() {
 
 #[test]
 fn signal_fault_wakeup_preserves_fractional_tick_coordinate() {
+    let _decode_scope = crucible::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler =
         SingleScheduler::new(scenario(vec![idle_node("a")])).expect("scenario should build");
 

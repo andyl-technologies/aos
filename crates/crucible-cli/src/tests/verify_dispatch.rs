@@ -22,6 +22,7 @@ impl LiveQemuProbeRunner for FakeLiveQemuProbeRunner {
 
 #[test]
 fn run_scenario_rejects_noncanonical_builtin_names() {
+    let _scope = crate::tests::component_decode_scope();
     for name in [
         "happy-path.scn",
         "happy-path",
@@ -35,6 +36,7 @@ fn run_scenario_rejects_noncanonical_builtin_names() {
 
 #[test]
 fn total_verify_mismatch_classification_covers_equal_and_divergent_witnesses() {
+    let _scope = crate::tests::component_decode_scope();
     assert_eq!(verify_mismatch_kind(false, false), None);
     assert_eq!(
         verify_mismatch_kind(true, false),
@@ -52,6 +54,7 @@ fn total_verify_mismatch_classification_covers_equal_and_divergent_witnesses() {
 
 #[test]
 fn total_triage_member_selection_rejects_disabled_or_empty_selection() {
+    let _scope = crate::tests::component_decode_scope();
     let members = [1_u8, 2];
     assert_eq!(
         selected_triage_members(TriageMinimizeArg::Representative, &members)
@@ -70,6 +73,7 @@ fn total_triage_member_selection_rejects_disabled_or_empty_selection() {
 #[test]
 pub(super) fn cli_verify_workflow_localizes_divergence_and_writes_side_artifacts()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let scenario = crucible::partition_recovery_scenario()?
         .scenario
@@ -202,6 +206,7 @@ pub(super) fn cli_verify_workflow_localizes_divergence_and_writes_side_artifacts
 #[test]
 pub(super) fn cli_verify_workflow_remote_divergence_skips_side_artifacts_without_producer_identity()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let cli = Cli::parse_from([
@@ -246,6 +251,7 @@ pub(super) fn cli_verify_workflow_remote_divergence_skips_side_artifacts_without
     }];
     let witnesses = vec![
         VerifyRunWitness {
+            _input_custody: crucible_session::engine::owned_decode::current_custody(),
             reduction: verify_plan.reductions[0].clone(),
             canonical_log: left_log.clone(),
             canonical_log_bytes: canonical_log_entry_bytes(&left_log),
@@ -257,6 +263,7 @@ pub(super) fn cli_verify_workflow_remote_divergence_skips_side_artifacts_without
             artifact: None,
         },
         VerifyRunWitness {
+            _input_custody: crucible_session::engine::owned_decode::current_custody(),
             reduction: verify_plan.reductions[1].clone(),
             canonical_log: right_log.clone(),
             canonical_log_bytes: canonical_log_entry_bytes(&right_log),
@@ -270,6 +277,7 @@ pub(super) fn cli_verify_workflow_remote_divergence_skips_side_artifacts_without
     ];
     let divergence = compare_verify_witnesses(&witnesses).expect("fixture should diverge");
     let report = VerifyWorkflowReport {
+        _input_custody: crucible_session::engine::owned_decode::current_custody(),
         witnesses,
         divergence: Some(divergence),
     };
@@ -299,6 +307,7 @@ pub(super) fn cli_verify_workflow_remote_divergence_skips_side_artifacts_without
 #[test]
 pub(super) fn cli_verify_workflow_compares_existing_reproduction_artifacts()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let scenario_path = write_valid_run_scenario(&temp)?;
     let scenario = resolve_run_scenario(Some(&scenario_path.display().to_string()), temp.path())?
@@ -458,6 +467,7 @@ pub(super) fn cli_verify_workflow_compares_existing_reproduction_artifacts()
 #[test]
 pub(super) fn cli_verify_workflow_runs_fresh_remote_daemon_reductions() -> Result<(), Box<dyn Error>>
 {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let daemon = spawn_production_lifecycle_server()?;
@@ -537,6 +547,7 @@ pub(super) fn cli_verify_workflow_runs_fresh_remote_daemon_reductions() -> Resul
 #[test]
 pub(super) fn cli_verify_workflow_retains_every_passing_reduction_artifact()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let scenario_path = write_valid_run_scenario(&temp)?;
     let artifact_dir = temp.path().join("passing-verify-artifacts");
@@ -593,6 +604,7 @@ pub(super) fn cli_verify_workflow_retains_every_passing_reduction_artifact()
         .reductions
         .iter()
         .map(|reduction| VerifyRunWitness {
+            _input_custody: crucible_session::engine::owned_decode::current_custody(),
             reduction: reduction.clone(),
             canonical_log: canonical_log.clone(),
             canonical_log_bytes: canonical_log_entry_bytes(&canonical_log),
@@ -605,6 +617,7 @@ pub(super) fn cli_verify_workflow_retains_every_passing_reduction_artifact()
         })
         .collect::<Vec<_>>();
     let report = VerifyWorkflowReport {
+        _input_custody: crucible_session::engine::owned_decode::current_custody(),
         witnesses,
         divergence: None,
     };
@@ -699,9 +712,11 @@ pub(super) fn cli_verify_workflow_retains_every_passing_reduction_artifact()
 
 #[test]
 pub(super) fn cli_replay_reports_campaign_owned_guest_identity() -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let expected_event_stream = content_address_bytes(b"canonical guest events");
     let expected_fingerprint_stream = content_address_bytes(b"canonical guest fingerprints");
     let report = ReplayArtifactReport {
+        _input_custody: None,
         path: PathBuf::from("reproduction.crucible"),
         digest: content_address_bytes(b"artifact"),
         seed: 17,
@@ -769,6 +784,7 @@ pub(super) fn cli_replay_reports_campaign_owned_guest_identity() -> Result<(), B
 #[test]
 pub(super) fn cli_verify_live_event_evidence_decodes_production_event_frames()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let assertion = crucible::AssertionId::from_name("request-succeeded");
     let mut event_log = crucible::EventLog::new();
     let fault = event_log.append_fault_observations([crucible_core::model::FaultObservation {
@@ -805,12 +821,15 @@ pub(super) fn cli_verify_live_event_evidence_decodes_production_event_frames()
         .iter()
         .chain(&assertions.entries)
         .map(|entry| {
-            canonical_streaming_event_frame_bytes(&crucible_api::StreamingEventFrame {
-                generation: 0,
-                cursor: crucible_api::EventLogCursor::new(entry.sequence()),
-                next_cursor: crucible_api::EventLogCursor::new(entry.sequence() + 1),
-                event: crucible_api::open_set_event_envelope_from_entry(entry),
-            })
+            canonical_streaming_event_frame_bytes(
+                &crucible_api::StreamingEventFrame::from_owned_fields(
+                    0,
+                    crucible_api::EventLogCursor::new(entry.sequence()),
+                    crucible_api::EventLogCursor::new(entry.sequence() + 1),
+                    crucible_api::open_set_event_envelope_from_entry(entry),
+                )
+                .unwrap_or_else(|error| panic!("component event frame: {error}")),
+            )
         })
         .collect::<Vec<_>>();
 
@@ -831,6 +850,7 @@ pub(super) fn cli_verify_live_event_evidence_decodes_production_event_frames()
 #[test]
 pub(super) fn cli_backend_selection_routes_daemon_over_api_without_local_backend()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let cli = Cli::parse_from([
         "crucible",
         "--daemon",
@@ -887,6 +907,7 @@ pub(super) fn cli_backend_selection_routes_daemon_over_api_without_local_backend
 
 #[test]
 pub(super) fn cli_backend_selection_rejects_unacknowledged_cleartext_daemon() {
+    let _scope = crate::tests::component_decode_scope();
     let cli = Cli::parse_from([
         "crucible",
         "--daemon",
@@ -911,6 +932,7 @@ pub(super) fn cli_backend_selection_rejects_unacknowledged_cleartext_daemon() {
 #[test]
 pub(super) fn cli_backend_selection_local_and_remote_have_equivalent_canonical_outcome()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let local_cli = Cli::parse_from(["crucible", "--backend", "double", "run", TEST_SCENARIO]);
     let remote_cli = Cli::parse_from([
         "crucible",
@@ -974,6 +996,7 @@ pub(super) fn cli_backend_selection_local_and_remote_have_equivalent_canonical_o
 #[test]
 pub(super) fn cli_backend_selection_rejects_execution_identity_divergence()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
     let cli = Cli::parse_from([
@@ -1020,6 +1043,7 @@ pub(super) fn cli_backend_selection_rejects_execution_identity_divergence()
 #[test]
 pub(super) fn cli_backend_execution_observation_reloads_invoked_artifact_identity()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
     let cli = Cli::parse_from([
@@ -1063,6 +1087,7 @@ pub(super) fn cli_backend_execution_observation_reloads_invoked_artifact_identit
 
 #[test]
 pub(super) fn cli_backend_selection_rejects_daemon_on_serve() {
+    let _scope = crate::tests::component_decode_scope();
     let cli = Cli::parse_from([
         "crucible",
         "--daemon",
@@ -1084,6 +1109,7 @@ pub(super) fn cli_backend_selection_rejects_daemon_on_serve() {
 #[test]
 pub(super) fn cli_determinism_ergonomics_resolves_seed_by_flag_env_or_generated()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let mut entropy = FakeSeedEntropySource::new(0xfeed_face_cafe_beef);
     let flag_cli = Cli::parse_from(["crucible", "--seed", "0x2a", "run", TEST_SCENARIO]);
     let flag_plan = plan_determinism_ergonomics(
@@ -1155,6 +1181,7 @@ pub(super) fn cli_determinism_ergonomics_resolves_seed_by_flag_env_or_generated(
 #[test]
 pub(super) fn cli_determinism_ergonomics_rejects_invalid_seed_and_markdown_trace_format()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let mut entropy = FakeSeedEntropySource::new(7);
     let bad_seed = Cli::parse_from(["crucible", "--seed", "not-a-seed", "run", TEST_SCENARIO]);
     let error =
@@ -1241,6 +1268,7 @@ pub(super) fn cli_determinism_ergonomics_rejects_invalid_seed_and_markdown_trace
 #[test]
 pub(super) fn cli_determinism_ergonomics_renders_three_formats_over_same_canonical_log()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let entries = canonical_trace_entries();
     let jsonl = render_canonical_event_log(OutputFormat::Jsonl, &entries)?;
     let json = render_canonical_event_log(OutputFormat::Json, &entries)?;
@@ -1274,6 +1302,7 @@ pub(super) fn cli_determinism_ergonomics_renders_three_formats_over_same_canonic
 #[test]
 pub(super) fn cli_determinism_ergonomics_threads_seed_into_backend_outcome()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let local_cli = Cli::parse_from([
         "crucible",
         "--backend",
@@ -1379,6 +1408,7 @@ pub(super) fn cli_determinism_ergonomics_threads_seed_into_backend_outcome()
 #[test]
 pub(super) fn cli_determinism_ergonomics_failure_artifact_carries_resolved_seed_and_footer()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let artifact_dir = temp.path().join("artifacts");
     let cli = Cli::parse_from([
@@ -1418,6 +1448,7 @@ pub(super) fn cli_determinism_ergonomics_failure_artifact_carries_resolved_seed_
 #[test]
 pub(super) fn cli_determinism_ergonomics_emits_trace_and_failure_artifact_from_outcome()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let artifact_dir = temp.path().join("artifact dir with spaces");
     let trace = temp.path().join("trace.jsonl");
@@ -1515,6 +1546,7 @@ pub(super) fn cli_determinism_ergonomics_emits_trace_and_failure_artifact_from_o
 #[test]
 pub(super) fn cli_determinism_ergonomics_rejects_remote_mock_failure_artifact()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let cli = Cli::parse_from([
         "crucible",
         "--daemon",
@@ -1558,12 +1590,14 @@ pub(super) fn cli_determinism_ergonomics_rejects_remote_mock_failure_artifact()
 
 #[test]
 pub(super) fn cli_determinism_ergonomics_keeps_wall_clock_out_of_canonical_paths() {
+    let _scope = crate::tests::component_decode_scope();
     assert!(canonical_state_wall_clock_guard());
 }
 
 #[test]
 pub(super) fn cli_explicit_findings_path_writes_empty_reproduction_ledger()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let path = temp.path().join("empty.crucible-findings");
     let (written_path, digest, bytes) =
@@ -1579,6 +1613,7 @@ pub(super) fn cli_explicit_findings_path_writes_empty_reproduction_ledger()
 
 #[test]
 pub(super) fn cli_selftest_canonical_gate_names_match_harness_catalog() {
+    let _scope = crate::tests::component_decode_scope();
     let harness_gate_names = crucible_harness::canonical_gates()
         .iter()
         .map(|gate| gate.name)
@@ -1589,6 +1624,7 @@ pub(super) fn cli_selftest_canonical_gate_names_match_harness_catalog() {
 
 #[test]
 pub(super) fn cli_replay_validates_reproduction_artifact() -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let path = temp.path().join("case.crucible");
     let artifact = mock_e2e_reproduction_artifact()?;
@@ -1617,6 +1653,7 @@ pub(super) fn cli_replay_validates_reproduction_artifact() -> Result<(), Box<dyn
 
 #[test]
 pub(super) fn cli_replay_reexecutes_embedded_model_reproduction() -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let path = temp.path().join("model-case.crucible");
     let fixture = crucible::happy_path_scenario()?;
@@ -1655,6 +1692,7 @@ pub(super) fn cli_replay_reexecutes_embedded_model_reproduction() -> Result<(), 
 #[test]
 pub(super) fn cli_replay_check_accepts_byte_identical_canonical_log() -> Result<(), Box<dyn Error>>
 {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("case.crucible");
     let check_path = temp.path().join("original.jsonl");
@@ -1703,6 +1741,7 @@ pub(super) fn cli_replay_check_accepts_byte_identical_canonical_log() -> Result<
 #[test]
 pub(super) fn cli_replay_resolves_content_addressed_component_payloads()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("externalized.crucible");
     let check_path = temp.path().join("original.jsonl");
@@ -1756,6 +1795,7 @@ pub(super) fn cli_replay_resolves_content_addressed_component_payloads()
 #[test]
 pub(super) fn cli_replay_to_savepoint_validates_artifact_prefix_and_oracle()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("case.crucible");
     let fixture = crucible::happy_path_scenario()?;
@@ -1934,6 +1974,7 @@ pub(super) fn cli_replay_to_savepoint_validates_artifact_prefix_and_oracle()
 #[test]
 pub(super) fn cli_replay_to_savepoint_rejects_missing_prefix_decision_payload()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("missing-prefix-payload.crucible");
     let fixture = crucible::happy_path_scenario()?;
@@ -2020,6 +2061,7 @@ pub(super) fn cli_replay_to_savepoint_rejects_missing_prefix_decision_payload()
 #[test]
 pub(super) fn cli_replay_to_savepoint_rejects_non_matching_schedule_prefix()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("prefix-mismatch.crucible");
     let fixture = crucible::happy_path_scenario()?;
@@ -2096,6 +2138,7 @@ pub(super) fn cli_replay_to_savepoint_rejects_non_matching_schedule_prefix()
 
 #[test]
 pub(super) fn cli_replay_to_savepoint_rejects_scenario_mismatch() -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("scenario-mismatch.crucible");
     let fixture = crucible::happy_path_scenario()?;
@@ -2170,6 +2213,7 @@ pub(super) fn cli_replay_to_savepoint_rejects_scenario_mismatch() -> Result<(), 
 #[test]
 pub(super) fn cli_replay_to_savepoint_rejects_target_beyond_artifact_prefix()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("short-artifact.crucible");
     let fixture = crucible::happy_path_scenario()?;
@@ -2242,6 +2286,7 @@ pub(super) fn cli_replay_to_savepoint_rejects_target_beyond_artifact_prefix()
 #[test]
 pub(super) fn cli_replay_externalized_identity_mismatch_keeps_identity_exit()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("externalized-identity-drift.crucible");
     let store_root = temp.path().join("store");
@@ -2289,6 +2334,7 @@ pub(super) fn cli_replay_externalized_identity_mismatch_keeps_identity_exit()
 #[test]
 pub(super) fn cli_replay_rejects_inline_component_store_uri_mismatch() -> Result<(), Box<dyn Error>>
 {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("inline-store-mismatch.crucible");
     let store_root = temp.path().join("store");
@@ -2344,6 +2390,7 @@ pub(super) fn cli_replay_rejects_inline_component_store_uri_mismatch() -> Result
 
 #[test]
 pub(super) fn cli_replay_check_rejects_mismatch_with_failure_exit() -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("case.crucible");
     let check_path = temp.path().join("original.jsonl");
@@ -2377,7 +2424,9 @@ pub(super) fn cli_replay_check_rejects_mismatch_with_failure_exit() -> Result<()
     assert!(error.to_string().contains("replayed_len="));
 
     let decoded_artifact =
-        validate_replayable_reproduction_artifact(&replay_cli, &artifact.encode()?)?;
+        validate_replayable_reproduction_artifact(&replay_cli, &artifact.encode()?, &mut |path| {
+            crate::cli_input_resources::StandaloneInputResources::open(None)?.read(path)
+        })?;
     let canonical_log = canonical_log_entries_from_artifact(&decoded_artifact)?;
     let canonical_log_bytes = canonical_log_entry_bytes(&canonical_log);
     assert!(
@@ -2421,6 +2470,7 @@ pub(super) fn cli_replay_check_rejects_mismatch_with_failure_exit() -> Result<()
 
 #[test]
 pub(super) fn cli_replay_bisects_artifact_divergence() -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let scenario = crucible::partition_recovery_scenario()?
         .scenario
@@ -2677,6 +2727,7 @@ pub(super) fn cli_replay_bisects_artifact_divergence() -> Result<(), Box<dyn Err
 
 #[test]
 pub(super) fn cli_replay_bisect_accepts_identical_artifacts() -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let path = temp.path().join("case.crucible");
     let artifact = mock_e2e_reproduction_artifact()?;
@@ -2705,6 +2756,7 @@ pub(super) fn cli_replay_bisect_accepts_identical_artifacts() -> Result<(), Box<
 #[test]
 pub(super) fn cli_replay_rejects_build_identity_mismatch_with_identity_exit()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let path = temp.path().join("identity-drift.crucible");
     let mut artifact = mock_e2e_reproduction_artifact()?;
@@ -2736,6 +2788,7 @@ pub(super) fn cli_replay_rejects_build_identity_mismatch_with_identity_exit()
 #[test]
 pub(super) fn cli_replay_rejects_selected_qemu_file_identity_mismatch_with_identity_exit()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("case.crucible");
     let plugin_abi = required_qemu_plugin_abi();
@@ -2779,6 +2832,7 @@ pub(super) fn cli_replay_rejects_selected_qemu_file_identity_mismatch_with_ident
 #[test]
 pub(super) fn cli_replay_rejects_remote_daemon_without_producer_identity()
 -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("case.crucible");
     let artifact = mock_e2e_reproduction_artifact()?;
@@ -2811,6 +2865,7 @@ pub(super) fn cli_replay_rejects_remote_daemon_without_producer_identity()
 
 #[test]
 pub(super) fn cli_replay_rejects_duplicate_singleton_lines() -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let path = temp.path().join("duplicate.crucible");
     let artifact = mock_e2e_reproduction_artifact()?;
@@ -2840,6 +2895,7 @@ pub(super) fn cli_replay_rejects_duplicate_singleton_lines() -> Result<(), Box<d
 
 #[test]
 pub(super) fn cli_mock_failure_artifact_is_harness_decodable() -> Result<(), Box<dyn Error>> {
+    let _scope = crate::tests::component_decode_scope();
     let cli = Cli::parse_from(["crucible", "run", TEST_SCENARIO]);
     let bytes = mock_failure_reproduction_artifact_bytes(&cli, 0xe2e0_0010)?;
     let artifact = ReproductionArtifact::decode(&bytes)?;

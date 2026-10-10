@@ -20,7 +20,11 @@
       }
       {
         label = "worker-owned digest";
-        needle = "let sample = work.captured.digest();";
+        needle = ".captured\n                        .digest()";
+      }
+      {
+        label = "fallible digest precedes publication";
+        needle = ".and_then(|sample| {\n                            slot.get().publish(&sample)";
       }
       {
         label = "worker-owned acknowledgement";

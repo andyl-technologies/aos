@@ -664,7 +664,11 @@ fn observation_ref_conflict_leaves_the_admitted_head_authoritative() {
     let (fixture_repository, lineage, policy, blobs) = counted_fixture();
     drop(fixture_repository);
     let refs = Arc::new(ConflictAfterCreateRefBackend::new());
-    let repository = CampaignRepository::new(blobs, refs.clone());
+    let repository = CampaignRepository::new(
+        blobs,
+        refs.clone(),
+        crate::CampaignRamAdmission::Unavailable,
+    );
     let (_, admitted, observation) =
         admitted_observation_fixture(&repository, &lineage, &policy, "observation-cas");
     let checkpoint_count = repository
@@ -701,7 +705,7 @@ struct RecordingFindingCheckpointAuthenticator {
     scenario_override: Option<ScenarioDefId>,
     configuration_override: Option<ConfigurationId>,
     event_counts: BTreeMap<ExactCheckpointId, u64>,
-    failure: Option<FindingExactCheckpointAuthenticationError>,
+    reject_authentication: bool,
     object_source: Option<Arc<MemoryBlobBackend>>,
 }
 
@@ -719,8 +723,8 @@ impl FindingExactCheckpointAuthenticator for RecordingFindingCheckpointAuthentic
             .lock()
             .expect("record finding checkpoint authentication")
             .push((checkpoint, maximum_metadata_bytes));
-        if let Some(error) = self.failure {
-            return Err(error);
+        if self.reject_authentication {
+            return Err(FindingExactCheckpointAuthenticationError::AuthenticationFailed);
         }
         Ok(AuthenticatedFindingExactCheckpoint::new(
             self.scenario_override.unwrap_or(scenario),
@@ -756,7 +760,7 @@ fn recording_finding_checkpoint_authenticator(
         scenario_override: None,
         configuration_override: None,
         event_counts,
-        failure: None,
+        reject_authentication: false,
         object_source: None,
     }
 }
@@ -796,7 +800,7 @@ fn publish_test_exact_checkpoint_closure(
 
     let root = ContentEnvelope::new(
         "crucible.test.exact-checkpoint-root",
-        5,
+        6,
         BTreeSet::from([
             ContentChild::new("index.0000", index_id).expect("root index child"),
             ContentChild::new("manifest", manifest).expect("root manifest child"),
@@ -904,8 +908,11 @@ fn complete_exact_retention_requires_executor_authentication_and_cold_loads_atte
         "selected-exact-checkpoint-source",
         64 * 1024 * 1024,
     ));
-    let checkpoint_repository =
-        CampaignRepository::new(checkpoint_blobs.clone(), Arc::new(MemoryRefBackend::new()));
+    let checkpoint_repository = CampaignRepository::new(
+        checkpoint_blobs.clone(),
+        Arc::new(MemoryRefBackend::new()),
+        crate::CampaignRamAdmission::Unavailable,
+    );
     let (checkpoint, selected_leaf, selected_leaf_bytes) =
         publish_test_exact_checkpoint_closure(&checkpoint_repository, b"selected");
     let (unselected_checkpoint, _, _) =
@@ -1019,8 +1026,7 @@ fn complete_exact_retention_requires_executor_authentication_and_cold_loads_atte
         17,
         candidate_events.clone(),
     );
-    failed_authenticator.failure =
-        Some(FindingExactCheckpointAuthenticationError::AuthenticationFailed);
+    failed_authenticator.reject_authentication = true;
     let failed_store = CampaignExecutorStore::new(Arc::clone(&repository));
     assert!(matches!(
         failed_store.publish_executor_finding_candidate(&bundle, &failed_authenticator),
@@ -1194,7 +1200,11 @@ fn complete_exact_retention_requires_executor_authentication_and_cold_loads_atte
         )
         .expect("incorporate executor-attested bundle");
     assert!(!incorporated.replayed);
-    let cold = CampaignRepository::new(Arc::clone(&repository.blobs), Arc::clone(&repository.refs));
+    let cold = CampaignRepository::new(
+        Arc::clone(&repository.blobs),
+        Arc::clone(&repository.refs),
+        repository.ram_admission().clone(),
+    );
     assert!(
         cold.incorporate_finding_candidate_bundle(
             "authenticated-exact-retention",
@@ -1225,11 +1235,14 @@ fn complete_exact_retention_requires_executor_authentication_and_cold_loads_atte
             private.path().join("objects"),
         )),
         Arc::new(DirectoryRefBackend::new(private.path().join("refs"))),
+        crate::CampaignRamAdmission::Unavailable,
     );
     cold.transfer_campaign_archive_objects(
         &imported,
         &plan,
         DurabilityRequirement::new(1, false).expect("private store durability"),
+        cold.ram_admission().original(),
+        imported.ram_admission().original(),
     )
     .expect("transfer exact finding handoff");
     imported

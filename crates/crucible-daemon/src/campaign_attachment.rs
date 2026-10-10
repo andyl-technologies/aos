@@ -496,8 +496,8 @@ fn prepare_canonical_campaign_runtime_with_service(
 
     let resources = config
         .executor_resources()
-        .unwrap_or_else(|| capabilities.resource_ceiling());
-    if !resources_fit(resources, capabilities.resource_ceiling()) {
+        .unwrap_or_else(|| capabilities.assignment_limits());
+    if !resources_fit(resources, capabilities.assignment_limits()) {
         return Err(CanonicalCampaignRuntimeError::ExecutorResourcesExceedCeiling);
     }
     let worker_slots = config.worker_slots().unwrap_or_else(|| {

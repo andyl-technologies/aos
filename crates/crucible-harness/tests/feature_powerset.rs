@@ -70,8 +70,25 @@ fn crucible_manifest_feature_layout_is_explicit() -> Result<(), Box<dyn Error>> 
         "crucible-qemu",
         &[
             ("default", &[][..]),
-            ("test-support", &["crucible/test-double"][..]),
+            ("kernel-swap-measurement", &[][..]),
+            (
+                "private-measurement-domain",
+                &[
+                    "crucible-linux-resource/private-measurement-domain",
+                    "crucible-cas/private-measurement-domain",
+                    "rustix/thread",
+                ][..],
+            ),
+            (
+                "test-support",
+                &["crucible/test-double", "crucible-ram/test-support"][..],
+            ),
         ],
+    );
+    assert_features(
+        &manifests,
+        "crucible-ram",
+        &[("test-support", &["dep:sha2", "dep:serde_json"][..])],
     );
     assert_features(&manifests, "crucible-device", &[("default", &[][..])]);
 
@@ -403,6 +420,18 @@ fn feature_cases() -> &'static [FeatureCase] {
         FeatureCase {
             name: "crucible-qemu test support",
             package: "crucible-qemu",
+            no_default_features: true,
+            features: &["test-support"],
+        },
+        FeatureCase {
+            name: "crucible-ram production",
+            package: "crucible-ram",
+            no_default_features: true,
+            features: &[],
+        },
+        FeatureCase {
+            name: "crucible-ram offline measurements",
+            package: "crucible-ram",
             no_default_features: true,
             features: &["test-support"],
         },

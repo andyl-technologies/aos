@@ -1,6 +1,6 @@
 //! Exhaustive scenario-owned resource limits for the fault system.
 //!
-//! The public plan carries every executable limit named by RFC-0014. Values
+//! The public plan carries every executable signal-fault resource limit. Values
 //! may be lowered but never raised above the compiled ceiling. This table is
 //! also the machine-readable source for reference generation and generic
 //! resource diagnostics, so adapters cannot introduce hidden semantic bounds.
@@ -9,6 +9,44 @@ use std::error::Error;
 use std::fmt;
 
 use super::*;
+
+// Fixed default identity bytes are generated from the same limit registry as
+// Default. Decimal literal separators and the final JSON comma are omitted at
+// compile time, so the empty plan requires no heap before admission exists.
+pub(super) struct DefaultIdentityBytes<const N: usize> {
+    bytes: [u8; N],
+    length: usize,
+}
+
+impl<const N: usize> DefaultIdentityBytes<N> {
+    const fn new(input: &str) -> Self {
+        let input = input.as_bytes();
+        let mut result = Self {
+            bytes: [0; N],
+            length: 0,
+        };
+        let mut index = 0;
+        while index < input.len() {
+            let separator = input[index] == b'_'
+                && index > 0
+                && index + 1 < input.len()
+                && input[index - 1].is_ascii_digit()
+                && input[index + 1].is_ascii_digit();
+            let trailing_comma =
+                input[index] == b',' && index + 1 < input.len() && input[index + 1] == b'}';
+            if !separator && !trailing_comma {
+                result.bytes[result.length] = input[index];
+                result.length += 1;
+            }
+            index += 1;
+        }
+        result
+    }
+
+    pub(super) fn bytes(&self) -> &[u8] {
+        &self.bytes[..self.length]
+    }
+}
 
 /// One public resource-limit field and its compiled values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,6 +87,22 @@ macro_rules! define_fault_resource_limits {
                 hard: $hard,
             },)+
         ];
+
+        pub(super) static EMPTY_PLAN_MATERIAL: DefaultIdentityBytes<{
+            concat!($(stringify!($field), "=", stringify!($default), "\n",)+ "programs=0\nbindings=0").len()
+        }> = DefaultIdentityBytes::new(concat!(
+            $(stringify!($field), "=", stringify!($default), "\n",)+ "programs=0\nbindings=0"
+        ));
+
+        pub(super) static EMPTY_PLAN_WIRE: DefaultIdentityBytes<{
+            concat!("{\"semantic_version\":2,\"resource_limits\":{",
+                $("\"", stringify!($field), "\":", stringify!($default), ",",)+
+                "},\"signal_program\":[],\"fault_binding\":[]}").len()
+        }> = DefaultIdentityBytes::new(concat!(
+            "{\"semantic_version\":2,\"resource_limits\":{",
+            $("\"", stringify!($field), "\":", stringify!($default), ",",)+
+            "},\"signal_program\":[],\"fault_binding\":[]}"
+        ));
 
         impl FaultResourceLimits {
             /// Returns the compiled ceiling for every resource field.

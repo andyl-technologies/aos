@@ -1,9 +1,9 @@
 //! `crucible-api` owns the versioned programmatic API surface.
 //!
-//! Spec index: RFC-0010 files 21.
+//! Implementation contract: Host lifecycle composition, exact checkpoints, and temporal graph APIs.
 //!
-//! This L4 crate will define the session lifecycle, stepping, query, and
-//! temporal-graph API types described by RFC-0010 file 21. It is a
+//! This L4 crate defines the session lifecycle, stepping, query, and
+//! temporal-graph API types. It is a
 //! safe boundary over versioned data and dispatch shapes.
 //!
 //! Module map: [`client`] owns the transport-agnostic [`ControlClient`] trait
@@ -18,11 +18,16 @@
 //! typed-attribute payload model; [`vm_lifecycle`] owns production local-VM
 //! loop construction; [`debug_gateway`] owns the Apache-side Unix
 //! control client for the separate GPL debugger gateway process;
-//! [`transport_security`] owns remote mutual-TLS authentication.
+//! [`transport_security`] owns remote mutual-TLS authentication;
+//! [`host_operational`] owns bounded target, policy, resource, and deadline
+//! contracts outside modeled guest state.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
+
+mod admitted_output;
+pub use admitted_output::{AdmittedOutput, AdmittedShared};
 
 pub mod client;
 pub mod control_responsive;
@@ -31,6 +36,7 @@ pub mod debug_gateway;
 mod debug_holders;
 pub mod debug_relay;
 pub mod event_log_stream;
+pub mod host_operational;
 pub mod lifecycle;
 pub mod open_set;
 pub mod rpc_abi;
@@ -63,25 +69,27 @@ pub use debug_relay::{
 };
 pub use event_log_stream::{
     ControlPlaneEventLog, EventLogCursor, SESSION_EVENT_LOG_BROADCAST_CAPACITY,
-    SESSION_EVENT_LOG_REPLAY_BATCH_SIZE, SessionEventLogFrame, SessionEventLogHub,
-    SessionEventLogSnapshot, SessionEventLogStream, SessionEventLogStreamError,
+    SessionEventLogFrame, SessionEventLogHub, SessionEventLogSnapshot, SessionEventLogStream,
+    SessionEventLogStreamError,
 };
 pub use lifecycle::{
     CreateSessionRequest, CreateSessionResponse, CreateSessionSource, DebugLandedRuntimeCoordinate,
     DebugRepositionDispatch, DebugRepositionResult, DestroySessionRequest, DestroySessionResponse,
     GetReproductionRequest, GetReproductionResponse, GuestIntrospectionDispatch,
     InProcessLifecycleClient, LIFECYCLE_SESSION_MAILBOX_CAPACITY,
-    LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS, LifecycleApiError, LifecycleControlPlane,
-    LifecycleLoopFactory, LifecycleResourceLimit, ListScenariosResponse, ListSessionsResponse,
-    QuiescentLifecycleLoop, RESUME_OBSERVATION_PREPARATION_CAPACITY,
-    RESUME_OBSERVATION_PREPARATION_TIMEOUT, RESUME_OBSERVATION_SOURCE_MAX_BYTES,
-    RESUME_REPLAY_CLOSURE_MAX_BYTES, ReproductionCommandDecodeError, ReproductionCommandPayload,
-    ReproductionCommandRecord, ReproductionCommandResult, ResumeObservationCancellation,
+    LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS, LifecycleApiError,
+    LifecycleBackendConstructionError, LifecycleControlPlane, LifecycleLoopFactory,
+    LifecycleResourceLimit, ListScenariosResponse, ListSessionsResponse, QuiescentLifecycleLoop,
+    RESUME_OBSERVATION_PREPARATION_CAPACITY, RESUME_OBSERVATION_PREPARATION_TIMEOUT,
+    RESUME_OBSERVATION_SOURCE_MAX_BYTES, RESUME_REPLAY_CLOSURE_MAX_BYTES,
+    ReproductionCommandDecodeError, ReproductionCommandPayload, ReproductionCommandRecord,
+    ReproductionCommandRecordFields, ReproductionCommandResult, ResumeObservationCancellation,
     ResumeObservationCancellationRegistration, ResumeObservationLoopFactory,
     ResumeObservationPreparationContext, ResumeObservationSource, ResumeReplayClosure,
     ResumeReplayClosureValidationError, ResumeReplayClosureValidator, ResumeSessionRequest,
     ResumeSessionResponse, ScenarioCatalogEntry, ScenarioCatalogSource, ScenarioSummary, SessionId,
     SessionLifetimeRetention, SessionRef, SessionRetentionUpdateError, SessionSummary,
+    admit_future, spawn_admitted_session_actor,
 };
 pub use open_set::{
     OPEN_SET_BREAKPOINT_KIND_PREFIX, OPEN_SET_CAPABILITY_CATEGORIES, OPEN_SET_COMMAND_KIND_PREFIX,
@@ -111,12 +119,14 @@ pub use vm_lifecycle::{
 #[cfg(target_os = "linux")]
 pub use vm_lifecycle::{
     BoundedSchedulerPreemptionEvidence, BoundedSchedulerPreemptionEvidenceSnapshot,
-    DecodedProductionExactCheckpoint, PreparedProductionReplayOraclePromotion,
+    DecodedProductionExactCheckpoint, OriginalCheckpointDecodeError,
+    OriginalDecodedProductionExactCheckpoint, PreparedProductionReplayOraclePromotion,
     ProductionBakedSnapshotCatalog, ProductionBakedSnapshotSet, ProductionBlockFaultEvidence,
     ProductionExactCheckpointClosure, ProductionExactCheckpointObject,
-    ProductionExactCheckpointRetirement, ProductionExactCheckpointRetirementError,
-    ProductionExactCheckpointRetirementReport, ProductionFaultEvidenceSnapshot,
-    ProductionNetworkOutageEvidence, ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence,
+    ProductionExactCheckpointReadSources, ProductionExactCheckpointRetirement,
+    ProductionExactCheckpointRetirementError, ProductionExactCheckpointRetirementReport,
+    ProductionFaultEvidenceSnapshot, ProductionNetworkOutageEvidence,
+    ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence, ProductionPagedRamSource,
     ProductionVmExactNodeRestoreAdmission, ProductionVmExactNodeRestoreAdmissions,
     ProductionVmLifecycleConfig, ProductionVmLifecycleLoop, ProductionVmLifecycleResumeState,
     ProductionVmNodeGeneration, ProductionVmNodeLaunch, ProductionVmNodeLaunchRequest,
@@ -125,7 +135,8 @@ pub use vm_lifecycle::{
     ProductionVmReplayExactNodeRestoreAdmission, build_production_vm_exact_resume_lifecycle,
     build_production_vm_lifecycle_loop_with_launcher, collect_signal_artifact_objects,
     collect_signal_artifact_objects_bounded, collect_signal_artifact_objects_with_budget,
-    decode_authenticated_production_exact_checkpoint, open_exact_checkpoint_closure,
+    decode_authenticated_production_exact_checkpoint,
+    decode_authenticated_production_exact_checkpoint_under_original, open_exact_checkpoint_closure,
     production_vm_search_frontier, retire_production_exact_checkpoint_catalog,
 };
 #[cfg(target_os = "linux")]
@@ -171,4 +182,14 @@ pub use streaming::{
 };
 pub use transport_security::{
     DebugTransportIdentity, MutualTlsServerConfigError, mutual_tls_acceptor_from_pem,
+};
+
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub use vm_lifecycle::{
+    ProductionVmParentParkDrain, ProductionVmParentParkDrainCause,
+    ProductionVmParentParkDrainFailure, ProductionVmParentParkDrainRefusal,
+    ProductionVmParentParkDrainRequest, ProductionVmParentParkStageAdmissionCause,
+    ProductionVmParentParkStageEarlyCause, ProductionVmParentParkStageEnteredCause,
+    ProductionVmParentParkStageFailure, ProductionVmParentParkStageOwnerCause,
+    ProductionVmParentParkStageReborrowCause,
 };

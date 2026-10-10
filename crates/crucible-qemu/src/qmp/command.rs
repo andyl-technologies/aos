@@ -183,6 +183,16 @@ impl HotForkBlockBarrierAction {
 
 pub(super) enum QmpCommand<'a> {
     Capabilities,
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    SelectableReset {
+        pending: &'a crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
+        request_hex: &'a str,
+        correlation: u64,
+    },
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    ParentParkDrain {
+        request: &'a super::parent_park_drain::ParentParkDrainRequest<'a>,
+    },
     SaveVm {
         tag: &'a QmpSnapshotTag,
         job_id: &'a str,
@@ -194,17 +204,41 @@ pub(super) enum QmpCommand<'a> {
     CheckpointCapture {
         request: &'a QmpCheckpointCaptureRequest,
     },
+    CheckpointTopology {
+        request: &'a QmpCheckpointCaptureRequest,
+    },
     CheckpointRestore {
         request: &'a QmpCheckpointRestoreRequest,
     },
     CheckpointCommit {
         identity: QmpCheckpointIdentity,
+        capture_generation: u64,
     },
     CheckpointAbort {
         identity: QmpCheckpointIdentity,
+        capture_generation: u64,
     },
     QueryCheckpointEpoch,
     QueryFingerprintProjectionManifest,
+    QueryPausedCpu {
+        vcpu: u32,
+        generation: Option<u64>,
+    },
+    #[cfg(feature = "kernel-swap-measurement")]
+    QueryKernelSwapAdmission {
+        generation: u64,
+        cancellation: &'a QmpDescriptorName,
+    },
+    #[cfg(feature = "kernel-swap-measurement")]
+    QueryKernelSwapResidency {
+        generation: u64,
+        topology_generation: u64,
+        cancellation: &'a QmpDescriptorName,
+    },
+    #[cfg(any(test, feature = "test-support"))]
+    PerformanceObservation {
+        command: &'static str,
+    },
     QueryJobs,
     JobDismiss {
         job_id: &'a str,
@@ -264,6 +298,9 @@ pub(super) enum QmpCommand<'a> {
         cancellation_name: Option<&'a QmpDescriptorName>,
         identity: Option<QmpHotForkChildProcessContractIdentity>,
     },
+    HotForkChildRam {
+        request: hot_fork_ram::Request<'a>,
+    },
     HotForkChildFiles {
         action: HotForkChildFilesAction,
         files: Option<&'a [QmpHotForkChildFile]>,
@@ -312,9 +349,14 @@ impl QmpCommand<'_> {
     pub(super) const fn kind(&self) -> QmpCommandKind {
         match self {
             Self::Capabilities => QmpCommandKind::Capabilities,
+            #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+            Self::SelectableReset { .. } => QmpCommandKind::SelectableReset,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            Self::ParentParkDrain { .. } => QmpCommandKind::ParentParkDrain,
             Self::SaveVm { .. } => QmpCommandKind::SaveVm,
             Self::DeleteSnapshot { .. } => QmpCommandKind::DeleteSnapshot,
             Self::CheckpointCapture { .. } => QmpCommandKind::CheckpointCapture,
+            Self::CheckpointTopology { .. } => QmpCommandKind::CheckpointTopology,
             Self::CheckpointRestore { .. } => QmpCommandKind::CheckpointRestore,
             Self::CheckpointCommit { .. } => QmpCommandKind::CheckpointCommit,
             Self::CheckpointAbort { .. } => QmpCommandKind::CheckpointAbort,
@@ -322,6 +364,13 @@ impl QmpCommand<'_> {
             Self::QueryFingerprintProjectionManifest => {
                 QmpCommandKind::QueryFingerprintProjectionManifest
             }
+            Self::QueryPausedCpu { .. } => QmpCommandKind::QueryPausedCpu,
+            #[cfg(feature = "kernel-swap-measurement")]
+            Self::QueryKernelSwapResidency { .. } => QmpCommandKind::QueryKernelSwapResidency,
+            #[cfg(feature = "kernel-swap-measurement")]
+            Self::QueryKernelSwapAdmission { .. } => QmpCommandKind::QueryKernelSwapAdmission,
+            #[cfg(any(test, feature = "test-support"))]
+            Self::PerformanceObservation { .. } => QmpCommandKind::PerformanceObservation,
             Self::QueryJobs => QmpCommandKind::QueryJobs,
             Self::JobDismiss { .. } => QmpCommandKind::JobDismiss,
             Self::QueryStatus => QmpCommandKind::QueryStatus,
@@ -344,6 +393,7 @@ impl QmpCommand<'_> {
             Self::HotFork { .. } => QmpCommandKind::HotFork,
             Self::HotForkChildProcess { .. } => QmpCommandKind::HotForkChildProcess,
             Self::HotForkChildProcessContract { .. } => QmpCommandKind::HotForkChildProcessContract,
+            Self::HotForkChildRam { .. } => QmpCommandKind::HotForkChildRam,
             Self::HotForkChildFiles { .. } => QmpCommandKind::HotForkChildFiles,
             Self::HotForkPrivateRings { .. } => QmpCommandKind::HotForkPrivateRings,
             Self::HotForkPluginEndpoints { .. } => QmpCommandKind::HotForkPluginEndpoints,
@@ -359,12 +409,35 @@ impl QmpCommand<'_> {
 
     pub(super) fn request(&self) -> Value {
         match self {
+            #[cfg(any(test, feature = "test-support"))]
+            Self::PerformanceObservation { command } => json!({
+                "execute": "human-monitor-command", "arguments": { "command-line": command },
+            }),
             Self::Capabilities => json!({
                 "execute": QMP_CAPABILITIES_COMMAND,
                 "arguments": {
                     "enable": ["oob"],
                 },
             }),
+            #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+            Self::SelectableReset {
+                pending,
+                request_hex,
+                correlation,
+            } => json!({
+                "execute": "crucible-selectable-reset-v1",
+                "arguments": {
+                    "schema-version": 1,
+                    "correlation": correlation,
+                    "request-hex": request_hex,
+                    "raw-icount": pending.raw_icount(),
+                    "trap-tick-ps": pending.trap_tick_ps(),
+                    "vcpu-index": pending.vcpu_index(),
+                    "reply-address": pending.guest_virtual_address(),
+                },
+            }),
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            Self::ParentParkDrain { request } => request.request(),
             Self::SaveVm { tag, job_id } => {
                 snapshot_request(QMP_SNAPSHOT_SAVE_COMMAND, job_id, tag)
             }
@@ -380,23 +453,87 @@ impl QmpCommand<'_> {
                 "execute": QMP_CHECKPOINT_CAPTURE_COMMAND,
                 "arguments": request.wire_value(),
             }),
+            Self::CheckpointTopology { request } => {
+                let mut arguments = request
+                    .identity()
+                    .wire_value()
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default();
+                arguments.insert(
+                    "root-fdname".into(),
+                    Value::from(request.ram_descriptor().as_str()),
+                );
+                arguments.insert(
+                    "cancellation-fdname".into(),
+                    Value::from(request.cancellation_descriptor().as_str()),
+                );
+                json!({ "execute": checkpoint_topology::COMMAND, "arguments": arguments })
+            }
             Self::CheckpointRestore { request } => json!({
                 "execute": QMP_CHECKPOINT_RESTORE_COMMAND,
                 "arguments": request.wire_value(),
             }),
-            Self::CheckpointCommit { identity } => json!({
+            Self::CheckpointCommit {
+                identity,
+                capture_generation,
+            } => json!({
                 "execute": QMP_CHECKPOINT_COMMIT_COMMAND,
-                "arguments": identity.wire_value(),
+                "arguments": {
+                    "checkpoint-sha256": identity.checkpoint().to_hex(),
+                    "target-sha256": identity.target().to_hex(),
+                    "frontier-sha256": identity.frontier().to_hex(),
+                    "capture-generation": capture_generation,
+                },
             }),
-            Self::CheckpointAbort { identity } => json!({
+            Self::CheckpointAbort {
+                identity,
+                capture_generation,
+            } => json!({
                 "execute": QMP_CHECKPOINT_ABORT_COMMAND,
-                "arguments": identity.wire_value(),
+                "arguments": {
+                    "checkpoint-sha256": identity.checkpoint().to_hex(),
+                    "target-sha256": identity.target().to_hex(),
+                    "frontier-sha256": identity.frontier().to_hex(),
+                    "capture-generation": capture_generation,
+                },
             }),
             Self::QueryCheckpointEpoch => json!({
                 "execute": QMP_QUERY_CHECKPOINT_EPOCH_COMMAND,
             }),
             Self::QueryFingerprintProjectionManifest => json!({
                 "execute": QMP_QUERY_FINGERPRINT_PROJECTION_MANIFEST_COMMAND,
+            }),
+            Self::QueryPausedCpu { vcpu, generation } => {
+                let mut arguments = json!({"vcpu-index":vcpu});
+                if let Some(generation) = generation {
+                    arguments["expected-generation"] = json!(generation);
+                }
+                json!({"execute":QMP_QUERY_PAUSED_CPU_COMMAND,"arguments":arguments})
+            }
+            #[cfg(feature = "kernel-swap-measurement")]
+            Self::QueryKernelSwapAdmission {
+                generation,
+                cancellation,
+            } => json!({
+                "execute": super::QMP_QUERY_KERNEL_SWAP_ADMISSION_COMMAND,
+                "arguments": {
+                    "expected-generation": generation,
+                    "cancellation-fdname": cancellation.as_str(),
+                },
+            }),
+            #[cfg(feature = "kernel-swap-measurement")]
+            Self::QueryKernelSwapResidency {
+                generation,
+                topology_generation,
+                cancellation,
+            } => json!({
+                "execute": super::QMP_QUERY_KERNEL_SWAP_RESIDENCY_COMMAND,
+                "arguments": {
+                    "expected-generation": generation,
+                    "expected-topology-generation": topology_generation,
+                    "cancellation-fdname": cancellation.as_str(),
+                },
             }),
             Self::QueryJobs => json!({
                 "execute": QMP_QUERY_JOBS_COMMAND,
@@ -587,12 +724,19 @@ impl QmpCommand<'_> {
                         String::from("maximum-file-bytes"),
                         Value::from(identity.maximum_file_bytes()),
                     );
+                    arguments.insert(
+                        String::from("maximum-locked-bytes"),
+                        Value::from(identity.maximum_locked_bytes()),
+                    );
                 }
                 json!({
                     "exec-oob": QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_COMMAND,
                     "arguments": Value::Object(arguments),
                 })
             }
+            Self::HotForkChildRam { request } => json!({
+                "execute": hot_fork_ram::COMMAND, "arguments": request.wire_value(),
+            }),
             Self::HotForkChildFiles {
                 action,
                 files,

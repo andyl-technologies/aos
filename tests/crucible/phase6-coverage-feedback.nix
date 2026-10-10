@@ -242,7 +242,7 @@
       }
       {
         label = "causal determinism exclusion assertion";
-        needle = "compare_event_log_determinism(&baseline, &with_coverage).passes()";
+        needle = "compare_event_log_determinism(&baseline, &with_coverage)\n            .unwrap_or_else(|error| panic!(\"finite component event-log operation: {error}\"))\n            .passes()";
       }
     ]
     ++ forbiddenFailuresFor "crates/crucible/tests/gate_coverage_feedback.rs" coverageFeedbackTest [

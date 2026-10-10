@@ -167,6 +167,7 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
         self.configuration = Some(configuration.clone());
 
         Ok(QuantumOutcome {
+            event_log_custody: append.event_log_custody,
             configuration,
             frontier: self.frontier,
             advanced_node: None,

@@ -265,7 +265,7 @@ impl CampaignRecordKind {
             Self::Finding => 4,
             Self::FindingCandidateBundle => 7,
             Self::FindingTriageReplayEvidence => 2,
-            Self::ArchiveManifest | Self::ArchiveInventoryPage => RECORD_SCHEMA_VERSION,
+            Self::ArchiveManifest | Self::ArchiveInventoryPage => 2,
             Self::PlannerCandidateGuidance | Self::PlannerCandidateBudget => 2,
             Self::BudgetLedger => 3,
             Self::PlannerBeamCandidate => 2,
@@ -703,6 +703,16 @@ impl ObjectEnvelope {
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         self.envelope.canonical_bytes()
+    }
+
+    pub(crate) fn canonical_bytes_with_boundary(
+        &self,
+        original: &crucible_cas::owned_decode::DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_cas::content_store::StoreError>,
+    ) -> Result<crucible_cas::content_store::OwnedBlobBytes, crucible_cas::content_store::StoreError>
+    {
+        self.envelope
+            .canonical_bytes_with_boundary(original, boundary)
     }
 
     /// Returns the backend-independent immutable content identity.

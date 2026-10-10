@@ -50,16 +50,20 @@ fn golden_vectors_match_canonical_codec_bytes() {
 
 #[test]
 fn golden_vectors_freeze_literal_wire_bytes() {
-    assert_vector_bytes("hello", &[0, 0, 0, 9, 0xF0, 0, 0, 0, 3, 0, 0, 0, 1]);
+    assert_vector_bytes("hello", &[0, 0, 0, 9, 0xF0, 0, 0, 0, 5, 0, 0, 0, 1]);
     assert_vector_bytes(
         "hello-ack",
         &[
-            0, 0, 0, 17, 0xF1, 0, 0, 0, 3, 0, 0, 0, 1, 0, 0, 0, 7, 0, 0, 0, 32,
+            0, 0, 0, 17, 0xF1, 0, 0, 0, 5, 0, 0, 0, 1, 0, 0, 0, 7, 0, 0, 0, 32,
         ],
     );
     assert_vector_bytes(
         "setup-payload",
-        &[0, 0, 0, 9, 0x01, 0, 0, 0, 0, 0, 6, 0xE0, 0],
+        &[
+            0, 0, 0, 57, 1, 0, 0, 0, 0, 0, 6, 224, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0,
+        ],
     );
     assert_vector_bytes("setup-ack", &[0, 0, 0, 2, 0x02, 0]);
     assert_vector_bytes("quit", &[0, 0, 0, 1, 0x12]);
@@ -150,7 +154,13 @@ fn setup_vector_freezes_payload_without_descriptor_sidecar() {
     );
     assert_eq!(
         &setup.frame[FRAME_LENGTH_PREFIX_SIZE + FRAME_TAG_SIZE..],
-        &[0, 0, 0, 0, 0, 6, 0xE0, 0],
+        &[
+            0, 0, 0, 0, 0, 6, 0xE0, 0, // Region extent.
+            0, 0, 0, 0, 0, 0, 0, 0, // Absent workspace schema and flags.
+            0, 0, 0, 0, 0, 0, 0, 1, // Actual process generation.
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0,
+        ],
     );
 }
 
@@ -178,7 +188,11 @@ fn encode_vector(vector: ControlGoldenVector) -> Vec<u8> {
             node_count,
         }),
         ControlGoldenVectorMessage::SetupPayload { region_len } => {
-            control_encode_host_msg(&HostMsg::Setup { region_len })
+            control_encode_host_msg(&HostMsg::Setup {
+                process_generation: 1,
+                device_digest_workspace: None,
+                region_len,
+            })
         }
         ControlGoldenVectorMessage::Quit => control_encode_host_msg(&HostMsg::Quit),
     }
@@ -209,8 +223,13 @@ fn decode_vector(vector: ControlGoldenVector) -> ControlGoldenVectorMessage {
                 slot_index,
                 node_count,
             },
-            Ok(HostMsg::Setup { region_len }) => {
-                ControlGoldenVectorMessage::SetupPayload { region_len }
+            Ok(HostMsg::Setup {
+                region_len,
+                process_generation: 1,
+                device_digest_workspace: None,
+            }) => ControlGoldenVectorMessage::SetupPayload { region_len },
+            Ok(HostMsg::Setup { .. }) => {
+                panic!("golden setup has an unexpected generation or workspace")
             }
             Ok(HostMsg::Quit) => ControlGoldenVectorMessage::Quit,
             Err(error) => panic!("host golden vector should decode: {error}"),

@@ -339,7 +339,7 @@ in
             printf 'qemu_sim_capability=qemu-crucible\n'
             printf 'qemu_atomic_patch_hash=sha256-test-qemu-atomic-patch\n'
             printf 'qemu_shmem_abi_version=30\n'
-            printf 'qemu_shmem_abi=crucible-shmem-abi-v30\n'
+            printf 'qemu_shmem_abi=crucible-shmem-abi-v31\n'
             printf 'qemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\n'
             printf 'qemu_shmem_header_hash=sha256-test-shmem-header\n'
             printf 'qemu_build_id=gate-aos-qemu-build\n'
@@ -349,9 +349,9 @@ in
             printf 'qemu_package=qemu-crucible\n'
             printf 'qemu_build_id=gate-aos-qemu-build\n'
             printf 'shmem_abi_version=30\n'
-            printf 'shmem_abi=crucible-shmem-abi-v30\n'
+            printf 'shmem_abi=crucible-shmem-abi-v31\n'
             printf 'shmem_generated_header_hash=sha256-test-shmem-header\n'
-            printf 'plugin_abi=crucible-shmem-abi-v30\n'
+            printf 'plugin_abi=crucible-shmem-abi-v31\n'
           } > "$plugin_fixture/nix-support/crucible-qemu-plugin-build-info"
           export CRUCIBLE_AOS_QEMU="$qemu_fixture/bin/qemu-system-x86_64"
           export CRUCIBLE_AOS_PLUGIN="$plugin_fixture/lib/libcrucible_qemu_plugin.so"
@@ -369,7 +369,7 @@ in
     ];
 
     meta = {
-      description = "RFC-0010 phase 5 CLI hermetic QEMU discovery gate for ${taskList}";
+      description = "Crucible CLI hermetic QEMU discovery gate for ${taskList}";
       passthru = {
         inherit attrPath dependencies failureText taskIds;
       };

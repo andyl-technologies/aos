@@ -7,12 +7,16 @@ publish = false
 
 [features]
 default = []
-test-support = ["crucible/test-double"]
+kernel-swap-measurement = []
+test-support = ["crucible/test-double", "crucible-ram/test-support"]
+private-measurement-domain = ["crucible-linux-resource/private-measurement-domain", "crucible-cas/private-measurement-domain", "rustix/thread"]
 
 [lints]
 workspace = true
 
 [dependencies]
+crucible-cas = { workspace = true }
+crucible-ram = { workspace = true }
 blake3 = { workspace = true }
 crucible = { path = "../crucible" }
 crucible-device = { path = "../crucible-device" }
@@ -30,5 +34,7 @@ tempfile = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-crucible = { path = "../crucible", features = ["test-double"] }
+crucible-linux-resource = { path = "../crucible-linux-resource", default-features = false, features = ["test-support"] }
+crucible-cas = { workspace = true, features = ["test-support"] }
+crucible = { path = "../crucible", features = ["test-double", "test-support"] }
 rustix = { workspace = true, features = ["time"] }

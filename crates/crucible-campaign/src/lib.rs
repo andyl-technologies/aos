@@ -6,7 +6,7 @@
 //! QEMU-private state, storage paths, and runtime closures are deliberately not
 //! representable here.
 //!
-//! Spec index: RFC-0020 files 01, 02, 04a, 06, 09.
+//! Implementation contract: Campaign identity, typed graph storage, planning, and distributed executor contracts.
 //!
 //! Module map: `artifact`, `choice`, `model`, and `objective` own the portable
 //! campaign vocabulary; `campaign_service`, `execution`, and `planner_service`
@@ -127,8 +127,9 @@ pub use execution::{
 };
 pub use executor_capability::{
     DescribeExecutorRequest, ExecutorCapabilityService, ExecutorCapabilitySet,
-    ExecutorCapacityReport, ExecutorDescription, ExecutorMaterializationCapability,
-    ExecutorMaterializationLocality, WatchExecutorCapacityRequest,
+    ExecutorCapacityReport, ExecutorDescription, ExecutorHostResources,
+    ExecutorMaterializationCapability, ExecutorMaterializationLocality, ExecutorResourceBounds,
+    WatchExecutorCapacityRequest,
 };
 pub use exploration::{
     Attempt, AttemptAdmission, AttemptAdmissionRole, AttemptContinuationInput, AttemptStart,
@@ -268,12 +269,13 @@ pub use repository::{
     CampaignExecutorPublicationGuard, CampaignExecutorStepOutcome, CampaignExecutorStore,
     CampaignHead, CampaignHeadPage, CampaignLifecycle, CampaignPinRetentionRecord,
     CampaignPinRetentionSummary, CampaignPlannerDriver, CampaignPlannerDriverConfigError,
-    CampaignPlannerDriverError, CampaignPlannerStepOutcome, CampaignRepository,
-    CampaignRepositoryError, CampaignRepositoryGcExclusionGuard, CampaignSupervisor,
-    CampaignSupervisorConfigError, CampaignSupervisorError, CampaignSupervisorStepOutcome,
-    ChoiceDiscovery, ChoiceDiscoveryResult, ClaimableAttemptPage,
-    FindingExactCheckpointAuthenticationError, FindingExactCheckpointAuthenticator,
-    FindingPublicationResult, MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_CAMPAIGN_CLOSURE_OBJECTS,
+    CampaignPlannerDriverError, CampaignPlannerStepOutcome, CampaignRamAdmission,
+    CampaignRepository, CampaignRepositoryError, CampaignRepositoryGcExclusionGuard,
+    CampaignStorageClosure, CampaignSupervisor, CampaignSupervisorConfigError,
+    CampaignSupervisorError, CampaignSupervisorStepOutcome, ChoiceDiscovery, ChoiceDiscoveryResult,
+    ClaimableAttemptPage, FindingExactCheckpointAuthenticationError,
+    FindingExactCheckpointAuthenticator, FindingPublicationResult,
+    MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_CAMPAIGN_CLOSURE_OBJECTS,
     MAX_CAMPAIGN_SNAPSHOT_ANCESTRY, MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS,
     MAX_OBJECTIVE_EVALUATION_SCAN_PAGE_ITEMS, MAX_OBSERVATION_CHOICE_DISCOVERIES,
     MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, MAX_PLANNER_SCAN_PAGE_ITEMS,

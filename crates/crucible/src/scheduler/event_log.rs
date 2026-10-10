@@ -7,12 +7,17 @@ use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 mod backend_loop;
 pub(super) use backend_loop::HeldDeliveryCeiling;
 pub(super) use backend_loop::HeldRunLineage;
+mod causal_identity;
 mod observation_append;
+pub(super) mod owned_copy;
 pub use backend_loop::{
     BackendNetworkOutputInterceptor, BackendNetworkSettlement, BackendQuantumLoop,
     FailedCapNegotiation, FailedDispatchResolution, FailedInputResolution, HeldHostStopKind,
     HeldHostStopWitness, NoopBackendNetworkOutputInterceptor,
 };
+pub(crate) use causal_identity::scheduler_event_log_segment_identity;
+pub use causal_identity::{EventLogCausalIdentity, event_log_causal_identity};
+pub(crate) use owned_copy::{copy_entries_admitted, copy_entry_admitted, copy_observable_admitted};
 
 /// Terminal verdict emitted by a scenario trigger at a quantum boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -773,7 +778,7 @@ pub struct QuantumRequest {
 }
 
 /// Output produced by one scheduler quantum.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct QuantumOutcome {
     /// The configuration after all decisions from this quantum have been
     /// appended.
@@ -804,10 +809,12 @@ pub struct QuantumOutcome {
     pub event_log_offset: EventLogOffset,
     /// Scheduler-owned quiescence evidence at this quantum boundary, when available.
     pub scheduler_quiescence: Option<SchedulerQuiescence>,
+    /// Original loans retained until all event-log output storage closes.
+    pub event_log_custody: EventLogOutputCustody,
 }
 
 /// Result of admitting due live-network outputs at an exact choice boundary.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum BackendNetworkAdmission {
     /// Every due output was resolved through its selected or default outcome.
     Settled {
@@ -1151,7 +1158,7 @@ impl SchedulerEventLogEntry {
             class,
             event_payload,
             SchedulerEventLogPayload::Diagnostic(diagnostic),
-        );
+        )?;
         if !entry.class_matches_catalog() {
             return Err(SchedulerError::BoundaryViolation {
                 message: format!(
@@ -1168,12 +1175,14 @@ impl SchedulerEventLogEntry {
     /// The marker deliberately records only the stable budget domain. Numeric
     /// limits and observed counters belong in timeout report evidence and do not
     /// perturb the causal signature.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns an original metadata admission or canonical rendering failure.
     pub fn execution_budget_exhausted(
         sequence: u64,
         at: VirtualTime,
         budget_kind: impl Into<String>,
-    ) -> Self {
+    ) -> Result<Self, crate::EngineError> {
         Self::execution_budget_exhausted_with_time(
             sequence,
             EventLogTime::from_virtual_time(at),
@@ -1182,12 +1191,14 @@ impl SchedulerEventLogEntry {
     }
 
     /// Builds an execution-budget marker with its exact retained coordinate.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns an original metadata admission or canonical rendering failure.
     pub fn execution_budget_exhausted_with_time(
         sequence: u64,
         at: EventLogTime,
         budget_kind: impl Into<String>,
-    ) -> Self {
+    ) -> Result<Self, crate::EngineError> {
         let mut attributes = BTreeMap::new();
         attributes.insert(
             String::from("budget_kind"),
@@ -1217,13 +1228,15 @@ impl SchedulerEventLogEntry {
     /// scheduler loop implementations that already own event-log offset
     /// accounting; it must not be used to rewrite replayed logs or bypass
     /// replay-oracle validation.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns an original metadata admission or canonical rendering failure.
     pub fn assertion_state_observation(
         sequence: u64,
         at: VirtualTime,
         name: AssertionId,
         state: AssertionPhase,
-    ) -> Self {
+    ) -> Result<Self, crate::EngineError> {
         scheduler_event_log_entry(
             sequence,
             at,
@@ -1236,14 +1249,16 @@ impl SchedulerEventLogEntry {
 
     /// Builds a scheduler-owned assertion-state observation with an exact
     /// retained event-log coordinate.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns an original metadata admission or canonical rendering failure.
     pub fn assertion_state_observation_with_time(
         sequence: u64,
         at: EventLogTime,
         name: AssertionId,
         state: AssertionPhase,
-    ) -> Self {
-        let entry = Self::assertion_state_observation(sequence, at.virtual_time, name, state);
+    ) -> Result<Self, crate::EngineError> {
+        let entry = Self::assertion_state_observation(sequence, at.virtual_time, name, state)?;
         scheduler_event_log_entry_with_material(
             sequence,
             at,
@@ -1263,13 +1278,15 @@ impl SchedulerEventLogEntry {
     /// scheduler loop implementations that already own event-log offset
     /// accounting; it must not be used to rewrite replayed logs or bypass
     /// replay-oracle validation.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns an original metadata admission or canonical rendering failure.
     pub fn guest_marker_observation(
         sequence: u64,
         retired_icount: Icount,
         node: NodeId,
         marker: MarkerId,
-    ) -> Self {
+    ) -> Result<Self, crate::EngineError> {
         scheduler_event_log_entry(
             sequence,
             VirtualTime {
@@ -1290,13 +1307,15 @@ impl SchedulerEventLogEntry {
     /// constructor is for trusted scheduler loop and conformance-test
     /// implementations; campaign sealing still validates the exact scenario
     /// measurement contract before retaining an observation.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns an original metadata admission or canonical rendering failure.
     pub fn guest_measurement_observation(
         sequence: u64,
         retired_icount: Icount,
         node: NodeId,
         event: GuestMeasurementEvent,
-    ) -> Self {
+    ) -> Result<Self, crate::EngineError> {
         scheduler_event_log_entry(
             sequence,
             VirtualTime {
@@ -1317,7 +1336,9 @@ impl SchedulerEventLogEntry {
     /// constructor is for trusted scheduler loop and conformance-test
     /// implementations; campaign sealing still validates the exact scenario
     /// marker and instance contract before retaining an observation.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns an original metadata admission or canonical rendering failure.
     pub fn guest_semantic_marker_observation(
         sequence: u64,
         retired_icount: Icount,
@@ -1325,7 +1346,7 @@ impl SchedulerEventLogEntry {
         marker: String,
         instance: String,
         details: Vec<GuestSemanticMarkerDetail>,
-    ) -> Self {
+    ) -> Result<Self, crate::EngineError> {
         scheduler_event_log_entry(
             sequence,
             VirtualTime {
@@ -1343,22 +1364,26 @@ impl SchedulerEventLogEntry {
 
     /// Builds an observable condition entry as if appended by scheduler EMIT.
     #[cfg(any(debug_assertions, feature = "test-support"))]
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns an original metadata admission or canonical rendering failure.
     pub(crate) fn observable(
         sequence: u64,
         at: VirtualTime,
         payload: ObservableEventPayload,
-    ) -> Self {
+    ) -> Result<Self, crate::EngineError> {
         scheduler_event_log_entry(sequence, at, SchedulerEventLogPayload::Observable(payload))
     }
 
     /// Builds a deterministic condition-evaluation boundary entry.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns an original metadata admission or canonical rendering failure.
     pub(crate) fn evaluation_boundary(
         sequence: u64,
         at: VirtualTime,
         kind: SchedulerEvaluationBoundaryKind,
-    ) -> Self {
+    ) -> Result<Self, crate::EngineError> {
         scheduler_event_log_entry(
             sequence,
             at,
@@ -1367,8 +1392,14 @@ impl SchedulerEventLogEntry {
     }
 
     /// Builds an observational diagnostic entry as if appended by scheduler EMIT.
-    #[must_use]
-    pub fn diagnostic(sequence: u64, at: VirtualTime, diagnostic: EventDiagnosticPayload) -> Self {
+    ///
+    /// # Errors
+    /// Returns an original metadata admission or canonical rendering failure.
+    pub fn diagnostic(
+        sequence: u64,
+        at: VirtualTime,
+        diagnostic: EventDiagnosticPayload,
+    ) -> Result<Self, crate::EngineError> {
         scheduler_event_log_entry(
             sequence,
             at,
@@ -1377,14 +1408,16 @@ impl SchedulerEventLogEntry {
     }
 
     /// Builds a causal catalog `fork` marker with debug-specific attributes.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns an original metadata admission or canonical rendering failure.
     pub(crate) fn fork_marker(
         sequence: u64,
         at: VirtualTime,
         from_checkpoint_id: ContentHash,
         schedule_delta: ContentHash,
         mut attributes: BTreeMap<String, EventAttributeValue>,
-    ) -> Self {
+    ) -> Result<Self, crate::EngineError> {
         attributes.insert(
             String::from("from_checkpoint_id"),
             EventAttributeValue::String(from_checkpoint_id.to_hex()),
@@ -1466,9 +1499,11 @@ impl SchedulerEventLogEntry {
     /// consumers that retain scheduler entries across multiple quanta. It
     /// includes variable-sized payload material but excludes container
     /// allocation overhead.
-    #[must_use]
-    pub fn canonical_material_len(&self) -> usize {
-        scheduler_event_log_entry_material(
+    ///
+    /// # Errors
+    /// Returns an original metadata admission or canonical rendering failure.
+    pub fn canonical_material_len(&self) -> Result<usize, crate::EngineError> {
+        crate::model::canonical_display_len(&scheduler_event_log_entry_material(
             self.sequence,
             &self.at,
             &self.source,
@@ -1476,18 +1511,19 @@ impl SchedulerEventLogEntry {
             self.class,
             &self.event_payload,
             &self.payload,
-        )
-        .len()
+        ))
     }
 
     /// Returns whether this entry's content hash matches its canonical material.
-    #[must_use]
-    pub fn has_valid_content_hash(&self) -> bool {
+    ///
+    /// # Errors
+    /// Returns an original metadata admission or canonical rendering failure.
+    pub fn has_valid_content_hash(&self) -> Result<bool, crate::EngineError> {
         if !self.class_matches_catalog() {
-            return false;
+            return Ok(false);
         }
-        self.content_hash
-            == ContentHash::from_canonical_material(
+        Ok(self.content_hash
+            == crate::model::hash_canonical_display(
                 "crucible.scheduler.event-log.entry.v5",
                 &scheduler_event_log_entry_material(
                     self.sequence,
@@ -1498,7 +1534,7 @@ impl SchedulerEventLogEntry {
                     &self.event_payload,
                     &self.payload,
                 ),
-            )
+            )?)
     }
 
     /// Returns whether the recorded class matches the event-kind catalog.
@@ -1521,7 +1557,7 @@ impl SchedulerEventLogEntry {
         sequence: u64,
         at: VirtualTime,
         payload: SchedulerEventLogPayload,
-    ) -> Self {
+    ) -> Result<Self, crate::EngineError> {
         scheduler_event_log_entry(sequence, at, payload)
     }
 
@@ -1532,12 +1568,12 @@ impl SchedulerEventLogEntry {
         class: SchedulerEventLogClass,
         event_payload: EventPayload,
         payload: SchedulerEventLogPayload,
-    ) -> Self {
+    ) -> Result<Self, crate::EngineError> {
         scheduler_event_log_entry_with_class(sequence, at, class, event_payload, payload)
     }
 
     #[cfg(any(debug_assertions, feature = "test-support"))]
-    pub(crate) fn with_time_for_test(self, at: EventLogTime) -> Self {
+    pub(crate) fn with_time_for_test(self, at: EventLogTime) -> Result<Self, crate::EngineError> {
         scheduler_event_log_entry_with_material(
             self.sequence,
             at,
@@ -1600,19 +1636,137 @@ impl fmt::Debug for EventLogSegmentStore {
 /// `EventLog` is the owner of append sequencing, prefix content-addressing, and
 /// the condition-evaluation prefix derived from the same retained entries. All
 /// observability consumers take projections of this one stream.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct EventLog {
     pub(super) segment_store: EventLogSegmentStore,
-    pub(super) segment_dependencies: Vec<ContentHash>,
     pub(super) prefix: ContentHash,
     pub(super) offset: EventLogOffset,
     pub(super) bytes: u64,
     pub(super) events: u64,
     pub(super) condition_base_events: u64,
-    pub(super) condition_prefix: ConditionEventLogPrefix,
+    genesis_prefix: ConditionEventLogPrefix,
+    retained_state: Option<Arc<RetainedEventLogState>>,
+}
+
+#[derive(Debug)]
+struct RetainedEventLogState {
+    dependencies: Vec<ContentHash>,
+    prefix: ConditionEventLogPrefix,
+    _custody: crate::owned_decode::DecodeCustody,
+    _dependencies_custody: crate::owned_decode::DecodeCustody,
+}
+
+impl Clone for EventLog {
+    fn clone(&self) -> Self {
+        Self {
+            segment_store: self.segment_store.clone(),
+            prefix: self.prefix,
+            offset: self.offset,
+            bytes: self.bytes,
+            events: self.events,
+            condition_base_events: self.condition_base_events,
+            genesis_prefix: ConditionEventLogPrefix::genesis()
+                .with_base_sequence(self.condition_base_events)
+                .with_event_log_offset(self.offset),
+            retained_state: self.retained_state.clone(),
+        }
+    }
+}
+
+fn condition_copy_error(source: crate::ConditionEvaluationError) -> SchedulerError {
+    match source {
+        crate::ConditionEvaluationError::OriginalAdmission(source) => {
+            SchedulerError::from(crate::EngineError::ArtifactDecodeAdmission { source })
+        }
+        crate::ConditionEvaluationError::CanonicalIdentity { source, .. } => {
+            SchedulerError::Evaluation { source }
+        }
+        source => SchedulerError::from(crate::EngineError::ArtifactDecodeAdmission {
+            source: crate::owned_decode::DecodeAdmissionError::new(source),
+        }),
+    }
 }
 
 impl EventLog {
+    fn retained_state_mut(&mut self) -> Result<&mut RetainedEventLogState, SchedulerError> {
+        let must_copy = self
+            .retained_state
+            .as_ref()
+            .is_none_or(|state| Arc::strong_count(state) != 1);
+        if must_copy {
+            let prefix = self.condition_prefix();
+            let _original = prefix.enter_original_decode();
+            let budget = crate::owned_decode::require_current_child_budget()
+                .map_err(|source| crate::EngineError::ArtifactDecodeAdmission { source })?;
+            let _scope = budget.enter();
+            crate::owned_decode::charge_bytes(
+                (std::mem::size_of::<RetainedEventLogState>() + 2 * std::mem::size_of::<usize>())
+                    as u64,
+            )
+            .map_err(|source| crate::EngineError::ArtifactDecodeAdmission { source })?;
+            let mut dependencies = Vec::new();
+            let mut dependencies_custody = crate::owned_decode::DecodeCustody::default();
+            crate::owned_decode::grow_retained_vec(
+                &mut dependencies,
+                self.segment_dependencies().len(),
+                &mut dependencies_custody,
+            )
+            .map_err(|source| crate::EngineError::ArtifactDecodeAdmission { source })?;
+            dependencies.extend_from_slice(self.segment_dependencies());
+            let prefix = prefix.try_clone_admitted().map_err(condition_copy_error)?;
+            self.retained_state = Some(Arc::new(RetainedEventLogState {
+                dependencies,
+                prefix,
+                _custody: budget.custody(),
+                _dependencies_custody: dependencies_custody,
+            }));
+        }
+        self.retained_state
+            .as_mut()
+            .and_then(Arc::get_mut)
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("event log mutation requires exclusive retained state"),
+            })
+    }
+
+    pub(super) fn segment_dependencies(&self) -> &[ContentHash] {
+        self.retained_state
+            .as_ref()
+            .map_or(&[], |state| &state.dependencies)
+    }
+
+    pub(super) fn replace_retained_state(
+        &mut self,
+        dependencies: &[ContentHash],
+        prefix: ConditionEventLogPrefix,
+    ) -> Result<(), SchedulerError> {
+        let _original = prefix.enter_original_decode();
+        let budget = crate::owned_decode::require_current_child_budget()
+            .map_err(|source| crate::EngineError::ArtifactDecodeAdmission { source })?;
+        let _scope = budget.enter();
+        crate::owned_decode::charge_bytes(
+            (std::mem::size_of::<RetainedEventLogState>() + 2 * std::mem::size_of::<usize>())
+                as u64,
+        )
+        .map_err(|source| crate::EngineError::ArtifactDecodeAdmission { source })?;
+        let mut copied_dependencies = Vec::new();
+        let mut dependencies_custody = crate::owned_decode::DecodeCustody::default();
+        crate::owned_decode::grow_retained_vec(
+            &mut copied_dependencies,
+            dependencies.len(),
+            &mut dependencies_custody,
+        )
+        .map_err(|source| crate::EngineError::ArtifactDecodeAdmission { source })?;
+        copied_dependencies.extend_from_slice(dependencies);
+        self.retained_state = Some(Arc::new(RetainedEventLogState {
+            dependencies: copied_dependencies,
+            prefix,
+            _custody: budget.custody(),
+            _dependencies_custody: dependencies_custody,
+        }));
+        Ok(())
+    }
+
     /// Builds an empty unified event log.
     #[must_use]
     pub fn new() -> Self {
@@ -1660,15 +1814,15 @@ impl EventLog {
         let prefix = scheduler_event_log_prefix_for_resume(offset);
         Self {
             segment_store,
-            segment_dependencies: Vec::new(),
             prefix,
             offset,
             bytes: offset.bytes,
             events: offset.events,
             condition_base_events: offset.events,
-            condition_prefix: ConditionEventLogPrefix::genesis()
+            genesis_prefix: ConditionEventLogPrefix::genesis()
                 .with_base_sequence(offset.events)
                 .with_event_log_offset(offset),
+            retained_state: None,
         }
     }
 
@@ -1681,7 +1835,9 @@ impl EventLog {
     /// Returns the condition-evaluation projection over the retained log prefix.
     #[must_use]
     pub fn condition_prefix(&self) -> &ConditionEventLogPrefix {
-        &self.condition_prefix
+        self.retained_state
+            .as_ref()
+            .map_or(&self.genesis_prefix, |state| &state.prefix)
     }
 
     /// Returns the exact event entries retained for condition and evidence replay.
@@ -1692,7 +1848,7 @@ impl EventLog {
     /// complete run history.
     #[must_use]
     pub fn retained_entries(&self) -> &[SchedulerEventLogEntry] {
-        self.condition_prefix.scheduler_entries()
+        self.condition_prefix().scheduler_entries()
     }
 
     /// Returns the dense event count preceding [`Self::retained_entries`].
@@ -1730,6 +1886,7 @@ impl EventLog {
                 segment_text: String::new(),
                 segment_hash: None,
                 offset: self.offset(),
+                event_log_custody: EventLogOutputCustody::default(),
             });
         }
 
@@ -1765,14 +1922,22 @@ impl EventLog {
             }
         }
 
-        let segment_bytes = scheduler_event_log_segment_bytes(self.prefix, &entries);
-        let segment_text = decode_scheduler_event_log_segment(&segment_bytes)
-            .map(|segment| segment.text_view())
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!(
-                    "event-log segment canonical bytes did not decode after encode: {error:?}"
-                ),
-            })?;
+        let input_custody = crate::owned_decode::require_current_custody()
+            .map_err(|source| crate::EngineError::ArtifactDecodeAdmission { source })?;
+        let output_bank = crate::owned_decode::require_current_child_budget()
+            .map_err(|source| crate::EngineError::ArtifactDecodeAdmission { source })?;
+        let _output_scope = output_bank.enter();
+        let material_bank = crate::owned_decode::require_current_child_budget()
+            .map_err(|source| crate::EngineError::ArtifactDecodeAdmission { source })?;
+        let material = {
+            let _material_scope = material_bank.enter();
+            scheduler_event_log_segment_material(self.prefix, &entries)?
+        };
+        let segment_bytes = material.encode()?;
+        let segment_text = material.text_view()?;
+        drop(material);
+        drop(material_bank);
+        let event_log_custody = EventLogOutputCustody::from_budget(&output_bank, input_custody)?;
         let segment_hash = self.segment_store.put_segment(&segment_bytes)?;
         let appended_bytes =
             u64::try_from(segment_bytes.len()).map_err(|_| SchedulerError::BoundaryViolation {
@@ -1797,18 +1962,25 @@ impl EventLog {
             EventLogOffset::with_appended_segment(self.prefix, bytes, events, segment_hash);
         let prefix =
             scheduler_event_log_prefix_after_append(self.prefix, segment_hash, bytes, events);
-        self.condition_prefix
-            .append_scheduler_entries(entries.clone())
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!("scheduler emitted invalid condition event-log prefix: {error:?}"),
-            })?;
+        let retained = self.retained_state_mut()?;
+        let _original = retained._custody.enter();
+        crate::owned_decode::grow_retained_vec(
+            &mut retained.dependencies,
+            1,
+            &mut retained._dependencies_custody,
+        )
+        .map_err(|source| crate::EngineError::ArtifactDecodeAdmission { source })?;
+        retained
+            .prefix
+            .append_scheduler_entries_ref(&entries)
+            .map_err(condition_copy_error)?;
+        retained.dependencies.push(segment_hash);
+        retained.prefix.set_event_log_offset(current_offset);
 
         self.prefix = prefix;
-        self.segment_dependencies.push(segment_hash);
         self.offset = current_offset;
         self.bytes = bytes;
         self.events = events;
-        self.condition_prefix.set_event_log_offset(current_offset);
 
         Ok(SchedulerEventLogAppend {
             entries,
@@ -1816,6 +1988,7 @@ impl EventLog {
             segment_text,
             segment_hash: Some(segment_hash),
             offset: current_offset,
+            event_log_custody,
         })
     }
 }
@@ -1957,15 +2130,20 @@ impl EventLogDeterminismComparison {
 }
 
 /// Builds the canonical causal-subsequence projection for `entries`.
-#[must_use]
-pub fn event_log_causal_projection(entries: &[SchedulerEventLogEntry]) -> EventLogCausalProjection {
+///
+/// # Errors
+///
+/// Returns the original metadata admission or canonical rendering refusal.
+pub fn event_log_causal_projection(
+    entries: &[SchedulerEventLogEntry],
+) -> Result<EventLogCausalProjection, crate::EngineError> {
     let entries = entries
         .iter()
         .enumerate()
         .filter(|(_, entry)| entry.class == SchedulerEventLogClass::Causal)
         .enumerate()
-        .map(
-            |(causal_index, (raw_index, entry))| EventLogCausalProjectionEntry {
+        .map(|(causal_index, (raw_index, entry))| {
+            Ok(EventLogCausalProjectionEntry {
                 raw_index,
                 entry: scheduler_event_log_entry_with_material(
                     causal_index as u64,
@@ -1975,22 +2153,22 @@ pub fn event_log_causal_projection(entries: &[SchedulerEventLogEntry]) -> EventL
                     SchedulerEventLogClass::Causal,
                     entry.event_payload.clone(),
                     entry.payload.clone(),
-                ),
-            },
-        )
-        .collect::<Vec<_>>();
+                )?,
+            })
+        })
+        .collect::<Result<Vec<_>, crate::EngineError>>()?;
     let canonical_entries = entries
         .iter()
         .map(|entry| entry.entry.clone())
         .collect::<Vec<_>>();
     let canonical_bytes =
-        scheduler_event_log_segment_bytes(scheduler_event_log_empty_prefix(), &canonical_entries);
+        scheduler_event_log_segment_bytes(scheduler_event_log_empty_prefix(), &canonical_entries)?;
     let content_hash = ContentHash::from_bytes(&canonical_bytes);
-    EventLogCausalProjection {
+    Ok(EventLogCausalProjection {
         entries,
         canonical_bytes,
         content_hash,
-    }
+    })
 }
 
 /// Compares two unified event logs by their canonical causal subsequence.
@@ -1998,25 +2176,28 @@ pub fn event_log_causal_projection(entries: &[SchedulerEventLogEntry]) -> EventL
 /// Observational entries are excluded before comparison. Surviving causal
 /// entries are renumbered independently on both sides, so different
 /// observational interleavings do not perturb the comparison.
-#[must_use]
+///
+/// # Errors
+///
+/// Returns the original metadata admission or canonical rendering refusal.
 pub fn compare_event_log_determinism(
     expected: &[SchedulerEventLogEntry],
     reproduced: &[SchedulerEventLogEntry],
-) -> EventLogDeterminismComparison {
-    let expected = event_log_causal_projection(expected);
-    let reproduced = event_log_causal_projection(reproduced);
+) -> Result<EventLogDeterminismComparison, crate::EngineError> {
+    let expected = event_log_causal_projection(expected)?;
+    let reproduced = event_log_causal_projection(reproduced)?;
     let byte_identical = expected.canonical_bytes == reproduced.canonical_bytes;
     let mismatch = if byte_identical {
         None
     } else {
         event_log_determinism_mismatch(&expected, &reproduced)
     };
-    EventLogDeterminismComparison {
+    Ok(EventLogDeterminismComparison {
         expected,
         reproduced,
         byte_identical,
         mismatch,
-    }
+    })
 }
 
 pub(super) fn event_log_determinism_mismatch(
