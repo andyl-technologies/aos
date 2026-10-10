@@ -25,6 +25,8 @@ use crate::{
 
 use super::*;
 
+mod campaign_execution;
+
 // Matches the resident-throughput executor declaration in
 // packaged_qemu_executor/tests/paging_native/throughput/corpus.rs. Dirty-unit
 // capacity is a different resource axis even where the authored values agree.
@@ -118,6 +120,7 @@ impl OriginalWorkflowArtifactsOwner {
 fn validate_geometry(workflow: &WorkflowProjection<'_>) -> Result<(), ArtifactCause> {
     let profile = &workflow.service_profile;
     let input = &profile.operator.executor;
+    campaign_execution::validate(&input.campaign_execution)?;
     let capacity = &input.capacity;
     let operational = &input.host_operational_capacity;
     let aggregate = &profile.aggregate;
@@ -462,6 +465,7 @@ mod tests {
     //! These controls exercise paid configuration, not native launch admission.
 
     use super::*;
+
     use crate::private_measurement_runtime::catalog::tests::fixture;
 
     fn deployment() -> Result<ExecutorDeployment<'static>, serde_json::Error> {
@@ -622,6 +626,58 @@ mod tests {
             assert!(failure.to_string().contains("u8"));
             drop(failure);
         }
+        catalog.try_close().map_err(|_| "catalog close refused")?;
+        decoder.try_close().map_err(|_| "decoder close refused")?;
+        Ok(())
+    }
+
+    #[test]
+    fn closed_workflow_requires_campaign_execution_and_owns_variant_failures()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = include_str!(
+            "../../../../../crucible-qemu/src/linux_attempt_host/original_actor/workflow/whole_executor_fixture.json"
+        );
+        let (_, decoder, catalog) = fixture();
+        let budget = decoder.budget()?;
+        let decoded: WorkflowProjection<'_> = from_json_slice_closed(source.as_bytes(), budget)?;
+        campaign_execution::validate(
+            &decoded.service_profile.operator.executor.campaign_execution,
+        )?;
+        drop(decoded);
+
+        let begin = source
+            .find(",\n        \"campaignExecution\"")
+            .ok_or("execution fixture field disappeared")?;
+        let end = source[begin..]
+            .find("\n      },")
+            .ok_or("execution fixture boundary disappeared")?;
+        let absent = format!("{}{}", &source[..begin], &source[begin + end..]);
+        let failure =
+            match from_json_slice_closed::<WorkflowProjection<'_>>(absent.as_bytes(), budget) {
+                Ok(_) => return Err("missing execution contract parsed".into()),
+                Err(failure) => failure,
+            };
+        assert!(failure.to_string().contains("campaignExecution"));
+        drop(failure);
+
+        let malformed = source.replacen("\"breadthFirst\"", "\"unsupportedSearch\"", 1);
+        assert_ne!(malformed, source);
+        let failure =
+            match from_json_slice_closed::<WorkflowProjection<'_>>(malformed.as_bytes(), budget) {
+                Ok(_) => return Err("unsupported search parsed".into()),
+                Err(failure) => failure,
+            };
+        assert!(failure.to_string().contains("breadthFirst"));
+        drop(failure);
+
+        let malformed = source.replacen("\"discard\"", "\"unsupportedRetention\"", 1);
+        let failure =
+            match from_json_slice_closed::<WorkflowProjection<'_>>(malformed.as_bytes(), budget) {
+                Ok(_) => return Err("unsupported retention parsed".into()),
+                Err(failure) => failure,
+            };
+        assert!(failure.to_string().contains("retainAlways"));
+        drop(failure);
         catalog.try_close().map_err(|_| "catalog close refused")?;
         decoder.try_close().map_err(|_| "decoder close refused")?;
         Ok(())

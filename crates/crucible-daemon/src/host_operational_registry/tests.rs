@@ -1081,3 +1081,279 @@ fn native_actor_control_contention_preserves_the_original_deadline_cause() {
             .is_some()
     );
 }
+
+#[test]
+fn existing_service_watcher_sends_exact_pager_cancel_without_releasing_reservation() {
+    use crucible_protocol::ram_control::{
+        RamControlDisposition, RamControlMessage, RamControlRequest, ram_control_request_digest,
+        read_ram_control, write_ram_control,
+    };
+    use std::os::unix::net::UnixStream;
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024).unwrap();
+    let fixture = fixture(64 * 1024);
+    let owner = fixture.registry.node(fixture.target).unwrap();
+    let mut reply = placement_reply(&owner.state.lock().unwrap());
+    let (host, mut peer) = UnixStream::pair().unwrap();
+    peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let (observed, received) = std::sync::mpsc::channel();
+    let expected = fixture.target;
+    let cancellation = crate::ExecutionCancellation::default();
+    let process_signal = cancellation.observer_for_test().unwrap();
+    let server = std::thread::spawn(move || {
+        for next in 0..2 {
+            let mut frame = read_ram_control(&mut peer).unwrap().unwrap();
+            if next == 1 {
+                assert!(
+                    process_signal.wait_for_cancellation(Duration::ZERO),
+                    "process containment must be signaled before any Cancel wait"
+                );
+                assert_eq!(
+                    frame.target,
+                    crucible_qemu::ram_control::target_to_wire(expected)
+                );
+                assert!(matches!(
+                    frame.message,
+                    RamControlMessage::Request(RamControlRequest::Cancel {
+                        operation_generation: 1
+                    })
+                ));
+                reply.disposition = RamControlDisposition::Canceled;
+            }
+            frame.message = RamControlMessage::Reply {
+                request_digest: ram_control_request_digest(&frame).unwrap(),
+                state: reply,
+            };
+            write_ram_control(&mut peer, &frame).unwrap();
+            if next == 1 {
+                observed.send(()).unwrap();
+            }
+        }
+    });
+    let client = RamControlClient::connect_supervised(
+        host,
+        [4; 32],
+        fixture.target,
+        fixture.supervisor.clone(),
+    )
+    .unwrap();
+    *owner.client.lock().unwrap() = Some(client);
+    let before = fixture
+        .admission
+        .0
+        .lock()
+        .unwrap()
+        .owner_reservation(fixture.target)
+        .unwrap();
+    let mut watcher = crate::supervision::AssignmentHostWatchdogGuard::start_service(
+        fixture.supervisor.clone(),
+        cancellation.clone(),
+        Some(fixture.registry.clone()),
+    )
+    .unwrap();
+    let page = fixture
+        .supervisor
+        .begin(HostOperationClass::PageIn)
+        .unwrap();
+
+    fixture.supervisor.cancel().unwrap();
+    received
+        .recv_timeout(Duration::from_secs(2))
+        .expect("existing watcher must send typed Cancel");
+    assert!(watcher.stop());
+
+    assert!(page.wait_slice().is_err());
+    assert!(cancellation.is_canceled());
+    assert_eq!(
+        fixture
+            .admission
+            .0
+            .lock()
+            .unwrap()
+            .owner_reservation(fixture.target),
+        Some(before)
+    );
+    assert_eq!(
+        owner.state.lock().unwrap().convergence,
+        HostRamConvergence::Quarantined
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn cancellation_snapshot_and_request_admission_refuse_roster_contention() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024).unwrap();
+    let fixture = fixture(64 * 1024);
+    let state = fixture.registry.shared.state.lock().unwrap();
+
+    assert!(matches!(
+        fixture.registry.begin_request("operator"),
+        Err(HostOperationalError::Unavailable)
+    ));
+    assert!(matches!(
+        fixture
+            .registry
+            .cancel_registered_pagers(&fixture.supervisor),
+        Err(HostOperationalError::Unavailable)
+    ));
+    assert!(state.nodes.contains_key(&fixture.target));
+}
+
+fn install_cancellation_peer(fixture: &Fixture) -> (Arc<Owner>, std::os::unix::net::UnixStream) {
+    use crucible_protocol::ram_control::{
+        RamControlMessage, ram_control_request_digest, read_ram_control, write_ram_control,
+    };
+    let owner = fixture.registry.node(fixture.target).unwrap();
+    let reply = placement_reply(&owner.state.lock().unwrap());
+    let (host, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+    peer.set_read_timeout(Some(Duration::from_millis(50)))
+        .unwrap();
+    let handshake = std::thread::spawn(move || {
+        let mut frame = read_ram_control(&mut peer).unwrap().unwrap();
+        frame.message = RamControlMessage::Reply {
+            request_digest: ram_control_request_digest(&frame).unwrap(),
+            state: reply,
+        };
+        write_ram_control(&mut peer, &frame).unwrap();
+        peer
+    });
+    let client = RamControlClient::connect_supervised(
+        host,
+        [4; 32],
+        fixture.target,
+        fixture.supervisor.clone(),
+    )
+    .unwrap();
+    *owner.client.lock().unwrap() = Some(client);
+    (owner, handshake.join().unwrap())
+}
+
+#[test]
+fn cancellation_error_slot_refuses_contention_and_poison_before_exchange() {
+    use std::io::Read;
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024).unwrap();
+    let fixture = fixture(64 * 1024);
+    let (owner, mut peer) = install_cancellation_peer(&fixture);
+    let reservation = fixture
+        .admission
+        .0
+        .lock()
+        .unwrap()
+        .owner_reservation(fixture.target);
+    let slot = owner.cancellation_failure.lock().unwrap();
+
+    assert!(matches!(
+        fixture
+            .registry
+            .cancel_registered_pagers(&fixture.supervisor),
+        Err(HostOperationalError::Unavailable)
+    ));
+    assert!(slot.is_none());
+    let mut byte = [0];
+    assert!(
+        matches!(peer.read(&mut byte), Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut))
+    );
+    drop(slot);
+
+    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _slot = owner.cancellation_failure.lock().unwrap();
+        panic!("modeled failure-slot poison");
+    }));
+    assert!(poisoned.is_err());
+    assert!(matches!(
+        fixture
+            .registry
+            .cancel_registered_pagers(&fixture.supervisor),
+        Err(HostOperationalError::Unavailable)
+    ));
+    assert!(
+        matches!(peer.read(&mut byte), Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut))
+    );
+    assert_eq!(
+        fixture
+            .admission
+            .0
+            .lock()
+            .unwrap()
+            .owner_reservation(fixture.target),
+        reservation
+    );
+}
+
+#[test]
+fn cancellation_transport_first_survives_status_contention() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024).unwrap();
+    let fixture = fixture(64 * 1024);
+    let (owner, peer) = install_cancellation_peer(&fixture);
+    drop(peer);
+    let status = owner.state.lock().unwrap();
+
+    assert!(matches!(
+        fixture
+            .registry
+            .cancel_registered_pagers(&fixture.supervisor),
+        Err(HostOperationalError::Unavailable)
+    ));
+    let failure = owner.cancellation_failure.lock().unwrap();
+    let failure = failure
+        .as_ref()
+        .expect("initiating transport failure must remain owned");
+    assert!(matches!(
+        failure._first,
+        RamControlError::Io(_) | RamControlError::AuthorityMismatch
+    ));
+    assert_eq!(status.target, fixture.target);
+}
+
+#[test]
+fn cancellation_client_contention_expires_same_cleanup_without_releasing_owner() {
+    use crucible_linux_resource::host_supervision::{HostOperationBudget, HostSupervisionError};
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024).unwrap();
+    let fixture = fixture(64 * 1024);
+    let (owner, peer) = install_cancellation_peer(&fixture);
+    let reservation = fixture
+        .admission
+        .0
+        .lock()
+        .unwrap()
+        .owner_reservation(fixture.target);
+    let (revision, mut budgets) = fixture.supervisor.budgets().unwrap();
+    budgets.classes[HostOperationClass::Cleanup as usize] =
+        HostOperationBudget::finite(Duration::from_millis(50));
+    fixture
+        .supervisor
+        .update_budgets(revision, budgets)
+        .unwrap();
+    let page = fixture
+        .supervisor
+        .begin(HostOperationClass::PageIn)
+        .unwrap();
+    let client = owner.client.lock().unwrap();
+
+    assert!(matches!(
+        fixture
+            .registry
+            .cancel_registered_pagers(&fixture.supervisor),
+        Err(HostOperationalError::OriginalBoundary {
+            source: HostSupervisionError::DeadlineExpired {
+                class: HostOperationClass::Cleanup,
+                ..
+            }
+        })
+    ));
+
+    assert!(client.is_some());
+    assert!(owner.cancellation_failure.lock().unwrap().is_none());
+    assert!(page.wait_slice().is_err());
+    assert_eq!(owner.state.lock().unwrap().target, fixture.target);
+    assert_eq!(
+        fixture
+            .admission
+            .0
+            .lock()
+            .unwrap()
+            .owner_reservation(fixture.target),
+        reservation
+    );
+    drop(client);
+    drop(peer);
+}

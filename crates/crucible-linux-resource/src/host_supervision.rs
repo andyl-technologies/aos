@@ -1386,6 +1386,14 @@ impl HostOperationGuard {
         self.supervisor.begin_control(HostOperationClass::Cleanup)
     }
 
+    /// Checks whether a supplied supervisor retains this operation's same outer owner.
+    ///
+    /// This validates identity without exposing the account or creating another
+    /// operation, clock, or budget roster.
+    pub fn shares_outer_cap(&self, supervisor: &HostOperationSupervisor) -> bool {
+        self.supervisor.shares_outer_cap(supervisor)
+    }
+
     /// Returns coherent live operation status.
     ///
     /// # Errors

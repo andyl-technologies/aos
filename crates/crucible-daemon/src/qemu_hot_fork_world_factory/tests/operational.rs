@@ -117,6 +117,7 @@ fn admitted_service_context(
     let watchdog = crate::supervision::AssignmentHostWatchdogGuard::start_service(
         supervision,
         cancellation.clone(),
+        None,
     )
     .expect("actual finite service watcher");
     let context = AttemptExecutionContext::for_preparation_service(

@@ -15,6 +15,10 @@ use crucible_qemu::OriginalActorServiceLaunchPurpose;
 use super::*;
 
 mod artifacts;
+mod campaign_execution;
+pub(crate) use campaign_execution::{
+    OriginalCampaignCoordinator, OriginalCampaignCoordinatorError,
+};
 
 #[cfg(test)]
 mod tests;
@@ -177,12 +181,18 @@ enum PreparedCause {
     Service(#[from] CampaignLocalServiceError),
     #[error("original packaged factory refused: {0}")]
     Packaged(#[from] crate::private_measurement_runtime::OriginalPackagedPreparationError),
+    #[error("original packaged retirement refused: {0}")]
+    PackagedRetirement(
+        #[from] crate::packaged_qemu_executor::original_retirement::OriginalPackagedRetirementError,
+    ),
     #[error("original repository refused: {0}")]
     Repository(#[from] StoreError),
     #[error("campaign request authorization refused: {0}")]
     Authorization(#[from] CampaignAuthorizationError),
     #[error("campaign creation refused: {0}")]
     Creation(#[from] crucible_campaign::RepositoryCampaignServiceError),
+    #[error("original campaign coordinator refused: {0}")]
+    Coordinator(#[from] OriginalCampaignCoordinatorError),
     #[error("canonical campaign response refused: {0}")]
     Codec(#[from] crucible_campaign::CampaignCodecError),
     #[error("original service allocation refused: {0}")]

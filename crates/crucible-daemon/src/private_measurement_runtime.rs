@@ -21,47 +21,13 @@ pub use actor_roles::{
 };
 pub use catalog::OriginalActorCatalogOwner;
 pub use workflow::{
-    OriginalWorkflowArtifactsError, OriginalWorkflowInputError, OriginalWorkflowReadError,
+    OriginalWorkflowArtifactsError, OriginalWorkflowCloseError, OriginalWorkflowInputError,
+    OriginalWorkflowReadError,
 };
 
-/// Names the fixed genuine service stage whose admission remains incomplete.
-#[derive(Clone, Copy, Debug)]
-pub enum OriginalServiceStage {
-    /// Retention and transfer journal construction are the next service stage.
-    RetainedCampaignService,
-    /// The existing prepared service requires its immutable server and assets.
-    PreparedCampaignService,
-    /// The real prepared owner requires its immutable packaged executor.
-    PackagedExecutor,
-}
-
-impl std::fmt::Display for OriginalServiceStage {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::PackagedExecutor => {
-                formatter.write_str("original-paid genuine packaged executor and resolved assets")
-            }
-            Self::RetainedCampaignService => {
-                formatter.write_str("original-paid campaign retention and transfer journal")
-            }
-            Self::PreparedCampaignService => formatter
-                .write_str("original-paid prepared service and authenticated executor asset tuple"),
-        }
-    }
-}
-
-/// Retains the actual ordered cleanup cut after a known missing service stage.
+/// Retains the actual ordered local retirement refusal after campaign work.
 #[derive(Debug, thiserror::Error)]
 pub enum OriginalServiceCleanup {
-    /// Actual artifact files/models retain their same original refusal.
-    #[error("workflow artifact cleanup refused: {0}")]
-    Artifacts(#[source] OriginalWorkflowArtifactsError),
-    /// The prepared service retains its original buffers or a late refusal.
-    #[error("prepared service cleanup refused: {0}")]
-    PreparedService(#[source] crate::campaign_bootstrap::OriginalPreparedServiceError),
-    /// The genuine policy retains service aliases or original completion refusal.
-    #[error("policy cleanup refused: {0}")]
-    Policy(#[source] crate::campaign_policy::OriginalCampaignPolicyError),
     /// The genuine repository did not close its actual controls.
     #[error("repository cleanup refused: {0}")]
     Repository(#[source] crucible_cas::content_store::StoreError),
@@ -90,30 +56,18 @@ pub enum MeasurementRuntimeAdmissionError {
     /// Authenticated guest files or real compact campaign import refused.
     #[error("original workflow artifacts refused: {0}")]
     WorkflowArtifacts(#[from] OriginalWorkflowArtifactsError),
+    /// Actual fixed input/decode closure retained its first refusal.
+    #[error("original workflow retirement refused: {0}")]
+    WorkflowClose(#[from] OriginalWorkflowCloseError),
     /// The actual prepared service refused under the same original owner.
     #[error("original prepared service refused: {0}")]
     PreparedService(#[from] crate::campaign_bootstrap::OriginalPreparedServiceError),
     /// Genuine retention/journal ownership refused without a replacement bank.
     #[error("original campaign support refused: {0}")]
     CampaignSupport(#[from] OriginalCampaignSupportError),
-    /// The missing prepared-service continuation remains first after support cleanup.
-    #[error("original actor lacks {stage}; support cleanup: {cleanup}")]
-    MissingSupportContinuationCleanup {
-        /// The already-known missing genuine continuation.
-        stage: OriginalServiceStage,
-        /// Actual later support close remains typed and owned.
-        #[source]
-        cleanup: OriginalCampaignSupportError,
-    },
-    /// The known absent continuation stays primary across actual cleanup refusal.
-    #[error("original actor lacks {stage}; cleanup: {cleanup}")]
-    MissingContinuationCleanup {
-        /// The already-known first missing service stage.
-        stage: OriginalServiceStage,
-        /// Actual subsequent cleanup refusal remains typed and independently owned.
-        #[source]
-        cleanup: OriginalServiceCleanup,
-    },
+    /// Actual ordered local cleanup retained its initiating refusal.
+    #[error("original local retirement refused: {0}")]
+    RetirementCleanup(#[source] OriginalServiceCleanup),
     /// The genuine repository retained its original control admission cause.
     #[error("original campaign repository refused: {0}")]
     CampaignRepository(#[source] crucible_cas::content_store::StoreError),
@@ -129,24 +83,11 @@ pub enum MeasurementRuntimeAdmissionError {
     /// The same installed SQLite heap refused before state effects.
     #[error("original service heap refused: {0}")]
     ServiceHeap(#[source] crucible_cas::content_store::StoreError),
-    /// The missing graph purpose remains first across actual state closure.
-    #[error("original actor lacks {stage}; state closure: {cleanup}")]
-    MissingServicePurposeCleanup {
-        /// Exact missing next genuine service purpose.
-        stage: OriginalServiceStage,
-        /// Separately retained actual state cleanup and original cause.
-        #[source]
-        cleanup: crate::campaign_bootstrap::OriginalCampaignStateError,
-    },
-    /// The fixed next purpose remains first across catalog control closure.
-    #[error("original actor lacks {stage}; catalog closure: {cleanup}")]
-    MissingCatalogPurposeCleanup {
-        /// Fixed next genuine service stage.
-        stage: OriginalServiceStage,
-        /// Retains the same catalog owner and its typed original refusal.
-        #[source]
-        cleanup: crate::private_measurement_runtime::catalog::OriginalActorCatalogOwner,
-    },
+    /// Actual catalog closure retained the same paid owner and refusal.
+    #[error("original catalog retirement refused: {0}")]
+    CatalogRetirement(
+        #[source] crate::private_measurement_runtime::catalog::OriginalActorCatalogOwner,
+    ),
     /// The actual fixed workflow read failed under its original input owner.
     #[error("{0}")]
     WorkflowRead(#[from] OriginalWorkflowReadError),
@@ -183,10 +124,15 @@ pub enum MeasurementRuntimeAdmissionError {
 /// from an image inventory. The compiled workflow must subsequently select the
 /// genuine packaged service and retain its same factory through retirement.
 ///
+/// Successful return acknowledges local campaign and executor retirement.
+/// Process-global bootstrap and issuer custody remain in this process until
+/// the genuine PID1 observes its real Child exit; external whole-VM payment
+/// closes only after that parent's actual VM join and resource-owner finish.
+///
 /// # Errors
-/// Refuses original parent authentication or account publication. Until the
-/// immutable workflow package is installed, retains the published custody and
-/// refuses factory effects rather than substituting actor arguments.
+/// Preserves actual authentication, account, input, authorization, factory,
+/// campaign execution and local retirement refusals. An unqualified native
+/// purpose still refuses before birth; no success is inferred from this route.
 pub fn run_original_actor() -> Result<(), MeasurementRuntimeAdmissionError> {
     let invocation = AuthenticatedParentInvocation::receive_original()?;
     let mut issuer = OriginalActorRoleIssuer::admit_parent(invocation)?;
@@ -216,57 +162,37 @@ pub fn run_original_actor() -> Result<(), MeasurementRuntimeAdmissionError> {
     std::mem::forget(heap);
     workflow.import_fixed_campaign_inputs()?;
 
-    let _executor = workflow.prepare_genuine_executor(&mut issuer)?;
-    let purpose = "original-paid packaged execution and physical retirement";
-    let stage = OriginalServiceStage::PackagedExecutor;
-    workflow.close_artifacts().map_err(|source| {
-        MeasurementRuntimeAdmissionError::MissingContinuationCleanup {
-            stage,
-            cleanup: OriginalServiceCleanup::Artifacts(source),
-        }
+    let mut executor = workflow.prepare_genuine_executor(&mut issuer)?;
+    workflow.execute_campaigns(&executor)?;
+    workflow.retire_executor(&mut executor)?;
+    drop(executor);
+    workflow.close_artifacts()?;
+    workflow.close_prepared_service()?;
+    workflow.close_campaign_support()?;
+    workflow.close_campaign_policy()?;
+    workflow.close_campaign_repository().map_err(|cause| {
+        MeasurementRuntimeAdmissionError::RetirementCleanup(OriginalServiceCleanup::Repository(
+            cause,
+        ))
     })?;
-    workflow.close_prepared_service().map_err(|source| {
-        MeasurementRuntimeAdmissionError::MissingContinuationCleanup {
-            stage,
-            cleanup: OriginalServiceCleanup::PreparedService(source),
-        }
+    workflow.close_campaign_refs().map_err(|cause| {
+        MeasurementRuntimeAdmissionError::RetirementCleanup(OriginalServiceCleanup::References(
+            cause,
+        ))
     })?;
-    workflow.close_campaign_support().map_err(|cleanup| {
-        MeasurementRuntimeAdmissionError::MissingSupportContinuationCleanup { stage, cleanup }
+    workflow.close_campaign_graph().map_err(|cause| {
+        MeasurementRuntimeAdmissionError::RetirementCleanup(OriginalServiceCleanup::Graph(cause))
     })?;
-    workflow.close_campaign_policy().map_err(|source| {
-        MeasurementRuntimeAdmissionError::MissingContinuationCleanup {
-            stage,
-            cleanup: OriginalServiceCleanup::Policy(source),
-        }
-    })?;
-    workflow.close_campaign_repository().map_err(|source| {
-        MeasurementRuntimeAdmissionError::MissingContinuationCleanup {
-            stage,
-            cleanup: OriginalServiceCleanup::Repository(source),
-        }
-    })?;
-    workflow.close_campaign_refs().map_err(|source| {
-        MeasurementRuntimeAdmissionError::MissingContinuationCleanup {
-            stage,
-            cleanup: OriginalServiceCleanup::References(source),
-        }
-    })?;
-    workflow.close_campaign_graph().map_err(|source| {
-        MeasurementRuntimeAdmissionError::MissingContinuationCleanup {
-            stage,
-            cleanup: OriginalServiceCleanup::Graph(source),
-        }
-    })?;
-    if let Err(cleanup) = workflow.close_catalog_owner() {
-        return Err(
-            MeasurementRuntimeAdmissionError::MissingCatalogPurposeCleanup { stage, cleanup },
-        );
-    }
-    if let Err(cleanup) = workflow.close_campaign_state() {
-        return Err(
-            MeasurementRuntimeAdmissionError::MissingServicePurposeCleanup { stage, cleanup },
-        );
-    }
-    Err(MeasurementRuntimeAdmissionError::MissingPurpose(purpose))
+    workflow
+        .close_catalog_owner()
+        .map_err(MeasurementRuntimeAdmissionError::CatalogRetirement)?;
+    workflow.close_campaign_state()?;
+    workflow.close_inputs(&issuer)?;
+    drop(workflow);
+    drop(sqlite);
+
+    // This is a local success acknowledgement, never a process-global refund.
+    // PID1 observes the actual actor Child exit before sending completion; the
+    // external parent retains its same whole pair through real VM join/finish.
+    issuer.retain_until_parent_reap()
 }

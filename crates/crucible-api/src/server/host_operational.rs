@@ -45,6 +45,16 @@ where
     let Some(control) = state.host_operational_control.clone() else {
         return error_response(HostOperationalError::Unavailable);
     };
+    let admission = HOST_CONTROL_ADMISSION
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(MAX_HOST_CONTROL_IN_FLIGHT)));
+    let permit = match Arc::clone(admission).try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => return error_response(HostOperationalError::Unavailable),
+    };
+    let operation = match control.begin_request(identity.certificate_sha256()) {
+        Ok(operation) => operation,
+        Err(error) => return error_response(error),
+    };
     let budget = match control
         .metadata_budget(identity.certificate_sha256())
         .and_then(|budget| {
@@ -70,7 +80,23 @@ where
         bytes
     };
     let mut chunks = request.into_body().into_data_stream();
-    while let Some(chunk) = chunks.next().await {
+    loop {
+        let slice = match operation.wait_slice() {
+            Ok(slice) => slice,
+            Err(source) => {
+                return error_response(HostOperationalError::OriginalBoundary { source });
+            }
+        };
+        let chunk = match tokio::time::timeout(slice, chunks.next()).await {
+            Ok(chunk) => chunk,
+            Err(_) => continue,
+        };
+        if let Err(source) = operation.wait_slice() {
+            return error_response(HostOperationalError::OriginalBoundary { source });
+        }
+        let Some(chunk) = chunk else {
+            break;
+        };
         let chunk = match chunk {
             Ok(chunk) => chunk,
             Err(_) => return error_response(HostOperationalError::Unavailable),
@@ -87,15 +113,12 @@ where
             Err(error) => return error_response(error),
         }
     };
+    // The body allocation closes while its original metadata account is still here.
+    drop(chunks);
+    drop(body);
     if state.mode.is_read_only() && request.is_mutating() {
         return read_only_rejection_response("host-operational");
     }
-    let admission = HOST_CONTROL_ADMISSION
-        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(MAX_HOST_CONTROL_IN_FLIGHT)));
-    let permit = match Arc::clone(admission).try_acquire_owned() {
-        Ok(permit) => permit,
-        Err(_) => return error_response(HostOperationalError::Unavailable),
-    };
     let principal = {
         let _scope = budget.enter();
         match crucible::owned_decode::display_string(identity.certificate_sha256()) {
@@ -107,7 +130,21 @@ where
         let _permit = permit;
         let _scope = budget.enter();
         let (request, _request_custody) = request.into_parts();
-        control.execute(&principal, request)
+        if let Err(source) = operation.wait_slice() {
+            return Err(HostOperationalError::OriginalBoundary { source });
+        }
+        let result = control.execute(&principal, request);
+        let after = operation.wait_slice();
+        match (result, after) {
+            (Err(first), _) => Err(first),
+            (Ok(response), Ok(_)) => {
+                operation
+                    .complete()
+                    .map_err(|source| HostOperationalError::OriginalBoundary { source })?;
+                Ok(response)
+            }
+            (Ok(_), Err(source)) => Err(HostOperationalError::OriginalBoundary { source }),
+        }
     })
     .await
     {
@@ -130,7 +167,9 @@ fn error_response(error: HostOperationalError) -> Response {
             RpcStatusCode::Unsupported,
             "host-principal-denied",
         ),
-        HostOperationalError::Unavailable | HostOperationalError::Admission { .. } => (
+        HostOperationalError::Unavailable
+        | HostOperationalError::Admission { .. }
+        | HostOperationalError::OriginalBoundary { .. } => (
             StatusCode::SERVICE_UNAVAILABLE,
             RpcStatusCode::Internal,
             "host-owner-unavailable",
@@ -158,14 +197,34 @@ mod tests {
         HostOperationalControl, HostOperationalRequest, HostOperationalResponse,
         HostRamCapabilities, HostRamTarget,
     };
+    use crucible_linux_resource::host_supervision::{
+        HostOperationBudget, HostOperationBudgets, HostOperationClass,
+    };
     use std::sync::atomic::{AtomicU64, Ordering};
 
     struct Probe {
         principal: String,
         calls: AtomicU64,
+        body_closed: Option<Arc<std::sync::atomic::AtomicBool>>,
+        supervisor: crucible_linux_resource::host_supervision::HostOperationSupervisor,
     }
 
     impl HostOperationalControl for Probe {
+        fn begin_request(
+            &self,
+            principal: &str,
+        ) -> Result<
+            crucible_linux_resource::host_supervision::HostOperationGuard,
+            HostOperationalError,
+        > {
+            if principal != self.principal {
+                return Err(HostOperationalError::PrincipalDenied);
+            }
+            self.supervisor
+                .begin(HostOperationClass::Setup)
+                .map_err(|source| HostOperationalError::OriginalBoundary { source })
+        }
+
         fn metadata_budget(
             &self,
             principal: &str,
@@ -186,6 +245,12 @@ mod tests {
                 .map_err(|source| HostOperationalError::Admission { source })?;
             if principal != self.principal {
                 return Err(HostOperationalError::PrincipalDenied);
+            }
+            if let Some(closed) = &self.body_closed {
+                assert!(
+                    closed.load(Ordering::Acquire),
+                    "body owner must close before dispatch"
+                );
             }
             self.calls.fetch_add(1, Ordering::SeqCst);
             let crate::host_operational::HostOperationalTarget::Ram(target) = request.target()
@@ -208,6 +273,17 @@ mod tests {
                 })
             })
         }
+    }
+
+    fn fixture_supervisor(
+        total: std::time::Duration,
+    ) -> crucible_linux_resource::host_supervision::HostOperationSupervisor {
+        let budgets = HostOperationBudgets {
+            classes: [HostOperationBudget::finite(total);
+                crucible_linux_resource::host_supervision::HOST_OPERATION_CLASS_COUNT],
+        };
+        crucible_linux_resource::host_supervision::HostOperationSupervisor::new(budgets, None)
+            .unwrap()
     }
 
     fn target() -> HostRamTarget {
@@ -250,6 +326,8 @@ mod tests {
         let probe = Arc::new(Probe {
             principal: identity.certificate_sha256().into(),
             calls: AtomicU64::new(0),
+            body_closed: None,
+            supervisor: fixture_supervisor(std::time::Duration::from_secs(5)),
         });
         let state = state(Arc::clone(&probe), LifecycleServerMode::read_write()).await;
         let bytes = encode_request(&HostOperationalRequest::Capabilities { target: target() });
@@ -266,6 +344,8 @@ mod tests {
         let probe = Arc::new(Probe {
             principal: identity.certificate_sha256().into(),
             calls: AtomicU64::new(0),
+            body_closed: None,
+            supervisor: fixture_supervisor(std::time::Duration::from_secs(5)),
         });
         let state = state(Arc::clone(&probe), LifecycleServerMode::read_write()).await;
         let bytes = encode_request(&HostOperationalRequest::Capabilities { target: target() });
@@ -290,6 +370,8 @@ mod tests {
         let probe = Arc::new(Probe {
             principal: identity.certificate_sha256().into(),
             calls: AtomicU64::new(0),
+            body_closed: None,
+            supervisor: fixture_supervisor(std::time::Duration::from_secs(5)),
         });
         let state = state(Arc::clone(&probe), LifecycleServerMode::read_write()).await;
         let bytes = encode_request(&HostOperationalRequest::Capabilities { target: target() });
@@ -317,6 +399,8 @@ mod tests {
         let probe = Arc::new(Probe {
             principal: identity.certificate_sha256().into(),
             calls: AtomicU64::new(0),
+            body_closed: None,
+            supervisor: fixture_supervisor(std::time::Duration::from_secs(5)),
         });
         let state = state(Arc::clone(&probe), LifecycleServerMode::read_only()).await;
         let mutation = HostOperationalRequest::AmendOuterCap {
@@ -355,6 +439,8 @@ mod tests {
         let probe = Arc::new(Probe {
             principal: identity.certificate_sha256().into(),
             calls: AtomicU64::new(0),
+            body_closed: None,
+            supervisor: fixture_supervisor(std::time::Duration::from_secs(5)),
         });
         let state = state(Arc::clone(&probe), LifecycleServerMode::read_write()).await;
         let bytes = encode_request(&HostOperationalRequest::Capabilities { target: target() });
@@ -368,5 +454,155 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(probe.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn authenticated_pending_body_expires_without_live_dispatch() {
+        let identity = DebugTransportIdentity::from_leaf_certificate(b"operator");
+        let probe = Arc::new(Probe {
+            principal: identity.certificate_sha256().into(),
+            calls: AtomicU64::new(0),
+            body_closed: None,
+            supervisor: fixture_supervisor(std::time::Duration::from_millis(30)),
+        });
+        let state = state(Arc::clone(&probe), LifecycleServerMode::read_write()).await;
+        let mut pending = request(bytes::Bytes::new());
+        *pending.body_mut() = Body::from_stream(futures_util::stream::pending::<
+            Result<bytes::Bytes, std::io::Error>,
+        >());
+
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            handle(State(state), Some(Extension(identity)), pending),
+        )
+        .await
+        .expect("actual declared body operation must expire");
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(probe.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn same_service_cancellation_interrupts_an_authenticated_pending_body() {
+        let identity = DebugTransportIdentity::from_leaf_certificate(b"operator");
+        let probe = Arc::new(Probe {
+            principal: identity.certificate_sha256().into(),
+            calls: AtomicU64::new(0),
+            body_closed: None,
+            supervisor: fixture_supervisor(std::time::Duration::from_secs(5)),
+        });
+        let state = state(Arc::clone(&probe), LifecycleServerMode::read_write()).await;
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let observed = Arc::clone(&entered);
+        let body = futures_util::stream::poll_fn(move |_| {
+            observed.notify_one();
+            std::task::Poll::Pending::<Option<Result<bytes::Bytes, std::io::Error>>>
+        });
+        let mut pending = request(bytes::Bytes::new());
+        *pending.body_mut() = Body::from_stream(body);
+        let running = tokio::spawn(handle(State(state), Some(Extension(identity)), pending));
+        entered.notified().await;
+
+        probe.supervisor.cancel().unwrap();
+        let response = tokio::time::timeout(std::time::Duration::from_secs(2), running)
+            .await
+            .expect("same original cancellation must stop body waiting")
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(probe.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn arriving_body_chunks_do_not_renew_the_declared_operation() {
+        let identity = DebugTransportIdentity::from_leaf_certificate(b"operator");
+        let probe = Arc::new(Probe {
+            principal: identity.certificate_sha256().into(),
+            calls: AtomicU64::new(0),
+            body_closed: None,
+            supervisor: fixture_supervisor(std::time::Duration::from_secs(5)),
+        });
+        let state = state(Arc::clone(&probe), LifecycleServerMode::read_write()).await;
+        let delivered = Arc::new(AtomicU64::new(0));
+        let observed = Arc::clone(&delivered);
+        let supervisor = probe.supervisor.clone();
+        let chunks = futures_util::stream::unfold(0, move |next| {
+            let observed = Arc::clone(&observed);
+            let supervisor = supervisor.clone();
+            async move {
+                if next == 0 {
+                    let (revision, mut budgets) = supervisor.budgets().unwrap();
+                    budgets.classes[HostOperationClass::Setup as usize] =
+                        HostOperationBudget::finite(std::time::Duration::from_millis(50));
+                    supervisor.update_budgets(revision, budgets).unwrap();
+                } else {
+                    tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+                }
+                observed.fetch_add(1, Ordering::SeqCst);
+                Some((
+                    Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"x")),
+                    next + 1,
+                ))
+            }
+        });
+        let mut incoming = request(bytes::Bytes::new());
+        *incoming.body_mut() = Body::from_stream(chunks);
+
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            handle(State(state), Some(Extension(identity)), incoming),
+        )
+        .await
+        .expect("partial delivery must not renew the original operation");
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(delivered.load(Ordering::SeqCst) > 0);
+        assert_eq!(probe.calls.load(Ordering::SeqCst), 0);
+    }
+
+    struct DroppingBody {
+        bytes: Option<bytes::Bytes>,
+        closed: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl futures_util::Stream for DroppingBody {
+        type Item = Result<bytes::Bytes, std::io::Error>;
+
+        fn poll_next(
+            mut self: std::pin::Pin<&mut Self>,
+            _context: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            std::task::Poll::Ready(self.bytes.take().map(Ok))
+        }
+    }
+
+    impl Drop for DroppingBody {
+        fn drop(&mut self) {
+            self.closed.store(true, Ordering::Release);
+        }
+    }
+
+    #[tokio::test]
+    async fn completed_body_owner_closes_before_blocking_dispatch() {
+        let identity = DebugTransportIdentity::from_leaf_certificate(b"operator");
+        let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let probe = Arc::new(Probe {
+            principal: identity.certificate_sha256().into(),
+            calls: AtomicU64::new(0),
+            body_closed: Some(Arc::clone(&closed)),
+            supervisor: fixture_supervisor(std::time::Duration::from_secs(5)),
+        });
+        let state = state(Arc::clone(&probe), LifecycleServerMode::read_write()).await;
+        let wire = encode_request(&HostOperationalRequest::Capabilities { target: target() });
+        let mut incoming = request(bytes::Bytes::new());
+        *incoming.body_mut() = Body::from_stream(DroppingBody {
+            bytes: Some(wire),
+            closed,
+        });
+
+        let response = handle(State(state), Some(Extension(identity)), incoming).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(probe.calls.load(Ordering::SeqCst), 1);
     }
 }

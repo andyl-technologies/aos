@@ -437,8 +437,10 @@ impl HostOperationalRegistry {
             HostOperationalTarget::Ram(target) => {
                 let owner = self.node(target)?;
                 owner.supervisor.cancel().map_err(unavailable)?;
+                let native = self.cancel_registered_pagers(&owner.supervisor);
                 owner.state.lock().map_err(unavailable)?.convergence =
                     HostRamConvergence::Quarantined;
+                native?;
             }
             HostOperationalTarget::OuterCap(target) => {
                 let cap = self
@@ -451,6 +453,7 @@ impl HostOperationalRegistry {
                     .cloned()
                     .ok_or(HostOperationalError::Unavailable)?;
                 cap.supervisor.cancel().map_err(unavailable)?;
+                self.cancel_registered_pagers(&cap.supervisor)?;
             }
         }
         Ok(())

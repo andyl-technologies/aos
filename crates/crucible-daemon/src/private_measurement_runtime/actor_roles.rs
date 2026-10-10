@@ -228,6 +228,7 @@ impl OriginalActorRoleIssuer {
             _actor: self,
             roster: Some(roster),
             executor: Some(executor),
+            retirement_terminal: false,
         };
         let after = owner
             ._actor
@@ -243,6 +244,47 @@ impl OriginalActorRoleIssuer {
         }
 
         Ok(owner)
+    }
+
+    /// Checks the saved raw original without exposing its guard or accounts.
+    ///
+    /// # Errors
+    /// Returns the actual original refusal or unavailable consumed custody.
+    pub(super) fn verify_original_boundary(
+        &self,
+    ) -> Result<(), crucible_linux_resource::host_supervision::HostSupervisionError> {
+        self.held
+            .as_ref()
+            .ok_or(crucible_linux_resource::host_supervision::HostSupervisionError::Unavailable)?
+            .preparation
+            .wait_slice()?;
+        Ok(())
+    }
+
+    /// Transfers this same local publication to process-lifetime exit custody.
+    ///
+    /// Only the fixed actor main calls this after actual campaign/service/input
+    /// retirement. This method neither returns a physical-retirement witness
+    /// nor refunds any actor credit. PID1's retained actual Child and external
+    /// ParentVM join/finish determine the later physical completion boundary.
+    ///
+    /// # Errors
+    /// Refuses missing custody or the same original before terminal handoff.
+    /// A late refusal still retains the actual publication through process exit.
+    pub(super) fn retain_until_parent_reap(
+        mut self,
+    ) -> Result<(), MeasurementRuntimeAdmissionError> {
+        self.require_original()?;
+        let held = self
+            .held
+            .take()
+            .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                "retained original actor custody",
+            ))?;
+        let after = held.preparation.wait_slice().map(|_| ());
+        std::mem::forget(held);
+        after?;
+        Ok(())
     }
 
     /// Retains the same admitted guard for the genuine packaged capture route.
@@ -288,6 +330,117 @@ pub struct OriginalPreparedPackagedExecutor<'actor> {
     _actor: &'actor mut OriginalActorRoleIssuer,
     roster: Option<OriginalNativeAccountRoster>,
     executor: Option<crate::PackagedQemuExecutor>,
+    retirement_terminal: bool,
+}
+
+impl OriginalPreparedPackagedExecutor<'_> {
+    /// Waits for asynchronous pool progress within the same saved original.
+    ///
+    /// # Errors
+    /// Refuses missing retained custody or the original before/after the wait.
+    pub(crate) fn wait_for_campaign_progress(
+        &self,
+    ) -> Result<(), crucible_linux_resource::host_supervision::HostSupervisionError> {
+        let held =
+            self._actor.held.as_ref().ok_or(
+                crucible_linux_resource::host_supervision::HostSupervisionError::Unavailable,
+            )?;
+        let slice = held.preparation.wait_slice()?;
+        std::thread::park_timeout(slice);
+        held.preparation.wait_slice()?;
+        Ok(())
+    }
+
+    /// Attaches one coordinator to the already-owned factory and original.
+    ///
+    /// # Errors
+    /// Refuses terminal retirement, missing retained actor/factory, foreign
+    /// repository, invalid explicit scan or the actual component boundary.
+    pub(crate) fn prepare_campaign_driver(
+        &self,
+        repository: &Arc<crucible_campaign::CampaignRepository>,
+        retention: crucible_campaign::ExecutionRetentionIntent,
+        scan_limit: usize,
+    ) -> Result<
+        (
+            crucible_campaign::CampaignExecutorDriver<
+                crate::packaged_qemu_executor::original_campaign::OriginalCampaignExecutorService,
+            >,
+            u32,
+        ),
+        crate::packaged_qemu_executor::original_campaign::OriginalCampaignExecutorError,
+    > {
+        use crate::packaged_qemu_executor::original_campaign::OriginalCampaignExecutorError;
+        if self.retirement_terminal {
+            return Err(OriginalCampaignExecutorError::Binding);
+        }
+        let held = self
+            ._actor
+            .held
+            .as_ref()
+            .ok_or(OriginalCampaignExecutorError::Binding)?;
+        held.accounts.require_original()?;
+        let executor = self
+            .executor
+            .as_ref()
+            .ok_or(OriginalCampaignExecutorError::Binding)?;
+        let slots = executor.original_campaign_worker_slots()?;
+        let driver = executor.original_campaign_driver(
+            repository,
+            Arc::clone(&held.preparation),
+            retention,
+            scan_limit,
+        )?;
+        held.accounts.require_original()?;
+        Ok((driver, slots))
+    }
+
+    /// Frees the genuine executor before closing its external native roster.
+    ///
+    /// # Errors
+    /// Retains every unfinished owner on original, worker, materializer or
+    /// native refusal. This does not certify the enclosing actor process exit.
+    pub(crate) fn try_retire(
+        &mut self,
+    ) -> Result<
+        (),
+        crate::packaged_qemu_executor::original_retirement::OriginalPackagedRetirementError,
+    > {
+        if self.retirement_terminal {
+            return Err(crate::packaged_qemu_executor::original_retirement::OriginalPackagedRetirementError::Terminal);
+        }
+        let work = self.retire_body();
+        if work.is_err() {
+            self.retirement_terminal = true;
+        }
+        work
+    }
+
+    fn retire_body(
+        &mut self,
+    ) -> Result<
+        (),
+        crate::packaged_qemu_executor::original_retirement::OriginalPackagedRetirementError,
+    > {
+        let held = self
+            ._actor
+            .held
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        held.accounts.require_original()?;
+        if let Some(executor) = self.executor.as_mut() {
+            executor.try_retire_original(&held.preparation)?;
+        }
+        // The factory's weak binding and every worker/control body die before
+        // the roster's atomic uniqueness check and paired-credit retirement.
+        drop(self.executor.take());
+        if let Some(roster) = self.roster.as_mut() {
+            roster.try_close()?;
+        }
+        drop(self.roster.take());
+        held.accounts.require_original()?;
+        Ok(())
+    }
 }
 
 /// Preserves original account or genuine service preparation refusal.

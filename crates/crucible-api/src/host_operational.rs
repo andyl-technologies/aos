@@ -454,6 +454,13 @@ pub enum HostOperationalError {
         #[source]
         source: crucible::owned_decode::DecodeAdmissionError,
     },
+    /// The original declared request operation expired or was canceled.
+    #[error("host operational original boundary refused: {source}")]
+    OriginalBoundary {
+        /// Actual refusal from the retained service operation.
+        #[source]
+        source: crucible_linux_resource::host_supervision::HostSupervisionError,
+    },
     /// The transport principal does not own operational authority for this target.
     #[error("host operational principal is denied")]
     PrincipalDenied,
@@ -473,6 +480,19 @@ pub enum HostOperationalError {
 
 /// Executor-owned authority over live operational controllers and durable history.
 pub trait HostOperationalControl: Send + Sync {
+    /// Begins the authenticated service's declared request operation before body I/O.
+    ///
+    /// The returned operation retains the existing service roster and original
+    /// outer cap. Request bytes cannot choose another supervisor or target.
+    ///
+    /// # Errors
+    /// Refuses an unauthorized principal, missing original service, terminal
+    /// supervision, or exhausted operation records.
+    fn begin_request(
+        &self,
+        principal: &str,
+    ) -> Result<crucible_linux_resource::host_supervision::HostOperationGuard, HostOperationalError>;
+
     /// Projects the authenticated executor's original metadata authority.
     ///
     /// The transport retains this account through request decoding and dispatch.

@@ -676,6 +676,11 @@ pub use campaign_run::test_support::{
     run_guarded_default_campaign_test_fixture_with_trace,
     run_guarded_default_campaign_test_fixture_with_trace_and_choice_offer,
 };
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) use campaign_run::{
+    ConfiguredCampaignPlannerError, LocalCampaignPlannerKind, LocalCampaignPlannerService,
+    LocalCampaignPlannerServiceError, configured_campaign_planner,
+};
 pub use campaign_run::{
     GuardedCampaignBranchAcceptance, GuardedCampaignExploration,
     GuardedCampaignExplorationCompletion, GuardedCampaignExplorationStrategy,

@@ -156,5 +156,26 @@
       "progressMillis": null,
       "totalMillis": 30000
     }
+  },
+  "campaignExecution": {
+    "planner": {
+      "exhaustive": {
+        "search": "breadthFirst"
+      }
+    },
+    "planningBudget": {
+      "branchRequests": 1,
+      "proposals": 1,
+      "inputObjects": 16384,
+      "inputBytes": 33554432,
+      "fuel": 4096
+    },
+    "plannerScanLimit": 100,
+    "executorScanLimit": 100,
+    "retention": "discard",
+    "grant": {
+      "proposals": 1,
+      "attempts": 1
+    }
   }
 }

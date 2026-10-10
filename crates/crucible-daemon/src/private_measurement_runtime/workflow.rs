@@ -17,7 +17,9 @@ use super::MeasurementRuntimeAdmissionError;
 use super::actor_roles::OriginalActorRoleIssuer;
 
 mod assets;
+mod retirement;
 pub use assets::OriginalWorkflowArtifactsError;
+pub use retirement::OriginalWorkflowCloseError;
 
 const WORKFLOW_PATH: &str = "/etc/crucible/measurement-workflow.json";
 
@@ -48,6 +50,7 @@ pub(super) struct OriginalResidentWorkflowOwner {
     )>,
     prepared_service: Option<crate::campaign_bootstrap::OriginalPreparedCampaignServiceOwner>,
     artifacts: Option<assets::OriginalWorkflowArtifactsOwner>,
+    input_retirement_attempted: bool,
 }
 
 /// Preserves an actual read refusal before its independent original boundary.
@@ -113,6 +116,7 @@ impl OriginalResidentWorkflowOwner {
             component_authorities: None,
             prepared_service: None,
             artifacts: None,
+            input_retirement_attempted: false,
             catalog: None,
             graph: None,
             refs: None,
@@ -548,6 +552,50 @@ impl OriginalResidentWorkflowOwner {
         Ok(service.prepare_packaged_executor(issuer, config)?)
     }
 
+    /// Advances actual created campaigns before the factory's physical retirement.
+    ///
+    /// # Errors
+    /// Refuses missing authenticated input, service/artifact custody or actual
+    /// command, driver and original boundary failures without replacing owners.
+    pub(super) fn execute_campaigns(
+        &mut self,
+        executor: &super::OriginalPreparedPackagedExecutor<'_>,
+    ) -> Result<(), MeasurementRuntimeAdmissionError> {
+        let bytes = self
+            .input
+            .as_ref()
+            .map(|input| input.bytes.as_slice())
+            .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                "retained execution input",
+            ))?;
+        let service = self.prepared_service.as_ref().ok_or(
+            MeasurementRuntimeAdmissionError::MissingPurpose("retained execution service"),
+        )?;
+        let artifacts =
+            self.artifacts
+                .as_mut()
+                .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                    "retained execution artifacts",
+                ))?;
+        Ok(artifacts.execute_campaigns(bytes, service, executor)?)
+    }
+
+    /// Retires the same factory using the existing prepared failure purpose.
+    ///
+    /// # Errors
+    /// Refuses absent service custody or typed retirement and original cuts.
+    pub(super) fn retire_executor(
+        &self,
+        executor: &mut super::OriginalPreparedPackagedExecutor<'_>,
+    ) -> Result<(), MeasurementRuntimeAdmissionError> {
+        let service = self.prepared_service.as_ref().ok_or(
+            MeasurementRuntimeAdmissionError::MissingPurpose(
+                "retained prepared service for physical executor retirement",
+            ),
+        )?;
+        Ok(service.retire_packaged_executor(executor)?)
+    }
+
     pub(super) fn close_artifacts(&mut self) -> Result<(), OriginalWorkflowArtifactsError> {
         if let Some(artifacts) = self.artifacts.as_mut() {
             let service = self
@@ -757,6 +805,10 @@ impl Drop for OriginalResidentWorkflowOwner {
         drop(self.bootstrap.take());
         drop(self.input.take());
         if let Some(decoder) = self.decoder.take() {
+            if self.input_retirement_attempted {
+                std::mem::forget(decoder);
+                return;
+            }
             // A refused close returns the same fail-sticky owner. Its Drop
             // retains opaque errors and original credit until actor teardown.
             let _closed = decoder.try_close();

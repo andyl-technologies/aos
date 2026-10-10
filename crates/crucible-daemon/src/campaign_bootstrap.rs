@@ -106,6 +106,7 @@ pub(crate) use original_graph::{prepare_original_directory_refs, prepare_origina
 pub(crate) use original_repository::OriginalCampaignRepositoryBootstrap;
 #[cfg(feature = "private-measurement-domain")]
 pub(crate) use original_service::{
+    OriginalCampaignCoordinator, OriginalCampaignCoordinatorError,
     OriginalPreparedCampaignServiceOwner, OriginalPreparedServiceError,
 };
 pub use runtime_registry::CampaignRuntimeAttachmentHandle;

@@ -15,6 +15,13 @@ use serde::Deserialize;
 
 use super::{ResourceVector, ServiceServer};
 
+mod campaign_execution;
+
+pub use campaign_execution::{
+    CampaignExecution, CampaignExecutionGrant, CampaignExecutionPlanner,
+    CampaignExecutionPlanningBudget, CampaignExecutionRetention, CampaignExecutionSearch,
+};
+
 /// Deserializes the complete required executor deployment object.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -51,6 +58,8 @@ pub struct ExecutorDeployment<'input> {
     pub assignment_resources: ResourceVector,
     /// Specifies modeled request ceilings independently of physical peaks.
     pub assignment_limits: ExecutorAssignmentLimits,
+    /// Specifies the complete coordinator work and semantic campaign grant.
+    pub campaign_execution: CampaignExecution,
     /// Specifies every original host operation class without fallback values.
     pub host_operation_budgets: ExecutorOperationBudgets,
 }

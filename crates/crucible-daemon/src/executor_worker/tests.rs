@@ -816,7 +816,7 @@ fn retained_service_preparation_budget_applies_to_active_work_and_preserves_idle
     let supervisor = HostOperationSupervisor::new(budgets, None).expect("service budgets");
     let cancellation = ExecutionCancellation::default();
     let mut watcher =
-        AssignmentHostWatchdogGuard::start_service(supervisor.clone(), cancellation.clone())
+        AssignmentHostWatchdogGuard::start_service(supervisor.clone(), cancellation.clone(), None)
             .expect("retained service watcher");
 
     ProcessDeadline::after(Duration::from_millis(30))

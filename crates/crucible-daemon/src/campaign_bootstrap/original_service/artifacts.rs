@@ -76,32 +76,31 @@ impl OriginalPreparedCampaignServiceOwner {
         request: &crucible_campaign::CreateCampaignRequest,
     ) -> Result<crucible_campaign::CreateCampaignResponse, OriginalPreparedServiceError> {
         self.artifact_operation(|service| {
-            // Use this actor's real inherited effective identity, rather than
-            // constructing a peer credential or selecting a request principal.
-            let identity = UnixPeerCampaignIdentity::new(
-                rustix::process::geteuid().as_raw(),
-                rustix::process::getegid().as_raw(),
-            );
-            if !service
-                .policy
-                .matches_identity(identity, request.principal())
-            {
-                return Err(CampaignAuthorizationError::Unauthorized.into());
-            }
-            let direct = crucible_campaign::RepositoryCampaignService::new(
-                service.repository.as_ref(),
-                CampaignLocalAuthorizer {
-                    policy: Arc::clone(&service.policy),
-                    mode: service.mode,
-                },
-            );
+            let direct = authorized_service(service, request.principal())?;
             let response = crucible_campaign::CampaignService::create_campaign(&direct, request)?;
             response.validate_for(request)?;
             Ok(response)
         })
     }
 
-    fn artifact_operation<T>(
+    /// Retires the existing executor with failure storage admitted before work.
+    ///
+    /// # Errors
+    /// Preserves actual retirement and independently reconciled original cuts
+    /// in the same preborn prepared-service failure owner.
+    pub(crate) fn retire_packaged_executor(
+        &self,
+        executor: &mut crate::private_measurement_runtime::OriginalPreparedPackagedExecutor<'_>,
+    ) -> Result<(), OriginalPreparedServiceError> {
+        self.artifact_operation(|_| executor.try_retire().map_err(Into::into))
+    }
+
+    /// Admits first-cause storage before one same-service artifact operation.
+    ///
+    /// # Errors
+    /// Retains the initiating typed cause and independent original post cuts
+    /// without allocating a replacement carrier after refusal.
+    pub(super) fn artifact_operation<T>(
         &self,
         operation: impl FnOnce(&PreparedCampaignLocalService) -> Result<T, PreparedCause>,
     ) -> Result<T, OriginalPreparedServiceError> {
@@ -118,4 +117,50 @@ impl OriginalPreparedCampaignServiceOwner {
         })();
         reconcile(&self.original, failure, work)
     }
+}
+
+// The same retained policy and ReadOnly semantics cover both creation and
+// control. Effective process credentials identify the real caller; a supplied
+// request principal never selects another operational identity.
+/// Resolves the actual inherited caller against this retained service policy.
+///
+/// # Errors
+/// Refuses a principal without the actual effective UID/GID binding.
+pub(super) fn authorized_service<'service>(
+    service: &'service PreparedCampaignLocalService,
+    principal: &crucible_campaign::CampaignPrincipal,
+) -> Result<
+    crucible_campaign::RepositoryCampaignService<'service, CampaignLocalAuthorizer>,
+    PreparedCause,
+> {
+    let identity = UnixPeerCampaignIdentity::new(
+        rustix::process::geteuid().as_raw(),
+        rustix::process::getegid().as_raw(),
+    );
+    if !service.policy.matches_identity(identity, principal) {
+        return Err(CampaignAuthorizationError::Unauthorized.into());
+    }
+    Ok(crucible_campaign::RepositoryCampaignService::new(
+        service.repository.as_ref(),
+        CampaignLocalAuthorizer {
+            policy: Arc::clone(&service.policy),
+            mode: service.mode,
+        },
+    ))
+}
+
+/// Applies and validates one command through the same inherited principal policy.
+///
+/// # Errors
+/// Refuses inherited identity, ApplyCampaignCommand permission, ReadOnly mode,
+/// actual head publication or response binding. The enclosing operation retains
+/// this initiating cause before its original post checks.
+pub(super) fn apply_authorized_command(
+    service: &PreparedCampaignLocalService,
+    request: &crucible_campaign::ApplyCampaignCommandRequest,
+) -> Result<crucible_campaign::ApplyCampaignCommandResponse, PreparedCause> {
+    let direct = authorized_service(service, request.principal())?;
+    let response = crucible_campaign::CampaignService::apply_campaign_command(&direct, request)?;
+    response.validate_for(request)?;
+    Ok(response)
 }

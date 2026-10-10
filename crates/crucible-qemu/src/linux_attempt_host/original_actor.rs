@@ -354,6 +354,19 @@ struct RetainedNativeCredit {
 }
 
 impl OriginalNativeAccountCredit {
+    /// Releases the same pair after its enclosing native control was freed.
+    ///
+    /// This private cut is called only by exclusive whole-roster retirement.
+    /// A refused original retains the pair in that external retirement owner.
+    ///
+    /// # Errors
+    /// Preserves the same preparation's original refusal before pair release.
+    pub(super) fn retire_after_control_free(&mut self) -> Result<(), OriginalActorAccountError> {
+        self.require_original()?;
+        drop(self.original.take());
+        Ok(())
+    }
+
     pub(super) fn verify_preparation(
         &self,
         preparation: &Arc<HostOperationGuard>,

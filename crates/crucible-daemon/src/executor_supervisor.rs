@@ -487,8 +487,12 @@ impl QueuedAttempt {
         cancellation: ExecutionCancellation,
         budgets: crucible_linux_resource::host_supervision::HostOperationBudgets,
     ) -> std::io::Result<(crate::supervision::AssignmentHostWatchdog, bool)> {
-        self.publication_supervision
-            .start(milliseconds, cancellation, budgets)
+        self.publication_supervision.start(
+            milliseconds,
+            cancellation,
+            budgets,
+            Some(self.host_operational_registry.clone()),
+        )
     }
 
     pub(crate) fn begin_publication(&self) -> std::io::Result<()> {

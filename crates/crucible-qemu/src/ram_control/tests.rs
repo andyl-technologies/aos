@@ -345,3 +345,44 @@ fn performance_exchange_borrows_original_guard_and_authenticates_report() {
     guard.complete().unwrap();
     pager.join().unwrap();
 }
+
+#[test]
+fn cancellation_borrows_one_same_original_cleanup_and_refuses_foreign_or_stale_inputs() {
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+    let foreign = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+    let (host, mut peer) = UnixStream::pair().unwrap();
+    peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let server = thread::spawn(move || {
+        let hello = read_ram_control(&mut peer).unwrap().unwrap();
+        write_ram_control(&mut peer, &response(hello)).unwrap();
+        let frame = read_ram_control(&mut peer).unwrap().unwrap();
+        assert!(matches!(
+            frame.message,
+            RamControlMessage::Request(RamControlRequest::Cancel {
+                operation_generation: 1
+            })
+        ));
+        assert_eq!(frame.sequence, 2);
+        let mut reply = response(frame);
+        let RamControlMessage::Reply { state, .. } = &mut reply.message else {
+            panic!("reply");
+        };
+        state.disposition = RamControlDisposition::Canceled;
+        write_ram_control(&mut peer, &reply).unwrap();
+    });
+    let mut client =
+        RamControlClient::connect_supervised(host, [4; 32], target(), supervisor.clone()).unwrap();
+    let foreign_cleanup = foreign.begin_control(HostOperationClass::Cleanup).unwrap();
+    assert!(client.cancel_under(1, &foreign_cleanup).is_err());
+    let cleanup = supervisor
+        .begin_control(HostOperationClass::Cleanup)
+        .unwrap();
+    assert!(client.cancel_under(2, &cleanup).is_err());
+    supervisor.cancel().unwrap();
+
+    let receipt = client.cancel_under(1, &cleanup).unwrap();
+
+    assert_eq!(receipt.disposition, RamControlDisposition::Canceled);
+    cleanup.complete().unwrap();
+    server.join().unwrap();
+}

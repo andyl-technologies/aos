@@ -503,9 +503,17 @@ impl RetainedTemplateService {
         }
 
         let watchdog_result = if factory.outer_supervisor.is_some() {
-            AssignmentHostWatchdogGuard::start_borrowed_service(supervisor, cancellation.clone())
+            AssignmentHostWatchdogGuard::start_borrowed_service(
+                supervisor,
+                cancellation.clone(),
+                Some(registry.clone()),
+            )
         } else {
-            AssignmentHostWatchdogGuard::start_service(supervisor, cancellation.clone())
+            AssignmentHostWatchdogGuard::start_service(
+                supervisor,
+                cancellation.clone(),
+                Some(registry.clone()),
+            )
         };
         let watchdog = match watchdog_result {
             Ok(watchdog) => watchdog,

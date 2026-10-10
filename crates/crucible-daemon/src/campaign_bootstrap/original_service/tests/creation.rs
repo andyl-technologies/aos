@@ -16,6 +16,10 @@ enum CreationCase {
     Authorized,
     DifferentPrincipal,
     MissingGrant,
+    AuthorizedCommand,
+    CreateOnlyCommand,
+    DifferentCommandPrincipal,
+    ReadOnlyCommand,
 }
 
 fn exercise_creation(case: CreationCase) {
@@ -89,6 +93,16 @@ fn exercise_creation(case: CreationCase) {
             "create-campaign"
         },
     );
+    let policy_bytes = if matches!(
+        case,
+        CreationCase::AuthorizedCommand | CreationCase::ReadOnlyCommand
+    ) {
+        format!(
+            "{policy_bytes}\n[[grants]]\nprincipal = \"operator\"\noperation = \"apply-campaign-command\"\ncampaign = \"creation-control\"\n"
+        )
+    } else {
+        policy_bytes
+    };
     let policy =
         Arc::new(UnixPeerCampaignPolicy::from_toml_bytes(policy_bytes.as_bytes()).unwrap());
     let original = ServiceOriginal::Fixture(fixture_original(&catalog));
@@ -171,7 +185,10 @@ fn exercise_creation(case: CreationCase) {
 
     let result = prepared.create_campaign(&request);
 
-    if matches!(case, CreationCase::Authorized) {
+    if !matches!(
+        case,
+        CreationCase::DifferentPrincipal | CreationCase::MissingGrant
+    ) {
         let response = result.unwrap();
         response.validate_for(&request).unwrap();
         assert_eq!(
@@ -187,6 +204,15 @@ fn exercise_creation(case: CreationCase) {
         );
         let repeated = prepared.create_campaign(&request).unwrap();
         assert_eq!(response.snapshot(), repeated.snapshot());
+        if matches!(
+            case,
+            CreationCase::AuthorizedCommand
+                | CreationCase::CreateOnlyCommand
+                | CreationCase::DifferentCommandPrincipal
+                | CreationCase::ReadOnlyCommand
+        ) {
+            exercise_commands(&mut prepared, &request, case);
+        }
     } else {
         let refusal = result.err().unwrap();
         assert!(matches!(
@@ -244,4 +270,111 @@ fn request_principal_differing_from_inherited_identity_creates_no_head() {
 #[test]
 fn actual_identity_without_create_grant_creates_no_head() {
     exercise_creation(CreationCase::MissingGrant);
+}
+
+fn exercise_commands(
+    prepared: &mut OriginalPreparedCampaignServiceOwner,
+    creation: &CreateCampaignRequest,
+    case: CreationCase,
+) {
+    use crucible_campaign::{
+        ApplyCampaignCommandRequest, BudgetGrant, CampaignCommandId, CampaignControlAction,
+        CampaignHash, ControlRequest,
+    };
+    if matches!(case, CreationCase::ReadOnlyCommand) {
+        prepared.service.as_mut().unwrap().mode = CampaignLocalServiceMode::ReadOnly;
+    }
+    let actions = [
+        CampaignControlAction::GrantBudget(BudgetGrant::new(1, 1).unwrap()),
+        CampaignControlAction::Resume,
+        CampaignControlAction::Complete,
+    ];
+    for (ordinal, action) in actions.into_iter().enumerate() {
+        let before = prepared
+            .service
+            .as_ref()
+            .unwrap()
+            .repository
+            .head(creation.campaign().as_str())
+            .unwrap()
+            .snapshot_id();
+        let principal = if matches!(case, CreationCase::DifferentCommandPrincipal) {
+            CampaignPrincipal::new("different-principal").unwrap()
+        } else {
+            creation.principal().clone()
+        };
+        let request = ApplyCampaignCommandRequest::new(
+            principal,
+            creation.campaign().clone(),
+            ControlRequest {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "crucible.original-campaign-command-fixture.v1",
+                    &(ordinal as u64).to_be_bytes(),
+                )),
+                expected_snapshot: before,
+                action,
+            },
+        )
+        .unwrap();
+
+        let result = prepared
+            .artifact_operation(|service| artifacts::apply_authorized_command(service, &request));
+
+        if matches!(case, CreationCase::AuthorizedCommand) {
+            let response = result.unwrap();
+            response.validate_for(&request).unwrap();
+            assert_eq!(
+                prepared
+                    .service
+                    .as_ref()
+                    .unwrap()
+                    .repository
+                    .head(creation.campaign().as_str())
+                    .unwrap()
+                    .snapshot_id(),
+                response.new_snapshot()
+            );
+        } else {
+            let refusal = result.err().unwrap();
+            assert!(matches!(
+                &refusal.failure,
+                PreparedFailure::Retained(purpose)
+                    if matches!(purpose.data.source,
+                        Some(PreparedCause::Authorization(CampaignAuthorizationError::Unauthorized))
+                        | Some(PreparedCause::Creation(crucible_campaign::RepositoryCampaignServiceError::Authorization(CampaignAuthorizationError::Unauthorized))))
+            ));
+            assert_eq!(
+                prepared
+                    .service
+                    .as_ref()
+                    .unwrap()
+                    .repository
+                    .head(creation.campaign().as_str())
+                    .unwrap()
+                    .snapshot_id(),
+                before
+            );
+            drop(refusal);
+        }
+    }
+}
+
+#[test]
+fn actual_control_grant_resume_complete_validate_the_same_published_heads() {
+    exercise_creation(CreationCase::AuthorizedCommand);
+}
+
+#[test]
+fn create_only_policy_cannot_grant_resume_or_complete_existing_heads() {
+    exercise_creation(CreationCase::CreateOnlyCommand);
+}
+
+#[test]
+fn foreign_control_principal_cannot_select_another_inherited_identity() {
+    exercise_creation(CreationCase::DifferentCommandPrincipal);
+}
+
+#[test]
+fn readonly_actual_service_refuses_control_publication() {
+    exercise_creation(CreationCase::ReadOnlyCommand);
 }

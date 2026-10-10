@@ -121,6 +121,7 @@ pub(super) struct AssignmentHostWatchdogGuard {
     operation_expired: Arc<AtomicBool>,
     operation: Option<Arc<HostOperationGuard>>,
     cancellation: ExecutionCancellation,
+    registry: Option<crate::HostOperationalRegistry>,
     watcher: Option<JoinHandle<()>>,
     pub(super) state: AssignmentHostWatchdog,
 }
@@ -201,6 +202,7 @@ impl PublicationSupervision {
         milliseconds: Option<u64>,
         cancellation: ExecutionCancellation,
         budgets: HostOperationBudgets,
+        registry: Option<crate::HostOperationalRegistry>,
     ) -> std::io::Result<(AssignmentHostWatchdog, bool)> {
         let mut slot = self
             .ownership
@@ -215,6 +217,7 @@ impl PublicationSupervision {
             cancellation,
             budgets,
             slot.caller.clone(),
+            registry,
         )?;
         let state = watcher.state.clone();
         slot.watcher = Some(watcher);
@@ -286,7 +289,7 @@ impl AssignmentHostWatchdogGuard {
         cancellation: ExecutionCancellation,
         budgets: HostOperationBudgets,
     ) -> std::io::Result<Self> {
-        Self::start_under(milliseconds, cancellation, budgets, None)
+        Self::start_under(milliseconds, cancellation, budgets, None, None)
     }
 
     fn start_under(
@@ -294,6 +297,7 @@ impl AssignmentHostWatchdogGuard {
         cancellation: ExecutionCancellation,
         budgets: HostOperationBudgets,
         caller: Option<HostOperationSupervisor>,
+        registry: Option<crate::HostOperationalRegistry>,
     ) -> std::io::Result<Self> {
         let supervisor =
             HostOperationSupervisor::new(budgets, milliseconds.map(Duration::from_millis))
@@ -301,7 +305,7 @@ impl AssignmentHostWatchdogGuard {
         // Backend operations own their class scopes. A Quantum guard here
         // would incorrectly charge VM setup, capture, and publication to guest
         // execution time instead of their independently authored allowances.
-        Self::start_service_under(supervisor, cancellation, caller)
+        Self::start_service_under(supervisor, cancellation, caller, registry)
     }
 
     /// Retains a separately registered preparation cap and its finite class guard.
@@ -316,14 +320,16 @@ impl AssignmentHostWatchdogGuard {
     pub(super) fn start_service(
         supervisor: HostOperationSupervisor,
         cancellation: ExecutionCancellation,
+        registry: Option<crate::HostOperationalRegistry>,
     ) -> std::io::Result<Self> {
-        Self::start_service_under(supervisor, cancellation, None)
+        Self::start_service_under(supervisor, cancellation, None, registry)
     }
 
     fn start_service_under(
         supervisor: HostOperationSupervisor,
         cancellation: ExecutionCancellation,
         caller: Option<HostOperationSupervisor>,
+        registry: Option<crate::HostOperationalRegistry>,
     ) -> std::io::Result<Self> {
         let stopped = Arc::new(AtomicBool::new(false));
         let operation_expired = Arc::new(AtomicBool::new(false));
@@ -332,6 +338,7 @@ impl AssignmentHostWatchdogGuard {
         let watcher_cancellation = cancellation.clone();
         let watcher_supervisor = supervisor.clone();
         let watcher_caller = caller.clone();
+        let watcher_registry = registry.clone();
         let watcher = thread::Builder::new()
             .name(String::from("retained-service-watchdog"))
             .stack_size(HOST_WATCHDOG_STACK_BYTES)
@@ -339,7 +346,8 @@ impl AssignmentHostWatchdogGuard {
                 while !watcher_stopped.load(Ordering::Acquire) {
                     // One already charged watcher observes both original caps.
                     // It neither renews nor completes the caller's authority.
-                    if watcher_supervisor.wait_for_active_work_change().is_err()
+                    if watcher_cancellation.is_canceled()
+                        || watcher_supervisor.wait_for_active_work_change().is_err()
                         || watcher_caller
                             .as_ref()
                             .is_some_and(|caller| caller.wait_for_active_work_change().is_err())
@@ -347,7 +355,12 @@ impl AssignmentHostWatchdogGuard {
                         if !watcher_stopped.load(Ordering::Acquire) {
                             watcher_expired.store(true, Ordering::Release);
                             let _ = watcher_supervisor.cancel();
+                            // Containment is published immediately, independently of
+                            // whether the native control channel can acknowledge Cancel.
                             watcher_cancellation.cancel();
+                            if let Some(registry) = &watcher_registry {
+                                let _ = registry.cancel_registered_pagers(&watcher_supervisor);
+                            }
                         }
                         break;
                     }
@@ -360,6 +373,7 @@ impl AssignmentHostWatchdogGuard {
             operation_expired,
             operation: None,
             cancellation,
+            registry,
             watcher: Some(watcher),
             state: AssignmentHostWatchdog {
                 supervisor,
@@ -373,8 +387,9 @@ impl AssignmentHostWatchdogGuard {
     pub(super) fn start_borrowed_service(
         supervisor: HostOperationSupervisor,
         cancellation: ExecutionCancellation,
+        registry: Option<crate::HostOperationalRegistry>,
     ) -> std::io::Result<Self> {
-        let mut watcher = Self::start_service(supervisor, cancellation)?;
+        let mut watcher = Self::start_service(supervisor, cancellation, registry)?;
         watcher.complete_outer = false;
         Ok(watcher)
     }
@@ -417,6 +432,7 @@ impl AssignmentHostWatchdogGuard {
             operation_expired,
             operation: Some(operation),
             cancellation,
+            registry: None,
             watcher: Some(watcher),
             state,
         })
@@ -455,6 +471,12 @@ impl AssignmentHostWatchdogGuard {
             || self.operation_expired.load(Ordering::Acquire);
         if expired {
             self.cancellation.cancel();
+            if !self.operation_expired.load(Ordering::Acquire)
+                && let Some(registry) = &self.registry
+            {
+                let _ = self.state.supervisor.cancel();
+                let _ = registry.cancel_registered_pagers(&self.state.supervisor);
+            }
         }
         expired
     }
@@ -514,7 +536,7 @@ mod tests {
             .bind_caller(&caller)
             .unwrap_or_else(|error| panic!("bind original caller: {error}"));
         let (state, _) = publication
-            .start(Some(7_000), cancellation.clone(), budgets)
+            .start(Some(7_000), cancellation.clone(), budgets, None)
             .unwrap_or_else(|error| panic!("independent assignment cap: {error}"));
         assert_ne!(state.supervisor().cap_id(), caller.cap_id());
         assert!(publication.bind_caller(&caller).is_err());
@@ -554,7 +576,7 @@ mod tests {
             .bind_caller(&caller)
             .unwrap_or_else(|error| panic!("bind original caller: {error}"));
         publication
-            .start(Some(7_000), ExecutionCancellation::default(), budgets)
+            .start(Some(7_000), ExecutionCancellation::default(), budgets, None)
             .unwrap_or_else(|error| panic!("assignment watcher: {error}"));
         publication
             .finish()
@@ -577,7 +599,7 @@ mod tests {
         let cancellation = ExecutionCancellation::default();
         let publication = PublicationSupervision::default();
         let (state, first_start) = publication
-            .start(Some(5_000), cancellation.clone(), budgets)
+            .start(Some(5_000), cancellation.clone(), budgets, None)
             .unwrap_or_else(|error| panic!("authored original watcher: {error}"));
         assert!(first_start);
         let supervisor = state.supervisor().clone();
@@ -585,7 +607,7 @@ mod tests {
             .outer_cap_binding()
             .unwrap_or_else(|error| panic!("original binding: {error}"));
         let (retry, restarted) = publication
-            .start(Some(50_000), cancellation.clone(), budgets)
+            .start(Some(50_000), cancellation.clone(), budgets, None)
             .unwrap_or_else(|error| panic!("borrow original retry scope: {error}"));
         assert!(!restarted);
         assert_eq!(retry.supervisor().cap_id(), supervisor.cap_id());

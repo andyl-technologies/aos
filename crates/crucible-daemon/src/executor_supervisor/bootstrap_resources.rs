@@ -565,7 +565,8 @@ mod tests {
                 &directory.path().join("must-remain-unopened"),
                 [0x31; 32],
                 configuration().registry_resources,
-                services
+                services,
+                None
             )
             .is_err()
         );

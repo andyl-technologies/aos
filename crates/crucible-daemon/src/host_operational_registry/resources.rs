@@ -49,6 +49,7 @@ impl Drop for Retirement {
 
 pub(super) struct RegistryResources {
     pub(super) entitlement: HostResourceVector,
+    pub(super) request_supervisor: Option<HostOperationSupervisor>,
     services: HostServiceAllocator,
     metadata: HostServiceAllocator,
     _lease: HostServiceLease,
@@ -248,7 +249,7 @@ impl HostOperationalRegistry {
             resources.resident_peak_bytes,
         )
         .map_err(unavailable)?;
-        Self::open_admitted_with_services(path, owner, resources, allocator)
+        Self::open_admitted_with_services(path, owner, resources, allocator, None)
     }
 
     /// Opens history using the original startup service allocator.
@@ -260,6 +261,7 @@ impl HostOperationalRegistry {
         owner: [u8; 32],
         resources: HostResourceVector,
         allocator: HostServiceAllocator,
+        request_supervisor: Option<HostOperationSupervisor>,
     ) -> Result<Self, HostOperationalError> {
         Self::validate_service_resources(owner, resources)?;
         if allocator.maximum_tasks() != resources.task_slots
@@ -284,6 +286,7 @@ impl HostOperationalRegistry {
             Some(history),
             Some(RegistryResources {
                 entitlement: resources,
+                request_supervisor,
                 services: allocator,
                 metadata,
                 _lease: lease,

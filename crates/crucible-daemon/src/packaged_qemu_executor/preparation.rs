@@ -299,7 +299,7 @@ where
         registry_owner,
         registry_resources,
         registry_maximum_inodes,
-        preparation_supervisor,
+        preparation_supervisor: preparation_supervisor.clone(),
     })?;
     let startup_services = ownership.services()?;
     // The original complete account and finite scope exist before the ledger
@@ -337,6 +337,7 @@ where
         registry_owner,
         registry_resources,
         startup_services,
+        Some(preparation_supervisor),
     )?;
     #[cfg(feature = "private-measurement-domain")]
     if config.original_preparation.is_some() {

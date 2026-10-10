@@ -49,11 +49,15 @@ use admitted_error::AdmittedCampaignError;
 #[cfg(any(test, feature = "test-support"))]
 mod component;
 
-pub(super) struct LocalPlannerMeter;
+/// Measures deterministic canonical planning against its explicit work budget.
+pub(crate) struct LocalPlannerMeter;
 
+/// Reports fixed canonical planner fuel accounting refusal.
 #[derive(Debug)]
-pub(super) enum LocalPlannerMeterError {
+pub(crate) enum LocalPlannerMeterError {
+    /// The measured request size cannot fit the fuel coordinate.
     FuelOverflow,
+    /// Measured work exceeds the explicit request budget.
     FuelExceeded,
 }
 

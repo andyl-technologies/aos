@@ -53,11 +53,15 @@ use crate::{
 
 mod diagnostics;
 mod host_admission;
+#[cfg(feature = "private-measurement-domain")]
+mod original_ingress;
 use diagnostics::{record_phase, record_queued_phase, record_retained_publication};
 pub(crate) use host_admission::{CampaignActorPort, PreparedExecutorActor};
 
 mod checkpoint;
 mod completion;
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) mod original_retirement;
 use checkpoint::{observe_promoted_checkpoint, reconcile_checkpoint_result};
 pub use completion::LocalExecutorPoolCompletion;
 use completion::{PoolCompletionState, WorkerCompletion};
@@ -113,6 +117,8 @@ pub(crate) trait PausedCheckpointObserver: Send + Sync {
 /// Cloneable checked component service backed by one fixed worker pool.
 pub struct LocalExecutorPoolService<L, V> {
     shared: Arc<SharedExecutor<L, V>>,
+    #[cfg(feature = "private-measurement-domain")]
+    original: Option<Arc<crucible_linux_resource::host_supervision::HostOperationGuard>>,
 }
 
 /// Bounded process-owned executor activity captured under the actor mutex.
@@ -127,6 +133,8 @@ impl<L, V> Clone for LocalExecutorPoolService<L, V> {
     fn clone(&self) -> Self {
         Self {
             shared: Arc::clone(&self.shared),
+            #[cfg(feature = "private-measurement-domain")]
+            original: self.original.clone(),
         }
     }
 }
@@ -136,6 +144,31 @@ where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator + Send + Sync,
 {
+    #[cfg(not(feature = "private-measurement-domain"))]
+    fn require_running_for_call(&self) -> Result<(), LocalExecutorPoolServiceError<L::Error>> {
+        self.shared.require_running()
+    }
+
+    #[cfg(not(feature = "private-measurement-domain"))]
+    fn lock_executor_for_call(
+        &self,
+        changes_ownership: bool,
+    ) -> Result<
+        MutexGuard<'_, LocalExecutorCapabilityService<L, V>>,
+        LocalExecutorPoolServiceError<L::Error>,
+    > {
+        if changes_ownership {
+            self.shared.lock_executor()
+        } else {
+            self.shared.lock_executor_read_only()
+        }
+    }
+
+    #[cfg(not(feature = "private-measurement-domain"))]
+    fn poison_for_call(&self) {
+        self.shared.poison();
+    }
+
     /// Durably requests cancellation of one exact local execution.
     ///
     /// Capacity remains charged while its worker is physically in flight. The
@@ -150,7 +183,7 @@ where
         key: AttemptExecutionKey,
         execution: crucible_campaign::ExecutionId,
     ) -> Result<crate::CancellationOutcome, LocalExecutorPoolServiceError<L::Error>> {
-        let mut executor = self.shared.lock_executor()?;
+        let mut executor = self.lock_executor_for_call(true)?;
         executor
             .supervisor_mut()
             .cancel_execution(key, execution)
@@ -161,11 +194,16 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error when supervisor ownership is poisoned.
+    /// Returns an error when supervisor ownership is poisoned or the direct
+    /// original-bound component alias does not support operational reporting.
     pub fn report(
         &self,
     ) -> Result<LocalExecutorPoolReport, LocalExecutorPoolServiceError<L::Error>> {
-        let executor = self.shared.lock_executor_read_only()?;
+        #[cfg(feature = "private-measurement-domain")]
+        if self.original.is_some() {
+            return Err(LocalExecutorPoolServiceError::OriginalReportUnavailable);
+        }
+        let executor = self.lock_executor_for_call(false)?;
         Ok(self.shared.report(executor.supervisor()))
     }
 
@@ -173,8 +211,8 @@ where
     pub(crate) fn operational_snapshot(
         &self,
     ) -> Result<LocalExecutorOperationalSnapshot, LocalExecutorPoolServiceError<L::Error>> {
-        self.shared.require_running()?;
-        let executor = self.shared.lock_executor_read_only()?;
+        self.require_running_for_call()?;
+        let executor = self.lock_executor_for_call(false)?;
         let revision = self.shared.ownership_revision.load(Ordering::Acquire);
         if revision == u64::MAX {
             return Err(LocalExecutorPoolServiceError::ObservationRevisionExhausted);
@@ -199,9 +237,9 @@ where
         &mut self,
         request: &SubmitAttemptRequest,
     ) -> Result<SubmitAttemptResponse, Self::Error> {
-        self.shared.require_running()?;
+        self.require_running_for_call()?;
         let preflight = {
-            let mut executor = self.shared.lock_executor()?;
+            let mut executor = self.lock_executor_for_call(true)?;
             executor
                 .supervisor_mut()
                 .preflight_submit(request)
@@ -219,12 +257,12 @@ where
         })) {
             Ok(validation) => validation,
             Err(_) => {
-                self.shared.poison();
+                self.poison_for_call();
                 return Err(LocalExecutorPoolServiceError::WorkerPanicked);
             }
         };
-        self.shared.require_running()?;
-        let mut executor = self.shared.lock_executor()?;
+        self.require_running_for_call()?;
+        let mut executor = self.lock_executor_for_call(true)?;
         let response = executor
             .supervisor_mut()
             .submit_after_validation(request, validation)
@@ -242,9 +280,8 @@ where
     V: AttemptAdmissionValidator + Send + Sync,
 {
     fn describe_executor(&mut self) -> Result<ExecutorDescription, Self::Error> {
-        self.shared.require_running()?;
-        self.shared
-            .lock_executor_read_only()?
+        self.require_running_for_call()?;
+        self.lock_executor_for_call(false)?
             .describe_executor()
             .map_err(LocalExecutorPoolServiceError::Supervisor)
     }
@@ -253,9 +290,8 @@ where
         &mut self,
         request: &WatchExecutorCapacityRequest,
     ) -> Result<ExecutorCapacityReport, Self::Error> {
-        self.shared.require_running()?;
-        self.shared
-            .lock_executor()?
+        self.require_running_for_call()?;
+        self.lock_executor_for_call(true)?
             .watch_capacity(request)
             .map_err(LocalExecutorPoolServiceError::Supervisor)
     }
@@ -270,9 +306,8 @@ where
         &mut self,
         request: &GetAttemptExecutionRequest,
     ) -> Result<GetAttemptExecutionResponse, Self::Error> {
-        self.shared.require_running()?;
-        self.shared
-            .lock_executor_read_only()?
+        self.require_running_for_call()?;
+        self.lock_executor_for_call(false)?
             .get_attempt_execution(request)
             .map_err(LocalExecutorPoolServiceError::Supervisor)
     }
@@ -287,9 +322,8 @@ where
         &mut self,
         request: &CheckpointAttemptExecutionRequest,
     ) -> Result<CheckpointAttemptExecutionResponse, Self::Error> {
-        self.shared.require_running()?;
-        self.shared
-            .lock_executor()?
+        self.require_running_for_call()?;
+        self.lock_executor_for_call(true)?
             .checkpoint_attempt_execution(request)
             .map_err(LocalExecutorPoolServiceError::Supervisor)
     }
@@ -298,9 +332,8 @@ where
         &mut self,
         request: &CancelAttemptExecutionRequest,
     ) -> Result<CancelAttemptExecutionResponse, Self::Error> {
-        self.shared.require_running()?;
-        self.shared
-            .lock_executor()?
+        self.require_running_for_call()?;
+        self.lock_executor_for_call(true)?
             .cancel_attempt_execution(request)
             .map_err(LocalExecutorPoolServiceError::Supervisor)
     }
@@ -315,7 +348,7 @@ where
         &mut self,
         request: &ResumeAttemptExecutionRequest,
     ) -> Result<ResumeAttemptExecutionResponse, Self::Error> {
-        self.shared.require_running()?;
+        self.require_running_for_call()?;
         let assignment = request
             .assignment_request()
             .map_err(LocalExecutorError::from)
@@ -328,12 +361,12 @@ where
         })) {
             Ok(validation) => validation,
             Err(_) => {
-                self.shared.poison();
+                self.poison_for_call();
                 return Err(LocalExecutorPoolServiceError::WorkerPanicked);
             }
         };
-        self.shared.require_running()?;
-        let mut executor = self.shared.lock_executor()?;
+        self.require_running_for_call()?;
+        let mut executor = self.lock_executor_for_call(true)?;
         let response = executor
             .supervisor_mut()
             .resume_after_validation(request, validation)
@@ -349,6 +382,8 @@ where
 pub struct LocalExecutorWorkerPool<L, V> {
     service: LocalExecutorPoolService<L, V>,
     workers: Vec<JoinHandle<()>>,
+    #[cfg(feature = "private-measurement-domain")]
+    original_retired: bool,
 }
 
 /// Retains the authorities published together with one worker pool.
@@ -594,8 +629,14 @@ where
         }
 
         Ok(Self {
-            service: LocalExecutorPoolService { shared },
+            service: LocalExecutorPoolService {
+                shared,
+                #[cfg(feature = "private-measurement-domain")]
+                original: None,
+            },
             workers: joins,
+            #[cfg(feature = "private-measurement-domain")]
+            original_retired: false,
         })
     }
 
@@ -704,6 +745,12 @@ impl<L, V> LocalExecutorPoolShutdown<L, V> {
 
 impl<L, V> Drop for LocalExecutorWorkerPool<L, V> {
     fn drop(&mut self) {
+        #[cfg(feature = "private-measurement-domain")]
+        if self.original_retired {
+            // The bounded original path joined every real handle after draining
+            // the actor. Reentering ordinary shutdown would reacquire its locks.
+            return;
+        }
         self.service.shared.request_shutdown();
         // Dropping a JoinHandle detaches without dropping the shared supervisor.
         // Each thread retains the Arc and exact reconciliation token until its
@@ -774,6 +821,14 @@ pub enum LocalExecutorPoolConfigError {
 /// Checked component-service failure from a local worker pool.
 #[derive(Debug, thiserror::Error)]
 pub enum LocalExecutorPoolServiceError<E> {
+    /// The component caller's retained original refused further ingress.
+    #[cfg(feature = "private-measurement-domain")]
+    #[error("original executor component refused: {0}")]
+    Original(#[from] crucible_linux_resource::host_supervision::HostSupervisionError),
+    /// Operational reporting is outside the direct original component contract.
+    #[cfg(feature = "private-measurement-domain")]
+    #[error("operational reporting is unavailable on the original component alias")]
+    OriginalReportUnavailable,
     /// The pool has begun terminal shutdown.
     #[error("local executor worker pool is shutting down")]
     ShuttingDown,

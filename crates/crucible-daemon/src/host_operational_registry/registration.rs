@@ -253,6 +253,7 @@ impl HostOperationalRegistry {
                 client: Mutex::new(client),
                 pending: Mutex::new(None),
                 retirement: Mutex::new(None),
+                cancellation_failure: Mutex::new(None),
             }),
         );
         Ok(())

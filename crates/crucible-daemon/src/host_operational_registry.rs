@@ -20,6 +20,7 @@ use crucible_qemu::ram_control::{
     RamControlClient, RamControlRegistrar, RamControlRetirementAuthority, RamInventoryAdmission,
 };
 
+mod cancellation;
 mod fault_actor;
 mod history;
 mod mutation;
@@ -63,6 +64,7 @@ struct Owner {
     state: Mutex<HostRamStatus>,
     client: Mutex<Option<RamControlClient>>,
     pending: Mutex<Option<HostResourceTransition>>,
+    cancellation_failure: Mutex<Option<cancellation::CancellationFailure>>,
     retirement: Mutex<Option<Weak<node_retirement::NodeRetirement>>>,
 }
 
@@ -691,7 +693,8 @@ impl HostOperationalRegistry {
             .ok_or(HostOperationalError::Unavailable)?;
         owner.supervisor.cancel().map_err(unavailable)?;
         state.retired.insert(target);
-        Ok(())
+        drop(state);
+        self.cancel_registered_pagers(&owner.supervisor)
     }
 
     /// Discharges an exact node after successful process and borrower cleanup.
@@ -917,6 +920,30 @@ impl HostOperationalRegistry {
 }
 
 impl HostOperationalControl for HostOperationalRegistry {
+    fn begin_request(
+        &self,
+        principal: &str,
+    ) -> Result<crucible_linux_resource::host_supervision::HostOperationGuard, HostOperationalError>
+    {
+        if !self
+            .shared
+            .state
+            .try_lock()
+            .map_err(unavailable)?
+            .principals
+            .contains_key(principal)
+        {
+            return Err(HostOperationalError::PrincipalDenied);
+        }
+        self.shared
+            .resources
+            .as_ref()
+            .and_then(|resources| resources.request_supervisor.as_ref())
+            .ok_or(HostOperationalError::Unavailable)?
+            .begin(crucible_linux_resource::host_supervision::HostOperationClass::Setup)
+            .map_err(|source| HostOperationalError::OriginalBoundary { source })
+    }
+
     fn metadata_budget(
         &self,
         principal: &str,

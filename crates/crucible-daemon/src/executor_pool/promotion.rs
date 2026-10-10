@@ -403,6 +403,26 @@ impl PromotionQueue {
         self.space.notify_all();
     }
 
+    /// Commits stopping while the real promotion queue remains drained.
+    ///
+    /// # Errors
+    /// Refuses queued or active work, an occupied or poisoned queue lock, or
+    /// the supplied same-owner commit without releasing any work resource.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(super) fn try_stop_quiescent(
+        &self,
+        commit: impl FnOnce() -> Result<(), ()>,
+    ) -> Result<(), ()> {
+        let state = self.state.try_lock().map_err(|_| ())?;
+        if !state.pending.is_empty() || !state.active.is_empty() {
+            return Err(());
+        }
+        commit()?;
+        self.ready.notify_all();
+        self.space.notify_all();
+        Ok(())
+    }
+
     pub(super) fn shutdown(&self) {
         let state = match self.state.lock() {
             Ok(state) => state,

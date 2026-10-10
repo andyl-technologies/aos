@@ -4031,6 +4031,10 @@ fn wait_until(timeout: Duration, mut condition: impl FnMut() -> bool) {
     }
 }
 
+#[cfg(feature = "private-measurement-domain")]
+mod original_ingress;
+#[cfg(feature = "private-measurement-domain")]
+mod original_retirement;
 mod preparation;
 
 mod promotion_cases;

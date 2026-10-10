@@ -81,15 +81,19 @@ pub(crate) mod native_throughput;
 use executor::{SynchronousCampaignExecutor, SynchronousCampaignExecutorError};
 
 mod exploration;
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) use exploration::{
+    ConfiguredCampaignPlannerError, LocalCampaignPlannerKind, configured_campaign_planner,
+};
 use exploration::{
-    ExplorationBranchDecision, LocalCampaignPlannerService, LocalCampaignPlannerServiceError,
-    exploration_branch_request, local_campaign_planner, local_campaign_policy,
-    observation_has_finding, publish_all_candidates_generator,
+    ExplorationBranchDecision, exploration_branch_request, local_campaign_planner,
+    local_campaign_policy, observation_has_finding, publish_all_candidates_generator,
 };
 pub use exploration::{
     GuardedCampaignBranchAcceptance, GuardedCampaignExploration,
     GuardedCampaignExplorationCompletion, GuardedCampaignExplorationStrategy,
 };
+pub(crate) use exploration::{LocalCampaignPlannerService, LocalCampaignPlannerServiceError};
 
 mod finding_export;
 use finding_export::capture_final_finding_export;

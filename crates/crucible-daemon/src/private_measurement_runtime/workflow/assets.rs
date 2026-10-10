@@ -15,6 +15,7 @@ use crucible::{ScenarioDefForm, Schedule};
 use crate::campaign_bootstrap::OriginalPreparedCampaignServiceOwner;
 
 mod creation;
+mod execution;
 pub(super) mod executor;
 mod failure;
 mod files;
@@ -44,6 +45,7 @@ pub(super) struct OriginalWorkflowArtifactsOwner {
 }
 
 struct LoadedAttempt {
+    coordinator: Option<crate::campaign_bootstrap::OriginalCampaignCoordinator>,
     scenario: Option<ScenarioDefForm>,
     schedule: Option<Schedule>,
     imported: Option<crucible_campaign::ConfigurationArtifactId>,
@@ -54,6 +56,8 @@ struct LoadedAttempt {
 
 #[derive(Debug, thiserror::Error)]
 enum ArtifactCause {
+    #[error("original campaign execution refused: {0}")]
+    Coordinator(#[from] crate::campaign_bootstrap::OriginalCampaignCoordinatorError),
     #[error("original catalog provider refused: {0}")]
     Catalog(#[from] crucible_cas::content_store::StoreError),
     #[error("executor configuration refused: {0}")]
@@ -215,6 +219,7 @@ impl OriginalWorkflowArtifactsOwner {
                             &check,
                         )?;
                         owner.models.push(LoadedAttempt {
+                            coordinator: None,
                             scenario: None,
                             schedule: None,
                             imported: None,

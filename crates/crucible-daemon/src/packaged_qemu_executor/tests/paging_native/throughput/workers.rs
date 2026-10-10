@@ -73,8 +73,9 @@ impl WorkerService {
                 )
                 .expect("one original matrix operation before host work"),
         );
-        let watchdog = AssignmentHostWatchdogGuard::start_service(supervisor, cancellation.clone())
-            .expect("original admitted Service watcher and bounded stack");
+        let watchdog =
+            AssignmentHostWatchdogGuard::start_service(supervisor, cancellation.clone(), None)
+                .expect("original admitted Service watcher and bounded stack");
         Self {
             registry,
             owner: service,

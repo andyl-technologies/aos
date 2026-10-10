@@ -18,6 +18,7 @@ use crate::linux_attempt_process::LinuxQemuAttemptProcessOwner;
 use crate::linux_attempt_storage::LinuxQemuAttemptStorageOwner;
 
 mod device_digest;
+mod retirement;
 
 pub(crate) use device_digest::OriginalDeviceDigestWorkspacePurpose;
 
@@ -34,6 +35,7 @@ const MAX_ORIGINAL_NATIVE_NODE_GENERATIONS: u8 = 2;
 #[must_use = "retain original native accounts through genuine factory retirement"]
 pub struct OriginalNativeAccountRoster {
     held: Option<Arc<Mutex<NativeRoster>>>,
+    retiring_credits: [Option<OriginalNativeAccountCredit>; MAX_NATIVE_WORKERS],
 }
 
 #[cfg(test)]
@@ -781,7 +783,13 @@ impl OriginalNativeAccountRoster {
         let binding = OriginalNativeAccountFactoryBinding {
             roster: Arc::downgrade(&roster),
         };
-        Ok((Self { held: Some(roster) }, binding))
+        Ok((
+            Self {
+                held: Some(roster),
+                retiring_credits: std::array::from_fn(|_| None),
+            },
+            binding,
+        ))
     }
 
     pub(super) fn allocation_extent() -> Result<u64, OriginalActorAccountError> {
@@ -791,8 +799,12 @@ impl OriginalNativeAccountRoster {
         )>()
         .extend(std::alloc::Layout::new::<Mutex<NativeRoster>>())
         .map_err(|_| OriginalActorAccountError::Unavailable)?;
-        u64::try_from(layout.pad_to_align().size())
-            .map_err(|_| OriginalActorAccountError::Unavailable)
+        let bytes = layout
+            .pad_to_align()
+            .size()
+            .checked_add(std::mem::size_of::<Self>())
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        u64::try_from(bytes).map_err(|_| OriginalActorAccountError::Unavailable)
     }
 
     /// Retries the same retained physical owners under their original Cleanup.

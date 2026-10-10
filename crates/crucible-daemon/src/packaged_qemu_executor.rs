@@ -101,6 +101,10 @@ pub(crate) mod ram_catalog;
 pub use ram_catalog::{PackagedRamCatalogConfig, PackagedRamCatalogConfigError};
 
 pub(crate) mod guarded;
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) mod original_campaign;
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) mod original_retirement;
 mod preparation;
 pub use preparation::PreparationExpiredCause;
 mod status;

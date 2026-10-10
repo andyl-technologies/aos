@@ -510,6 +510,45 @@ impl RamControlClient {
         })
     }
 
+    /// Cancels the exact pager generation under the caller's retained Cleanup operation.
+    ///
+    /// One fanout uses one original operation rather than starting another
+    /// timeout for every target. Uncertain transport remains poisoned.
+    ///
+    /// # Errors
+    /// Refuses zero or foreign generations, a non-Cleanup guard, a different
+    /// original cap, elapsed cleanup, or an uncertain exchange.
+    pub fn cancel_under(
+        &mut self,
+        operation_generation: u64,
+        cleanup: &HostOperationGuard,
+    ) -> Result<RamControlReply, RamControlError> {
+        if operation_generation == 0
+            || operation_generation != self.target.arena_generation
+            || cleanup.status().map_err(supervision_error)?.class != HostOperationClass::Cleanup
+            || self
+                .supervisor
+                .as_ref()
+                .is_none_or(|supervisor| !cleanup.shares_outer_cap(supervisor))
+        {
+            return Err(RamControlError::AuthorityMismatch);
+        }
+        cleanup.wait_slice().map_err(supervision_error)?;
+        let first = self.exchange_under(
+            RamControlRequest::Cancel {
+                operation_generation,
+            },
+            Some(cleanup),
+            None,
+        );
+        let after = cleanup.wait_slice().map_err(supervision_error);
+        match (first, after) {
+            (Err(first), _) => Err(first),
+            (Ok(reply), Ok(_)) => Ok(reply),
+            (Ok(_), Err(after)) => Err(after),
+        }
+    }
+
     fn exchange(&mut self, request: RamControlRequest) -> Result<RamControlReply, RamControlError> {
         let class = if matches!(
             request,
