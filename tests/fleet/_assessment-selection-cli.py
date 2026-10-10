@@ -76,7 +76,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
         assert set(request) == {"registrySlug", field}, request
         document = json.loads(base64.b64decode(request[field]))
         calls.append((self.path, document))
-        if self.path == "/aos.hub.v1.AssessmentService/GetStatus":
+        if self.path == "/aos.hub.v1.AssessmentService/ListEvents":
+            assert document == {
+                "schema": "aos.assessment-event-query/v1", "limit": 10,
+                "afterSequence": 0,
+            }, document
+            failure = {
+                "scanId": "fixture-durable-scan", "provider": "osv",
+                "operationDigest": "sha256:" + "c" * 64,
+                "planDigest": "sha256:" + "d" * 64, "attempt": 1,
+                "receiptDigest": "sha256:" + "e" * 64,
+                "code": "rate-limited", "status": 429,
+                "retryAt": "2026-10-10T00:02:00Z",
+            }
+            if scenario == "source-event-private-field":
+                failure["requestUrl"] = "https://example.org/private"
+            elif scenario == "source-event-invalid-status":
+                failure["status"] = 200
+            response = {
+                "schema": "aos.assessment-event-page/v1",
+                "resourceScope": "fixture-registry-incarnation",
+                "asOf": "2026-10-10T00:00:00Z", "nextSequence": 1,
+                "events": [{
+                    "schema": "aos.assessment-event/v1", "eventId": "fixture-source-failure",
+                    "sequence": "1", "occurredAt": "2026-10-10T00:00:00Z",
+                    "payload": {"kind": "source-failed", "failure": failure},
+                }],
+            }
+        elif self.path == "/aos.hub.v1.AssessmentService/GetStatus":
             assert document["profiles"] == profiles
             assert document["limit"] == 100
             position = document.get("afterSubject")
@@ -173,8 +200,34 @@ try:
             calls.clear()
             run_status(okay=False)
             assert len(calls) == 1 and calls[0][0].endswith("/GetStatus")
+
+        def run_events(as_json=True, okay=True):
+            result = subprocess.run([
+                str(binary), *(["--json"] if as_json else []),
+                "hub", "maintain", "events", "--registry", "fixture",
+                "--hub", f"http://127.0.0.1:{server.server_port}", "--token", "public-fixture-token",
+            ], cwd=root, env=environment, capture_output=True, text=True, timeout=30)
+            assert (result.returncode == 0) == okay, (result.stdout, result.stderr)
+            if okay:
+                if as_json:
+                    failure = json.loads(result.stdout)["data"]["events"][0]["payload"]["failure"]
+                    assert failure["code"] == "rate-limited" and failure["status"] == 429
+                else:
+                    assert "source-failed" in result.stdout + result.stderr
+                assert "requestUrl" not in result.stdout + result.stderr
+
+        scenario = "source-event"
+        calls.clear()
+        run_events()
+        run_events(as_json=False)
+        assert len(calls) == 2 and all(path.endswith("/ListEvents") for path, _ in calls)
+        for scenario in ["source-event-private-field", "source-event-invalid-status"]:
+            calls.clear()
+            run_events(okay=False)
+            assert len(calls) == 1 and calls[0][0].endswith("/ListEvents")
         print("PASS: actual CLI pinned selection, bounded pages and changed receipt refusal")
         print("PASS: actual CLI scoped source status and malformed availability refusal")
+        print("PASS: actual CLI source failure events and malformed fact refusal")
 finally:
     server.shutdown()
     server.server_close()

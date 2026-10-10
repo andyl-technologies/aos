@@ -250,6 +250,11 @@ impl Database {
             .expecting(1),
             self.assessment_provider_failure_budget_statement(claim, None)?,
         ]);
+        let now = self.assessment_database_time().await?;
+        statements.extend(
+            self.assessment_execution_failure_event_statements(registry_id, claim, &now)
+                .await?,
+        );
         self.backend.checked_batch(&statements).await
     }
 
@@ -493,6 +498,22 @@ impl Database {
                 &plan.claim,
                 result.retry.as_ref().map(|retry| &retry.not_before),
             )?);
+            if let Some(failure) =
+                aos_assessment_runtime::events::SourceFailureV1::from_result(plan, result)?
+            {
+                statements.extend(
+                    self.assessment_event_statements(
+                        registry_id,
+                        vec![
+                            aos_assessment_runtime::events::AssessmentEventPayload::SourceFailed {
+                                failure: Box::new(failure),
+                            },
+                        ],
+                        &now,
+                    )
+                    .await?,
+                );
+            }
         } else if matches!(
             result.outcome,
             WorkOutcome::Observed | WorkOutcome::NotModified

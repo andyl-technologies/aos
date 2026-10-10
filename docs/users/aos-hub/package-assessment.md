@@ -457,6 +457,16 @@ it contains no callback destination, body or credentials. Failure events
 never create callback intents, so an unavailable destination cannot cause a
 notification loop. Receipt replay creates no additional failure event.
 
+Failed source attempts also retain `source.failed` events in the same
+transaction as their physical settlement. These identify the scan, public
+provider, exact operation and plan commitments, and original attempt. An
+admitted response includes its receipt commitment; validated throttling or
+retry responses include their status and source retry boundary. Execution
+uncertainty has no response receipt. The event exposes no private request,
+account, credential or raw error text, and replay creates no additional event.
+Physical failure events do not create callback intents; grouped source-health
+attention is a separate notification decision.
+
 Receivers verify `X-AOS-Signature-Version`, `X-AOS-Signing-Key-Version`,
 `X-AOS-Timestamp`, `X-AOS-Delivery-ID` and `X-AOS-Signature` against the exact
 canonical body. The shared `CallbackSignature::verify` implementation enforces the

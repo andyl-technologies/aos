@@ -116,6 +116,11 @@ impl NotificationSummaryV1 {
             AssessmentEventPayload::DeliveryFailed { .. } => {
                 bail!("operational delivery failures cannot be selected for callback fanout");
             }
+            AssessmentEventPayload::SourceFailed { .. } => {
+                bail!(
+                    "physical source failures require source-health attention before callback fanout"
+                );
+            }
         }
         value.validate()?;
         Ok(value)

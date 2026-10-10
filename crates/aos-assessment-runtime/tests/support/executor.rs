@@ -119,6 +119,13 @@ async fn source_reads_are_tightened_to_the_remaining_aggregate_budget_before_dis
     assert_eq!(result.diagnostics, vec!["source-request-incomplete"]);
     assert!(result.normalized_objects.iter().any(|projection| matches!(&projection.object, NormalizedObject::Advisory(record) if record.id == "OSV-2026-1")));
     result.validate_for(&plan, &FixedClock.now()?)?;
+
+    assert_eq!(
+        aos_assessment_runtime::events::SourceFailureV1::from_result(&plan, &result)?
+            .context("partial source outage")?
+            .code,
+        aos_assessment_runtime::events::SourceFailureCode::SourceUnavailable
+    );
     Ok(())
 }
 
@@ -171,6 +178,22 @@ async fn throttled_batches_stop_and_bind_cooldown_to_the_exact_failed_observatio
     assert_eq!(retry.not_before.elapsed_since(&retry.observed_at)?, 7200);
     result.validate_for(&plan, &FixedClock.now()?)?;
 
+    let failure = aos_assessment_runtime::events::SourceFailureV1::from_result(&plan, &result)?
+        .context("rate limited source event facts")?;
+    assert_eq!(
+        failure.code,
+        aos_assessment_runtime::events::SourceFailureCode::RateLimited
+    );
+    assert_eq!(failure.status, Some(429));
+    assert_eq!(failure.retry_at.as_ref(), Some(&retry.not_before));
+    assert_eq!(
+        failure.receipt_digest,
+        Some(Sha256Digest::of_canonical(
+            "aos.provider-work-result/v1",
+            &result
+        )?)
+    );
+
     let mut changed = result.clone();
     changed
         .retry
@@ -209,6 +232,9 @@ async fn ordinary_denials_have_no_cooldown_and_explicit_github_throttling_does()
     .await?;
     assert!(denied.retry.is_none());
     assert_eq!(denied.diagnostics, ["source-http-403"]);
+    assert!(
+        aos_assessment_runtime::events::SourceFailureV1::from_result(&plan, &denied)?.is_none()
+    );
 
     let source = Source::new(403, b"rate limited".to_vec());
     source.responses.lock().expect("fixture queue")[0].throttle = SourceThrottleHeaders {
@@ -290,6 +316,48 @@ async fn outage_after_a_valid_record_preserves_positive_evidence_and_stops_the_b
         &projection.object, NormalizedObject::Advisory(record) if record.id == "OSV-2026-1"
     )));
     result.validate_for(&plan, &FixedClock.now()?)?;
+    let failure = aos_assessment_runtime::events::SourceFailureV1::from_result(&plan, &result)?
+        .context("partial source outage facts")?;
+    assert_eq!(
+        failure.code,
+        aos_assessment_runtime::events::SourceFailureCode::SourceUnavailable
+    );
+    assert!(failure.status.is_none() && failure.retry_at.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn source_retry_event_projects_only_validated_response_hints() -> Result<()> {
+    let plan = super::plan()?;
+    let source = Source::new(503, b"private source diagnostic".to_vec());
+    source.responses.lock().expect("fixture queue")[0]
+        .throttle
+        .retry_after = Some("120".into());
+    let result = execute_source(
+        &source,
+        &Custody::default(),
+        &FixedClock,
+        &plan,
+        "fixture-build",
+        3600,
+    )
+    .await?;
+    let failure = aos_assessment_runtime::events::SourceFailureV1::from_result(&plan, &result)?
+        .context("validated source retry facts")?;
+    assert_eq!(
+        failure.code,
+        aos_assessment_runtime::events::SourceFailureCode::RetryableResponse
+    );
+    assert_eq!(failure.status, Some(503));
+    assert_eq!(
+        failure
+            .retry_at
+            .as_ref()
+            .context("retry boundary")?
+            .elapsed_since(&FixedClock.now()?)?,
+        120
+    );
+    assert!(!serde_json::to_string(&failure)?.contains("private source diagnostic"));
     Ok(())
 }
 

@@ -7,7 +7,7 @@ use aos_assessment_runtime::attention_control::{
 use aos_assessment_runtime::events::AssessmentEventPayload;
 use leptos::prelude::*;
 
-use super::assessments::{start_status_poll, AssessmentReadGuard};
+use super::assessments::{AssessmentReadGuard, start_status_poll};
 use crate::components::InlineError;
 use crate::mutation::{idempotency_key, scoped_workflow_tasks};
 use crate::transport::ApiClient;
@@ -52,6 +52,29 @@ fn event_description(payload: &AssessmentEventPayload) -> String {
             format!(
                 "Delivery {} for subscription {} failed on attempt {}{retry}",
                 failure.delivery_id, failure.subscription_id, failure.attempt
+            )
+        }
+        AssessmentEventPayload::SourceFailed { failure } => {
+            let reason = match failure.code {
+                aos_assessment_runtime::events::SourceFailureCode::ExecutionFailed => {
+                    "execution incomplete"
+                }
+                aos_assessment_runtime::events::SourceFailureCode::RateLimited => "rate limited",
+                aos_assessment_runtime::events::SourceFailureCode::RetryableResponse => {
+                    "retryable response"
+                }
+                aos_assessment_runtime::events::SourceFailureCode::SourceUnavailable => {
+                    "source unavailable"
+                }
+            };
+            let retry = failure
+                .retry_at
+                .as_ref()
+                .map(|time| format!("; source retry boundary {time}"))
+                .unwrap_or_default();
+            format!(
+                "Source {} failed during scan {} on attempt {}: {reason}{retry}",
+                failure.provider, failure.scan_id, failure.attempt
             )
         }
     }

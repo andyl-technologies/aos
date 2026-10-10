@@ -18,6 +18,7 @@ mod notifications;
 mod notification_journal;
 mod notification_work;
 mod objects;
+mod provider_failure;
 mod provider_index;
 mod provider_state;
 mod publication;
@@ -63,6 +64,9 @@ mod execution_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod provider_state_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod provider_failure_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod conditional_tests;

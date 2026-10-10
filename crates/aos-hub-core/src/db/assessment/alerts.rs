@@ -358,6 +358,7 @@ impl Database {
                 AssessmentEventPayload::DeliveryFailed { .. } => {
                     ("delivery.failed", None, None, None)
                 }
+                AssessmentEventPayload::SourceFailed { .. } => ("source.failed", None, None, None),
             };
             let event = AssessmentEventV1 {
                 schema: "aos.assessment-event/v1".into(),

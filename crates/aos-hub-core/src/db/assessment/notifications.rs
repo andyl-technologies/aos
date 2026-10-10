@@ -335,9 +335,13 @@ impl Database {
         registry_id: i64,
         event: &AssessmentEventV1,
     ) -> Result<Vec<CheckedStatement>> {
-        // Failure visibility must never create another callback to a failed
-        // destination or any other subscription, including generic wildcards.
-        if matches!(event.payload, AssessmentEventPayload::DeliveryFailed { .. }) {
+        // Delivery failures cannot recurse. Physical source attempts acquire
+        // callback visibility through grouped source-health attention instead.
+        if matches!(
+            event.payload,
+            AssessmentEventPayload::DeliveryFailed { .. }
+                | AssessmentEventPayload::SourceFailed { .. }
+        ) {
             return Ok(Vec::new());
         }
         let subscriptions = self.subscription_records(registry_id).await?;

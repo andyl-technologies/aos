@@ -13,8 +13,10 @@ use crate::alerts::{AlertTransitionKind, AssessmentAlertV1};
 use crate::validation::text;
 
 mod delivery;
+mod source;
 
 pub use delivery::{DeliveryFailureCode, DeliveryFailureV1};
+pub use source::{SourceFailureCode, SourceFailureV1};
 
 const LIMITS: JsonLimits = JsonLimits {
     max_bytes: 262_144,
@@ -71,6 +73,11 @@ pub enum AssessmentEventPayload {
     DeliveryFailed {
         /// Sanitized immutable operational facts for the exact physical batch.
         failure: Box<DeliveryFailureV1>,
+    },
+    /// Reports one exact settled source failure without provider secrets.
+    SourceFailed {
+        /// Compact immutable facts for the admitted physical attempt.
+        failure: Box<SourceFailureV1>,
     },
 }
 
@@ -143,6 +150,14 @@ impl AssessmentEventV1 {
                     if delay > 3600 {
                         bail!("delivery failure retry exceeds the installed one-hour ceiling");
                     }
+                }
+            }
+            AssessmentEventPayload::SourceFailed { failure } => {
+                failure.validate()?;
+                if failure.retry_at.as_ref().is_some_and(|retry| {
+                    retry.unix_seconds() > self.occurred_at.unix_seconds().saturating_add(86400)
+                }) {
+                    bail!("source failure retry exceeds the installed one-day ceiling");
                 }
             }
         }
