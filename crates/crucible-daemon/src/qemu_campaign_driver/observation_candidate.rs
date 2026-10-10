@@ -270,7 +270,8 @@ pub(super) fn property_verdicts(
             HostAssertionOutcomeKind::Warning
             | HostAssertionOutcomeKind::NeverEvaluated
             | HostAssertionOutcomeKind::NeverTriggered
-            | HostAssertionOutcomeKind::NeverReachedWarn => PropertyVerdict::Inconclusive,
+            | HostAssertionOutcomeKind::NeverReachedWarn
+            | HostAssertionOutcomeKind::Undecided => PropertyVerdict::Inconclusive,
         };
         let evidence = PropertyEvidence::new(verdict, BTreeSet::new())?;
         if properties

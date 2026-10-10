@@ -872,6 +872,33 @@ enum ModeledStop {
     TerminalFailed(Vec<String>),
 }
 
+impl ModeledStop {
+    /// Returns whether the run can continue past this stop.
+    ///
+    /// A requested choice, boundary, or observation pauses an attempt mid-run,
+    /// and a child attempt may continue it. Terminal verdicts and exhausted
+    /// time or quantum budgets end the run, so only they decide end-of-run
+    /// property obligations.
+    fn continues_run(&self) -> bool {
+        match self {
+            Self::Reached(stop) | Self::BoundedPrimaryReached { stop, .. } => !matches!(
+                stop.primary(),
+                StopCondition::Terminal | StopCondition::ExecutionQuanta(_)
+            ),
+            Self::ObservationReached { proof, .. } => {
+                proof.satisfaction()
+                    != crucible_campaign::ObservationStopSatisfaction::ExecutionQuanta
+            }
+            Self::ReplayBoundary => true,
+            Self::BoundedPrimaryTimeout { .. }
+            | Self::PolicyTimeout { .. }
+            | Self::ModeledTimeout(_)
+            | Self::TerminalPassed
+            | Self::TerminalFailed(_) => false,
+        }
+    }
+}
+
 /// Authenticated private target used only to verify a later own checkpoint.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuSelectedResumeBoundary {
@@ -2625,6 +2652,9 @@ fn check_pending_assertions(
         .with_world_white_box_policies(pending.input.scenario().world());
     if let Some(quiescence) = pending.terminal_quiescence.clone() {
         checker = checker.with_terminal_scheduler_quiescence(quiescence);
+    }
+    if pending.stop.continues_run() {
+        checker = checker.with_continuing_prefix();
     }
     checker
         .check_run(pending.input.scenario().properties(), &pending.event_log)

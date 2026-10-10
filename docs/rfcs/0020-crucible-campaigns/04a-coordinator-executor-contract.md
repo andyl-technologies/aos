@@ -2900,7 +2900,15 @@ bounds before any semantic result is built. The complete retained log is checked
 assertion evaluator under the scenario's white-box and final-quiescence policy;
 `Violated` and `NeverReachedFail` become failed campaign properties,
 `Passed`/`Satisfied` become passed properties, and other non-failing terminal
-states remain inconclusive. Any failed property takes the observation stop;
+states remain inconclusive. A stop from which the run can continue (a requested
+choice, named boundary, event count, virtual-time boundary, replay boundary, or
+observation other than an exhausted quantum budget) is graded as a continuing
+prefix: an unsatisfied `sometimes`, an unreached `reachable`, an armed
+`eventually` whose deadline lies ahead, and an `after-quiescence` predicate
+report `Undecided` and project as inconclusive, while a violation the prefix
+itself decides still fails. Terminal verdicts and exhausted time or quantum
+budgets end the run and finalize every obligation. Any failed property takes
+the observation stop;
 otherwise the exact requested or terminal stop is retained. Each unique basic
 block or named coverage point becomes the campaign coverage identity carrying
 the bytes of

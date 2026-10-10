@@ -1115,8 +1115,10 @@ fn bounded_exploration_stops_on_an_accepted_property_finding() {
         Arc::clone(&starts),
     );
 
-    assert_eq!(starts.load(Ordering::Relaxed), 1);
-    assert_eq!(completed.observations().len(), 1);
+    // An unreached `sometimes` stays undecided where discovery pauses at the
+    // choice; the selected branch ends the run, which decides the finding.
+    assert_eq!(starts.load(Ordering::Relaxed), 2);
+    assert_eq!(completed.observations().len(), 2);
     assert_eq!(
         completed.terminal().observation().stop(),
         &StopOutcome::AssertionFailure(String::from(property_name))

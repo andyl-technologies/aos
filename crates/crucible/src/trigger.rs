@@ -41,6 +41,8 @@ pub type Condition = Predicate;
 
 mod assertions;
 mod conditions;
+#[cfg(test)]
+mod continuing_prefix_tests;
 mod deadlines;
 mod evaluation;
 mod event_graph;

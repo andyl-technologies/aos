@@ -1889,9 +1889,25 @@ pub(super) fn guest_marker_assertion_state_for<'a>(
 pub(super) fn finalize_guest_marker_assertion_state(
     state: &mut GuestMarkerAssertionState,
     at: VirtualTime,
+    end: AssertionPrefixEnd,
 ) -> Option<HostAssertionOutcome> {
     if state.terminal.is_some() {
         return None;
+    }
+
+    // An unreached existential marker can still be reached after a
+    // continuing prefix, so only the end of the run decides it.
+    let awaits_run_end = match state.kind {
+        GuestAssertionKind::Sometimes => true,
+        GuestAssertionKind::Reachable => !state.observed_true,
+        GuestAssertionKind::Always | GuestAssertionKind::Unreachable => false,
+    };
+    if end == AssertionPrefixEnd::Continuing && awaits_run_end {
+        return state.terminal(
+            HostAssertionOutcomeKind::Undecided,
+            at,
+            guest_marker_reason(state, "guest marker is undecided at a continuing prefix"),
+        );
     }
 
     match state.kind {
@@ -1986,7 +2002,8 @@ pub(super) fn lifecycle_for_outcome_kind(kind: HostAssertionOutcomeKind) -> Prop
         HostAssertionOutcomeKind::Passed
         | HostAssertionOutcomeKind::Warning
         | HostAssertionOutcomeKind::NeverTriggered
-        | HostAssertionOutcomeKind::NeverReachedWarn => PropertyLifecycleState::Passing,
+        | HostAssertionOutcomeKind::NeverReachedWarn
+        | HostAssertionOutcomeKind::Undecided => PropertyLifecycleState::Passing,
         HostAssertionOutcomeKind::Satisfied => PropertyLifecycleState::Satisfied,
         HostAssertionOutcomeKind::NeverEvaluated => PropertyLifecycleState::Declared,
         HostAssertionOutcomeKind::Violated | HostAssertionOutcomeKind::NeverReachedFail => {
@@ -2005,6 +2022,7 @@ pub(super) fn host_assertion_outcome_kind_rank(kind: HostAssertionOutcomeKind) -
         HostAssertionOutcomeKind::NeverReachedWarn => 5,
         HostAssertionOutcomeKind::NeverReachedFail => 6,
         HostAssertionOutcomeKind::Violated => 7,
+        HostAssertionOutcomeKind::Undecided => 8,
     }
 }
 

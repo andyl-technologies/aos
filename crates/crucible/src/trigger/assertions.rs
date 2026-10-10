@@ -22,6 +22,11 @@ pub enum HostAssertionOutcomeKind {
     NeverReachedWarn,
     /// A fail-disposition reachability marker was never reached.
     NeverReachedFail,
+    /// A continuing prefix ended before an end-of-run obligation was decided.
+    ///
+    /// Only [`OfflineAssertionChecker::with_continuing_prefix`] produces this
+    /// kind. It never fails the run.
+    Undecided,
 }
 
 /// Assertion quantifier or marker flavor attached to outcomes and violations.
@@ -580,6 +585,22 @@ pub struct OfflineAssertionChecker {
     code_points: BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
     terminal_quiescence: Option<SchedulerQuiescence>,
+    prefix_end: AssertionPrefixEnd,
+}
+
+/// How the last retained prefix relates to the end of the run.
+///
+/// End-of-run obligations, such as a `sometimes` predicate that has not yet
+/// held, are only decided once the run has ended. A run that stops where it
+/// can still continue has not ended, so those obligations stay undecided.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum AssertionPrefixEnd {
+    /// The prefix ends the run; every obligation is finalized.
+    #[default]
+    Terminal,
+    /// The run can continue past the prefix; end-of-run obligations become
+    /// [`HostAssertionOutcomeKind::Undecided`].
+    Continuing,
 }
 
 impl OfflineAssertionChecker {
@@ -644,6 +665,18 @@ impl OfflineAssertionChecker {
     #[must_use]
     pub fn with_terminal_scheduler_quiescence(mut self, quiescence: SchedulerQuiescence) -> Self {
         self.terminal_quiescence = Some(quiescence);
+        self
+    }
+
+    /// Grades the retained log as a prefix of a run that can still continue.
+    ///
+    /// Outcomes the prefix decides keep their kinds: a false `always`, a
+    /// reached `unreachable`, a satisfied `sometimes`, or an expired
+    /// `eventually` deadline. Obligations that only the end of the run can
+    /// decide report [`HostAssertionOutcomeKind::Undecided`] instead of failing.
+    #[must_use]
+    pub fn with_continuing_prefix(mut self) -> Self {
+        self.prefix_end = AssertionPrefixEnd::Continuing;
         self
     }
 
@@ -799,7 +832,7 @@ impl OfflineAssertionChecker {
             pending_enabled_marker = false;
         }
 
-        Ok(evaluator.finalize_prefix(&terminal_prefix, oracle))
+        Ok(evaluator.finalize_prefix_at_end(&terminal_prefix, oracle, self.prefix_end))
     }
 }
 
@@ -1564,6 +1597,19 @@ impl HostAssertionEvaluator {
     where
         O: HostAssertionOracle + ?Sized,
     {
+        self.finalize_prefix_at_end(prefix, oracle, AssertionPrefixEnd::Terminal)
+    }
+
+    /// Finalizes all assertions at a prefix whose relation to the run end is `end`.
+    pub(super) fn finalize_prefix_at_end<O>(
+        &mut self,
+        prefix: &ConditionEventLogPrefix,
+        oracle: &mut O,
+        end: AssertionPrefixEnd,
+    ) -> HostAssertionReport
+    where
+        O: HostAssertionOracle + ?Sized,
+    {
         self.observe_prefix(prefix, oracle);
         let once_latches = &mut self.once_latches;
         for state in &mut self.states {
@@ -1576,10 +1622,11 @@ impl HostAssertionEvaluator {
                 &self.code_points,
                 &self.mem_places,
                 self.terminal_quiescence.as_ref(),
+                end,
             );
         }
         for state in &mut self.guest_marker_states {
-            finalize_guest_marker_assertion_state(state, prefix.point().at());
+            finalize_guest_marker_assertion_state(state, prefix.point().at(), end);
         }
         let outcomes = self
             .states
@@ -2267,6 +2314,7 @@ pub(super) fn finalize_host_assertion_state<O>(
     code_points: &BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: &BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
     terminal_quiescence: Option<&SchedulerQuiescence>,
+    end: AssertionPrefixEnd,
 ) where
     O: HostAssertionOracle + ?Sized,
 {
@@ -2276,6 +2324,15 @@ pub(super) fn finalize_host_assertion_state<O>(
 
     let at = prefix.point().at();
     let property = state.assertion.property.clone();
+    if end == AssertionPrefixEnd::Continuing && host_obligation_awaits_run_end(state, &property, at)
+    {
+        state.terminal(
+            HostAssertionOutcomeKind::Undecided,
+            at,
+            "end-of-run obligation is undecided at a continuing prefix",
+        );
+        return;
+    }
     match property {
         Property::Always { .. } => {
             if state.evaluated {
@@ -2374,6 +2431,37 @@ pub(super) fn finalize_host_assertion_state<O>(
                 );
             }
         },
+    }
+}
+
+/// Returns whether only the end of the run can decide this open host obligation.
+///
+/// An expired `eventually` deadline is decided by the prefix itself and still
+/// fails; an armed obligation whose deadline lies ahead is not.
+fn host_obligation_awaits_run_end(
+    state: &HostAssertionState,
+    property: &Property,
+    at: VirtualTime,
+) -> bool {
+    match property {
+        Property::Sometimes { .. }
+        | Property::AfterQuiescence { .. }
+        | Property::Reachable {
+            expectation: ReachabilityExpectation::Reachable { .. },
+            ..
+        } => true,
+        Property::Eventually { .. } => {
+            !state.pending_eventually.is_empty()
+                && state
+                    .pending_eventually
+                    .iter()
+                    .all(|obligation| at.ticks <= obligation.deadline.ticks)
+        }
+        Property::Always { .. }
+        | Property::Reachable {
+            expectation: ReachabilityExpectation::Unreachable,
+            ..
+        } => false,
     }
 }
 
