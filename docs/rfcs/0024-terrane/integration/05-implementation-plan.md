@@ -152,15 +152,21 @@ the earlier cases. Source review and private composition do not establish
 compiler, runtime, recovery or complete-floor qualification.
 The first combined native build reports an incorrect `IdentityPrefix` import,
 two independent current-purpose lifetimes and a missing candidate-read lifetime
-bound; an unused concrete-reader re-export is also reported. Compiler-directed
-fixes are under review. Clippy, fresh test compilation and runtime checks remain
-unrun for this composition.
+bound; an unused concrete-reader re-export is also reported. Reviewed
+compiler-directed fixes are composed on `dd7f3ca886`, whose native build passes.
+Strict all-target Clippy then refuses unused duplicate purpose state and
+retained-receipt accessors. Scoped fixes preserve the genuine reference binding
+and owned descriptors through promotion. Fresh test compilation and runtime
+checks remain unrun for this composition.
 The two additional current-token/current-policy cases and four captured-input
 cases pass independent source review. Their owning gate registration extends
 the new current-history population to twenty-six cases while preserving every
 earlier selector. The physical controls retain distinct exact corruption and
 unavailability refusals; none is allowed to pass on a generic error. Their
 compilation and runtime qualification remain pending.
+The actual `registry-complete` Nix check on `dd7f3ca886` passes all 292
+specification mappings and all 69 T0/T1 plan gate citations. This establishes
+registry coverage, independently of the still-pending native runtime gates.
 
 Recovery candidate `b6bf1db80f` passes native build, strict all-target Clippy
 and fresh test-target compilation. Its archived verification case passes in
