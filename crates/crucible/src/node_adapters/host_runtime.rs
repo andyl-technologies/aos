@@ -73,7 +73,7 @@ impl SimulationNode for HostModelNode {
         world: &ActivationRecord,
         ready: &ReadyAttestation,
     ) -> Result<Option<Vec<crucible_node_contract::PreparedOwner>>, OperationFailure> {
-        if self.public_model_preparation.is_some() {
+        if self.public_model_preparation.is_some() || self.public_model_history.is_some() {
             return self.original_model_owners(world, ready);
         }
         self.public_clock_owners(world, ready)
@@ -500,6 +500,15 @@ impl SimulationNode for HostModelNode {
         }
         if self.public_continuation {
             return self.capture_public_clock(activation, source, limits);
+        }
+        if self
+            .binding
+            .compatibility
+            .implementation
+            .formats
+            .contains(&owned_preparation::host_public_owned_model_continuation_schema()?)
+        {
+            return self.capture_public_owned_model(activation, source, limits);
         }
         let capture =
             self.capture_host_continuation(activation, source, limits.maximum_record_bytes)?;

@@ -40,6 +40,20 @@ impl<'a> IndependentGroupSelection<'a> {
     pub(in crate::node_observed_executor::factory) fn new(
         selections: &'a [InstalledNodeSelection],
     ) -> Result<Self, NodeObservedError> {
+        Self::new_selected(selections, false)
+    }
+
+    /// Selects the distinct complete preparation-bearing x86 source composition.
+    pub(in crate::node_observed_executor::factory::native_state) fn new_preserving(
+        selections: &'a [InstalledNodeSelection],
+    ) -> Result<Self, NodeObservedError> {
+        Self::new_selected(selections, true)
+    }
+
+    fn new_selected(
+        selections: &'a [InstalledNodeSelection],
+        preserving: bool,
+    ) -> Result<Self, NodeObservedError> {
         let [clock, cpu, first, second] = selections else {
             return Err(refused(
                 "independent storage composition requires its Clock/CPU and two group owners",
@@ -50,12 +64,13 @@ impl<'a> IndependentGroupSelection<'a> {
             || !matches!(clock.kind, InstalledNodeKind::HostClock)
             || cpu.node.as_str() != "cpu"
             || cpu.owner.as_str() != "owner/cpu"
-            || !matches!(
-                cpu.kind,
-                InstalledNodeKind::Gem5Closed {
-                    isa: super::super::super::InstalledGem5Isa::X86_64,
+            || !match (&cpu.kind, preserving) {
+                (InstalledNodeKind::Gem5Closed { isa }, false)
+                | (InstalledNodeKind::Gem5ClosedPreserving { isa }, true) => {
+                    *isa == super::super::super::InstalledGem5Isa::X86_64
                 }
-            )
+                _ => false,
+            }
         {
             return Err(refused(
                 "independent storage composition requires the existing live x86 native selection",

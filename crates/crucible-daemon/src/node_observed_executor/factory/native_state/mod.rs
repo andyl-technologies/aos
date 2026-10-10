@@ -17,6 +17,7 @@ mod installed;
 mod ledger;
 pub(super) mod profile;
 pub(super) mod public_catalog;
+pub(super) mod public_group;
 mod publication;
 mod scheduling_epochs;
 mod service;

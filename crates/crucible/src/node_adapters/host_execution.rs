@@ -1351,7 +1351,7 @@ impl HostModelNode {
     }
 
     pub(super) fn capture_continuation(&self) -> Result<Vec<u8>, OperationFailure> {
-        if self.public_model_preparation.is_some() {
+        if self.public_model_preparation.is_some() || self.public_model_history.is_some() {
             return Err(failure(
                 "public owned-model preparation requires a distinct preparation-bearing capture codec",
             ));

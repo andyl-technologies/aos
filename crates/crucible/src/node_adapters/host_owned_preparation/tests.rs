@@ -99,6 +99,76 @@ fn fixture() -> (HostModelNode, AdmittedGraph, ActivationRecord) {
 }
 
 #[test]
+fn model_qualification_cannot_replace_installed_continuation_refusal() {
+    let (adapter, _, target) = fixture();
+    let model = adapter.model.as_ref().unwrap();
+    let original = RuntimeSnapshot {
+        schema_version: 1,
+        source_activation: (&target).into(),
+        capture_cut: target.boundary,
+        capture_ordinal: 0.into(),
+        owners: Vec::new(),
+        operations: Vec::new(),
+        inputs: Vec::new(),
+        terminal: None,
+        condition_stop: None,
+    };
+    ModelPolicy
+        .authenticate_model(model, &adapter.descriptor, &adapter.binding)
+        .unwrap();
+
+    let refusal = continuation::InstalledContinuationRequest {
+        model,
+        descriptor: &adapter.descriptor,
+        binding: &adapter.binding,
+        native: &adapter.initial,
+        runtime: &original,
+        target: &target,
+    }
+    .authenticate(&ModelPolicy)
+    .unwrap_err();
+    assert_eq!(refusal.effects, EffectKnowledge::None);
+    assert!(refusal.reason.contains("continuation"));
+    assert!(adapter.public_model_history.is_none());
+    assert!(adapter.prepared_continuation.is_none());
+}
+
+#[test]
+fn retained_data_capsule_without_native_preparation_cannot_mint_ready_or_owner() {
+    let (mut adapter, _, record) = fixture();
+    let before = adapter.capture().unwrap();
+    let bytes = b"data-only source label".to_vec();
+    adapter.public_model_history = Some(continuation::PreservedOwnedModelPreparation {
+        original: crate::node_scheduling::InputPayload {
+            reference: canonical::content_ref(&bytes, "application/json").unwrap(),
+            bytes,
+        },
+        evidence: Vec::new(),
+        target: record.clone(),
+        target_credit: 4096,
+    });
+    adapter.preparation_origin = HostPreparationOrigin::Restored;
+
+    assert!(adapter.arm(&record).is_err());
+    assert!(adapter.readiness.is_none());
+    assert!(adapter.public_model_preparation.is_none());
+    let unattached = ReadyAttestation {
+        owners: adapter.route.owners.clone(),
+        boundary: adapter.boundary,
+        state_inventory: adapter.readiness_inventory.clone(),
+        ready_receipt: canonical::content_ref(b"data-only Ready label", "application/json")
+            .unwrap(),
+    };
+    assert!(adapter.prepared_owners(&record, &unattached).is_err());
+    assert!(
+        adapter
+            .validate_initial_preparation(&record, &unattached)
+            .is_err()
+    );
+    assert_eq!(adapter.capture().unwrap(), before);
+}
+
+#[test]
 fn ordinary_model_qualification_does_not_select_public_preparation() {
     let (mut adapter, graph, _) = fixture();
     let before = adapter.capture().unwrap();

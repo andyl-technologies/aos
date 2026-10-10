@@ -159,6 +159,36 @@ Hermetic application compilation passes 167 test targets, including 69
 integration targets. The preceding storage-exhaustion attempt remains a failed
 build attempt; its unchanged-source retry supplies the completed gate result.
 
+## Preserving four-owner transfer domain
+
+The preserving gem5 CPU, Clock, Script and Block group retains the original
+complete transfer domain, native process custody, outstanding input, and
+acknowledgment associations. It uses a separate profile and preparation path
+from the live group. Captured objects are joined by their original ownership
+roles and exact content, including the dependency that connects the pending
+Block input to its producer. Missing or changed transfer dependencies refuse
+before native construction.
+
+The actual x86 fixed-workload witness captures at the original pending input,
+retires the source world, removes its source program, base resources and
+namespace, and restores two independent complete worlds. Both preserve the
+original CPU result, pending bytes, operation state and acknowledgment sequence,
+then finish and reclaim their original custody. This qualifies that scoped
+witness. It uses a separately frozen private source image; the current join
+preserves its functional bodies and adds current-source model and quality
+checks. Full-system Linux, ARM group preservation, device parity and ordinary
+preserving execution remain separate work.
+
+Verification on the coherent source passes twelve owned-preparation controls,
+nine host-group controls and the explicit prebirth refusal. Three-consumer
+all-target strict compilation, all 37 source-quality cases and formatting of
+the 41 changed Rust sources pass. Hermetic application compilation passes 167
+test targets, including 69 integration targets. Its selected source includes
+the twelve core preservation paths; daemon preservation sources and their
+metadata are outside that application gate. The original failed compilation,
+zero-match test selection, missing-fixture invocation and temporary-storage
+refusal remain separately retained; they supply no test or native qualification.
+
 ## Component verification in progress
 
 | Component | Implemented behavior | Remaining integration or qualification |

@@ -23,9 +23,11 @@ use crate::node_scenario::{MAX_NODE_SCENARIO_BYTES, NodeScenario, ScenarioConten
 /// Holds independently regenerated source definitions for one complete mixed world.
 pub(in crate::node_observed_executor::factory::native_state) struct IndependentGroupProfile {
     pub(in crate::node_observed_executor::factory::native_state) scenario: NodeScenario,
-    pub(in crate::node_observed_executor::factory::native_state) native: MixedProfile,
+    pub(in crate::node_observed_executor::factory::native_state) native: Rc<MixedProfile>,
     pub(in crate::node_observed_executor::factory::native_state) group: NodeScenario,
     pub(in crate::node_observed_executor::factory::native_state) qualification: ContentRef,
+    pub(in crate::node_observed_executor::factory::native_state) preserving: bool,
+    pub(super) metadata: Option<super::metadata::MetadataClosure>,
 }
 
 impl IndependentGroupProfile {
@@ -63,13 +65,63 @@ impl IndependentGroupProfile {
                 "regenerated group connection differs from original source and Block selection",
             ));
         }
-        let (scenario, qualification) = compose(&native.scenario, &group)?;
+        let (scenario, qualification) = compose(&native.scenario, &group, false)?;
 
         Ok(Self {
             scenario,
-            native,
+            native: Rc::new(native),
             group,
             qualification,
+            preserving: false,
+            metadata: None,
+        })
+    }
+
+    /// Regenerates a distinct complete native and Host preparation-bearing source.
+    ///
+    /// # Errors
+    /// Refuses another selected family, missing immutable inputs or unsupported
+    /// complete codec, ownership or original source capability geometry.
+    pub(in crate::node_observed_executor::factory::native_state) fn build_preserving(
+        installed: Rc<InstalledGem5ClosedProfile>,
+        catalog: &InstalledNodeCatalog,
+        selections: &[InstalledNodeSelection],
+    ) -> Result<Self, NodeObservedError> {
+        Self::build_preserving_scoped(installed, catalog, selections, &catalog.artifacts)
+    }
+
+    /// Regenerates the same selected source using independently enrolled archive inputs.
+    pub(in crate::node_observed_executor::factory::native_state) fn build_preserving_scoped(
+        installed: Rc<InstalledGem5ClosedProfile>,
+        catalog: &InstalledNodeCatalog,
+        selections: &[InstalledNodeSelection],
+        artifacts: &BTreeMap<String, super::super::super::InstalledIoArtifact>,
+    ) -> Result<Self, NodeObservedError> {
+        let selected = IndependentGroupSelection::new_preserving(selections)?;
+        let native =
+            MixedProfile::build_public_preserving(installed, &catalog.host_identity, "x86_64")?;
+        let group = host_profile::build_world(
+            selected.selections,
+            &catalog.host_identity,
+            &catalog.device_identity,
+            artifacts,
+        )?
+        .scenario;
+        if group.world.connections.len() != 1
+            || group.world.connections[0].producer.node_id != selected.source.node
+            || group.world.connections[0].consumer.node_id != selected.block.node
+        {
+            return Err(refused("preserving original storage connection differs"));
+        }
+        let (mut scenario, qualification) = compose(&native.scenario, &group, true)?;
+        let metadata = super::metadata::MetadataClosure::install(&mut scenario, &native, catalog)?;
+        Ok(Self {
+            scenario,
+            native: Rc::new(native),
+            group,
+            qualification,
+            preserving: true,
+            metadata: Some(metadata),
         })
     }
 }
@@ -93,6 +145,7 @@ fn original_policy<T: serde::de::DeserializeOwned>(
 fn compose(
     native: &NodeScenario,
     group: &NodeScenario,
+    preserving: bool,
 ) -> Result<(NodeScenario, ContentRef), NodeObservedError> {
     if native.descriptors.len() != 2
         || group.descriptors.len() != 2
@@ -165,9 +218,7 @@ fn compose(
             }
         }
     }
-    let qualification = host_profile::put_json(
-        &mut content,
-        &serde_json::json!({
+    let mut qualification_body = serde_json::json!({
             "schema":"crucible.installed-independent-host-group-qualification.v1",
             "native_source_world":native.world.identity()?,
             "group_source_world":group.world.identity()?,
@@ -179,8 +230,19 @@ fn compose(
             "cpu_input_connections":false,"external_inputs":false,
             "common_microstep_credit":"exact unchanged installed native authority ceiling; the disconnected finite Host source introduces no same-time cycle",
             "original_group_preparation":crucible::node_adapters::HOST_PUBLIC_OWNED_MODEL_PREPARATION_SPECIFICATION,
-        }),
-    )?;
+    });
+    if preserving {
+        qualification_body["schema"] =
+            "crucible.installed-independent-host-group-preservation-qualification.v1".into();
+        qualification_body["whole_world_capture"] = true.into();
+        qualification_body["whole_world_continuation"] = true.into();
+        qualification_body["whole_world_durable_restart"] = true.into();
+        qualification_body["individual_model_contracts"] = "unchanged source-installed native CPU/Clock preservation and finite Host model state, plus actual complete original public preparation and fresh restoring ownership under selected Host9; complete signed original input/ACK/payload/FIFO/coordinator closure required".into();
+        qualification_body["owned_model_continuation"] =
+            crucible::node_adapters::HOST_PUBLIC_OWNED_MODEL_CONTINUATION_SPECIFICATION.into();
+        qualification_body["consistent_cut"] = "the original transfer FIFO capture owner includes both original endpoint capture owners; native9 model histories, full runtime staged input/ACK and complete coordinator pending delivery remain jointly authenticated".into();
+    }
+    let qualification = host_profile::put_json(&mut content, &qualification_body)?;
 
     let mut ownership: OwnershipPolicy = original_policy(native, &native.world.ownership_ref)?;
     let group_ownership: OwnershipPolicy = original_policy(group, &group.world.ownership_ref)?;
@@ -192,6 +254,9 @@ fn compose(
     ownership
         .capture_owners
         .extend(group_ownership.capture_owners);
+    if preserving {
+        qualify_transfer_cut(group, &mut ownership)?;
+    }
     // Public initial preparation adds original session/readiness custody that
     // the old model codec cannot preserve. Declare it in the complete realized
     // inventory while explicitly excluding capture of this selected facade.
@@ -200,7 +265,31 @@ fn compose(
             id: crucible_node_contract::Id::new(format!("object/{}/public-preparation", node.id))?,
             node_ids: vec![node.id.clone()],
             future_affecting: true,
-            state: ObjectState::OutsideScope,
+            state: if preserving {
+                let binding = group
+                    .compatibility
+                    .iter()
+                    .find(|binding| binding.node_id == node.id)
+                    .ok_or_else(|| refused("preserving public model binding is absent"))?;
+                ownership
+                    .capture_owners
+                    .iter()
+                    .find(|owner| owner.owner_id == binding.capture_owner.id)
+                    .ok_or_else(|| refused("preserving public model capture owner is absent"))?;
+                // Native model custody and the original transfer FIFO are distinct
+                // domains of the same capture owner. Preparation belongs to the
+                // exact original model object, while the FIFO stays unchanged.
+                ObjectState::Mutable {
+                    domain_id: model_preparation_domain(
+                        &ownership,
+                        &node.id,
+                        &binding.capture_owner.id,
+                        &binding.capture_owner.state_domain_ids,
+                    )?,
+                }
+            } else {
+                ObjectState::OutsideScope
+            },
         });
     }
     ownership
@@ -237,10 +326,10 @@ fn compose(
             .iter()
             .any(|original| original.owner.id == owner.owner_id)
         {
-            owner.complete_model = false;
-            owner.unchanged_cut = false;
-            owner.exact_continuation = false;
-            owner.durable_restart = false;
+            owner.complete_model = preserving;
+            owner.unchanged_cut = preserving;
+            owner.exact_continuation = preserving;
+            owner.durable_restart = preserving;
             owner.isolated_fork = false;
             owner.cut_procedure_ref = qualification.clone();
         }
@@ -281,24 +370,57 @@ fn compose(
         let mut selected = original.clone();
         let mut capabilities: CapabilityProfile =
             original_policy(group, &original.capabilities_ref)?;
-        capabilities
-            .facets
-            .retain(|facet| facet.id.as_str() == "host/exact-v1");
-        if capabilities.facets.len() != 1 {
+        capabilities.facets.retain(|facet| {
+            facet.id.as_str() == "host/exact-v1"
+                || preserving && facet.id.as_str() == "host/preservation-v1"
+        });
+        if capabilities.facets.len() != if preserving { 2 } else { 1 } {
             return Err(refused(
                 "original group lacks its unique qualified exact facade",
             ));
         }
         let mut guarantees: GuaranteeProfile = original_policy(group, &original.guarantees_ref)?;
-        guarantees.capture_scope = CaptureScope::None;
-        guarantees.continuation = Continuation::Unsupported;
-        guarantees.durable_restart = false;
+        guarantees.capture_scope = if preserving {
+            CaptureScope::CompleteModel
+        } else {
+            CaptureScope::None
+        };
+        guarantees.continuation = if preserving {
+            Continuation::Exact
+        } else {
+            Continuation::Unsupported
+        };
+        guarantees.durable_restart = preserving;
         guarantees.isolated_fork = false;
         guarantees.conditional_replay = false;
         guarantees.limitations_ref = qualification.clone();
         selected.guarantees_ref = host_profile::put_json(&mut content, &guarantees)?;
         for facet in &mut capabilities.facets {
             facet.guarantees_ref = selected.guarantees_ref.clone();
+            if preserving && facet.id.as_str() == "host/preservation-v1" {
+                facet.id = crucible_node_contract::Id::new(
+                    crucible::node_adapters::HOST_PUBLIC_OWNED_MODEL_CONTINUATION_PROFILE,
+                )?;
+            }
+        }
+        if preserving {
+            let schema = crucible::node_adapters::host_public_owned_model_continuation_schema()
+                .map_err(|error| refused(&error.reason))?;
+            if host_profile::put(
+                &mut content,
+                crucible::node_adapters::HOST_PUBLIC_OWNED_MODEL_CONTINUATION_SPECIFICATION
+                    .as_bytes()
+                    .to_vec(),
+                "text/plain",
+            )? != schema.definition
+            {
+                return Err(refused("preserving public model schema body differs"));
+            }
+            selected.implementation.formats.push(schema);
+            selected
+                .implementation
+                .formats
+                .sort_by(|left, right| left.id.cmp(&right.id));
         }
         capabilities.requirements_ref = qualification.clone();
         selected.operating_contract.facets = capabilities.facets.clone();
@@ -344,24 +466,28 @@ fn compose(
             .map(|node| (&node.id, &node.initialization_ref))
             .collect::<Vec<_>>(),
     )?;
-    let scenario_ref = host_profile::put_json(
-        &mut content,
-        &serde_json::json!({
+    let mut scenario_body = serde_json::json!({
             "schema":"crucible.installed-independent-host-group-scenario.v1",
             "native":native.world.scenario_ref,"group":group.world.scenario_ref,
             "qualification":qualification,"cross_group_connections":[],"external_inputs":[],
-        }),
-    )?;
+    });
+    if preserving {
+        scenario_body["schema"] =
+            "crucible.installed-independent-host-group-preservation-scenario.v1".into();
+    }
+    let scenario_ref = host_profile::put_json(&mut content, &scenario_body)?;
     let mut requirements = group.requirements.clone();
-    requirements.exact_capture = false;
-    requirements.exact_continuation = false;
-    requirements.durable_restart = false;
+    requirements.exact_capture = preserving;
+    requirements.exact_continuation = preserving;
+    requirements.durable_restart = preserving;
     requirements
         .accepted_limited_state_nodes
         .extend(native.requirements.accepted_limited_state_nodes.clone());
-    requirements
-        .accepted_limited_state_nodes
-        .extend(group.descriptors.iter().map(|node| node.id.clone()));
+    if !preserving {
+        requirements
+            .accepted_limited_state_nodes
+            .extend(group.descriptors.iter().map(|node| node.id.clone()));
+    }
     requirements.accepted_limited_state_nodes.sort();
     requirements.accepted_limited_state_nodes.dedup();
     let scenario = NodeScenario {
@@ -396,3 +522,109 @@ fn compose(
     scenario.canonical_bytes()?;
     Ok((scenario, qualification))
 }
+
+fn model_preparation_domain(
+    ownership: &OwnershipPolicy,
+    node: &crucible_node_contract::Id,
+    capture_owner: &crucible_node_contract::Id,
+    captured_domains: &[crucible_node_contract::Id],
+) -> Result<crucible_node_contract::Id, NodeObservedError> {
+    let mut originals = ownership.objects.iter().filter(|object| &object.id == node);
+    let original = originals
+        .next()
+        .ok_or_else(|| refused("preserving public model original state object is absent"))?;
+    let ObjectState::Mutable { domain_id } = &original.state else {
+        return Err(refused(
+            "preserving public model original object is not mutable",
+        ));
+    };
+    if originals.next().is_some()
+        || original.node_ids.as_slice() != std::slice::from_ref(node)
+        || !original.future_affecting
+        || !captured_domains.contains(domain_id)
+        || ownership
+            .domains
+            .iter()
+            .filter(|domain| &domain.id == domain_id)
+            .count()
+            != 1
+        || !ownership.domains.iter().any(|domain| {
+            &domain.id == domain_id
+                && &domain.capture_owner_id == capture_owner
+                && domain.future_affecting
+        })
+    {
+        return Err(refused(
+            "preserving public model original domain or ownership differs",
+        ));
+    }
+    Ok(domain_id.clone())
+}
+
+fn qualify_transfer_cut(
+    group: &NodeScenario,
+    ownership: &mut OwnershipPolicy,
+) -> Result<(), NodeObservedError> {
+    let [connection] = group.world.connections.as_slice() else {
+        return Err(refused(
+            "preserving group requires its original single transfer",
+        ));
+    };
+    let mut dependencies = Vec::new();
+    dependencies
+        .try_reserve_exact(2)
+        .map_err(|_| refused("preserving original transfer dependency credit is unavailable"))?;
+    for endpoint in [&connection.producer, &connection.consumer] {
+        let mut bindings = group
+            .compatibility
+            .iter()
+            .filter(|binding| binding.node_id == endpoint.node_id);
+        let binding = bindings
+            .next()
+            .ok_or_else(|| refused("preserving original transfer endpoint binding is absent"))?;
+        if bindings.next().is_some()
+            || !group.owners.iter().any(|owner| {
+                owner.owner == binding.capture_owner
+                    && owner.owner.participant_ids.as_slice()
+                        == std::slice::from_ref(&endpoint.node_id)
+            })
+            || ownership
+                .capture_owners
+                .iter()
+                .filter(|owner| owner.owner_id == binding.capture_owner.id)
+                .count()
+                != 1
+        {
+            return Err(refused(
+                "preserving original transfer endpoint owner differs",
+            ));
+        }
+        if binding.capture_owner.id != connection.capture_owner_id {
+            dependencies.push(binding.capture_owner.id.clone());
+        }
+    }
+    let mut policies = ownership
+        .capture_owners
+        .iter_mut()
+        .filter(|owner| owner.owner_id == connection.capture_owner_id);
+    let policy = policies
+        .next()
+        .ok_or_else(|| refused("preserving original transfer capture owner is absent"))?;
+    if policies.next().is_some() {
+        return Err(refused(
+            "preserving original transfer capture owner is ambiguous",
+        ));
+    }
+    policy
+        .dependencies
+        .try_reserve_exact(dependencies.len())
+        .map_err(|_| refused("preserving original transfer cut credit is unavailable"))?;
+    policy.dependencies.extend(dependencies);
+    policy.dependencies.sort();
+    policy.dependencies.dedup();
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "profile_tests.rs"]
+mod tests;

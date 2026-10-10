@@ -141,7 +141,10 @@ impl CaptureEvidence for MixedImmutableEvidence {
 }
 
 impl MixedEvidence {
-    fn known_immutable_reference(&self, reference: &ContentRef) -> bool {
+    pub(in crate::node_observed_executor::factory::native_state) fn known_immutable_reference(
+        &self,
+        reference: &ContentRef,
+    ) -> bool {
         self.scenario
             .content
             .iter()

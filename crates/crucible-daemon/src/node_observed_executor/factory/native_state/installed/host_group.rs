@@ -24,6 +24,10 @@ pub(in crate::node_observed_executor::factory::native_state) struct IndependentL
     pub(in crate::node_observed_executor::factory::native_state) graph: Rc<AdmittedGraph>,
     pub(in crate::node_observed_executor::factory::native_state) realization: PreparedRealization,
     pub(in crate::node_observed_executor::factory::native_state) target: ActivationRecord,
+    pub(in crate::node_observed_executor::factory::native_state) evidence:
+        Rc<IndependentGroupEvidence>,
+    #[cfg(test)]
+    pub(in crate::node_observed_executor::factory::native_state) namespace: PathBuf,
 }
 
 impl InstalledMixedEngine {
@@ -35,8 +39,57 @@ impl InstalledMixedEngine {
         activation_id: Id,
         capabilities: Option<&super::super::super::ResolvedCapabilityWorld>,
     ) -> Result<IndependentLiveWorld, NodeObservedError> {
-        let selected = IndependentGroupSelection::new(selections)?;
-        let profile = IndependentGroupProfile::build(self.installed.clone(), catalog, selections)?;
+        self.prepare_independent_group_selected(
+            catalog,
+            selections,
+            expected,
+            activation_id,
+            capabilities,
+            false,
+        )
+    }
+
+    pub(in crate::node_observed_executor::factory::native_state) fn prepare_independent_preserving_group(
+        &self,
+        catalog: &InstalledNodeCatalog,
+        selections: &[InstalledNodeSelection],
+        expected: &crate::node_scenario::NodeScenario,
+        activation_id: Id,
+    ) -> Result<IndependentLiveWorld, NodeObservedError> {
+        self.prepare_independent_group_selected(
+            catalog,
+            selections,
+            expected,
+            activation_id,
+            None,
+            true,
+        )
+    }
+
+    fn prepare_independent_group_selected(
+        &self,
+        catalog: &InstalledNodeCatalog,
+        selections: &[InstalledNodeSelection],
+        expected: &crate::node_scenario::NodeScenario,
+        activation_id: Id,
+        capabilities: Option<&super::super::super::ResolvedCapabilityWorld>,
+        preserving: bool,
+    ) -> Result<IndependentLiveWorld, NodeObservedError> {
+        let (selected, profile) = if preserving {
+            (
+                IndependentGroupSelection::new_preserving(selections)?,
+                IndependentGroupProfile::build_preserving(
+                    self.installed.clone(),
+                    catalog,
+                    selections,
+                )?,
+            )
+        } else {
+            (
+                IndependentGroupSelection::new(selections)?,
+                IndependentGroupProfile::build(self.installed.clone(), catalog, selections)?,
+            )
+        };
         let profile = Rc::new(match capabilities {
             Some(resolved) => profile.with_capabilities(resolved)?,
             None => profile,
@@ -209,24 +262,24 @@ impl InstalledMixedEngine {
         all_bindings.extend(native_bindings);
         all_bindings
             .sort_by(|left, right| left.compatibility.node_id.cmp(&right.compatibility.node_id));
-        let evidence = IndependentGroupEvidence::new(
+        let evidence = Rc::new(IndependentGroupEvidence::new(
             profile.clone(),
             all_bindings,
             native_evidence,
             host_evidence,
             host_bindings,
             original_native_graph,
-        )?;
+        )?);
         let capability_admission = capabilities.map(|resolved| {
             super::super::super::capabilities::admission::CapabilityAdmission {
-                original: &evidence,
+                original: evidence.as_ref(),
                 resolved,
             }
         });
         let admission: &dyn crucible::node_admission::AdmissionEvidence =
             match &capability_admission {
                 Some(admission) => admission,
-                None => &evidence,
+                None => evidence.as_ref(),
             };
         let graph = Rc::new(
             profile
@@ -238,22 +291,41 @@ impl InstalledMixedEngine {
             &graph,
             &Id::new("clock")?,
             clock,
-            &evidence,
+            evidence.as_ref(),
             host_resources(),
         )
         .map_err(|failure| refused(&failure.reason))?;
-        actual_clock
-            .qualify_public_initial_clock(&graph, &evidence)
-            .map_err(|failure| refused(&failure.reason))?;
+        if preserving {
+            actual_clock
+                .qualify_public_preserving_initial_clock(&graph, evidence.as_ref())
+                .map_err(|failure| refused(&failure.reason))?;
+        } else {
+            actual_clock
+                .qualify_public_initial_clock(&graph, evidence.as_ref())
+                .map_err(|failure| refused(&failure.reason))?;
+        }
         let qualification = evidence.qualify_prepared(&native, &authority, graph.clone())?;
         let prepared =
             Gem5NodePreparation::from_prepared(&graph, &Id::new("cpu")?, native, &qualification)
                 .map_err(|failure| refused(&failure.error.reason))?;
-        let cpu = prepared
-            .into_qualified_simulation_node(&graph, authority, native_resources("x86_64")?)
-            .map_err(|failure| refused(&failure.error.reason))?
-            .into_public_initial_preparation(&graph, &qualification)
-            .map_err(|failure| refused(&failure.error.reason))?;
+        let cpu = if preserving {
+            prepared
+                .into_qualified_capturing_simulation_node(
+                    &graph,
+                    authority,
+                    native_resources("x86_64")?,
+                    archive_installation(&self.installed, &namespace)?,
+                )
+                .map_err(|failure| refused(&failure.error.reason))?
+                .into_public_preserving_initial_preparation(&graph, &qualification)
+                .map_err(|failure| refused(&failure.error.reason))?
+        } else {
+            prepared
+                .into_qualified_simulation_node(&graph, authority, native_resources("x86_64")?)
+                .map_err(|failure| refused(&failure.error.reason))?
+                .into_public_initial_preparation(&graph, &qualification)
+                .map_err(|failure| refused(&failure.error.reason))?
+        };
         nodes.push(Box::new(actual_clock));
         nodes.push(Box::new(cpu));
         for selected in selected.selections {
@@ -264,12 +336,12 @@ impl InstalledMixedEngine {
                 &graph,
                 &selected.node,
                 model,
-                &evidence,
+                evidence.as_ref(),
                 HostModelResources::default(),
             )
             .map_err(|failure| refused(&failure.reason))?;
             original_model
-                .qualify_public_initial_owned_model(&graph, &evidence)
+                .qualify_public_initial_owned_model(&graph, evidence.as_ref())
                 .map_err(|failure| refused(&failure.reason))?;
             nodes.push(Box::new(original_model));
         }
@@ -284,6 +356,9 @@ impl InstalledMixedEngine {
             graph,
             realization: PreparedRealization::new(nodes, target.clone(), limits, runtime_slot),
             target,
+            evidence,
+            #[cfg(test)]
+            namespace,
         })
     }
 }
@@ -313,7 +388,7 @@ fn target(
     })
 }
 
-fn source_bindings(
+pub(super) fn source_bindings(
     scenario: &crate::node_scenario::NodeScenario,
     target: &ActivationRecord,
     receipt: &ContentRef,

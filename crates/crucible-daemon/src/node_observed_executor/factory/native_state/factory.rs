@@ -270,6 +270,7 @@ impl NativeWorldFactory for MixedNativeFactory {
             archive,
             profile: plan.profile,
             evidence: plan.evidence,
+            group: None,
             target: target.clone(),
             reservations,
             queue: self.queue.clone(),

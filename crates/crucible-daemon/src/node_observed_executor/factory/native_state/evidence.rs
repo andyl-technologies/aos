@@ -88,6 +88,7 @@ impl ReservedMixedRestore {
 enum NativeEnrollment {
     Live(Box<LivePeer>),
     Reserved(Box<ReservedMixedRestore>),
+    ReservedGroup(Box<super::host_group::reservation::ReservedGroupRestore>),
 }
 
 /// Retains immutable admission scope and authentic live or inactive owned resources.
@@ -277,6 +278,65 @@ impl MixedEvidence {
             receipt,
             NativeEnrollment::Reserved(Box::new(reservation)),
             &[],
+        )
+    }
+
+    /// Enrolls the unchanged CPU implementation against a full four-owner lease.
+    ///
+    /// # Errors
+    /// Refuses another regenerated source policy, missing CPU or Clock bindings,
+    /// changed original target identities or unavailable inactive native custody.
+    pub(super) fn enroll_reserved_group_restore(
+        profile: &MixedProfile,
+        bindings: &[NodeBinding],
+        clock: &HostModel,
+        reservation: super::host_group::reservation::ReservedGroupRestore,
+        host_executable: &Path,
+    ) -> Result<Self, NodeObservedError> {
+        let receipt = Self::reserved_group_enrollment_receipt(profile, clock, &reservation)?;
+        if bindings.len() != 2 {
+            return Err(refused("reserved group original CPU scope is incomplete"));
+        }
+        for binding in bindings {
+            let owner = reservation
+                .target()
+                .owners
+                .iter()
+                .find(|owner| owner.owner == binding.compatibility.execution_owner.id)
+                .ok_or_else(|| refused("reserved group original target owner is absent"))?;
+            if binding.authority.incarnation_id != owner.incarnation
+                || binding.authority.owner_generation != owner.generation
+                || binding.authority.world_generation.get() != 0
+            {
+                return Err(refused(
+                    "reserved group original binding differs from fresh target",
+                ));
+            }
+        }
+        Self::assemble(
+            profile,
+            bindings,
+            clock,
+            host_executable,
+            receipt,
+            NativeEnrollment::ReservedGroup(Box::new(reservation)),
+            &[],
+        )
+    }
+
+    /// Records an actual whole-source lease without claiming a current native peer.
+    ///
+    /// # Errors
+    /// Refuses another source policy, changed initial Clock or a used native lease.
+    pub(super) fn reserved_group_enrollment_receipt(
+        profile: &MixedProfile,
+        clock: &HostModel,
+        reservation: &super::host_group::reservation::ReservedGroupRestore,
+    ) -> Result<ScenarioContent, NodeObservedError> {
+        let bytes = clock_bytes(profile, clock)?;
+        reservation.receipt(
+            profile,
+            &canonical::content_ref(&bytes, "application/octet-stream")?,
         )
     }
 
@@ -496,6 +556,9 @@ impl MixedEvidence {
                 .verify_kernel()
                 .map_err(|error| evidence(&error.to_string())),
             NativeEnrollment::Reserved(reservation) => reservation
+                .verify()
+                .map_err(|error| evidence(&error.to_string())),
+            NativeEnrollment::ReservedGroup(reservation) => reservation
                 .verify()
                 .map_err(|error| evidence(&error.to_string())),
         }

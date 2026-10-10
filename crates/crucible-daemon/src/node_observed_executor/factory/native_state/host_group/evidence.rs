@@ -32,6 +32,67 @@ pub(in crate::node_observed_executor::factory::native_state) struct IndependentG
 }
 
 impl IndependentGroupEvidence {
+    pub(super) fn metadata(&self) -> Result<&super::metadata::MetadataClosure, EvidenceError> {
+        self.authenticate_all()?;
+        self.profile
+            .metadata
+            .as_ref()
+            .ok_or_else(|| error("live group has no selected preserving metadata codec"))
+    }
+
+    pub(super) fn authenticate_continuation_scope(
+        &self,
+        graph: &AdmittedGraph,
+        source: &crucible::node_state::AuthenticatedNativeSource<'_>,
+        target: &crucible::node_contract::ActivationRecord,
+    ) -> Result<(), crucible::node_state::StateError> {
+        let runtime = source.runtime();
+        if !self.profile.preserving
+            || target.world_binding_hash != *graph.world_binding_hash()
+            || target.boundary != runtime.capture_cut
+            || target.owners.len() != 4
+            || target.generation.get()
+                != runtime
+                    .source_activation
+                    .generation
+                    .get()
+                    .checked_add(1)
+                    .ok_or_else(|| super::source::error("group world generation exhausted"))?
+            || target.activation_id == runtime.source_activation.activation_id
+            || target
+                .owners
+                .windows(2)
+                .any(|pair| pair[0].owner >= pair[1].owner)
+            || target.owners.iter().any(|fresh| {
+                !runtime.source_activation.owners.iter().any(|original| {
+                    fresh.owner == original.owner
+                        && fresh.incarnation != original.incarnation
+                        && original.generation.get().checked_add(1) == Some(fresh.generation.get())
+                })
+            })
+            || target.owners.iter().any(|fresh| {
+                !self.bindings.iter().any(|binding| {
+                    binding.compatibility.execution_owner.id == fresh.owner
+                        && binding.authority.incarnation_id == fresh.incarnation
+                        && binding.authority.owner_generation == fresh.generation
+                        && graph.binding(&binding.compatibility.node_id) == Some(binding)
+                })
+            })
+        {
+            return Err(super::source::error(
+                "installed group continuation has no complete fresh owner mapping",
+            ));
+        }
+        self.authenticate_all().map_err(super::source::error)?;
+        super::source::authenticate(
+            &self.profile,
+            graph,
+            runtime,
+            &source.archive().scheduling_snapshot()?,
+            source.content(),
+        )
+    }
+
     /// Retains actual original enrollment predicates and both independently built scopes.
     pub(in crate::node_observed_executor::factory::native_state) fn new(
         profile: Rc<IndependentGroupProfile>,
@@ -85,6 +146,16 @@ impl IndependentGroupEvidence {
             .descriptors
             .iter()
             .any(|descriptor| &descriptor.id == node)
+    }
+
+    pub(super) fn known_immutable_reference(&self, reference: &ContentRef) -> bool {
+        self.profile
+            .scenario
+            .content
+            .iter()
+            .any(|object| &object.reference == reference)
+            || self.native.known_immutable_reference(reference)
+            || self.host.known_immutable_reference(reference)
     }
 
     fn original_host_binding(&self, selected: &NodeBinding) -> Result<&NodeBinding, EvidenceError> {
@@ -188,7 +259,19 @@ impl AdmissionEvidence for IndependentGroupEvidence {
         {
             self.native.authenticate_implementation(implementation)
         } else {
-            self.host.authenticate_implementation(implementation)
+            let selected = self
+                .bindings
+                .iter()
+                .find(|binding| &binding.compatibility.implementation == implementation)
+                .ok_or_else(|| {
+                    error("selected public model implementation is not source regenerated")
+                })?;
+            self.host.authenticate_implementation(
+                &self
+                    .original_host_binding(selected)?
+                    .compatibility
+                    .implementation,
+            )
         }
     }
 
@@ -227,6 +310,14 @@ impl AdmissionEvidence for IndependentGroupEvidence {
         if native {
             self.native.authenticate_schema(schema)
         } else {
+            if self.profile.preserving
+                && schema == &crucible::node_adapters::host_public_owned_model_continuation_schema()
+                    .map_err(|failure| error(failure.reason))?
+                && self.profile.scenario.content.iter().any(|body| body.reference == schema.definition
+                    && body.bytes == crucible::node_adapters::HOST_PUBLIC_OWNED_MODEL_CONTINUATION_SPECIFICATION.as_bytes())
+            {
+                return Ok(());
+            }
             self.host.authenticate_schema(schema)
         }
     }
@@ -398,8 +489,43 @@ impl AdmissionEvidence for IndependentGroupEvidence {
                             "live-only model capture refusal differs from source policy",
                         ));
                     }
-                    // This authenticates the declared unsupported procedure;
-                    // it supplies no capture or continuation permission.
+                    if self.profile.preserving {
+                        let ownership: crucible::node_admission::OwnershipPolicy =
+                            serde_json::from_slice(&self.host.content(
+                                &self.profile.group.world.ownership_ref,
+                                4 * 1024 * 1024,
+                            )?)
+                            .map_err(error)?;
+                        let original = ownership
+                            .capture_owners
+                            .iter()
+                            .find(|owner| &owner.owner_id == capture_owner_id)
+                            .ok_or_else(|| {
+                                error("original complete Host capture owner is absent")
+                            })?;
+                        if !original.complete_model
+                            || !original.unchanged_cut
+                            || !original.exact_continuation
+                            || !original.durable_restart
+                        {
+                            return Err(error(
+                                "original Host model lacks complete continuation qualification",
+                            ));
+                        }
+                        self.host.qualify(QualificationClaim::Capture {
+                            world_binding_hash: &self
+                                .profile
+                                .group
+                                .world
+                                .identity()
+                                .map_err(error)?,
+                            capture_owner_id,
+                            procedure_ref: &original.cut_procedure_ref,
+                        })?;
+                    }
+                    // The live path authenticates its unsupported procedure;
+                    // the selected preserving path also requires the unchanged
+                    // original model procedure and preparation-bearing codec.
                     return Ok(());
                 }
                 let (original, evidence): (_, &dyn AdmissionEvidence) = if self

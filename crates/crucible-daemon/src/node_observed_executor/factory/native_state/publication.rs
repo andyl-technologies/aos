@@ -85,10 +85,13 @@ impl ActivationPublisher for NativeCustodyPublisher {
     ) -> Result<InputPayload, RuntimeError> {
         if let Some(original) = &self.restored {
             if original.target != *record
-                || nodes.len() != 2
+                || nodes.len() != original.expected_nodes
                 || nodes.iter().any(|node| node.prepared_owners().is_none())
             {
                 return Err(RuntimeError::ForeignAuthority);
+            }
+            if original.expected_nodes == 4 {
+                preflight_group_coordinator(original, record, nodes)?;
             }
             let bytes = crucible_node_contract::canonical::canonical_json(&serde_json::json!({
                 "schema":"crucible/coordinator-restored-public-native/1",
@@ -132,6 +135,7 @@ impl ActivationPublisher for NativeCustodyPublisher {
 
 /// Retains authenticated original coordinator data before fresh publication.
 pub(super) struct RestoredCoordinator {
+    expected_nodes: usize,
     target: ActivationRecord,
     source: crucible::node_contract::SavedRuntimeActivation,
     archive: crucible_node_contract::ContentRef,
@@ -167,6 +171,7 @@ impl NativeCustodyPublisher {
             stored,
             queue,
             restored: Some(RestoredCoordinator {
+                expected_nodes: 2,
                 target: target.clone(),
                 source,
                 archive: archive.artifact().clone(),
@@ -177,4 +182,109 @@ impl NativeCustodyPublisher {
             }),
         })
     }
+
+    /// Retains the separately selected signed complete four-owner source bridge.
+    ///
+    /// # Errors
+    /// Refuses another roster or native family, an unchanged activation or a
+    /// missing source coordinator. Actual restored Ready remains mandatory.
+    pub(super) fn for_public_group_restore(
+        stored: StoredWorldActivationPublisher,
+        queue: Gem5CustodyQueue,
+        archive: &crucible::node_state::NativeArchiveRecord,
+        target: &ActivationRecord,
+    ) -> Result<Self, super::super::NodeObservedError> {
+        if archive.owners().len() != 4
+            || target.owners.len() != 4
+            || archive
+                .owners()
+                .iter()
+                .filter(|owner| {
+                    owner.key.schema.id.as_str() == "host/public-owned-model-continuation-v1"
+                        && owner.key.schema.version == 1
+                })
+                .count()
+                != 2
+            || !archive.owners().iter().any(|owner| {
+                owner.key.schema.id.as_str() == "crucible/gem5-public-native-continuation-v1"
+            })
+            || !archive.owners().iter().any(|owner| {
+                owner.key.schema.id.as_str() == "crucible/host-public-clock-continuation-v1"
+            })
+        {
+            return Err(super::super::refused(
+                "public group bridge selects another signed native family",
+            ));
+        }
+        let mut publisher = Self::for_public_restore(stored, queue, archive, target)?;
+        let original = publisher
+            .restored
+            .as_mut()
+            .ok_or_else(|| super::super::refused("public group original coordinator is absent"))?;
+        original.expected_nodes = 4;
+        Ok(publisher)
+    }
+}
+
+fn preflight_group_coordinator(
+    original: &RestoredCoordinator,
+    record: &ActivationRecord,
+    nodes: &[ValidatedNodePreparation],
+) -> Result<(), RuntimeError> {
+    #[derive(serde::Serialize)]
+    struct Target<'a> {
+        generation: crucible_node_contract::U64,
+        activation_id: &'a crucible_node_contract::Id,
+        world_binding_hash: &'a crucible_node_contract::HashRef,
+        owners: &'a [crucible::node_contract::OwnerIdentity],
+        boundary: crucible_node_contract::Position,
+    }
+
+    #[derive(serde::Serialize)]
+    struct Wire<'a> {
+        schema: &'static str,
+        source_archive: &'a crucible_node_contract::ContentRef,
+        source_activation: &'a crucible::node_contract::SavedRuntimeActivation,
+        source_coordinator_ref: &'a crucible_node_contract::ContentRef,
+        source_coordinator_bytes: &'a [u8],
+        target_activation: Target<'a>,
+        actual_fresh_preparations: &'a [ValidatedNodePreparation],
+    }
+
+    struct Credit(usize);
+
+    impl std::io::Write for Credit {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.checked_sub(bytes.len()).ok_or_else(|| {
+                std::io::Error::other("complete restored group coordinator exceeds credit")
+            })?;
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    // The borrowed counter precedes Value, canonical body and owner roster
+    // allocation. Source bytes and actual fresh preparations remain untouched.
+    serde_json::to_writer(
+        Credit(16 * 1024 * 1024),
+        &Wire {
+            schema: "crucible/coordinator-restored-public-native/1",
+            source_archive: &original.archive,
+            source_activation: &original.source,
+            source_coordinator_ref: &original.coordinator.reference,
+            source_coordinator_bytes: &original.coordinator.bytes,
+            target_activation: Target {
+                generation: record.generation,
+                activation_id: &record.activation_id,
+                world_binding_hash: &record.world_binding_hash,
+                owners: &record.owners,
+                boundary: record.boundary,
+            },
+            actual_fresh_preparations: nodes,
+        },
+    )
+    .map_err(|_| RuntimeError::PublicationFailed)
 }

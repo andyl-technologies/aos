@@ -15,7 +15,12 @@ use crucible_node_contract::{
 use crate::{device_subnode::ScheduledIoNode, node_admission::AdmittedGraph, node_contract::*};
 
 pub use condition_state::reopen::reopen_condition_model;
-pub use owned_preparation::HOST_PUBLIC_OWNED_MODEL_PREPARATION_SPECIFICATION;
+pub use owned_preparation::{
+    HOST_PUBLIC_OWNED_MODEL_CONTINUATION_PROFILE,
+    HOST_PUBLIC_OWNED_MODEL_CONTINUATION_SPECIFICATION,
+    HOST_PUBLIC_OWNED_MODEL_PREPARATION_SPECIFICATION, host_public_owned_model_continuation_schema,
+    validate_public_owned_model_continuation,
+};
 pub use preparation::{
     HOST_PUBLIC_CLOCK_PREPARATION_SPECIFICATION, host_public_clock_preparation_schema,
 };
@@ -345,6 +350,7 @@ pub struct HostModelNode {
     preparation_origin: HostPreparationOrigin,
     public_preparation: Option<HostPublicPreparation>,
     public_model_preparation: Option<owned_preparation::OriginalOwnedModelPreparation>,
+    public_model_history: Option<owned_preparation::continuation::PreservedOwnedModelPreparation>,
     public_continuation: bool,
     recorded_ingress: Option<super::host_ingress::RecordedIngressCustody>,
     condition_preservation: bool,
@@ -420,8 +426,15 @@ impl HostModelNode {
             .implementation
             .formats
             .contains(&public_continuation::host_public_clock_epoch_continuation_schema()?);
+        let owned_model_preservation = binding
+            .compatibility
+            .implementation
+            .formats
+            .contains(&owned_preparation::host_public_owned_model_continuation_schema()?);
         let preservation = Id::new(if state::condition::selected(binding) {
             state::condition::PRESERVATION_PROFILE
+        } else if owned_model_preservation {
+            owned_preparation::HOST_PUBLIC_OWNED_MODEL_CONTINUATION_PROFILE
         } else if epoch_preservation {
             public_continuation::HOST_PUBLIC_CLOCK_EPOCH_CONTINUATION_PROFILE
         } else if public_preservation {
@@ -543,6 +556,7 @@ impl HostModelNode {
             preparation_origin: HostPreparationOrigin::Original,
             public_preparation: None,
             public_model_preparation: None,
+            public_model_history: None,
             public_continuation: false,
             recorded_ingress: None,
             condition_preservation: false,

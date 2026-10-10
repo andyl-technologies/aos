@@ -41,6 +41,7 @@ pub(super) struct MixedStaging {
     pub(super) archive: NativeArchiveRecord,
     pub(super) profile: Rc<MixedProfile>,
     pub(super) evidence: Rc<MixedEvidence>,
+    pub(super) group: Option<GroupContinuation>,
     pub(super) target: ActivationRecord,
     pub(super) reservations: RestoreReservations,
     pub(super) queue: Gem5CustodyQueue,
@@ -56,7 +57,17 @@ pub(super) struct MixedStaging {
     pub(super) transferred: bool,
 }
 
+/// Retains the distinct complete group policy and fresh unused original Host nodes.
+pub(super) struct GroupContinuation {
+    pub(super) evidence: Rc<super::host_group::evidence::IndependentGroupEvidence>,
+    pub(super) nodes: BTreeMap<Id, crucible::node_adapters::HostModelNode>,
+}
+
 impl MixedStaging {
+    fn expected_owners(&self) -> usize {
+        if self.group.is_some() { 4 } else { 2 }
+    }
+
     fn prepare_cpu(&mut self, capture: &VerifiedCapture, node: &Id) -> Result<(), StateError> {
         if self.imported.is_some()
             || self.native.is_some()
@@ -149,16 +160,26 @@ impl MixedStaging {
                 self.profile.installed.maximum_microsteps(),
             )
             .map_err(state_error)?;
-        let qualification = self
-            .evidence
-            .qualify_prepared(native, &authority)
-            .map_err(state_error)?;
+        let qualification: Box<dyn crucible::node_adapters::gem5::Gem5PreparationQualification> =
+            match &self.group {
+                Some(group) => Box::new(
+                    group
+                        .evidence
+                        .qualify_prepared(native, &authority, self.graph.clone())
+                        .map_err(state_error)?,
+                ),
+                None => Box::new(
+                    self.evidence
+                        .qualify_prepared(native, &authority)
+                        .map_err(state_error)?,
+                ),
+            };
         let native = self
             .native
             .take()
             .ok_or_else(|| refusal("mixed fresh peer unavailable"))?;
         let preparation =
-            Gem5NodePreparation::from_prepared(&self.graph, node, native, &qualification)
+            Gem5NodePreparation::from_prepared(&self.graph, node, native, qualification.as_ref())
                 .map_err(|failure| refusal(failure.error.reason.clone()))?;
         let continuation = self
             .imported
@@ -218,7 +239,7 @@ impl NativeRuntimeContinuationVerifier for MixedStaging {
     ) -> Result<NativeRuntimeContinuationEvidence, RuntimeError> {
         if self.quarantined
             || target != &self.target
-            || self.proofs.len() != 2
+            || self.proofs.len() != self.expected_owners()
             || self.coordinator.is_none()
             || self
                 .archive
@@ -313,6 +334,40 @@ impl NativeRestoreStaging for MixedStaging {
             self.proofs.insert(node.clone(), proof);
         } else if node.as_str() == "cpu" {
             self.prepare_cpu(capture, node)?;
+        } else if let Some(group) = &mut self.group {
+            let saved = self.archive.runtime_snapshot()?;
+            let source = self.archive.authenticated_source(
+                &owner.capture_owner_id,
+                &saved,
+                capture.content(),
+            )?;
+            let qualification =
+                super::host_group::continuation_policy::IndependentModelContinuation::new(
+                    group.evidence.as_ref(),
+                    &self.graph,
+                    &source,
+                    &self.target,
+                )?;
+            let actual = group
+                .nodes
+                .get_mut(node)
+                .ok_or_else(|| refusal("group original inactive Host node is absent"))?;
+            let proof = actual
+                .prepare_public_owned_model_continuation(
+                    &self.graph,
+                    &source,
+                    &self.target,
+                    &qualification,
+                )
+                .map_err(|error| refusal(error.reason))?;
+            // A failed restore remains in the same owning context. Transfer only
+            // after its complete original journal and fresh proofs are retained.
+            let actual = group
+                .nodes
+                .remove(node)
+                .ok_or_else(|| refusal("group restored Host node is unavailable"))?;
+            self.nodes.insert(node.clone(), Box::new(actual));
+            self.proofs.insert(node.clone(), proof);
         } else {
             return Err(refusal("mixed capsule refuses an uninstalled native owner"));
         }
@@ -397,8 +452,8 @@ impl NativeRestoreStaging for MixedStaging {
     ) -> Result<ContentRef, StateError> {
         if self.quarantined
             || target != &self.target
-            || self.owners.len() != 2
-            || capture.manifest().owners.len() != 2
+            || self.owners.len() != self.expected_owners()
+            || capture.manifest().owners.len() != self.expected_owners()
         {
             return Err(refusal("mixed whole owner barrier is incomplete"));
         }
@@ -414,7 +469,9 @@ impl NativeRestoreStaging for MixedStaging {
         owners: &[RestoredOwnerAttestation],
         receipt: &ContentRef,
     ) -> Result<(), StateError> {
-        if owners.len() != 2 || self.owners.len() != 2 || self.coordinator.as_ref() != Some(receipt)
+        if owners.len() != self.expected_owners()
+            || self.owners.len() != self.expected_owners()
+            || self.coordinator.as_ref() != Some(receipt)
         {
             return Err(refusal("mixed whole world ready barrier differs"));
         }
@@ -428,7 +485,7 @@ impl NativeRestoreStaging for MixedStaging {
         if self.quarantined
             || self.transferred
             || self.coordinator.is_none()
-            || self.nodes.len() != 2
+            || self.nodes.len() != self.expected_owners()
         {
             return Err(refusal(
                 "mixed native custody is unavailable or already transferred",
@@ -491,6 +548,11 @@ impl NativeRestoreStaging for MixedStaging {
             .record_publication(&self.target, original_publication);
         for node in self.nodes.values_mut() {
             node.quarantine_resources();
+        }
+        if let Some(group) = &mut self.group {
+            for node in group.nodes.values_mut() {
+                node.quarantine_resources();
+            }
         }
         // Drop transfers the raw native capsule into the pre-reserved global
         // supervisor; source image/ledger/backing remain held by this capsule.

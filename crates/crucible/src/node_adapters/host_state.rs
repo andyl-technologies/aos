@@ -180,6 +180,31 @@ pub(super) struct PreparedHostContinuation {
     fresh_acknowledgement_bodies: BTreeMap<Id, InputPayload>,
 }
 
+// This closed projection associates a historical preparation with the exact
+// native model in its retained predecessor envelope. It never issues a restore
+// permit; the current source still passes the complete runtime/native reader.
+pub(super) fn public_owned_native_model_reference(
+    bytes: &[u8],
+    maximum: usize,
+) -> Result<ContentRef, OperationFailure> {
+    if bytes.len() > maximum {
+        return Err(failure(
+            "historical finite-model native body exceeds credit",
+        ));
+    }
+    let mut decoder = serde_json::Deserializer::from_slice(bytes);
+    let captured = Captured::deserialize(&mut decoder)
+        .map_err(|_| failure("historical finite-model native grammar differs"))?;
+    decoder
+        .end()
+        .map_err(|_| failure("historical finite-model native body has trailing bytes"))?;
+    if captured.schema_version != 1 || captured.profile != HOST_EXACT_PROFILE {
+        return Err(failure("historical finite-model native edition differs"));
+    }
+    canonical::content_ref(&captured.native, "application/octet-stream")
+        .map_err(|error| failure(&error.to_string()))
+}
+
 // Other components' native state is covered by the complete host restore
 // barrier. Retaining only this component's checked original ledgers avoids an
 // entire-world snapshot clone for every node in a heterogeneous world.

@@ -20,6 +20,8 @@ struct Session<'a, T> {
     initial_native_state: &'a ContentRef,
     original_native_ready: &'a ContentRef,
     complete_original_owners: T,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_preparation: Option<&'a ContentRef>,
 }
 
 #[derive(Serialize)]
@@ -57,7 +59,11 @@ fn session<'a, T>(
     owners: T,
 ) -> Session<'a, T> {
     Session {
-        format: "crucible.host.original-owned-model-session",
+        format: if node.public_model_history.is_some() {
+            "crucible.host.restored-owned-model-session"
+        } else {
+            "crucible.host.original-owned-model-session"
+        },
         version: 1,
         world_hash: &node.world_hash,
         node: &node.route.node,
@@ -67,6 +73,10 @@ fn session<'a, T>(
         initial_native_state: initial,
         original_native_ready: native_ready,
         complete_original_owners: owners,
+        source_preparation: node
+            .public_model_history
+            .as_ref()
+            .map(|history| &history.original.reference),
     }
 }
 
@@ -93,6 +103,21 @@ pub(super) fn encode_session(
 ) -> Result<Vec<u8>, OperationFailure> {
     let (initial, native_ready, binding) = preparation;
     encode(&session(node, initial, native_ready, binding, owners))
+}
+
+/// Counts a fresh restored session against its original target roster.
+pub(super) fn restored_session_length(
+    node: &HostModelNode,
+    initial: &ContentRef,
+    native_ready: &ContentRef,
+    binding: &crucible_node_contract::HashRef,
+    owners: &[OwnerIdentity],
+    maximum: usize,
+) -> Result<usize, OperationFailure> {
+    length(
+        &session(node, initial, native_ready, binding, owners),
+        maximum,
+    )
 }
 
 #[derive(Serialize)]

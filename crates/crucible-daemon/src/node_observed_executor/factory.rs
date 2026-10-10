@@ -67,6 +67,10 @@ pub use kvm::{
     MAX_KVM_CANDIDATE_POLICY_BYTES, load_installed_kvm_candidate, prepare_installed_kvm_candidate,
 };
 pub use native_state::public_catalog::{InstalledNativePreservation, InstalledPreparedNativeWorld};
+pub use native_state::public_group::{
+    InstalledIndependentNativePreservation, InstalledIndependentNativeRestore,
+    InstalledPreparedIndependentNativeWorld,
+};
 pub use native_state::{
     InstalledGem5Isa, NativeCapturePoint, NativeWorldOutcome, NativeWorldRecord,
     NativeWorldRequest, NativeWorldRetention, NativeWorldService,

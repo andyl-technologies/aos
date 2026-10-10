@@ -1344,3 +1344,6 @@ fn publisher(
     )
     .unwrap()
 }
+
+#[path = "tests/independent_group.rs"]
+mod independent_group;

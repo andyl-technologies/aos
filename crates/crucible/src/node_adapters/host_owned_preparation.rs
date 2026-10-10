@@ -11,6 +11,18 @@ use crucible_node_contract::{Extensions, PreparedOwner};
 #[path = "host_owned_preparation/credit.rs"]
 mod credit;
 
+#[path = "host_owned_preparation/continuation.rs"]
+pub(super) mod continuation;
+
+#[path = "host_owned_preparation/restored.rs"]
+mod restored;
+
+pub use continuation::{
+    HOST_PUBLIC_OWNED_MODEL_CONTINUATION_PROFILE,
+    HOST_PUBLIC_OWNED_MODEL_CONTINUATION_SPECIFICATION,
+    host_public_owned_model_continuation_schema, validate_public_owned_model_continuation,
+};
+
 /// Defines the separately selected original finite-model preparation semantics.
 pub const HOST_PUBLIC_OWNED_MODEL_PREPARATION_SPECIFICATION: &str = "host public original owned model preparation v1: original independently owned finite Block request script or Block/COW model; separately installed complete-world policy and immutable input/model qualification; actual initialized state and private memory session; exact complete graph owner/binding roster and original readiness retained; restored, used, recorded, condition and other models refused; no continuation, capture, fork or replay qualification";
 
@@ -24,6 +36,7 @@ pub(super) struct OriginalOwnedModelPreparation {
     native_ready_bytes: Vec<u8>,
     world_owners: Vec<OwnerIdentity>,
     ready: Option<(ActivationRecord, ReadyAttestation, Vec<u8>)>,
+    previous: Option<ContentRef>,
 }
 
 impl HostModelNode {
@@ -152,6 +165,7 @@ impl HostModelNode {
             native_ready_bytes,
             world_owners,
             ready: None,
+            previous: None,
         });
         Ok(())
     }
@@ -193,9 +207,24 @@ impl HostModelNode {
         ready: &mut ReadyAttestation,
     ) -> Result<(), OperationFailure> {
         if self.public_model_preparation.is_none() {
+            if self.public_model_history.is_some() {
+                return Err(failure(
+                    "retained restored capsule has no successful fresh preparation",
+                ));
+            }
             return Ok(());
         }
-        self.authenticate_original_owned_model()?;
+        self.authenticate_owned_model_preparation()?;
+        if self
+            .public_model_history
+            .as_ref()
+            .is_some_and(|history| &history.target != world)
+        {
+            return Err(failure(
+                "restored public readiness has another authenticated target",
+            ));
+        }
+        let total_credit = self.restored_preparation_credit()?;
         let preparation = self
             .public_model_preparation
             .as_mut()
@@ -215,9 +244,7 @@ impl HostModelNode {
             .native_ready
             .verify(&preparation.native_ready_bytes)
             .map_err(|error| failure(&error.to_string()))?;
-        let remaining = self
-            .limits
-            .maximum_capture_bytes
+        let remaining = total_credit
             .checked_sub(preparation.session_bytes.len())
             .and_then(|remaining| remaining.checked_sub(preparation.native_ready_bytes.len()))
             .ok_or_else(|| failure("retained original session exceeds preparation credit"))?;
@@ -251,9 +278,14 @@ impl HostModelNode {
         ready: &ReadyAttestation,
     ) -> Result<Option<Vec<PreparedOwner>>, OperationFailure> {
         let Some(preparation) = &self.public_model_preparation else {
+            if self.public_model_history.is_some() {
+                return Err(failure(
+                    "restored source capsule has no fresh public preparation",
+                ));
+            }
             return Ok(None);
         };
-        self.authenticate_original_owned_model()?;
+        self.authenticate_owned_model_preparation()?;
         let Some((original, retained, bytes)) = &preparation.ready else {
             return Err(failure("original model has no retained readiness body"));
         };

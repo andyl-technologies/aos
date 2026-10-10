@@ -37,6 +37,17 @@ pub(super) struct InstalledEvidence {
 }
 
 impl InstalledEvidence {
+    /// Checks source membership without copying immutable bytes or issuing authority.
+    pub(super) fn known_immutable_reference(&self, reference: &ContentRef) -> bool {
+        self.content
+            .get(&reference.hash.digest)
+            .is_some_and(|(original, _)| original == reference)
+            || self
+                .installed
+                .get(&reference.hash.digest)
+                .is_some_and(|(original, _)| original == reference)
+    }
+
     pub(super) fn new(
         scenario: &NodeScenario,
         bindings: &[NodeBinding],

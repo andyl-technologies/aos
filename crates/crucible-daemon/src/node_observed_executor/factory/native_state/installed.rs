@@ -5,7 +5,10 @@
 //! cold preparation reserves authenticated image custody before graph admission
 //! and leaves child allocation to the already installed restoration capsule.
 
-mod host_group;
+pub(super) mod host_group;
+mod host_group_cold;
+
+pub(super) use host_group_cold::IndependentColdWorld;
 
 use std::{
     fs::File,
