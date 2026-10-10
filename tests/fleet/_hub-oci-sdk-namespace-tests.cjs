@@ -222,9 +222,13 @@ test('owner-private socket keeps old variant and External verifier; new request 
   const root = mkdtempSync(path.join(tmpdir(), 'oci-source-socket-'));
   chmodSync(root, 0o700);
   let sdkDispatches = 0;
+  let refuse = false;
   const server = observer.acceptanceRegistryServer({ getKVNamespace() { sdkDispatches++; } },
     path.join(root, 'control.sock'), {}, async () => ({ version: 1, kind: 'old-guard' }),
-    async () => ({ version: 1, observationScope: 'controlled-callback' }));
+    async () => {
+      if (refuse) throw new Error('private namespace diagnostic canary');
+      return { version: 1, observationScope: 'controlled-callback' };
+    });
   try {
     await server.ready;
     assert.deepEqual(await socketRequest(path.join(root, 'control.sock'),
@@ -240,6 +244,17 @@ test('owner-private socket keeps old variant and External verifier; new request 
         { version: 1, status: 'refused' });
     }
     assert.equal(sdkDispatches, 0);
+    refuse = true;
+    const diagnostics = [], originalError = console.error;
+    console.error = message => diagnostics.push(message);
+    try {
+      assert.deepEqual(await socketRequest(path.join(root, 'control.sock'),
+        { version: 1, kind: 'oci-sdk-namespace-readback' }), { version: 1, status: 'refused' });
+      assert.equal(diagnostics.length, 1);
+      assert.match(diagnostics[0], /^Local OCI namespace observation refused at runner line [0-9]+$/);
+    } finally {
+      console.error = originalError;
+    }
   } finally {
     await server.close();
     rmSync(root, { recursive: true });

@@ -62,7 +62,16 @@ function acceptanceRegistryServer(
         }
         if (request.version === 1 && fields === 'kind,version'
             && request.kind === 'oci-sdk-namespace-readback') {
-          socket.end(JSON.stringify(await ociNamespaceObservation()) + '\n');
+          try {
+            socket.end(JSON.stringify(await ociNamespaceObservation()) + '\n');
+          } catch (error) {
+            // Keep inputs and exception messages private; identify only the
+            // failed check in this installed runner for local fleet debugging.
+            const frame = error.stack?.split('\n').find(line => line.includes(`${__filename}:`));
+            const line = frame?.split(`${__filename}:`)[1]?.match(/^[0-9]+/)?.[0] ?? 'unknown';
+            console.error(`Local OCI namespace observation refused at runner line ${line}`);
+            throw error;
+          }
           return;
         }
         if (request.version === 1 && request.kind === 'queue-fault-job-read') {
