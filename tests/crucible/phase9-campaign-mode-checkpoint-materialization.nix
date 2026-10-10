@@ -22,7 +22,7 @@ in
           {
             targetName = "gate_checkpoint_materialization";
             targetKind = "test";
-            crateDir = "crucible";
+            crateDir = "crucible-engine";
             destination = "crucible-gate-checkpoint-materialization";
           }
         ];

@@ -31,9 +31,9 @@ in
           destination = "gate-typed-choice";
         }
         {
-          targetName = "crucible_protocol";
+          targetName = "crucible_qemu_protocol";
           targetKind = "lib";
-          crateDir = "crucible-protocol";
+          crateDir = "crucible-qemu-protocol";
           destination = "crucible-protocol-lib";
         }
         {

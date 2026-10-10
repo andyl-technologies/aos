@@ -18,7 +18,7 @@ in
         {
           targetName = "gate_divergence_bisect";
           targetKind = "test";
-          crateDir = "crucible-harness";
+          crateDir = "crucible-test-support";
           destination = "gate-divergence-bisect";
         }
       ];

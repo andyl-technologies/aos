@@ -19,7 +19,7 @@ in
         {
           targetName = "gate_campaign_continuity";
           targetKind = "test";
-          crateDir = "crucible-cas";
+          crateDir = "crucible-store";
           destination = "gate-campaign-continuity";
         }
       ];

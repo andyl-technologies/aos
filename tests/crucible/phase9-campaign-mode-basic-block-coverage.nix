@@ -23,13 +23,13 @@ in
           {
             targetName = "gate_basic_block_coverage";
             targetKind = "test";
-            crateDir = "crucible";
+            crateDir = "crucible-engine";
             destination = "crucible-gate-basic-block-coverage";
           }
           {
-            targetName = "crucible_qemu";
+            targetName = "crucible_qemu_host";
             targetKind = "lib";
-            crateDir = "crucible-qemu";
+            crateDir = "crucible-qemu-host";
             destination = "crucible-qemu-lib";
           }
           {

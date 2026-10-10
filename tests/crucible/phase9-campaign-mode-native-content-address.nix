@@ -20,19 +20,19 @@ in
         {
           targetName = "predicate_dsl";
           targetKind = "test";
-          crateDir = "crucible";
+          crateDir = "crucible-engine";
           destination = "crucible-predicate-dsl";
         }
         {
           targetName = "gate_content_address";
           targetKind = "test";
-          crateDir = "crucible";
+          crateDir = "crucible-engine";
           destination = "crucible-gate-content-address";
         }
         {
           targetName = "gate_content_address";
           targetKind = "test";
-          crateDir = "crucible-sim";
+          crateDir = "crucible-determinism";
           destination = "crucible-sim-gate-content-address";
         }
       ];

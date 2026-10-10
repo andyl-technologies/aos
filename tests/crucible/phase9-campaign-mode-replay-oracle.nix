@@ -21,7 +21,7 @@ in
           {
             targetName = "gate_fork_replay_oracle";
             targetKind = "test";
-            crateDir = "crucible";
+            crateDir = "crucible-engine";
             destination = "crucible-gate-fork-replay-oracle";
           }
         ];

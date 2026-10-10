@@ -19,13 +19,13 @@ in
         {
           targetName = "gate_state_space_search";
           targetKind = "test";
-          crateDir = "crucible";
+          crateDir = "crucible-engine";
           destination = "gate-state-space-search";
         }
         {
-          targetName = "crucible";
+          targetName = "crucible_engine";
           targetKind = "lib";
-          crateDir = "crucible";
+          crateDir = "crucible-engine";
           destination = "crucible-lib";
         }
       ];
