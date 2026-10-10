@@ -66,7 +66,9 @@ pub(super) const Q04_INTAKE_IMAGE_POLICY_BYTES: usize = 1656;
 pub(super) const ROOT_IMAGE_POLICY_BYTES: usize = 1832;
 const IMAGE_POLICY_MAGIC: &[u8; 8] = b"AOSRSB01";
 
-pub(super) fn decode_image_policy(bytes: &[u8]) -> Result<ImageBootstrapPolicy, ResourceReservationErrorV1> {
+pub(super) fn decode_image_policy(
+    bytes: &[u8],
+) -> Result<ImageBootstrapPolicy, ResourceReservationErrorV1> {
     let (length, magic) = match bytes.get(..8) {
         Some(magic) if magic == b"AOSRSB06" => (ROOT_IMAGE_POLICY_BYTES, b"AOSRSB06"),
         Some(magic) if magic == b"AOSRSB05" => (Q04_INTAKE_IMAGE_POLICY_BYTES, b"AOSRSB05"),
@@ -558,8 +560,9 @@ mod image_policy_tests {
             first_global_prefix: (version >= 3).then_some(subdivision),
             nix_original_start_intake: (version >= 4)
                 .then_some(subdivision.with(ResourceDimension::Pids, 4)),
-            q04_original_intake: (version >= 5)
-                .then_some(ResourceVector::new([2 * 1024 * 1024; ResourceDimension::COUNT])),
+            q04_original_intake: (version >= 5).then_some(ResourceVector::new(
+                [2 * 1024 * 1024; ResourceDimension::COUNT],
+            )),
             root_receiving: (version >= 6).then_some(subdivision),
         };
         let (magic, length) = FORMATS[version - 1];
@@ -621,17 +624,23 @@ mod image_policy_tests {
             let (_, mut bytes) = fixture(version);
 
             for end in 0..bytes.len() {
-                assert!(matches!(
-                    decode_image_policy(&bytes[..end]),
-                    Err(ResourceReservationErrorV1::CorruptLedger)
-                ), "version {version}, prefix {end}");
+                assert!(
+                    matches!(
+                        decode_image_policy(&bytes[..end]),
+                        Err(ResourceReservationErrorV1::CorruptLedger)
+                    ),
+                    "version {version}, prefix {end}"
+                );
             }
             bytes.push(0);
 
-            assert!(matches!(
-                decode_image_policy(&bytes),
-                Err(ResourceReservationErrorV1::CorruptLedger)
-            ), "version {version}, trailing byte");
+            assert!(
+                matches!(
+                    decode_image_policy(&bytes),
+                    Err(ResourceReservationErrorV1::CorruptLedger)
+                ),
+                "version {version}, trailing byte"
+            );
         }
     }
 
@@ -687,8 +696,8 @@ mod image_policy_tests {
     #[test]
     fn image_policy_q_failure_precedes_invalid_root_service() {
         let (expected, mut bytes) = fixture(6);
-        let minimum = crate::controller_resource_reservation::q04_intake::minimum_failure_demand()
-            .unwrap();
+        let minimum =
+            crate::controller_resource_reservation::q04_intake::minimum_failure_demand().unwrap();
         let undersized = minimum.with(ResourceDimension::MemoryBytes, 0);
         encode_vector(undersized, &mut bytes[1448..1624]);
         encode_vector(ResourceVector::ZERO, &mut bytes[1624..1800]);
@@ -705,8 +714,10 @@ mod image_policy_tests {
             )) if requested == minimum.get(ResourceDimension::MemoryBytes)
         ));
 
-        encode_vector(ResourceVector::new([2 * 1024 * 1024; ResourceDimension::COUNT]),
-            &mut bytes[1448..1624]);
+        encode_vector(
+            ResourceVector::new([2 * 1024 * 1024; ResourceDimension::COUNT]),
+            &mut bytes[1448..1624],
+        );
         refresh_checksum(&mut bytes);
 
         assert!(matches!(
