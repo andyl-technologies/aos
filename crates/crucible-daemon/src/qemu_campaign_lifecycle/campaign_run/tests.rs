@@ -2663,3 +2663,6 @@ fn neutral_finding_export_preserves_parent_query_bytes_after_repository_teardown
     );
     crate::campaign_finding_export::validate_retained_responses_for_test(&clone);
 }
+
+#[path = "exploration_compatibility_tests.rs"]
+mod exploration_compatibility_tests;

@@ -92,7 +92,9 @@
 mod anchored_fs;
 pub mod assignment_ledger;
 pub mod attempt_evidence;
+pub mod campaign_exploration;
 pub mod campaign_finding_export;
+mod campaign_planner_meter;
 pub mod campaign_replay_closure;
 pub mod modeled_campaign_driver;
 
