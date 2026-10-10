@@ -378,12 +378,73 @@ Independent review verifies unchanged source and executable seals and the
 actual terminal result. This new scoped success does not erase the earlier
 failed run or establish a production expiry fix. The dependent twenty-nine
 read cases pass in 54.192 seconds and the public SDK case in 0.007 seconds,
-with unchanged source, executable and verified raw-log seals. The seven index
-contract witnesses now proceed in order; the complete T1 floor and formal
-task acceptance remain pending.
+with unchanged source, executable and verified raw-log seals. The index
+key-limit case passes in 17.433 seconds. The next 1,024-entry ordinary case
+fails after 59.128 seconds with `Advance(Expired)` during baseline publication,
+before its incremental update; its initial inputs contain twenty source and
+557 auxiliary nodes. The remaining five population cases do not run. All
+original handles terminate, and source, executable and raw-log seals remain
+unchanged. A reviewed five-line test-only prerequisite on `530cc4e1bb` enables
+the existing publication-expiry sample under the exact denial diagnostic
+switch, preserving the clock sample, predicate, error and global trace behavior.
+Its native build, strict all-target Clippy and test compilation pass, retaining
+a genuine 1,004-case inventory. The single diagnostic fails after 58.611 seconds
+during baseline publication with commit `Denied`; the actual retained deadline
+sample is 31.528179173 seconds against thirty seconds at `guard/time.rs:285`.
+The Coordinator probe emits nothing, and the earlier `Advance(Expired)` result
+remains separate evidence. This sample establishes neither the expensive phase
+nor a root cause. All original processes terminate without retries or further
+population cases, and source and executable seals remain unchanged.
+Independent source review also identifies two extra local passes outside
+DRV-29's independent-validation exceptions: copying every auxiliary node again
+into publication output, and scanning every namespace entry again solely to
+construct reverse graft addresses. Source-only correction `9a31d962f6` carries
+only reachable newly emitted auxiliary nodes into publication, excludes reused
+and intermediate nodes, and reports selection, map and byte work. Full inputs
+for independent completion verification remain available, and initialization
+moves its explicitly constructed full output after verification. Five focused
+regressions are added. On frozen `1873a4759e`, the core build, strict all-target
+Clippy and all 757 tests pass across nine actual test binaries with zero skipped
+tests. Independent review verifies the genuine inventory, each new publication
+case exactly once and nonignored, executable hashes, raw terminal results and
+unchanged 6,211-file source seal. Native runtime and owning gate qualification
+remain pending. Separate graft-metadata and complete local cost assertions
+are implemented and under review. Independent source review of
+`589e1e11ee` verifies exact root/use/geometry binding, maximum occurrence depth,
+and repeated Conflict candidate/base physical addresses. The shared writer
+report now exposes actual mandatory validation capture and ordered sparse
+publication identities; the latter charges one additional bounded identity
+visit/copy pass. Private candidate `1873a4759e` wires these observations into
+the real returned report. Separate workers commit depth-certificate, locality,
+exact per-occurrence event and complete population-cost regressions. Source
+review catches an external import of a private framing constant and a vector
+incorrectly treated as a map; focused corrections preserve the eight-byte
+framing bound and ordered emitted identities. Another reviewed implementation
+reuses only identical fully validated present owner/attribute/use relationships
+within one checker invocation, after each occurrence independently resolves
+policy. Eight actual-loader regressions check reuse and refusal boundaries;
+missing bindings, errors and current/history/Original/producer/ACK authority
+are never cached. No measured timeout cause or speedup is established.
+Native integration and these assertions remain uncompiled and
+unqualified. The DRV-29 qualification blocker, complete T1 floor and formal
+task acceptance remain open.
+Five replacement core gate commands pass on frozen `25ac838bda`, including
+the corrected provenance selector, required attributes, reference domains,
+ref names and node distribution. The four Rust test gates execute 102
+nonignored tests. The distribution artifact contains thirty-eight level rows
+across twelve fixture groups, has no oversized nodes, and has a maximum node
+size of 47,201 bytes. All twelve applicable complete-node means fall between
+11,809 and 12,756 bytes. Independent review verifies all seventy-one packet
+file hashes and the five actual store artifacts. The original wrapper's
+nonzero result remains recorded: it incorrectly expected a generic `result`
+file instead of the gate's declared TSV. Read-only artifact validation succeeds
+without a gate rerun or fabricated result. This scoped evidence does not
+qualify the later production index corrections or the complete T1 floor.
 Both mandatory formatter commands pass on clean `759c4c9e52` with no edits.
-Sixteen pack and four codec gates qualify separately on
-the same candidate with private hermetic Cargo targets. Both store outcome
+All sixteen pack gates pass separately on frozen `759c4c9e52`, executing forty
+tests with zero failures or ignored tests. Independent review verifies all 379
+packet file hashes. Four codec gates remain under qualification on that
+candidate with private hermetic Cargo targets. Both store outcome
 and trait-split gates pass on frozen `759c4c9e52`: four exact unit cases and
 three doctests execute with no failures or ignored cases; actual store outputs,
 derivers, filtered input and unchanged source seals are retained. The twenty-six
