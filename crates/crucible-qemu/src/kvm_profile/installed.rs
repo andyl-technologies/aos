@@ -144,6 +144,17 @@ impl KvmInstalledCandidate {
             .map(|artifact| &artifact.policy.expected)
     }
 
+    pub(super) fn original_qemu_descriptor(&self) -> Result<std::fs::File, KvmCandidateError> {
+        let artifact = self
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.policy.role == KvmCandidateArtifactRole::Qemu)
+            .ok_or(KvmCandidateError::Policy {
+                reason: "original QEMU installation absent",
+            })?;
+        artifact.clone_descriptor()
+    }
+
     /// Prepares a genuine stopped kernel VM and probes its component inventory.
     ///
     /// The returned object retains the actual system/VM descriptors. No vCPU,

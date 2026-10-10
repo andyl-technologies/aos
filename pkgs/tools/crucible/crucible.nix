@@ -320,6 +320,8 @@
     doCheck = true;
     buildDeps =
       [buildRustDev buildPkgConfig openssl sqlite buildProtobuf gem5-closed-profile]
+      # Runtime-only test binding: never a compiled or controller output reference.
+      ++ lib.optionals (!stdenv.isCross) [qemu-crucible]
       ++ referenceQualificationInputs
       ++ referenceLineageMechanismInputs
       ++ referenceProgressMechanismInputs
@@ -358,6 +360,10 @@
             ${workspaceCargoFlags}
         ''
         else ''
+          # Native process-custody tests require the current source-built QEMU.
+          # This shell binding survives into check; Cargo never embeds its path.
+          export CRUCIBLE_NATIVE_PROBE_QEMU="${nativeQemuPath}"
+          test -x "$CRUCIBLE_NATIVE_PROBE_QEMU"
           # The reference-only package has no ARM profile binding. Require this
           # installed mechanism check in its native, source-bound controller.
           cargo test \

@@ -194,6 +194,18 @@ pub(super) enum QmpCommand<'a> {
     },
     #[cfg(target_os = "linux")]
     KvmUserspaceExits,
+    #[cfg(target_os = "linux")]
+    KvmOriginalWindow {
+        request: &'a QmpKvmOriginalWindowRequest,
+    },
+    #[cfg(target_os = "linux")]
+    KvmOriginalReturn {
+        request: &'a QmpKvmOriginalReturnRequest,
+    },
+    #[cfg(target_os = "linux")]
+    KvmOriginalReturns {
+        request: &'a QmpKvmOriginalReturnsRequest,
+    },
     Capabilities,
     SaveVm {
         tag: &'a QmpSnapshotTag,
@@ -331,6 +343,12 @@ impl QmpCommand<'_> {
             Self::KvmClockComponentV3 { .. } => QmpCommandKind::KvmClockComponentV3,
             #[cfg(target_os = "linux")]
             Self::KvmUserspaceExits => QmpCommandKind::KvmUserspaceExits,
+            #[cfg(target_os = "linux")]
+            Self::KvmOriginalWindow { .. } => QmpCommandKind::KvmOriginalWindow,
+            #[cfg(target_os = "linux")]
+            Self::KvmOriginalReturn { .. } => QmpCommandKind::KvmOriginalReturn,
+            #[cfg(target_os = "linux")]
+            Self::KvmOriginalReturns { .. } => QmpCommandKind::KvmOriginalReturns,
             Self::Capabilities => QmpCommandKind::Capabilities,
             Self::SaveVm { .. } => QmpCommandKind::SaveVm,
             Self::DeleteSnapshot { .. } => QmpCommandKind::DeleteSnapshot,
@@ -432,6 +450,18 @@ impl QmpCommand<'_> {
             }),
             #[cfg(target_os = "linux")]
             Self::KvmUserspaceExits => json!({"execute":"x-crucible-kvm-userspace-exits"}),
+            #[cfg(target_os = "linux")]
+            Self::KvmOriginalWindow { request } => json!({
+                "execute":"x-crucible-kvm-original-window", "arguments":request
+            }),
+            #[cfg(target_os = "linux")]
+            Self::KvmOriginalReturn { request } => json!({
+                "execute":"x-crucible-kvm-original-return", "arguments":request
+            }),
+            #[cfg(target_os = "linux")]
+            Self::KvmOriginalReturns { request } => json!({
+                "execute":"x-crucible-kvm-original-returns", "arguments":request
+            }),
             Self::QueryJobs => json!({
                 "execute": QMP_QUERY_JOBS_COMMAND,
             }),

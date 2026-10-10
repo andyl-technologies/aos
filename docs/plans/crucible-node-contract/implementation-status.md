@@ -1054,6 +1054,32 @@ This compilation result supplies no execution or later KVM/native-effect credit.
 This stage supplies live Debug8 operations; cold debug preservation, Scheduler4,
 scenario finalization and broader device support remain unqualified.
 
+## Owned KVM component custody
+
+Original Window and ACK requests retain finite, non-evicting journals before
+dispatch. An ambiguous transport exchange fences its stream; recovery must
+authenticate the same child generation, executable and Unix peer before
+observing the original transaction. Child wait authority, installation files
+and journals share a pre-reserved supervisory capsule. Dropping the owner
+transfers that capsule to authenticated containment without replacing it.
+Preparation requires the actual KVM device and exact native components before
+child creation, with no accelerator fallback.
+
+Central verification passes 66 component cases, 108 QMP cases and 37
+current-source hygiene cases, plus all-target strict checks and formatting of
+18 Rust files and one Nix recipe. The process cases include five actual stopped
+TCG children and one pre-child supervisor refusal, using explicitly configured
+signed native source `25df9f4e6896f40eb49958ca317be1429195808f`.
+The fixture binding rejects absent or unusable executables; the packaging recipe
+supplies it at test runtime through a build-only QEMU dependency. A source
+confinement failure is repaired by delegating the unchanged five-second bound
+to the existing private supervision API, without detector or allowlist changes.
+
+This machine has no `/dev/kvm`; the hardware probe remains ignored. These
+component results supply no whole-node readiness, common grants, device,
+input/output or archive qualification. The new native-effect production tuple
+and current hermetic controller/ABI/license builds require separate evidence.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

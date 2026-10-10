@@ -28,6 +28,16 @@ impl PinnedArtifact {
         Ok(pinned)
     }
 
+    pub(super) fn clone_descriptor(&self) -> Result<File, KvmCandidateError> {
+        self.verify()?;
+        self.descriptor
+            .try_clone()
+            .map_err(|source| KvmCandidateError::ArtifactIo {
+                role: self.policy.role,
+                source,
+            })
+    }
+
     pub(super) fn verify(&self) -> Result<(), KvmCandidateError> {
         let io_error = |source| KvmCandidateError::ArtifactIo {
             role: self.policy.role,

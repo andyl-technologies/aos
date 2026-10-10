@@ -3,15 +3,33 @@
 //! Standard `query-kvm` proves only what the connected emulator reports about
 //! its accelerator. It grants no clock, native pause, custody or capture claim.
 
+mod exchange;
+mod original_inventory;
+mod original_return;
+mod original_window;
 mod userspace;
 mod v3;
 
+pub use original_inventory::{
+    QmpKvmOriginalReturnIdentity, QmpKvmOriginalReturnsObservation, QmpKvmOriginalReturnsRequest,
+    QmpKvmOriginalReturnsState,
+};
+pub use original_return::{
+    QmpKvmOriginalAckTransaction, QmpKvmOriginalReturnObservation, QmpKvmOriginalReturnOperation,
+    QmpKvmOriginalReturnRequest, QmpKvmOriginalReturnState,
+};
+
+pub use original_window::{
+    QmpKvmOriginalWindowObservation, QmpKvmOriginalWindowOperation, QmpKvmOriginalWindowRequest,
+    QmpKvmOriginalWindowState, QmpKvmOriginalWindowTransaction,
+};
 pub use userspace::{
     QmpKvmUserspaceComponentState, QmpKvmUserspaceExitPhase, QmpKvmUserspaceExitRecord,
     QmpKvmUserspaceInventory,
 };
 pub use v3::QmpKvmClockV3ComponentState;
 
+use exchange::exchange_component;
 use serde::{Deserialize, Serialize};
 
 use super::{QmpClient, QmpCommand, QmpCommandKind, QmpError, QmpTimeoutStream};
