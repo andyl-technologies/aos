@@ -1057,7 +1057,7 @@ impl ReadOnlyProtectedJournal {
     ) -> Result<CachePolicyHoldV1, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
         use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
 
-        if self.witness.name != NAME || self.physical_names_v1() != original_names
+        if self.witness.name() != NAME || self.physical_names_v1() != original_names
             || matches!(phase, super::Q04CacheTerminalPhaseV1::Held)
         {
             return Err(CreateQ04ErrorV1::ChangedCut);
@@ -1086,7 +1086,7 @@ impl ReadOnlyProtectedJournal {
 
     /// Returns only an active, canonical hold from the fixed read-only name.
     pub(crate) fn held_cache_policy_hold(&mut self) -> Result<CachePolicyHoldV1, JournalError> {
-        if self.witness.name != NAME {
+        if self.witness.name() != NAME {
             return Err(JournalError::ProtectedBoundary);
         }
         current(&mut self.journal)?
@@ -1332,11 +1332,11 @@ pub(super) fn mutation_guard(journal: &Journal) -> Result<Option<Journal>, Journ
     #[cfg(not(test))]
     journal.require_protected_location(
         directory,
-        &journal
+        journal
             .protected
             .as_ref()
             .ok_or(JournalError::ProtectedBoundary)?
-            .name,
+            .name(),
         *uid,
         journal.native.limits(),
     )?;

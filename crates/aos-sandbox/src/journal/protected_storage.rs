@@ -17,7 +17,7 @@ use std::os::fd::{AsFd as _, BorrowedFd};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
-use rustix::fs::{FileType, Mode, OFlags, fcntl_getfl};
+use rustix::fs::{OFlags, fcntl_getfl};
 
 #[cfg(target_os = "linux")]
 use super::runtime_deployment_history;
@@ -35,15 +35,20 @@ pub(crate) use opening::{
 pub(super) use opening::{ProtectedJournalOpenMode, ProtectedOwnerPolicy};
 
 pub(super) use aos_sandbox_journal::protected_storage::{
-    FileIdentity, MAXIMUM_PROTECTED_COMPONENT_BYTES, MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES,
-    ProtectedAncestry, open_protected_file, open_protected_file_into,
+    FileIdentity, MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES,
+    open_protected_file, open_protected_file_into,
     open_protected_file_into_original, open_read_only_protected_file,
-    open_read_only_protected_file_original, protected_compaction_name, protected_directory_flags,
+    open_read_only_protected_file_original, protected_directory_flags,
     protected_open_error, reject_operator_provisioning_history, reject_stale_protected_compaction,
     remove_stale_protected_compaction, require_opened_directory_identity,
     require_protected_file_names_current, resolve_protected_directory_from_root,
-    resolve_protected_directory_from_root_original, rustix_io, traverse_protected_directory,
+    resolve_protected_directory_from_root_original, rustix_io,
     validate_basename, validate_protected_fd,
+};
+
+#[cfg(test)]
+pub(super) use aos_sandbox_journal::protected_storage::{
+    ProtectedAncestry, traverse_protected_directory,
 };
 
 pub(crate) use aos_sandbox_journal::protected_storage::ProtectedWriterNameWitness;
@@ -172,6 +177,10 @@ impl ReadOnlyProtectedJournal {
 }
 
 impl ReadOnlyJournalNameWitness {
+    pub(super) fn name(&self) -> &str {
+        self.physical.name()
+    }
+
     pub(crate) fn check_named_currentness(&self) -> Result<(), JournalError> {
         self.physical.check_named_currentness::<JournalError>()
     }

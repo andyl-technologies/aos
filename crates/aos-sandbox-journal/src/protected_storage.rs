@@ -192,6 +192,12 @@ impl ReadOnlyJournalNameWitness {
 }
 
 impl ReadOnlyJournalNameWitness {
+    /// Borrows the original basename without asserting named currentness.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     /// Moves the original path/name/UID and three observations without validation.
     #[must_use]
     pub fn from_original_parts(
