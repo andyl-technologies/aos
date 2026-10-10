@@ -1023,7 +1023,7 @@ in {
       # Finally publish a locally built AOS toplevel and its authenticated raw
       # OTA image as a sysroot package. Stage it over the Hub, boot it through
       # UEFI, then exercise durable image rollback and roll-forward.
-      publication_system = publisher.succeed(textwrap.dedent(f"""
+      publisher.succeed(textwrap.dedent(f"""
           set -eu
           export HOME=/var/lib/aos-fleet-publisher USER=publisher
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:${pkgs.sbsigntools}/bin:${pkgs.binutils}/bin:${pkgs.systemd}/lib/systemd:$PATH
@@ -1054,6 +1054,16 @@ in {
             --channel stable --count 256 --cache-url {REGISTRY} \\
             --upload-url file:///var/tmp/aos-publication-system
           {APR} verify --registry production
+      """), timeout=1800)
+      # Image preparation can consume most of an API bearer's lifetime.
+      # Mint the upload credential after compression and signature checks.
+      token = refresh_browser_token()
+      publication_system = publisher.succeed(textwrap.dedent(f"""
+          set -eu
+          export HOME=/var/lib/aos-fleet-publisher USER=publisher
+          export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
+          export NIX_REMOTE=""
+          export NIX_CONF_DIR="$HOME/.config/nix"
           {AOS} --json hub registry publish upload acme/production \\
             --hub {HUB} --token {shlex.quote(token)} \\
             --root /var/tmp/aos-publication-system
