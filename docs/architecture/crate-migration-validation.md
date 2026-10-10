@@ -392,10 +392,12 @@ Use the documented [Cargo shell](../../AGENTS.md) and `aos-dev`. Set
 target rpath flags through `RUSTDOCFLAGS` inside that shell; do not export them
 globally into WebAssembly checks or leak OpenSSL through `LD_LIBRARY_PATH`.
 
-The planned local bundle under `~/scratch/aos-crate-monorepo-pr-715/` will contain complete
+The published local snapshot under `~/scratch/aos-crate-monorepo-pr-715/` contains
 logs, exact commands, metadata, source checkpoints, outcome classifications,
-and compatibility audits. Its manifest will hash every copied artifact and record
-the final branch head. The prepared nine owning-PR handoffs include the pinned inspection
+and compatibility audits. Its manifest hashes every copied artifact and records
+the captured branch head. Its status remains `in_progress` while the remaining
+runs execute; supervising agents will refresh this record and bundle afterward.
+The nine owning-PR handoffs include the pinned inspection
 snapshot and 242-symbol Crucible ownership map. They distinguish committed
 code, dirty local observations, and future extractions; other owners' checkouts
 were not modified. Dispatch has five implemented crates. A separate discovery at
