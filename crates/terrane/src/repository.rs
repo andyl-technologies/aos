@@ -239,12 +239,32 @@ where
         session: &mut WriterSession,
         request: CommitRequest,
     ) -> Result<RefRecord, Error> {
+        self.commit_request_inner(session, request, None).await
+    }
+
+    async fn commit_request_inner(
+        &self,
+        session: &mut WriterSession,
+        request: CommitRequest,
+        original_started: Option<std::time::Duration>,
+    ) -> Result<RefRecord, Error> {
+        if let Some(started) = original_started {
+            self.coordinator
+                .check_time(started)
+                .map_err(Error::Advance)?;
+        }
+
         self.retain_baseline(session).await?;
-        let prepared = self
-            .coordinator
-            .prepare_advance(session, request)
-            .await
-            .map_err(Error::Advance)?;
+        let prepared = match original_started {
+            Some(started) => {
+                self.coordinator
+                    .prepare_advance_started(session, request, started)
+                    .await
+            }
+            None => self.coordinator.prepare_advance(session, request).await,
+        }
+        .map_err(Error::Advance)?;
+
         Ok(self.publish_retained(session, prepared).await?.record)
     }
 

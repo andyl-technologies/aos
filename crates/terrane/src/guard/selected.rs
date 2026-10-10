@@ -20,6 +20,10 @@ pub(crate) mod source_requalification;
 #[path = "selected/meta_batch.rs"]
 pub(crate) mod meta_batch;
 
+#[cfg(unix)]
+#[path = "selected/index_recovery.rs"]
+pub(crate) mod index_recovery;
+
 #[cfg(all(feature = "tokio", unix))]
 #[path = "selected/held_history.rs"]
 mod held_history;

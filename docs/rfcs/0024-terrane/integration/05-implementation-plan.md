@@ -300,6 +300,23 @@ unrun. This result establishes no phase-level cause or capacity qualification.
 Index recovery and the complete current trunk floor remain pending. These
 results do not advance a task checkbox, milestone exit or freeze.
 
+The current `db99b7d937` read gate passes all thirty exact witnesses, including
+both retained-decoding cases, with no failures or ignored tests. The property
+change also passes core build, strict all-target Clippy and fresh all-target
+compilation; its exact signing-key regression passes from the genuine archived
+executable. The other 760 core cases remain unrun in that focused request.
+A distinct index-recovery diagnostic on the same tree reproduces the malformed
+request in 412.88 seconds and identifies exactly `loss-generation` and `sources`
+as changed immutable-context fields. Missing-primary replacement invalidates
+the retained context before the subsequent Commit upload. Recovery must stage
+replacement content under real current authority, discard old observations,
+and freshly qualify the same source and whole ref. Shared private preparation
+plumbing carries one original monotonic start through fresh baseline admission
+and final publication; ordinary callers keep their existing capture point.
+Independent source review passes that prerequisite. The native producer,
+intervening-change and original-deadline witnesses, and full recovery gate
+remain pending; no continuity check is relaxed.
+
 The earlier combined read candidate `be832963c4` failed strict native all-target
 Clippy on two large enum variants. The reviewed enum, PACK-16 attribution,
 native fixture, producer-history and GC handoff corrections are composed on

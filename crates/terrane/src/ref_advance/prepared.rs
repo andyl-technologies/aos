@@ -103,13 +103,45 @@ impl<S: Store, C: Clock, F: LocalFs> Coordinator<S, C, F> {
         session: &mut WriterSession,
         request: CommitRequest,
     ) -> Result<PreparedAdvance, AdvanceError> {
+        self.prepare_advance_inner(session, request, None).await
+    }
+
+    /// Preserves the original deadline across preparatory maintenance effects.
+    ///
+    /// # Errors
+    /// Preserves ordinary preparation failures and rejects an expired original
+    /// deadline before and after freshly qualifying the retained baseline.
+    pub(crate) async fn prepare_advance_started(
+        &self,
+        session: &mut WriterSession,
+        request: CommitRequest,
+        started: std::time::Duration,
+    ) -> Result<PreparedAdvance, AdvanceError> {
+        self.prepare_advance_inner(session, request, Some(started))
+            .await
+    }
+
+    async fn prepare_advance_inner(
+        &self,
+        session: &mut WriterSession,
+        request: CommitRequest,
+        original_started: Option<std::time::Duration>,
+    ) -> Result<PreparedAdvance, AdvanceError> {
         if session.fenced {
             return Err(AdvanceError::Fenced {
                 current: session.record.clone().map(Box::new),
             });
         }
+        if let Some(started) = original_started {
+            self.check_time(started)?;
+        }
+
         let original = self.checked_preparation_baseline(session).await?;
-        let started = self.guard().clock().monotonic();
+        let started = original_started.unwrap_or_else(|| self.guard().clock().monotonic());
+        if original_started.is_some() {
+            self.check_time(started)?;
+        }
+
         let current = self.store().ref_get(session.reference()).await?;
         let base = session.record.clone();
         let changed = current != base;
