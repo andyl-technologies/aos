@@ -6,26 +6,26 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "be655ca93bd0c9eb8de2cf0da1c8d57a3e75a5598562db6846fd5ae741f217ab";
-  subject = "Run ICH9 crossmode timer producers in fresh processes";
-  body = "The crossmode fixture used a raw fork after QEMU's RCU constructor had started a worker. Its child could inherit qemu_hot_fork_thread_lock and block before emitting the migration stream, leaving the package check indefinitely waiting for its length prefix.\n\nSpawn the same test executable with posix_spawn so the real exact VMState writer runs without inherited QEMU thread state. Preserve all four producer scenarios and the original migration acceptance/refusal and timer assertions. Bound producer IPC to five seconds and isolated GLib test subprocesses to ten seconds, closing descriptors and reaping only the owned producer on failure.\n\nThe actual package worker was observed blocked on the registry mutex. All 21 corrected controls passed with the configured AOS compiler and existing native objects; a separate short original probe passed, so it is retained as a non-reproduction of the timing-dependent failure. The existing heap-owned hot-fork operation, protocol headers and production timer code remain unchanged.";
-  commit = "9f2c75b7d78059936402aba0ad932932cd496a6f";
-  tree = "c040f0f079ec0638746862cb6f2054a2dcdafbb2";
+  sha256 = "e9ebd32258d9196a6aee7acf0b22feec8bd59ccb390351516c4b6d95560af236";
+  subject = "Unlink poll-ready handlers before aio_prepare returns";
+  body = "aio_prepare() disables poll mode for the GLib event loop. The final poll in poll_set_started() can link a ready handler into aio_prepare()'s stack-local ready list, and the function returned with the handler still linked. The next aio_add_ready_handler() for that handler unlinked it through node_ready.le_prev, storing NULL into whatever frame had reused the slot.\n\nA hot-fork child's replacement monitor iothread enters the GLib loop with poll mode started and a notification pending. The stale store landed on the saved frame pointer of aio_dispatch(), so g_main_dispatch() faulted reading source flags through a null RBP at address 0x2c.\n\nUnlink the handlers before returning. Each keeps poll_ready, so its next dispatch still runs io_poll_ready() as before. A new test-nested-aio-poll case checks that aio_prepare() leaves the ready handler unlinked and that the next poll still delivers its readiness.";
+  commit = "53b5bdeaa02ecc71771532e01210634f4bdb0366";
+  tree = "84bddc551e0fd9af749d3c25b49fe2224b15960b";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/native-ich9-fresh-exec-atomic";
+  branchRef = "dplecki/native-aio-prepare-unlink-atomic";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "12ece7649421db0be01ded8a8ce84410f3cc40065404dada9d98221d87a6f1e0";
+  bundleSha256 = "7d25702b95fa0a93454080a90c99e5d803bc245fe0aa86830c5723bac3a94109";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
-  deterministicPatchDate = "2026-10-09T17:02:07Z";
+  deterministicPatchDate = "2026-10-10T01:38:50Z";
 
   additionalCapabilities = [
     {

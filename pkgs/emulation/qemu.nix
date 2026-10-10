@@ -1704,6 +1704,10 @@ in
                 -p /aio/hot-fork/async-worker-barrier \
                 > aio-hot-fork-tests.tap
               cat aio-hot-fork-tests.tap
+              # Ending poll mode for the GLib loop must not leave ready
+              # handlers linked into aio_prepare()'s dead stack frame.
+              build/tests/unit/test-nested-aio-poll --tap \
+                -p /aio-prepare/poll-ready-unlinked
               # Keep the exact native fixture output with the package; a
               # separate certificate checks named cases, not a boot proxy.
               # Pin GLib's seed so the installed transcript is reproducible.
