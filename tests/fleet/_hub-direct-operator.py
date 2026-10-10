@@ -14,6 +14,7 @@ import re
 import shlex
 import tempfile
 import textwrap
+import time
 
 
 HYDRATION_METADATA_TABLES = (
@@ -98,12 +99,22 @@ def private_guest_command(machine, command, timeout=60):
     # can include the whole request, so replace those with an explicit stage
     # refusal before they reach the driver log.
     prefix = "# Private fixture input: command contents and output are not logged.\n"
+    started = time.monotonic()
     try:
         status, stdout, stderr = machine.agent.request(
             (prefix + command).encode(), timeout=timeout,
         )
-    except Exception:
-        raise RuntimeError("private operator fixture command failed in transport") from None
+    except Exception as error:
+        category = type(error).__name__
+        if category not in {
+                "ClientAgentTimeout", "TimeoutError", "ConnectionResetError",
+                "BrokenPipeError", "EOFError", "AgentProtocolError", "_ProtocolMidstream"}:
+            category = "OtherTransportError"
+        elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
+        raise RuntimeError(
+            "private operator fixture command failed in transport "
+            f"(category={category}, elapsed_ms={elapsed_ms})"
+        ) from None
     if status != 0:
         # Preserve bounded diagnostics for the operator, never in the driver
         # log. Keeping a failed build retains this owner-private directory.

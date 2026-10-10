@@ -11,6 +11,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest.mock import patch
 
 
 def load(name, filename):
@@ -64,6 +65,30 @@ def projection():
 
 
 class SetupTests(unittest.TestCase):
+    def test_private_transport_failure_reports_only_closed_category_and_time(self):
+        private_input = "fixture-private-command-and-error"
+        cases = [
+            (TimeoutError, "TimeoutError"),
+            (type("ClientAgentTimeout", (Exception,), {}), "ClientAgentTimeout"),
+            (RuntimeError, "OtherTransportError"),
+            (type(private_input, (Exception,), {}), "OtherTransportError"),
+        ]
+        for error_type, category in cases:
+            with self.subTest(category=category):
+                def request(body, *, timeout):
+                    raise error_type(private_input)
+
+                machine = types.SimpleNamespace(agent=types.SimpleNamespace(request=request))
+                with patch.object(operator.time, "monotonic", side_effect=[1.0, 1.25]), \
+                        self.assertRaises(RuntimeError) as raised:
+                    operator.private_guest_command(machine, private_input)
+
+                self.assertEqual(str(raised.exception),
+                    "private operator fixture command failed in transport "
+                    f"(category={category}, elapsed_ms=250)")
+                self.assertNotIn(private_input, str(raised.exception))
+                self.assertTrue(raised.exception.__suppress_context__)
+
     def test_origins_database_and_roots_cannot_alias_main_or_another_run(self):
         value = coordinates()
         self.assertEqual(setup.setup_coordinates(value), value)
