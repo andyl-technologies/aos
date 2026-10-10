@@ -13,10 +13,11 @@ impl RpcService {
     /// # Errors
     /// Returns an error for invalid review, stale revision, revoked authority,
     /// excessive lock scope or unavailable persistence.
-    pub async fn write_assessment_schedule(
+    pub(super) async fn commit_assessment_schedule_review(
         &self,
         auth: Option<&str>,
         req: pb::AssessmentControlRequest,
+        completion: &crate::db::AssessmentReviewCompletion,
     ) -> Result<pb::AssessmentDocumentResponse, RpcError> {
         let request = ScheduleWriteV1::from_slice(&req.document_json)
             .map_err(|error| RpcError::invalid(error.to_string()))?;
@@ -33,9 +34,20 @@ impl RpcService {
             self.assessment_mutation_fences(&claims, &registry, "assessment.scan")
                 .await?,
         );
+
+        fences.extend(
+            self.assessment_mutation_fences(&claims, &registry, "assessment.read")
+                .await?,
+        );
         let schedule = self
             .db
-            .write_assessment_schedule_fenced(registry.id, &request, &claims, &fences)
+            .write_assessment_schedule_with_plan_fenced(
+                registry.id,
+                &request,
+                &claims,
+                &fences,
+                Some(completion),
+            )
             .await
             .map_err(|error| RpcError::FailedPrecondition(error.to_string()))?;
         let document_json = schedule.to_bytes().map_err(RpcError::internal)?;

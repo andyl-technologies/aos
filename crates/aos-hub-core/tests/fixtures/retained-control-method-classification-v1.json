@@ -4455,5 +4455,62 @@
       "class": "read"
     },
     "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "AcknowledgeAlert",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "append_only_event",
+      "event_kind": "assessment_alert_acknowledgement"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "PlanWriteSchedule",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "plan",
+      "pair": "assessment_schedule_review"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "WriteSchedule",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "apply",
+      "pair": "assessment_schedule_review",
+      "outcome": "immediate"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "PlanWriteSubscription",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "plan",
+      "pair": "assessment_subscription_review"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "WriteSubscription",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "apply",
+      "pair": "assessment_subscription_review",
+      "outcome": "immediate"
+    },
+    "external_effects": false
   }
 ]

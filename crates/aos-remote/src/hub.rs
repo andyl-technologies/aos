@@ -93,11 +93,15 @@ enum HubTopologyMethod {
     ListAssessmentEvents,
     ListAssessmentSchedules,
     WriteAssessmentSchedule,
+    /// Plans an exact recurring assessment configuration without enabling it.
+    PlanWriteAssessmentSchedule,
     ListAssessmentSubscriptions,
     ListAssessmentNotificationDeliveries,
     /// Selects exact cached advisory revisions under current assessment read authority.
     GetAssessmentAdvisory,
     WriteAssessmentSubscription,
+    /// Plans an exact notification subscription without enqueueing callbacks.
+    PlanWriteAssessmentSubscription,
     ReviewAssessmentNotificationDestination,
     /// Selects authenticated direct-upload capability discovery.
     DirectUploadGetCapabilities,
@@ -1236,11 +1240,13 @@ impl HubTopologyMethod {
             ListAssessmentEvents => "aos.hub.v1.AssessmentService/ListEvents",
             ListAssessmentSchedules => "aos.hub.v1.AssessmentService/ListSchedules",
             WriteAssessmentSchedule => "aos.hub.v1.AssessmentService/WriteSchedule",
+            PlanWriteAssessmentSchedule => "aos.hub.v1.AssessmentService/PlanWriteSchedule",
             ListAssessmentSubscriptions => "aos.hub.v1.AssessmentService/ListSubscriptions",
             ListAssessmentNotificationDeliveries => {
                 "aos.hub.v1.AssessmentService/ListNotificationDeliveries"
             }
             WriteAssessmentSubscription => "aos.hub.v1.AssessmentService/WriteSubscription",
+            PlanWriteAssessmentSubscription => "aos.hub.v1.AssessmentService/PlanWriteSubscription",
             ReviewAssessmentNotificationDestination => {
                 "aos.hub.v1.AssessmentService/ReviewNotificationDestination"
             }
@@ -1811,11 +1817,13 @@ pub mod hub_rpc {
         AcknowledgePackageAlert: AssessmentControlRequest => AssessmentDocumentResponse;
         ListAssessmentEvents: AssessmentControlRequest => AssessmentDocumentResponse;
         ListAssessmentSchedules: AssessmentControlRequest => AssessmentDocumentResponse;
-        WriteAssessmentSchedule: AssessmentControlRequest => AssessmentDocumentResponse;
+        PlanWriteAssessmentSchedule: PlanAssessmentReviewRequest => TopologyPlanResponse;
+        WriteAssessmentSchedule: ApplyRegistryMutationRequest => AssessmentDocumentResponse;
         ListAssessmentSubscriptions: AssessmentControlRequest => AssessmentDocumentResponse;
         ListAssessmentNotificationDeliveries: AssessmentControlRequest => AssessmentDocumentResponse;
         GetAssessmentAdvisory: AssessmentControlRequest => AssessmentDocumentResponse;
-        WriteAssessmentSubscription: AssessmentControlRequest => AssessmentDocumentResponse;
+        PlanWriteAssessmentSubscription: PlanAssessmentReviewRequest => TopologyPlanResponse;
+        WriteAssessmentSubscription: ApplyRegistryMutationRequest => AssessmentDocumentResponse;
         ReviewAssessmentNotificationDestination: AssessmentControlRequest => AssessmentDocumentResponse;
         PlanUpdateRegistryMetadata: PlanUpdateRegistryMetadataRequest => TopologyPlanResponse;
         UpdateRegistryMetadata: ApplyRegistryMutationRequest => RegistryMetadataChangeResponse;

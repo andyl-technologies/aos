@@ -13,9 +13,7 @@ use aos_assessment_runtime::attention_control::{
 use aos_assessment_runtime::control::{
     ScanCancellationV1, ScanListQueryV1, ScanListV1, ScanLookupV1, ScanRetryV1, ScanSubmissionV1,
 };
-use aos_assessment_runtime::schedules::{
-    SchedulePageV1, ScheduleQueryV1, ScheduleV1, ScheduleWriteV1,
-};
+use aos_assessment_runtime::schedules::{SchedulePageV1, ScheduleQueryV1, ScheduleV1};
 use aos_contract::Sha256Digest;
 use aos_core::output::{OutputMode, Printer};
 use aos_maintain::presentation::escape_terminal as escape_bounded_terminal;
@@ -36,11 +34,12 @@ fn escape_terminal(text: &str) -> String {
 /// calls or incompatible canonical inner documents.
 pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result<()> {
     match command {
-        HubAssessmentCmd::Advisory { .. } => super::assessment_advisories::run(printer, command).await,
+        HubAssessmentCmd::Advisory { .. } => {
+            super::assessment_advisories::run(printer, command).await
+        }
         HubAssessmentCmd::Deliveries { .. }
         | HubAssessmentCmd::Delivery { .. }
         | HubAssessmentCmd::Subscriptions { .. }
-        | HubAssessmentCmd::Subscription { .. }
         | HubAssessmentCmd::NotificationDestination { .. } => {
             super::assessment_notifications::run(printer, command).await
         }
@@ -91,37 +90,11 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
             }
             Ok(())
         }
-        HubAssessmentCmd::Schedule {
-            access,
-            registry,
-            request,
-        } => {
-            let bytes = read_bounded_file(request, 262_144, "assessment schedule review")?;
-            let request = ScheduleWriteV1::from_slice(&bytes)?;
-            let client = hub_client(&access.hub, access.token.as_deref()).await?;
-            let response = client
-                .call_topology(
-                    hub_rpc::WriteAssessmentSchedule,
-                    &hub_types::AssessmentControlRequest {
-                        registry_slug: registry.clone(),
-                        document_json: bytes,
-                    },
-                )
-                .await?;
-            let schedule = ScheduleV1::from_slice(&response.document_json)?;
-            if schedule.resource_scope != request.resource_scope
-                || schedule.schedule_id != request.schedule_id
-                || schedule.enabled != request.enabled
-                || schedule.configuration != request.configuration
-            {
-                anyhow::bail!("assessment schedule receipt differs from the reviewed request");
-            }
-            if printer.mode() == OutputMode::Json {
-                printer.json(&serde_json::json!({"schema_version":"aos.hub.cli/v1", "kind":"assessment-schedule", "data":schedule}));
-            } else {
-                render_schedule(printer, &schedule);
-            }
-            Ok(())
+        HubAssessmentCmd::Schedule { .. }
+        | HubAssessmentCmd::ApplySchedule { .. }
+        | HubAssessmentCmd::Subscription { .. }
+        | HubAssessmentCmd::ApplySubscription { .. } => {
+            super::assessment_reviews::run(printer, command).await
         }
         HubAssessmentCmd::Alerts {
             access,

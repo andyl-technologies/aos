@@ -10,14 +10,15 @@ use leptos::prelude::*;
 
 use super::assessments::{start_status_poll, AssessmentReadGuard};
 use crate::components::InlineError;
-use crate::mutation::scoped_workflow_tasks;
+use crate::mutation::{idempotency_key, scoped_workflow_tasks, PendingPlan};
 use crate::transport::ApiClient;
 
 /// Shows credential-bounded recurring reviews and their current due state.
 #[component]
 pub(super) fn RegistryAssessmentSchedules(client: ApiClient, slug: String) -> impl IntoView {
-    let can_review =
-        client.allows("assessment.schedule.manage") && client.allows("assessment.scan");
+    let can_review = client.allows("assessment.schedule.manage")
+        && client.allows("assessment.scan")
+        && client.allows("assessment.read");
     let context = StoredValue::new((client, slug));
     let tasks = scoped_workflow_tasks();
     let epoch = RwSignal::new(0_u64);
@@ -36,6 +37,7 @@ pub(super) fn RegistryAssessmentSchedules(client: ApiClient, slug: String) -> im
     let enabled = RwSignal::new(true);
     let busy = RwSignal::new(false);
     let failure = RwSignal::new(None::<String>);
+    let pending = RwSignal::new(None::<(PendingPlan, ScheduleWriteV1)>);
 
     let page = LocalResource::new(move || {
         let _ = epoch.get();
@@ -162,39 +164,84 @@ pub(super) fn RegistryAssessmentSchedules(client: ApiClient, slug: String) -> im
         failure.set(None);
         tasks.spawn(async move {
             let result = async {
+                let key = idempotency_key("assessment-review");
                 let response = client
-                    .call::<_, aos_proto_types::AssessmentDocumentResponse>(
-                        aos_proto_types::ASSESSMENT_SERVICE_WRITE_SCHEDULE_PATH,
-                        &aos_proto_types::AssessmentControlRequest {
+                    .call::<_, aos_proto_types::TopologyPlanResponse>(
+                        aos_proto_types::ASSESSMENT_SERVICE_PLAN_WRITE_SCHEDULE_PATH,
+                        &aos_proto_types::PlanAssessmentReviewRequest {
                             registry_slug,
-                            document_json,
+                            document_json: document_json,
+                            expected_resource_version: request.expected_revision.to_string(),
+                            idempotency_key: key.clone(),
                         },
                     )
                     .await
                     .map_err(|error| error.to_string())?;
-                let schedule = ScheduleV1::from_slice(&response.document_json)
-                    .map_err(|error| error.to_string())?;
-                if schedule.resource_scope != request.resource_scope
-                    || schedule.schedule_id != request.schedule_id
-                    || schedule.enabled != request.enabled
-                    || schedule.configuration != request.configuration
-                {
-                    return Err(
-                        "The recurring-review receipt differs from the submitted review".to_owned(),
-                    );
-                }
-                Ok::<_, String>(schedule)
+                let plan = PendingPlan::from_response(response, key)?;
+                Ok::<_, String>((plan, request))
             }
             .await;
             busy.set(false);
             match result {
-                Ok(schedule) => {
-                    if identity.get_untracked().trim() == request.schedule_id
-                        && scope.get_untracked().as_ref() == Some(&request.resource_scope)
-                    {
-                        selected.set(Some(schedule));
+                Ok(review) => {
+                    if scope.get_untracked().as_ref() == Some(&review.1.resource_scope) {
+                        pending.set(Some(review));
                     }
-                    epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
+                }
+                Err(error) => failure.set(Some(error)),
+            }
+        });
+    };
+
+    let apply = move |_| {
+        if busy.get_untracked() || !can_review || !polling.get_untracked() {
+            return;
+        }
+        let Some((plan, request)) = pending.get_untracked() else {
+            return;
+        };
+        if scope.get_untracked().as_ref() != Some(&request.resource_scope) {
+            pending.set(None);
+            failure.set(Some(
+                "The reviewed resource changed. Plan again before applying.".into(),
+            ));
+            return;
+        }
+        let (client, _) = context.get_value();
+        busy.set(true);
+        failure.set(None);
+        tasks.spawn(async move {
+            let outcome = async {
+                let response = client
+                    .call::<_, aos_proto_types::AssessmentDocumentResponse>(
+                        aos_proto_types::ASSESSMENT_SERVICE_WRITE_SCHEDULE_PATH,
+                        &plan.registry_apply(),
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let admitted = ScheduleV1::from_slice(&response.document_json)
+                    .map_err(|error| error.to_string())?;
+                if admitted.resource_scope != request.resource_scope
+                    || admitted.schedule_id != request.schedule_id
+                    || admitted.enabled != request.enabled
+                    || admitted.configuration != request.configuration
+                    || request.expected_revision.checked_add(1) != Some(admitted.revision)
+                {
+                    return Err(
+                        "The receipt differs from the exact reviewed configuration".to_owned()
+                    );
+                }
+                Ok::<_, String>(admitted)
+            }
+            .await;
+            busy.set(false);
+            match outcome {
+                Ok(admitted) => {
+                    if scope.get_untracked().as_ref() == Some(&request.resource_scope) {
+                        selected.set(Some(admitted));
+                        pending.set(None);
+                        epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
+                    }
                 }
                 Err(error) => failure.set(Some(error)),
             }
@@ -204,7 +251,7 @@ pub(super) fn RegistryAssessmentSchedules(client: ApiClient, slug: String) -> im
     view! {
         <section class="assessment-schedules">
             <div class="section-heading"><h3>"Recurring scans"</h3><button class="secondary-button" on:click=move |_| {
-                selected.set(None); scope.set(None); after.set(None); polling.set(true);
+                pending.set(None); selected.set(None); scope.set(None); after.set(None); polling.set(true);
                 epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
             }>"Refresh schedules"</button></div>
             <Suspense fallback=move || view! { <p>"Loading recurring reviews…"</p> }>
@@ -219,7 +266,7 @@ pub(super) fn RegistryAssessmentSchedules(client: ApiClient, slug: String) -> im
                                 let due = schedule.next_due_at.to_string();
                                 let deadline = schedule.authority_expires_at.to_string();
                                 view! { <tr><td>{label}</td><td>{state}</td><td>{due}</td><td>{deadline}</td><td>
-                                    {can_review.then(|| view! { <button class="secondary-button" disabled=move || busy.get() on:click=move |_| {
+                                    {can_review.then(|| view! { <button class="secondary-button" disabled=move || (busy.get() || pending.get().is_some()) on:click=move |_| {
                                         identity.set(schedule.schedule_id.clone()); packages.set(schedule.configuration.packages.join("\n"));
                                         cadence.set(schedule.configuration.cadence_seconds.to_string()); expiry.set(schedule.configuration.review_expires_at.to_string());
                                         updates.set(schedule.configuration.profiles.contains(&Profile::Updates)); vulnerabilities.set(schedule.configuration.profiles.contains(&Profile::Vulnerabilities));
@@ -239,16 +286,30 @@ pub(super) fn RegistryAssessmentSchedules(client: ApiClient, slug: String) -> im
             {can_review.then(|| view! {
                 <div class="assessment-schedule-form">
                     <h4>"Review recurring scan"</h4>
-                    <label>"Schedule name"<input prop:value=move || identity.get() disabled=move || busy.get() || selected.get().is_some() on:input=move |event| identity.set(event_target_value(&event))/></label>
-                    <label>"Packages (one exact coordinate per line)"<textarea prop:value=move || packages.get() disabled=move || busy.get() on:input=move |event| packages.set(event_target_value(&event))/></label>
-                    <label>"Interval in seconds"<input type="number" min="60" max="2592000" prop:value=move || cadence.get() disabled=move || busy.get() on:input=move |event| cadence.set(event_target_value(&event))/></label>
-                    <label>"Review expires (UTC)"<input placeholder="2026-10-10T00:00:00Z" prop:value=move || expiry.get() disabled=move || busy.get() on:input=move |event| expiry.set(event_target_value(&event))/></label>
-                    <label><input type="checkbox" prop:checked=move || updates.get() disabled=move || busy.get() on:change=move |event| updates.set(event_target_checked(&event))/>"Package updates"</label>
-                    <label><input type="checkbox" prop:checked=move || vulnerabilities.get() disabled=move || busy.get() on:change=move |event| vulnerabilities.set(event_target_checked(&event))/>"Vulnerabilities"</label>
-                    <label><input type="checkbox" prop:checked=move || licenses.get() disabled=move || busy.get() on:change=move |event| licenses.set(event_target_checked(&event))/>"License signals"</label>
-                    <label><input type="checkbox" prop:checked=move || enabled.get() disabled=move || busy.get() on:change=move |event| enabled.set(event_target_checked(&event))/>"Enable due scans"</label>
-                    <button class="primary-button" disabled=move || busy.get() || !polling.get() || scope.get().is_none() on:click=review>"Save reviewed schedule"</button>
-                    <button class="secondary-button" disabled=move || busy.get() on:click=move |_| { selected.set(None); identity.set(String::new()); failure.set(None); }>"New schedule"</button>
+                    <label>"Schedule name"<input prop:value=move || identity.get() disabled=move || (busy.get() || pending.get().is_some()) || selected.get().is_some() on:input=move |event| identity.set(event_target_value(&event))/></label>
+                    <label>"Packages (one exact coordinate per line)"<textarea prop:value=move || packages.get() disabled=move || (busy.get() || pending.get().is_some()) on:input=move |event| packages.set(event_target_value(&event))/></label>
+                    <label>"Interval in seconds"<input type="number" min="60" max="2592000" prop:value=move || cadence.get() disabled=move || (busy.get() || pending.get().is_some()) on:input=move |event| cadence.set(event_target_value(&event))/></label>
+                    <label>"Review expires (UTC)"<input placeholder="2026-10-10T00:00:00Z" prop:value=move || expiry.get() disabled=move || (busy.get() || pending.get().is_some()) on:input=move |event| expiry.set(event_target_value(&event))/></label>
+                    <label><input type="checkbox" prop:checked=move || updates.get() disabled=move || (busy.get() || pending.get().is_some()) on:change=move |event| updates.set(event_target_checked(&event))/>"Package updates"</label>
+                    <label><input type="checkbox" prop:checked=move || vulnerabilities.get() disabled=move || (busy.get() || pending.get().is_some()) on:change=move |event| vulnerabilities.set(event_target_checked(&event))/>"Vulnerabilities"</label>
+                    <label><input type="checkbox" prop:checked=move || licenses.get() disabled=move || (busy.get() || pending.get().is_some()) on:change=move |event| licenses.set(event_target_checked(&event))/>"License signals"</label>
+                    <label><input type="checkbox" prop:checked=move || enabled.get() disabled=move || (busy.get() || pending.get().is_some()) on:change=move |event| enabled.set(event_target_checked(&event))/>"Enable due scans"</label>
+                    <button class="primary-button" disabled=move || (busy.get() || pending.get().is_some()) || !polling.get() || scope.get().is_none() on:click=review>"Plan schedule review"</button>
+                    <button class="secondary-button" disabled=move || (busy.get() || pending.get().is_some()) on:click=move |_| { selected.set(None); identity.set(String::new()); failure.set(None); }>"New schedule"</button>
+
+                    {move || pending.get().map(|(review, _)| {
+                        let effects = review.plan.effects.join("\n");
+                        let warnings = review.plan.warnings.join("\n");
+                        view! {
+                            <div class="assessment-review-confirmation">
+                                <h4>"Confirm exact configuration"</h4>
+                                <pre>{effects}</pre><p>{warnings}</p>
+                                <p>{format!("Plan {} · expires {} · commitment {}", review.plan.plan_id, review.plan.expires_at, review.plan.confirmation_hash)}</p>
+                                <button class="primary-button" disabled=move || busy.get() || !polling.get() on:click=apply>"Apply exact reviewed configuration"</button>
+                                <button class="secondary-button" disabled=move || busy.get() on:click=move |_| pending.set(None)>"Discard review"</button>
+                            </div>
+                        }
+                    })}
                     {move || failure.get().map(|detail| view! { <InlineError detail=detail/> })}
                 </div>
             })}

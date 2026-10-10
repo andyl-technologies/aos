@@ -46,6 +46,7 @@ mod access_token;
 mod assessment;
 mod assessment_notifications;
 mod assessment_advisories;
+mod assessment_reviews;
 mod audit;
 mod auth;
 mod binding;

@@ -79,10 +79,11 @@ impl RpcService {
     /// # Errors
     /// Returns an error for unknown fields, stale destination/review, missing current
     /// authority or unavailable persistence. Enabling additionally requires read authority.
-    pub async fn write_assessment_subscription(
+    pub(super) async fn commit_assessment_subscription_review(
         &self,
         auth: Option<&str>,
         req: pb::AssessmentControlRequest,
+        completion: &crate::db::AssessmentReviewCompletion,
     ) -> Result<pb::AssessmentDocumentResponse, RpcError> {
         let request = SubscriptionWriteV1::from_slice(&req.document_json)
             .map_err(|error| RpcError::invalid(error.to_string()))?;
@@ -93,7 +94,7 @@ impl RpcService {
         let mut fences = self
             .assessment_mutation_fences(&claims, &registry, "assessment.subscription.manage")
             .await?;
-        if request.enabled {
+        {
             self.recheck_assessment(&claims, &registry, "assessment.read")
                 .await?;
             fences.extend(
@@ -101,9 +102,16 @@ impl RpcService {
                     .await?,
             );
         }
+
         let subscription = self
             .db
-            .write_assessment_subscription_fenced(registry.id, &request, &claims, &fences)
+            .write_assessment_subscription_with_plan_fenced(
+                registry.id,
+                &request,
+                &claims,
+                &fences,
+                Some(completion),
+            )
             .await
             .map_err(|error| RpcError::FailedPrecondition(error.to_string()))?;
         let document_json = subscription.to_bytes().map_err(RpcError::internal)?;

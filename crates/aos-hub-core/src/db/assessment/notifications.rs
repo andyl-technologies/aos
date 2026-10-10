@@ -60,7 +60,32 @@ impl Database {
         claims: &Claims,
         fences: &[CheckedStatement],
     ) -> Result<SubscriptionV1> {
+        self.write_assessment_subscription_with_plan_fenced(
+            registry_id,
+            request,
+            claims,
+            fences,
+            None,
+        )
+        .await
+    }
+
+    /// Commits configuration and an optional immutable plan receipt atomically.
+    ///
+    /// # Errors
+    /// Returns an error for stale configuration, authority or plan fences.
+    pub(crate) async fn write_assessment_subscription_with_plan_fenced(
+        &self,
+        registry_id: i64,
+        request: &SubscriptionWriteV1,
+        claims: &Claims,
+        fences: &[CheckedStatement],
+        completion: Option<&super::reviews::AssessmentReviewCompletion>,
+    ) -> Result<SubscriptionV1> {
         request.validate()?;
+        if let Some(completion) = completion {
+            completion.require_kind("assessment_subscription_review")?;
+        }
         ensure!(
             !fences.is_empty()
                 && fences.len() <= 32
@@ -120,8 +145,15 @@ impl Database {
                 if let Some(destination) = &destination {
                     checked.push(self.notification_destination_guard(registry_id, destination)?);
                 }
+                let receipt = project(&registry.scope_key, existing)?;
+                if let Some(completion) = completion {
+                    checked.push(completion.statement(
+                        receipt.to_bytes()?,
+                        self.backend.dialect().unix_time_expression(),
+                    )?);
+                }
                 self.backend.checked_batch(&checked).await?;
-                return project(&registry.scope_key, existing);
+                return Ok(receipt);
             }
             ensure!(
                 existing.revision == request.expected_revision,
@@ -183,10 +215,24 @@ impl Database {
             checked.push(Statement::new(format!("UPDATE assessment_notification_outbox SET state = 'revoked', claim_token = NULL, lease_expires_at = NULL, last_error_code = 'subscription-review-replaced', resource_version = resource_version + 1, updated_at = {clock}
                 WHERE registry_id = ?1 AND subscription_id = ?2 AND subscription_revision = ?3 AND state IN('pending', 'leased')"), vals![registry_id, key, request.expected_revision]).unchecked());
         }
+        let receipt = SubscriptionV1 {
+            schema: "aos.assessment-subscription/v1".into(),
+            resource_scope: registry.scope_key,
+            subscription_id: request.subscription_id.clone(),
+            revision: request
+                .expected_revision
+                .checked_add(1)
+                .context("subscription revision exhausted")?,
+            enabled: request.enabled,
+            authority_expires_at: review.authority_expires_at.clone(),
+            configuration: request.configuration.clone(),
+        };
+        receipt.to_bytes()?;
+        if let Some(completion) = completion {
+            checked.push(completion.statement(receipt.to_bytes()?, clock)?);
+        }
         self.backend.checked_batch(&checked).await?;
-        self.assessment_subscription(registry_id, &request.subscription_id)
-            .await?
-            .context("committed notification subscription is absent")
+        Ok(receipt)
     }
 
     /// Reads an exact public subscription without private authenticated provenance.

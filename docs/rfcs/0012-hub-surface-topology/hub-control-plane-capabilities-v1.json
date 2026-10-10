@@ -1324,9 +1324,11 @@
         "AcknowledgeAlert",
         "ListEvents",
         "ListSchedules",
+        "PlanWriteSchedule",
         "WriteSchedule",
         "ListSubscriptions",
         "ListNotificationDeliveries",
+        "PlanWriteSubscription",
         "WriteSubscription",
         "ReviewNotificationDestination"
       ]

@@ -370,7 +370,7 @@ pub enum HubAssessmentCmd {
         #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=10))]
         limit: u32,
     },
-    /// Create, replace or disable an exact notification subscription review
+    /// Plan an exact notification subscription review without changing configuration
     Subscription {
         #[command(flatten)]
         access: HubAccessArgs,
@@ -380,6 +380,23 @@ pub enum HubAssessmentCmd {
         /// Read a closed aos.assessment-subscription-write/v1 document
         #[arg(long)]
         request: PathBuf,
+        /// Bind planning to one exact actor-scoped request identity
+        #[arg(long)]
+        idempotency_key: String,
+    },
+    /// Apply an exact retained subscription plan after reviewing its effects
+    ApplySubscription {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Select the exact retained plan
+        #[arg(long)]
+        plan_id: String,
+        /// Preserve this identity through apply retries
+        #[arg(long)]
+        idempotency_key: String,
+        /// Confirm the commitment from the reviewed plan
+        #[arg(long)]
+        confirmation_hash: String,
     },
     /// Review the exact registered webhook commitment before subscribing
     NotificationDestination {
@@ -412,7 +429,7 @@ pub enum HubAssessmentCmd {
         #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=10))]
         limit: u32,
     },
-    /// Create, replace or disable an explicit recurring scan review
+    /// Plan an exact recurring scan review without changing configuration
     Schedule {
         #[command(flatten)]
         access: HubAccessArgs,
@@ -422,6 +439,23 @@ pub enum HubAssessmentCmd {
         /// Read a closed aos.assessment-schedule-write/v1 document
         #[arg(long)]
         request: PathBuf,
+        /// Bind planning to one exact actor-scoped request identity
+        #[arg(long)]
+        idempotency_key: String,
+    },
+    /// Apply an exact retained recurring scan plan after reviewing its effects
+    ApplySchedule {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Select the exact retained plan
+        #[arg(long)]
+        plan_id: String,
+        /// Preserve this identity through apply retries
+        #[arg(long)]
+        idempotency_key: String,
+        /// Confirm the commitment from the reviewed plan
+        #[arg(long)]
+        confirmation_hash: String,
     },
     /// Read alert episodes including acknowledgement and resolution history
     Alerts {

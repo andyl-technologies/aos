@@ -22,9 +22,12 @@ mod provider_index;
 mod provider_state;
 mod publication;
 mod reconcile;
+mod reviews;
 mod scans;
 mod schedules;
 mod status;
+
+pub(crate) use reviews::AssessmentReviewCompletion;
 
 pub use budgets::{AssessmentProviderReservation, AssessmentProviderWork, AssessmentSourceBudget};
 pub use inventory::{AssessmentInventoryAdmission, AssessmentResource};

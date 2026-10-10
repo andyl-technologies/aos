@@ -297,3 +297,55 @@ fn hub_assessment_wait_is_optional_bounded_and_available_through_the_maintain_al
         }
     }
 }
+
+#[test]
+fn assessment_configuration_plans_and_applies_require_distinct_exact_inputs() {
+    for family in ["assessment", "maintain"] {
+        for resource in ["schedule", "subscription"] {
+            let base = [
+                "aos",
+                "hub",
+                family,
+                resource,
+                "--registry",
+                "fixture",
+                "--request",
+                "review.json",
+            ];
+            assert!(
+                parse_cli(base).is_err(),
+                "planning must require a stable identity"
+            );
+            assert!(parse_cli(base.into_iter().chain(["--idempotency-key", "exact-plan"])).is_ok());
+
+            let action = format!("apply-{resource}");
+            let apply = [
+                "aos",
+                "hub",
+                family,
+                action.as_str(),
+                "--plan-id",
+                "exact-retained-plan",
+                "--idempotency-key",
+                "exact-apply",
+            ];
+            assert!(
+                parse_cli(apply).is_err(),
+                "applying must require explicit confirmation"
+            );
+            let confirmed = apply
+                .into_iter()
+                .chain(["--confirmation-hash", "exact-reviewed-commitment"]);
+            assert!(parse_cli(confirmed.clone()).is_ok());
+            assert!(
+                parse_cli(
+                    confirmed
+                        .clone()
+                        .chain(["--request", "changed-review.json"])
+                )
+                .is_err()
+            );
+            assert!(parse_cli(confirmed.chain(["--registry", "changed-resource"])).is_err());
+        }
+    }
+}

@@ -47,6 +47,11 @@ pub enum AppendOnlyEventKind {
     ChangeRequestComment,
     /// A review bound to an exact change-request revision.
     ChangeRequestReview,
+    /// An actor-bound acknowledgement of an exact assessment alert episode.
+    ///
+    /// The journal event and current acknowledgement projection do not resolve
+    /// the finding, grant a disposition or configure background execution.
+    AssessmentAlertAcknowledgement,
 }
 
 /// Principled class assigned to every API method.
@@ -240,11 +245,14 @@ pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestVio
                 let expected_path = match event_kind {
                     AppendOnlyEventKind::ChangeRequestComment => "ChangeRequestService/AddComment",
                     AppendOnlyEventKind::ChangeRequestReview => "ChangeRequestService/AddReview",
+                    AppendOnlyEventKind::AssessmentAlertAcknowledgement => {
+                        "AssessmentService/AcknowledgeAlert"
+                    }
                 };
                 if path != expected_path {
                     violations.push(violation(
                         method,
-                        "append-only exception is valid only for its canonical change-request method",
+                        "append-only exception is valid only for its canonical collaboration method",
                     ));
                 }
             }
@@ -1659,6 +1667,27 @@ mod tests {
             },
         ];
         assert!(validate_method_manifest(&methods).is_empty());
+    }
+
+    #[test]
+    fn assessment_acknowledgement_exception_cannot_configure_or_dispatch() {
+        let mut acknowledgement = MethodDescriptor {
+            service: "AssessmentService".into(),
+            method: "AcknowledgeAlert".into(),
+            exposure: MethodExposure::Public,
+            durability: MethodDurability::Durable,
+            class: MethodClass::AppendOnlyEvent {
+                event_kind: AppendOnlyEventKind::AssessmentAlertAcknowledgement,
+            },
+            external_effects: false,
+        };
+        assert!(validate_method_manifest(&[acknowledgement.clone()]).is_empty());
+
+        acknowledgement.external_effects = true;
+        assert!(!validate_method_manifest(&[acknowledgement.clone()]).is_empty());
+        acknowledgement.external_effects = false;
+        acknowledgement.method = "WriteSchedule".into();
+        assert!(!validate_method_manifest(&[acknowledgement]).is_empty());
     }
 
     #[test]

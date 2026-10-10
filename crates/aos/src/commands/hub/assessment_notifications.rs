@@ -4,7 +4,6 @@ use anyhow::{Result, bail, ensure};
 use aos_assessment_runtime::notifications::{
     DestinationReviewQueryV1, NotificationDeliveryPageV1, NotificationDeliveryQueryV1,
     NotificationDestinationV1, SubscriptionPageV1, SubscriptionQueryV1, SubscriptionV1,
-    SubscriptionWriteV1,
 };
 use aos_core::output::{OutputMode, Printer};
 use aos_maintain::presentation::escape_terminal;
@@ -108,38 +107,6 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
                 for subscription in page.subscriptions {
                     render(printer, &subscription);
                 }
-            }
-            Ok(())
-        }
-        HubAssessmentCmd::Subscription {
-            access,
-            registry,
-            request,
-        } => {
-            let bytes = read_bounded_file(request, 262_144, "assessment notification review")?;
-            let request = SubscriptionWriteV1::from_slice(&bytes)?;
-            let client = hub_client(&access.hub, access.token.as_deref()).await?;
-            let response = client
-                .call_topology(
-                    hub_rpc::WriteAssessmentSubscription,
-                    &hub_types::AssessmentControlRequest {
-                        registry_slug: registry.clone(),
-                        document_json: bytes,
-                    },
-                )
-                .await?;
-            let subscription = SubscriptionV1::from_slice(&response.document_json)?;
-            ensure!(
-                subscription.resource_scope == request.resource_scope
-                    && subscription.subscription_id == request.subscription_id
-                    && subscription.enabled == request.enabled
-                    && subscription.configuration == request.configuration,
-                "notification receipt differs from the reviewed request"
-            );
-            if printer.mode() == OutputMode::Json {
-                printer.json(&serde_json::json!({"schema_version":"aos.hub.cli/v1", "kind":"assessment-subscription", "data":subscription}));
-            } else {
-                render(printer, &subscription);
             }
             Ok(())
         }

@@ -3259,9 +3259,16 @@
          "service" : "AssessmentService"
       },
       {
+         "method" : "PlanWriteSchedule",
+         "path" : "aos.hub.v1.AssessmentService/PlanWriteSchedule",
+         "request" : "PlanAssessmentReviewRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "AssessmentService"
+      },
+      {
          "method" : "WriteSchedule",
          "path" : "aos.hub.v1.AssessmentService/WriteSchedule",
-         "request" : "AssessmentControlRequest",
+         "request" : "ApplyRegistryMutationRequest",
          "response" : "AssessmentDocumentResponse",
          "service" : "AssessmentService"
       },
@@ -3280,9 +3287,16 @@
          "service" : "AssessmentService"
       },
       {
+         "method" : "PlanWriteSubscription",
+         "path" : "aos.hub.v1.AssessmentService/PlanWriteSubscription",
+         "request" : "PlanAssessmentReviewRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "AssessmentService"
+      },
+      {
          "method" : "WriteSubscription",
          "path" : "aos.hub.v1.AssessmentService/WriteSubscription",
-         "request" : "AssessmentControlRequest",
+         "request" : "ApplyRegistryMutationRequest",
          "response" : "AssessmentDocumentResponse",
          "service" : "AssessmentService"
       },
@@ -3350,7 +3364,7 @@
    },
    "protobuf_package" : "aos.hub.v1",
    "protobuf_source" : "crates/aos-proto/src/proto/aos/hub/v1/hub.proto",
-   "rpc_count" : 471,
+   "rpc_count" : 473,
    "services" : [
       "RegistryService",
       "OrganizationService",

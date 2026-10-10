@@ -164,7 +164,11 @@ Hybrid edge profiles reject this member because Native owns coordination and SQL
 ## Reviewed recurring scans
 
 The remote CLI exposes `aos hub maintain schedules` and
-`aos hub maintain schedule`; the web console exposes the same reviewed schedules.
+`aos hub maintain schedule --request FILE --idempotency-key KEY`. The latter
+retains an immutable plan and prints its exact effects, expiry and confirmation
+hash. After reviewing it, use `aos hub maintain apply-schedule --plan-id ID
+--confirmation-hash HASH --idempotency-key KEY`. The web console provides the
+same separate plan and confirmation steps; a pending review freezes its form.
 A schedule pins an exact registry scope, explicit nonempty package selectors,
 profiles, freshness, limits, cadence and review expiry. Creation and replacement
 use optimistic revisions. Disabling or replacing a review fences already queued
@@ -181,8 +185,13 @@ Acknowledgements remain attention state and cannot suppress vulnerability eviden
 
 `aos hub maintain notification-destination` reads the exact registered webhook
 commitment for a registry and review expiry. The webhook must be active and owned
-by that registry's organization. `aos hub maintain subscription` creates, replaces
-or disables a closed subscription review; `aos hub maintain subscriptions` reads
+by that registry's organization. `aos hub maintain subscription --request FILE
+--idempotency-key KEY` plans an exact creation, replacement or disable. Review
+its effects before `aos hub maintain apply-subscription --plan-id ID
+--confirmation-hash HASH --idempotency-key KEY`; applying consumes that exact
+actor-bound, expiring plan. The configuration, journal event and immutable apply
+receipt commit in one transaction. Retries preserve the original authority and
+do not duplicate the event. `aos hub maintain subscriptions` reads
 its public projection. The web console exposes these same controls. Generic
 webhook wildcards do not subscribe to assessment events.
 

@@ -12,13 +12,14 @@ use leptos::prelude::*;
 use super::assessment_deliveries::RegistryAssessmentDeliveries;
 use super::assessments::{start_status_poll, AssessmentReadGuard};
 use crate::components::InlineError;
-use crate::mutation::scoped_workflow_tasks;
+use crate::mutation::{idempotency_key, scoped_workflow_tasks, PendingPlan};
 use crate::transport::ApiClient;
 
 /// Shows reviewed notifications without exposing private actor or signing material.
 #[component]
 pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -> impl IntoView {
-    let can_review = client.allows("assessment.subscription.manage");
+    let can_review =
+        client.allows("assessment.subscription.manage") && client.allows("assessment.read");
     let context = StoredValue::new((client, slug));
     let tasks = scoped_workflow_tasks();
     let epoch = RwSignal::new(0_u64);
@@ -36,6 +37,7 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
     let enabled = RwSignal::new(true);
     let busy = RwSignal::new(false);
     let failure = RwSignal::new(None::<String>);
+    let pending = RwSignal::new(None::<(PendingPlan, SubscriptionWriteV1)>);
 
     let page = LocalResource::new(move || {
         let _ = epoch.get();
@@ -193,39 +195,85 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
                     configuration,
                 };
                 request.validate().map_err(|error| error.to_string())?;
+                let key = idempotency_key("assessment-review");
                 let response = client
-                    .call::<_, aos_proto_types::AssessmentDocumentResponse>(
-                        aos_proto_types::ASSESSMENT_SERVICE_WRITE_SUBSCRIPTION_PATH,
-                        &aos_proto_types::AssessmentControlRequest {
+                    .call::<_, aos_proto_types::TopologyPlanResponse>(
+                        aos_proto_types::ASSESSMENT_SERVICE_PLAN_WRITE_SUBSCRIPTION_PATH,
+                        &aos_proto_types::PlanAssessmentReviewRequest {
                             registry_slug,
-                            document_json: serde_json::to_vec(&request)
-                                .map_err(|error| error.to_string())?,
+                            document_json: serde_json::to_vec(&request).map_err(|error| error.to_string())?,
+                            expected_resource_version: request.expected_revision.to_string(),
+                            idempotency_key: key.clone(),
                         },
                     )
                     .await
                     .map_err(|error| error.to_string())?;
-                let subscription = SubscriptionV1::from_slice(&response.document_json)
-                    .map_err(|error| error.to_string())?;
-                if subscription.resource_scope != request.resource_scope
-                    || subscription.subscription_id != request.subscription_id
-                    || subscription.enabled != request.enabled
-                    || subscription.configuration != request.configuration
-                {
-                    return Err("The notification receipt differs from the submitted review".to_owned());
-                }
-                Ok::<_, String>(subscription)
+                let plan = PendingPlan::from_response(response, key)?;
+                Ok::<_, String>((plan, request))
             }
             .await;
 
             busy.set(false);
             match outcome {
-                Ok(subscription) => {
-                    if identity.get_untracked().trim() == subscription.subscription_id
-                        && scope.get_untracked().as_ref() == Some(&subscription.resource_scope)
-                    {
-                        selected.set(Some(subscription));
+                Ok(review) => {
+                    if scope.get_untracked().as_ref() == Some(&review.1.resource_scope) {
+                        pending.set(Some(review));
                     }
-                    epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
+                }
+                Err(error) => failure.set(Some(error)),
+            }
+        });
+    };
+
+    let apply = move |_| {
+        if busy.get_untracked() || !can_review || !polling.get_untracked() {
+            return;
+        }
+        let Some((plan, request)) = pending.get_untracked() else {
+            return;
+        };
+        if scope.get_untracked().as_ref() != Some(&request.resource_scope) {
+            pending.set(None);
+            failure.set(Some(
+                "The reviewed resource changed. Plan again before applying.".into(),
+            ));
+            return;
+        }
+        let (client, _) = context.get_value();
+        busy.set(true);
+        failure.set(None);
+        tasks.spawn(async move {
+            let outcome = async {
+                let response = client
+                    .call::<_, aos_proto_types::AssessmentDocumentResponse>(
+                        aos_proto_types::ASSESSMENT_SERVICE_WRITE_SUBSCRIPTION_PATH,
+                        &plan.registry_apply(),
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let admitted = SubscriptionV1::from_slice(&response.document_json)
+                    .map_err(|error| error.to_string())?;
+                if admitted.resource_scope != request.resource_scope
+                    || admitted.subscription_id != request.subscription_id
+                    || admitted.enabled != request.enabled
+                    || admitted.configuration != request.configuration
+                    || request.expected_revision.checked_add(1) != Some(admitted.revision)
+                {
+                    return Err(
+                        "The receipt differs from the exact reviewed configuration".to_owned()
+                    );
+                }
+                Ok::<_, String>(admitted)
+            }
+            .await;
+            busy.set(false);
+            match outcome {
+                Ok(admitted) => {
+                    if scope.get_untracked().as_ref() == Some(&request.resource_scope) {
+                        selected.set(Some(admitted));
+                        pending.set(None);
+                        epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
+                    }
                 }
                 Err(error) => failure.set(Some(error)),
             }
@@ -237,6 +285,7 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
             <div class="section-heading">
                 <h3>"Notifications"</h3>
                 <button class="secondary-button" on:click=move |_| {
+                    pending.set(None);
                     selected.set(None);
                     scope.set(None);
                     after.set(None);
@@ -271,7 +320,7 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
                                         <td>{deadline}</td>
                                         <td>{can_review.then(|| view! {
                                             <button class="secondary-button"
-                                                disabled=move || busy.get()
+                                                disabled=move || (busy.get() || pending.get().is_some())
                                                 on:click=move |_| {
                                                     identity.set(subscription.subscription_id.clone());
                                                     destination.set(subscription.configuration.destination_reference.clone());
@@ -322,15 +371,29 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
             {can_review.then(|| view! {
                 <div class="assessment-notification-form"><h4>"Review notifications"</h4>
                     <p>"New subscriptions receive attention transitions, completed scans and review changes. Editing preserves their selected event kinds and issue families."</p>
-                    <label>"Subscription name"<input prop:value=move || identity.get() disabled=move || busy.get() || selected.get().is_some() on:input=move |event| identity.set(event_target_value(&event))/></label>
-                    <label>"Registered webhook reference"<input placeholder="webhook:42" prop:value=move || destination.get() disabled=move || busy.get() || (!enabled.get() && selected.get().is_some()) on:input=move |event| destination.set(event_target_value(&event))/></label>
-                    <label>"Review expires (UTC)"<input placeholder="2026-10-10T00:00:00Z" prop:value=move || expiry.get() disabled=move || busy.get() || (!enabled.get() && selected.get().is_some()) on:input=move |event| expiry.set(event_target_value(&event))/></label>
-                    <label><input type="checkbox" prop:checked=move || digest.get() disabled=move || busy.get() || (!enabled.get() && selected.get().is_some()) on:change=move |event| digest.set(event_target_checked(&event))/>"Group events into digests"</label>
-                    <label>"Digest window in seconds"<input type="number" min="60" max="86400" prop:value=move || window.get() disabled=move || busy.get() || !digest.get() || (!enabled.get() && selected.get().is_some()) on:input=move |event| window.set(event_target_value(&event))/></label>
-                    <label><input type="checkbox" prop:checked=move || uncertainty.get() disabled=move || busy.get() || (!enabled.get() && selected.get().is_some()) on:change=move |event| uncertainty.set(event_target_checked(&event))/>"Include uncertain attention"</label>
-                    <label><input type="checkbox" prop:checked=move || enabled.get() disabled=move || busy.get() on:change=move |event| enabled.set(event_target_checked(&event))/>"Enable notifications"</label>
-                    <button class="primary-button" disabled=move || busy.get() || !polling.get() || scope.get().is_none() on:click=save>"Save reviewed notifications"</button>
-                    <button class="secondary-button" disabled=move || busy.get() on:click=move |_| { selected.set(None); identity.set(String::new()); enabled.set(true); failure.set(None); }>"New subscription"</button>
+                    <label>"Subscription name"<input prop:value=move || identity.get() disabled=move || (busy.get() || pending.get().is_some()) || selected.get().is_some() on:input=move |event| identity.set(event_target_value(&event))/></label>
+                    <label>"Registered webhook reference"<input placeholder="webhook:42" prop:value=move || destination.get() disabled=move || (busy.get() || pending.get().is_some()) || (!enabled.get() && selected.get().is_some()) on:input=move |event| destination.set(event_target_value(&event))/></label>
+                    <label>"Review expires (UTC)"<input placeholder="2026-10-10T00:00:00Z" prop:value=move || expiry.get() disabled=move || (busy.get() || pending.get().is_some()) || (!enabled.get() && selected.get().is_some()) on:input=move |event| expiry.set(event_target_value(&event))/></label>
+                    <label><input type="checkbox" prop:checked=move || digest.get() disabled=move || (busy.get() || pending.get().is_some()) || (!enabled.get() && selected.get().is_some()) on:change=move |event| digest.set(event_target_checked(&event))/>"Group events into digests"</label>
+                    <label>"Digest window in seconds"<input type="number" min="60" max="86400" prop:value=move || window.get() disabled=move || (busy.get() || pending.get().is_some()) || !digest.get() || (!enabled.get() && selected.get().is_some()) on:input=move |event| window.set(event_target_value(&event))/></label>
+                    <label><input type="checkbox" prop:checked=move || uncertainty.get() disabled=move || (busy.get() || pending.get().is_some()) || (!enabled.get() && selected.get().is_some()) on:change=move |event| uncertainty.set(event_target_checked(&event))/>"Include uncertain attention"</label>
+                    <label><input type="checkbox" prop:checked=move || enabled.get() disabled=move || (busy.get() || pending.get().is_some()) on:change=move |event| enabled.set(event_target_checked(&event))/>"Enable notifications"</label>
+                    <button class="primary-button" disabled=move || (busy.get() || pending.get().is_some()) || !polling.get() || scope.get().is_none() on:click=save>"Plan notification review"</button>
+                    <button class="secondary-button" disabled=move || (busy.get() || pending.get().is_some()) on:click=move |_| { selected.set(None); identity.set(String::new()); enabled.set(true); failure.set(None); }>"New subscription"</button>
+
+                    {move || pending.get().map(|(review, _)| {
+                        let effects = review.plan.effects.join("\n");
+                        let warnings = review.plan.warnings.join("\n");
+                        view! {
+                            <div class="assessment-review-confirmation">
+                                <h4>"Confirm exact configuration"</h4>
+                                <pre>{effects}</pre><p>{warnings}</p>
+                                <p>{format!("Plan {} · expires {} · commitment {}", review.plan.plan_id, review.plan.expires_at, review.plan.confirmation_hash)}</p>
+                                <button class="primary-button" disabled=move || busy.get() || !polling.get() on:click=apply>"Apply exact reviewed configuration"</button>
+                                <button class="secondary-button" disabled=move || busy.get() on:click=move |_| pending.set(None)>"Discard review"</button>
+                            </div>
+                        }
+                    })}
                     {move || failure.get().map(|detail| view! { <InlineError detail=detail/> })}
                 </div>
             })}

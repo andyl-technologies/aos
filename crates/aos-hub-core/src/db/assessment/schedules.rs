@@ -59,7 +59,26 @@ impl Database {
         claims: &Claims,
         fences: &[CheckedStatement],
     ) -> Result<ScheduleV1> {
+        self.write_assessment_schedule_with_plan_fenced(registry_id, request, claims, fences, None)
+            .await
+    }
+
+    /// Commits configuration and an optional immutable plan receipt atomically.
+    ///
+    /// # Errors
+    /// Returns an error for stale configuration, authority or plan fences.
+    pub(crate) async fn write_assessment_schedule_with_plan_fenced(
+        &self,
+        registry_id: i64,
+        request: &ScheduleWriteV1,
+        claims: &Claims,
+        fences: &[CheckedStatement],
+        completion: Option<&super::reviews::AssessmentReviewCompletion>,
+    ) -> Result<ScheduleV1> {
         request.validate()?;
+        if let Some(completion) = completion {
+            completion.require_kind("assessment_schedule_review")?;
+        }
         ensure!(
             !fences.is_empty() && fences.len() <= 32,
             "schedule review requires current authority"
@@ -93,8 +112,15 @@ impl Database {
             {
                 let mut checked = fences.to_vec();
                 checked.push(self.schedule_revision_guard(registry_id, &existing, false));
+                let receipt = project(&registry.scope_key, existing)?;
+                if let Some(completion) = completion {
+                    checked.push(completion.statement(
+                        receipt.to_bytes()?,
+                        self.backend.dialect().unix_time_expression(),
+                    )?);
+                }
                 self.backend.checked_batch(&checked).await?;
-                return project(&registry.scope_key, existing);
+                return Ok(receipt);
             }
             ensure!(
                 existing.revision == request.expected_revision,
@@ -150,10 +176,26 @@ impl Database {
             )
             .await?,
         );
+        let receipt = ScheduleV1 {
+            schema: "aos.assessment-schedule/v1".into(),
+            resource_scope: registry.scope_key,
+            schedule_id: request.schedule_id.clone(),
+            revision: request
+                .expected_revision
+                .checked_add(1)
+                .context("schedule revision exhausted")?,
+            enabled: request.enabled,
+            authority_expires_at: Timestamp::from_unix_seconds(u64::try_from(claims.exp)?)?
+                .min(request.configuration.review_expires_at.clone()),
+            next_due_at: next_due,
+            configuration: request.configuration.clone(),
+        };
+        receipt.to_bytes()?;
+        if let Some(completion) = completion {
+            checked.push(completion.statement(receipt.to_bytes()?, clock)?);
+        }
         self.backend.checked_batch(&checked).await?;
-        self.assessment_schedule(registry_id, &request.schedule_id)
-            .await?
-            .context("committed schedule is absent")
+        Ok(receipt)
     }
 
     /// Reads a public projection scoped to the current registry incarnation.

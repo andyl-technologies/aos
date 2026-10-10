@@ -383,11 +383,13 @@ service AssessmentService {
   rpc AcknowledgeAlert(AssessmentControlRequest) returns (AssessmentDocumentResponse);
   rpc ListEvents(AssessmentControlRequest) returns (AssessmentDocumentResponse);
   rpc ListSchedules(AssessmentControlRequest) returns (AssessmentDocumentResponse);
-  rpc WriteSchedule(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+  rpc PlanWriteSchedule(PlanAssessmentReviewRequest) returns (TopologyPlanResponse);
+  rpc WriteSchedule(ApplyRegistryMutationRequest) returns (AssessmentDocumentResponse);
   rpc ListSubscriptions(AssessmentControlRequest) returns (AssessmentDocumentResponse);
   rpc ListNotificationDeliveries(AssessmentControlRequest) returns (AssessmentDocumentResponse);
   rpc GetAdvisory(AssessmentControlRequest) returns (AssessmentDocumentResponse);
-  rpc WriteSubscription(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+  rpc PlanWriteSubscription(PlanAssessmentReviewRequest) returns (TopologyPlanResponse);
+  rpc WriteSubscription(ApplyRegistryMutationRequest) returns (AssessmentDocumentResponse);
   rpc ReviewNotificationDestination(AssessmentControlRequest) returns (AssessmentDocumentResponse);
 }
 
@@ -404,6 +406,15 @@ service ScanService {
 message AssessmentControlRequest {
   string registry_slug = 1;
   bytes document_json = 2;
+}
+
+// Plans one closed configuration review against its exact declared revision.
+// Apply accepts only the retained plan identity and confirmation commitment.
+message PlanAssessmentReviewRequest {
+  string registry_slug = 1;
+  bytes document_json = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
 }
 
 // Canonical domain documents pass the same bounded, closed parsers as local
