@@ -634,7 +634,7 @@ in {
           {APR} publish {AOS_HUB_PACKAGE} --registry production \\
             --key-id initial
           {APR} publish {TOOL_V1} --registry production --key-id initial
-          for dependency in ${lib.concatMapStringsSep " " builtins.toString publicationProject.runtimePublicationRoots}; do
+          for dependency in ${lib.concatMapStringsSep " " builtins.toString publicationProject.dependencyPublicationRoots}; do
             {APR} publish "$dependency" --registry production --key-id initial
           done
           {APR} release 1.0.0 --registry production \\
