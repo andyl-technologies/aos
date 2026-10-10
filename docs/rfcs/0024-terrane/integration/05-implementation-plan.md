@@ -366,8 +366,21 @@ its expiry source. Neither diagnostic logs the existing elapsed sample or
 configured window. An independently reviewed test-only prerequisite now
 reports those existing values under the same explicit callsite switch,
 without sampling a clock again, logging request data, changing errors or
-altering production behavior and authority budgets. Its compilation and bounded
-runtime attribution remain pending; no timing benefit is claimed.
+altering production behavior and authority budgets. On frozen `58730f184a`,
+the prerequisite passes native build, strict all-target Clippy, actual test
+compilation and genuine executable-bound inventory. Its bounded diagnostic
+passes in 20.681 seconds without emitting a failed deadline sample, so the
+earlier rejecting window remains unconfirmed. No timing benefit is claimed.
+On frozen `ea64a04697`, all ninety-five required read cases pass in 383.361
+seconds, with all three diagnostic switches unset and the unchanged default
+120-second process bound. The existing-binding case passes in 23.022 seconds.
+Independent review verifies unchanged source and executable seals and the
+actual terminal result. This new scoped success does not erase the earlier
+failed run or establish a production expiry fix. The dependent twenty-nine
+read cases pass in 54.192 seconds and the public SDK case in 0.007 seconds,
+with unchanged source, executable and verified raw-log seals. The seven index
+contract witnesses now proceed in order; the complete T1 floor and formal
+task acceptance remain pending.
 Both mandatory formatter commands pass on clean `759c4c9e52` with no edits.
 Sixteen pack and four codec gates qualify separately on
 the same candidate with private hermetic Cargo targets. Both store outcome
