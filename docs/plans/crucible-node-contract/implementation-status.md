@@ -1132,8 +1132,41 @@ execution remains unavailable.
 These results qualify preparation and one original CPU service. Complete
 grants, continued execution, typed timers and IRQs, output publication and
 prefix acknowledgment, common readiness, capture, fork and restore remain
-unqualified. The new committed checkpoint requires its own complete
-controller/ABI/license and application compilation runs.
+unqualified. The exact committed checkpoint passes fresh hermetic compilation
+of every application unit and integration target, yielding
+`810500qqdd8naij3pmkyx0gg05ma4ibk-aos-test-targets-0.1.0`.
+Its complete controller/ABI/license qualification remains in progress; these
+results supply no later Root-operation or gem5 source credit.
+
+## Canonical gem5 closed Linux disk and 9p mechanisms
+
+The separately registered closed disk and 9p recipes bind actual Linux writes
+to retained native requests and future device reactions. Each canonical
+lifecycle removes the original namespace before two concurrent fresh owners
+audit their bytes, recover the original request, acknowledge it and complete
+readback and flush. Original payloads, receipts, UART history and native
+tick/ordinal agree, and all three anchored groups reclaim.
+
+Independent source review verifies 59 union leaves: 31 new sources and 28
+unchanged reused dependencies. Existing network source and the shared native
+foundations remain byte-identical. The added source-delta metadata also
+materializes an existing network recipe dependency. The documentation
+distinguishes historical private evidence from the separately qualified
+canonical installed tuples.
+
+The current source-owned profile recipes pass 14 disk and 20 9p checks,
+yielding `xj1r38wdzsz59l6kmg84834sp2gkrb3a` and
+`vjgz775w27g19lmzjzh2hkzd9l5ywxb4`. Central verification remeasures all
+77 artifact roles and each complete 168-file configuration tree. Every
+non-license artifact digest, lifecycle evidence object and semantic profile
+field agrees with its original canonical profile. The new profiles bind the
+current append-only license inventory; their unchanged native and lifecycle
+derivations are reused. No duplicate native cohort is claimed.
+
+All owned Python sources parse and six Nix recipes pass formatting. These
+results qualify two distinct fixed Linux device mechanisms. Common readiness,
+combined execution, CPU timing, external ingress, general device parity and
+NativeArchive admission remain disabled and unqualified.
 
 ## Performance evidence
 
