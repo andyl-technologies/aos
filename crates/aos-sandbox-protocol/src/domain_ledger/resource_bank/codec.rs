@@ -290,55 +290,35 @@ pub(super) fn encode_claim(claim: Claim) -> Result<[u8; CLAIM_BYTES], ResourceBa
 }
 
 pub(super) fn decode_claim(bytes: &[u8]) -> Result<Claim, ResourceBankDataError> {
-    let host = bytes.get(..8) == Some(b"AOSRSC03".as_slice());
-    let first_global = bytes.get(..8) == Some(b"AOSRSC04".as_slice());
-    let intake = bytes.get(..8) == Some(b"AOSRSC06".as_slice());
-    let q04_intake = bytes.get(..8) == Some(b"AOSRSC07".as_slice());
-    let root = bytes.get(..8) == Some(b"AOSRSC08".as_slice());
-    if root {
-        require_record(bytes, CLAIM_BYTES, b"AOSRSC08")?;
-    } else if q04_intake {
-        require_record(bytes, CLAIM_BYTES, b"AOSRSC07")?;
-    } else if intake {
-        require_record(bytes, CLAIM_BYTES, b"AOSRSC06")?;
-    } else if first_global {
-        require_record(bytes, CLAIM_BYTES, b"AOSRSC04")?;
-    } else if host {
-        require_record(bytes, CLAIM_BYTES, b"AOSRSC03")?;
-    } else {
-        require_record(bytes, CLAIM_BYTES, CLAIM_MAGIC)?;
-    }
+    let magic = match bytes.get(..8) {
+        Some(magic) if magic == b"AOSRSC08" => b"AOSRSC08",
+        Some(magic) if magic == b"AOSRSC07" => b"AOSRSC07",
+        Some(magic) if magic == b"AOSRSC06" => b"AOSRSC06",
+        Some(magic) if magic == b"AOSRSC04" => b"AOSRSC04",
+        Some(magic) if magic == b"AOSRSC03" => b"AOSRSC03",
+        _ => CLAIM_MAGIC,
+    };
+    require_record(bytes, CLAIM_BYTES, magic)?;
+
     let claim = Claim {
         enrollment: decode_enrollment(&bytes[8..104])?,
         id: fixed(&bytes[104..120])?,
         account: fixed(&bytes[120..136])?,
         child: fixed(&bytes[136..152])?,
         owner: fixed(&bytes[152..184])?,
-        purpose: match bytes[184] {
-            1 if !host && !first_global && !intake && !q04_intake && !root => {
-                ClaimPurpose::ControllerBootstrap
-            }
-            2 if !host && !first_global && !intake && !q04_intake && !root => {
-                ClaimPurpose::ComponentEnvelope
-            }
-            3 if !host && !first_global && !intake && !q04_intake && !root => {
-                ClaimPurpose::InclusiveGrant
-            }
-            4 if !host && !first_global && !intake && !q04_intake && !root => {
-                ClaimPurpose::Snapshot
-            }
-            5 if !host && !first_global && !intake && !q04_intake && !root => {
-                ClaimPurpose::ProjectPreparation
-            }
-            6 if !host && !first_global && !intake && !q04_intake && !root => {
-                ClaimPurpose::Q04Preparation
-            }
-            7 if host => ClaimPurpose::HostComponentBootstrap,
-            8 if host => ClaimPurpose::HostControlInterval,
-            9 if first_global => ClaimPurpose::ControllerFirstGlobalPrefix,
-            11 if intake => ClaimPurpose::NixOriginalStartIntake,
-            12 if q04_intake => ClaimPurpose::Q04OriginalIntake,
-            13 if root => ClaimPurpose::RootReceiving,
+        purpose: match (magic, bytes[184]) {
+            (b"AOSRSC02", 1) => ClaimPurpose::ControllerBootstrap,
+            (b"AOSRSC02", 2) => ClaimPurpose::ComponentEnvelope,
+            (b"AOSRSC02", 3) => ClaimPurpose::InclusiveGrant,
+            (b"AOSRSC02", 4) => ClaimPurpose::Snapshot,
+            (b"AOSRSC02", 5) => ClaimPurpose::ProjectPreparation,
+            (b"AOSRSC02", 6) => ClaimPurpose::Q04Preparation,
+            (b"AOSRSC03", 7) => ClaimPurpose::HostComponentBootstrap,
+            (b"AOSRSC03", 8) => ClaimPurpose::HostControlInterval,
+            (b"AOSRSC04", 9) => ClaimPurpose::ControllerFirstGlobalPrefix,
+            (b"AOSRSC06", 11) => ClaimPurpose::NixOriginalStartIntake,
+            (b"AOSRSC07", 12) => ClaimPurpose::Q04OriginalIntake,
+            (b"AOSRSC08", 13) => ClaimPurpose::RootReceiving,
             _ => return Err(ResourceBankDataError::CorruptLedger),
         },
         operation: fixed(&bytes[185..201])?,
@@ -946,3 +926,6 @@ mod image_policy_tests {
         policy.validate(overflow).unwrap();
     }
 }
+
+#[cfg(test)]
+mod claim_tests;
