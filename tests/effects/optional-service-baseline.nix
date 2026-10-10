@@ -49,7 +49,8 @@ in {
     && hubState.input.mode == "0750"
     && hubState.input.owner == services.hub.identity.principal
     && hubState.input.group == services.hub.identity.primary_group
-    && builtins.elem hubState.outputs.resource services.hub.dependencies.requires;
+    && builtins.elem hubState.outputs.resource services.hub.activationAfter
+    && builtins.elem hubState.outputs.path services.hub.dependencies.required_mounts;
   libvirtRetainsUpstreamCoreAndOOMPolicy = services."libvirt.virtlogd".isolation.permit_core_dumps && services."libvirt.virtlogd".policy.hardening.memory_pressure_adjustment == -900 && services."libvirt.virtlockd".policy.hardening.memory_pressure_adjustment == -900;
   libvirtRetainsUpstreamFileLimits = builtins.all (name:
     services.${name}.resources.open_files
