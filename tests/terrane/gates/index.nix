@@ -97,6 +97,8 @@
     "guard::index_backfill::tests::native_index_backfill_reports_unavailable_or_invalid_evidence_as_gaps"
     "guard::index_backfill::tests::native_index_backfill_rechecks_producer_current_and_final_publication"
     "guard::index_backfill::tests::native_index_backfill_closes_required_inline_and_index_gaps_in_real_commit"
+    "guard::index_backfill::tests::native_index_backfill_preserves_complete_carriers_after_protected_reopen"
+    "guard::index_backfill::tests::native_index_backfill_updates_existing_required_binding_in_real_commit"
     "guard::index_maintenance::tests::native_index_verify_reports_divergence_without_mutation"
     "guard::index_maintenance::tests::native_index_rebuild_recovers_divergent_and_missing_auxiliary_closures"
     "guard::index_maintenance::tests::native_index_rebuild_rechecks_original_current_producer_and_final_ack"

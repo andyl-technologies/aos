@@ -332,6 +332,17 @@ assertion. Composition `cf7fa4d256` passes actual all-target compilation with
 source seals unchanged; its phase-only diagnostic remains pending. Twenty-six
 independent core and foundation gates proceed on frozen `4a1ff5d5fb` with private
 hermetic Cargo targets, separately from application and native qualification.
+The bounded diagnostic times out after entering the reopened lookup. A separate
+source-unchanged run streams the same markers with external timestamps: first
+backfill takes 35.963 seconds including preparation, first current lookup takes
+44.113 seconds, and the reopened lookup begins at 108.384 seconds. These
+measurements identify cumulative fixture cost without establishing a deadlock.
+The parent registers two additional mandatory backfill cases before their
+implementation: protected reopen and maintenance of an existing required binding.
+The worker separates these independent scenarios while retaining every original
+assertion, genuine histories, populations, authority checks and unchanged limits.
+The required read population grows from ninety-three to ninety-five cases; no
+case is removed. Runtime qualification and the complete aggregate remain pending.
 No owning gate or task is accepted by these results.
 The same frozen retained-read candidate passes all twenty-nine mandatory
 native read cases in 46.960 seconds and the public SDK case in 0.009 seconds,
