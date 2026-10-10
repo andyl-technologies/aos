@@ -1385,6 +1385,7 @@ in rec {
       cargo-artifacts = import ./tests/cargo-artifacts {inherit pkgs;};
       aos = pkgs.aos;
       aos-test-targets = pkgs.aos.passthru.testTargets;
+      aos-sandbox-coordinator-test-targets = pkgs.aos.passthru.coordinatorTestTargets;
       crucible-controller = pkgs.crucible-controller;
       crucible-qemu-plugin = pkgs.crucible-qemu-plugin;
       crucible-guest = pkgs.crucible-guest;

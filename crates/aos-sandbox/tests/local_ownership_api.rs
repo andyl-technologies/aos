@@ -24,43 +24,7 @@ fn protected_snapshot_inventory_remains_available_without_remote_selection() {
 
 #[cfg(feature = "multi-node")]
 #[test]
-fn explicit_multi_node_selection_exposes_remote_adapters() {
-    use aos_sandbox::local_inventory::remote::{
-        DormantOrderedWatchServiceV1, place_deterministically,
-    };
-    use aos_sandbox::local_ownership::ProtectedCommittedLeaseV1;
-
-    let _watch = DormantOrderedWatchServiceV1::new;
-    let _placement = place_deterministically;
-    let _lease_wire = ProtectedCommittedLeaseV1::protobuf;
+fn explicit_multi_node_selection_retains_protected_transport() {
     let _transport =
         aos_sandbox::local_inventory::ProtectedMultiNodeAuthorityOwnerV1::authenticate_dormant_transport;
-}
-
-#[cfg(feature = "multi-node")]
-#[test]
-fn explicitly_selected_placement_keeps_no_candidates_closed() {
-    use aos_sandbox::local_inventory::remote::{
-        PlacementBlockReasonV1, PlacementDecisionV1, place_deterministically,
-    };
-    use aos_sandbox_core::model::PlacementRequest;
-    use aos_sandbox_core::{ResourceVector, SandboxId};
-
-    let request = PlacementRequest::new(
-        SandboxId::from_bytes([1; 16]),
-        Vec::new(),
-        Vec::new(),
-        ResourceVector::default(),
-    )
-    .unwrap();
-
-    let outcome = place_deterministically(&request, &[], &[], 100, 30).unwrap();
-
-    assert_eq!(
-        outcome,
-        PlacementDecisionV1::Blocked {
-            reason: PlacementBlockReasonV1::NoCandidates,
-            rejections: Vec::new(),
-        }
-    );
 }

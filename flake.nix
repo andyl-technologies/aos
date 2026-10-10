@@ -511,6 +511,7 @@
             rust-cargo-artifacts = aos.checks.rust.cargo-artifacts;
             rust-aos = aos.checks.rust.aos;
             rust-aos-test-targets = aos.checks.rust.aos-test-targets;
+            rust-aos-sandbox-coordinator-test-targets = aos.checks.rust.aos-sandbox-coordinator-test-targets;
             rust-crucible-controller = aos.checks.rust.crucible-controller;
             rust-crucible-qemu-plugin = aos.checks.rust.crucible-qemu-plugin;
             rust-crucible-guest = aos.checks.rust.crucible-guest;

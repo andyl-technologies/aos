@@ -1047,6 +1047,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-sandbox-coordinator"
+version = "0.1.0"
+dependencies = [
+ "aos-proto",
+ "aos-sandbox",
+ "aos-sandbox-coordinator-protocol",
+ "aos-sandbox-core",
+ "buffa",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "aos-sandbox-coordinator-protocol"
 version = "0.1.0"
 dependencies = [

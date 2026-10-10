@@ -17,24 +17,24 @@ use aos_sandbox_core::{
     supported_protocol_version,
 };
 
-use super::super::assignment::{
+use aos_sandbox::local_inventory::assignment::{
     AssignmentIntentV1, InvalidAssignmentModel, SelectedCapabilityBindingV1,
 };
-pub use super::super::capability::PlacementCandidateV1;
-use super::super::capability::{
+pub use aos_sandbox::local_inventory::capability::PlacementCandidateV1;
+use aos_sandbox::local_inventory::capability::{
     CarrierValidatedCapabilityObservationV1, NodeAdmissionStateV1, NodeBootId, NodeBootLineageV1,
     NodeCapabilitySnapshotV1, NodeProtocolV1,
 };
-pub use super::super::evidence_authority::AffinityPlacementV1;
-pub use super::super::placement_input::InvalidPlacementInput;
+pub use aos_sandbox::local_inventory::AffinityPlacementV1;
+pub use aos_sandbox::local_inventory::InvalidPlacementInput;
 
 /// Maximum candidate nodes considered by one placement decision.
 pub const MAX_PLACEMENT_CANDIDATES: usize = 4_096;
 /// Maximum complete affinity observations supplied to one placement decision.
-pub const MAX_AFFINITY_PLACEMENTS: usize = super::super::reducer_state::MAX_ASSIGNMENT_AFFINITIES;
+pub const MAX_AFFINITY_PLACEMENTS: usize = aos_sandbox::local_inventory::MAX_ASSIGNMENT_AFFINITIES;
 /// Maximum required features accepted from one semantic placement request.
 pub const MAX_PLACEMENT_REQUIRED_FEATURES: usize =
-    super::super::assignment::MAX_SNAPSHOT_TRANSFER_REQUIRED_FEATURES;
+    aos_sandbox::local_inventory::assignment::MAX_SNAPSHOT_TRANSFER_REQUIRED_FEATURES;
 
 /// Explains why one candidate could not satisfy placement.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -99,6 +99,32 @@ pub struct PlacementSelectionV1 {
 }
 
 impl PlacementSelectionV1 {
+    /// Constructs one assignment desired-state record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidAssignmentModel::PlacementMismatch`] when the
+    /// deterministic selection names another node. The canonical manifest has
+    /// already validated every assignment identity and derives its own digest.
+    pub fn assignment_intent(
+        &self,
+        assignment: CanonicalAssignmentManifestV1,
+        desired_lifecycle: DesiredSandboxState,
+    ) -> Result<AssignmentIntentV1, InvalidAssignmentModel> {
+        if assignment.manifest().node() != self.node()
+            || assignment.manifest().sandbox() != self.sandbox()
+            || assignment.manifest().reservations() != self.requested_resources()
+            || assignment.manifest().required_features() != self.required_features()
+        {
+            return Err(InvalidAssignmentModel::PlacementMismatch);
+        }
+
+        let selected_capability =
+            SelectedCapabilityBindingV1::from_observation(self.capability_observation())?;
+
+        AssignmentIntentV1::from_canonical_binding(assignment, desired_lifecycle, selected_capability)
+    }
+
     /// Returns the sandbox whose request was evaluated.
     #[must_use]
     pub const fn sandbox(&self) -> SandboxId {
@@ -160,34 +186,6 @@ impl PlacementSelectionV1 {
     }
 }
 
-impl AssignmentIntentV1 {
-    /// Constructs one assignment desired-state record.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InvalidAssignmentModel::PlacementMismatch`] when the
-    /// deterministic selection names another node. The canonical manifest has
-    /// already validated every assignment identity and derives its own digest.
-    #[cfg(feature = "multi-node")]
-    pub fn new(
-        assignment: CanonicalAssignmentManifestV1,
-        desired_lifecycle: DesiredSandboxState,
-        selection: &PlacementSelectionV1,
-    ) -> Result<Self, InvalidAssignmentModel> {
-        if assignment.manifest().node() != selection.node()
-            || assignment.manifest().sandbox() != selection.sandbox()
-            || assignment.manifest().reservations() != selection.requested_resources()
-            || assignment.manifest().required_features() != selection.required_features()
-        {
-            return Err(InvalidAssignmentModel::PlacementMismatch);
-        }
-
-        let selected_capability =
-            SelectedCapabilityBindingV1::from_observation(selection.capability_observation())?;
-
-        Self::from_canonical_binding(assignment, desired_lifecycle, selected_capability)
-    }
-}
 
 /// Reports either a selected node or a complete bounded placement block.
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -447,7 +447,9 @@ pub struct NodeWatchCursorV1 {
 }
 
 impl NodeWatchCursorV1 {
-    /// Constructs one watch cursor.
+    /// Constructs one structurally validated watch cursor.
+    ///
+    /// This data constructor does not authenticate a bootstrap or its history.
     ///
     /// The event sequence must be at or beyond the binding's complete-bootstrap
     /// watermark. A zero watermark may name the position before the first event.
@@ -457,7 +459,7 @@ impl NodeWatchCursorV1 {
     /// Returns [`InvalidMultiNodeProtocol::Unspecified`] for zero identity
     /// fields, or [`InvalidMultiNodeProtocol::WatchBindingMismatch`] when the
     /// cursor falls below its bootstrap or retained-history floor.
-    pub(super) fn new(
+    pub fn new(
         node: NodeId,
         lineage: NodeBootLineageV1,
         binding: NodeWatchBindingV1,
@@ -757,7 +759,13 @@ impl CanonicalNodeSemanticCodecV1 {
         Ok(bytes)
     }
 
-    pub(super) fn encode_watch_event_body(
+    /// Encodes a bounded canonical watch payload without authenticating it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidMultiNodeProtocol::NonCanonicalFrame`] for an empty
+    /// or oversized canonical payload, or a semantic encoding error.
+    pub fn encode_watch_event_body(
         &self,
         body: &NodeWatchEventBodyV1,
     ) -> Result<Vec<u8>, InvalidMultiNodeProtocol> {
@@ -857,13 +865,16 @@ pub struct NodeWatchEventV1 {
 }
 
 impl NodeWatchEventV1 {
-    /// Constructs one event and verifies that its payload names the cursor node and boot.
+    /// Constructs one event and verifies its structural history commitments.
+    ///
+    /// This data constructor does not authenticate its input or refresh existing
+    /// authority. It checks that the payload names the cursor node and boot.
     ///
     /// # Errors
     ///
     /// Returns [`InvalidMultiNodeProtocol::InventoryNotCanonical`] when the
     /// payload and cursor do not share one node boot.
-    pub(super) fn from_authenticated_history(
+    pub fn from_authenticated_history(
         cursor: NodeWatchCursorV1,
         predecessor_event_uid: ObjectDigest,
         body: NodeWatchEventBodyV1,

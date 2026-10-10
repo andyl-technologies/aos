@@ -1,0 +1,16 @@
+[package]
+name = "aos-sandbox-coordinator"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+aos-proto.workspace = true
+aos-sandbox = { workspace = true, default-features = false, features = ["multi-node"] }
+aos-sandbox-coordinator-protocol.workspace = true
+aos-sandbox-core.workspace = true
+buffa.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

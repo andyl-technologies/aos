@@ -80,6 +80,13 @@ pub use draining::{
     DrainReleaseEvidenceV1, DrainSnapshotEvidenceV1, InvalidDrainModel, MAX_DRAIN_ASSIGNMENTS,
     NodeDrainModeV1,
 };
+#[cfg(feature = "multi-node")]
+pub use evidence_authority::AffinityPlacementV1;
+#[cfg(feature = "multi-node")]
+pub use placement_input::InvalidPlacementInput;
+#[cfg(feature = "multi-node")]
+pub use reducer_state::MAX_ASSIGNMENT_AFFINITIES;
+
 pub use evidence::{AuthenticatedEvidenceContextV1, InvalidEvidenceContext};
 pub use journal::{
     CanonicalJournalPayloadV1, DurableJournalEffectV1, InvalidMultiNodeJournal,

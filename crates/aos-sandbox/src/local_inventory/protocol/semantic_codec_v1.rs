@@ -2603,31 +2603,62 @@ pub(super) fn protobuf_watch_event_body_model(
     })
 }
 
-pub(in crate::local_inventory) fn protobuf_cursor(value: NodeWatchCursorV1) -> protobuf::WatchCursor {
-    pb_cursor(value.into())
-}
-pub(in crate::local_inventory) fn protobuf_cursor_model(
-    value: protobuf::WatchCursor,
-) -> Result<NodeWatchCursorV1, InvalidMultiNodeProtocol> {
-    wire_cursor(value)?.model()
-}
-pub(in crate::local_inventory) fn protobuf_binding(value: NodeWatchBindingV1) -> protobuf::WatchBinding {
-    pb_watch_binding(value.into())
-}
-pub(in crate::local_inventory) fn protobuf_binding_model(
-    value: protobuf::WatchBinding,
-) -> Result<NodeWatchBindingV1, InvalidMultiNodeProtocol> {
-    wire_watch_binding(value)?.model()
-}
-pub(in crate::local_inventory) fn protobuf_ordered_event(
-    value: &NodeWatchEventV1,
-) -> protobuf::WatchEvent {
-    protobuf_event(value)
-}
-pub(in crate::local_inventory) fn protobuf_ordered_event_model(
-    value: protobuf::WatchEvent,
-    context: AuthenticatedEvidenceContextV1,
-    codec: &CanonicalNodeSemanticCodecV1,
-) -> Result<NodeWatchEventV1, InvalidMultiNodeProtocol> {
-    protobuf_event_model(value, context, codec)
+#[cfg(feature = "multi-node")]
+impl CanonicalNodeSemanticCodecV1 {
+    /// Projects a watch position into its generated protobuf data carrier.
+    #[must_use]
+    pub fn protobuf_cursor(value: NodeWatchCursorV1) -> protobuf::WatchCursor {
+        pb_cursor(value.into())
+    }
+    /// Reconstructs a structurally validated watch position from protobuf data.
+    ///
+    /// This conversion validates structure; callers also check canonical carrier equality.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidMultiNodeProtocol`] for incomplete or invalid semantic data.
+    pub fn protobuf_cursor_model(
+        value: protobuf::WatchCursor,
+    ) -> Result<NodeWatchCursorV1, InvalidMultiNodeProtocol> {
+        wire_cursor(value)?.model()
+    }
+    /// Projects a watch binding into its generated protobuf data carrier.
+    #[must_use]
+    pub fn protobuf_binding(value: NodeWatchBindingV1) -> protobuf::WatchBinding {
+        pb_watch_binding(value.into())
+    }
+    /// Reconstructs a structurally validated watch binding from protobuf data.
+    ///
+    /// This conversion validates structure; callers also check canonical carrier equality.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidMultiNodeProtocol`] for incomplete or invalid semantic data.
+    pub fn protobuf_binding_model(
+        value: protobuf::WatchBinding,
+    ) -> Result<NodeWatchBindingV1, InvalidMultiNodeProtocol> {
+        wire_watch_binding(value)?.model()
+    }
+    /// Projects one canonical watch event into its generated protobuf data carrier.
+    #[must_use]
+    pub fn protobuf_ordered_event(
+        value: &NodeWatchEventV1,
+    ) -> protobuf::WatchEvent {
+        protobuf_event(value)
+    }
+    /// Reconstructs canonical watch history without granting current authority.
+    ///
+    /// This conversion validates structure; callers also check canonical carrier equality.
+    /// Returned assignment and drain reports carry no fresh authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidMultiNodeProtocol`] for incomplete or invalid semantic data.
+    pub fn protobuf_ordered_event_model(
+        value: protobuf::WatchEvent,
+        context: AuthenticatedEvidenceContextV1,
+        codec: &CanonicalNodeSemanticCodecV1,
+    ) -> Result<NodeWatchEventV1, InvalidMultiNodeProtocol> {
+        protobuf_event_model(value, context, codec)
+    }
 }

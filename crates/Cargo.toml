@@ -41,6 +41,7 @@ members = [
     "aos-sandbox-guest-root-realization",
     "aos-sandbox-guest-root-tree",
     "aos-sandbox-core",
+    "aos-sandbox-coordinator",
     "aos-sandbox-coordinator-protocol",
     "aos-sandbox-journal",
     "aos-sandbox-policy",
@@ -354,6 +355,7 @@ aos-oci = { path = "aos-oci" }
 aos-boot-identity = { path = "aos-boot-identity" }
 aos-net = { path = "aos-net" }
 aos-proto = { path = "aos-proto" }
+aos-sandbox-coordinator = { path = "aos-sandbox-coordinator" }
 aos-sandbox-coordinator-protocol = { path = "aos-sandbox-coordinator-protocol" }
 aos-proto-types = { path = "aos-proto-types" }
 aos-server = { path = "aos-server" }

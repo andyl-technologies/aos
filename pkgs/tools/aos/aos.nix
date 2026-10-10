@@ -287,12 +287,12 @@
   # Compiles every application test target, including the `tests/`
   # integration crates that `cargo test --lib` skips, without running them.
   # This gives a fast compile gate that does not wait on the full suite.
-  testTargets = mkCargoPackage {
-    pname = "aos-test-targets";
+  mkTestTargets = {pname, cargoFlags}: mkCargoPackage {
+    inherit pname;
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoBuildCommands = [
-      "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${cargoFlags}"
     ];
     buildDeps =
       [buildPerl buildPkgConfig buildProtobuf buildCmake]
@@ -302,6 +302,14 @@
       ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
     installBins = false;
     doCheck = false;
+  };
+  testTargets = mkTestTargets {
+    pname = "aos-test-targets";
+    cargoFlags = applicationTestFlags;
+  };
+  coordinatorTestTargets = mkTestTargets {
+    pname = "aos-sandbox-coordinator-test-targets";
+    cargoFlags = "-p aos-sandbox-coordinator";
   };
 in
   mkCargoPackage {
@@ -331,7 +339,7 @@ in
     # scheduler time to satisfy their production-sized deadlines on large hosts.
     cargoNextestMaxTestThreads = 16;
     passthru = {
-      inherit cargoArtifacts cargoDeps cargoEnv testTargets;
+      inherit cargoArtifacts cargoDeps cargoEnv testTargets coordinatorTestTargets;
     };
 
     # cmake builds git2's vendored libgit2 from source. OpenSSL, SQLite, and

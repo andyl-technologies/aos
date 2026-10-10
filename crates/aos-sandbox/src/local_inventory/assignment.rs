@@ -458,7 +458,7 @@ impl SelectedCapabilityBindingV1 {
     ///
     /// Returns [`InvalidAssignmentModel::PlacementMismatch`] for an unspecified
     /// identity or commitment, empty frame, or invalid currentness interval.
-    pub(super) fn from_observation(
+    pub fn from_observation(
         observation: &CarrierValidatedCapabilityObservationV1,
     ) -> Result<Self, InvalidAssignmentModel> {
         Self::new(
