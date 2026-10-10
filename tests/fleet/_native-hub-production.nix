@@ -189,7 +189,7 @@
     ];
 
   consumerUpgrade = {
-    aos.system.version = "test-2";
+    aos.system.version = "0.2.0";
     aos.abilities.configuration.operations.file.effects.upgrade-marker.input = {
       path = "/etc/aos/upgrade-test/marker.conf";
       content = "marker = 1\n";

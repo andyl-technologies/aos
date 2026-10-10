@@ -1045,7 +1045,7 @@ in {
           test "$#" -eq 1
           test -s "$1"
           {APR} release 3.0.0 --registry production \\
-            --store-path {UPGRADE_TOPLEVEL} --name aos --version test-2 \\
+            --store-path {UPGRADE_TOPLEVEL} --name aos --version 0.2.0 \\
             --sysroot --previous 0.1.0 \\
             --image-payload {UPGRADE_IMAGE} \\
             --image-disk {UPGRADE_IMAGE_DISK} \\
@@ -1075,7 +1075,7 @@ in {
       assert publication_system_data["state"] == "ready", publication_system_data
       publisher.wait_until_succeeds(
           hub_command("registry package show acme/production aos", token)
-          + f" | {JQ} -e '.data | tostring | contains(\"test-2\")'",
+          + f" | {JQ} -e '.data | tostring | contains(\"0.2.0\")'",
           timeout=240,
       )
       consumer.fail(
@@ -1090,9 +1090,9 @@ in {
           {APM} registry --system add {REGISTRY} --name production \\
             --priority 900 --channel stable --trust-key {shlex.quote(trust)}
           {APM} update --system --registry production
-          {APM} show aos --system --registry production 2>&1 | grep test-2 >/dev/null
-          {APM} list --system --upgradable 2>&1 | grep test-2 >/dev/null
-          {APM} image upgrade --dry-run 2>&1 | grep test-2 >/dev/null
+          {APM} show aos --system --registry production 2>&1 | grep 0.2.0 >/dev/null
+          {APM} list --system --upgradable 2>&1 | grep 0.2.0 >/dev/null
+          {APM} image upgrade --dry-run 2>&1 | grep 0.2.0 >/dev/null
           {APM} image upgrade --yes 2>&1
       """), timeout=1200)
       assert system_status == 0, (system_status, system_stdout, system_stderr)
@@ -1121,7 +1121,7 @@ in {
       )
       consumer.succeed(textwrap.dedent(f"""
           set -eu
-          grep -q 'VERSION_ID=test-2' /etc/os-release
+          grep -q 'VERSION_ID=0.2.0' /etc/os-release
           grep -qx 'marker = 1' /etc/aos/upgrade-test/marker.conf
           systemctl is-active --quiet aos-upgrade-test-marker.service
           ! systemctl is-active --quiet aos-upgrade-removed.service
@@ -1150,7 +1150,7 @@ in {
       )
       consumer.succeed(textwrap.dedent(f"""
           set -eu
-          grep -q 'VERSION_ID=test-2' /etc/os-release
+          grep -q 'VERSION_ID=0.2.0' /etc/os-release
           grep -qx 'marker = 1' /etc/aos/upgrade-test/marker.conf
           {JQ} -e '.running == 2 and .pending == null' \\
             /var/lib/profiles/image/state.json >/dev/null
