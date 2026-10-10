@@ -89,6 +89,9 @@
   ];
 
   nativeTokioTests = [
+    "bucket::content::meta_batch::verification_tests::metadata_confirmation_reuses_only_identical_pack_parsing"
+    "bucket::content::meta_batch::verification_tests::metadata_confirmation_rechecks_each_member_and_physical_read"
+    "bucket::content::meta_batch::verification_tests::metadata_confirmation_reuse_never_crosses_batches_or_catalog_geometry"
     "guard::history::completion::owner_preparation_tests::repeated_owner_preparation_reuses_only_fixed_canonical_tree_work"
     "guard::history::completion::owner_preparation_tests::owner_preparation_reuse_preserves_each_occurrence_policy_and_role"
     "guard::history::completion::owner_preparation_tests::owner_preparation_reuse_never_crosses_inputs_geometry_or_invocations"
