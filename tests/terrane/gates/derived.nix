@@ -28,7 +28,9 @@
          "derived::tests::immutable_signature_variants_coexist_and_exact_quarantine_preserves_other_variant",
          "derived::storage_tests::durable_catalog_reopen_and_quarantine_preserve_other_attributes",
          "derived::storage_tests::unavailable_producer_evidence_never_publishes_durable_quarantine",
-         "derived::tests::signed_tests::context_tests::pending_actual_root_context_propagates_without_durable_quarantine"],
+         "derived::tests::signed_tests::context_tests::pending_actual_root_context_propagates_without_durable_quarantine",
+         "derived::tests::signed_tests::read_failure_tests::cyclic_dictionary_read_preserves_signed_attribute_until_verified_retry",
+         "derived::tests::verification_quarantines_an_executable_record_for_non_executable_bytes"],
         ["public_attrs_get_put_preserves_provenance_and_storage_errors"],
     ]
     for name, tests in zip(sys.argv[1:], required):
