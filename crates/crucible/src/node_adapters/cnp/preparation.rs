@@ -133,13 +133,21 @@ impl CnpReferencePreparation {
     /// Returns complete guarded custody on unqualified source, changed manifests,
     /// uncertain effects, invalid evidence, native peer loss or exhausted limits.
     pub fn prepare(
+        guard: CnpLaunchGuard,
+        qualification: &dyn CnpReferenceQualification,
+    ) -> Result<Self, CnpPreparationFailure> {
+        Self::prepare_checked(guard, qualification, None)
+    }
+
+    pub(super) fn prepare_checked(
         mut guard: CnpLaunchGuard,
         qualification: &dyn CnpReferenceQualification,
+        acceptance: Option<&dyn super::CnpRealizationAcceptance>,
     ) -> Result<Self, CnpPreparationFailure> {
         if let Some(custody) = guard.custody.as_mut() {
             custody.preparation_started = true;
         }
-        match prepare(&mut guard, qualification) {
+        match prepare(&mut guard, qualification, acceptance) {
             Ok((realization, binding, owner_binding, gate, companion_pid)) => Ok(Self {
                 guard,
                 realization,
@@ -230,6 +238,7 @@ type Prepared = (
 fn prepare(
     guard: &mut CnpLaunchGuard,
     qualification: &dyn CnpReferenceQualification,
+    acceptance: Option<&dyn super::CnpRealizationAcceptance>,
 ) -> Result<Prepared, OperationFailure> {
     let custody = guard
         .custody
@@ -370,6 +379,17 @@ fn prepare(
         .ok_or_else(|| failure("native provider custody lost", true))?;
     verify_companion(companion_pid, provider_pid, &profile)?;
     qualification.authenticate_realization(guard, &realization, &record, companion_pid)?;
+    if let Some(acceptance) = acceptance {
+        acceptance.authenticate(super::CnpAcceptanceScope {
+            guard,
+            profile: &profile,
+            realization: &realization,
+            binding: &binding,
+            owner: &owner_binding,
+            resources: &bootstrap.resource_limits,
+            gate: &record,
+        })?;
+    }
     // The receipt is host-installed private admission evidence, not a provider
     // assertion. It was checked by the installed qualification gate above.
     let admitted = guard

@@ -66,55 +66,67 @@ impl<'a> BehavioralAdmissionEvidence<'a> {
             limits,
         }
     }
+}
 
-    fn reauthenticate(
-        &self,
-        binding: &BindingCompatibility,
-        binding_hash: &crucible_node_contract::HashRef,
-        references: &[ContentRef],
-    ) -> Result<(), QualificationError> {
-        let scope = self.policy.scope_for_node(&binding.node_id)?;
-        let record = scope.record;
-        super::record::bounded(binding, self.limits.maximum_record_bytes)?;
-        super::record::bounded(record, self.limits.maximum_record_bytes)?;
-        if scope.binding != binding
-            || binding.identity()? != *binding_hash
-            || references != binding.qualification_refs
-            || !references.contains(scope.original_claim)
-            || record.format != "crucible.node-acceptance"
-            || record.version != 1
-            || record.original_claim != *scope.original_claim
-            || record.evaluated_unit != scope.current_unit
-            || record.required_classes != scope.required_classes
-            || !record.missing_requirements.is_empty()
-            || record.decision != AcceptanceDecision::Accepted
-        {
-            return Err(QualificationError::Refused(
-                "outside current installed acceptance scope",
-            ));
-        }
-        if scope.original_bytes.len() > self.limits.qualification.maximum_claim_bytes
-            || !record.matches_original(
-                scope.original_bytes,
-                self.limits.qualification.maximum_claim_bytes,
-            )?
-        {
-            return Err(QualificationError::Refused(
-                "changed retained acceptance original",
-            ));
-        }
-        // Historical Passed data and delegated acceptance cannot bypass current
-        // original evidence/oracle authentication. Native admission remains next.
-        accept_claim(
-            scope.original_bytes,
-            scope.original_claim,
-            &scope.current_unit,
-            &scope.required_classes,
-            self.policy,
-            self.limits.qualification,
-        )?;
-        Ok(())
+pub(super) fn authenticate_binding(
+    policy: &dyn InstalledAcceptancePolicy,
+    limits: AcceptanceLimits,
+    binding: &BindingCompatibility,
+    binding_hash: &crucible_node_contract::HashRef,
+    references: &[ContentRef],
+) -> Result<(), QualificationError> {
+    let scope = policy.scope_for_node(&binding.node_id)?;
+    authenticate_scope(scope, policy, limits, binding, binding_hash, references)
+}
+
+pub(super) fn authenticate_scope(
+    scope: AcceptanceScope<'_>,
+    policy: &dyn InstalledAcceptancePolicy,
+    limits: AcceptanceLimits,
+    binding: &BindingCompatibility,
+    binding_hash: &crucible_node_contract::HashRef,
+    references: &[ContentRef],
+) -> Result<(), QualificationError> {
+    let record = scope.record;
+    super::record::bounded(binding, limits.maximum_record_bytes)?;
+    super::record::bounded(record, limits.maximum_record_bytes)?;
+    if scope.binding != binding
+        || binding.identity()? != *binding_hash
+        || references != binding.qualification_refs
+        || !references.contains(scope.original_claim)
+        || record.format != "crucible.node-acceptance"
+        || record.version != 1
+        || record.original_claim != *scope.original_claim
+        || record.evaluated_unit != scope.current_unit
+        || record.required_classes != scope.required_classes
+        || !record.missing_requirements.is_empty()
+        || record.decision != AcceptanceDecision::Accepted
+    {
+        return Err(QualificationError::Refused(
+            "outside current installed acceptance scope",
+        ));
     }
+    if scope.original_bytes.len() > limits.qualification.maximum_claim_bytes
+        || !record.matches_original(
+            scope.original_bytes,
+            limits.qualification.maximum_claim_bytes,
+        )?
+    {
+        return Err(QualificationError::Refused(
+            "changed retained acceptance original",
+        ));
+    }
+    // Historical Passed data and delegated acceptance cannot bypass current
+    // original evidence/oracle authentication. Native admission remains next.
+    accept_claim(
+        scope.original_bytes,
+        scope.original_claim,
+        &scope.current_unit,
+        &scope.required_classes,
+        policy,
+        limits.qualification,
+    )?;
+    Ok(())
 }
 
 impl AdmissionEvidence for BehavioralAdmissionEvidence<'_> {
@@ -162,10 +174,16 @@ impl AdmissionEvidence for BehavioralAdmissionEvidence<'_> {
             qualification_refs,
         } = &claim
         {
-            self.reauthenticate(binding, binding_hash, qualification_refs)
-                .map_err(|error| EvidenceError {
-                    message: error.to_string(),
-                })?;
+            authenticate_binding(
+                self.policy,
+                self.limits,
+                binding,
+                binding_hash,
+                qualification_refs,
+            )
+            .map_err(|error| EvidenceError {
+                message: error.to_string(),
+            })?;
         }
         self.underlying.qualify(claim)
     }

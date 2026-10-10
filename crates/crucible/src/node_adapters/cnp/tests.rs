@@ -487,3 +487,6 @@ fn actual_public_preparation_retains_original_ready_and_reclaims_both_native_pro
 
 #[path = "original_conflict_tests.rs"]
 mod original_conflict;
+
+#[path = "acceptance_tests.rs"]
+mod acceptance;

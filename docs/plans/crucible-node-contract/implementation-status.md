@@ -1442,6 +1442,26 @@ a complete native provider certificate, generic vendor constructor, Ready or
 preservation capability. The owning CNP adapter's earlier wire admission needs
 its separate mandatory-acceptance integration.
 
+## Required acceptance before CNP admission
+
+The public accepted-preparation capsule requires independent current behavioral
+acceptance after original realization, native gate and companion authentication,
+before sending Admit. The borrowed scope includes the complete actual profile,
+realization, node/owner bindings, resource limits and native closed-gate record.
+Consuming node construction repeats native and acceptance authentication; a
+historical accepted record cannot authorize it. Refusal retains the original
+process capsule under its reserved supervisor.
+
+The daemon projects the complete realized unit into its installed report policy,
+with finite pre-allocation bounds and one current installed scope. Current-source
+checks pass 28 report/projection cases, the actual acceptance-ordering/refusal
+test, unchanged legacy native preparation, 37 hygiene cases, core/daemon
+all-target strict checks and formatting of ten Rust files. All 8,652 source
+leaves match before and after verification. Actual test and scanner executables,
+native companions and logs remain local. These tests establish enforcement for
+the existing checksum peer and modeled report policy; the generic translator
+and complete native vendor certificates require their separate qualification.
+
 ## Application test-target compilation
 
 Fresh hermetic compilation passes for the application dependency closure at

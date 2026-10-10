@@ -7,6 +7,7 @@
 //! Unsupported exact execution, state preservation and causal input mappings
 //! refuse explicitly while the original process remains supervised.
 
+mod acceptance;
 mod activation;
 mod boundary;
 mod control;
@@ -25,6 +26,7 @@ mod process;
 mod readiness;
 mod windows;
 
+pub use acceptance::{CnpAcceptanceScope, CnpAcceptedPreparation, CnpRealizationAcceptance};
 pub use control::CnpControlledReference;
 pub use lineage::{
     OriginalRuntimeLineage, with_completed_runtime_lineage, with_original_runtime_lineage,

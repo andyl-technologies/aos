@@ -519,3 +519,6 @@ fn bounded_control_diagnostic_preserves_the_exact_original_refusal() {
     );
     assert_eq!(evaluated.original_bytes(), fixture.bytes);
 }
+
+#[path = "cnp_tests.rs"]
+mod cnp;

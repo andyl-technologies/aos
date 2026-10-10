@@ -10,6 +10,7 @@
 mod acceptance;
 mod admission;
 mod catalog;
+mod cnp;
 mod issuance;
 mod record;
 mod reference_oracle;
@@ -44,3 +45,5 @@ pub use record::{
     AcceptanceDecision, AcceptanceLimits, AcceptanceRecord, EvaluatedAcceptance,
     evaluate_acceptance,
 };
+
+pub use cnp::{CnpBehavioralAcceptance, CnpQualificationProjection, project_cnp_qualification};
