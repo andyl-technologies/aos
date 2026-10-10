@@ -148,6 +148,11 @@ pub enum InstalledNodeKind {
         /// Binds the complete source file, native storage and precise run context.
         profile: InstalledRecordedIngressProfile,
     },
+    /// Selects the separate signed recorded Block cursor-preservation codec.
+    HostRecordedBlockPreserving {
+        /// Binds independently installed original source and immutable Block base.
+        profile: InstalledRecordedIngressProfile,
+    },
     /// Evaluates the exact independently enrolled finite native request script.
     HostScripted {
         /// Binds the complete source script and its ordinary public consumer.
@@ -227,6 +232,9 @@ impl<'de> Deserialize<'de> for InstalledNodeKind {
             InstalledNodeKindWire::HostRecordedBlock { profile } => {
                 Self::HostRecordedBlock { profile }
             }
+            InstalledNodeKindWire::HostRecordedBlockPreserving { profile } => {
+                Self::HostRecordedBlockPreserving { profile }
+            }
             InstalledNodeKindWire::HostScripted { profile } => Self::HostScripted { profile },
             InstalledNodeKindWire::HostPacketReceiver {
                 source_node,
@@ -300,6 +308,11 @@ enum InstalledNodeKindWire {
     /// Runs exact Block requests from an independently enrolled finite logical source.
     HostRecordedBlock {
         /// Binds the complete source file, native storage and precise run context.
+        profile: InstalledRecordedIngressProfile,
+    },
+    /// Selects the separate signed recorded Block cursor-preservation codec.
+    HostRecordedBlockPreserving {
+        /// Binds independently installed original source and immutable Block base.
         profile: InstalledRecordedIngressProfile,
     },
     HostScripted {
@@ -763,6 +776,7 @@ impl InstalledNodeCatalog {
                 selection.kind,
                 InstalledNodeKind::HostClock
                     | InstalledNodeKind::HostIo { .. }
+                    | InstalledNodeKind::HostRecordedBlockPreserving { .. }
                     | InstalledNodeKind::HostScripted { .. }
                     | InstalledNodeKind::HostSeededLink { .. }
                     | InstalledNodeKind::HostFaultedLink { .. }
@@ -990,7 +1004,8 @@ impl InstalledNodeCatalog {
                         seeded::build_model(selection, profile, artifacts)?,
                     );
                 }
-                InstalledNodeKind::HostRecordedBlock { profile } => {
+                InstalledNodeKind::HostRecordedBlock { profile }
+                | InstalledNodeKind::HostRecordedBlockPreserving { profile } => {
                     models.insert(
                         selection.node.clone(),
                         io::build_model(selection, &profile.storage, artifacts)?,
@@ -1148,24 +1163,31 @@ impl InstalledNodeCatalog {
                         "closed gem5 native custody cannot become a host model",
                     ));
                 }
-                InstalledNodeKind::HostRecordedBlock { profile } => {
+                InstalledNodeKind::HostRecordedBlock { profile }
+                | InstalledNodeKind::HostRecordedBlockPreserving { profile } => {
                     let model = models.remove(&selection.node).ok_or_else(|| {
                         refused("recorded Block original native custody disappeared")
                     })?;
                     let definition = recorded_ingress::from_scenario(&scenario, &selection.node)?;
                     recorded_ingress::check_configuration(&profile.configuration, &definition)?;
-                    nodes.push(Box::new(
-                        HostModelNode::new(
-                            &graph,
-                            &selection.node,
-                            model,
-                            &evidence,
-                            HostModelResources::default(),
-                        )
-                        .map_err(native)?
-                        .with_recorded_ingress(&graph, definition, &evidence)
-                        .map_err(native)?,
-                    ));
+                    let actual = HostModelNode::new(
+                        &graph,
+                        &selection.node,
+                        model,
+                        &evidence,
+                        HostModelResources::default(),
+                    )
+                    .map_err(native)?;
+                    let actual = if matches!(
+                        &selection.kind,
+                        InstalledNodeKind::HostRecordedBlockPreserving { .. }
+                    ) {
+                        actual.with_preservable_recorded_ingress(&graph, definition, &evidence)
+                    } else {
+                        actual.with_recorded_ingress(&graph, definition, &evidence)
+                    }
+                    .map_err(native)?;
+                    nodes.push(Box::new(actual));
                 }
                 InstalledNodeKind::HostClock
                 | InstalledNodeKind::HostSemantics { .. }

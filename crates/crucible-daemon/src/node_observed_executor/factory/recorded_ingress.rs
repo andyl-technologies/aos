@@ -214,7 +214,7 @@ pub(super) fn from_content(
     content: &BTreeMap<String, (ContentRef, Vec<u8>)>,
 ) -> Result<RecordedIngressDefinition, NodeObservedError> {
     let configuration = configuration(descriptor, content)?;
-    if configuration.schema_version != 1 {
+    if !matches!(configuration.schema_version, 1 | 2) {
         return Err(refused("recorded input configuration edition differs"));
     }
     let root = configuration
@@ -312,3 +312,38 @@ pub(in crate::node_observed_executor) fn check_configuration(
 #[cfg(test)]
 #[path = "recorded_ingress_tests.rs"]
 mod tests;
+
+/// Regenerates only the explicitly selected complete native cursor recipe.
+pub(super) fn preserving_recipe(
+    host: &ContentRef,
+    profile: &InstalledRecordedIngressProfile,
+) -> Result<InputPayload, NodeObservedError> {
+    let mut value: serde_json::Value = serde_json::from_slice(&recipe(host, profile)?.bytes)?;
+    value["version"] = serde_json::json!(2);
+    value["capture"] = serde_json::json!(
+        "signed complete Host edition5, original Block and consumed source cursor plus original runtime/scheduler/ACK and activation proof history; no source reconstruction"
+    );
+    let bytes = canonical::canonical_json(&value)?;
+    let reference = canonical::content_ref(&bytes, "application/json")?;
+    Ok(InputPayload { reference, bytes })
+}
+
+/// Retains the original projected world closure without rebuilding it at capture.
+pub(super) fn projection_contents(
+    projection: &InputPayload,
+) -> Result<Vec<ScenarioContent>, NodeObservedError> {
+    projection.reference.verify(&projection.bytes)?;
+    let original: BindingProjection = serde_json::from_slice(&projection.bytes)?;
+    if original.format != "crucible.recorded-input-binding-projection"
+        || original.version != 1
+        || original.designated_slot != "single selected Block configuration.record_root"
+    {
+        return Err(refused(
+            "recorded projection has an unsupported original codec",
+        ));
+    }
+    for object in &original.world.content {
+        object.reference.verify(&object.bytes)?;
+    }
+    Ok(original.world.content)
+}

@@ -453,7 +453,11 @@ impl SimulationNode for HostModelNode {
         source: &RuntimeSnapshot,
         maximum_bytes: usize,
     ) -> Result<HostNativeCapture, OperationFailure> {
-        if self.recorded_ingress.is_some() {
+        if self
+            .recorded_ingress
+            .as_ref()
+            .is_some_and(|ingress| !ingress.preserved)
+        {
             return Err(failure("recorded input cursor capture is not qualified"));
         }
         if self.public_preparation.is_some() {
@@ -470,7 +474,11 @@ impl SimulationNode for HostModelNode {
         source: &RuntimeSnapshot,
         limits: crate::node_contract::NativeCaptureLimits,
     ) -> Result<crate::node_contract::InstalledNativeCapture, OperationFailure> {
-        if self.recorded_ingress.is_some() {
+        if self
+            .recorded_ingress
+            .as_ref()
+            .is_some_and(|ingress| !ingress.preserved)
+        {
             return Err(failure("recorded input cursor capture is not qualified"));
         }
         if self.public_continuation {

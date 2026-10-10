@@ -208,10 +208,12 @@ impl RecordedIngressDefinition {
 }
 
 pub(super) struct RecordedIngressCustody {
-    definition: RecordedIngressDefinition,
-    cursor: usize,
-    proofs: Vec<InputPayload>,
-    activation: Option<ActivationRecord>,
+    pub(super) definition: RecordedIngressDefinition,
+    pub(super) cursor: usize,
+    pub(super) proofs: Vec<InputPayload>,
+    pub(super) activation: Option<ActivationRecord>,
+    pub(super) historical_proofs: Vec<super::host::state::recorded::ProofHistory>,
+    pub(super) preserved: bool,
 }
 
 impl RecordedIngressCustody {
@@ -221,6 +223,8 @@ impl RecordedIngressCustody {
             cursor: 0,
             proofs: Vec::new(),
             activation: None,
+            historical_proofs: Vec::new(),
+            preserved: false,
         }
     }
 
@@ -230,7 +234,15 @@ impl RecordedIngressCustody {
 
     pub(super) fn arm(&mut self, activation: &ActivationRecord) -> Result<(), OperationFailure> {
         if let Some(original) = &self.activation {
-            return if original == activation && self.cursor == 0 {
+            // Restored readiness rechecks the same inactive native prefix. An
+            // imported history authenticates that prefix; fresh consumption
+            // changes the cursor and cannot pass this rearm check.
+            let unchanged_restored_prefix = self.preserved
+                && self
+                    .historical_proofs
+                    .last()
+                    .is_some_and(|history| history.proofs.len() == self.cursor + 1);
+            return if original == activation && (self.cursor == 0 || unchanged_restored_prefix) {
                 Ok(())
             } else {
                 Err(failure("recorded input original inactive scope changed"))
@@ -318,6 +330,11 @@ impl RecordedIngressCustody {
         self.definition
             .objects
             .iter()
+            .chain(
+                self.historical_proofs
+                    .iter()
+                    .flat_map(|history| &history.proofs),
+            )
             .chain(self.proofs.iter().take(self.cursor + 1))
     }
 }

@@ -40,6 +40,21 @@ pub(super) fn materialize(
     }
     let mut expected = BTreeMap::new();
     for selected in selections {
+        if let InstalledNodeKind::HostRecordedBlockPreserving { profile } = &selected.kind {
+            for reference in [&profile.source, profile.storage.artifact()] {
+                if installed
+                    .get(&reference.hash.digest)
+                    .is_none_or(|artifact| &artifact.expected != reference)
+                    || reference.length.get() > super::io::MAXIMUM_IO_ARTIFACT_BYTES as u64
+                {
+                    return Err(refused(
+                        "recorded cold artifact lacks bounded independent operator enrollment",
+                    ));
+                }
+                expected.insert(reference.hash.digest.clone(), reference.clone());
+            }
+            continue;
+        }
         let reference = match &selected.kind {
             InstalledNodeKind::HostClock | InstalledNodeKind::HostPacketReceiver { .. } => continue,
             InstalledNodeKind::HostSeededLink { profile } => &profile.program,

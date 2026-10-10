@@ -49,7 +49,10 @@ pub(super) fn build_world(
     let selected: Vec<_> = selections
         .iter()
         .filter_map(|selected| match &selected.kind {
-            InstalledNodeKind::HostRecordedBlock { profile } => Some((selected, profile)),
+            InstalledNodeKind::HostRecordedBlock { profile }
+            | InstalledNodeKind::HostRecordedBlockPreserving { profile } => {
+                Some((selected, profile))
+            }
             _ => None,
         })
         .collect();
@@ -106,6 +109,13 @@ fn build_world_once(
             .any(|selection| matches!(selection.kind, InstalledNodeKind::HostFaultedLink { .. }))
         {
             b"crucible installed adverse storage transport v1: distinct static loss/duplicate program, actual per-input raw draws and original zero/one/two outputs, complete native RNG/fault/queue and original runtime/transfer custody; no corruption or dynamic fault/debug operation".to_vec()
+        } else if selections.iter().any(|selection| {
+            matches!(
+                selection.kind,
+                InstalledNodeKind::HostRecordedBlockPreserving { .. }
+            )
+        }) {
+            b"crucible installed recorded Block preservation v1: independently measured host and enrolled original source/base; complete actual Block overlay, FIFO, consumed cursor, staged/native ACK and operation ledgers; original source proof history bound signed runtime and scheduler; fresh independent owner authority; no physical ingress, 9p, faults, debugger, replay or fork".to_vec()
         } else if selections
             .iter()
             .any(|selection| matches!(selection.kind, InstalledNodeKind::HostRecordedBlock { .. }))
@@ -205,6 +215,18 @@ fn build_world_once(
                     artifacts,
                     host,
                     &qualification,
+                    &mut contents,
+                )?
+            }
+            InstalledNodeKind::HostRecordedBlockPreserving { profile } => {
+                accepted_limited.push(selection.node.clone());
+                recorded_ingress::preserving_profile(
+                    selection,
+                    profile,
+                    artifacts,
+                    host,
+                    &qualification,
+                    projection,
                     &mut contents,
                 )?
             }
@@ -358,6 +380,7 @@ fn build_world_once(
                 && matches!(
                     selection.kind,
                     InstalledNodeKind::HostClock
+                        | InstalledNodeKind::HostRecordedBlockPreserving { .. }
                         | InstalledNodeKind::HostIo { .. }
                         | InstalledNodeKind::HostScripted { .. }
                         | InstalledNodeKind::HostSeededLink { .. }
@@ -440,7 +463,8 @@ fn build_world_once(
     let external_inputs = selections
         .iter()
         .filter_map(|selection| match selection.kind {
-            InstalledNodeKind::HostRecordedBlock { .. } => {
+            InstalledNodeKind::HostRecordedBlock { .. }
+            | InstalledNodeKind::HostRecordedBlockPreserving { .. } => {
                 Some(super::recorded_ingress::endpoint(&selection.node))
             }
             _ => None,

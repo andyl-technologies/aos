@@ -939,8 +939,48 @@ remain retained; allowances, thresholds and deadlines are unchanged.
 
 This stage qualifies live condition stop/report/resume only. Cold restoration
 of a condition-stopped world and the public debugger command workflow still
-require their own native and operator evidence. New complete hermetic gates must
-qualify this source stage separately from the preceding 49-path checkpoint.
+require their own native and operator evidence. The 108-path condition/fault checkpoint also passes hermetic application
+test-target compilation (`ksx37flpzvj3rn1c9v5cdx933y8dw3xn-aos-test-targets-0.1.0`).
+Complete ABI/license gates must qualify it separately from the preceding
+49-path checkpoint.
+
+## Recorded Block cold continuation
+
+Selected recorded Block worlds now preserve their consumed FIFO cursor, original
+input provenance, native Block/CoW state, pending or staged delivery, operation
+journal and ACKs. The native envelope and portable coordinator use edition 5;
+the runtime remains edition 2. Initial runtime 1 without provenance refuses
+before immutable closure assembly or native capture. Legacy editions, controlled
+faults and unsupported condition restoration keep their separate formats.
+
+The matching native cohort passes two source-gone continuations in 88.55 seconds.
+Each removes the original input and backing store, restores two independent
+current owners, preserves the original acknowledged Write101 and exact delivery
+history, then publishes Read102 bytes `[1, 2, 3]` once per branch. Subsequent empty
+execution produces no duplicate publication, and all world reservations reclaim.
+The production coordinator reader dispatches directly to its closed legacy or
+portable decoder after the streaming runtime probe. Duplicate fields, trailing
+input, unsupported scopes and wrong model/schema/configuration refuse.
+
+Independent review verifies all 24 source pre/postimages, 8,410 tested
+source/dependency leaves and retained executable identities. The matching private
+cohort also passes 37 actual-source-root hygiene cases, four-consumer all-target
+strict checks, 23 Rust formatting checks, five live recorded cases, five semantic
+phase cases, the legacy no-ingress byte golden, six coordinator/header cases,
+15 archive cases and 126 adapter cases with seven existing ignored fixtures.
+Central verification passes 15 archive cases, five live recorded cases, both
+genuine cold continuations (84.99 seconds), all 37 current-source hygiene cases
+and ten-crate all-target strict checks. All 23 owned Rust files pass formatting.
+This stage covers proof-bearing pending/staged recorded Block custody; it adds no initial-runtime,
+9p, physical-ingress, replay/fork or cold-debug authority.
+
+The complete 49-path controller suite passes 6,536 cases with 230 skipped. Its
+combined ABI/license gate subsequently fails because the packaging identity
+probe omitted the required `patch` argument when importing the QEMU recipe.
+The narrow probe repair reproduces that failure, then matches the exact shipped
+QEMU build identity when supplying the AOS patch placeholder. Production QEMU
+source, recipe and dependencies remain unchanged; complete gate success still
+requires a new corrected run.
 
 ## Performance evidence
 

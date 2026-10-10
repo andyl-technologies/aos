@@ -7,6 +7,7 @@
 mod archive;
 mod capture;
 mod driver;
+mod recorded_coordinator;
 mod runtime_header;
 
 #[cfg(test)]
@@ -108,6 +109,26 @@ pub trait HostWorldFactory {
         scheduler: &crate::node_scheduling::SchedulingSnapshot,
         content: &VerifiedStateContent,
     ) -> Result<(), StateError>;
+
+    /// Authenticates selected original input proof buffers beneath signed custody.
+    ///
+    /// The default refuses provenance continuation. A selected implementation
+    /// checks the complete original source, staging ledger and decoded bodies;
+    /// content identities alone do not authorize a reconstructed arrival.
+    ///
+    /// # Errors
+    /// Refuses unsupported input codecs or changed original proof custody.
+    fn authenticate_input_provenance(
+        &self,
+        _graph: &AdmittedGraph,
+        _runtime: &RuntimeSnapshot,
+        _scheduler: &crate::node_scheduling::SchedulingSnapshot,
+        _content: &VerifiedStateContent,
+    ) -> Result<(), StateError> {
+        Err(archive::refusal(
+            "installed original input provenance continuation is unsupported",
+        ))
+    }
 
     /// Authenticates the captured native model and complete immutable source.
     ///

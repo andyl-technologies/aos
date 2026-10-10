@@ -294,6 +294,7 @@ impl AdmissionEvidence for InstalledEvidence {
                     | "reference-device/content-possession-v1"
                     | "crucible/octet-stream-v1"
                     | "host/native-continuation-v1"
+                    | "host/native-recorded-block-v1"
                     | "host/native-seeded-link-v1"
                     | "host/native-faulted-link-v1"
                     | "host/native-controlled-fault-link-v1"
@@ -489,6 +490,35 @@ impl ReferenceDeviceQualification for InstalledEvidence {
 }
 
 impl HostModelQualification for InstalledEvidence {
+    fn authenticate_recorded_preservation(
+        &self,
+        definition: &crucible::node_adapters::RecordedIngressDefinition,
+        descriptor: &NodeDescriptor,
+        binding: &NodeBinding,
+    ) -> Result<(), OperationFailure> {
+        self.authenticate_recorded_ingress(definition, descriptor, binding)?;
+        if binding
+            .compatibility
+            .implementation
+            .implementation_id
+            .as_str()
+            != "crucible-host-recorded-block-preserving-v1"
+            || !binding
+                .compatibility
+                .implementation
+                .formats
+                .iter()
+                .any(|schema| {
+                    schema.id.as_str() == "host/native-recorded-block-v1" && schema.version == 1
+                })
+        {
+            return Err(no_effect(evidence(
+                "distinct recorded native cursor policy is not installed",
+            )));
+        }
+        Ok(())
+    }
+
     fn authenticate_recorded_ingress(
         &self,
         definition: &crucible::node_adapters::RecordedIngressDefinition,
@@ -505,6 +535,12 @@ impl HostModelQualification for InstalledEvidence {
                 .implementation_id
                 .as_str()
                 != "crucible-host-recorded-block-v1"
+                && binding
+                    .compatibility
+                    .implementation
+                    .implementation_id
+                    .as_str()
+                    != "crucible-host-recorded-block-preserving-v1"
         {
             return Err(no_effect(evidence(
                 "recorded input has no original installed Block enrollment",

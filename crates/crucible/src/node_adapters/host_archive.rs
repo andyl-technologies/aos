@@ -22,6 +22,9 @@ pub struct HostContinuationInventory {
     pub evidence: Vec<InputPayload>,
     /// Lists the complete component's original operation identities.
     pub operations: Vec<Id>,
+    /// Describes the checked original source and actual native consumed FIFO prefix.
+    /// This remains data until the complete signed source is authenticated.
+    pub recorded_input: Option<(crate::node_adapters::RecordedIngressDefinition, U64)>,
     /// Lists the complete original staged input inventory commitments.
     pub input_inventories: Vec<ContentRef>,
 }
@@ -91,8 +94,11 @@ pub fn validate_host_continuation(
         .any(|schema| {
             schema.id.as_str() == "host/native-controlled-fault-link-v1" && schema.version == 1
         });
+    let recorded = super::recorded::selected(binding);
     if captured.schema_version
-        != if controlled_fault {
+        != if recorded {
+            5
+        } else if controlled_fault {
             3
         } else if terminal_semantic {
             2
@@ -100,6 +106,7 @@ pub fn validate_host_continuation(
             1
         }
         || (controlled_fault && source.schema_version != 4)
+        || (recorded && source.schema_version != 2)
         || captured.profile != HOST_EXACT_PROFILE
         || captured.boundary != source.capture_cut
         || captured.operations.len() > limits.maximum_operations
@@ -113,6 +120,17 @@ pub fn validate_host_continuation(
         return Err(failure(
             "host archive edition, cut or record ceiling differs",
         ));
+    }
+    match (&captured.recorded_ingress, recorded) {
+        (Some(cursor), true) => {
+            super::recorded::restore(cursor, &captured, source, binding)?;
+        }
+        (None, false) => {}
+        _ => {
+            return Err(failure(
+                "recorded cursor codec does not match selected installed format",
+            ));
+        }
     }
     let mut expected = BTreeMap::new();
     for saved in source
@@ -166,7 +184,11 @@ pub fn validate_host_continuation(
             },
             |observation| observation.publications.len().saturating_add(3),
         );
-        if operation.evidence.len() > maximum_objects {
+        if super::recorded::native_receipt_count(
+            captured.recorded_ingress.as_ref(),
+            &operation.evidence,
+        )? > maximum_objects
+        {
             return Err(failure(
                 "host archive original receipt object ceiling exceeded",
             ));
@@ -371,9 +393,18 @@ pub fn validate_host_continuation(
             ));
         }
     }
+    let recorded_input = captured
+        .recorded_ingress
+        .as_ref()
+        .map(|cursor| {
+            let custody = super::recorded::restore(cursor, &captured, source, binding)?;
+            Ok((custody.definition, U64::new(custody.cursor as u64)))
+        })
+        .transpose()?;
     let native_reference = canonical::content_ref(&captured.native, "application/octet-stream")
         .map_err(|error| failure(&error.to_string()))?;
     Ok(HostContinuationInventory {
+        recorded_input,
         node: node.clone(),
         boundary: captured.boundary,
         native_model: InputPayload {

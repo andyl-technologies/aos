@@ -213,6 +213,7 @@ in
                 gnumake = null;
                 bash = "/aos-bash";
                 perl = "/aos-perl";
+                patch = "/aos-patch";
                 pkg-config = null;
                 meson = null;
                 ninja = null;

@@ -17,6 +17,9 @@ use super::*;
 #[path = "host_archive.rs"]
 pub(super) mod archive;
 
+#[path = "host_recorded_state.rs"]
+pub(crate) mod recorded;
+
 #[derive(Serialize)]
 struct Wire<'a> {
     schema_version: u16,
@@ -28,6 +31,8 @@ struct Wire<'a> {
     input_history: InputHistoryWire<'a>,
     pending_causes: CausesWire<'a>,
     operations: OperationsWire<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recorded_ingress: Option<recorded::RecordedCursor>,
 }
 
 #[derive(Serialize)]
@@ -122,6 +127,8 @@ struct Captured {
     input_history: Vec<CapturedInput>,
     pending_causes: Vec<CapturedCause>,
     operations: Vec<CapturedOperation>,
+    #[serde(default, deserialize_with = "recorded::present_cursor")]
+    recorded_ingress: Option<recorded::RecordedCursor>,
 }
 
 #[derive(Deserialize)]
@@ -317,7 +324,13 @@ pub(super) fn encode_with_limit(
         .capture(maximum)?;
     let staged = node.staged.as_ref().map(input_wire);
     let wire = Wire {
-        schema_version: if matches!(&node.model, Some(HostModel::ControlledFaultLink(_))) {
+        schema_version: if node
+            .recorded_ingress
+            .as_ref()
+            .is_some_and(|ingress| ingress.preserved)
+        {
+            5
+        } else if matches!(&node.model, Some(HostModel::ControlledFaultLink(_))) {
             3
         } else if matches!(&node.model, Some(HostModel::Semantics(model)) if model.definition().version == 2)
         {
@@ -333,6 +346,12 @@ pub(super) fn encode_with_limit(
         input_history: InputHistoryWire(&node.input_history),
         pending_causes: CausesWire(&node.pending_causes),
         operations: OperationsWire(&node.completed),
+        recorded_ingress: node
+            .recorded_ingress
+            .as_ref()
+            .filter(|ingress| ingress.preserved)
+            .map(recorded::capture)
+            .transpose()?,
     };
     bounded_bytes(&wire, maximum)
 }
@@ -621,7 +640,13 @@ impl HostModelNode {
         let captured: Captured =
             serde_json::from_slice(bytes).map_err(|error| failure(&error.to_string()))?;
         if captured.schema_version
-            != if matches!(&self.model, Some(HostModel::ControlledFaultLink(_))) {
+            != if self
+                .recorded_ingress
+                .as_ref()
+                .is_some_and(|ingress| ingress.preserved)
+            {
+                5
+            } else if matches!(&self.model, Some(HostModel::ControlledFaultLink(_))) {
                 3
             } else if matches!(&self.model, Some(HostModel::Semantics(model)) if model.definition().version == 2)
             {
@@ -709,7 +734,11 @@ impl HostModelNode {
                 },
                 |observation| observation.publications.len().saturating_add(3),
             );
-            if operation.evidence.len() > maximum_objects {
+            if recorded::native_receipt_count(
+                captured.recorded_ingress.as_ref(),
+                &operation.evidence,
+            )? > maximum_objects
+            {
                 return Err(failure(
                     "captured host receipt registry exceeds original object inventory",
                 ));
@@ -889,6 +918,18 @@ impl HostModelNode {
                 ));
             }
         }
+        if let Some(cursor) = &captured.recorded_ingress {
+            let restored = recorded::restore(cursor, &captured, source, &self.binding)?;
+            if self.recorded_ingress.as_ref().is_none_or(|initial| {
+                !initial.preserved || initial.definition != restored.definition
+            }) {
+                return Err(failure(
+                    "recorded cursor differs from independently installed source",
+                ));
+            }
+            self.recorded_ingress = Some(restored);
+        }
+
         // Native restoration preserves base/tree identity through existing
         // device validators. No request is re-submitted and no queue is drained.
         // Successful source authentication selects a restored birth before any

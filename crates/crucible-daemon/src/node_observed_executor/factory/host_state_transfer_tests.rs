@@ -7,6 +7,9 @@
 // crucible-lint: allow panic-shortcut -- These host state transfer tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "host_state_recorded_tests.rs"]
+mod recorded;
+
 #[path = "host_state_ninep_transfer_tests.rs"]
 mod ninep;
 

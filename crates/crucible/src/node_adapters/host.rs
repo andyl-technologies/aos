@@ -196,6 +196,21 @@ pub trait HostModelQualification {
         ))
     }
 
+    /// Qualifies the separate complete recorded cursor preservation policy.
+    ///
+    /// # Errors
+    /// Refuses by default until the installed source owns this native codec.
+    fn authenticate_recorded_preservation(
+        &self,
+        _definition: &super::RecordedIngressDefinition,
+        _descriptor: &NodeDescriptor,
+        _binding: &NodeBinding,
+    ) -> Result<(), OperationFailure> {
+        Err(failure(
+            "recorded cursor preservation policy is not qualified",
+        ))
+    }
+
     /// Authenticates complete native capture and isolated original custody lineage.
     ///
     /// # Errors
@@ -482,10 +497,33 @@ impl HostModelNode {
     /// Refuses late attachment, unsupported model/lane, incomplete graph inventory,
     /// selected capture facets, or absent installed source authentication.
     pub fn with_recorded_ingress(
+        self,
+        graph: &AdmittedGraph,
+        definition: super::RecordedIngressDefinition,
+        qualification: &dyn HostModelQualification,
+    ) -> Result<Self, OperationFailure> {
+        self.install_recorded_ingress(graph, definition, qualification, false)
+    }
+
+    /// Installs independently qualified recorded Block custody with its distinct cursor codec.
+    ///
+    /// # Errors
+    /// Refuses another native format, unsupported source policy or nonfresh custody.
+    pub fn with_preservable_recorded_ingress(
+        self,
+        graph: &AdmittedGraph,
+        definition: super::RecordedIngressDefinition,
+        qualification: &dyn HostModelQualification,
+    ) -> Result<Self, OperationFailure> {
+        self.install_recorded_ingress(graph, definition, qualification, true)
+    }
+
+    fn install_recorded_ingress(
         mut self,
         graph: &AdmittedGraph,
         definition: super::RecordedIngressDefinition,
         qualification: &dyn HostModelQualification,
+        preserved: bool,
     ) -> Result<Self, OperationFailure> {
         let endpoint = &definition.source().endpoint;
         if self.readiness.is_some()
@@ -496,10 +534,11 @@ impl HostModelNode {
             || self.input_endpoint.as_ref() != Some(endpoint)
             || graph.coordinator_policy().external_inputs.as_slice()
                 != std::slice::from_ref(endpoint)
-            || self.facets.contains(&FacetKind::Preservation)
+            || self.facets.contains(&FacetKind::Preservation) != preserved
+            || (preserved && !state::recorded::selected(&self.binding))
         {
             return Err(failure(
-                "recorded input lacks unique original inactive block custody",
+                "recorded input lacks unique original inactive Block custody and selected codec",
             ));
         }
         qualification.authenticate_recorded_ingress(
@@ -507,8 +546,17 @@ impl HostModelNode {
             &self.descriptor,
             &self.binding,
         )?;
+        if preserved {
+            qualification.authenticate_recorded_preservation(
+                &definition,
+                &self.descriptor,
+                &self.binding,
+            )?;
+        }
         self.readiness_inventory = definition.root().clone();
-        self.recorded_ingress = Some(super::host_ingress::RecordedIngressCustody::new(definition));
+        let mut ingress = super::host_ingress::RecordedIngressCustody::new(definition);
+        ingress.preserved = preserved;
+        self.recorded_ingress = Some(ingress);
         Ok(self)
     }
 
@@ -586,7 +634,7 @@ mod execution;
 mod fault;
 
 #[path = "host_state.rs"]
-mod state;
+pub(super) mod state;
 
 #[path = "host_terminal.rs"]
 mod terminal;

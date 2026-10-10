@@ -30,6 +30,7 @@ enum CoordinatorEdition {
     Legacy,
     Terminal,
     Fault,
+    Recorded,
 }
 
 impl CoordinatorEdition {
@@ -38,12 +39,11 @@ impl CoordinatorEdition {
             Self::Legacy => 1,
             Self::Terminal => 2,
             Self::Fault => 3,
+            Self::Recorded => 5,
         }
     }
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(super) struct Coordinator {
     pub schema_version: u32,
     pub scheduler: SchedulingSnapshot,
@@ -114,7 +114,11 @@ impl HostArchive {
             requirements,
             immutable,
             factory,
-            CoordinatorEdition::Legacy,
+            if recorded_binding(graph) {
+                CoordinatorEdition::Recorded
+            } else {
+                CoordinatorEdition::Legacy
+            },
         )
     }
 
@@ -244,6 +248,11 @@ impl HostArchive {
                 .runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
                 .map_err(schema)?
         };
+        if edition == CoordinatorEdition::Recorded && source.schema_version != 2 {
+            return Err(refusal(
+                "recorded capture requires original input provenance runtime two",
+            ));
+        }
         if edition == CoordinatorEdition::Terminal {
             factory.authenticate_terminal_custody(graph, &source, &scheduler, None)?;
         } else if edition == CoordinatorEdition::Fault {
@@ -376,15 +385,24 @@ impl HostArchive {
             let mut dependencies = Vec::new();
             for object in captured.evidence() {
                 dependencies.push(object.reference.clone());
-                objects.insert(
-                    object.reference.clone(),
-                    object.bytes.clone(),
-                    if edition == CoordinatorEdition::Fault {
-                        fault_receipt_dependencies(&object.bytes).unwrap_or_default()
-                    } else {
-                        Vec::new()
-                    },
-                )?;
+                // An immutable source body already carries its selected typed
+                // dependency edges. Native custody retains the same bytes rather
+                // than replacing that closure with an opaque leaf.
+                if let Some(original) = immutable_content.get(&object.reference) {
+                    if original != object.bytes.as_slice() {
+                        return Err(refusal("native retained immutable source body differs"));
+                    }
+                } else {
+                    objects.insert(
+                        object.reference.clone(),
+                        object.bytes.clone(),
+                        if edition == CoordinatorEdition::Fault {
+                            fault_receipt_dependencies(&object.bytes).unwrap_or_default()
+                        } else {
+                            Vec::new()
+                        },
+                    )?;
+                }
             }
             if inventory
                 .evidence
@@ -535,9 +553,10 @@ impl HostArchiveRecord {
         if object.bytes.len() > maximum_record_bytes {
             return Err(limit("authenticated source activation record"));
         }
-        let coordinator: Coordinator =
-            super::runtime_header::decode_supported_coordinator(&object.bytes)?;
-        if !matches!(coordinator.schema_version, 1..=3)
+        let coordinator = super::recorded_coordinator::decode(&object.bytes)?;
+        if !matches!(coordinator.schema_version, 1..=3 | 5)
+            || (coordinator.schema_version == 5 && coordinator.runtime.schema_version != 2)
+            || (coordinator.schema_version == 5) != recorded_manifest(&self.manifest)
             || (coordinator.schema_version == 2) != (coordinator.runtime.schema_version == 3)
             || (coordinator.schema_version == 3) != (coordinator.runtime.schema_version == 4)
             || coordinator.runtime.source_activation.world_binding_hash
@@ -695,7 +714,9 @@ impl CaptureEvidence for ArchiveEvidence<'_> {
             return Err(refusal("signed coordinator manifest differs"));
         }
         let coordinator = self.coordinator(content)?;
-        if !matches!(coordinator.schema_version, 1..=3)
+        if !matches!(coordinator.schema_version, 1..=3 | 5)
+            || (coordinator.schema_version == 5 && coordinator.runtime.schema_version != 2)
+            || (coordinator.schema_version == 5) != recorded_manifest(manifest)
             || (coordinator.schema_version == 2) != (coordinator.runtime.schema_version == 3)
             || (coordinator.schema_version == 3) != (coordinator.runtime.schema_version == 4)
             || coordinator.world_repeatability != graph.world_repeatability()
@@ -737,7 +758,7 @@ impl CaptureEvidence for ArchiveEvidence<'_> {
 impl ArchiveEvidence<'_> {
     fn coordinator(&self, content: &VerifiedStateContent) -> Result<Coordinator, StateError> {
         let reference = &self.record.manifest.coordinator_state_ref;
-        super::runtime_header::decode_supported_coordinator(
+        super::recorded_coordinator::decode(
             content
                 .get(reference)
                 .ok_or_else(|| refusal("signed coordinator bytes absent"))?,
@@ -827,4 +848,26 @@ impl Objects {
     fn finish(self) -> Vec<Object> {
         self.objects.into_values().collect()
     }
+}
+
+fn recorded_manifest(manifest: &CaptureManifest) -> bool {
+    manifest.owners.len() == 1
+        && manifest.owners[0].state_schema.id.as_str() == "host/native-recorded-block-v1"
+        && manifest.owners[0].state_schema.version == 1
+}
+
+fn recorded_binding(graph: &AdmittedGraph) -> bool {
+    graph.node_ids().count() == 1
+        && graph.node_ids().all(|node| {
+            graph.binding(node).is_some_and(|binding| {
+                binding
+                    .compatibility
+                    .implementation
+                    .formats
+                    .iter()
+                    .any(|format| {
+                        format.id.as_str() == "host/native-recorded-block-v1" && format.version == 1
+                    })
+            })
+        })
 }
