@@ -23,7 +23,7 @@ fn with_restore(
     ) -> TestResult,
 ) -> TestResult {
     let (mut source, scheduler, mut process, mut diagnostics) =
-        crate::node::tests::console_retry_scheduler_continuation(None)?;
+        crate::node::tests::console_reattempt_scheduler_continuation(None)?;
     let mut fixture = ChildFixture::with_request(scheduler.request())?;
     fixture.publish_capability()?;
     let deadline =

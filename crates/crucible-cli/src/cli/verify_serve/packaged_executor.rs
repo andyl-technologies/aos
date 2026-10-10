@@ -787,7 +787,8 @@ qemu_profile = "deterministic-tcg-v1"
                  qemu_build_id=qemu-build-v1\n\
                  shmem_abi_version={abi_version}\n\
                  shmem_abi={abi}\n\
-                 shmem_generated_header_hash=sha256:header\n"
+                 shmem_generated_header_hash=sha256:header\n\
+                 stopped_restore_ack_notification_version=1\n"
             ),
         )
         .expect("write plugin marker");

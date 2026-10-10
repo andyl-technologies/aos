@@ -18,8 +18,8 @@ use super::*;
 use crate::QemuQmpVmStateControlChannel;
 
 #[cfg(test)]
-#[path = "hot_fork_scheduler_continuation/retry_tests.rs"]
-mod retry_tests;
+#[path = "hot_fork_scheduler_continuation/reattempt_tests.rs"]
+mod reattempt_tests;
 
 /// Exact scheduler-owned node state copied at one retained-template fork.
 ///

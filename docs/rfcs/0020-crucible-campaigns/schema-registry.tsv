@@ -38,8 +38,8 @@ crucible.guest-selectable.reply	1	crucible-protocol::selectable	process-protocol
 crucible.guest-selectable.catalog-plan	4	crucible-protocol::selectable_catalog_plan	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.guest-selectable.pending-request	2	crucible-protocol::selectable_transport	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.qemu-plugin.setup-plan	3	crucible-protocol::plugin_setup_plan	process-protocol-message	gate:typed-choice,gate:abi-conformance
-crucible.qemu.hot-fork.template	29	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-equivalence,gate:hot-fork-isolation
-crucible.qemu.hot-fork.template-resource-stage	13	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
+crucible.qemu.hot-fork.template	30	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-equivalence,gate:hot-fork-isolation
+crucible.qemu.hot-fork.template-resource-stage	14	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.fork	3	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-equivalence,gate:hot-fork-isolation
 crucible.qemu.hot-fork.plugin-resource-inventory	3	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.plugin-barrier	6	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
@@ -415,6 +415,10 @@ crucible.qemu.vmstate.cpu%2ftimers-wide	1	qemu-patch::vmstate	device-state	gate:
 crucible.qemu.vmstate.cpu-crucible-clock	2	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.cpu-crucible-hardware-error	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.cpu_timer%2fclock-wide	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.crucible-console	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.crucible-console-canonical	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.crucible-console-origin	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.crucible-console-prefix	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.crucible-sim-preemption	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.env%2ftimer-wide	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.hda-audio-stream-buffer-crucible-clock	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming

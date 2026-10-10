@@ -835,8 +835,8 @@ pub enum SingleSchedulerCheckpointError {
 }
 
 #[cfg(test)]
-#[path = "checkpoint/restore_ready_origins.rs"]
-mod restore_ready_origins;
+#[path = "checkpoint/restore_ready_origins_tests.rs"]
+mod restore_ready_origins_tests;
 
 #[cfg(test)]
 mod epoch_ready_point_tests {

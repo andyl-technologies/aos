@@ -285,10 +285,10 @@ fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
             &bytes,
         )
         .to_hex(),
-        // The current closure includes the v6 scheduler continuation and its
+        // The current closure includes the v7 scheduler continuation and its
         // World-bound I/O ledger. Authenticate the pin and closure above before
         // pinning these recanonicalized selection bytes.
-        "547dbea896dc4d2c24b24e3b0b1caf58ef75daa24bf52a423dfb09bdd49c77ea"
+        "fcef07a6e3da98b7cca96bc2a93b9924630fd6b8be0bb23e1871706df744fc20"
     );
     drop(store);
 

@@ -1497,9 +1497,9 @@ fn sealed_hot_fork_node_with_log(
     Ok((node, log))
 }
 
-/// Owns the scripted child planes used by console installer retry controls.
+/// Owns the scripted child planes used by console installer reattempt controls.
 #[cfg(target_os = "linux")]
-type ConsoleRetrySchedulerContinuation = (
+type ConsoleReattemptSchedulerContinuation = (
     QemuNode,
     QemuHotForkSchedulerNodeContinuation,
     Box<dyn crate::QemuNodeExternalProcessControl>,
@@ -1508,9 +1508,9 @@ type ConsoleRetrySchedulerContinuation = (
 
 /// Retains the original scripted fork's typed planes for installer controls.
 #[cfg(target_os = "linux")]
-pub(in crate::node) fn console_retry_scheduler_continuation(
+pub(in crate::node) fn console_reattempt_scheduler_continuation(
     launch: Option<&crate::QemuLaunchArtifactIdentity>,
-) -> Result<ConsoleRetrySchedulerContinuation, Box<dyn Error>> {
+) -> Result<ConsoleReattemptSchedulerContinuation, Box<dyn Error>> {
     let (mut node, _log) = sealed_hot_fork_node_with_log(DescriptorScript::SchedulerContinuation)?;
     // The scripted process owns modeled immutable artifacts, not a real plugin.
     // Bind the source before its genuine fork/host-continuation capture.

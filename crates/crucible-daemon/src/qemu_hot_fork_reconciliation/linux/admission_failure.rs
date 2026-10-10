@@ -22,8 +22,8 @@ pub struct ChildAdmissionFailureReport {
     template_generation: u64,
     retained_bytes: usize,
     stderr_tail: Vec<u8>,
-    drain: Result<crucible_qemu::QemuHotForkChildDiagnosticDrain, String>,
-    terminal_readiness: Result<bool, String>,
+    drain: Result<crucible_qemu::QemuHotForkChildDiagnosticDrain, BoundedErrorText>,
+    terminal_readiness: Result<bool, BoundedErrorText>,
 }
 
 impl fmt::Display for ChildAdmissionFailureReport {
@@ -72,16 +72,33 @@ fn write_escaped(formatter: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Resul
     Ok(())
 }
 
-fn bounded_error(error: impl fmt::Display) -> String {
+/// An observation error rendered to bounded text for the advisory report.
+///
+/// The report outlives the borrowed consumer and must not retain the original
+/// error, so only its display form is kept. `Debug` matches a plain string so
+/// the report text is unchanged.
+struct BoundedErrorText(String);
+
+impl fmt::Debug for BoundedErrorText {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.0, formatter)
+    }
+}
+
+fn bounded_error(error: impl fmt::Display) -> BoundedErrorText {
     let error = error.to_string();
     if error.len() <= MAX_REPORTED_ERROR_BYTES {
-        return error;
+        return BoundedErrorText(error);
     }
     let mut end = MAX_REPORTED_ERROR_BYTES;
     while !error.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{} [omitted {} bytes]", &error[..end], error.len() - end)
+    BoundedErrorText(format!(
+        "{} [omitted {} bytes]",
+        &error[..end],
+        error.len() - end
+    ))
 }
 
 pub(super) fn capture(

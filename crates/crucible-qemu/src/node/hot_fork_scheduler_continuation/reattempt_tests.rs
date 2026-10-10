@@ -1,4 +1,4 @@
-//! Original child installer retries with real mapped Restore publications.
+//! Original child installer reattempts with real mapped Restore publications.
 //!
 //! The fork process, released native status, capability, CLOSED frontier and
 //! ACK remain explicit external providers. This executes neither QEMU nor a
@@ -184,7 +184,7 @@ fn child_installer_retains_ceiling_and_restore_receipt_after_failed_wake()
         crate::artifact_identity::tests::modeled_stopped_restore_ack_capability()?;
 
     let (mut source, mut scheduler, process, mut diagnostics) =
-        crate::node::tests::console_retry_scheduler_continuation(Some(
+        crate::node::tests::console_reattempt_scheduler_continuation(Some(
             stopped_restore_ack.launch_identity(),
         ))?;
     let fixture = crate::native_console_owner::ChildFixture::with_request(scheduler.request())?;
@@ -450,7 +450,7 @@ fn missing_operation_capability_refuses_before_ceiling_pause_or_restore_publicat
     let (_source_artifacts, source_launch) =
         crate::artifact_identity::tests::modeled_cold_launch_identity()?;
     let (mut source, mut scheduler, process, mut diagnostics) =
-        crate::node::tests::console_retry_scheduler_continuation(Some(&source_launch))?;
+        crate::node::tests::console_reattempt_scheduler_continuation(Some(&source_launch))?;
     let fixture = crate::native_console_owner::ChildFixture::with_request(scheduler.request())?;
     fixture.publish_capability()?;
     let descriptor = fixture.descriptor()?;
@@ -554,7 +554,7 @@ fn child_installer_error_reaps_qmp_peer_while_continuation_is_retained()
         crate::artifact_identity::tests::modeled_stopped_restore_ack_capability()?;
 
     let (mut source, mut scheduler, process, mut diagnostics) =
-        crate::node::tests::console_retry_scheduler_continuation(Some(
+        crate::node::tests::console_reattempt_scheduler_continuation(Some(
             stopped_restore_ack.launch_identity(),
         ))?;
     let fixture = crate::native_console_owner::ChildFixture::with_request(scheduler.request())?;
@@ -648,7 +648,7 @@ fn child_installer_retains_restore_after_late_unavailable_publication() -> Resul
         crate::artifact_identity::tests::modeled_stopped_restore_ack_capability()?;
 
     let (mut source, mut scheduler, process, mut diagnostics) =
-        crate::node::tests::console_retry_scheduler_continuation(Some(
+        crate::node::tests::console_reattempt_scheduler_continuation(Some(
             stopped_restore_ack.launch_identity(),
         ))?;
     let fixture = crate::native_console_owner::ChildFixture::with_request(scheduler.request())?;
@@ -870,7 +870,7 @@ fn child_console_capability_refusal_remains_fatal() -> Result<(), Box<dyn Error>
     let (_source_artifacts, stopped_restore_ack) =
         crate::artifact_identity::tests::modeled_stopped_restore_ack_capability()?;
     let (mut source, scheduler, process, mut diagnostics) =
-        crate::node::tests::console_retry_scheduler_continuation(Some(
+        crate::node::tests::console_reattempt_scheduler_continuation(Some(
             stopped_restore_ack.launch_identity(),
         ))?;
     let request = scheduler.request();

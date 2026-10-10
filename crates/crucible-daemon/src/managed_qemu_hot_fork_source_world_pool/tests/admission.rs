@@ -92,7 +92,7 @@ fn canonical_genesis_rejects_a_physical_counter_foreign_to_its_ready_point()
 fn changed_scheduler_quanta(
     checkpoint: &crucible::SingleSchedulerCheckpoint,
 ) -> Result<crucible::SingleSchedulerCheckpoint, Box<dyn std::error::Error>> {
-    const PREFIX: &[u8] = b"crucible.single-scheduler-continuation.v6\0";
+    const PREFIX: &[u8] = b"crucible.single-scheduler-continuation.v7\0";
     let bytes = checkpoint.canonical_bytes()?;
     let payload = bytes.strip_prefix(PREFIX).ok_or("scheduler version")?;
     let mut value: ciborium::value::Value = ciborium::de::from_reader(payload)?;
