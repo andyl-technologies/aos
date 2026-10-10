@@ -89,6 +89,9 @@
   ];
 
   nativeTokioTests = [
+    "guard::history::completion::planning_tests::paired_preparation_preserves_pending_policy_and_relationship_plan"
+    "guard::history::completion::planning_tests::paired_preparation_preserves_role_policy_and_refusal_order"
+    "guard::history::completion::planning_tests::paired_preparation_keeps_full_history_and_relationship_checks"
     "bucket::content::meta_batch::verification_tests::metadata_confirmation_reuses_only_identical_pack_parsing"
     "bucket::content::meta_batch::verification_tests::metadata_confirmation_rechecks_each_member_and_physical_read"
     "bucket::content::meta_batch::verification_tests::metadata_confirmation_reuse_never_crosses_batches_or_catalog_geometry"
