@@ -386,6 +386,7 @@ service AssessmentService {
   rpc WriteSchedule(AssessmentControlRequest) returns (AssessmentDocumentResponse);
   rpc ListSubscriptions(AssessmentControlRequest) returns (AssessmentDocumentResponse);
   rpc ListNotificationDeliveries(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+  rpc GetAdvisory(AssessmentControlRequest) returns (AssessmentDocumentResponse);
   rpc WriteSubscription(AssessmentControlRequest) returns (AssessmentDocumentResponse);
   rpc ReviewNotificationDestination(AssessmentControlRequest) returns (AssessmentDocumentResponse);
 }

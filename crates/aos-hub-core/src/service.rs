@@ -33,6 +33,7 @@ mod assessment;
 mod assessment_scans;
 mod assessment_schedules;
 mod assessment_notifications;
+mod assessment_advisories;
 mod assessment_attention;
 mod container;
 mod container_admin;

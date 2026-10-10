@@ -3224,6 +3224,13 @@
          "service" : "AssessmentService"
       },
       {
+         "method" : "GetAdvisory",
+         "path" : "aos.hub.v1.AssessmentService/GetAdvisory",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
          "method" : "ListAlerts",
          "path" : "aos.hub.v1.AssessmentService/ListAlerts",
          "request" : "AssessmentControlRequest",
@@ -3343,7 +3350,7 @@
    },
    "protobuf_package" : "aos.hub.v1",
    "protobuf_source" : "crates/aos-proto/src/proto/aos/hub/v1/hub.proto",
-   "rpc_count" : 454,
+   "rpc_count" : 471,
    "services" : [
       "RegistryService",
       "OrganizationService",
@@ -3379,6 +3386,8 @@
       "TopologyControllerService",
       "BinaryCacheUploadControllerService",
       "DirectUploadService",
-      "AssessmentService"
+      "AssessmentService",
+      "ScanService",
+      "StorageAuthorityService"
    ]
 }

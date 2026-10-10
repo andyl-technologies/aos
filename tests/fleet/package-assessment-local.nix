@@ -49,6 +49,22 @@ in {
       assert len(findings) == 1, findings
       assert "CVE-2026-10001" in findings[0]["advisoryIds"], findings
 
+      advisory_command = (
+          "aos --json maintain cve CVE-2026-10001 "
+          "--evidence-input /var/lib/assessment/evidence.json "
+      )
+      advisory = json.loads(maintainer.succeed(advisory_command))
+      assert advisory["execution"]["context"] == "bundle-reproduction", advisory
+      page = advisory["data"]
+      assert page["assessmentContext"]["inputDigest"] == first["data"]["inputDigest"], page
+      assert len(page["revisions"]) == 1, page
+      assert page["revisions"][0]["findingLinks"][0]["findingKey"] == findings[0]["findingKey"], page
+      assert page["revisions"][0]["recordDigest"] in findings[0]["advisoryRecordDigests"], page
+      miss = json.loads(maintainer.succeed(advisory_command.replace("CVE-2026-10001", "CVE-2026-99999")))
+      assert miss["data"]["revisions"] == [], miss
+      maintainer.fail(advisory_command + "--subject-ref absent-subject")
+      maintainer.fail(advisory_command + "--resource-scope different-bundle")
+
       reproduced = json.loads(maintainer.succeed(
           "aos-release-fleet-fixture assessment-verify /var/lib/assessment/evidence.json"
       ))
@@ -77,5 +93,6 @@ in {
       encoded = shlex.quote(json.dumps(bundle))
       maintainer.succeed("printf '%s' " + encoded + " > /var/lib/assessment/tampered.json")
       maintainer.fail("aos-release-fleet-fixture assessment-verify /var/lib/assessment/tampered.json")
+      maintainer.fail(advisory_command.replace("evidence.json", "tampered.json"))
     '';
 }

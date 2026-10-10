@@ -15,6 +15,7 @@
 #![forbid(unsafe_code)]
 
 pub mod alerts;
+pub mod advisories;
 pub mod acquisition;
 pub mod application;
 pub mod control;

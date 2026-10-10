@@ -290,6 +290,32 @@ impl From<AssessmentProfileArg> for aos_assessment::input::Profile {
 
 #[derive(Subcommand)]
 pub enum HubAssessmentCmd {
+    /// Read retained advisory revisions and optional historical finding links
+    #[command(visible_alias = "cve")]
+    Advisory {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Select the registry that admits the evidence
+        #[arg(long)]
+        registry: String,
+        /// Select an exact CVE or provider-native advisory identifier
+        advisory_id: String,
+        /// Limit revisions and findings to this admitted assessment snapshot
+        #[arg(long)]
+        assessment_digest: Option<String>,
+        /// Limit finding links to this subject in the selected assessment
+        #[arg(long, requires = "assessment_digest")]
+        subject_ref: Option<String>,
+        /// Continue after the exact last record from the preceding page
+        #[arg(long, requires = "resource_scope")]
+        after_record: Option<String>,
+        /// Pin the registry incarnation from the preceding page
+        #[arg(long)]
+        resource_scope: Option<String>,
+        /// Bound the number of returned revisions
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=10))]
+        limit: u32,
+    },
     /// Read notification delivery status without claiming or retrying callbacks
     Deliveries {
         #[command(flatten)]

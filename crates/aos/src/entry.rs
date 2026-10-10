@@ -35,6 +35,10 @@ pub async fn aos_main() {
         color,
     );
     if let Commands::Maintain(args) = &cli.command {
+        if let Some(MaintainCommand::Advisory(command)) = &args.command {
+            let result = commands::maintain::run_advisory(&cli, args, command, &printer);
+            exit_with_result(result, &printer);
+        }
         if let Some(MaintainCommand::Scan(command)) = &args.command {
             if !command.profiles.is_empty() {
                 let result = tokio::select! {

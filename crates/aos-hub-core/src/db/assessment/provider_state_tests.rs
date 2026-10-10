@@ -188,6 +188,73 @@ async fn admitted_advisory_queries_publish_exact_indexes_without_related_id_equi
         .await?;
     db.admit_assessment_provider_result(registry_id, &plan, &result)
         .await?;
+    let query = aos_assessment_runtime::advisories::AdvisoryQueryV1 {
+        schema: "aos.assessment-advisory-query/v1".into(),
+        advisory_id: "CVE-2026-12345".into(),
+        resource_scope: Some(plan.authorization_partition.clone()),
+        assessment_digest: None,
+        subject_ref: None,
+        after_record: None,
+        limit: 1,
+    };
+    let usage_before = db
+        .assessment_scan(registry_id, &plan.claim.scan_id)
+        .await?
+        .context("scan")?
+        .usage;
+    let page = db
+        .assessment_advisory_page(registry_id, &query)
+        .await?
+        .context("advisory page")?;
+    page.validate_for(&query)?;
+    assert_eq!(page.revisions.len(), 1);
+    assert_eq!(page.revisions[0].record, record);
+    assert!(page.assessment_context.is_none());
+    assert!(page.revisions[0].finding_links.is_empty());
+    assert_eq!(
+        db.assessment_scan(registry_id, &plan.claim.scan_id)
+            .await?
+            .context("scan")?
+            .usage,
+        usage_before
+    );
+    let mut after = query.clone();
+    after.after_record = Some(record.digest()?);
+    assert!(db
+        .assessment_advisory_page(registry_id, &after)
+        .await?
+        .context("continued page")?
+        .revisions
+        .is_empty());
+    let mut related = query.clone();
+    related.advisory_id = "CVE-2026-98765".into();
+    assert!(db
+        .assessment_advisory_page(registry_id, &related)
+        .await?
+        .context("related query")?
+        .revisions
+        .is_empty());
+    let foreign_registry = db
+        .register_registry("foreign-advisory-read", &[], false)
+        .await?;
+    assert!(db
+        .assessment_advisory_page(foreign_registry, &query)
+        .await?
+        .is_none());
+    let mut foreign = query.clone();
+    foreign.resource_scope = None;
+    assert!(db
+        .assessment_advisory_page(foreign_registry, &foreign)
+        .await?
+        .context("foreign page")?
+        .revisions
+        .is_empty());
+    let mut unadmitted = query.clone();
+    unadmitted.assessment_digest = Some(Sha256Digest::of_bytes("unadmitted assessment"));
+    assert!(db
+        .assessment_advisory_page(registry_id, &unadmitted)
+        .await?
+        .is_none());
     assert_eq!(
         db.assessment_advisory_revision_page(
             &plan.authorization_partition,

@@ -4385,5 +4385,75 @@
       "class": "operation_lifecycle"
     },
     "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "GetAdvisory",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "ListAlerts",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "ListEvents",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "ListSchedules",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "ListSubscriptions",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "ListNotificationDeliveries",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "AssessmentService",
+    "method": "ReviewNotificationDestination",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
   }
 ]

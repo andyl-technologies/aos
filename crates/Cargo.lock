@@ -608,6 +608,7 @@ version = "0.1.0"
 dependencies = [
  "aos-assessment",
  "aos-assessment-runtime",
+ "aos-contract",
  "aos-doc-model",
  "aos-hub-console-contract",
  "aos-proto-types",

@@ -5,6 +5,7 @@
 //! Raw source bodies stay on the admitted evidence path, including in Hybrid.
 
 mod acquisition_progress;
+mod advisories;
 mod alerts;
 mod authority;
 mod budgets;

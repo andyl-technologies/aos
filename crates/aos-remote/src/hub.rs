@@ -95,6 +95,8 @@ enum HubTopologyMethod {
     WriteAssessmentSchedule,
     ListAssessmentSubscriptions,
     ListAssessmentNotificationDeliveries,
+    /// Selects exact cached advisory revisions under current assessment read authority.
+    GetAssessmentAdvisory,
     WriteAssessmentSubscription,
     ReviewAssessmentNotificationDestination,
     /// Selects authenticated direct-upload capability discovery.
@@ -1223,6 +1225,7 @@ impl HubTopologyMethod {
             GetRegistryMetadata => "aos.hub.v1.RegistryService/GetRegistryMetadata",
             GetAssessmentStatus => "aos.hub.v1.AssessmentService/GetStatus",
             GetPackageAssessment => "aos.hub.v1.AssessmentService/GetAssessment",
+            GetAssessmentAdvisory => "aos.hub.v1.AssessmentService/GetAdvisory",
             RequestPackageScan => "aos.hub.v1.ScanService/RequestScan",
             GetPackageScan => "aos.hub.v1.ScanService/GetScan",
             ListPackageScans => "aos.hub.v1.ScanService/ListScans",
@@ -1811,6 +1814,7 @@ pub mod hub_rpc {
         WriteAssessmentSchedule: AssessmentControlRequest => AssessmentDocumentResponse;
         ListAssessmentSubscriptions: AssessmentControlRequest => AssessmentDocumentResponse;
         ListAssessmentNotificationDeliveries: AssessmentControlRequest => AssessmentDocumentResponse;
+        GetAssessmentAdvisory: AssessmentControlRequest => AssessmentDocumentResponse;
         WriteAssessmentSubscription: AssessmentControlRequest => AssessmentDocumentResponse;
         ReviewAssessmentNotificationDestination: AssessmentControlRequest => AssessmentDocumentResponse;
         PlanUpdateRegistryMetadata: PlanUpdateRegistryMetadataRequest => TopologyPlanResponse;

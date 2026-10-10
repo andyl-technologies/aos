@@ -24,6 +24,9 @@ pub struct MaintainArgs {
 
 #[derive(Subcommand)]
 pub enum MaintainCommand {
+    /// Inspect exact CVE or advisory evidence in a verified local bundle
+    #[command(visible_alias = "cve")]
+    Advisory(MaintainAdvisoryArgs),
     /// Plan, build, verify, and publish canonical AOS releases
     Release {
         #[command(subcommand)]
@@ -73,6 +76,32 @@ pub enum MaintainCommand {
     ObservePr(MaintainObservePrArgs),
     /// Record the observed protected merge as ready for release consumption
     Handoff(MaintainHandoffArgs),
+}
+
+#[derive(Args)]
+pub struct MaintainAdvisoryArgs {
+    /// Select an exact CVE or provider-native advisory identifier
+    pub advisory_id: String,
+
+    /// Read a bounded local assessment evidence bundle
+    #[arg(long, value_name = "PATH")]
+    pub evidence_input: PathBuf,
+
+    /// Limit finding links to one subject in the bundle's assessment
+    #[arg(long)]
+    pub subject_ref: Option<String>,
+
+    /// Continue after the last exact record from the preceding page
+    #[arg(long, requires = "resource_scope")]
+    pub after_record: Option<String>,
+
+    /// Pin the local bundle scope from the preceding page
+    #[arg(long)]
+    pub resource_scope: Option<String>,
+
+    /// Bound the number of returned revisions
+    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=10))]
+    pub limit: u32,
 }
 
 #[derive(Args)]

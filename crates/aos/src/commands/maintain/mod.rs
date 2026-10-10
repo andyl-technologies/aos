@@ -2,6 +2,7 @@
 
 mod confinement;
 mod assessment;
+mod advisories;
 mod discovery;
 mod evidence;
 mod git;
@@ -39,6 +40,7 @@ use crate::cli::{Cli, ColorChoice, MaintainArgs, MaintainCommand, ProgressChoice
 const MAX_SCAN_DIAGNOSTICS: usize = 128;
 
 pub use assessment::run_assessment;
+pub use advisories::run_advisory;
 
 /// Dispatches one recognized maintenance command to a typed completion.
 ///
@@ -94,6 +96,9 @@ pub async fn run(cli: &Cli, args: &MaintainArgs, printer: &Printer) -> Result<Co
     match &args.command {
         Some(MaintainCommand::Release { .. }) => {
             anyhow::bail!("release commands must use the independent release dispatcher")
+        }
+        Some(MaintainCommand::Advisory(_)) => {
+            anyhow::bail!("advisory commands must use the shared assessment dispatcher")
         }
         None => cached_completion("home", args, None),
         Some(MaintainCommand::Inventory(command)) => {
@@ -3217,6 +3222,7 @@ fn command_name(args: &MaintainArgs) -> &'static str {
     match &args.command {
         None => "home",
         Some(MaintainCommand::Release { .. }) => "release",
+        Some(MaintainCommand::Advisory(_)) => "advisory",
         Some(MaintainCommand::Inventory(_)) => "inventory",
         Some(MaintainCommand::Scan(_)) => "scan",
         Some(MaintainCommand::Report(_)) => "report",
@@ -3245,6 +3251,7 @@ fn command_name(args: &MaintainArgs) -> &'static str {
 fn activity_label(args: &MaintainArgs) -> Option<&'static str> {
     match args.command.as_ref()? {
         MaintainCommand::Release { .. } => None,
+        MaintainCommand::Advisory(_) => None,
         MaintainCommand::Inventory(_) => Some("Evaluating package maintenance inventory"),
         MaintainCommand::Scan(_) => Some("Checking direct upstreams and advisory evidence"),
         MaintainCommand::RefreshHashes(_) => Some("Refreshing fixed-output package hashes"),

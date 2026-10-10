@@ -2961,6 +2961,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     r = rpc_route!(r, "/aos.hub.v1.AssessmentService/WriteSchedule", write_assessment_schedule);
     r = rpc_route!(r, "/aos.hub.v1.AssessmentService/ListSubscriptions", list_assessment_subscriptions);
     r = rpc_route!(r, "/aos.hub.v1.AssessmentService/ListNotificationDeliveries", list_assessment_notification_deliveries);
+    r = rpc_route!(r, "/aos.hub.v1.AssessmentService/GetAdvisory", get_assessment_advisory);
     r = rpc_route!(r, "/aos.hub.v1.AssessmentService/WriteSubscription", write_assessment_subscription);
     r = rpc_route!(r, "/aos.hub.v1.AssessmentService/ReviewNotificationDestination", review_assessment_notification_destination);
     // ScanService

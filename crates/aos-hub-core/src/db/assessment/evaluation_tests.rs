@@ -296,5 +296,75 @@ async fn vulnerability_attention_retains_partial_positive_evidence_without_unrel
             .iter()
             .any(|proof| proof.context_digest == issue.context_digest)
     );
+    // A successfully admitted historical closure can be inspected without a
+    // mutable provider index or any further source request.
+    let frozen = db
+        .freeze_assessment_evaluation(registry_id, &claim, &data)
+        .await?;
+    let admitted = aos_assessment::evaluator::evaluate(&frozen, &data)?;
+    db.commit_assessment_evaluation(registry_id, &claim, &admitted)
+        .await?;
+    let query = aos_assessment_runtime::advisories::AdvisoryQueryV1 {
+        schema: "aos.assessment-advisory-query/v1".into(),
+        advisory_id: "CVE-2026-12345".into(),
+        resource_scope: None,
+        assessment_digest: Some(admitted.digest()?),
+        subject_ref: Some(admitted.subject_results[0].subject_ref.clone()),
+        after_record: None,
+        limit: 10,
+    };
+    let page = db
+        .assessment_advisory_page(registry_id, &query)
+        .await?
+        .context("historical advisory page")?;
+    page.validate_for(&query)?;
+    let context = page
+        .assessment_context
+        .as_ref()
+        .context("historical context")?;
+    assert_eq!(context.input_digest, admitted.input_digest);
+    assert_eq!(
+        context.snapshot_digest,
+        data.advisory_snapshot
+            .as_ref()
+            .context("snapshot")?
+            .digest()?
+    );
+    assert_eq!(context.evaluated_at, frozen.evaluated_at);
+    assert_eq!(page.revisions[0].finding_links.len(), 1);
+    assert_eq!(
+        page.revisions[0].finding_links[0].finding_key,
+        admitted.subject_results[0].findings[0].finding_key
+    );
+    let projected = aos_assessment_runtime::advisories::lookup_assessment(
+        &query,
+        &frozen,
+        &data,
+        &admitted,
+        page.resource_scope.clone(),
+        page.as_of.clone(),
+    )?;
+    assert_eq!(projected, page);
+    let mut absent_subject = query.clone();
+    absent_subject.subject_ref = Some("absent-subject".into());
+    assert!(db
+        .assessment_advisory_page(registry_id, &absent_subject)
+        .await?
+        .is_none());
+    let mut miss = query.clone();
+    miss.advisory_id = "CVE-2026-98765".into();
+    assert!(db
+        .assessment_advisory_page(registry_id, &miss)
+        .await?
+        .context("historical miss")?
+        .revisions
+        .is_empty());
+    let foreign_registry = db
+        .register_registry("foreign-historical-advisory-read", &[], false)
+        .await?;
+    assert!(db
+        .assessment_advisory_page(foreign_registry, &query)
+        .await?
+        .is_none());
     Ok(())
 }

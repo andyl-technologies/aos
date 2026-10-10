@@ -11,6 +11,38 @@ installing a controller does not grant authenticated callers assessment permissi
 Packages without explicit authenticated scan declarations remain unassessed.
 Missing source mappings and incomplete source responses remain coverage gaps.
 
+## Cached CVE and advisory lookup
+
+`aos hub maintain advisory CVE-2026-12345 --registry REGISTRY` reads admitted
+normalized advisory revisions. `cve` is an alias for `advisory`; exact source
+identifiers such as OSV IDs also work. Reads retain source severity, equivalent
+aliases, version ranges, upstream fix claims and withdrawal history. Related
+or upstream IDs do not create equivalence. A cache miss never contacts a
+provider and does not establish that a package is unaffected.
+
+Add `--assessment-digest DIGEST` to select that successfully admitted assessment's
+immutable advisory snapshot. This selection also returns links to its original
+raw findings, with the assessment's input, policy and evaluation time. Use
+`--subject-ref SUBJECT` to select one subject within that assessment. The lookup
+does not assert that a historical result remains current or fresh. The registry
+console offers the same explicit cached lookup and historical selection.
+
+`--limit 1..10` bounds revisions; use the returned `--after-record` and
+`--resource-scope` with the same advisory/assessment selection to continue.
+Responses are limited to 256 KiB and one hundred finding links per revision;
+reduce the revision limit or select a subject if a response exceeds those bounds.
+The shared runtime projection reads the exact frozen closure in every Hub mode,
+including revisions that have no live provider index.
+
+For local inspection, export a bundle with `aos maintain scan --profile
+vulnerabilities --evidence-output FILE` and use `aos maintain advisory
+CVE-2026-12345 --evidence-input FILE` (`cve` also works). Local and hosted
+lookup use the same historical projection, canonical page and human renderer.
+Local output identifies a bundle reproduction and a bundle-specific scope;
+reproducing supplied evidence establishes semantic agreement, not independent
+source authority. It does not import that evidence into Hub or change package
+status. The local command rejects tampered bundles and performs no source HTTP.
+
 ## Native controller
 
 Supply an owner-private JSON file with `aos-hub serve

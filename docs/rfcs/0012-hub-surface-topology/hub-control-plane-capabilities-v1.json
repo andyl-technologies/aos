@@ -1319,6 +1319,7 @@
       "methods": [
         "GetStatus",
         "GetAssessment",
+        "GetAdvisory",
         "ListAlerts",
         "AcknowledgeAlert",
         "ListEvents",
