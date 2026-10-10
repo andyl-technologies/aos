@@ -340,7 +340,10 @@ fn verify_measured_objective(
     let traffic = &evaluation.outcomes()[&MeasurementId::parse("traffic_loss_packets")?];
     let drops = &traffic.metrics()[&MetricId::parse("modeled_drop_count")?];
     if drops.samples().is_empty()
-        || !matches!(drops.aggregate(), MeasurementAggregateValue::Unsigned(_))
+        || !matches!(
+            drops.aggregate(),
+            Some(MeasurementAggregateValue::Unsigned(_))
+        )
     {
         return Err("traffic objective lacks model-derived drop evidence".into());
     }

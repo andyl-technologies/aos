@@ -170,7 +170,12 @@ pub fn project_crucible_objective_values(
             if !policy.objectives().contains_key(&name) {
                 continue;
             }
-            let value = match outcome.aggregate() {
+            // An uncommitted window without samples has no aggregate; the
+            // objective evaluator then rejects it as a missing measurement.
+            let Some(aggregate) = outcome.aggregate() else {
+                continue;
+            };
+            let value = match aggregate {
                 MeasurementAggregateValue::Signed(value) => ObjectiveValue::Signed(*value),
                 MeasurementAggregateValue::Unsigned(value) => ObjectiveValue::Unsigned(*value),
                 MeasurementAggregateValue::Rational(value) => ObjectiveValue::rational(

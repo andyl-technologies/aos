@@ -7,8 +7,8 @@
 use super::*;
 use crucible_core::model::{
     Aggregation, BoundarySelector, CohortPolicy, MeasurementDefinition, MeasurementDefinitions,
-    MeasurementId, MeasurementInstanceKey, MetricDefinition, MetricId, MetricSource,
-    MetricValueType, UnitId,
+    MeasurementEvaluation, MeasurementId, MeasurementInstanceKey, MeasurementWindowOutcome,
+    MetricDefinition, MetricId, MetricSource, MetricValueType, UnitId,
 };
 use crucible_core::{FramePredicate, LinkId};
 use crucible_daemon::{AttemptExecutionOrigin, AttemptRuntimeState};
@@ -765,8 +765,7 @@ fn http_measurement_publication_accepts_only_the_declared_client_marker()
     use crucible_campaign::{ConfigurationId, ScenarioDefId};
     use crucible_core::SchedulerEventLogEntry;
     use crucible_core::model::{
-        MeasurementAggregateValue, MeasurementEvaluationError, MeasurementSampleValue,
-        MeasurementTerminalState, MeasurementWindowOutcome,
+        MeasurementAggregateValue, MeasurementSampleValue, MeasurementTerminalState,
     };
     use crucible_daemon::{
         CrucibleMeasurementError, evaluate_crucible_measurement_publication,
@@ -849,12 +848,16 @@ fn http_measurement_publication_accepts_only_the_declared_client_marker()
     needs_ready[0].begin = BoundarySelector::ScenarioReady;
     let needs_ready =
         MeasurementDefinitions::new(&world, &plan, &Properties::empty(), needs_ready)?;
-    assert!(matches!(
-        evaluate(&needs_ready, client.clone(), HTTP_MARKER_INSTANCE, None),
-        Err(CrucibleMeasurementError::Evaluation(
-            MeasurementEvaluationError::EmptySamples { aggregation: "max" }
-        ))
-    ));
+    // A window that never opens commits no measurement, so its max is absent.
+    let unready = evaluate(&needs_ready, client.clone(), HTTP_MARKER_INSTANCE, None)?;
+    let evaluation = verify_crucible_measurement_publication(
+        unready.measurement_set(),
+        unready.evidence(),
+        scenario,
+        configuration,
+        &needs_ready,
+    )?;
+    require_uncommitted_http_window(&evaluation)?;
 
     let no_response_marker = evaluate_crucible_measurement_publication(
         scenario,
@@ -868,13 +871,15 @@ fn http_measurement_publication_accepts_only_the_declared_client_marker()
             scheduler_quiescent: true,
         },
         1024 * 1024,
-    );
-    assert!(matches!(
-        no_response_marker,
-        Err(CrucibleMeasurementError::Evaluation(
-            MeasurementEvaluationError::EmptySamples { aggregation: "max" }
-        ))
-    ));
+    )?;
+    let evaluation = verify_crucible_measurement_publication(
+        no_response_marker.measurement_set(),
+        no_response_marker.evidence(),
+        scenario,
+        configuration,
+        restored.measurements(),
+    )?;
+    require_uncommitted_http_window(&evaluation)?;
 
     for ready in [
         None,
@@ -912,7 +917,7 @@ fn http_measurement_publication_accepts_only_the_declared_client_marker()
         );
         assert_eq!(
             metric.aggregate(),
-            &MeasurementAggregateValue::Unsigned(marker.at().ticks)
+            Some(&MeasurementAggregateValue::Unsigned(marker.at().ticks))
         );
     }
 
@@ -930,3 +935,20 @@ fn http_measurement_publication_accepts_only_the_declared_client_marker()
 
 #[path = "two_node_http/proxy_tests.rs"]
 mod proxy_tests;
+
+fn require_uncommitted_http_window(
+    evaluation: &MeasurementEvaluation,
+) -> Result<(), Box<dyn Error>> {
+    let outcome = &evaluation.outcomes()[&MeasurementId::parse(HTTP_MARKER)?];
+    if outcome.window() != &MeasurementWindowOutcome::NotStarted {
+        return Err(format!("HTTP window unexpectedly opened: {outcome:?}").into());
+    }
+    if outcome
+        .metrics()
+        .values()
+        .any(|metric| metric.aggregate().is_some())
+    {
+        return Err(format!("uncommitted HTTP window reported an aggregate: {outcome:?}").into());
+    }
+    Ok(())
+}

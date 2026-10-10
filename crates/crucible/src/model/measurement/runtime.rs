@@ -425,11 +425,15 @@ impl MeasurementWindowOutcome {
 }
 
 /// Exact samples and recomputed aggregate for one metric.
+///
+/// The aggregate is absent only when the window did not complete and admitted
+/// no sample for an aggregation that is undefined on an empty window. A
+/// completed window always carries its aggregate.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeasurementMetricOutcome {
     samples: Vec<MeasurementRuntimeSample>,
-    aggregate: MeasurementAggregateValue,
+    aggregate: Option<MeasurementAggregateValue>,
     evidence: Vec<ContentHash>,
 }
 
@@ -441,9 +445,12 @@ impl MeasurementMetricOutcome {
     }
 
     /// Returns the recomputed exact aggregate.
+    ///
+    /// Returns `None` when an uncommitted window admitted no sample for a
+    /// first, last, min, max, exact-mean, or event-delta aggregation.
     #[must_use]
-    pub const fn aggregate(&self) -> &MeasurementAggregateValue {
-        &self.aggregate
+    pub const fn aggregate(&self) -> Option<&MeasurementAggregateValue> {
+        self.aggregate.as_ref()
     }
 
     /// Returns the event hash corresponding to every sample.
@@ -883,13 +890,22 @@ pub fn evaluate_measurements(
                 })
                 .cloned()
                 .collect::<Vec<_>>();
-            let aggregate = aggregate_metric_samples(
-                metric,
-                &retained
-                    .iter()
-                    .map(|sample| sample.value.clone())
-                    .collect::<Vec<_>>(),
-            )?;
+            let values = retained
+                .iter()
+                .map(|sample| sample.value.clone())
+                .collect::<Vec<_>>();
+            // Only a completed window commits a measurement. A window that
+            // never opened, is still open, or timed out may lack every sample,
+            // so an aggregation undefined on empty input is reported absent
+            // rather than failing the whole evaluation.
+            let aggregate = if values.is_empty()
+                && !matches!(window, MeasurementWindowOutcome::Completed { .. })
+                && aggregation_requires_samples(&metric.aggregation)
+            {
+                None
+            } else {
+                Some(aggregate_metric_samples(metric, &values)?)
+            };
             let evidence = retained
                 .iter()
                 .map(|sample| {
@@ -936,6 +952,19 @@ pub fn verify_measurement_evaluation(
         return Err(MeasurementEvaluationError::ReplayMismatch);
     }
     Ok(evaluation)
+}
+
+/// Reports whether an aggregation is undefined on an empty sample window.
+const fn aggregation_requires_samples(aggregation: &Aggregation) -> bool {
+    match aggregation {
+        Aggregation::Count | Aggregation::Sum | Aggregation::Histogram { .. } => false,
+        Aggregation::Min
+        | Aggregation::Max
+        | Aggregation::ExactMean
+        | Aggregation::First
+        | Aggregation::Last
+        | Aggregation::EventDelta => true,
+    }
 }
 
 // Recomputes one aggregate only after the full evaluator has authenticated the

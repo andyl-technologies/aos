@@ -223,7 +223,10 @@ fn cohort_boundaries_retain_exact_events_and_bound_samples() -> Result<(), Box<d
     assert_eq!(end.events().len(), 2);
     let metric = &outcome.metrics()[&MetricId::parse("samples")?];
     assert_eq!(metric.samples().len(), 2);
-    assert_eq!(metric.aggregate(), &MeasurementAggregateValue::Unsigned(12));
+    assert_eq!(
+        metric.aggregate(),
+        Some(&MeasurementAggregateValue::Unsigned(12))
+    );
     assert_eq!(metric.evidence().len(), 2);
     let verified = verify_measurement_evaluation(
         &definitions,
@@ -353,7 +356,7 @@ fn end_boundary_wins_a_same_event_timeout() -> Result<(), Box<dyn Error>> {
         evaluation.outcomes()[&MeasurementId::parse("deadline")?].metrics()
             [&MetricId::parse("count")?]
             .aggregate(),
-        &MeasurementAggregateValue::Unsigned(0)
+        Some(&MeasurementAggregateValue::Unsigned(0))
     );
     Ok(())
 }
@@ -462,7 +465,10 @@ fn synthetic_ready_coordinate_excludes_earlier_samples() -> Result<(), Box<dyn E
     ));
     let metric = &outcome.metrics()[&MetricId::parse("sum")?];
     assert_eq!(metric.samples().len(), 1);
-    assert_eq!(metric.aggregate(), &MeasurementAggregateValue::Unsigned(7));
+    assert_eq!(
+        metric.aggregate(),
+        Some(&MeasurementAggregateValue::Unsigned(7))
+    );
     Ok(())
 }
 
@@ -875,4 +881,99 @@ fn samples_for_metric(samples: &[MeasurementRuntimeSample], metric: &str) -> Vec
             value => panic!("model projector emitted non-unsigned sample: {value:?}"),
         })
         .collect()
+}
+
+fn marker_window(aggregation: Aggregation) -> Result<MeasurementDefinitions, Box<dyn Error>> {
+    let measurement = MeasurementDefinition {
+        id: MeasurementId::parse("recovery")?,
+        begin: BoundarySelector::GuestMarker {
+            marker: MarkerId::from_name("begin"),
+            instance: None,
+        },
+        end: BoundarySelector::GuestMarker {
+            marker: MarkerId::from_name("end"),
+            instance: None,
+        },
+        timeout: None,
+        cohort: CohortPolicy::Any(vec![node("router-a")]),
+        metrics: vec![metric(
+            "delta",
+            MetricValueType::UnsignedInteger,
+            aggregation,
+        )?],
+    };
+    Ok(MeasurementDefinitions::new(
+        &world()?,
+        &Plan::empty(),
+        &Properties::empty(),
+        vec![measurement],
+    )?)
+}
+
+fn marker_entry(sequence: u64, at: u64, marker: &str) -> SchedulerEventLogEntry {
+    SchedulerEventLogEntry::guest_marker_observation(
+        sequence,
+        Icount { retired: at },
+        node("router-a"),
+        MarkerId::from_name(marker),
+    )
+}
+
+#[test]
+fn uncommitted_windows_report_sample_requiring_aggregates_absent() -> Result<(), Box<dyn Error>> {
+    let definitions = marker_window(Aggregation::EventDelta)?;
+    let recovery = MeasurementId::parse("recovery")?;
+    let delta = MetricId::parse("delta")?;
+
+    // The attempt stops before the begin marker, so the window never opens.
+    let before_begin = vec![marker_entry(0, 10, "unrelated")];
+    let evaluation = evaluate_measurements(&definitions, &before_begin, Vec::new(), &terminal(10))?;
+    let outcome = &evaluation.outcomes()[&recovery];
+    assert_eq!(outcome.window(), &MeasurementWindowOutcome::NotStarted);
+    assert_eq!(outcome.metrics()[&delta].aggregate(), None);
+
+    // An open window without samples is likewise uncommitted.
+    let open = vec![marker_entry(0, 10, "begin")];
+    let evaluation = evaluate_measurements(&definitions, &open, Vec::new(), &terminal(10))?;
+    let outcome = &evaluation.outcomes()[&recovery];
+    assert!(matches!(
+        outcome.window(),
+        MeasurementWindowOutcome::Open { .. }
+    ));
+    assert_eq!(outcome.metrics()[&delta].aggregate(), None);
+    Ok(())
+}
+
+#[test]
+fn completed_windows_still_require_samples_for_event_delta() -> Result<(), Box<dyn Error>> {
+    let definitions = marker_window(Aggregation::EventDelta)?;
+    let completed = vec![marker_entry(0, 10, "begin"), marker_entry(1, 20, "end")];
+
+    let Err(error) = evaluate_measurements(&definitions, &completed, Vec::new(), &terminal(20))
+    else {
+        return Err("a committed event-delta window must be measurable".into());
+    };
+
+    assert_eq!(
+        error,
+        MeasurementEvaluationError::EmptySamples {
+            aggregation: "event_delta",
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn uncommitted_windows_keep_empty_tolerant_aggregates() -> Result<(), Box<dyn Error>> {
+    let definitions = marker_window(Aggregation::Count)?;
+    let before_begin = vec![marker_entry(0, 10, "unrelated")];
+
+    let evaluation = evaluate_measurements(&definitions, &before_begin, Vec::new(), &terminal(10))?;
+
+    let outcome = &evaluation.outcomes()[&MeasurementId::parse("recovery")?];
+    assert_eq!(
+        outcome.metrics()[&MetricId::parse("delta")?].aggregate(),
+        Some(&MeasurementAggregateValue::Unsigned(0))
+    );
+    Ok(())
 }

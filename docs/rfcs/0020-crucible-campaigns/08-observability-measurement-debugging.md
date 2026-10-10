@@ -133,7 +133,7 @@ and definitions therefore produce byte-identical samples regardless of host
 timing or adapter call order.
 
 The pure replay result is
-`crucible.model.measurement-evaluation.v1`. Evaluation first authenticates a
+`crucible.model.measurement-evaluation.v2`. Evaluation first authenticates a
 dense scheduler-log range, then admits at most 1,000,000 normalized samples and
 1,000,000 scheduler entries. Normalized samples have a separate aggregate
 64-MiB canonical-body limit, and terminal input contains at most 65,536 node
@@ -154,7 +154,7 @@ Evaluation = {
 }
 Metric = {
   samples: [{ sequence, measurement, metric, value }],
-  aggregate: Aggregate,
+  aggregate: Aggregate | null,
   evidence: [ContentHash]
 }
 Boundary = { sequence: u64|null, at: VirtualTime, events: [Event], cohort: [NodeId] }
@@ -172,7 +172,9 @@ lowercase `snake_case` `kind` plus `value`; their common tags are `signed`,
 `unsigned_vector`, and aggregates additionally admit `histogram`. A rational
 value is `{negative,numerator,denominator}` in that order. `ContentHash` remains
 `{bytes:[32 u8]}`. The identity is
-`H("crucible.model.measurement-evaluation.v1", lowercase_hex(body))`.
+`H("crucible.model.measurement-evaluation.v2", lowercase_hex(body))`. A
+present aggregate encodes exactly as before `null` was admitted, so every
+body without a `null` aggregate keeps its identity.
 
 Each satisfying boundary retains its completing sequence and virtual-time
 coordinate plus the exact scheduler-entry hashes in scheduler order and the
@@ -193,7 +195,12 @@ scenario genesis. Exact integer arithmetic rejects overflow; rationals use a
 reduced signed-magnitude numerator and positive denominator; integer histograms
 use inclusive declared upper bounds plus one overflow bin. `count`, numeric
 `sum`, and histogram may aggregate an empty window, while `first`, `last`,
-`min`, `max`, exact mean, and event delta require samples. Retained evaluation
+`min`, `max`, exact mean, and event delta require samples. Only a completed
+window commits a measurement: a completed window without the samples its
+aggregation requires fails evaluation, while a `not_started`, `open`, or
+`timed_out` window with no admitted sample reports that aggregate as `null`.
+Objective projection skips a `null` aggregate, so the campaign records a
+missing measurement instead of a numeric score. Retained evaluation
 bytes are accepted only by recomputing the complete result and comparing the
 canonical body exactly.
 
@@ -369,7 +376,7 @@ plus canonical framing fits one generic envelope. `definitions` and
 selects the model-specific verifier. The campaign layer retains those bytes and
 generic evidence children but never treats a caller-asserted hash as semantic
 proof. Current Crucible payload schema 2 retains the canonical
-`crucible.model.measurement-evaluation.v1` body and adds an exact raw-input
+`crucible.model.measurement-evaluation.v2` body and adds an exact raw-input
 contract. Its `evidence` set contains exactly one `Trace` content ID using
 `crucible.executor.measurement-replay-evidence.v2`. The strict canonical CBOR
 leaf binds the scenario-definition ID, configuration ID, measurement-definition

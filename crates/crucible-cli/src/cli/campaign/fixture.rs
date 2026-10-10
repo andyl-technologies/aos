@@ -512,13 +512,13 @@ fn worked_network_measurements(
             metrics,
         })
     };
-    let model_metric = |id: &str, unit: &str, source: MetricSource| {
+    let model_metric = |id: &str, unit: &str, source: MetricSource, aggregation| {
         Ok::<_, CliError>(MetricDefinition {
             id: metric_id(id)?,
             value_type: MetricValueType::UnsignedInteger,
             unit: unit_id(unit)?,
             source,
-            aggregation: Aggregation::EventDelta,
+            aggregation,
         })
     };
     let guest_metric = |id: &str, unit: &str| {
@@ -545,6 +545,7 @@ fn worked_network_measurements(
                 "elapsed_virtual_time",
                 "virtual_ticks",
                 MetricSource::VirtualTime,
+                Aggregation::EventDelta,
             )?],
         )?,
         window(
@@ -555,7 +556,9 @@ fn worked_network_measurements(
             vec![model_metric(
                 "modeled_drop_count",
                 "packets",
+                // The drop source emits one sample per modeled drop.
                 MetricSource::NetworkModeledDropCount { link: None },
+                Aggregation::Count,
             )?],
         )?,
         window(
@@ -569,6 +572,7 @@ fn worked_network_measurements(
                 MetricSource::NodeIcount {
                     node: router_a.clone(),
                 },
+                Aggregation::EventDelta,
             )?],
         )?,
         // West reports its own request outcomes between convergence and the
@@ -593,6 +597,7 @@ fn worked_network_measurements(
                 "elapsed_virtual_time",
                 "virtual_ticks",
                 MetricSource::VirtualTime,
+                Aggregation::EventDelta,
             )?],
         )?,
         window(
@@ -604,6 +609,7 @@ fn worked_network_measurements(
                 "elapsed_virtual_time",
                 "virtual_ticks",
                 MetricSource::VirtualTime,
+                Aggregation::EventDelta,
             )?],
         )?,
         window(
@@ -615,6 +621,7 @@ fn worked_network_measurements(
                 "elapsed_virtual_time",
                 "virtual_ticks",
                 MetricSource::VirtualTime,
+                Aggregation::EventDelta,
             )?],
         )?,
     ];
