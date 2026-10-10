@@ -42,7 +42,9 @@ pub use service::{
     ConditionalPreparationRequest, ConditionalPreparationState, NodeDebugRecord,
     NodeDebugResumeRequest, NodeDebugStartRequest, NodeDebugState, NodeDebugStop,
     NodeObservationRetention, NodeObservationService, NodeObservationServiceConfig,
-    NodeObservationServiceError,
+    NodeObservationServiceError, NodePreservingDebugAction, NodePreservingDebugCapture,
+    NodePreservingDebugRecord, NodePreservingDebugRequest, NodePreservingDebugResumeRequest,
+    NodePreservingDebugState,
 };
 pub use terminal_publication::StoredTerminalResultPublisher;
 

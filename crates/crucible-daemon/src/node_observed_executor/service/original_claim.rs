@@ -28,6 +28,7 @@ pub(super) enum Route {
     Capability,
     Root,
     Debug,
+    DebugPreserving,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -199,6 +200,7 @@ impl OriginalClaims {
             (Route::Conditional, "node-conditional-preparations"),
             (Route::Root, "node-root-preparations"),
             (Route::Debug, "node-debug-preparations"),
+            (Route::DebugPreserving, "node-preserving-debug-preparations"),
         ] {
             if original != route
                 && self

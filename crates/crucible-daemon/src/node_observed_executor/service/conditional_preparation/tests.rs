@@ -186,6 +186,8 @@ fn pending_status_and_exact_retry_do_not_wait_for_the_owning_actor() {
         .unwrap(),
         preparations: Some(ledger.clone()),
         debug: super::super::debug::DebugLedger::new(blobs.clone(), refs.clone()).unwrap(),
+        preserving_debug: super::super::debug_preserving::Ledger::new(blobs.clone(), refs.clone())
+            .unwrap(),
         capabilities:
             super::super::capability_preparation::ledger::CapabilityPreparationLedger::new(
                 blobs.clone(),
@@ -547,6 +549,12 @@ fn queued_shutdown_completion_panic_preserves_original_and_reclaims_native_world
                     )
                     .unwrap(),
                 capability_archive: directory.path().join("capability-clock-archive"),
+                condition_archive: directory.path().join("condition-preserving-archive"),
+                preserving_debug: super::super::debug_preserving::Ledger::new(
+                    durable.clone(),
+                    refs.clone(),
+                )
+                .unwrap(),
                 capabilities:
                     super::super::capability_preparation::ledger::CapabilityPreparationLedger::new(
                         durable.clone(),

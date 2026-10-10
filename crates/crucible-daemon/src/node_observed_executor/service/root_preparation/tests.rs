@@ -149,6 +149,8 @@ fn queued_status_is_immediate_and_full_queue_preserves_original_unavailable_reco
         retired: Arc::new(AtomicBool::new(false)),
         preparations: None,
         debug: super::super::debug::DebugLedger::new(blobs.clone(), refs.clone()).unwrap(),
+        preserving_debug: super::super::debug_preserving::Ledger::new(blobs.clone(), refs.clone())
+            .unwrap(),
         capabilities:
             super::super::capability_preparation::ledger::CapabilityPreparationLedger::new(
                 blobs, refs,

@@ -14,7 +14,9 @@
 //! Compilation and dispatch belong to the actual daemon's installed catalog.
 
 mod debug;
+mod debug_preserving;
 pub use debug::decode_debug_record;
+pub use debug_preserving::decode_preserving_debug_record;
 mod capability_preparation;
 mod root_preparation;
 pub use root_preparation::{decode_root_diagnostic, decode_root_preparation};
@@ -90,6 +92,21 @@ pub struct NodeControlRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeControlCommand {
+    /// Queues source capture or a fresh original stopped owner under edition ten.
+    PreservingDebugPrepare {
+        /// Retains the complete original recipe and source capture relation.
+        request: Box<crate::node_observed_executor::NodePreservingDebugRequest>,
+    },
+    /// Queues one authentic current-owner Resume under edition ten.
+    PreservingDebugResume {
+        /// Retains the original execution and once-only suffix horizon.
+        request: Box<crate::node_observed_executor::NodePreservingDebugResumeRequest>,
+    },
+    /// Reads preserving custody without returning a stopped owner.
+    PreservingDebugStatus {
+        /// Names the original common-route execution.
+        execution: String,
+    },
     /// Queues one original live condition stop under explicit edition eight.
     DebugStart {
         /// Carries authored installed selections without native authority.
@@ -203,6 +220,11 @@ pub struct NodeControlReply {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeControlResult {
+    /// Reports preserving data without granting native restore or Resume authority.
+    PreservingDebugState {
+        /// Retains exact original request, source capture and custody history.
+        record: Box<crate::node_observed_executor::NodePreservingDebugRecord>,
+    },
     /// Retains original live Debug status without transferring native authority.
     DebugState {
         /// Contains the exact durable original request and control state.
@@ -358,6 +380,9 @@ impl NodeControlRequest {
 
     fn validate(&self) -> Result<(), NodeControlError> {
         let expected_version = match self.command {
+            NodeControlCommand::PreservingDebugPrepare { .. }
+            | NodeControlCommand::PreservingDebugResume { .. }
+            | NodeControlCommand::PreservingDebugStatus { .. } => 10,
             NodeControlCommand::DebugStart { .. }
             | NodeControlCommand::DebugResume { .. }
             | NodeControlCommand::DebugStatus { .. } => 8,
@@ -378,6 +403,15 @@ impl NodeControlRequest {
             return Err(refused("unsupported local node control edition"));
         }
         match &self.command {
+            NodeControlCommand::PreservingDebugPrepare { request } => {
+                request.validate().map_err(refused)
+            }
+            NodeControlCommand::PreservingDebugResume { request } => {
+                request.validate().map_err(refused)
+            }
+            NodeControlCommand::PreservingDebugStatus { execution } => {
+                execution_id(execution).map(|_| ())
+            }
             NodeControlCommand::DebugStart { request } => request.validate().map_err(refused),
             NodeControlCommand::DebugResume { request } => request.validate().map_err(refused),
             NodeControlCommand::DebugStatus { execution } => execution_id(execution).map(|_| ()),
@@ -495,6 +529,9 @@ pub fn decode_node_state(
     reply: &NodeControlReply,
 ) -> Result<ObservedAttemptState, NodeControlError> {
     match &reply.result {
+        NodeControlResult::PreservingDebugState { .. } => Err(refused(
+            "preserving status is not ordinary observed execution state",
+        )),
         NodeControlResult::DebugState { .. } => Err(refused(
             "Debug custody is not ordinary observed execution state",
         )),

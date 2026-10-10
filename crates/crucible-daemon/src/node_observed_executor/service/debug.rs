@@ -8,7 +8,7 @@
 //! its retained runtime fence; neither a nonce retry nor a daemon restart
 //! creates native stop, report, acknowledgement or resume authority.
 
-mod budget;
+pub(super) mod budget;
 mod ledger;
 #[cfg(test)]
 mod tests;

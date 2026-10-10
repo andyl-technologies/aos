@@ -14,6 +14,11 @@ use crucible_node_contract::ContentRef;
 
 mod capability_preparation;
 mod debug;
+mod debug_preserving;
+pub use debug_preserving::{
+    NodePreservingDebugAction, NodePreservingDebugCapture, NodePreservingDebugRecord,
+    NodePreservingDebugRequest, NodePreservingDebugResumeRequest, NodePreservingDebugState,
+};
 mod original_claim;
 mod root_preparation;
 use root_preparation::ledger::RootPreparationLedger;
@@ -87,6 +92,16 @@ pub use conditional_preparation::{
 type Reply = SyncSender<Result<ObservedAttemptState, NodeObservationServiceError>>;
 
 enum Command {
+    PreservingDebugPrepare {
+        request: NodePreservingDebugRequest,
+        reservation: Box<debug_preserving::Reservation>,
+        ledger: debug_preserving::Ledger,
+    },
+    PreservingDebugResume {
+        request: NodePreservingDebugResumeRequest,
+        reservation: Box<debug_preserving::Reservation>,
+        ledger: debug_preserving::Ledger,
+    },
     DebugStart {
         request: NodeDebugStartRequest,
         reservation: DebugReservation,
@@ -152,9 +167,11 @@ struct RootWorker {
 struct ActorStorage {
     root_installation: root_preparation::worker::Installation,
     capability_archive: PathBuf,
+    condition_archive: PathBuf,
     preparations: Option<ConditionalPreparationLedger>,
     capabilities: CapabilityPreparationLedger,
     debug: DebugLedger,
+    preserving_debug: debug_preserving::Ledger,
     root_preparations: RootPreparationLedger,
     transcripts: Option<crucible::node_adapters::transcript::TranscriptArchive>,
     repository: Arc<CampaignRepository>,
@@ -181,6 +198,7 @@ pub struct NodeObservationRetention {
     preparations: Option<ConditionalPreparationLedger>,
     capabilities: CapabilityPreparationLedger,
     debug: DebugLedger,
+    preserving_debug: debug_preserving::Ledger,
     root_preparations: RootPreparationLedger,
 }
 
@@ -197,6 +215,7 @@ impl NodeObservationRetention {
             .clone();
         roots.extend(self.capabilities.retention_roots()?);
         roots.extend(self.debug.retention_roots()?);
+        roots.extend(self.preserving_debug.retention_roots()?);
         roots.extend(self.root_preparations.retention_roots()?);
         if let Some(preparations) = &self.preparations {
             roots.extend(preparations.retention_roots()?);
@@ -226,6 +245,7 @@ pub struct NodeObservationService {
     preparations: Option<ConditionalPreparationLedger>,
     capabilities: CapabilityPreparationLedger,
     debug: DebugLedger,
+    preserving_debug: debug_preserving::Ledger,
     root_preparations: RootPreparationLedger,
 }
 
@@ -270,11 +290,16 @@ impl NodeObservationService {
         let actor_capabilities = capabilities.clone();
         let debug = DebugLedger::new(blobs.clone(), refs.clone())?;
         let actor_debug = debug.clone();
+        let preserving_debug = debug_preserving::Ledger::new(blobs.clone(), refs.clone())?;
+        let actor_preserving_debug = preserving_debug.clone();
         let root_preparations = RootPreparationLedger::new(blobs.clone(), refs.clone())?;
         let actor_root_preparations = root_preparations.clone();
         let root_installation =
             root_preparation::worker::Installation::from_configuration(&configuration)?;
         let capability_archive = configuration.socket_parent.join("capability-clock-archive");
+        let condition_archive = configuration
+            .socket_parent
+            .join("condition-preserving-archive");
         let (commands, receiver) = mpsc::sync_channel(configuration.maximum_pending_requests);
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let stopping = Arc::new(AtomicBool::new(false));
@@ -308,9 +333,11 @@ impl NodeObservationService {
                                 preparations: actor_preparations,
                                 capabilities: actor_capabilities,
                                 debug: actor_debug,
+                                preserving_debug: actor_preserving_debug,
                                 root_preparations: actor_root_preparations,
                                 root_installation,
                                 capability_archive,
+                                condition_archive,
                                 transcripts,
                                 repository,
                                 blobs,
@@ -341,6 +368,7 @@ impl NodeObservationService {
             preparations,
             capabilities,
             debug,
+            preserving_debug,
             root_preparations,
         })
     }
@@ -459,6 +487,7 @@ impl NodeObservationService {
             preparations: self.preparations.clone(),
             capabilities: self.capabilities.clone(),
             debug: self.debug.clone(),
+            preserving_debug: self.preserving_debug.clone(),
             root_preparations: self.root_preparations.clone(),
         }
     }
@@ -497,6 +526,7 @@ fn run_actor(
     } = control;
     let mut workers: BTreeMap<ExecutionId, ActorWorker> = BTreeMap::new();
     let mut debug_workers: BTreeMap<ExecutionId, DebugWorker> = BTreeMap::new();
+    let mut preserving_workers = debug_preserving::actor::Workers::new();
     let mut root_workers: BTreeMap<ExecutionId, RootWorker> = BTreeMap::new();
     let mut retired_roots: BTreeMap<ExecutionId, BTreeSet<ContentId>> = BTreeMap::new();
     let mut context = Context::from_waker(Waker::noop());
@@ -527,9 +557,12 @@ fn run_actor(
                 } else {
                     handle_command(
                         command,
-                        &mut workers,
-                        &mut debug_workers,
-                        &mut root_workers,
+                        ActorOwners {
+                            workers: &mut workers,
+                            debug_workers: &mut debug_workers,
+                            preserving_workers: &mut preserving_workers,
+                            root_workers: &mut root_workers,
+                        },
                         &mut catalog,
                         maximum_worlds.saturating_sub(retired_roots.len()),
                         &storage,
@@ -555,6 +588,7 @@ fn run_actor(
             }
         }
         debug::poll_owned(&mut debug_workers, &storage, &stopping);
+        debug_preserving::actor::poll(&mut preserving_workers, &mut catalog, &storage, &stopping);
         let finished_debug: Vec<_> = debug_workers
             .iter()
             .filter_map(|(execution, owned)| {
@@ -651,6 +685,7 @@ fn run_actor(
         }
         if stopping.load(Ordering::Acquire)
             && workers.is_empty()
+            && preserving_workers.is_empty()
             && debug_workers.is_empty()
             && root_workers.is_empty()
             && reclaimed
@@ -670,16 +705,50 @@ fn run_actor(
     }
 }
 
+/// Borrows the original owner maps for one dispatch without moving their custody.
+struct ActorOwners<'a> {
+    workers: &'a mut BTreeMap<ExecutionId, ActorWorker>,
+    debug_workers: &'a mut BTreeMap<ExecutionId, DebugWorker>,
+    preserving_workers: &'a mut debug_preserving::actor::Workers,
+    root_workers: &'a mut BTreeMap<ExecutionId, RootWorker>,
+}
+
 fn handle_command(
     command: Command,
-    workers: &mut BTreeMap<ExecutionId, ActorWorker>,
-    debug_workers: &mut BTreeMap<ExecutionId, DebugWorker>,
-    root_workers: &mut BTreeMap<ExecutionId, RootWorker>,
+    owners: ActorOwners<'_>,
     catalog: &mut InstalledNodeCatalog,
     maximum_worlds: usize,
     storage: &ActorStorage,
 ) {
+    let ActorOwners {
+        workers,
+        debug_workers,
+        preserving_workers,
+        root_workers,
+    } = owners;
+
     match command {
+        Command::PreservingDebugPrepare {
+            request,
+            reservation,
+            ..
+        } => {
+            debug_preserving::actor::prepare(
+                request,
+                *reservation,
+                preserving_workers,
+                workers.len() + debug_workers.len() + root_workers.len(),
+                maximum_worlds,
+                storage,
+            );
+        }
+        Command::PreservingDebugResume {
+            request,
+            reservation,
+            ..
+        } => {
+            debug_preserving::actor::resume(request, *reservation, preserving_workers, storage);
+        }
         Command::DebugStart {
             request,
             reservation,
@@ -690,7 +759,7 @@ fn handle_command(
                 workers,
                 debug_workers,
                 catalog,
-                maximum_worlds.saturating_sub(root_workers.len()),
+                maximum_worlds.saturating_sub(root_workers.len() + preserving_workers.len()),
                 storage,
             );
         }
@@ -706,7 +775,7 @@ fn handle_command(
                 workers,
                 root_workers,
                 catalog,
-                maximum_worlds.saturating_sub(debug_workers.len()),
+                maximum_worlds.saturating_sub(debug_workers.len() + preserving_workers.len()),
                 storage,
             );
         }
@@ -739,6 +808,20 @@ fn handle_other_command(
         _ => None,
     };
     if let Some(execution) = original_execution {
+        match storage.preserving_debug.owns(&execution) {
+            Ok(false) => {}
+            Ok(true) => {
+                reply_refusal(
+                    command,
+                    refused("execution belongs to original preserving Debug custody"),
+                );
+                return;
+            }
+            Err(error) => {
+                reply_refusal(command, error);
+                return;
+            }
+        }
         match storage.root_preparations.owns(&execution) {
             Ok(false) => {}
             Ok(true) => {
@@ -758,7 +841,10 @@ fn handle_other_command(
     // Other routes cannot spend those same aggregate live-world slots.
     let available_worlds = maximum_worlds.saturating_sub(root_workers.len());
     match command {
-        command @ (Command::DebugStart { .. } | Command::DebugResume { .. }) => {
+        command @ (Command::DebugStart { .. }
+        | Command::DebugResume { .. }
+        | Command::PreservingDebugPrepare { .. }
+        | Command::PreservingDebugResume { .. }) => {
             reply_refusal(command, refused("Debug command bypassed owning dispatch"));
         }
         Command::RootPreparation {
@@ -1043,6 +1129,24 @@ fn handle_other_command(
 
 fn reply_refusal(command: Command, error: NodeObservationServiceError) {
     match command {
+        Command::PreservingDebugPrepare {
+            reservation,
+            ledger,
+            ..
+        }
+        | Command::PreservingDebugResume {
+            reservation,
+            ledger,
+            ..
+        } => {
+            let _ = ledger.complete(
+                &reservation,
+                NodePreservingDebugState::Unknown {
+                    reason: error.to_string(),
+                },
+                None,
+            );
+        }
         Command::DebugStart { .. } | Command::DebugResume { .. } => {
             // The durable original stays pending; restart cannot dispatch it.
         }

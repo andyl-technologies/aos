@@ -1258,9 +1258,43 @@ executables are retained outside Git; independent review of the exact 40-file
 source join preserves the current Root, Clock and initial-owner APIs.
 
 These results qualify the closed Block condition preservation mechanism.
-Public operator capture/restore/Resume integration, initial or already-resumed
-Stops, physical ingress, 9p, replay, fork, general Compute and broader readiness
-remain separately unqualified.
+The public operator integration below supplies separate current-source credit.
+Initial or already-resumed Stops, physical ingress, 9p, replay, fork, general
+Compute and broader readiness remain separately unqualified.
+
+## Public preservation of original condition Stops
+
+Explicit control edition 10 exposes preserving prepare, status and once-only
+Resume through the daemon and CLI. The closed Source/Block/condition route
+claims the complete original request before allocating owners, captures its
+acknowledged unresumed Stop, and restores a separately claimed fresh stopped
+world. The fresh owner must reconcile the original durable report before Resume.
+Source and target claims, signed capture links and complete output bodies remain
+owned through publication, storage, shutdown and reclamation failures.
+
+The current-source operator cohort exercises the freshly built CLI and daemon,
+deletes the source program and condition, and restores two independent branches
+at the same native cut. Both branches retain the complete 97-body content DAG,
+original FIFO identities, payload bytes, positions, causal parents and native
+Resume acknowledgements. Retried commands do not allocate another owner or
+repeat suffix effects. Whole-record accounting applies the authored limit and
+the unchanged 32 MiB hard ceiling before completed-ledger allocation; existing
+parser and native capture limits are unchanged.
+
+Current-source qualification passes the native operator case in 80.15 seconds,
+six data cases, 37 source-hygiene cases, daemon and CLI all-target strict checks,
+and formatting of all 21 functional Rust paths. All 8,627 source leaves agree
+before and after execution. Complete original proof files, the actual daemon,
+CLI and four source scanners remain outside Git; every scanner embeds the actual
+worktree. A separate unchanged ContentRef checker verifies all 97 original body
+references in each of the source and two branch outputs. The 22-path functional
+join preserves unrelated factory, campaign, Clock, reader and cold-state review
+rows. Independent current-source review precedes final evidence review.
+
+The separate presentation commit formats one existing continuation call.
+Qualification covers the explicit closed Block operator route. Initial or
+already-resumed capture, physical ingress, 9p, replay, isolated fork, general
+Compute and broader readiness retain their existing refusals.
 
 ## Backend-neutral choice closure and finding export
 

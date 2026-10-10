@@ -4,7 +4,7 @@ use super::{NodeObservationServiceError, refused};
 use serde::Serialize;
 use std::io::{self, Write};
 
-pub(super) fn bounded_json<T: Serialize>(
+pub(in crate::node_observed_executor::service) fn bounded_json<T: Serialize>(
     value: &T,
     maximum_bytes: usize,
 ) -> Result<(), NodeObservationServiceError> {

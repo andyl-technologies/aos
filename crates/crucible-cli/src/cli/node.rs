@@ -7,6 +7,9 @@
 #[path = "node_debug.rs"]
 mod debug;
 
+#[path = "node_debug_preserving.rs"]
+mod debug_preserving;
+
 #[path = "node_cache_reuse.rs"]
 mod cache_reuse;
 #[path = "node_capability.rs"]
@@ -56,6 +59,8 @@ pub(super) struct NodeArgs {
 enum NodeCommand {
     #[command(flatten)]
     Debug(debug::NodeDebugCommand),
+    #[command(flatten)]
+    PreservingDebug(debug_preserving::NodePreservingDebugCommand),
     #[command(flatten)]
     Root(root::NodeRootCommand),
     #[command(flatten)]
@@ -144,6 +149,7 @@ pub(super) fn run_node_invocation(cli: &Cli, args: &NodeArgs) -> Result<(), CliE
     }
     match &args.command {
         NodeCommand::Debug(command) => debug::run(command),
+        NodeCommand::PreservingDebug(command) => debug_preserving::run(command),
         NodeCommand::Root(command) => root::run(command),
         NodeCommand::Capability(command) => capability::run(command),
         NodeCommand::CacheReuse(command) => cache_reuse::run(command),
