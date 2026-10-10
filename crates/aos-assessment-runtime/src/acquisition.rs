@@ -340,7 +340,13 @@ async fn acquire_jobs<P: AcquisitionPort, E: EvidenceStore>(
         }
         if advisory && !chain.observations.is_empty() {
             install_advisories(data, chain)?;
-        } else if chain.complete {
+        } else if chain.complete
+            || (!advisory
+                && chain
+                    .objects
+                    .iter()
+                    .any(|object| matches!(object, NormalizedObject::Upstream(_))))
+        {
             install_upstream(data, evidence, partition, &job, chain).await?;
         } else {
             if advisory {
@@ -708,6 +714,30 @@ async fn install_upstream<E: EvidenceStore>(
         .cloned()
         .context("upstream chain lacks candidate evidence")?;
     let mut candidates = BTreeMap::new();
+    let cached = if chain.complete {
+        vec![]
+    } else {
+        data.upstream
+            .iter()
+            .filter(|binding| {
+                job.component_refs.contains(&binding.component_ref)
+                    && matches_upstream(
+                        &job.operation,
+                        &binding.observation.provider,
+                        &binding.observation.project,
+                    )
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut retained_candidates = BTreeMap::new();
+    for binding in &cached {
+        observation.retrieved_at_unix = observation
+            .retrieved_at_unix
+            .max(binding.observation.retrieved_at_unix);
+        for candidate in &binding.observation.candidates {
+            retained_candidates.insert(candidate.raw_id.clone(), candidate.clone());
+        }
+    }
     for page in pages {
         for candidate in &page.candidates {
             if candidates
@@ -718,10 +748,11 @@ async fn install_upstream<E: EvidenceStore>(
             }
         }
     }
-    if candidates.len() > 2000 {
+    retained_candidates.extend(candidates);
+    if retained_candidates.len() > 2000 {
         bail!("upstream source chain exceeds its candidate count ceiling");
     }
-    observation.candidates = candidates.into_values().collect();
+    observation.candidates = retained_candidates.into_values().collect();
     let mut history = data
         .history
         .iter()
@@ -758,12 +789,21 @@ async fn install_upstream<E: EvidenceStore>(
             },
         )
         .collect();
-    observation.coverage = ObservationCoverage::Complete;
+    observation.coverage = if chain.complete {
+        ObservationCoverage::Complete
+    } else {
+        ObservationCoverage::Truncated {
+            reason: "source-acquisition-incomplete".into(),
+        }
+    };
     let mut source_refs = chain
         .observations
         .iter()
         .flat_map(|observation| observation.source_refs.clone())
         .collect::<Vec<_>>();
+    for binding in cached {
+        source_refs.extend(binding.source_refs.clone());
+    }
     source_refs.sort();
     source_refs.dedup();
     let bundle = aos_contract::canonical::to_vec(&serde_json::json!({

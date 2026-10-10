@@ -171,6 +171,82 @@ fn osv_record(modified: &str) -> serde_json::Value {
 }
 
 #[tokio::test]
+async fn interrupted_upstream_pages_retain_new_and_cached_candidates_without_complete_coverage()
+-> Result<()> {
+    let mut data = common::fixture("1.2.0")?;
+    let subjects = vec!["subject".into()];
+    let profiles = vec![Profile::Updates];
+    let cached = Port::new(vec![
+        json!([{"tag_name":"v1.3.0", "published_at":"2026-10-01T00:00:00Z"}]),
+    ])?;
+    acquire(
+        &cached,
+        &cached.custody,
+        "fixture",
+        &mut data,
+        &subjects,
+        &profiles,
+    )
+    .await?;
+    let prior_history = data.history[0].clone();
+    let page = (4..24)
+        .map(|minor| {
+            json!({
+                "tag_name":format!("v1.{minor}.0"), "published_at":"2026-10-01T00:00:00Z"
+            })
+        })
+        .collect::<Vec<_>>();
+    let interrupted = Port::new(vec![json!(page)])?;
+
+    let diagnostics = acquire(
+        &interrupted,
+        &interrupted.custody,
+        "fixture",
+        &mut data,
+        &subjects,
+        &profiles,
+    )
+    .await?;
+    assert_eq!(diagnostics, ["source-acquisition-incomplete"]);
+    assert_eq!(
+        interrupted
+            .operations
+            .lock()
+            .map_err(|_| anyhow::anyhow!("operation lock"))?
+            .len(),
+        2
+    );
+    let binding = &data.upstream[0];
+    assert_eq!(binding.observation.candidates.len(), 21);
+    assert!(
+        binding
+            .observation
+            .candidates
+            .iter()
+            .any(|candidate| candidate.raw_id == "v1.3.0")
+    );
+    assert!(
+        binding
+            .observation
+            .candidates
+            .iter()
+            .any(|candidate| candidate.raw_id == "v1.23.0")
+    );
+    assert!(matches!(
+        binding.observation.coverage,
+        aos_assessment::discovery::ObservationCoverage::Truncated { .. }
+    ));
+    assert!(data.history.contains(&prior_history));
+    let input = data.freeze_selected(profiles, subjects, FixedClock.now()?)?;
+    let result = aos_assessment::evaluator::evaluate(&input, &data)?;
+    assert_ne!(
+        result.coverage,
+        aos_assessment::security::CoverageState::Complete
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn positional_pages_and_exact_full_records_produce_an_evaluable_finding() -> Result<()> {
     let mut data = common::fixture("1.2.0")?;
     data.advisory_snapshot = None;
