@@ -131,15 +131,23 @@ passes its 21 core, 25 native and one SDK cases. Native build, strict
 all-target Clippy, fresh compilation and the three focused fold witnesses
 also pass on that tree. These results do not qualify subsequent shared
 maintenance interfaces or the complete T1 floor.
-Five disjoint implementation worklines now address auxiliary placement
+Six disjoint implementation worklines now address auxiliary placement
 classification, fresh repair authority after each replacement, the native
-current-history producer, its immutable data reader, and native read-only
-physical closure. The current-history worklines share data only within one
+current-history producer, its immutable data reader, native read-only
+physical closure, and current-purpose history preparation. The current-history
+worklines share data only within one
 authorization history walk and require distinct current-purpose physical
 completion before promotion. Shared closing interfaces and original selected
 Guard snapshot recipes are committed; integration and runtime checks remain
 pending.
 No additional task is accepted, and T2 and branch worklines remain deferred.
+
+Recovery candidate `b6bf1db80f` passes native build, strict all-target Clippy
+and fresh test-target compilation. Its archived verification case passes in
+35.199 seconds, but the recovery case times out at the unchanged 120-second
+host limit; the remaining eleven focused cases do not run. These results do
+not qualify recovery or its six-case owning Nix gate. Current-history
+composition remains the next source change before renewed qualification.
 
 Earlier combined candidate `6889de2180` passes native build, strict all-target
 Clippy, fresh compilation with 1,037 nonignored tests and the three new pure

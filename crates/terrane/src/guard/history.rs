@@ -1,5 +1,8 @@
 //! Authenticates stored commits against their signed original canonical root scope.
 
+#[cfg(all(feature = "std", feature = "tokio", unix))]
+mod current_reads;
+
 #[cfg(feature = "std")]
 pub(super) mod completion;
 
