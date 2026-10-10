@@ -554,6 +554,14 @@ sharing creates no completed context or authority. Reviewed implementation
 callback order; compiler and runtime qualification remain pending. Both
 implementation worklines use separate checkouts while the qualification source
 remains frozen.
+Private composition `5ad02c8121` preserves all twelve reviewed owned files
+exactly. Its frozen qualification `1a12676434` passes the native build in
+36.76 seconds, then stops at strict all-target Clippy's first unexpected fault:
+one unused shared fixture helper and two unnecessary one-element slice clones
+in the paired-preparation tests. Independent review verifies all twenty-five
+packet payloads and 6,224 tracked source entries. Test compilation, fresh
+inventory, features and all runtime cases remain unrun for this source. A
+test-only follow-up addresses these diagnostics before another qualification.
 A bounded T-CDC-1/T-GC-1 gate workline now extends the existing source-bound
 native test image to fifty-two matching native selectors across six gate
 wrappers. The ordered selector sets and independent execution remain fixed;
@@ -574,6 +582,19 @@ false-size refusal. Independent review verifies all 113 packet payloads,
 source files, and all four store results, raw inventories and derivers. The
 original runner exits zero. This earlier-source result does not qualify the
 new native wrappers, later production changes or formal T-CDC-1 acceptance.
+A separate bounded T-DRV-2 gate workline prepares the matching native-Tokio
+index selectors for the same existing source-bound test image. Shared factory
+exposure lands first; core and native-std Cargo paths, selector ordering and
+the DRV-29 qualification blocker remain fixed. Compilation reuse cannot certify
+the unqualified growing-population witnesses.
+The frozen GC observation qualification `9a16f49c8a` stops at its first
+auxiliary case after genuine compilation and an inventory of 1,016 tests.
+Baseline fixture publication returns `Unsupported` before observation or
+reconciliation runs; thirty-three later auxiliary cases and all five owning
+gates remain unrun. Read-only comparison identifies a current-source test
+filesystem wrapper that lacks the mandatory ordinary-record forwarding method.
+An isolated fixture-binding workline addresses that gap without changing
+production interfaces, deadlines, authority or the original failed evidence.
 The owning `algebra-merge` gate passes separately on frozen `ea64a04697`,
 executing thirty-two core and six native cases with zero failures or ignored
 tests. Independent review verifies all twenty packet files and the actual
