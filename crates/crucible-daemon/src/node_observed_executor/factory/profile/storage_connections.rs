@@ -41,7 +41,10 @@ pub(super) fn connections(
             })?;
         if !matches!(
             &sink.kind,
-            InstalledNodeKind::HostIo { .. } | InstalledNodeKind::HostPacketReceiver { .. }
+            InstalledNodeKind::HostIo { .. }
+                | InstalledNodeKind::HostPacketReceiver { .. }
+                | InstalledNodeKind::HostRateAlarmClock { .. }
+                | InstalledNodeKind::HostRateAlarmClockProducer { .. }
         ) && !matches!(&sink.kind, InstalledNodeKind::HostSeededLink {profile} if profile.producer == selected.node)
             && !matches!(&sink.kind, InstalledNodeKind::HostFaultedLink {profile} if profile.producer == selected.node)
             && !matches!(&sink.kind, InstalledNodeKind::HostControlledFaultLink {profile} if profile.producer == selected.node)

@@ -131,7 +131,10 @@ impl HostWorldFactory for InstalledHostStateFactory {
             InstalledNodeKind::HostSeededLink { profile } => profile.program.length.get(),
             InstalledNodeKind::HostFaultedLink { profile } => profile.program.length.get(),
             InstalledNodeKind::HostControlledFaultLink { profile } => profile.program.length.get(),
-            InstalledNodeKind::HostClock | InstalledNodeKind::HostPacketReceiver { .. } => 0,
+            InstalledNodeKind::HostClock
+            | InstalledNodeKind::HostRateAlarmClock { .. }
+            | InstalledNodeKind::HostRateAlarmClockProducer { .. }
+            | InstalledNodeKind::HostPacketReceiver { .. } => 0,
             InstalledNodeKind::HostSemantics { profile } => profile.program.length.get(),
             InstalledNodeKind::HostConditionDebugPreserving { profile } => {
                 profile.program.length.get()
@@ -154,6 +157,22 @@ impl HostWorldFactory for InstalledHostStateFactory {
         let binding = graph
             .binding(node)
             .ok_or_else(|| refusal("installed clock binding absent"))?;
+        if let Some(schema) = binding
+            .compatibility
+            .implementation
+            .formats
+            .iter()
+            .find(|schema| schema.id.as_str() == "host/rate-alarm-producer-native-v2")
+        {
+            let expected = crucible::node_adapters::host_rate_alarm_producer_schema()
+                .map_err(|error| refusal(error.reason))?;
+            if schema != &expected {
+                return Err(refusal(
+                    "producer state schema differs from the installed complete native codec",
+                ));
+            }
+            return Ok(schema.clone());
+        }
         binding
             .compatibility
             .implementation
@@ -166,7 +185,8 @@ impl HostWorldFactory for InstalledHostStateFactory {
                     || schema.id.as_str() == "host/native-seeded-link-v1"
                     || schema.id.as_str() == "host/native-faulted-link-v1"
                     || schema.id.as_str() == "host/native-controlled-fault-link-v1"
-                    || schema.id.as_str() == "host/native-packet-receiver-v1")
+                    || schema.id.as_str() == "host/native-packet-receiver-v1"
+                    || schema.id.as_str() == "host/rate-alarm-native-v1")
                     && schema.version == 1)
                     || (schema.id.as_str() == "host/native-semantic-continuation-v2"
                         && schema.version == 2)
@@ -184,6 +204,17 @@ impl HostWorldFactory for InstalledHostStateFactory {
     ) -> Result<(), StateError> {
         self.check_graph(graph)?;
         let policy = graph.ownership_policy();
+        if self.selections.values().any(|selection| {
+            matches!(
+                selection.kind,
+                InstalledNodeKind::HostRateAlarmClockProducer { .. }
+            )
+        }) && (runtime.schema_version != 1 || scheduler.schema_version != 1)
+        {
+            return Err(refusal(
+                "selected alarm producer codec preserves only original Runtime1 and Scheduler1",
+            ));
+        }
         if !(matches!(runtime.schema_version, 1 | 3 | 4)
             || (runtime.schema_version == 2 && self.recorded_world())
             || (runtime.schema_version == 6 && self.condition_world()))
@@ -408,6 +439,14 @@ impl HostWorldFactory for InstalledHostStateFactory {
             InstalledNodeKind::HostPacketReceiver { .. } => {
                 // Full native restore and original envelope validator above already
                 // authenticate the selected byte receiver and source runtime.
+            }
+            InstalledNodeKind::HostRateAlarmClock { definition }
+            | InstalledNodeKind::HostRateAlarmClockProducer { definition } => {
+                crucible::node_adapters::RateAlarmClock::from_continuation(
+                    definition.clone(),
+                    &inventory.native_model.bytes,
+                )
+                .map_err(|e| refusal(e.reason))?;
             }
             InstalledNodeKind::HostClock => {
                 if inventory.native_model.bytes

@@ -1516,6 +1516,51 @@ This recording mechanism supplies no conditional replay, physical capture,
 ordinary Ready or complete provider qualification; those require their separate
 native and installed-policy paths.
 
+## Rational host clock and original alarm preservation
+
+The installed rational Clock and its Script request node use common admission,
+activation, input delivery, execution, output acknowledgment and signed state
+preservation. Read, arm and cancel requests retain their original identities,
+full Positions and FIFO state. A fixed rational rate, epoch offset and drift
+change the visible counter; coordinator time retains its original picoseconds.
+Checked arithmetic refuses overflow and inverse alarm conversion rounds upward.
+The old integer Clock and existing preservation bytes remain unchanged.
+
+The selected Host8 producer codec retains complete stopped-root, native-state
+and causal-child bodies, original inputs, pending alarms and issued responses.
+Current activation custody is required even for empty evidence reads. Role and
+expanded-byte credits precede retained observations and operation effects.
+Missing, null, repeated, corrupt or foreign associations refuse. The receipt's
+nullable input field must be present explicitly; omission refuses before typed
+reconstruction.
+
+The current-worktree native cohort passes both signed cold cases in 87.19
+seconds, with drift zero and -500,000,000 ppb. Actual ordinary planner delivery
+and acknowledgment reach cut11 after read, two arms and one cancellation. The
+original runtime is reclaimed and its Script file deleted before two fresh
+worlds restore. Each fresh world recaptures the unchanged Clock native state,
+keeps the alarm absent before exclusive1000, fires it once before1001, keeps
+the canceled alarm absent and produces the same later reading. Complete signed
+archive bodies, original and fresh manifests, blobs, future events and genuine
+reclamation markers remain private; authentication keys are never exported.
+
+Five clock arithmetic/ordering controls, 21 Host regressions, nine archive
+regressions and three required-input grammar controls pass. Current source
+hygiene passes37, core/daemon all-target strict checks pass in80 seconds, and
+all27 selected Rust files pass formatting. Two initial runner selectors matched
+zero tests and supply no test credit; the corrected selectors execute the
+actual retained tests. The first hygiene run refused a nonadjacent test
+allowance comment. Moving that comment alone preserves all Rust statements and
+attributes; its current checks are recorded separately from the original native
+source image. Failed checks remain retained.
+
+This selected state uses Runtime1, coordinator1 and Scheduling1. Combining it
+with Tape2/Runtime7, conditional replay or selected extensions refuses before
+owner reconstruction. It does not establish guest IRQs, dynamic rate changes,
+wall-clock timing, mixed emulator execution, operator capture or a later-cut
+recapture after suffix execution. Broader preservation remains separately
+qualified.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

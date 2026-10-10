@@ -118,6 +118,8 @@ fn has_closed_source_qualification(kind: &super::InstalledNodeKind) -> bool {
 
     match kind {
         InstalledNodeKind::HostClock
+        | InstalledNodeKind::HostRateAlarmClock { .. }
+        | InstalledNodeKind::HostRateAlarmClockProducer { .. }
         | InstalledNodeKind::HostSemantics { .. }
         | InstalledNodeKind::Gem5ArmRoot
         | InstalledNodeKind::HostConditionDebug { .. }

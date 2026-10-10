@@ -19,6 +19,8 @@ struct Enrollment {
     child_pid: Option<u32>,
     model_bytes: Option<Vec<u8>>,
     condition_native: bool,
+    rate_alarm_native: bool,
+    rate_alarm_script_native: bool,
 }
 
 pub(super) struct InstalledEvidence {
@@ -74,12 +76,17 @@ impl InstalledEvidence {
                         child_pid: Some(child.child_pid()),
                         model_bytes: None,
                         condition_native: false,
+                        rate_alarm_native: false,
+                        rate_alarm_script_native: false,
                     }
                 }
                 (None, Some(model)) => Enrollment {
                     binding: binding.clone(),
                     child_pid: None,
                     condition_native: matches!(model, HostModel::ConditionObserver(_)),
+                    rate_alarm_native: matches!(model, HostModel::RateAlarmClock(_)),
+                    rate_alarm_script_native: matches!(model, HostModel::ScriptedSource(source)
+                        if source.kind() == crucible::node_adapters::ScriptedRequestKind::RateAlarmClock),
                     model_bytes: Some(
                         model
                             .initialization_bytes(4 * 1024 * 1024)
@@ -325,7 +332,84 @@ impl AdmissionEvidence for InstalledEvidence {
                 ));
             }
         }
-        if !(schema.version == 1 || semantic_v2)
+        if matches!(
+            schema.id.as_str(),
+            "host/rate-alarm-native-v1" | "crucible/rate-alarm-message-v1"
+        ) {
+            let expected = if schema.id.as_str() == "host/rate-alarm-native-v1" {
+                crucible::node_adapters::rate_alarm_clock_specification()
+            } else {
+                super::profile::RATE_ALARM_MESSAGE_SPECIFICATION
+            };
+            // Enrollment witnesses the actually owned clock, while the body is
+            // regenerated from this installed codec rather than a schema label.
+            if self.enrollments.len() != 2
+                || self
+                    .enrollments
+                    .values()
+                    .filter(|enrollment| enrollment.rate_alarm_native)
+                    .count()
+                    != 1
+                || !self
+                    .enrollments
+                    .values()
+                    .all(|enrollment| enrollment.model_bytes.is_some())
+                || self.content.get(&schema.definition.hash.digest).is_none_or(
+                    |(reference, bytes)| {
+                        reference != &schema.definition || bytes.as_slice() != expected.as_bytes()
+                    },
+                )
+            {
+                return Err(evidence(
+                    "rational clock codec lacks exact actually owned source scope",
+                ));
+            }
+        }
+        let rate_alarm_producer_v2 =
+            schema.id.as_str() == "host/rate-alarm-producer-native-v2" && schema.version == 2;
+        if schema.id.as_str() == "host/rate-alarm-producer-native-v2" {
+            let expected = crucible::node_adapters::host_rate_alarm_producer_schema()
+                .map_err(|error| evidence(&error.reason))?;
+            // Both actual endpoints must own the selected complete receipt codec;
+            // the extra format label cannot qualify an unrelated source model.
+            if schema != &expected
+                || self.enrollments.len() != 2
+                || self
+                    .enrollments
+                    .values()
+                    .filter(|row| row.rate_alarm_native)
+                    .count()
+                    != 1
+                || self
+                    .enrollments
+                    .values()
+                    .filter(|row| row.rate_alarm_script_native)
+                    .count()
+                    != 1
+                || !self.enrollments.values().all(|row| {
+                    row.model_bytes.is_some()
+                        && row
+                            .binding
+                            .compatibility
+                            .implementation
+                            .formats
+                            .contains(schema)
+                })
+                || self.content.get(&schema.definition.hash.digest).is_none_or(
+                    |(reference, bytes)| {
+                        reference != &schema.definition
+                            || bytes.as_slice()
+                                != crucible::node_adapters::RATE_ALARM_PRODUCER_SPECIFICATION
+                                    .as_bytes()
+                    },
+                )
+            {
+                return Err(evidence(
+                    "producer history codec lacks exact actually owned RateClock and kind4 source",
+                ));
+            }
+        }
+        if !(schema.version == 1 || semantic_v2 || rate_alarm_producer_v2)
             || !matches!(
                 schema.id.as_str(),
                 "reference-device/input-v1"
@@ -333,6 +417,9 @@ impl AdmissionEvidence for InstalledEvidence {
                     | "reference-device/content-possession-v1"
                     | "crucible/octet-stream-v1"
                     | "host/native-continuation-v1"
+                    | "host/rate-alarm-native-v1"
+                    | "host/rate-alarm-producer-native-v2"
+                    | "crucible/rate-alarm-message-v1"
                     | "host/native-recorded-block-v1"
                     | "host/native-condition-continuation-v1"
                     | "host/native-seeded-link-v1"

@@ -56,7 +56,10 @@ pub(super) fn materialize(
             continue;
         }
         let reference = match &selected.kind {
-            InstalledNodeKind::HostClock | InstalledNodeKind::HostPacketReceiver { .. } => continue,
+            InstalledNodeKind::HostClock
+            | InstalledNodeKind::HostRateAlarmClock { .. }
+            | InstalledNodeKind::HostRateAlarmClockProducer { .. }
+            | InstalledNodeKind::HostPacketReceiver { .. } => continue,
             InstalledNodeKind::HostSeededLink { profile } => &profile.program,
             InstalledNodeKind::HostFaultedLink { profile } => &profile.program,
             InstalledNodeKind::HostControlledFaultLink { profile } => &profile.program,

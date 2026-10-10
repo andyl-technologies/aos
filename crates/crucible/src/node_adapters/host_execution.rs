@@ -155,6 +155,7 @@ pub(super) fn validate_inventory(
             HostModel::ControlledFaultLink(controller) => controller.native().inflight_len(),
             HostModel::PacketReceiver(receiver) => receiver.pending_count(),
             HostModel::Clock(_) => 0,
+            HostModel::RateAlarmClock(clock) => clock.pending_count(),
             HostModel::ScriptedSource(source) => source.requests().len() - source.cursor(),
             HostModel::Semantics(model) => model.pending_count(),
             HostModel::ConditionObserver(_) => 0,
@@ -192,6 +193,7 @@ pub(super) fn validate_inventory(
             super::super::ScriptedRequestKind::Block => "crucible/block-request-v1",
             super::super::ScriptedRequestKind::Ninep => "crucible/filesystem-request-v1",
             super::super::ScriptedRequestKind::Packet => "crucible/opaque-packet-v1",
+            super::super::ScriptedRequestKind::RateAlarmClock => "crucible/rate-alarm-message-v1",
         };
         if lane.payload_schema.id.as_str() != expected
             || lane.payload_schema.version != 1
@@ -242,6 +244,7 @@ impl HostModelNode {
                 return Err(failure("host original input prefix remains unconsumed"));
             }
         }
+        self.check_producer_input_credit(batch)?;
         if self.input_history.contains_key(batch.stage_operation())
             || self.input_history.len() >= self.limits.maximum_operations
         {
@@ -347,6 +350,14 @@ impl HostModelNode {
                     {
                         return Err(failure(
                             "opaque packet exceeds its admitted native geometry",
+                        ));
+                    }
+                }
+                Some(HostModel::RateAlarmClock(_)) => {
+                    super::super::RateAlarmClock::decode_request(bytes)?;
+                    if output_lane.maximum_payload_bytes.get() < 512 {
+                        return Err(failure(
+                            "clock response lane needs its declared 512-byte bound",
                         ));
                     }
                 }
@@ -505,9 +516,13 @@ impl HostModelNode {
                 "host exact grant lacks available original activated custody",
             ));
         }
+        self.check_producer_effect_credit()?;
         let (start, limit) = interval(admission.request())?;
         if start != self.boundary || limit <= start {
             return Err(failure("host exact grant changed authentic boundary"));
+        }
+        if let Some(HostModel::RateAlarmClock(clock)) = self.model.as_ref() {
+            clock.definition().reading(limit.time_ps)?;
         }
         if let Some(HostModel::ConditionObserver(model)) = self.model.as_ref()
             && model.awaiting_control()
@@ -581,6 +596,7 @@ impl HostModelNode {
             let local_position = match self.model.as_ref() {
                 Some(HostModel::ScriptedSource(source)) => source.next_position(),
                 Some(HostModel::Semantics(model)) => model.next_position(),
+                Some(HostModel::RateAlarmClock(clock)) => clock.next_position(),
                 _ => self.next_local_event().map(root_reaction),
             };
             let next = match (input_position, local_position) {
@@ -627,6 +643,9 @@ impl HostModelNode {
             clock
                 .advance_to(limit.time_ps.get())
                 .map_err(|error| failure(&error.to_string()))?;
+        }
+        if let Some(HostModel::RateAlarmClock(clock)) = self.model.as_mut() {
+            clock.park(limit)?;
         }
         if let Some(HostModel::PacketReceiver(receiver)) = self.model.as_mut() {
             receiver.park(limit.time_ps.get())?;
@@ -754,6 +773,9 @@ impl HostModelNode {
                 controller.native().next_exact_local_event()
             }
             Some(HostModel::ScriptedSource(source)) => source.next_time(),
+            Some(HostModel::RateAlarmClock(clock)) => {
+                clock.next_position().map(|at| at.time_ps.get())
+            }
             Some(HostModel::Semantics(model)) => model.next_position().map(|at| at.time_ps.get()),
             _ => None,
         }
@@ -800,6 +822,7 @@ impl HostModelNode {
             ) => link.inflight_len(),
             Some(HostModel::ControlledFaultLink(controller)) => controller.native().inflight_len(),
             Some(HostModel::Semantics(model)) => model.pending_count(),
+            Some(HostModel::RateAlarmClock(clock)) => clock.pending_count(),
             Some(HostModel::ConditionObserver(model)) => usize::from(model.awaiting_control()),
             _ => 0,
         };
@@ -932,6 +955,15 @@ impl HostModelNode {
                     );
                 }
             }
+            Some(HostModel::RateAlarmClock(clock)) => {
+                let (added, removed) = clock.consume(input_reaction, bytes)?;
+                for key in removed {
+                    self.pending_causes.remove(&key);
+                }
+                for key in added {
+                    self.pending_causes.insert(key, cause.clone());
+                }
+            }
             Some(HostModel::ConditionObserver(model)) => {
                 model.consume(delivery, bytes, input_reaction)?;
             }
@@ -1007,6 +1039,16 @@ impl HostModelNode {
                         due.payload,
                     ));
                 }
+            }
+            Some(HostModel::RateAlarmClock(clock)) => {
+                outputs.extend(
+                    clock
+                        .publish(evaluation)?
+                        .into_iter()
+                        .map(|(event, bytes)| {
+                            (super::super::rate_alarm_clock::event_key(&event), bytes)
+                        }),
+                );
             }
             Some(HostModel::ScriptedSource(source)) => {
                 outputs.extend(source.publish_due(evaluation.time_ps.get()));
@@ -1240,7 +1282,12 @@ impl HostModelNode {
         {
             return Err(failure("host native producer observation unavailable"));
         }
-        let proof_ref = self.native_state_ref()?;
+        let proof_ref = if rate_alarm_evidence::selected(&self.binding) {
+            self.check_producer_effect_credit()?;
+            self.retain_producer_observation(state::state_receipt_objects(self)?)?
+        } else {
+            self.native_state_ref()?
+        };
         let observation = NativeSchedulingObservation {
             node: self.route.node.clone(),
             owners: self.route.owners.clone(),

@@ -116,6 +116,16 @@ use crate::node_scenario::{NodeRunConfiguration, NodeScenario};
 pub enum InstalledNodeKind {
     /// Runs the owned host integer clock with no timers or autonomous work.
     HostClock,
+    /// Runs a distinct causal rational counter and original alarm/response inventory.
+    HostRateAlarmClock {
+        /// Binds checked immutable rate, epoch, counter and fixed drift.
+        definition: crucible::node_adapters::RateAlarmClockDefinition,
+    },
+    /// Runs the separately selected rational clock with retained producer receipts.
+    HostRateAlarmClockProducer {
+        /// Binds the checked fixed counter and future alarm policy.
+        definition: crucible::node_adapters::RateAlarmClockDefinition,
+    },
     /// Runs an independently enrolled host assertion program and original state.
     HostSemantics {
         /// Binds immutable compact properties and qualified input projections.
@@ -227,6 +237,12 @@ impl<'de> Deserialize<'de> for InstalledNodeKind {
         let wire = InstalledNodeKindWire::deserialize(deserializer)?;
         Ok(match wire {
             InstalledNodeKindWire::HostClock {} => Self::HostClock,
+            InstalledNodeKindWire::HostRateAlarmClock { definition } => {
+                Self::HostRateAlarmClock { definition }
+            }
+            InstalledNodeKindWire::HostRateAlarmClockProducer { definition } => {
+                Self::HostRateAlarmClockProducer { definition }
+            }
             InstalledNodeKindWire::HostSemantics { profile } => Self::HostSemantics { profile },
             InstalledNodeKindWire::Gem5ArmRoot {} => Self::Gem5ArmRoot,
             InstalledNodeKindWire::HostConditionDebugPreserving { profile } => {
@@ -300,6 +316,12 @@ impl<'de> Deserialize<'de> for InstalledNodeKind {
 enum InstalledNodeKindWire {
     /// Runs the owned host integer clock with no timers or autonomous work.
     HostClock {},
+    HostRateAlarmClock {
+        definition: crucible::node_adapters::RateAlarmClockDefinition,
+    },
+    HostRateAlarmClockProducer {
+        definition: crucible::node_adapters::RateAlarmClockDefinition,
+    },
     HostSemantics {
         profile: InstalledHostSemanticProfile,
     },
@@ -799,6 +821,8 @@ impl InstalledNodeCatalog {
             !matches!(
                 selection.kind,
                 InstalledNodeKind::HostClock
+                    | InstalledNodeKind::HostRateAlarmClock { .. }
+                    | InstalledNodeKind::HostRateAlarmClockProducer { .. }
                     | InstalledNodeKind::HostIo { .. }
                     | InstalledNodeKind::HostRecordedBlockPreserving { .. }
                     | InstalledNodeKind::HostScripted { .. }
@@ -1089,6 +1113,16 @@ impl InstalledNodeCatalog {
                         "closed gem5 requires its original public preparation bridge",
                     ));
                 }
+                InstalledNodeKind::HostRateAlarmClock { definition }
+                | InstalledNodeKind::HostRateAlarmClockProducer { definition } => {
+                    models.insert(
+                        selection.node.clone(),
+                        HostModel::RateAlarmClock(Box::new(
+                            crucible::node_adapters::RateAlarmClock::new(definition.clone())
+                                .map_err(native)?,
+                        )),
+                    );
+                }
                 InstalledNodeKind::HostClock => {
                     models.insert(
                         selection.node.clone(),
@@ -1240,6 +1274,8 @@ impl InstalledNodeCatalog {
                     nodes.push(Box::new(actual));
                 }
                 InstalledNodeKind::HostClock
+                | InstalledNodeKind::HostRateAlarmClock { .. }
+                | InstalledNodeKind::HostRateAlarmClockProducer { .. }
                 | InstalledNodeKind::HostSemantics { .. }
                 | InstalledNodeKind::HostConditionDebug { .. }
                 | InstalledNodeKind::HostConditionDebugPreserving { .. }

@@ -33,6 +33,7 @@ pub(super) fn scripted_profile(
         ScriptedRequestKind::Block => "block",
         ScriptedRequestKind::Ninep => "filesystem",
         ScriptedRequestKind::Packet => "packet",
+        ScriptedRequestKind::RateAlarmClock => "rate_alarm_clock",
     };
     // Payloads are retained independently in the archive closure as well as in
     // the original script. Content identity does not fabricate input authority.
@@ -62,17 +63,25 @@ pub(super) fn scripted_profile(
             .map_err(|error| refused(&error.reason))?,
         "application/octet-stream",
     )?;
-    let request = if source.kind() == ScriptedRequestKind::Packet {
+    let request = if source.kind() == ScriptedRequestKind::RateAlarmClock {
+        super::rate_alarm_clock::payload_schema(contents)?
+    } else if source.kind() == ScriptedRequestKind::Packet {
         super::packet::schema(contents)?
     } else {
         super::io::wire_schema(role, "request", contents)?
     };
-    let ordering = if source.kind() == ScriptedRequestKind::Packet {
+    let ordering = if source.kind() == ScriptedRequestKind::RateAlarmClock {
+        super::rate_alarm_clock::ordering(contents)?
+    } else if source.kind() == ScriptedRequestKind::Packet {
         super::packet::ordering(contents)?
     } else {
         super::io::ordering(contents)?
     };
-    let maximum = crucible_shmem::MAX_FRAME_DATA as u64;
+    let maximum = if source.kind() == ScriptedRequestKind::RateAlarmClock {
+        512
+    } else {
+        crucible_shmem::MAX_FRAME_DATA as u64
+    };
     let port_policy = PortPolicy {
         schema_version: 1,
         lanes: vec![LanePolicy {

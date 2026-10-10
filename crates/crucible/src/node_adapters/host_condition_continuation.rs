@@ -301,6 +301,7 @@ pub(super) fn decode(
         pending_causes: causes.causes,
         operations,
         recorded_ingress: None,
+        producer_observations: None,
     })
 }
 

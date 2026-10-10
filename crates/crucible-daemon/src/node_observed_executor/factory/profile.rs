@@ -10,6 +10,9 @@ mod faulted;
 mod io;
 mod linked;
 mod packet;
+mod rate_alarm_clock;
+
+pub(super) const RATE_ALARM_MESSAGE_SPECIFICATION: &str = "canonical rational-clock messages v1: closed request operation read{correlation},arm{correlation,target},cancel{correlation,alarm}; original response correlation/kind reading|armed|canceled|alarm/reaction/counter/sequence; decimal U64 values and exact shared full Position; maximum512 bytes; no forged operation/publication authority";
 mod recorded_ingress;
 mod scripted;
 mod seeded;
@@ -47,6 +50,49 @@ pub(super) fn build_world(
     device: &ContentRef,
     artifacts: &BTreeMap<String, super::InstalledIoArtifact>,
 ) -> Result<ResolvedWorld, NodeObservedError> {
+    if selections.iter().any(|selection| {
+        matches!(
+            selection.kind,
+            InstalledNodeKind::HostRateAlarmClock { .. }
+                | InstalledNodeKind::HostRateAlarmClockProducer { .. }
+        )
+    }) {
+        let clock = selections
+            .iter()
+            .find(|selection| {
+                matches!(
+                    selection.kind,
+                    InstalledNodeKind::HostRateAlarmClock { .. }
+                        | InstalledNodeKind::HostRateAlarmClockProducer { .. }
+                )
+            })
+            .ok_or_else(|| refused("selected rational clock disappeared"))?;
+        if selections.len()!=2 || !selections.iter().any(|selection|matches!(&selection.kind,InstalledNodeKind::HostScripted { profile } if profile.consumer==clock.node)) {
+            return Err(refused("rational clock edition requires exactly its one enrolled finite request source"));
+        }
+    }
+    if selections.iter().any(|selection| {
+        matches!(
+            selection.kind,
+            InstalledNodeKind::HostRateAlarmClockProducer { .. }
+        )
+    }) {
+        let source = selections
+            .iter()
+            .find(|selection| matches!(selection.kind, InstalledNodeKind::HostScripted { .. }))
+            .ok_or_else(|| refused("selected producer source absent"))?;
+        let InstalledNodeKind::HostScripted { profile } = &source.kind else {
+            return Err(refused("selected producer source is not a script"));
+        };
+        if !matches!(super::scripted::build_model(source, profile, artifacts)?,
+            crucible::node_adapters::HostModel::ScriptedSource(model)
+                if model.kind() == crucible::node_adapters::ScriptedRequestKind::RateAlarmClock)
+        {
+            return Err(refused(
+                "selected producer history requires actual kind4 Clock requests",
+            ));
+        }
+    }
     let selected: Vec<_> = selections
         .iter()
         .filter_map(|selected| match &selected.kind {
@@ -101,6 +147,18 @@ fn build_world_once(
         if selections.iter().any(|selection| {
             matches!(
                 selection.kind,
+                InstalledNodeKind::HostRateAlarmClockProducer { .. }
+            )
+        }) {
+            b"crucible installed rational alarm producer policy v2: actual fixed RateClock and finite kind4 Script; complete original stopped root/native/causes before Observe, exact original input/output/ACK and complete producer history native8; Runtime1/coordinator1 only; no Tape2, EXT, CPU, guest IRQ or ordinary operator scope".to_vec()
+        } else if selections
+            .iter()
+            .any(|selection| matches!(selection.kind, InstalledNodeKind::HostRateAlarmClock { .. }))
+        {
+            b"crucible installed rational alarm clock v1: actual owned host counter and original request/alarm FIFO; fixed checked rational rate and epoch/drift map visible readings only, never coordinator time; exact native7/model1 plus unchanged runtime1/coordinator1 input/output/ACK custody; measured host code and independently enrolled finite script; no guest CPU, wall-clock time, dynamic rate, external ingress, debug, fork or conditional replay".to_vec()
+        } else if selections.iter().any(|selection| {
+            matches!(
+                selection.kind,
                 InstalledNodeKind::HostControlledFaultLink { .. }
             )
         }) {
@@ -134,6 +192,12 @@ fn build_world_once(
         },
         "text/plain",
     )?;
+    let producer_evidence = selections.iter().any(|selection| {
+        matches!(
+            selection.kind,
+            InstalledNodeKind::HostRateAlarmClockProducer { .. }
+        )
+    });
     let mut descriptors = Vec::new();
     let mut compatibility = Vec::new();
     let mut owners = Vec::new();
@@ -146,7 +210,7 @@ fn build_world_once(
     let condition_scope = condition_debug::selected(selections)?;
     let condition_preserving = condition_preservation::selected(selections);
     for selection in selections {
-        let (descriptor, mut binding, mut owner, mut complete) = match &selection.kind {
+        let (mut descriptor, mut binding, mut owner, mut complete) = match &selection.kind {
             InstalledNodeKind::ReferenceDevice {
                 quantum_ps,
                 host_budget_ns,
@@ -312,6 +376,16 @@ fn build_world_once(
                     "closed gem5 requires its distinct public profile compiler",
                 ));
             }
+            InstalledNodeKind::HostRateAlarmClock { definition }
+            | InstalledNodeKind::HostRateAlarmClockProducer { definition } => {
+                rate_alarm_clock::profile(
+                    selection,
+                    definition,
+                    host,
+                    &qualification,
+                    &mut contents,
+                )?
+            }
             InstalledNodeKind::HostClock => {
                 clock_profile(selection, host, &qualification, &mut contents)?
             }
@@ -337,6 +411,9 @@ fn build_world_once(
                 &mut contents,
             )?,
         };
+        if producer_evidence {
+            rate_alarm_clock::install_producer_scope(&mut descriptor, &mut binding, &mut contents)?;
+        }
         if condition_scope {
             condition_debug::install_scope(
                 &descriptor,
@@ -395,6 +472,8 @@ fn build_world_once(
                     && matches!(
                         selection.kind,
                         InstalledNodeKind::HostClock
+                            | InstalledNodeKind::HostRateAlarmClock { .. }
+                            | InstalledNodeKind::HostRateAlarmClockProducer { .. }
                             | InstalledNodeKind::HostRecordedBlockPreserving { .. }
                             | InstalledNodeKind::HostIo { .. }
                             | InstalledNodeKind::HostScripted { .. }

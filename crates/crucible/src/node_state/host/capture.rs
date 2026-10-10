@@ -252,6 +252,37 @@ impl HostArchive {
         edition: CoordinatorEdition,
     ) -> Result<HostArchiveRecord, StateError> {
         require_supported_extensions(graph)?;
+        let alarm = graph.node_ids().any(|node| {
+            graph.binding(node).is_some_and(|binding| {
+                crate::node_adapters::host_rate_alarm_clock_schema().is_ok_and(|schema| {
+                    binding
+                        .compatibility
+                        .implementation
+                        .formats
+                        .contains(&schema)
+                })
+            })
+        });
+        if alarm
+            && (edition != CoordinatorEdition::Legacy
+                || graph.node_ids().count() != 2
+                || !graph.node_ids().all(|node| {
+                    graph.binding(node).is_some_and(|binding| {
+                        matches!(
+                            binding
+                                .compatibility
+                                .implementation
+                                .implementation_id
+                                .as_str(),
+                            "crucible-host-rate-alarm-clock" | "crucible-host-scripted-source"
+                        )
+                    })
+                }))
+        {
+            return Err(refusal(
+                "rate-alarm capture requires its closed legacy-runtime Clock/script scope; combined lineage preservation is unsupported",
+            ));
+        }
         if requirements.restore_mode != StateRestoreMode::DurableRestart {
             return Err(refusal(
                 "host signed archive selects durable reconstruction explicitly",
@@ -302,6 +333,11 @@ impl HostArchive {
                 .runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
                 .map_err(schema)?
         };
+        if alarm && source.schema_version != 1 {
+            return Err(refusal(
+                "rate-alarm native7 requires its original runtime1/coordinator1 codec",
+            ));
+        }
         if edition == CoordinatorEdition::Recorded && source.schema_version != 2 {
             return Err(refusal(
                 "recorded capture requires original input provenance runtime two",

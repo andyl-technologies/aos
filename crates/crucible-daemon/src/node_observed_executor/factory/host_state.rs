@@ -107,6 +107,8 @@ impl InstalledNodeCatalog {
             !matches!(
                 selection.kind,
                 InstalledNodeKind::HostClock
+                    | InstalledNodeKind::HostRateAlarmClock { .. }
+                    | InstalledNodeKind::HostRateAlarmClockProducer { .. }
                     | InstalledNodeKind::HostIo { .. }
                     | InstalledNodeKind::HostRecordedBlockPreserving { .. }
                     | InstalledNodeKind::HostScripted { .. }
@@ -148,7 +150,8 @@ impl InstalledNodeCatalog {
                         || schema.id.as_str() == "host/native-seeded-link-v1"
                         || schema.id.as_str() == "host/native-faulted-link-v1"
                         || schema.id.as_str() == "host/native-controlled-fault-link-v1"
-                        || schema.id.as_str() == "host/native-packet-receiver-v1")
+                        || schema.id.as_str() == "host/native-packet-receiver-v1"
+                        || schema.id.as_str() == "host/rate-alarm-native-v1")
                         && schema.version == 1)
                         || (schema.id.as_str() == "host/native-semantic-continuation-v2"
                             && schema.version == 2)
@@ -273,6 +276,11 @@ impl InstalledHostStateFactory {
         }
         match (&selection.kind, model) {
             (InstalledNodeKind::HostClock, HostModel::Clock(_)) => {}
+            (
+                InstalledNodeKind::HostRateAlarmClock { definition }
+                | InstalledNodeKind::HostRateAlarmClockProducer { definition },
+                HostModel::RateAlarmClock(actual),
+            ) if definition == actual.definition() => {}
             (InstalledNodeKind::HostPacketReceiver { .. }, HostModel::PacketReceiver(_)) => {}
             (InstalledNodeKind::HostRecordedBlockPreserving { profile }, HostModel::Io(actual)) => {
                 let block = actual
@@ -369,7 +377,10 @@ impl InstalledHostStateFactory {
         content: &'a VerifiedStateContent,
     ) -> Result<Option<&'a [u8]>, StateError> {
         let reference = match &self.selection(node)?.kind {
-            InstalledNodeKind::HostClock | InstalledNodeKind::HostPacketReceiver { .. } => {
+            InstalledNodeKind::HostClock
+            | InstalledNodeKind::HostRateAlarmClock { .. }
+            | InstalledNodeKind::HostRateAlarmClockProducer { .. }
+            | InstalledNodeKind::HostPacketReceiver { .. } => {
                 return Ok(None);
             }
             InstalledNodeKind::HostSeededLink { profile } => &profile.program,
@@ -395,6 +406,13 @@ impl InstalledHostStateFactory {
         let selected = self.selection(node)?;
         match &selected.kind {
             InstalledNodeKind::HostClock => Ok(HostModel::Clock(VirtualClock::new())),
+            InstalledNodeKind::HostRateAlarmClock { definition }
+            | InstalledNodeKind::HostRateAlarmClockProducer { definition } => {
+                Ok(HostModel::RateAlarmClock(Box::new(
+                    crucible::node_adapters::RateAlarmClock::new(definition.clone())
+                        .map_err(|e| refusal(e.reason))?,
+                )))
+            }
             InstalledNodeKind::HostPacketReceiver {
                 source_node,
                 latency_ps,

@@ -23,7 +23,15 @@ pub use host_ingress::{
 mod inventory;
 mod packet_receiver;
 mod preparation_state;
+mod rate_alarm_clock;
+pub use host::rate_alarm_evidence::{
+    RATE_ALARM_PRODUCER_SPECIFICATION, host_rate_alarm_producer_schema,
+};
 mod reference_device;
+pub use rate_alarm_clock::{
+    RateAlarmClock, RateAlarmClockDefinition, RateAlarmClockEvent, RateAlarmClockRequest,
+    host_rate_alarm_clock_schema,
+};
 mod scripted_source;
 mod seeded_link;
 pub use faulted_link::controlled::{
@@ -144,4 +152,9 @@ pub fn condition_evidence_dependencies(
         });
     }
     condition_debug_model::ConditionDebugModel::original_dependencies(bytes)
+}
+
+/// Borrows the fixed specification for the distinct complete rational-clock envelope.
+pub fn rate_alarm_clock_specification() -> &'static str {
+    rate_alarm_clock::RATE_ALARM_CLOCK_SPECIFICATION
 }

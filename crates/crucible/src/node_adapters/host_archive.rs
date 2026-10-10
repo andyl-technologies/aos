@@ -96,7 +96,11 @@ pub fn validate_host_continuation(
     let recorded = super::recorded::selected(binding);
     let condition = super::condition::selected(binding);
     if captured.schema_version
-        != if condition {
+        != if rate_alarm_evidence::selected(binding) {
+            8
+        } else if super::super::super::rate_alarm_clock::selected(binding) {
+            7
+        } else if condition {
             6
         } else if recorded {
             5
@@ -388,7 +392,9 @@ pub fn validate_host_continuation(
         if !causal_keys.insert((cause.time_ps, cause.source, cause.sequence))
             || cause.parents.len() > limits.maximum_operations
             || cause.parents.iter().any(|parent| {
-                parent.time_ps >= cause.time_ps
+                (captured.schema_version != 7
+                    && captured.schema_version != 8
+                    && parent.time_ps >= cause.time_ps)
                     || !captured
                         .input_history
                         .iter()
@@ -405,6 +411,47 @@ pub fn validate_host_continuation(
             return Err(failure(
                 "host archive pending causal lineage differs from original consumed inputs",
             ));
+        }
+    }
+    super::validate_rate_alarm_capture(
+        &captured,
+        super::super::super::rate_alarm_clock::selected(binding),
+    )?;
+    if let Some(originals) = &captured.producer_observations {
+        // Precredit every retained association before copying any body into the
+        // archive inventory; same-byte distinct content roles remain separate.
+        let original_bytes = rate_alarm_evidence::validate_originals(
+            originals,
+            source,
+            node,
+            binding,
+            &captured.native,
+            limits,
+        )?;
+        let existing = evidence
+            .values()
+            .try_fold(0usize, |total, bytes| total.checked_add(bytes.len()))
+            .ok_or_else(|| failure("clock original archive evidence overflowed"))?;
+        if existing
+            .checked_add(original_bytes)
+            .is_none_or(|total| total > limits.maximum_capture_bytes)
+        {
+            return Err(failure(
+                "clock original archive evidence exceeds aggregate credit",
+            ));
+        }
+        for object in originals.iter().flat_map(|original| &original.objects) {
+            if evidence
+                .get(&object.reference)
+                .is_some_and(|bytes| bytes != &object.bytes)
+            {
+                return Err(failure(
+                    "clock original archive observation content conflict",
+                ));
+            }
+            evidence
+                .entry(object.reference.clone())
+                .or_insert_with(|| object.bytes.clone());
         }
     }
     let recorded_input = captured

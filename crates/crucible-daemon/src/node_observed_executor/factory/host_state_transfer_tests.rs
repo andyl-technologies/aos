@@ -577,3 +577,9 @@ mod loss;
 
 #[path = "host_state_controlled_tests.rs"]
 mod controlled;
+
+#[path = "host_state_rate_alarm_clock_tests.rs"]
+mod rate_alarm_clock;
+
+#[path = "host_state_rate_alarm_planner_tests.rs"]
+mod rate_alarm_planner;

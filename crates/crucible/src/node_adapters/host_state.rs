@@ -36,6 +36,8 @@ struct Wire<'a> {
     operations: OperationsWire<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     recorded_ingress: Option<recorded::RecordedCursor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    producer_observations: Option<&'a [rate_alarm_evidence::OriginalReceipt]>,
 }
 
 #[derive(Serialize)]
@@ -132,6 +134,8 @@ struct Captured {
     operations: Vec<CapturedOperation>,
     #[serde(default, deserialize_with = "recorded::present_cursor")]
     recorded_ingress: Option<recorded::RecordedCursor>,
+    #[serde(default, deserialize_with = "rate_alarm_evidence::present_originals")]
+    producer_observations: Option<Vec<rate_alarm_evidence::OriginalReceipt>>,
 }
 
 #[derive(Deserialize)]
@@ -327,7 +331,11 @@ pub(super) fn encode_with_limit(
         .capture(maximum)?;
     let staged = node.staged.as_ref().map(input_wire);
     let wire = Wire {
-        schema_version: if node
+        schema_version: if rate_alarm_evidence::selected(&node.binding) {
+            8
+        } else if matches!(&node.model, Some(HostModel::RateAlarmClock(_))) {
+            7
+        } else if node
             .recorded_ingress
             .as_ref()
             .is_some_and(|ingress| ingress.preserved)
@@ -355,6 +363,8 @@ pub(super) fn encode_with_limit(
             .filter(|ingress| ingress.preserved)
             .map(recorded::capture)
             .transpose()?,
+        producer_observations: rate_alarm_evidence::selected(&node.binding)
+            .then_some(node.producer_observations.as_slice()),
     };
     bounded_bytes(&wire, maximum)
 }
@@ -644,10 +654,18 @@ impl HostModelNode {
             self.limits,
         )?;
         let source_scope = SourceScope::checked(source, &self.route.node, self.limits)?;
-        let captured =
+        let mut captured =
             decode_captured(bytes, source, &self.descriptor, &self.binding, self.limits)?;
+        validate_rate_alarm_capture(
+            &captured,
+            super::super::rate_alarm_clock::selected(&self.binding),
+        )?;
         if captured.schema_version
-            != if self.condition_preservation {
+            != if rate_alarm_evidence::selected(&self.binding) {
+                8
+            } else if matches!(&self.model, Some(HostModel::RateAlarmClock(_))) {
+                7
+            } else if self.condition_preservation {
                 6
             } else if self
                 .recorded_ingress
@@ -909,10 +927,11 @@ impl HostModelNode {
             let key = (cause.time_ps.get(), cause.source, cause.sequence);
             if pending.insert(key, cause.parents.clone()).is_some()
                 || cause.parents.len() > self.limits.maximum_operations
-                || cause
-                    .parents
-                    .iter()
-                    .any(|parent| parent.time_ps >= cause.time_ps)
+                || cause.parents.iter().any(|parent| {
+                    captured.schema_version != 7
+                        && captured.schema_version != 8
+                        && parent.time_ps >= cause.time_ps
+                })
                 || cause.parents.iter().any(|parent| {
                     !captured
                         .input_history
@@ -948,6 +967,7 @@ impl HostModelNode {
         // device validators. No request is re-submitted and no queue is drained.
         // Successful source authentication selects a restored birth before any
         // native model effect. Event-zero restoration cannot become fresh Realize.
+        self.producer_observations = captured.producer_observations.take().unwrap_or_default();
         self.preparation_origin = HostPreparationOrigin::Restored;
         let native_result = restore_model(
             self.model
@@ -978,6 +998,7 @@ impl HostModelNode {
             let queued: std::collections::BTreeSet<_> = match self.model.as_ref() {
                 Some(HostModel::Io(io)) => io.pending_completion_keys().collect(),
                 Some(HostModel::PacketReceiver(receiver)) => receiver.pending_keys().collect(),
+                Some(HostModel::RateAlarmClock(clock)) => clock.pending_keys().collect(),
                 Some(
                     HostModel::Link(link)
                     | HostModel::SeededLink { link, .. }
@@ -1255,6 +1276,7 @@ fn restore_model(
             Ok(())
         }
         HostModel::PacketReceiver(receiver) => receiver.restore(bytes),
+        HostModel::RateAlarmClock(clock) => clock.restore(bytes),
         HostModel::ControlledFaultLink(controller) => {
             let restored =
                 super::super::ControlledFaultLink::restore(controller.program(), bytes, maximum)?;
@@ -1288,9 +1310,140 @@ fn decode_captured(
     binding: &NodeBinding,
     limits: HostModelResources,
 ) -> Result<Captured, OperationFailure> {
+    #[derive(Deserialize)]
+    struct NativeEnvelopeHeader {
+        schema_version: u16,
+    }
+    let header: NativeEnvelopeHeader =
+        serde_json::from_slice(bytes).map_err(|error| failure(&error.to_string()))?;
+    let rate_alarm = super::super::rate_alarm_clock::selected(binding);
+    // Skip unknown fields while probing the scalar family discriminator. Older
+    // codecs never reconstruct unfamiliar alarm state, including late headers.
+    let producer = rate_alarm_evidence::selected(binding);
+    if (producer && (header.schema_version != 8 || source.schema_version != 1))
+        || (!producer && rate_alarm && (header.schema_version != 7 || source.schema_version != 1))
+        || (!producer && !rate_alarm && header.schema_version > 6)
+    {
+        return Err(failure(
+            "selected native codec does not preserve rate-alarm/lineage combination",
+        ));
+    }
     if condition::selected(binding) {
         condition::decode(bytes, source, descriptor, binding, limits)
     } else {
-        serde_json::from_slice(bytes).map_err(|error| failure(&error.to_string()))
+        let captured: Captured =
+            serde_json::from_slice(bytes).map_err(|error| failure(&error.to_string()))?;
+        if captured.producer_observations.is_some() != producer {
+            return Err(failure(
+                "selected producer evidence inventory is absent or unexpected",
+            ));
+        }
+        if let Some(originals) = &captured.producer_observations {
+            rate_alarm_evidence::validate_originals(
+                originals,
+                source,
+                &descriptor.id,
+                binding,
+                &captured.native,
+                limits,
+            )?;
+        }
+        Ok(captured)
     }
+}
+
+// Edition7 validates exact native request/output and full-position causality.
+// This inert check does not provide installed-policy or fresh owner authority.
+fn validate_rate_alarm_capture(
+    captured: &Captured,
+    rate_alarm: bool,
+) -> Result<(), OperationFailure> {
+    if !rate_alarm {
+        return Ok(());
+    }
+    let clock = super::super::rate_alarm_clock::RateAlarmClock::validate_native(&captured.native)?;
+    if clock.position() != captured.boundary
+        || clock.issued().len() as u64 != captured.native_sequence.get()
+    {
+        return Err(failure(
+            "clock native boundary or original output count differs",
+        ));
+    }
+    let mut inputs = Vec::new();
+    inputs
+        .try_reserve_exact(super::super::rate_alarm_clock::MAXIMUM_CLOCK_REQUESTS)
+        .map_err(|_| failure("clock input validation credit unavailable"))?;
+    for input in captured.input_history.iter().chain(captured.staged.iter()) {
+        for delivery in input.deliveries.iter().take(input.consumed.get() as usize) {
+            if inputs.len() >= super::super::rate_alarm_clock::MAXIMUM_CLOCK_REQUESTS {
+                return Err(failure("clock original input validation credit exhausted"));
+            }
+            let bytes = &input
+                .payloads
+                .iter()
+                .find(|payload| payload.reference == delivery.payload)
+                .ok_or_else(|| failure("clock original consumed input body absent"))?
+                .bytes;
+            inputs.push((
+                delivery.delivery,
+                delivery.source_sequence,
+                bytes.as_slice(),
+            ));
+        }
+    }
+    inputs.sort_by_key(|(position, sequence, _)| (*position, *sequence));
+    clock.validate_original_inputs(&inputs)?;
+    if captured.pending_causes.len() != clock.pending_count()
+        || captured
+            .pending_causes
+            .iter()
+            .any(|cause| cause.parents.len() != 1)
+    {
+        return Err(failure(
+            "clock original parent geometry exceeds exact native credit",
+        ));
+    }
+    let causes = captured
+        .pending_causes
+        .iter()
+        .map(|cause| {
+            (
+                (cause.time_ps.get(), cause.source, cause.sequence),
+                cause.parents.clone(),
+            )
+        })
+        .collect();
+    clock.validate_pending_causes(&causes)?;
+    let mut outputs = Vec::new();
+    outputs
+        .try_reserve_exact(clock.issued().len())
+        .map_err(|_| failure("clock original output validation credit unavailable"))?;
+    for operation in &captured.operations {
+        if let Some(scheduling) = &operation.outcome.scheduling {
+            for output in &scheduling.publications {
+                if outputs.len() >= clock.issued().len() {
+                    return Err(failure("clock original publication roster is excessive"));
+                }
+                outputs.push(output);
+            }
+        }
+    }
+    outputs.sort_by_key(|output| output.native_sequence);
+    if outputs.len() != clock.issued().len() {
+        return Err(failure("clock original publication roster is incomplete"));
+    }
+    for (index, (output, event)) in outputs.iter().zip(clock.issued()).enumerate() {
+        let value = serde_json::to_value(event).map_err(|e| failure(&e.to_string()))?;
+        let bytes = canonical::canonical_json(&value).map_err(|e| failure(&e.to_string()))?;
+        if output.native_sequence.get() != index as u64
+            || output.evaluation != Some(event.reaction)
+            || output.payload_bytes != bytes
+            || output.causal_parents.as_slice() != [clock.original_parent(event)?]
+        {
+            return Err(failure(
+                "clock original issued event differs from native runtime publication",
+            ));
+        }
+    }
+    Ok(())
 }

@@ -38,6 +38,8 @@ pub enum ScriptedRequestKind {
     Packet,
     /// Publishes complete original 9P2000.L request frames.
     Ninep,
+    /// Publishes canonical original rational-clock read, arm and cancel requests.
+    RateAlarmClock,
 }
 
 /// Contains an immutable request evaluated at reaction microstep zero.
@@ -114,6 +116,7 @@ impl ScriptedSource {
             1 => ScriptedRequestKind::Block,
             2 => ScriptedRequestKind::Ninep,
             3 => ScriptedRequestKind::Packet,
+            4 => ScriptedRequestKind::RateAlarmClock,
             _ => return Err(failure("unsupported scripted request decoder")),
         };
         let count = usize::from(take::<1>(&mut input)?[0]);
@@ -173,6 +176,7 @@ impl ScriptedSource {
             ScriptedRequestKind::Block => 1,
             ScriptedRequestKind::Ninep => 2,
             ScriptedRequestKind::Packet => 3,
+            ScriptedRequestKind::RateAlarmClock => 4,
         });
         bytes.push(u8::try_from(self.requests.len()).map_err(|error| failure(&error.to_string()))?);
         for request in &self.requests {
@@ -365,6 +369,9 @@ fn validate_request(kind: ScriptedRequestKind, bytes: &[u8]) -> Result<(), Opera
             {
                 return Err(failure("scripted read response exceeds public geometry"));
             }
+        }
+        ScriptedRequestKind::RateAlarmClock => {
+            super::RateAlarmClock::decode_request(bytes)?;
         }
         ScriptedRequestKind::Packet => {
             if bytes.is_empty() || bytes.len() > 64 * 1024 {

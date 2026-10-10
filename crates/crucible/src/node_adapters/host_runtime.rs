@@ -533,6 +533,9 @@ impl SimulationNode for HostModelNode {
         if self.terminal_inventory.0.as_str() == HOST_CONDITION_INVENTORY_PROFILE {
             return self.condition_producer_objects(activation, references, maximum_bytes);
         }
+        if rate_alarm_evidence::selected(&self.binding) {
+            return self.read_producer_evidence(activation, references, maximum_bytes);
+        }
         if self.recorded_ingress.is_some() {
             self.read_recorded_evidence(activation, references, maximum_bytes)
         } else {
@@ -562,6 +565,9 @@ impl SimulationNode for HostModelNode {
     ) -> Result<Vec<ContentRef>, OperationFailure> {
         if self.terminal_inventory.0.as_str() == HOST_CONDITION_INVENTORY_PROFILE {
             return self.condition_producer_dependencies(activation, root, limits);
+        }
+        if rate_alarm_evidence::selected(&self.binding) {
+            return self.producer_dependencies(activation, root, limits);
         }
         if self.recorded_ingress.is_some() {
             self.recorded_dependencies(activation, root, limits)

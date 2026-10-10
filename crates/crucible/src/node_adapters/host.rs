@@ -78,6 +78,8 @@ pub enum HostModel {
     ControlledFaultLink(Box<super::ControlledFaultLink>),
     /// Owns an exact integer coordinator-clock model, without guest timers.
     Clock(VirtualClock),
+    /// Owns a distinct rational visible counter and original causal alarm queue.
+    RateAlarmClock(Box<super::RateAlarmClock>),
     /// Owns a finite immutable public request script and its exact native cursor.
     ScriptedSource(Box<super::ScriptedSource>),
     /// Owns the complete original assertion evaluator and checked input prefix.
@@ -104,6 +106,7 @@ impl HostModel {
             Self::ControlledFaultLink(_) => "controlled_fault_transport",
             Self::PacketReceiver(_) => "packet_receiver",
             Self::Clock(_) => "clock",
+            Self::RateAlarmClock(_) => "rate_alarm_clock",
             Self::ScriptedSource(_) => "scripted_source",
             Self::Semantics(_) => "host_assertions",
             Self::ConditionObserver(_) => "condition_observer",
@@ -123,6 +126,7 @@ impl HostModel {
             Self::PacketReceiver(receiver) => Ok(receiver.time_ps()),
             Self::ControlledFaultLink(controller) => Ok(controller.native().current_icount()),
             Self::Clock(clock) => Ok(clock.current_icount()),
+            Self::RateAlarmClock(clock) => Ok(clock.time_ps()),
             Self::ScriptedSource(source) => Ok(source.time_ps()),
             Self::Semantics(model) => Ok(model.position().time_ps.get()),
             Self::ConditionObserver(model) => Ok(model.position().time_ps.get()),
@@ -148,6 +152,7 @@ impl HostModel {
             Self::PacketReceiver(receiver) => receiver.capture()?,
             Self::ControlledFaultLink(controller) => controller.capture(maximum)?,
             Self::Clock(clock) => host_clock_initial_bytes(clock.current_icount()),
+            Self::RateAlarmClock(clock) => clock.capture()?,
             Self::ScriptedSource(source) => source.capture()?,
             Self::Semantics(model) => model.capture()?,
             Self::ConditionObserver(model) => model.capture()?,
@@ -325,6 +330,7 @@ pub struct HostModelNode {
     public_continuation: bool,
     recorded_ingress: Option<super::host_ingress::RecordedIngressCustody>,
     condition_preservation: bool,
+    producer_observations: Vec<rate_alarm_evidence::OriginalReceipt>,
 }
 
 impl HostModelNode {
@@ -366,6 +372,21 @@ impl HostModelNode {
         {
             return Err(failure(
                 "host model role, single-owner custody or resource contract mismatch",
+            ));
+        }
+        if matches!(&model, HostModel::RateAlarmClock(_))
+            != super::rate_alarm_clock::selected(binding)
+        {
+            return Err(failure(
+                "rational clock requires its distinct installed native schema",
+            ));
+        }
+        if rate_alarm_evidence::selected(binding)
+            && !matches!(&model, HostModel::RateAlarmClock(_))
+            && !matches!(&model, HostModel::ScriptedSource(source) if source.kind() == super::ScriptedRequestKind::RateAlarmClock)
+        {
+            return Err(failure(
+                "selected producer receipt codec requires RateClock/kind4 Script",
             ));
         }
         qualification.authenticate_model(&model, descriptor, binding)?;
@@ -497,6 +518,7 @@ impl HostModelNode {
             pending_causes: BTreeMap::new(),
             native_sequence: 0,
             scheduling_observation: None,
+            producer_observations: Vec::new(),
             prepared_continuation: None,
             readiness_inventory: descriptor.initialization_ref.clone(),
             original_model_session: Rc::new(()),
@@ -683,6 +705,9 @@ impl FacetDescription for HostFacet {
         &self.0
     }
 }
+
+#[path = "host_rate_alarm_evidence.rs"]
+pub(super) mod rate_alarm_evidence;
 
 #[path = "host_runtime.rs"]
 mod runtime;
