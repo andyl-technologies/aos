@@ -538,6 +538,14 @@ and refusal ordering, and independently executed history and relationship
 checks. Standalone planning and Legacy paths retain their existing behavior;
 sharing creates no completed context or authority. Both implementation
 worklines use separate checkouts while the qualification source remains frozen.
+A bounded T-CDC-1/T-GC-1 gate workline now extends the existing source-bound
+native test image to fifty-two matching native selectors across six gate
+wrappers. The ordered selector sets and independent execution remain fixed;
+portable/default Cargo checks, the non-Send GC witness and two-phase prerequisites
+retain their existing paths. Source inspection confirms matching feature and
+test profiles but establishes no execution or measured compilation benefit.
+The original frozen CDC, GC and property qualification processes continue
+unchanged; later owning qualification must bind the final composed source.
 The owning `algebra-merge` gate passes separately on frozen `ea64a04697`,
 executing thirty-two core and six native cases with zero failures or ignored
 tests. Independent review verifies all twenty packet files and the actual
