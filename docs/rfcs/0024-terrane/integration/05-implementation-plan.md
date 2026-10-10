@@ -152,24 +152,56 @@ both native-reading fixtures are composed in `2a303ddb63` for fresh combined
 qualification. Independent chunking, algebra, property and six-population
 worklines qualify fourteen Nix checks on that frozen candidate: all five
 chunking checks, all three property checks, graft, diff, acyclic trees, merge,
-native loading (23 cases) and backfill (six cases). Its required formatter pair,
+native loading (23 cases) and backfill (six cases). Independent review confirms
+all fourteen actual gate outputs and 238 case executions, without failed or
+ignored cases, against the frozen crate and harness inputs. Its required formatter pair,
 native build, strict all-target Clippy, fresh compilation of 1,037 tests and
 application compilation of 114 targets across 29 packages also pass. Fork's
-first native prerequisite refuses an omitted native closing projection; the
-reviewed fixture correction is under qualification. Locality expires during
+first native prerequisite refuses an omitted native closing projection. The two
+reviewed cold-fork fixture corrections in `39c6233966` qualify the full fork
+gate: all four prerequisite sets (13, 12, nine and one cases) and all twelve
+publication cases pass. Locality expires during
 the 1,024-entry update at 30.336 seconds against genuine C=30; its diagnostic
 charges 16.492 seconds to admission before required staging and current checks.
+The reviewed immutable-leaf entry lookup in `08c02fa554` preserves complete
+tree validation, provenance and fresh authority checks, and passes build,
+strict Clippy and all 760 core tests. Its isolated native locality check passes
+all six cases. The formerly expired update passes in 52.35 seconds with the
+original C=30, first-pack clock, populations and assertions unchanged.
 Ordinary 1,024-entry accounting fails baseline publication with commit denial
-at 64.237 seconds; the remaining five required populations are unrun.
+at 64.237 seconds; the remaining five required populations are unrun. A separate
+unchanged-source diagnostic identifies actual retained publication expiry at
+30.007 seconds. The six capacity witnesses assert exact work and native output,
+not a literal thirty-second throughput bound. Review permits a separately
+configured bucket capacity fixture under GC-11 while retaining the original
+first-pack clock and all existing short-deadline controls. Shared preparation
+adds the genuine fixture with an explicit C=6 h/G=24 h policy and retains that
+same validated timing on reopen. Its ordinary constructor remains C=30 s/G=60 s;
+all native operations and fault observers remain unchanged. Only the six capacity
+cases receive a finite thirty-minute runner bound. Their call-site wiring and
+new qualification remain pending; the prepared fixture is dormant on trunk until
+its pending module is integrated. This policy change establishes no speedup.
 The permanent GC suite passes its after-unlink case in 103.860 seconds, then
 times out before-unlink at 120.009 seconds; 32 cases remain unrun. A separate
 archived trace completes before-unlink in 110.315 seconds with all four progress
 events and genuine pack/trash recovery. The exact-case 180-second functional
-runner bound awaits fresh untraced qualification; collector and whole-lease
-clocks remain unchanged. The reviewed closed-absence diagnosis in `3f598fed48`
+runner bound passes untraced in 111.730 seconds; collector and whole-lease
+clocks remain unchanged. Continued qualification accounts for fourteen passes,
+one failed replacement-pack error oracle and nineteen unrun cases. The actual
+replacement is refused by the retained descriptor's zero-link policy before
+the later incarnation comparison. The reviewed exact oracle correction in
+`cc74aa4c96` preserves every foreign-byte, ownership and failed-reclaim assertion;
+fresh qualification remains pending. The reviewed closed-absence diagnosis in `3f598fed48`
 preserves present corruption refusal; its first verify case passes, but the
 second rebuild case refuses an ordinary absent observation without a retained
-closing recipe. A scoped actual protected-absence capture remains required.
+closing recipe. The scoped protected-absence capture and initial retained
+selected observation are implemented, with conservative non-Tokio behavior.
+Their qualification identifies an omitted native range reader in the maintenance
+fixture. Its correction in `75cc7a5438` passes build and strict Clippy; fresh
+compilation and focused rebuild qualification remain in progress. A broader
+earlier feature-matrix run is cancelled after seven actual missing-placement
+failures; it is not a passing matrix result. A separate workline diagnoses those
+failures without changing the sealed maintenance qualification source.
 All original faults remain preserved. No task, exit or freeze advances from
 these partial results.
 

@@ -93,6 +93,23 @@ threads-required = "num-test-threads"
 filter = 'package(terrane) & test(=ref_advance::disclosure_tests::disclosure_boundary_manifest_and_multiple_source_certificates)'
 threads-required = "num-test-threads"
 
+# Growing-population witnesses qualify work and canonical native outputs under
+# their explicit bucket-capacity policy. Keep this finite runner budget local
+# to these six cases; existing deadline and collector controls retain theirs.
+[[profile.default.overrides]]
+filter = '''
+package(terrane) & (
+  test(=guard::index_contract_tests::native_index_multi_edit_batches_and_resynchronizes_canonically) |
+  test(=guard::index_contract_tests::native_index_multi_edit_batches_and_resynchronizes_canonically_1024_adversarial) |
+  test(=guard::index_contract_tests::native_index_multi_edit_batches_and_resynchronizes_canonically_2048_ordinary) |
+  test(=guard::index_contract_tests::native_index_multi_edit_batches_and_resynchronizes_canonically_2048_adversarial) |
+  test(=guard::index_contract_tests::native_index_multi_edit_batches_and_resynchronizes_canonically_4096_ordinary) |
+  test(=guard::index_contract_tests::native_index_multi_edit_batches_and_resynchronizes_canonically_4096_adversarial)
+)
+'''
+threads-required = "num-test-threads"
+slow-timeout = { period = "60s", terminate-after = 30 }
+
 # This integration test launches a matrix of nested offline Cargo checks. Its
 # bounded work is materially slower than an ordinary unit test when the full
 # workspace suite is running concurrently.
