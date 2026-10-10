@@ -1871,9 +1871,13 @@ All 8,720 source files match before and after verification. The final combined
 receipt has SHA256
 `2469b30767f6a7c9afed0affb25255e350a00872781fd9132d20429df3a2806e`.
 Local retention preserves 64 source, log and command files and six actual
-test/scanner executables. Fresh application compilation is running against an
-immutable 5,716-file source image containing every changed Rust/Cargo file;
-completion is not claimed.
+test/scanner executables. Release compilation passes against the immutable 5,716-file selected
+application source image: 943 compiler artifacts and 167 test targets, including
+69 integration targets. Every changed Rust/Cargo file and both package recipes
+are included; the engineering baseline is excluded. Independent review checks
+5,773 source, derivation, command and compiler-record bindings. This compile-only
+image predates the typed-reader ledger and catalog join; it supplies no later
+whole-image, daemon, CLI, QEMU, native execution or source-package qualification.
 
 The separate privately frozen source22 image also passes source-built package
 checks and produces the distinct `4ac8a9w60vm7w5lxsazp141znl44rkn2` implementation.
@@ -1886,6 +1890,35 @@ earlier package identities. Source exports and generic negotiated construction d
 not supply installed behavioral acceptance, a native execution epoch, ordinary
 selection, readiness, a class, or conditional capture. Those remain separate
 owning-cohort requirements. Raw evidence stays local.
+
+## Measured typed package catalog and owning policy boundary
+
+The host catalog remeasures the exact installed typed package and regenerates its
+source definition, profile, graph, handler and eight semantic axes. Independently
+installed host policy is mandatory before package reads. Unsupported operation
+credits refuse before reads or callbacks; an absent or incomplete installed peer
+registry refuses before the owning callback. Successful preparation retains the
+same measured package, profile, peer semantics and returned qualification.
+Original installed package identities and complete pre-child model reservations
+remain unchanged. This API does not create a provider child or activate a world.
+
+The current twelve-path join passes nine focused tests and four separately run
+measured-package data controls: two against the original `rxaw` package and two
+against the distinct `4ac` package. Both data pairs preserve empty-registry
+refusal without an owning-policy callback. All 37 source-quality checks,
+daemon/CLI all-target strict checks and formatting of eleven Rust files pass.
+Every one of 8,729 source files matches before and after verification. The final
+receipt has SHA256
+`af0e94bb39c844e7a10d308258ec9599b519f6de7ff89db8fada8e4533262ddc`.
+Local retention preserves 36 source, log and command files and five actual test
+and scanner executables. The independently reviewed private twelve-path image
+has its own 8,727-file source inventory and evidence; current-root checks include
+the two later common-counter files instead of borrowing that earlier image.
+
+The installed owning behavioral policy, genuine typed source epoch, ordinary
+selector, complete-world activation, native class, readiness and conditional
+capture remain separate requirements. Package data and generic factory callbacks
+do not supply that authority. Raw evidence remains local.
 
 ## Performance evidence
 

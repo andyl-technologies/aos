@@ -27,6 +27,13 @@ mod semantics;
 pub use condition_debug::InstalledConditionDebugProfile;
 mod transcript;
 mod trust;
+mod typed_reader;
+
+pub use typed_reader::{
+    InstalledTypedReaderCatalog, InstalledTypedReaderCatalogPolicy,
+    InstalledTypedReaderConfiguration, InstalledTypedReaderPackage,
+    InstalledTypedReaderPreparation, InstalledTypedReaderPreparedParts,
+};
 
 #[cfg(test)]
 mod artifact_tests;
