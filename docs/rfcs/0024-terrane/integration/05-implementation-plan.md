@@ -306,6 +306,20 @@ or assertion. Corrected composition `66c861a2b6` proceeds to fresh native
 qualification while the independent golden-vector check continues on its
 unchanged frozen candidate. No dependent native runtime is claimed from the
 failed all-target check.
+Frozen `66c861a2b6` now passes its required native library build, strict
+all-target Clippy and actual all-target test compilation. All 6,209 tracked
+source entries remain unchanged. Fresh genuine metadata and executable-bound
+inventory discover 1,002 tests across three suites. Its first unchanged,
+untraced backfill witness times out after 120.004 seconds, with no typed error
+returned before termination. Source and selected executable seals remain
+unchanged. The dependent ninety-three-case population, mandatory native read
+cases and SDK case do not run; these compiler results do not establish runtime
+success. Independent reviews examine preparation and normal publication without
+relaxing deadlines or authority. The required application test-target
+build proceeds independently on `4a1ff5d5fb`, using ordinary hermetic derivations
+with shared caches disabled. Its configured Linux scope includes all twenty-nine
+packages and all five Terrane crates. Golden-vector consumers continue on their
+own frozen source; the complete aggregate remains pending.
 No owning gate or task is accepted by these results.
 The same frozen retained-read candidate passes all twenty-nine mandatory
 native read cases in 46.960 seconds and the public SDK case in 0.009 seconds,
