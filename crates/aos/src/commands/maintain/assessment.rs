@@ -8,11 +8,13 @@ use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::{Read as _, Write as _};
 use std::os::unix::fs::OpenOptionsExt as _;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::{Context as _, Result, bail};
 use aos_assessment::bundle::{AssessmentBundleV1, BundleProfile};
-use aos_assessment::input::{ASSESSMENT_POLICY_V1, AssessmentPolicyV1, EvaluationData, Profile};
+use aos_assessment::input::{
+    ASSESSMENT_POLICY_V1, AssessmentPolicyV1, EvaluationData, FreshnessMode, Profile,
+};
 use aos_assessment::metadata::{PackageAssessmentInventoryV1, SourcePackageBindingV1};
 use aos_assessment::time::Timestamp;
 use aos_assessment_http::{
@@ -24,7 +26,7 @@ use aos_assessment_runtime::provider::{
     BudgetReservation, PROVIDER_WORK_PLAN_V1, ProviderLimits, ProviderOperation, ProviderPageV1,
     ProviderWorkPlanV1, ProviderWorkResultV1, execute_source,
 };
-use aos_assessment_runtime::scan::{ScanLimits, ScanUsage, TaskClaim};
+use aos_assessment_runtime::scan::{ScanLimits, ScanState, TaskClaim};
 use aos_contract::Sha256Digest;
 use aos_core::nix::NixRunner;
 use aos_core::output::{OutputMode, Printer};
@@ -97,7 +99,6 @@ pub async fn run_assessment(
             StateStore::open_for_envelope(args.state_dir.as_deref(), &envelope)?,
         )
     };
-    let _lease = store.acquire_operation_lease("package-assessment")?;
     if let Some(cached) = store.assessment_closure()? {
         // First-observation history survives source and inventory changes.
         // Exact evidence bindings are reused only for the identical inventory.
@@ -110,7 +111,7 @@ pub async fn run_assessment(
             data.advisories = cached.advisories;
         }
     }
-    let subjects = data
+    let mut subjects = data
         .inventory
         .subjects
         .iter()
@@ -130,6 +131,7 @@ pub async fn run_assessment(
     {
         bail!("assessment selection contains an unknown package coordinate");
     }
+    subjects.sort();
     let partition = format!(
         "local-{}",
         Sha256Digest::of_bytes(store.root().as_os_str().as_encoded_bytes())
@@ -146,6 +148,33 @@ pub async fn run_assessment(
             read_secret(&command.nvd_key_env)?
         },
     });
+    let scan_id = Uuid::new_v4().to_string();
+    let _scan_lease = store.acquire_operation_lease(&scan_id)?;
+    store.recover_local_assessment_scans(100)?;
+    let issued_at = PhysicalClock.now()?;
+    let (receipt, is_new) = store.admit_local_assessment_scan(
+        &scan_id,
+        &data,
+        subjects.clone(),
+        profiles.clone(),
+        if command.offline {
+            FreshnessMode::Offline
+        } else {
+            FreshnessMode::Refresh
+        },
+        command.idempotency_key.as_deref().unwrap_or(&scan_id),
+        issued_at.clone(),
+    )?;
+    if !is_new {
+        super::assessment_scans::print_local_receipt(args, printer, &receipt);
+        return Ok(());
+    }
+    let _provider_lane = store.acquire_operation_lease("package-assessment")?;
+    let started = store.start_local_assessment_scan(&scan_id)?;
+    if started.state != ScanState::Running {
+        super::assessment_scans::print_local_receipt(args, printer, &started);
+        bail!("local assessment scan was cancelled before execution");
+    }
     let port = LocalPort {
         transport: NativeSourceTransport::new(credentials.clone()),
         credentials,
@@ -153,13 +182,41 @@ pub async fn run_assessment(
             store: &store,
             partition: &partition,
         },
-        inventory_digest: data.inventory.digest()?,
-        policy_digest: data.policy.digest()?,
-        scan_id: Uuid::new_v4().to_string(),
-        usage: Mutex::new(ScanUsage::default()),
-        issued_at: PhysicalClock.now()?,
-        limits: ScanLimits::default(),
+        inventory_digest: started.request.inventory_digest,
+        policy_digest: started.request.policy_digest,
+        request_digest: started.request_digest,
+        inventory_revision: started.request.inventory_revision,
+        generation: started.generation,
+        scan_id: scan_id.clone(),
+        issued_at,
+        limits: started.request.limits.clone(),
     };
+    let executed = tokio::select! {
+        result = execute_assessment(cli, args, command, printer, &store, &port, data, profiles, subjects, &partition) => result,
+        signal = tokio::signal::ctrl_c() => {
+            signal?;
+            Err(anyhow::anyhow!("assessment interrupted; admitted evidence remains available"))
+        }
+    };
+    if let Err(error) = executed {
+        store.fail_local_assessment_scan(&scan_id, "local-scan-failed")?;
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn execute_assessment(
+    cli: &Cli,
+    args: &MaintainArgs,
+    command: &MaintainScanArgs,
+    printer: &Printer,
+    store: &StateStore,
+    port: &LocalPort<'_>,
+    mut data: EvaluationData,
+    profiles: Vec<Profile>,
+    subjects: Vec<String>,
+    partition: &str,
+) -> Result<()> {
     let diagnostics = if command.offline {
         if profiles.contains(&Profile::Vulnerabilities) && data.advisory_snapshot.is_none() {
             data.advisory_snapshot = Some(aos_assessment::advisory::AdvisorySnapshotV1 {
@@ -171,9 +228,9 @@ pub async fn run_assessment(
         vec![]
     } else {
         acquire(
-            &port,
+            port,
             &port.evidence,
-            &partition,
+            partition,
             &mut data,
             &subjects,
             &profiles,
@@ -183,7 +240,13 @@ pub async fn run_assessment(
     let evaluated_at = PhysicalClock.now()?;
     let input = data.freeze_selected(profiles, subjects, evaluated_at)?;
     let result = aos_assessment::evaluator::evaluate(&input, &data)?;
-    store.retain_assessment(&data, &result)?;
+    let usage = store.inspect_local_assessment_scan(&port.scan_id)?.usage;
+    let receipt =
+        store.commit_local_assessment_scan(&port.scan_id, &input, &data, &result, &usage)?;
+    if !matches!(receipt.state, ScanState::Succeeded | ScanState::Partial) {
+        super::assessment_scans::print_local_receipt(args, printer, &receipt);
+        bail!("local assessment scan ended in {}", receipt.state.as_str());
+    }
     if let Some(path) = &command.evidence_output {
         let bundle = AssessmentBundleV1::export(
             input.clone(),
@@ -204,7 +267,7 @@ pub async fn run_assessment(
     if cli.json || args.jsonl || printer.mode() == OutputMode::Json {
         printer.json(&serde_json::json!({
             "schema_version":"aos.assessment-cli/v1", "kind":"package-assessment",
-            "execution":{"mode":"local", "scan_id":port.scan_id,"scan_input_digest":input.digest()?,"diagnostics":diagnostics},
+            "execution":{"mode":"local", "scan_id":port.scan_id,"scan_input_digest":input.digest()?,"diagnostics":diagnostics,"scan":receipt},
             "data":result,
         }));
     } else {
@@ -336,13 +399,21 @@ struct LocalPort<'a> {
     inventory_digest: Sha256Digest,
     policy_digest: Sha256Digest,
     scan_id: String,
-    usage: Mutex<ScanUsage>,
+    request_digest: Sha256Digest,
+    inventory_revision: u64,
+    generation: u64,
     issued_at: Timestamp,
     limits: ScanLimits,
 }
 
 #[async_trait::async_trait]
 impl AcquisitionPort for LocalPort<'_> {
+    async fn require_current(&self) -> Result<()> {
+        self.evidence
+            .store
+            .require_local_assessment_running(&self.scan_id)
+    }
+
     async fn invoke(
         &self,
         operation: &ProviderOperation,
@@ -354,20 +425,6 @@ impl AcquisitionPort for LocalPort<'_> {
             "local assessment wall time is exhausted"
         );
         let requests = operation.source_requests()?.len() as u32;
-        {
-            let mut usage = self
-                .usage
-                .lock()
-                .map_err(|_| anyhow::anyhow!("local scan usage is unavailable"))?;
-            *usage = usage.consume(
-                &ScanUsage {
-                    provider_requests: requests,
-                    tasks: 1,
-                    normalized_bytes: 0,
-                },
-                &self.limits,
-            )?;
-        }
         let expires = Timestamp::from_unix_seconds(now.unix_seconds() + 60)?;
         let id = Uuid::new_v4().to_string();
         let credential_ref = match operation.provider() {
@@ -386,9 +443,9 @@ impl AcquisitionPort for LocalPort<'_> {
             claim: TaskClaim {
                 scan_id: self.scan_id.clone(),
                 task_id: id.clone(),
-                request_digest: self.inventory_digest,
-                generation: 1,
-                inventory_revision: 1,
+                request_digest: self.request_digest,
+                generation: self.generation,
+                inventory_revision: self.inventory_revision,
                 claim_token: Uuid::new_v4().simple().to_string(),
                 expires_at: expires.clone(),
                 attempt: 1,
@@ -419,7 +476,7 @@ impl AcquisitionPort for LocalPort<'_> {
         };
         self.evidence
             .store
-            .claim_assessment_source(&plan, &PhysicalClock.now()?)?;
+            .reserve_local_assessment_source(&plan, &PhysicalClock.now()?)?;
         let executed = execute_source(
             &self.transport,
             &self.evidence,
@@ -445,17 +502,9 @@ impl AcquisitionPort for LocalPort<'_> {
             }
         };
         let bytes = serde_json::to_vec(&result)?.len() as u64;
-        let mut usage = self
-            .usage
-            .lock()
-            .map_err(|_| anyhow::anyhow!("local scan usage is unavailable"))?;
-        *usage = usage.consume(
-            &ScanUsage {
-                normalized_bytes: bytes,
-                ..Default::default()
-            },
-            &self.limits,
-        )?;
+        self.evidence
+            .store
+            .consume_local_assessment_bytes(&self.scan_id, bytes)?;
         Ok(result)
     }
 }

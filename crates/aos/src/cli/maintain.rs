@@ -36,6 +36,11 @@ pub enum MaintainCommand {
     Inventory(MaintainInventoryArgs),
     /// Refresh bounded direct-upstream and advisory evidence
     Scan(MaintainScanArgs),
+    /// Inspect and manage durable local package assessment scans
+    Scans {
+        #[command(subcommand)]
+        command: MaintainScansCommand,
+    },
     /// Report cached package-update discovery as a maintainer inbox
     Report(MaintainReportArgs),
     /// Show concise cached maintenance and active-run state
@@ -117,6 +122,9 @@ pub struct MaintainInventoryArgs {
 
 #[derive(Args)]
 pub struct MaintainScanArgs {
+    /// Reuse an exact frozen local assessment request without another scan
+    #[arg(long, requires = "profiles")]
+    pub idempotency_key: Option<String>,
     /// Run the shared package assessment profiles
     #[arg(long = "profile", value_delimiter = ',', conflicts_with_all = ["repology_fallback", "repology_limit"])]
     pub profiles: Vec<super::AssessmentProfileArg>,
@@ -166,6 +174,41 @@ pub struct MaintainScanArgs {
         requires = "repology_fallback"
     )]
     pub repology_limit: usize,
+}
+
+#[derive(Subcommand)]
+pub enum MaintainScansCommand {
+    /// List retained assessment operations
+    List {
+        /// Bound the returned operation count
+        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..=100))]
+        limit: u32,
+        /// Continue after the last exact operation identity
+        #[arg(long)]
+        after_scan: Option<String>,
+    },
+    /// Inspect one exact operation and its frozen request
+    Inspect { scan_id: String },
+    /// Cancel one exact current operation revision
+    Cancel {
+        scan_id: String,
+        /// Require the current operation revision
+        #[arg(long)]
+        expected_revision: u64,
+    },
+    /// Wait for one operation to reach a terminal state
+    Wait {
+        scan_id: String,
+        /// Bound the wait duration in seconds
+        #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u32).range(1..=3600))]
+        timeout: u32,
+    },
+    /// Finalize interrupted operations whose process leases are released
+    Recover {
+        /// Bound the inspected nonterminal operation count
+        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..=100))]
+        limit: u32,
+    },
 }
 
 #[derive(Args)]

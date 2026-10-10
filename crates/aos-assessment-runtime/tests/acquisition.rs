@@ -486,6 +486,57 @@ async fn refresh_stale_skips_complete_fresh_queries_and_refreshes_expired_eviden
 
 struct YieldingPort;
 
+#[derive(Debug)]
+struct RevokedOperation;
+
+impl std::fmt::Display for RevokedOperation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("operation authority was revoked")
+    }
+}
+
+impl std::error::Error for RevokedOperation {}
+
+struct RevokedPort(std::sync::atomic::AtomicU32);
+
+#[async_trait::async_trait]
+impl AcquisitionPort for RevokedPort {
+    async fn require_current(&self) -> Result<()> {
+        Err(RevokedOperation.into())
+    }
+
+    async fn invoke(
+        &self,
+        _: &ProviderOperation,
+        _: Option<&ProviderPageV1>,
+    ) -> Result<ProviderWorkResultV1> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        anyhow::bail!("a revoked operation cannot invoke a provider")
+    }
+}
+
+#[tokio::test]
+async fn operation_revocation_aborts_before_source_work_and_never_becomes_unknown_coverage()
+-> Result<()> {
+    let mut data = common::fixture("1.2.0")?;
+    let before = serde_json::to_value(&data)?;
+    let port = RevokedPort(std::sync::atomic::AtomicU32::new(0));
+    let error = acquire(
+        &port,
+        &Custody::default(),
+        "partition",
+        &mut data,
+        &["subject".into()],
+        &[Profile::Vulnerabilities],
+    )
+    .await
+    .unwrap_err();
+    assert!(error.downcast_ref::<RevokedOperation>().is_some());
+    assert_eq!(port.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(serde_json::to_value(data)?, before);
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl AcquisitionPort for YieldingPort {
     async fn save_acquisition_checkpoint(

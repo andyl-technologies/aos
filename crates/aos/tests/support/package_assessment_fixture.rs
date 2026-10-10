@@ -44,3 +44,35 @@ pub(super) fn verify(arguments: &[String]) -> Result<()> {
     std::io::stdout().write_all(&serde_json::to_vec(&bundle.assessment)?)?;
     Ok(())
 }
+
+pub(super) fn hold_lane(arguments: &[String]) -> Result<()> {
+    use std::fs::OpenOptions;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    use std::time::{Duration, Instant};
+
+    let [lock_path, ready_path, release_path] = arguments else {
+        bail!("usage: assessment-lane-lock LOCK READY RELEASE");
+    };
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(lock_path)?;
+    rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)?;
+    let mut ready = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(ready_path)?;
+    ready.write_all(b"locked")?;
+    ready.sync_all()?;
+    let started = Instant::now();
+    while !std::path::Path::new(release_path).try_exists()? {
+        if started.elapsed() >= Duration::from_secs(120) {
+            bail!("assessment lane fixture release deadline elapsed");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}

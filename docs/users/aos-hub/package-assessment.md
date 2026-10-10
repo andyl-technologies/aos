@@ -62,6 +62,34 @@ reproducing supplied evidence establishes semantic agreement, not independent
 source authority. It does not import that evidence into Hub or change package
 status. The local command rejects tampered bundles and performs no source HTTP.
 
+Local shared-profile scans retain the same frozen request and scan receipt
+contracts used by the Hub. Inspect and manage them in the repository's protected
+state namespace:
+
+```text
+aos maintain scans list --limit 20
+aos maintain scans inspect SCAN_ID
+aos maintain scans cancel SCAN_ID --expected-revision REVISION
+aos maintain scans wait SCAN_ID --timeout 300
+aos maintain scans recover --limit 100
+```
+
+Use `scan --profile … --idempotency-key KEY` to name one exact request. Repeating
+that key returns its retained receipt; changing its pinned selection, inventory,
+policy or freshness intent conflicts. JSON scan output includes the committed
+receipt under `execution.scan`, while `data` remains the canonical assessment.
+List, inspect and wait do not acquire sources or recover operations. Cancellation
+requires the current revision and prevents another physical reservation or
+assessment-head commit. Already admitted work keeps its quota and evidence.
+
+Receipt versions and assessment closures are immutable files selected by one
+atomic journal index. A new inventory revision or desired generation cannot
+resurrect an older result. Recovery checks released per-operation process leases
+before finalizing interrupted work; active queued and running processes remain
+eligible to finish. A new scan also performs bounded recovery. The namespace
+retains at most 4,096 operations and returns an explicit capacity error on further
+admission. A wait timeout or interrupt leaves the operation available to inspect.
+
 ## Native controller
 
 Supply an owner-private JSON file with `aos-hub serve

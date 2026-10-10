@@ -5,6 +5,7 @@ use aos_assessment::input::EvaluationData;
 use aos_assessment::result::PackageAssessmentV1;
 
 mod budget;
+mod journal;
 
 impl StateStore {
     pub(in crate::commands::maintain) fn assessment_directory(&self) -> Result<PathBuf> {
@@ -16,26 +17,18 @@ impl StateStore {
     pub(in crate::commands::maintain) fn assessment_closure(
         &self,
     ) -> Result<Option<EvaluationData>> {
+        if self
+            .repository
+            .join("assessments/journal.json")
+            .try_exists()?
+        {
+            return self.local_committed_assessment_closure();
+        }
         let path = self.assessment_directory()?.join("current-data.json");
         let bytes = read_optional::<serde_json::Value>(&path, "assessment closure")?;
         bytes
             .map(|value| EvaluationData::from_slice(&serde_json::to_vec(&value)?))
             .transpose()
-    }
-
-    pub(in crate::commands::maintain) fn retain_assessment(
-        &self,
-        data: &EvaluationData,
-        result: &PackageAssessmentV1,
-    ) -> Result<()> {
-        let directory = self.assessment_directory()?;
-        atomic_write(
-            &directory,
-            &format!("{}.json", result.digest()?.hex()),
-            result,
-        )?;
-        atomic_write(&directory, "current-data.json", data)?;
-        atomic_write(&directory, "current-result.json", result)
     }
 
     pub(in crate::commands::maintain) fn retain_assessment_source(

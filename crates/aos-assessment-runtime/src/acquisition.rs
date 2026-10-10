@@ -32,6 +32,17 @@ use crate::provider::{NormalizedObject, ProviderOperation, ProviderPageV1, Provi
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait AcquisitionPort: RuntimeBounds {
+    /// Checks current operation authority before beginning another source question.
+    ///
+    /// Hosts may reject cancellation or a lost local process lease immediately.
+    /// Implementations still fence individual physical reservations and results.
+    ///
+    /// # Errors
+    /// Returns an error when the operation may no longer acquire evidence.
+    async fn require_current(&self) -> Result<()> {
+        Ok(())
+    }
+
     /// Reads a previously journal-admitted acquisition cursor, if present.
     ///
     /// # Errors
@@ -380,6 +391,7 @@ async fn acquire_jobs<P: AcquisitionPort, E: EvidenceStore>(
         });
     }
     for (index, job) in jobs.iter().enumerate().skip(position) {
+        port.require_current().await?;
         let advisory = matches!(
             job.operation,
             ProviderOperation::QueryOsv { .. } | ProviderOperation::QueryNvd { .. }

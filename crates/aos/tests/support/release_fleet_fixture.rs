@@ -134,6 +134,7 @@ async fn main() -> Result<()> {
         Some("maintainer-upstream-proxy") => maintainer_upstream_proxy(&arguments[1..]).await,
         Some("assessment-input") => package_assessment_fixture::input(&arguments[1..]),
         Some("assessment-verify") => package_assessment_fixture::verify(&arguments[1..]),
+        Some("assessment-lane-lock") => package_assessment_fixture::hold_lane(&arguments[1..]),
         None => qualification_executor().await,
         Some(command) => bail!("unknown release fleet fixture command: {command}"),
     }
