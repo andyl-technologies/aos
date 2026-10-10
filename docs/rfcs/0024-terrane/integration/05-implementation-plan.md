@@ -358,12 +358,23 @@ The existing-binding case returns `Advance(Expired)` after 72.213 seconds;
 its earlier focused pass does not qualify the failing aggregate. Source,
 executable and raw-log seals remain unchanged. The dependent twenty-nine
 native read cases, public SDK case and seven native key-limit/maintenance
-cases remain unrun. A single bounded, source-unchanged diagnostic is assigned
-to locate the expiry while preserving every deadline and authority check.
+cases remain unrun. The bounded, source-unchanged diagnostic fails after
+68.776 seconds inside backfill with a source-less read denial. A distinct
+callsite diagnostic fails after 73.184 seconds and identifies the actual
+retained deadline predicate at `guard/time.rs:270`; the outward error masks
+its expiry source. Neither diagnostic logs the existing elapsed sample or
+configured window. An independently reviewed test-only prerequisite now
+reports those existing values under the same explicit callsite switch,
+without sampling a clock again, logging request data, changing errors or
+altering production behavior and authority budgets. Its compilation and bounded
+runtime attribution remain pending; no timing benefit is claimed.
 Both mandatory formatter commands pass on clean `759c4c9e52` with no edits.
 Sixteen pack and four codec gates qualify separately on
-the same candidate with private hermetic Cargo targets; the twenty-six core
-and foundation gates and twenty-nine application target compilation retain
+the same candidate with private hermetic Cargo targets. Both store outcome
+and trait-split gates pass on frozen `759c4c9e52`: four exact unit cases and
+three doctests execute with no failures or ignored cases; actual store outputs,
+derivers, filtered input and unchanged source seals are retained. The twenty-six
+core and foundation gates and twenty-nine application target compilation retain
 their earlier frozen `4a1ff5d5fb` source. The complete aggregate remains pending.
 No owning gate or task is accepted by these results.
 The same frozen retained-read candidate passes all twenty-nine mandatory

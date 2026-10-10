@@ -238,6 +238,21 @@ fn check_deadline(
 ) -> Result<(), StoreFailure> {
     let elapsed = clock.monotonic().checked_sub(started);
     if elapsed.is_none_or(|elapsed| elapsed > maximum) {
+        #[cfg(test)]
+        if std::env::var("TERRANE_TEST_DENIAL_CALLSITE")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
+            use std::io::Write;
+
+            // Observe the rejecting sample without resampling the injected clock
+            // or exposing retained request data. Full phase tracing stays separate.
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "retained-deadline-refusal started={started:?} elapsed={elapsed:?} maximum={maximum:?}",
+            );
+        }
         return Err(StoreFailure::with_source(
             denied(&request.reference, request.verb).kind().clone(),
             crate::ref_advance::AdvanceError::Expired,
