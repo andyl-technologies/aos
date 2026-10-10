@@ -197,6 +197,28 @@ impl Database {
         claim: &aos_assessment_runtime::scan::TaskClaim,
         code: &str,
     ) -> Result<()> {
+        self.fail_assessment_provider_work_fenced(registry_id, claim, code, &[])
+            .await
+    }
+
+    /// Settles an uncertain physical attempt under current principal and job guards.
+    ///
+    /// The exact attempt settlement and installed source backoff share the
+    /// authority transaction. Failed guards preserve both prior states.
+    ///
+    /// # Errors
+    /// Returns an error for invalid diagnostic, excessive/revoked authority,
+    /// stale parent/child claim or unavailable persistence.
+    pub async fn fail_assessment_provider_work_fenced(
+        &self,
+        registry_id: i64,
+        claim: &aos_assessment_runtime::scan::TaskClaim,
+        code: &str,
+        authority_fences: &[CheckedStatement],
+    ) -> Result<()> {
+        if authority_fences.len() > 32 {
+            bail!("assessment failure settlement exceeds its authority ceiling");
+        }
         if code.is_empty()
             || code.len() > 128
             || !code
@@ -212,8 +234,9 @@ impl Database {
             .await?;
         let mut values = claim_values(registry_id, &parent);
         values.extend(vals![claim.task_id, code]);
-        self.backend
-            .checked_batch(&[Statement::new(
+        let mut statements = authority_fences.to_vec();
+        statements.extend([
+            Statement::new(
                 format!(
                     "UPDATE assessment_tasks SET state = 'failed', last_error_code = ?10,
                  lease_expires_at = NULL, resource_version = resource_version + 1
@@ -224,8 +247,10 @@ impl Database {
                 ),
                 values,
             )
-            .expecting(1)])
-            .await
+            .expecting(1),
+            self.assessment_provider_failure_budget_statement(claim)?,
+        ]);
+        self.backend.checked_batch(&statements).await
     }
 
     /// Binds an installed typed plan to its already consumed exact reservation.
@@ -463,6 +488,14 @@ impl Database {
             vals![plan.claim.scan_id, plan.claim.task_id, plan.claim.claim_token, plan.claim.attempt, plan.digest()?.to_string(),
                 state, result_digest.to_string(), result_bytes, result.continuation.map(|digest| digest.to_string()), plan.budget_reservation.reservation_id],
         ).expecting(1));
+        if super::source_health::indicates_outage(result) {
+            statements.push(self.assessment_provider_failure_budget_statement(&plan.claim)?);
+        } else if matches!(
+            result.outcome,
+            WorkOutcome::Observed | WorkOutcome::NotModified
+        ) {
+            statements.push(self.assessment_provider_success_budget_statement(&plan.claim));
+        }
         // Index rows convey the same admitted authority as the result receipt;
         // retention alone must not publish current query or history heads.
         statements.extend(

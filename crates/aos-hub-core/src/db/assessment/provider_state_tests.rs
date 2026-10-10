@@ -12,7 +12,7 @@ use super::scans_tests::setup;
 use super::{AssessmentProviderWork, AssessmentSourceBudget};
 use crate::db::Database;
 
-async fn planned() -> Result<(Database, i64, ProviderWorkPlanV1)> {
+pub(super) async fn planned() -> Result<(Database, i64, ProviderWorkPlanV1)> {
     planned_operation(ProviderOperation::ObserveReleases {
         repository: "example/fixture".into(),
         tag_prefix: "v".into(),
@@ -67,13 +67,20 @@ async fn failed_physical_attempt_settles_without_refunding_and_allows_incomplete
 async fn planned_operation(
     operation: ProviderOperation,
 ) -> Result<(Database, i64, ProviderWorkPlanV1)> {
-    let (db, registry_id, request) = setup().await?;
+    planned_database(Database::open_in_memory().await?, operation).await
+}
+
+pub(super) async fn planned_database(
+    db: Database,
+    operation: ProviderOperation,
+) -> Result<(Database, i64, ProviderWorkPlanV1)> {
+    let (db, registry_id, request) = super::scans_tests::setup_database(db).await?;
     let scan = db.request_assessment_scan(registry_id, &request).await?;
     let coordinator = db
         .claim_assessment_scan(registry_id, &scan.scan_id, 90)
         .await?;
     let budget = AssessmentSourceBudget {
-        key: "installed-github-account".into(),
+        key: format!("installed-github-account/{}", request.resource_scope),
         window_seconds: 3600,
         allowance: 10,
         min_interval_seconds: 0,
@@ -184,10 +191,19 @@ async fn admitted_advisory_queries_publish_exact_indexes_without_related_id_equi
     result
         .normalized_objects
         .sort_by_key(|projection| projection.digest);
+    let cooldown = db.assessment_database_time().await?.unix_seconds() + 300;
+    db.backend.execute("UPDATE assessment_source_budgets SET failure_count = 5, circuit_until = ?2, next_eligible_at = ?2 WHERE budget_key = ?1",
+        &vals![@slice plan.budget_reservation.source_budget, cooldown]).await?;
     db.admit_assessment_provider_result(registry_id, &plan, &result)
         .await?;
     db.admit_assessment_provider_result(registry_id, &plan, &result)
         .await?;
+    let health = db.backend.query_opt("SELECT failure_count, circuit_until, next_eligible_at, consumed FROM assessment_source_budgets WHERE budget_key = ?1",
+        &vals![@slice plan.budget_reservation.source_budget]).await?.context("provider health")?;
+    assert_eq!(health.get::<u32>(0)?, 0);
+    assert_eq!(health.get::<u64>(1)?, cooldown);
+    assert_eq!(health.get::<u64>(2)?, cooldown);
+    assert_eq!(health.get::<u64>(3)?, 1);
     let query = aos_assessment_runtime::advisories::AdvisoryQueryV1 {
         schema: "aos.assessment-advisory-query/v1".into(),
         advisory_id: "CVE-2026-12345".into(),

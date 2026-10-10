@@ -108,6 +108,17 @@ must have exactly one installed budget. Share a provider/account budget across
 its routes so fan-out cannot multiply its allowance. Restarting a controller
 preserves consumption; uncertain physical outcomes are never refunded.
 
+Settled transport uncertainty, HTTP 429 and upstream 5xx responses persist
+backoff in that same shared budget. Backoff starts at twenty seconds with
+bounded jitter, grows exponentially and stops at one hour; five recorded
+outages open the persisted circuit. Bad questions (including HTTP 400/404) and
+ordinary pagination or enumeration limits do not open that circuit. Exact
+receipt replay adds no failure, restarting preserves cooldowns, and an
+in-flight success cannot shorten a concurrent cooldown. Settlement holds
+current job and IAM guards through the budget and attempt transaction.
+Provider health remains operational state, separate from vulnerability
+applicability and evidence freshness.
+
 Authenticated source routes refer to immutable credential grants. Grants constrain
 provider, partition, source scope, secret binding and expiry. Native
 `secretVersions` maps each selected binding to an immutable installed secret

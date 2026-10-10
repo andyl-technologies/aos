@@ -25,6 +25,7 @@ mod reconcile;
 mod reviews;
 mod scans;
 mod schedules;
+mod source_health;
 mod status;
 
 pub(crate) use reviews::AssessmentReviewCompletion;

@@ -547,10 +547,11 @@ impl<A: AssessmentAuthority, T: ProviderTransport, R: AssessmentSourceRoutes>
             Ok(result) => result,
             Err(error) => {
                 self.db
-                    .fail_assessment_provider_work(
+                    .fail_assessment_provider_work_fenced(
                         self.scan.registry_id,
                         &plan.claim,
                         "source-transport-failed",
+                        &self.authority.current_fences(self.scan).await?,
                     )
                     .await?;
                 return Err(error);
@@ -558,10 +559,11 @@ impl<A: AssessmentAuthority, T: ProviderTransport, R: AssessmentSourceRoutes>
         };
         if let Err(error) = result.validate_for(&plan, &self.db.assessment_database_time().await?) {
             self.db
-                .fail_assessment_provider_work(
+                .fail_assessment_provider_work_fenced(
                     self.scan.registry_id,
                     &plan.claim,
                     "source-result-refused",
+                    &self.authority.current_fences(self.scan).await?,
                 )
                 .await?;
             return Err(error);
