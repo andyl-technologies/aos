@@ -419,6 +419,8 @@ def observe_direct_sparse_publisher(client, tools, process, signed, corpus):
                 if len(children) != 1:
                     raise ValueError('recorded publisher supervisor has no unique CLI child')
                 publisher = _pin(int(children[0]), inputs['arguments'], os.path.realpath(inputs['arguments'][0]), os.getuid())
+                _pin(process['supervisorPid'], process['supervisorArguments'],
+                    process['supervisorExecutable'], process['supervisorUid'], process['supervisorStartTicks'])
                 journal = Path(selected['signed']['publisherHome']) / 'direct-upload.sqlite'
                 try:
                     snapshot = _snapshot(journal, selected['sources'])
