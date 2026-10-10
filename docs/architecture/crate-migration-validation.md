@@ -249,6 +249,16 @@ This invocation captured `0bcc3027e0` plus the then-uncommitted SQLite fixture
 patch, whose stored bytes match the subsequent `a0632083fc` commit. Its result
 and selected-input hashes remain separate from the final clean source checkpoint.
 
+A later native license-boundary guard still expected cross-only Bash and
+rejected the intentional launcher dependency repair. Its recipe expectation now
+requires Bash unconditionally while retaining every matching QEMU/source and
+native dependency. The full official corrected guard passes against immutable
+`f917962d70` source and products, at output
+`l3fpqnbjysy49301w76fh2n3xlbnxw53-crucible-phase1-license-boundary-0`.
+All 18 license tests and packaging/source/reconstruction checks pass. Exact
+scanner mutation probes reject omission of either Bash or the matching QEMU
+source. The earlier frozen guard failure remains in its original invocation.
+
 The maintenance VM exported a configured typed-choice initrd that its rootfs
 closure omitted. Its original source has the same omission. The minimal repair
 retains that exact configured initrd without substituting the materially
@@ -308,16 +318,20 @@ checks. Installed destinations, commands, counts and assertions are retained.
 The corrected Rust scopes have no source-contract references to these Nix fields.
 Their corrective fixtures bind immutable `f917962d70` Rust source and products,
 rather than creating another production build for changed test-Nix hashes.
-The corrected official store-composition gate and eight additional native mode
-fixtures are still running. The store-equivalence prerequisite has passed and
-the corrected body has reached its process tests. The full SQLite workflow and
+The corrected official store-composition gate passes, including its official
+store-equivalence prerequisite, at output
+`ahswqwlibnrzzyms9dl87xk9l2bz3167-crucible-phase5-campaign-store-composition-0`.
+Its command executions report 113 passes and 18 existing ignores, including the
+complete 70-case harness with 52 passes and 18 ignores. Repeated selected
+executions are not counted as unique tests. Eight additional native mode
+fixtures are still running. The full SQLite workflow and
 CLI selftest reruns are also still running; their preceding standalone software
 proofs are not substituted for official prerequisite or VM results.
 
 The unchanged million-admission stress test is running separately against its
 captured source and corrected installed suite. It retains its original
-1,000,000-admission workload and 604,800-second timeout. Its latest recorded
-progress is 18,464 completed admissions; this is progress, not a passing result.
+1,000,000-admission workload and 604,800-second timeout. An early recorded
+snapshot shows 18,464 completed admissions; this is progress, not a passing result.
 Commands, captured inputs, and progress snapshots remain in local evidence.
 The final report and scratch bundle will be updated after the remaining runs.
 
