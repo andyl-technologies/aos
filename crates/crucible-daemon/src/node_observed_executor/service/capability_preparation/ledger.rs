@@ -66,7 +66,41 @@ impl CapabilityPreparationLedger {
         }
         let request_id = ContentId::for_bytes(ObjectKind::Trace, 1, &bytes);
         let reference = operation_ref(&request.execution)?;
-        let _guard = self.refs.acquire_publication_guard().map_err(refused)?;
+        let claims = super::super::original_claim::OriginalClaims::new(
+            self.blobs.clone(),
+            self.refs.clone(),
+        )?;
+        let route = super::super::original_claim::Route::Capability;
+        let publication = self.refs.acquire_publication_guard().map_err(refused)?;
+        if let Some(identity) = self.refs.read_ref(&reference).map_err(refused)? {
+            let record = self.read(identity, &request.execution)?;
+            if record.request != request_id.encode() {
+                return Err(refused(
+                    "capability nonce already owns different original bytes",
+                ));
+            }
+            // Legacy records already own their route. Checking a present claim
+            // cannot mint another dispatch or require new lifetime credit.
+            claims.existing(&request.execution, route, &bytes)?;
+            return Ok(CapabilityReservation {
+                record,
+                identity,
+                original_dispatch: false,
+            });
+        }
+        if claims.existing(&request.execution, route, &bytes)? {
+            return Err(refused(
+                "original capability claim lacks its admission record; redispatch is forbidden",
+            ));
+        }
+
+        // Existing per-route allowances remain preconditions for publishing
+        // original request bytes. Contenders may consume credit but no loser
+        // can acquire native dispatch from that consumption.
+        self.reserve_credit()?;
+        drop(publication);
+        let claim = claims.reserve(&request.execution, route, &bytes)?;
+        let _publication = self.refs.acquire_publication_guard().map_err(refused)?;
         if let Some(identity) = self.refs.read_ref(&reference).map_err(refused)? {
             let record = self.read(identity, &request.execution)?;
             if record.request != request_id.encode() {
@@ -80,8 +114,11 @@ impl CapabilityPreparationLedger {
                 original_dispatch: false,
             });
         }
-
-        self.reserve_credit()?;
+        if claim != super::super::original_claim::Reservation::Original {
+            return Err(refused(
+                "original capability claim lacks its admission record; redispatch is forbidden",
+            ));
+        }
         self.put(request_id, bytes)?;
         let record = CapabilityPreparationRecord {
             format: "crucible.capability-preparation".into(),
@@ -193,7 +230,15 @@ impl CapabilityPreparationLedger {
     pub(crate) fn retention_roots(
         &self,
     ) -> Result<BTreeSet<ContentId>, NodeObservationServiceError> {
-        self.inventory().map(|(roots, _)| roots)
+        let mut roots = self.inventory()?.0;
+        roots.extend(
+            super::super::original_claim::OriginalClaims::new(
+                self.blobs.clone(),
+                self.refs.clone(),
+            )?
+            .retention_roots()?,
+        );
+        Ok(roots)
     }
 
     fn reserve_credit(&self) -> Result<(), NodeObservationServiceError> {

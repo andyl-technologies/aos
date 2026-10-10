@@ -13,6 +13,7 @@ mod profile;
 pub(super) mod public_catalog;
 mod publication;
 mod qualification;
+mod retirement;
 mod staging;
 
 #[cfg(test)]
@@ -20,3 +21,11 @@ mod tests;
 
 #[cfg(test)]
 mod cold_tests;
+
+pub use retirement::{InstalledRootRetirement, RootNamespaceReleaseFailure};
+
+#[cfg(test)]
+mod retirement_tests;
+
+#[cfg(test)]
+mod retirement_native_tests;

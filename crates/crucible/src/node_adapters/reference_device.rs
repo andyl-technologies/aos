@@ -139,6 +139,8 @@ impl ControlledReferenceNode<ReferenceDevice> {
             graph,
             node,
             child,
+            Id::new(REFERENCE_DEVICE_QUANTIZED_PROFILE)
+                .map_err(|error| no_effect(&error.to_string()))?,
             &|child, descriptor, binding| {
                 qualification.authenticate_child(child, descriptor, binding)
             },
@@ -152,6 +154,7 @@ impl<C: ControlledReference> ControlledReferenceNode<C> {
         graph: &AdmittedGraph,
         node: &Id,
         child: C,
+        profile: Id,
         authenticate: &impl Fn(&C, &NodeDescriptor, &NodeBinding) -> Result<(), OperationFailure>,
         maximum_operations: usize,
     ) -> Result<Self, OperationFailure> {
@@ -202,8 +205,8 @@ impl<C: ControlledReference> ControlledReferenceNode<C> {
                 ));
             }
         };
-        let profile =
-            Id::new("reference-device/quantized-v1").map_err(|e| no_effect(&e.to_string()))?;
+        // The caller supplies the original source-qualified facet, never a
+        // replacement inferred from the newly admitted graph's public labels.
         let selected = &binding.compatibility.operating_contract.facets;
         if selected.len() != 1 || selected[0].id != profile || selected[0].version != 1 {
             return Err(no_effect(

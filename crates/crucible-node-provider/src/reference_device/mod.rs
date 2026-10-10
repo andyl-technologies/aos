@@ -10,11 +10,13 @@
 
 mod child;
 mod process;
+mod progress;
 mod protocol;
 mod supervision;
 
 pub use child::serve;
 pub use process::{DeviceStatus, ReferenceDevice};
+pub use progress::{NativeProgressPredecessor, NativeProgressRecord, serve_with_progress};
 pub use protocol::{DeviceGrant, DeviceOutput, DeviceReceipt, MAX_INPUT_BYTES};
 
 pub use supervision::{

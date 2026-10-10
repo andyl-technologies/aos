@@ -68,9 +68,21 @@ pub(super) struct SourceOriginalResponseLoss {
     predecessor: RefCell<Option<OriginalPredecessor>>,
     original: RefCell<Option<Value>>,
     recovery: RefCell<Option<Value>>,
+    progress: RefCell<Option<Rc<super::source_native_progress_loss::SourceNativeProgressLoss>>>,
 }
 
 impl SourceOriginalResponseLoss {
+    /// Installs the distinct predeclared native progress reader before controls.
+    pub(super) fn attach_progress(
+        &self,
+        progress: Rc<super::source_native_progress_loss::SourceNativeProgressLoss>,
+    ) -> Result<(), ProviderError> {
+        if self.progress.borrow().is_some() || self.archive.borrow().is_some() {
+            return Err(refused("native progress loss reader already installed"));
+        }
+        *self.progress.borrow_mut() = Some(progress);
+        Ok(())
+    }
     /// Reserves the one source-selected attempted population before Child.
     pub(super) fn new(
         installed: &SourcePublicReferenceInstallation,
@@ -97,6 +109,7 @@ impl SourceOriginalResponseLoss {
             predecessor: RefCell::new(None),
             original: RefCell::new(None),
             recovery: RefCell::new(None),
+            progress: RefCell::new(None),
         })
     }
 
@@ -209,7 +222,12 @@ impl SourceOriginalResponseLoss {
 
     /// Copies the original partial loss data without creating native authority.
     pub(super) fn retained(&self) -> Value {
-        serde_json::json!({"fixture":fixture(),"target_request":self.request,"original":&*self.original.borrow(),"recovery":&*self.recovery.borrow(),"ordinary_qualification":false})
+        let mut value = serde_json::json!({"fixture":fixture(),"target_request":self.request,"original":&*self.original.borrow(),"recovery":&*self.recovery.borrow(),"ordinary_qualification":false});
+        if let Some(progress) = self.progress.borrow().as_ref() {
+            value["fixture"] = super::source_native_progress_loss::fixture();
+            value["native_progress_observation"] = progress.original();
+        }
+        value
     }
 }
 
@@ -300,6 +318,8 @@ impl OriginalResponseLossQualification for SourceOriginalResponseLoss {
     }
 
     fn after_original_write(&self, original: &Envelope) -> Result<(), ProviderError> {
+        let progress = self.progress.borrow().as_ref().cloned();
+        let _containment = progress.as_ref().map(|progress| progress.contain_on_exit());
         let mut retained = self.original.borrow_mut();
         let retained = retained
             .as_mut()
@@ -309,6 +329,18 @@ impl OriginalResponseLossQualification for SourceOriginalResponseLoss {
                 .map_err(crucible_node_contract::ContractError::from)?
         {
             return Err(refused("original-loss sent frame differs"));
+        }
+        if let Some(progress) = progress.as_ref() {
+            let input = self.original_input.borrow();
+            let input = input
+                .as_deref()
+                .ok_or(refused("native progress original input absent"))?;
+            let predecessor = self.predecessor.borrow();
+            let predecessor = predecessor
+                .as_ref()
+                .ok_or(refused("native progress original predecessor absent"))?;
+            retained["actual_native_progress"] =
+                progress.read_positive(&self.grant, input, &predecessor.receipt)?;
         }
         retained["signal_attempted"] = Value::Bool(true);
         let provider = self.provider.borrow();
@@ -326,6 +358,10 @@ impl OriginalResponseLossQualification for SourceOriginalResponseLoss {
             return Err(refused("original-loss provider not terminal"));
         }
         retained["provider_terminal"] = Value::Bool(true);
+        if let Some(progress) = progress.as_ref() {
+            progress.contain_held_original()?;
+            retained["native_progress_stream_shutdown"] = Value::Bool(true);
+        }
         Ok(())
     }
 }

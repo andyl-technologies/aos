@@ -57,6 +57,9 @@ pub(super) struct SourceLifecycleResendPolicy {
     original_loss:
         RefCell<Option<Rc<super::source_original_response_loss::SourceOriginalResponseLoss>>>,
     #[cfg(test)]
+    native_progress:
+        RefCell<Option<Rc<super::source_native_progress_loss::SourceNativeProgressLoss>>>,
+    #[cfg(test)]
     original_controls: RefCell<
         Vec<(
             CnpCompletedLifecycleScope,
@@ -84,6 +87,36 @@ pub(super) struct OriginalLifecyclePremise {
 }
 
 impl SourceLifecycleResendPolicy {
+    /// Retains the distinct progress endpoint before native process creation.
+    #[cfg(test)]
+    pub(super) fn attach_native_progress(
+        &self,
+        progress: Rc<super::source_native_progress_loss::SourceNativeProgressLoss>,
+    ) -> Result<(), ProviderError> {
+        if self.native_progress.borrow().is_some() || self.observer.borrow().is_some() {
+            return Err(ProviderError::Correlation(
+                "native progress endpoint already attached",
+            ));
+        }
+        *self.native_progress.borrow_mut() = Some(progress);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn native_progress_endpoint(&self) -> Option<std::path::PathBuf> {
+        self.native_progress
+            .borrow()
+            .as_ref()
+            .map(|value| value.endpoint().to_owned())
+    }
+
+    #[cfg(test)]
+    pub(super) fn bind_native_progress_before_child(&self) -> Result<(), ProviderError> {
+        if let Some(progress) = self.native_progress.borrow().as_ref() {
+            progress.bind_before_child()?;
+        }
+        Ok(())
+    }
     /// Checks inert mutations against authentic callback scopes and publication.
     ///
     /// # Errors
@@ -222,6 +255,8 @@ impl SourceLifecycleResendPolicy {
             window_loss: RefCell::new(None),
             #[cfg(test)]
             original_loss: RefCell::new(None),
+            #[cfg(test)]
+            native_progress: RefCell::new(None),
         })
     }
 

@@ -22,6 +22,18 @@ path = "src/bin/crucible-reference-manifest.rs"
 name = "crucible-reference-provider"
 path = "src/bin/crucible-reference-provider.rs"
 
+[[bin]]
+name = "crucible-reference-progress-device"
+path = "src/bin/crucible-reference-progress-device.rs"
+
+[[bin]]
+name = "crucible-reference-progress-manifest"
+path = "src/bin/crucible-reference-progress-manifest.rs"
+
+[[bin]]
+name = "crucible-reference-progress-provider"
+path = "src/bin/crucible-reference-progress-provider.rs"
+
 [lints]
 workspace = true
 
@@ -32,7 +44,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
-rustix = { workspace = true, features = ["net", "process"] }
+rustix = { workspace = true, features = ["event", "net", "process"] }
 
 [[bin]]
 name = "crucible-reference-lineage-device"

@@ -69,10 +69,28 @@ enum Limitation {
 /// Scenario input, runtime environment variables and supplied expected hashes
 /// cannot install a different implementation or upgrade its guarantees.
 pub struct InstalledPublicReferencePackage {
+    selection: PackageSelection,
     manifest: Manifest,
     identity: ContentRef,
     bytes: Vec<u8>,
     runtime: RuntimeClosure,
+}
+
+#[derive(Clone, Copy)]
+enum PackageSelection {
+    Ordinary,
+    #[cfg(test)]
+    NativeProgress,
+}
+
+impl PackageSelection {
+    fn policy(self) -> &'static str {
+        match self {
+            Self::Ordinary => "public-byte-linked-checksum-v1",
+            #[cfg(test)]
+            Self::NativeProgress => "public-positive-native-progress-v1",
+        }
+    }
 }
 
 impl InstalledPublicReferencePackage {
@@ -89,6 +107,18 @@ impl InstalledPublicReferencePackage {
     }
 
     fn load_installed(path: &Path) -> Result<Self, NodeObservedError> {
+        Self::load_selected(path, PackageSelection::Ordinary)
+    }
+
+    /// Loads only the separately pinned source-built progress fixture package.
+    #[cfg(test)]
+    pub(super) fn built_in_progress() -> Result<Rc<Self>, NodeObservedError> {
+        let path = option_env!("CRUCIBLE_REFERENCE_PROGRESS_IMPLEMENTATION_MANIFEST")
+            .ok_or_else(|| refused("compiled progress installation missing"))?;
+        Self::load_selected(Path::new(path), PackageSelection::NativeProgress).map(Rc::new)
+    }
+
+    fn load_selected(path: &Path, selection: PackageSelection) -> Result<Self, NodeObservedError> {
         require_store_path(path)?;
         let mut bytes = Vec::new();
         open_regular(path)?
@@ -107,7 +137,11 @@ impl InstalledPublicReferencePackage {
             ));
         }
         let manifest: Manifest = serde_json::from_value(value)?;
-        manifest.validate()?;
+        match selection {
+            PackageSelection::Ordinary => manifest.validate()?,
+            #[cfg(test)]
+            PackageSelection::NativeProgress => manifest.validate_selected(selection.policy())?,
+        }
         let mut total = 0u64;
         for artifact in manifest
             .artifacts
@@ -169,6 +203,7 @@ impl InstalledPublicReferencePackage {
         }
         let identity = canonical::content_ref(&bytes, "application/json")?;
         Ok(Self {
+            selection,
             manifest,
             identity,
             bytes,
@@ -206,6 +241,21 @@ impl InstalledPublicReferencePackage {
         let device = self.artifact("device")?;
         provider.measure()?;
         device.measure()?;
+        #[cfg(test)]
+        if matches!(self.selection, PackageSelection::NativeProgress) {
+            return ReferenceProfile::build_public_progress(
+                node,
+                owner,
+                provider.content.clone(),
+                device.content.clone(),
+                quantum_ps,
+                host_budget_ns,
+                closed_ingress,
+            )
+            .map_err(|error| refused_owned(error.to_string()));
+        }
+        // The production package has one immutable ordinary selection.
+        let _selection = self.selection;
         ReferenceProfile::build_public_linked(
             node,
             owner,
@@ -222,6 +272,11 @@ impl InstalledPublicReferencePackage {
         let artifact = self.artifact(role)?;
         artifact.measure()?;
         Ok(&artifact.path)
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_progress_fixture(&self) -> bool {
+        matches!(self.selection, PackageSelection::NativeProgress)
     }
 
     pub(super) fn artifact_content(&self, role: &str) -> Result<&ContentRef, NodeObservedError> {
@@ -325,8 +380,12 @@ impl RuntimeClosure {
 
 impl Manifest {
     fn validate(&self) -> Result<(), NodeObservedError> {
+        self.validate_selected(PackageSelection::Ordinary.policy())
+    }
+
+    fn validate_selected(&self, expected_policy: &str) -> Result<(), NodeObservedError> {
         if self.schema != "crucible.reference.installed-implementation.v1"
-            || self.policy_id != "public-byte-linked-checksum-v1"
+            || self.policy_id != expected_policy
             || self.policy_version != 1
             || !self
                 .artifacts

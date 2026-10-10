@@ -155,6 +155,7 @@ pub(super) struct Resources {
     pub(super) profile: ReferenceProfile,
     pub(super) child_path: PathBuf,
     pub(super) socket_parent: PathBuf,
+    pub(super) progress_endpoint: Option<PathBuf>,
     pub(super) child: Option<ReferenceChild>,
     pub(super) binding: NodeBinding,
     pub(super) owner_binding: OwnerBinding,

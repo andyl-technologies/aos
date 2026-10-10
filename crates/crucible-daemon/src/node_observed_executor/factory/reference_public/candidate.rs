@@ -83,18 +83,31 @@ impl PrivateCandidate {
                     "candidate mechanism bytes absent",
                 ))?
                 .clone();
-            let launch = bootstrap.install_qualifications(
-                profile,
-                vec![InstalledContent {
-                    reference: definition.qualification().clone(),
-                    bytes: Bytes::new(bytes),
-                }],
-            )?;
+            let qualification = InstalledContent {
+                reference: definition.qualification().clone(),
+                bytes: Bytes::new(bytes),
+            };
+            #[cfg(test)]
+            let (bootstrap, qualifications) = if package.is_progress_fixture() {
+                super::source_native_progress_loss::bind_candidate(
+                    bootstrap,
+                    profile,
+                    qualification,
+                )?
+            } else {
+                let launch = bootstrap.install_qualifications(profile, vec![qualification])?;
+                (launch.bootstrap, launch.qualification_refs)
+            };
+            #[cfg(not(test))]
+            let (bootstrap, qualifications) = {
+                let launch = bootstrap.install_qualifications(profile, vec![qualification])?;
+                (launch.bootstrap, launch.qualification_refs)
+            };
             installations.push(SourcePublicReferenceInstallation::new(
                 Rc::clone(&package),
                 profile.clone(),
-                launch.bootstrap,
-                launch.qualification_refs,
+                bootstrap,
+                qualifications,
                 index == 1,
             )?);
         }

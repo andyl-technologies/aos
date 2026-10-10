@@ -77,9 +77,40 @@ enum ProfileSelection {
     Linked { closed_ingress: bool },
     PublicLinked { closed_ingress: bool },
     PublicLineage { closed_ingress: bool },
+    PublicProgress { closed_ingress: bool },
 }
 
 impl ReferenceProfile {
+    /// Builds a separate qualification-only positive-work latch profile.
+    ///
+    /// The input-capable companion holds quantum one's completion after one
+    /// actual byte. The closed source never reaches that input-bearing target.
+    /// This model selects a distinct implementation, configuration and facet;
+    /// ordinary public launch records cannot select it.
+    ///
+    /// # Errors
+    /// Rejects invalid measured artifacts, zero budgets, malformed portable
+    /// records, or unrepresentable profile content.
+    pub fn build_public_progress(
+        node: Id,
+        owner: Id,
+        provider_executable: ContentRef,
+        device_executable: ContentRef,
+        quantum_ps: U64,
+        host_budget_ns: U64,
+        closed_ingress: bool,
+    ) -> Result<Self, ProviderError> {
+        Self::build_selected(
+            node,
+            owner,
+            provider_executable,
+            device_executable,
+            quantum_ps,
+            host_budget_ns,
+            ProfileSelection::PublicProgress { closed_ingress },
+        )
+    }
+
     /// Builds a bounded phase-zero quantized checksum profile.
     ///
     /// All input is frozen before execution. The child publishes one cumulative
@@ -235,13 +266,17 @@ impl ReferenceProfile {
     /// Returns the selected public launch profile without granting authority.
     ///
     /// # Errors
-    /// Refuses actor-native profiles, which do not expose a public endpoint.
+    /// Refuses actor-native profiles and the separate progress fixture, which
+    /// requires its own explicit launch edition.
     pub fn public_profile(&self) -> Result<PublicReferenceProfile, ProviderError> {
         match self.selection {
             ProfileSelection::Cnp => Ok(PublicReferenceProfile::ChecksumJsonV1),
             ProfileSelection::PublicLinked { closed_ingress } => {
                 Ok(PublicReferenceProfile::ByteLinkedV1 { closed_ingress })
             }
+            ProfileSelection::PublicProgress { .. } => Err(ProviderError::Frame(
+                "progress fixture requires explicit launch edition five",
+            )),
             ProfileSelection::Closed
             | ProfileSelection::Linked { .. }
             | ProfileSelection::PublicLineage { .. } => Err(ProviderError::Frame(
@@ -253,7 +288,9 @@ impl ReferenceProfile {
     pub(super) fn output_media_type(&self) -> &'static str {
         if matches!(
             self.selection,
-            ProfileSelection::PublicLinked { .. } | ProfileSelection::PublicLineage { .. }
+            ProfileSelection::PublicLinked { .. }
+                | ProfileSelection::PublicLineage { .. }
+                | ProfileSelection::PublicProgress { .. }
         ) {
             "application/octet-stream"
         } else {
@@ -282,11 +319,16 @@ impl ReferenceProfile {
                 | ProfileSelection::PublicLineage {
                     closed_ingress: true
                 }
+                | ProfileSelection::PublicProgress {
+                    closed_ingress: true
+                }
         );
         let native_linked = matches!(selection, ProfileSelection::Linked { .. });
         let public_lineage = matches!(selection, ProfileSelection::PublicLineage { .. });
-        let public_linked =
-            matches!(selection, ProfileSelection::PublicLinked { .. }) || public_lineage;
+        let progress_latch = matches!(selection, ProfileSelection::PublicProgress { .. });
+        let public_linked = matches!(selection, ProfileSelection::PublicLinked { .. })
+            || public_lineage
+            || progress_latch;
         let byte_linked = native_linked || public_linked;
         let native_adapter = matches!(
             selection,
@@ -303,7 +345,9 @@ impl ReferenceProfile {
         let mut content = Vec::new();
         let model = put_text(
             &mut content,
-            if public_lineage {
+            if progress_latch {
+                PROGRESS_MODEL_SPECIFICATION
+            } else if public_lineage {
                 lineage::MODEL_SPECIFICATION
             } else if public_linked {
                 PUBLIC_LINKED_MODEL_SPECIFICATION
@@ -348,7 +392,9 @@ impl ReferenceProfile {
         let guarantees_ref = put_json(&mut content, &guarantees)?;
         let window = put_text(
             &mut content,
-            if public_lineage {
+            if progress_latch {
+                PROGRESS_WINDOW_SPECIFICATION
+            } else if public_lineage {
                 lineage::WINDOW_SPECIFICATION
             } else if public_linked {
                 PUBLIC_LINKED_WINDOW_SPECIFICATION
@@ -392,9 +438,19 @@ impl ReferenceProfile {
             configuration_value["maximum_native_journal_bytes"] = json!("8388608");
             configuration_value["relation_reserved_bytes"] = json!("614400");
         }
+        if progress_latch {
+            configuration_value["native_fault_fixture"] = json!({
+                "schema":"crucible.reference.native-progress.v1",
+                "target_quantum":"1","consumed_prefix":"1",
+                "completion_latch":"separate-private-stream-release-byte-1",
+                "closed_ingress_target":"never-selected"
+            });
+        }
         let configuration = put_json(&mut content, &configuration_value)?;
         let facet = FacetSelection {
-            id: id(if public_lineage {
+            id: id(if progress_latch {
+                "reference-device/quantized-progress-v1"
+            } else if public_lineage {
                 "reference-device/quantized-lineage-v1"
             } else {
                 "reference-device/quantized-v1"
@@ -545,7 +601,9 @@ impl ReferenceProfile {
         formats.sort_by(|left, right| (&left.id, left.version).cmp(&(&right.id, right.version)));
         let implementation = ImplementationIdentity {
             schema_version: 1,
-            implementation_id: id(if public_lineage {
+            implementation_id: id(if progress_latch {
+                "crucible-reference-progress-device"
+            } else if public_lineage {
                 "crucible-reference-lineage"
             } else {
                 "crucible-reference-device"
@@ -573,7 +631,9 @@ impl ReferenceProfile {
 
         let configuration_schema = schema(
             &mut content,
-            if public_lineage {
+            if progress_latch {
+                "reference-device/configuration-progress-v1"
+            } else if public_lineage {
                 "reference-device/configuration-public-lineage-v1"
             } else if public_linked {
                 "reference-device/configuration-public-linked-v1"
@@ -584,7 +644,9 @@ impl ReferenceProfile {
             } else {
                 "reference-device/configuration-v1"
             },
-            if public_lineage {
+            if progress_latch {
+                PROGRESS_CONFIGURATION_SCHEMA
+            } else if public_lineage {
                 lineage::CONFIGURATION_SCHEMA
             } else if public_linked {
                 PUBLIC_LINKED_CONFIGURATION_SCHEMA
@@ -606,7 +668,13 @@ impl ReferenceProfile {
         let port_templates_ref = put_json(&mut content, &descriptor.ports)?;
         let node_manifest = NodeManifest {
             schema_version: 1,
-            profile_id: id(if public_lineage {
+            profile_id: id(if progress_latch {
+                if closed_ingress {
+                    "reference-device/progress-source-v1"
+                } else {
+                    "reference-device/progress-consumer-v1"
+                }
+            } else if public_lineage {
                 if closed_ingress {
                     "reference-device/cnp-lineage-source-v1"
                 } else {
@@ -661,7 +729,9 @@ impl ReferenceProfile {
                 vec![
                     id("cnp.control-evidence/1")?,
                     id("cnp.resume/1")?,
-                    id(if public_lineage {
+                    id(if progress_latch {
+                        "reference-device/quantized-progress-v1"
+                    } else if public_lineage {
                         "reference-device/quantized-lineage-v1"
                     } else {
                         "reference-device/quantized-v1"
@@ -914,6 +984,12 @@ const MODEL_SPECIFICATION: &str = "Controlled checksum model, edition 1. Initial
 const WINDOW_SPECIFICATION: &str = "Quantized checksum window, edition 1. The controller authenticates one fixed input batch and closed prefix before begin. Staging consumes no bytes. Execution consumes exactly the staged batch once, with a finite host-time budget. Output remains invisible until the controller closes the original window. Publication is at (window_end_ps,0,Publication), without an evaluation coordinate. The parked child acknowledges closure and retains its output until acknowledgement. A lost response does not authorize reexecution. Budget failure retains original native custody under supervision. Application park makes no physical suspension claim. Each input and output is bounded by its lane credits. No captures, forks, reset or continuation are supported.";
 
 const INPUT_SCHEMA: &str = "reference-device/input-v1: arbitrary octets in one immutable content reference, length 0 through MAX_INPUT_BYTES. Multiple admitted events are concatenated in coordinator order before begin. No textual decoding, implicit separators, or host arrival ordering is applied.";
+
+const PROGRESS_MODEL_SPECIFICATION: &str = "reference-device/native-progress-v1: separately measured qualification-only rolling-checksum process. Original ordered input bytes update cumulative checksum by wrapping multiplier257. Quantum0 normally closes and acknowledges; input-bearing quantum1 consumes exactly its first byte, sends the original Initialize/Ready, Stage/Activate and preceding Close/ACK ledger on a distinct private source-owned stream, and holds its ordinary completion until release byte1. The ledger is positive partial work, never a complete-window receipt, source-class claim or capture. Empty quantum1 completes normally without a progress ledger. Closed-ingress sources have no positive-input target. All records and stream state belong to the original owner; native deadlines/loss retain Unknown without replacement execution.";
+
+const PROGRESS_WINDOW_SPECIFICATION: &str = "reference-device/native-progress-window-v1: unchanged opaque-octet boundary sampling and cumulative checksum output on successful completion. A distinct declared fault fixture holds input-bearing quantum1 after consumed-prefix1 and before completion publication; a source actor may terminate the original provider only after authenticating the actual progress peer, original input/grant/predecessor and ledger. Positive partial progress cannot authorize Close/publication/ACK or establish full quantum completion. The first original request and missing response remain owned on loss. Native modeled timing, repeatability and preservation remain unqualified.";
+
+const PROGRESS_CONFIGURATION_SCHEMA: &str = "reference-device/configuration-progress-v1: the closed public-linked base configuration plus native_fault_fixture object with exactly schema crucible.reference.native-progress.v1, target_quantum string1, consumed_prefix string1, completion_latch separate-private-stream-release-byte-1, closed_ingress_target never-selected. No implicit environment switch or ordinary launch record may enable the fault. The explicit edition5 launch carries a separately private progress endpoint whose path is operational launch scope, not reusable model identity.";
 
 const OUTPUT_SCHEMA: &str = "reference-device/output-v1: closed JSON object with required bytes_processed and checksum fields. Each field is a canonical decimal u64 string, never a JSON number. bytes_processed equals the original frozen input length for this window; checksum is cumulative across windows. There are no additional fields. The original grant carries the quantum identity separately. Serialized bytes are preserved exactly in output custody.";
 

@@ -295,3 +295,81 @@ fn complete_portable_receipt_credit_accounts_for_the_control_wrapper() {
     let bytes = serde_json::to_vec(&wrapped).unwrap();
     assert!(bytes.len() < crate::node_control::MAX_NODE_CONTROL_BYTES);
 }
+
+#[test]
+fn capability_and_conditional_pending_callers_cannot_both_reserve_one_nonce() {
+    use super::super::conditional_preparation::{
+        ConditionalPreparationRequest, ledger::ConditionalPreparationLedger,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let (blobs, refs) = storage(directory.path());
+    let capability = ledger::CapabilityPreparationLedger::new(blobs.clone(), refs.clone()).unwrap();
+    let conditional = ConditionalPreparationLedger::new(blobs, refs).unwrap();
+    let original = request();
+    let source =
+        canonical::content_ref(b"model source, no native authority", "application/json").unwrap();
+    let conditional_request = ConditionalPreparationRequest {
+        ledger: original.ledger.clone(),
+        execution: original.execution.clone(),
+        sources: [
+            (Id::new("first").unwrap(), source.clone()),
+            (Id::new("second").unwrap(), source),
+        ]
+        .into_iter()
+        .collect(),
+        configuration: original.configuration.clone(),
+    };
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    let first_barrier = barrier.clone();
+    let second_barrier = barrier.clone();
+    let first = std::thread::spawn(move || {
+        first_barrier.wait();
+        capability
+            .reserve(&original)
+            .map(|value| value.original_dispatch)
+    });
+    let second = std::thread::spawn(move || {
+        second_barrier.wait();
+        conditional
+            .reserve(&conditional_request)
+            .map(|value| value.original_dispatch)
+    });
+
+    barrier.wait();
+    let outcomes = [first.join().unwrap(), second.join().unwrap()];
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|result| matches!(result, Ok(true)))
+            .count(),
+        1
+    );
+    assert_eq!(outcomes.iter().filter(|result| result.is_err()).count(), 1);
+}
+
+#[test]
+fn retained_claim_without_own_admission_record_cannot_redispatch() {
+    let directory = tempfile::tempdir().unwrap();
+    let (blobs, refs) = storage(directory.path());
+    let original = request();
+    let claims =
+        super::super::original_claim::OriginalClaims::new(blobs.clone(), refs.clone()).unwrap();
+    assert_eq!(
+        claims
+            .reserve(
+                &original.execution,
+                super::super::original_claim::Route::Capability,
+                &encode(&original).unwrap()
+            )
+            .unwrap(),
+        super::super::original_claim::Reservation::Original
+    );
+    let ledger = ledger::CapabilityPreparationLedger::new(blobs, refs).unwrap();
+
+    assert!(ledger.reserve(&original).is_err());
+    assert!(ledger.state(&original.execution).is_err());
+    assert_eq!(
+        ledger.retention_roots().unwrap(),
+        claims.retention_roots().unwrap()
+    );
+}

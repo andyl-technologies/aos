@@ -334,16 +334,54 @@ fn provider_tools_reject_implicit_missing_renamed_and_native_outputs() -> Result
     implicit["package"]["autobins"] = Value::Boolean(true);
     assert!(!artifact_type_failures(&spec, &implicit, &layout).is_empty());
 
-    let mut missing = manifest.clone();
-    missing["bin"]
+    let bins = manifest["bin"].as_array().ok_or("binary list missing")?;
+    for (index, binary) in bins.iter().enumerate() {
+        let name = binary["name"].as_str().ok_or("binary name missing")?;
+
+        let mut missing = manifest.clone();
+        missing["bin"]
+            .as_array_mut()
+            .ok_or("binary list missing")?
+            .remove(index);
+        assert!(
+            !artifact_type_failures(&spec, &missing, &layout).is_empty(),
+            "missing declared provider tool must be refused: {name}"
+        );
+
+        let mut renamed = manifest.clone();
+        renamed["bin"][index]["name"] = Value::String("unreviewed-provider".into());
+        assert!(
+            !artifact_type_failures(&spec, &renamed, &layout).is_empty(),
+            "renamed declared provider tool must be refused: {name}"
+        );
+
+        let mut rebound = manifest.clone();
+        rebound["bin"][index]["path"] = Value::String("src/bin/unreviewed.rs".into());
+        assert!(
+            !artifact_type_failures(&spec, &rebound, &layout).is_empty(),
+            "rebound declared provider tool must be refused: {name}"
+        );
+    }
+
+    let mut extra = manifest.clone();
+    extra["bin"]
         .as_array_mut()
         .ok_or("binary list missing")?
-        .pop();
-    assert!(!artifact_type_failures(&spec, &missing, &layout).is_empty());
+        .push(Value::Table(toml::map::Map::from_iter([
+            ("name".into(), Value::String("unreviewed-provider".into())),
+            (
+                "path".into(),
+                Value::String("src/bin/unreviewed-provider.rs".into()),
+            ),
+        ])));
+    assert!(!artifact_type_failures(&spec, &extra, &layout).is_empty());
 
-    let mut renamed = manifest.clone();
-    renamed["bin"][0]["name"] = Value::String("unreviewed-provider".into());
-    assert!(!artifact_type_failures(&spec, &renamed, &layout).is_empty());
+    let mut duplicate = manifest.clone();
+    duplicate["bin"]
+        .as_array_mut()
+        .ok_or("binary list missing")?
+        .push(bins[0].clone());
+    assert!(!artifact_type_failures(&spec, &duplicate, &layout).is_empty());
 
     let mut native = manifest;
     native
@@ -645,7 +683,13 @@ fn artifact_type_failures(
             let expected = [
                 "crucible-node-conformance",
                 "crucible-reference-device",
+                "crucible-reference-lineage-device",
+                "crucible-reference-lineage-manifest",
+                "crucible-reference-lineage-provider",
                 "crucible-reference-manifest",
+                "crucible-reference-progress-device",
+                "crucible-reference-progress-manifest",
+                "crucible-reference-progress-provider",
                 "crucible-reference-provider",
             ];
             let mut actual = bin_targets(manifest)
@@ -666,7 +710,7 @@ fn artifact_type_failures(
                 || layout.has_main_rs
                 || !layout.has_src_bin_dir
             {
-                failures.push(format!("{}: provider must explicitly declare its four process tools and disable implicit binaries", spec.package));
+                failures.push(format!("{}: provider must explicitly declare its ten process tools and disable implicit binaries", spec.package));
             }
         }
         ExpectedArtifact::Library => {

@@ -23,11 +23,13 @@ pub use factory::{
     InstalledPreparedNativeWorld, InstalledPreparedRootWorld, InstalledPreparedWorld,
     InstalledPublicReferencePackage, InstalledRecordedIngressProfile, InstalledRecordedWorld,
     InstalledReferenceQualifier, InstalledReferenceRecording, InstalledReplayRecipe,
-    InstalledRootPreservation, InstalledRootRestore, InstalledScriptedSourceProfile,
-    MAX_KVM_CANDIDATE_POLICY_BYTES, NativeCapturePoint, NativeWorldOutcome, NativeWorldRecord,
-    NativeWorldRequest, NativeWorldRetention, NativeWorldService, QualificationRunError,
-    ReferenceQualificationObservation, ReferenceQualificationRun, ResolvedCapabilityWorld,
-    load_installed_kvm_candidate, prepare_installed_kvm_candidate,
+    InstalledRootPreservation, InstalledRootRestore, InstalledRootRetirement,
+    InstalledScriptedSourceProfile, MAX_KVM_CANDIDATE_POLICY_BYTES, NativeCapturePoint,
+    NativeWorldOutcome, NativeWorldRecord, NativeWorldRequest, NativeWorldRetention,
+    NativeWorldService, QualificationRunError, ReferenceQualificationObservation,
+    ReferenceQualificationRun, ResolvedCapabilityWorld, RootInitialRetirementFailure,
+    RootNamespaceReleaseFailure, RootRestoredRetirementFailure, load_installed_kvm_candidate,
+    prepare_installed_kvm_candidate,
 };
 pub use service::{
     CapabilityCandidateRecipe, CapabilityPreparationAction, CapabilityPreparationRecord,

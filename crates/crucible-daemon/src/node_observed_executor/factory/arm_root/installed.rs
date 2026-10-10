@@ -47,10 +47,8 @@ pub(super) struct RootLiveWorld {
     pub(super) profile: Rc<RootWorldProfile>,
     pub(super) graph: Rc<AdmittedGraph>,
     pub(super) evidence: Rc<RootEvidence>,
-    #[cfg(test)]
     pub(super) target: ActivationRecord,
     pub(super) realization: PreparedRealization,
-    #[cfg(test)]
     pub(super) namespace: PathBuf,
 }
 
@@ -222,10 +220,8 @@ impl RootInstalledEngine {
             profile,
             graph,
             evidence,
-            #[cfg(test)]
             target,
             realization,
-            #[cfg(test)]
             namespace,
         })
     }

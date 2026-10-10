@@ -14,6 +14,7 @@ mod lineage_measurement;
 mod native_child;
 mod native_supervision;
 pub mod profile;
+mod progress;
 mod resources;
 mod retirement;
 mod security;
@@ -28,6 +29,7 @@ pub use bootstrap::{
 pub use installed::ReferenceServiceInstalledLaunchBootstrap;
 pub use lineage_launch::ReferenceLineageLaunchBootstrap;
 pub use profile::{ProfileContent, ReferenceProfile};
+pub use progress::{ReferenceProgressLaunchBootstrap, serve_progress};
 pub use resources::{ConsumedRequest, PublicationConsumption, RequestConsumption};
 pub use server::{serve, serve_installed, serve_lineage, serve_selected};
 

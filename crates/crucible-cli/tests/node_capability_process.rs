@@ -538,3 +538,6 @@ fn actual_cli_capabilities_queue_clock_worker_and_preserve_two_source_gone_branc
     assert_eq!(branches[0].2["reached"], branches[1].2["reached"]);
     assert_eq!(branches[0].2["publications"], branches[1].2["publications"]);
 }
+
+#[path = "node_capability_process/original_claim.rs"]
+mod original_claim;

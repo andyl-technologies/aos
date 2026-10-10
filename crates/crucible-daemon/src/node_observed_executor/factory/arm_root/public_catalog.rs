@@ -14,7 +14,7 @@ use super::super::{
 };
 use super::{
     custody::RootCustodyQueue, factory::RootNativeFactory, installed::RootInstalledEngine,
-    profile::RootWorldProfile, publication::RootPublisher,
+    profile::RootWorldProfile, publication::RootPublisher, retirement::RootRetirementScope,
 };
 use crate::node_scenario::NodeScenario;
 
@@ -29,6 +29,8 @@ pub struct InstalledPreparedRootWorld {
 /// Retains the installed Root codec without minting native capture or execution seals.
 pub struct InstalledRootPreservation {
     pub(super) factory: Rc<RootNativeFactory>,
+    target: crucible::node_contract::ActivationRecord,
+    retirement: RootRetirementScope,
     #[cfg(test)]
     pub(super) namespace: std::path::PathBuf,
 }
@@ -39,10 +41,72 @@ impl InstalledRootPreservation {
         self.factory.clone()
     }
 
+    /// Couples initial publication to this actual inactive owner reservation.
+    ///
+    /// # Errors
+    /// Refuses an unavailable original reservation or another activation target.
+    pub fn publisher(
+        &self,
+        stored: crate::node_observed_executor::StoredWorldActivationPublisher,
+    ) -> Result<Box<dyn crucible::node_contract::ActivationPublisher>, NodeObservedError> {
+        let queue = self.factory.native_queue();
+        queue.publication_knowledge(&self.target)?;
+        Ok(Box::new(RootPublisher::for_prepared(
+            stored,
+            queue,
+            self.target.clone(),
+        )))
+    }
+
+    /// Consumes the same active runtime beneath its original containment scopes.
+    ///
+    /// # Errors
+    /// Returns the original runtime and preservation handle for a foreign graph,
+    /// activation or opaque runtime authority. Successful containment grants no
+    /// continuation, publication or namespace release permission.
+    pub fn begin_retirement(
+        self,
+        mut runtime: crucible::node_contract::NodeRuntime,
+        graph: &crucible::node_admission::AdmittedGraph,
+        activation: &crucible::node_contract::WorldActivation,
+    ) -> Result<super::InstalledRootRetirement, Box<RootInitialRetirementFailure>> {
+        let validate = (|| {
+            if activation.record() != &self.target {
+                return Err(refused("Root retirement names another original activation"));
+            }
+            self.factory
+                .check_graph(graph)
+                .map_err(|error| refused(&error.to_string()))?;
+            runtime
+                .scheduler(graph, activation)
+                .map_err(|error| refused(&error.to_string()))?;
+            Ok(())
+        })();
+        if let Err(error) = validate {
+            return Err(Box::new(RootInitialRetirementFailure {
+                error,
+                runtime,
+                preservation: self,
+            }));
+        }
+        let quarantine = runtime.into_quarantine();
+        Ok(self.retirement.begin(self.factory, Some(quarantine)))
+    }
+
     /// Returns bounded immutable bytes and independently recognized dependency rows.
     pub fn immutable(&self) -> Box<dyn crucible::node_state::CaptureEvidence> {
         Box::new(self.factory.immutable())
     }
+}
+
+/// Retains the same active world after a retirement authority mismatch.
+pub struct RootInitialRetirementFailure {
+    /// Describes the rejected original activation or runtime association.
+    pub error: NodeObservedError,
+    /// Owns the unchanged original runtime and its pre-reserved supervisor slot.
+    pub runtime: crucible::node_contract::NodeRuntime,
+    /// Retains the same installed factory and pinned original namespace.
+    pub preservation: InstalledRootPreservation,
 }
 
 fn validate_selection(selections: &[InstalledNodeSelection]) -> Result<(), NodeObservedError> {
@@ -99,6 +163,12 @@ pub(in super::super) fn prepare_native(
         ));
     }
     let factory = Rc::new(RootNativeFactory::for_live(&live, engine.native.clone()));
+    let retirement = RootRetirementScope::new(
+        live.target.clone(),
+        &live.namespace,
+        engine.native.clone(),
+        engine.runtime.clone(),
+    )?;
     let graph = Rc::try_unwrap(live.graph)
         .map_err(|_| refused("Root graph retained unexpected preparation aliases"))?;
     Ok(InstalledPreparedRootWorld {
@@ -109,6 +179,8 @@ pub(in super::super) fn prepare_native(
         },
         preservation: InstalledRootPreservation {
             factory,
+            target: live.target,
+            retirement,
             #[cfg(test)]
             namespace: live.namespace,
         },
@@ -134,11 +206,35 @@ pub struct InstalledRootRestore {
     pub(super) factory: Rc<RootNativeFactory>,
     native: RootCustodyQueue,
     custody: crucible::node_contract::RuntimeCustodyQueue,
+    retirement: RootRetirementScope,
     #[cfg(test)]
     pub(super) namespace: std::path::PathBuf,
 }
 
 impl InstalledRootRestore {
+    /// Consumes the original restored wrapper before polling retained reclamation.
+    ///
+    /// # Errors
+    /// Returns both owning values unchanged when the restored activation differs
+    /// from this reserved target. Successful transfer preserves runtime/staging
+    /// Drop custody and does not certify that cleanup has completed.
+    pub fn begin_retirement(
+        self,
+        restored: crucible::node_state::RestoredWorld,
+    ) -> Result<super::InstalledRootRetirement, Box<RootRestoredRetirementFailure>> {
+        if restored.activation().record() != &self.target {
+            return Err(Box::new(RootRestoredRetirementFailure {
+                error: refused("Root retirement names another restored activation"),
+                restored,
+                restore: self,
+            }));
+        }
+        // The complete owning wrapper transfers its actual runtime and staging
+        // obligations to the supervisors; no NodeRuntime is extracted or cloned.
+        drop(restored);
+        Ok(self.retirement.begin(self.factory, None))
+    }
+
     /// Returns the installed policy that independently authenticates the original source.
     pub fn factory(&self) -> Rc<dyn crucible::node_state::NativeWorldFactory> {
         self.factory.clone()
@@ -177,6 +273,16 @@ impl InstalledRootRestore {
     }
 }
 
+/// Retains the same restored world after a retirement target mismatch.
+pub struct RootRestoredRetirementFailure {
+    /// Describes the rejected original restore target association.
+    pub error: NodeObservedError,
+    /// Owns the original restored runtime and native staging capsule.
+    pub restored: crucible::node_state::RestoredWorld,
+    /// Retains the original installed source, target and retirement scopes.
+    pub restore: InstalledRootRestore,
+}
+
 pub(in super::super) fn prepare_restore(
     catalog: &InstalledNodeCatalog,
     selections: &[InstalledNodeSelection],
@@ -195,6 +301,12 @@ pub(in super::super) fn prepare_restore(
     let target = plan.target.clone();
     #[cfg(test)]
     let namespace = plan.namespace.clone();
+    let retirement = RootRetirementScope::new(
+        target.clone(),
+        &plan.namespace,
+        engine.native.clone(),
+        engine.runtime.clone(),
+    )?;
     let factory = Rc::new(RootNativeFactory::for_cold(plan, engine.native.clone()));
     Ok(InstalledRootRestore {
         graph,
@@ -203,7 +315,26 @@ pub(in super::super) fn prepare_restore(
         factory,
         native: engine.native,
         custody: engine.runtime,
+        retirement,
         #[cfg(test)]
         namespace,
     })
+}
+
+impl std::fmt::Debug for RootInitialRetirementFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RootInitialRetirementFailure")
+            .field("error", &self.error)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for RootRestoredRetirementFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RootRestoredRetirementFailure")
+            .field("error", &self.error)
+            .finish_non_exhaustive()
+    }
 }

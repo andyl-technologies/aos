@@ -151,9 +151,27 @@ pub(super) fn launch(
         bootstrap: bootstrap.clone(),
         qualification_refs: installed.qualifications.clone(),
     };
-    let private_launch = canonical::canonical_json(
-        &serde_json::to_value(launch).map_err(crucible_node_contract::ContractError::from)?,
-    )?;
+    let launch_value =
+        serde_json::to_value(launch).map_err(crucible_node_contract::ContractError::from)?;
+    #[cfg(test)]
+    let launch_value = if installed.package.is_progress_fixture() {
+        let endpoint = request.lifecycle_policy.native_progress_endpoint().ok_or(
+            ProviderError::Correlation("source progress endpoint absent"),
+        )?;
+        serde_json::to_value(
+            crucible_node_provider::reference_service::ReferenceProgressLaunchBootstrap {
+                schema_version: 5,
+                closed_ingress: request.closed_ingress,
+                progress_endpoint: endpoint,
+                qualification_refs: installed.qualifications.clone(),
+                bootstrap: bootstrap.clone(),
+            },
+        )
+        .map_err(crucible_node_contract::ContractError::from)?
+    } else {
+        launch_value
+    };
+    let private_launch = canonical::canonical_json(&launch_value)?;
     let features = super::unit::required_features()?;
     let hello_body = HelloRequest {
         versions: vec!["CNP/1".into()],
@@ -209,6 +227,11 @@ pub(super) fn launch(
         .mode(0o700)
         .create(&request.directory)?;
 
+    #[cfg(test)]
+    request
+        .lifecycle_policy
+        .bind_native_progress_before_child()?;
+
     let mut child = Command::new(provider)
         .arg(&socket)
         .arg(device)
@@ -229,19 +252,7 @@ pub(super) fn launch(
     let mut stdin = stdin.ok_or(ProviderError::Correlation(
         "original private launch pipe absent",
     ))?;
-    write_frame(
-        &mut stdin,
-        &serde_json::to_value(ReferenceServiceInstalledLaunchBootstrap {
-            schema_version: 3,
-            profile: PublicReferenceProfile::ByteLinkedV1 {
-                closed_ingress: request.closed_ingress,
-            },
-            bootstrap: bootstrap.clone(),
-            qualification_refs: installed.qualifications.clone(),
-        })
-        .map_err(crucible_node_contract::ContractError::from)?,
-        16 * 1024 * 1024,
-    )?;
+    write_frame(&mut stdin, &launch_value, 16 * 1024 * 1024)?;
     drop(stdin);
     let deadline = ProcessDeadline::after(Duration::from_secs(3)).ok_or(
         ProviderError::ResourceExhausted("private public connection deadline"),

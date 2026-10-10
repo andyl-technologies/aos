@@ -102,6 +102,33 @@ pub(super) fn submit(
                 .map_err(refused)
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let preparations = storage
+        .preparations
+        .as_ref()
+        .ok_or_else(|| refused("conditional source admission ledger is unavailable"))?;
+    let direct;
+    let reservation = if let Some(original) = queued {
+        let retry = preparations.reserve(&original_raw_request)?;
+        if !original.original_dispatch
+            || retry.original_dispatch
+            || retry.record.request != original.record.request
+            || retry.record.execution != original.record.execution
+        {
+            return Err(refused(
+                "conditional queue changed original admission custody",
+            ));
+        }
+        original
+    } else {
+        direct = preparations.reserve(&original_raw_request)?;
+        if !direct.original_dispatch {
+            return Err(refused(
+                "conditional source nonce already belongs to original admission custody",
+            ));
+        }
+        &direct
+    };
+
     let prepared = catalog
         .select_conditional_replay(authenticated, &configuration)
         .and_then(|recipe| recipe.prepare(catalog, execution))
@@ -161,32 +188,6 @@ pub(super) fn submit(
             config.payload().to_vec(),
         )
         .map_err(refused)?;
-    let preparations = storage
-        .preparations
-        .as_ref()
-        .ok_or_else(|| refused("conditional source admission ledger is unavailable"))?;
-    let direct;
-    let reservation = if let Some(original) = queued {
-        let retry = preparations.reserve(&original_raw_request)?;
-        if !original.original_dispatch
-            || retry.original_dispatch
-            || retry.record.request != original.record.request
-            || retry.record.execution != original.record.execution
-        {
-            return Err(refused(
-                "conditional queue changed original admission custody",
-            ));
-        }
-        original
-    } else {
-        direct = preparations.reserve(&original_raw_request)?;
-        if !direct.original_dispatch {
-            return Err(refused(
-                "conditional source nonce already belongs to original admission custody",
-            ));
-        }
-        &direct
-    };
     let request = backend.request(execution).map_err(refused)?;
     let admission = backend.admission().clone();
     let worker =

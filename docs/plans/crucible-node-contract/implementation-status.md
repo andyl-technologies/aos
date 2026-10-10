@@ -862,6 +862,50 @@ widened helper signatures and module ordering; these are retained as a separate
 formatting follow-up. The earlier hermetic target and boundary results do not
 qualify this subsequent source stage.
 
+## Original preparation exclusion, Root retirement and progress custody
+
+All public preparation routes now share one durable compare-and-exchange before
+native allocation. It binds the execution nonce, route and exact original
+request bytes; retained custody does not authorize redispatch. The lifetime
+quota includes losing contenders and refuses further publication after 4,096
+reservations. Requests, claims, scanning and CAS retries have explicit finite
+limits. Legacy foreign-route records continue to refuse competing preparation.
+
+Initial and restored ARM Root worlds transfer their complete owner into an
+explicit retirement handle. Namespace release requires both original runtime
+and exact-target native reclamation, retaining the original directory pin on
+failure. The actual current-source initial/restored retirement witness passes
+in 247.46 seconds. This qualifies the closed installed Root/Clock model, not
+arbitrary queued input or general devices.
+
+The separately measured reference-progress implementation observes an actual
+positive native response prefix before missing-response handling. The original
+window remains unknown; received bytes, source custody and retirement obligations
+are retained. Ordinary legacy and lineage defaults remain separate. Its
+repository-relative package is integrated into the suite, while the component
+witness uses the independently verified installed tuple
+`lx4k2fd47pdfnrsv5s9p67yy0753n2dv-crucible-reference-progress-implementation-1`.
+That component result does not qualify a later production-suite tuple or promote
+a capability class.
+
+Central verification of this 49-path source union passes 320 selected model,
+provider, actual CLI and native cases, followed by all 37 current-source hygiene
+checks and nine-crate all-target strict checks. All 45 owned Rust files pass
+formatting. The artifact contract now
+checks all ten explicit provider binaries and rejects missing, renamed,
+rebound, duplicate or extra declarations. An earlier private hygiene run scanned
+its compiled-in predecessor checkout; it supplies no retirement-stage quality
+credit. The current review count is corrected against actual classified source,
+and the central hygiene run scans this worktree.
+
+The earlier complete boundary attempt runs 6,506 cases: 6,504 pass and two stale
+artifact-inventory checks fail. The subsequent ABI build reaches 6,513 cases,
+with the same two stale checks failing and 6,511 passing. A later boundary build
+stops at a missing test-only unwrap annotation. These failures remain retained;
+the corrected current source is undergoing fresh hermetic ABI, license-boundary
+and application test-target builds. No successful complete gate is inferred
+from those partial results.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

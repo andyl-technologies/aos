@@ -24,6 +24,8 @@ mod run_error;
 mod runtime_retries;
 mod source_metadata_reviews;
 #[cfg(test)]
+mod source_native_progress_loss;
+#[cfg(test)]
 mod source_original_response_loss;
 mod source_pre_activation_execution;
 mod source_pre_activation_probe;

@@ -53,11 +53,19 @@ impl RootNativeFactory {
         }
     }
 
+    pub(super) fn native_queue(&self) -> RootCustodyQueue {
+        self.queue.clone()
+    }
+
     pub(super) fn immutable(&self) -> RootImmutableEvidence {
         RootImmutableEvidence::new(self.evidence.clone())
     }
 
-    fn check_graph(&self, graph: &AdmittedGraph) -> Result<(), StateError> {
+    /// Authenticates this factory's exact immutable owner roster and profiles.
+    ///
+    /// # Errors
+    /// Refuses a foreign world, descriptor or selected compatibility binding.
+    pub(super) fn check_graph(&self, graph: &AdmittedGraph) -> Result<(), StateError> {
         if graph.world() != &self.profile.scenario.world || graph.node_ids().count() != 2 {
             return Err(refusal(
                 "Root source world differs from installed frozen policy",

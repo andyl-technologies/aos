@@ -189,11 +189,20 @@ impl CnpReferencePreparation {
                 false,
             ));
         }
+        let original_facets = &self.binding.compatibility.operating_contract.facets;
+        if original_facets.len() != 1 || original_facets[0].version != 1 {
+            return Err(failure(
+                "original public source facet population differs",
+                false,
+            ));
+        }
+        let original_facet = original_facets[0].id.clone();
         let child = super::control::CnpControlledReference::new(self, maximum_operations);
         crate::node_adapters::reference_device::ControlledReferenceNode::from_controlled_prepared(
             graph,
             node,
             child,
+            original_facet,
             &|child, descriptor, binding| {
                 let controller = child.controller().map_err(native)?;
                 if descriptor != &controller.profile.descriptor || binding != &child.binding {

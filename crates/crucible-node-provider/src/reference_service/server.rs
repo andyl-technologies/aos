@@ -123,12 +123,18 @@ pub fn serve_lineage(
     )
 }
 
-enum SourceSelection {
+pub(super) enum SourceSelection {
     Legacy(PublicReferenceProfile),
-    Lineage { closed_ingress: bool },
+    Lineage {
+        closed_ingress: bool,
+    },
+    Progress {
+        closed_ingress: bool,
+        endpoint: std::path::PathBuf,
+    },
 }
 
-fn serve_bound(
+pub(super) fn serve_bound(
     socket: &Path,
     child: &Path,
     bootstrap: ReferenceServiceBootstrap,
@@ -151,6 +157,10 @@ fn serve_bound(
     }
     let provider_executable = crate::conformance::measure_executable(&std::env::current_exe()?)?;
     let device_executable = crate::conformance::measure_executable(child)?;
+    let progress_endpoint = match &selection {
+        SourceSelection::Progress { endpoint, .. } => Some(endpoint.clone()),
+        _ => None,
+    };
     let profile = match selection {
         SourceSelection::Legacy(PublicReferenceProfile::ChecksumJsonV1) => ReferenceProfile::build(
             bootstrap.node_id.clone(),
@@ -162,6 +172,17 @@ fn serve_bound(
         ),
         SourceSelection::Legacy(PublicReferenceProfile::ByteLinkedV1 { closed_ingress }) => {
             ReferenceProfile::build_public_linked(
+                bootstrap.node_id.clone(),
+                bootstrap.owner_id.clone(),
+                provider_executable,
+                device_executable,
+                bootstrap.quantum_ps,
+                bootstrap.host_budget_ns,
+                closed_ingress,
+            )
+        }
+        SourceSelection::Progress { closed_ingress, .. } => {
+            ReferenceProfile::build_public_progress(
                 bootstrap.node_id.clone(),
                 bootstrap.owner_id.clone(),
                 provider_executable,
@@ -195,6 +216,7 @@ fn serve_bound(
         profile: profile.clone(),
         child_path: child.to_owned(),
         socket_parent: parent.to_owned(),
+        progress_endpoint,
         child: None,
         binding: binding.clone(),
         owner_binding,

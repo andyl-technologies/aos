@@ -13,6 +13,7 @@ use crucible_cas::content_store::{ContentId, ImmutableBlobBackend, MutableRefBac
 use crucible_node_contract::ContentRef;
 
 mod capability_preparation;
+mod original_claim;
 mod replay;
 use capability_preparation::ledger::CapabilityPreparationLedger;
 pub use capability_preparation::{
@@ -718,6 +719,25 @@ fn handle_command(
                 }
                 if workers.len() >= maximum_worlds {
                     return Err(NodeObservationServiceError::Capacity);
+                }
+                let original_scope = crucible_node_contract::canonical::canonical_json(
+                    &serde_json::json!({
+                        "format": "crucible.ordinary-node-preparation-scope",
+                        "version": 1,
+                        "scenario": crucible_node_contract::Bytes::new(scenario.canonical_bytes().map_err(refused)?),
+                        "configuration": configuration,
+                    }),
+                ).map_err(refused)?;
+                let claims = original_claim::OriginalClaims::new(blobs.clone(), refs.clone())?;
+                if claims.reserve(
+                    &capability_preparation::execution_text(execution),
+                    original_claim::Route::Ordinary,
+                    &original_scope,
+                )? != original_claim::Reservation::Original
+                {
+                    return Err(refused(
+                        "ordinary preparation belongs to an original actor or unresolved claim",
+                    ));
                 }
                 let backend = catalog
                     .prepare(

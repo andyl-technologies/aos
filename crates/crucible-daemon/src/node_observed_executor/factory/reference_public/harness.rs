@@ -589,6 +589,12 @@ impl Actor {
 
     fn execute(&mut self) -> Result<serde_json::Value, ProviderError> {
         let package = InstalledPublicReferencePackage::built_in().map_err(failure)?;
+        #[cfg(test)]
+        let package = if matches!(self.fixture, ActorFixture::NativeProgressLoss) {
+            InstalledPublicReferencePackage::built_in_progress().map_err(failure)?
+        } else {
+            package
+        };
         self.candidate = Some(PrivateCandidate::new(
             Rc::clone(&package),
             U64::new(1000),
@@ -659,7 +665,10 @@ impl Actor {
             self.window_loss = Some(loss);
         }
         #[cfg(test)]
-        if matches!(self.fixture, ActorFixture::OriginalResponseLoss) {
+        if matches!(
+            self.fixture,
+            ActorFixture::OriginalResponseLoss | ActorFixture::NativeProgressLoss
+        ) {
             let loss = Rc::new(
                 super::source_original_response_loss::SourceOriginalResponseLoss::new(
                     &candidate.installations[0],
@@ -670,6 +679,30 @@ impl Actor {
             );
             self.lifecycle_policies[0].attach_original_loss(Rc::clone(&loss))?;
             self.original_loss = Some(loss);
+        }
+        #[cfg(test)]
+        if matches!(self.fixture, ActorFixture::NativeProgressLoss) {
+            for (index, installed) in candidate.installations.iter().enumerate() {
+                let progress = Rc::new(
+                    super::source_native_progress_loss::SourceNativeProgressLoss::reserve(
+                        self.private
+                            .join(installed.profile.descriptor.id.as_str())
+                            .join("progress.sock"),
+                        Rc::clone(&package),
+                        installed.bootstrap.resource_limits.clone(),
+                        Rc::clone(&self.lifecycle_native_origins[index]),
+                    )?,
+                );
+                self.lifecycle_policies[index].attach_native_progress(Rc::clone(&progress))?;
+                if index == 0 {
+                    self.original_loss
+                        .as_ref()
+                        .ok_or(ProviderError::Correlation(
+                            "progress original loss policy absent",
+                        ))?
+                        .attach_progress(progress)?;
+                }
+            }
         }
         for (index, (installed, cases)) in candidate
             .installations
@@ -1427,6 +1460,77 @@ mod completed_lifecycle_resend_native_test {
         assert_eq!(retirement["world_reservations"], 0);
         eprintln!(
             "first original Begin write retained with completion unread and physical effects unknown; authentic original token/cached refusal and original groups reclaimed; failed original {} at {}",
+            original.original_result().encode(),
+            path.display()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires separately compiled source-built native-progress implementation package"]
+    fn actual_native_positive_prefix_precedes_original_missing_response_loss() {
+        let nonce = super::super::candidate::entropy().unwrap();
+        let short = nonce
+            .as_slice()
+            .iter()
+            .take(8)
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let path = PathBuf::from(format!("/tmp/prog-loss-{short}"));
+        let original = super::run_actor_fixture(
+            path.clone(),
+            || panic!("native progress loss issuance unavailable"),
+            super::ActorFixture::NativeProgressLoss,
+        )
+        .unwrap();
+        assert!(!original.succeeded());
+        let value = canonical::parse_json(original.original_bytes(), 16 * 1024 * 1024).unwrap();
+        let loss = &value["original_response_loss"];
+        let progress = &loss["original"]["actual_native_progress"];
+        assert_eq!(
+            progress["actual_positive_native_work"],
+            true,
+            "original progress failure retained at {}: {}",
+            path.display(),
+            value["error"]
+        );
+        assert_eq!(progress["record"]["consumed_prefix"], "1");
+        assert_eq!(progress["record"]["checksum_before_window"], "0");
+        assert_eq!(progress["record"]["checksum_after_prefix"], "123");
+        assert_eq!(progress["completion_read"], false);
+        assert_eq!(progress["release_sent"], false);
+        assert_eq!(loss["original"]["native_progress_stream_shutdown"], true);
+        assert_eq!(
+            loss["native_progress_observation"]["original_stream_shutdown"],
+            true
+        );
+        assert_eq!(loss["original"]["signal_attempted"], true);
+        assert_eq!(loss["original"]["provider_terminal"], true);
+        assert_eq!(loss["recovery"]["same_original_authority"], true);
+        assert_eq!(loss["recovery"]["effects"], "Unknown");
+        let sent = &loss["recovery"]["attempted"];
+        assert_eq!(sent["write_completed"], true);
+        assert_eq!(sent["response_read"], false);
+        assert_eq!(sent, &loss["recovery"]["after_cached_checks"]);
+        let request_bytes: Vec<u8> = serde_json::from_value(sent["request"].clone()).unwrap();
+        let sent_request =
+            crucible_node_provider::envelope::Envelope::decode(&request_bytes, 65536).unwrap();
+        let original_journal = value["original_observations"][0]["evidence"]["requests"]
+            .as_array()
+            .unwrap();
+        let matching: Vec<_> = original_journal
+            .iter()
+            .filter(|record| {
+                record["key"]["request_id"]
+                    == serde_json::to_value(&sent_request.request_id.0).unwrap()
+            })
+            .collect();
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0]["response"], serde_json::Value::Null);
+        let retired = canonical::parse_json(original.retirement_bytes(), 1024 * 1024).unwrap();
+        assert_eq!(retired["reclaimed_original_peers"], 2);
+        assert_eq!(retired["world_reservations"], 0);
+        eprintln!(
+            "actual original native byte work before held completion and provider loss; first CNP Begin response missing, prefix1 checksum123, same uncertain authority/cache denial and original groups reclaimed; failed original {} at {}",
             original.original_result().encode(),
             path.display()
         );

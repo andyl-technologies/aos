@@ -28,6 +28,9 @@ pub(super) enum ActorFixture {
     /// Selects one first original Begin write with its completion unread.
     #[cfg(test)]
     OriginalResponseLoss,
+    /// Selects actual native consumed-prefix evidence before response loss.
+    #[cfg(test)]
+    NativeProgressLoss,
 }
 
 impl ActorFixture {
@@ -39,6 +42,8 @@ impl ActorFixture {
             Self::KnownWindowProviderLoss => super::source_window_provider_loss::fixture(),
             #[cfg(test)]
             Self::OriginalResponseLoss => super::source_original_response_loss::fixture(),
+            #[cfg(test)]
+            Self::NativeProgressLoss => super::source_native_progress_loss::fixture(),
         }
     }
 }
@@ -87,6 +92,14 @@ pub(super) fn measure_with_fixture(
         ["custody", include_str!("custody.rs")],
         ["package", include_str!("package.rs")],
         ["graphs", include_str!("graphs.rs")],
+        [
+            "source_native_progress_loss",
+            include_str!("source_native_progress_loss.rs"),
+        ],
+        [
+            "source_native_progress_loss_tests",
+            include_str!("source_native_progress_loss_tests.rs"),
+        ],
         ["world", include_str!("world.rs")],
         ["unit", include_str!("unit.rs")],
         ["witness", include_str!("witness.rs")],

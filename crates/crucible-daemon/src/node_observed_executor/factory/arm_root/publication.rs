@@ -21,6 +21,7 @@ pub(super) struct RootPublisher {
     pub(super) stored: StoredWorldActivationPublisher,
     pub(super) queue: RootCustodyQueue,
     restored: Option<RestoredCoordinator>,
+    prepared: Option<ActivationRecord>,
 }
 
 impl RootPublisher {
@@ -32,7 +33,32 @@ impl RootPublisher {
             stored,
             queue,
             restored: None,
+            prepared: None,
         }
+    }
+
+    pub(super) fn for_prepared(
+        stored: StoredWorldActivationPublisher,
+        queue: RootCustodyQueue,
+        target: ActivationRecord,
+    ) -> Self {
+        Self {
+            stored,
+            queue,
+            restored: None,
+            prepared: Some(target),
+        }
+    }
+
+    fn authenticate_target(&self, record: &ActivationRecord) -> Result<(), RuntimeError> {
+        if self
+            .prepared
+            .as_ref()
+            .is_some_and(|target| target != record)
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        Ok(())
     }
 
     pub(super) fn for_restore(
@@ -71,6 +97,7 @@ impl RootPublisher {
         Ok(Self {
             stored,
             queue,
+            prepared: None,
             restored: Some(RestoredCoordinator {
                 target: target.clone(),
                 source,
@@ -85,6 +112,9 @@ impl RootPublisher {
         record: &ActivationRecord,
         callback: impl FnOnce(&mut StoredWorldActivationPublisher) -> PublicationStatus,
     ) -> PublicationStatus {
+        if self.authenticate_target(record).is_err() {
+            return PublicationStatus::NotCommitted;
+        }
         let committed = matches!(
             self.queue.publication_knowledge(record),
             Ok(PublicationKnowledge::Committed)
@@ -129,6 +159,7 @@ impl ActivationPublisher for RootPublisher {
         nodes: Vec<ValidatedNodePreparation>,
         coordinator: InputPayload,
     ) -> Result<(), RuntimeError> {
+        self.authenticate_target(record)?;
         self.stored
             .retain_initial_coordinator(record, nodes, coordinator)
     }
@@ -138,6 +169,7 @@ impl ActivationPublisher for RootPublisher {
         record: &ActivationRecord,
         nodes: &[ValidatedNodePreparation],
     ) -> Result<InputPayload, RuntimeError> {
+        self.authenticate_target(record)?;
         if let Some(original) = &self.restored {
             if original.target != *record
                 || nodes.len() != 2

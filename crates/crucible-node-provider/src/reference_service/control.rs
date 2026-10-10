@@ -8,7 +8,7 @@ use crate::ProviderError;
 use crate::blob::{BlobSchemaVerifier, TransferKey};
 use crate::bodies::*;
 use crate::envelope::{Envelope, RequestOrigin};
-use crate::reference_device::DeviceStatus;
+use crate::reference_device::{DeviceStatus, ReferenceDevice};
 
 use super::completed;
 use super::resources::{PublicationConsumption, Resources};
@@ -169,15 +169,32 @@ impl Resources {
         if let Some(evidence) = &self.lineage_evidence {
             evidence.preflight_initialization()?;
         }
-        self.child = Some(ReferenceChild::spawn(
-            &self.child_path,
-            &self.socket_parent,
-            self.bootstrap.owner_id.clone(),
-            self.bootstrap.authority.incarnation_id.clone(),
-            self.bootstrap.authority.owner_generation,
-            self.timeout(),
-            self.profile.is_lineage(),
-        )?);
+        self.child = Some(if let Some(endpoint) = &self.progress_endpoint {
+            if self.profile.is_lineage() {
+                return Err(ProviderError::Correlation(
+                    "progress launch cannot replace the ordered native dialect",
+                ));
+            }
+            ReferenceChild::Legacy(Box::new(ReferenceDevice::spawn_with_progress(
+                &self.child_path,
+                &self.socket_parent,
+                self.bootstrap.owner_id.clone(),
+                self.bootstrap.authority.incarnation_id.clone(),
+                self.bootstrap.authority.owner_generation,
+                self.timeout(),
+                endpoint,
+            )?))
+        } else {
+            ReferenceChild::spawn(
+                &self.child_path,
+                &self.socket_parent,
+                self.bootstrap.owner_id.clone(),
+                self.bootstrap.authority.incarnation_id.clone(),
+                self.bootstrap.authority.owner_generation,
+                self.timeout(),
+                self.profile.is_lineage(),
+            )?
+        });
         let child = self.child.as_ref().ok_or(ProviderError::Correlation(
             "actual child failed to establish custody",
         ))?;

@@ -96,6 +96,61 @@ impl ReferenceDevice {
         generation: U64,
         control_timeout: Duration,
     ) -> Result<Self, ProviderError> {
+        Self::spawn_selected(
+            executable,
+            socket_parent,
+            owner,
+            incarnation,
+            generation,
+            control_timeout,
+            None,
+        )
+    }
+
+    /// Spawns the distinct qualification device with an explicit progress endpoint.
+    ///
+    /// The ordinary constructor never supplies this extra argument. The source
+    /// launcher owns the separate endpoint and must authenticate the native
+    /// progress peer independently before treating a ledger as evidence.
+    /// Existing native control custody and reclamation remain unchanged.
+    ///
+    /// # Errors
+    /// Refuses a relative endpoint or any ordinary native launch failure,
+    /// deadline expiry, resource exhaustion or mismatched child readiness.
+    pub fn spawn_with_progress(
+        executable: &Path,
+        socket_parent: &Path,
+        owner: Id,
+        incarnation: Id,
+        generation: U64,
+        control_timeout: Duration,
+        progress_endpoint: &Path,
+    ) -> Result<Self, ProviderError> {
+        if !progress_endpoint.is_absolute() {
+            return Err(ProviderError::Correlation(
+                "relative native progress endpoint",
+            ));
+        }
+        Self::spawn_selected(
+            executable,
+            socket_parent,
+            owner,
+            incarnation,
+            generation,
+            control_timeout,
+            Some(progress_endpoint),
+        )
+    }
+
+    fn spawn_selected(
+        executable: &Path,
+        socket_parent: &Path,
+        owner: Id,
+        incarnation: Id,
+        generation: U64,
+        control_timeout: Duration,
+        progress_endpoint: Option<&Path>,
+    ) -> Result<Self, ProviderError> {
         if !executable.is_absolute() || generation.get() == 0 || control_timeout.is_zero() {
             return Err(ProviderError::Correlation(
                 "invalid reference-device launch",
@@ -125,8 +180,12 @@ impl ReferenceDevice {
         let launch = (|| {
             let listener = UnixListener::bind(&socket_path)?;
             listener.set_nonblocking(true)?;
-            let child = Command::new(executable)
-                .arg(&socket_path)
+            let mut command = Command::new(executable);
+            command.arg(&socket_path);
+            if let Some(endpoint) = progress_endpoint {
+                command.arg(endpoint);
+            }
+            let child = command
                 .env_clear()
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
