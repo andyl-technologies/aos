@@ -788,7 +788,8 @@ in {
           ("install generated manpage",
            f"man_path=$({APM} docs man nginx --install --print-path); test -s \"$man_path\""),
           ("inspect documentation cache",
-           f"{APM} docs cache status | grep -q nginx"),
+           f"{APM} docs cache status --json | {JQ} -e "
+           "'.retained_documents > 0 and .generated_manpages == 1' >/dev/null"),
           ("export documentation schema",
            f"{APM} docs schema | {JQ} -e '.title | contains(\"AOS\")' >/dev/null"),
       )
