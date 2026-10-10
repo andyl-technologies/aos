@@ -705,6 +705,16 @@ impl ObjectEnvelope {
         self.envelope.canonical_bytes()
     }
 
+    pub(crate) fn canonical_bytes_with_boundary(
+        &self,
+        original: &crucible_cas::owned_decode::DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_cas::content_store::StoreError>,
+    ) -> Result<crucible_cas::content_store::OwnedBlobBytes, crucible_cas::content_store::StoreError>
+    {
+        self.envelope
+            .canonical_bytes_with_boundary(original, boundary)
+    }
+
     /// Returns the backend-independent immutable content identity.
     #[must_use]
     pub fn content_id(&self) -> ContentId {

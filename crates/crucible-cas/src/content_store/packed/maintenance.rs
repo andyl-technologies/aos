@@ -362,12 +362,9 @@ pub(super) fn replacement(
         operation,
         progress,
     )?;
-    for (id, entry) in entries {
-        let work =
-            update.insert_absent(backend, Key::object(*id), Value::object(*entry), operation);
-        progress.outcome.index_reclamation_pending |= update.uncommitted_backing();
-        work?;
-    }
+    let work = update.insert_absent_batch(backend, entries, operation);
+    progress.outcome.index_reclamation_pending |= update.uncommitted_backing();
+    work?;
     let key = Key::pack(pack);
     let prior = update
         .find(key, operation)?

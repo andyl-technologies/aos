@@ -194,6 +194,34 @@ impl ContentEnvelope {
         bytes
     }
 
+    /// Writes canonical bytes into an owner paid by the supplied original.
+    ///
+    /// # Errors
+    /// Returns framing-length, original admission, allocation or boundary
+    /// failures before exposing a completed canonical image.
+    pub fn canonical_bytes_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), crate::content_store::StoreError>,
+    ) -> Result<crate::content_store::OwnedBlobBytes, crate::content_store::StoreError> {
+        let length = self
+            .encoded_len()
+            .map_err(|_| crate::content_store::StoreError::Quota)?;
+        crate::content_store::OwnedBlobBytes::write_with_boundary(
+            original,
+            length,
+            boundary,
+            |bytes| {
+                let mut position = 0;
+                self.emit_canonical(&mut |chunk| {
+                    bytes[position..position + chunk.len()].copy_from_slice(chunk);
+                    position += chunk.len();
+                });
+                Ok(position)
+            },
+        )
+    }
+
     /// Computes the logical content identity for this exact envelope.
     #[must_use]
     pub fn content_id(&self, kind: ObjectKind) -> ContentId {

@@ -1,138 +1,170 @@
 //! Canonical streaming construction of complete Merkle maps.
 //!
-//! Point insertion preserves every historical root, which is the right shape
-//! for campaign mutations. Rebuildable projections instead need to publish one
-//! complete final root without retaining obsolete nodes for every inserted key.
-//! This module consumes a sorted stream and retains only one pending item plus
-//! at most one 16-way node per digest level.
+//! Ordinary and controlled construction share one traversal. Each retains one
+//! pending item and at most one 16-way node per digest level; their publication
+//! sinks retain the appropriate ordinary or original-account storage contract.
 
-use std::iter::Peekable;
+use crucible_cas::owned_decode::DecodeBudget;
 
 use super::*;
+
+mod checked;
 
 impl MerkleMap {
     /// Builds the canonical map for an ascending stream of unique entries.
     ///
     /// The result is byte-identical to inserting the same key/value set into an
     /// empty map. Input chunking does not affect the root. Construction retains
-    /// at most one pending entry and one bounded node per 256-bit digest level;
-    /// the supplied iterator may impose its own buffering policy.
-    ///
-    /// A successful operation publishes only nodes belonging to the final map.
-    /// The referenced values must already be available before the returned root
-    /// is used as an authenticated closure, just as with [`Self::insert`].
+    /// at most one pending entry and one bounded node per digest level; the
+    /// supplied iterator may impose its own buffering policy. Referenced values
+    /// must already be available before using the root as a storage closure.
     ///
     /// # Errors
-    ///
-    /// Returns a store or canonical-encoding error when a final node cannot be
-    /// published. Returns an integrity error when keys are duplicated or do not
-    /// arrive in strictly ascending order.
+    /// Returns storage/encoding errors or an integrity error for duplicate or
+    /// descending keys. Ordinary construction retains its existing store API.
     pub fn build_from_sorted<I>(&self, entries: I) -> Result<MerkleMapRoot, CampaignStoreError>
     where
         I: IntoIterator<Item = (CampaignHash, ContentId)>,
     {
-        let mut entries = SortedEntries::new(entries.into_iter());
+        let mut entries = SortedEntries::new(entries.into_iter().map(Ok::<_, CampaignStoreError>));
         let Some(first) = entries.next()? else {
             return self.empty();
         };
-
-        let root = self.build_nonempty_sorted_node(0, first, &mut entries)?;
-        if entries.peek().is_some() {
+        let mut sink = OrdinarySink(self);
+        let root = build_node(0, first, &mut entries, &mut sink)?;
+        if entries.peek()?.is_some() {
             return Err(invalid("sorted-builder-left-unconsumed-entry"));
         }
-
         Ok(root)
     }
+}
 
-    fn build_nonempty_sorted_node<I>(
-        &self,
-        depth: u8,
-        first: (CampaignHash, ContentId),
-        entries: &mut SortedEntries<I>,
-    ) -> Result<MerkleMapRoot, CampaignStoreError>
-    where
-        I: Iterator<Item = (CampaignHash, ContentId)>,
-    {
-        if depth >= DIGEST_NIBBLES {
-            return Err(invalid("duplicate-sorted-builder-key"));
-        }
+trait NodeSink {
+    fn begin_node(&mut self) -> Result<Option<DecodeBudget>, CampaignStoreError>;
 
-        let prefix_key = first.0;
-        let mut pending = Some(first);
-        let mut node = MerkleNode {
-            schema_version: MERKLE_NODE_SCHEMA_VERSION,
-            depth,
-            entry_count: 0,
-            entries: BTreeMap::new(),
-        };
+    fn emit(
+        &mut self,
+        node: &MerkleNode,
+        account: Option<&DecodeBudget>,
+    ) -> Result<MerkleMapRoot, CampaignStoreError>;
+}
 
-        while let Some((key, value)) = pending.take() {
-            if !keys_share_prefix(prefix_key, key, depth) {
-                return Err(invalid("sorted-builder-prefix-mismatch"));
-            }
+struct OrdinarySink<'a>(&'a MerkleMap);
 
-            let slot = digest_nibble(key, depth);
-            let entry = if entries
-                .peek()
-                .is_some_and(|(next, _)| keys_share_prefix(key, *next, depth + 1))
-            {
-                let child = self.build_nonempty_sorted_node(depth + 1, (key, value), entries)?;
-                MerkleEntry::Node {
-                    content_id: child.content_id(),
-                    entry_count: child.entry_count(),
-                }
-            } else {
-                MerkleEntry::Leaf { key, value }
-            };
-            if node.entries.insert(slot, entry).is_some() {
-                return Err(invalid("duplicate-sorted-builder-slot"));
-            }
+impl NodeSink for OrdinarySink<'_> {
+    fn begin_node(&mut self) -> Result<Option<DecodeBudget>, CampaignStoreError> {
+        Ok(None)
+    }
 
-            let Some((next, _)) = entries.peek() else {
-                break;
-            };
-            if !keys_share_prefix(prefix_key, *next, depth) {
-                break;
-            }
-            pending = entries.next()?;
-        }
-
-        node.recompute_count()?;
-        let content_id = self.persist_node(&node)?;
+    fn emit(
+        &mut self,
+        node: &MerkleNode,
+        _account: Option<&DecodeBudget>,
+    ) -> Result<MerkleMapRoot, CampaignStoreError> {
         Ok(MerkleMapRoot {
-            content_id,
+            content_id: self.0.persist_node(node)?,
             entry_count: node.entry_count,
         })
     }
 }
 
-struct SortedEntries<I>
+fn build_node<I, E, S>(
+    depth: u8,
+    first: (CampaignHash, ContentId),
+    entries: &mut SortedEntries<I>,
+    sink: &mut S,
+) -> Result<MerkleMapRoot, CampaignStoreError>
 where
-    I: Iterator<Item = (CampaignHash, ContentId)>,
+    I: Iterator<Item = Result<(CampaignHash, ContentId), E>>,
+    E: Into<CampaignStoreError>,
+    S: NodeSink,
 {
-    inner: Peekable<I>,
-    previous: Option<CampaignHash>,
+    if depth >= DIGEST_NIBBLES {
+        return Err(invalid("duplicate-sorted-builder-key"));
+    }
+    let account = sink.begin_node()?;
+    let _scope = account.as_ref().map(DecodeBudget::enter);
+    let prefix_key = first.0;
+    let mut pending = Some(first);
+    let mut node = MerkleNode {
+        schema_version: MERKLE_NODE_SCHEMA_VERSION,
+        depth,
+        entry_count: 0,
+        entries: BTreeMap::new(),
+    };
+
+    while let Some((key, value)) = pending.take() {
+        if !keys_share_prefix(prefix_key, key, depth) {
+            return Err(invalid("sorted-builder-prefix-mismatch"));
+        }
+        let slot = digest_nibble(key, depth);
+        let entry = if entries
+            .peek()?
+            .is_some_and(|(next, _)| keys_share_prefix(key, next, depth + 1))
+        {
+            let child = build_node(depth + 1, (key, value), entries, sink)?;
+            MerkleEntry::Node {
+                content_id: child.content_id(),
+                entry_count: child.entry_count(),
+            }
+        } else {
+            MerkleEntry::Leaf { key, value }
+        };
+        if let Some(account) = &account {
+            account
+                .charge_btree_entry::<u8, MerkleEntry>()
+                .map_err(CampaignCodecError::from)?;
+        }
+        if node.entries.insert(slot, entry).is_some() {
+            return Err(invalid("duplicate-sorted-builder-slot"));
+        }
+
+        let Some((next, _)) = entries.peek()? else {
+            break;
+        };
+        if !keys_share_prefix(prefix_key, next, depth) {
+            break;
+        }
+        pending = entries.next()?;
+    }
+    node.recompute_count()?;
+    sink.emit(&node, account.as_ref())
 }
 
-impl<I> SortedEntries<I>
+struct SortedEntries<I> {
+    inner: I,
+    pending: Option<(CampaignHash, ContentId)>,
+    previous: Option<CampaignHash>,
+    complete: bool,
+}
+
+impl<I, E> SortedEntries<I>
 where
-    I: Iterator<Item = (CampaignHash, ContentId)>,
+    I: Iterator<Item = Result<(CampaignHash, ContentId), E>>,
+    E: Into<CampaignStoreError>,
 {
     fn new(inner: I) -> Self {
         Self {
-            inner: inner.peekable(),
+            inner,
+            pending: None,
             previous: None,
+            complete: false,
         }
     }
 
-    fn peek(&mut self) -> Option<&(CampaignHash, ContentId)> {
-        self.inner.peek()
+    fn peek(&mut self) -> Result<Option<(CampaignHash, ContentId)>, CampaignStoreError> {
+        if self.pending.is_none() && !self.complete {
+            self.pending = self.inner.next().transpose().map_err(Into::into)?;
+            self.complete = self.pending.is_none();
+        }
+        Ok(self.pending)
     }
 
     fn next(&mut self) -> Result<Option<(CampaignHash, ContentId)>, CampaignStoreError> {
-        let Some(entry) = self.inner.next() else {
+        let Some(entry) = self.peek()? else {
             return Ok(None);
         };
+        self.pending = None;
         if self.previous.is_some_and(|previous| previous >= entry.0) {
             return Err(invalid("sorted-builder-keys-not-strictly-ascending"));
         }

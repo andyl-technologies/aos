@@ -24,11 +24,11 @@ fn page(index: u64) -> ContentId {
 fn seeded(fixture: &mut ComponentGcOperation, count: u64) -> Reachability {
     let operation = fixture.context();
     let mut marks = Reachability::with_backend(operation.marks(), operation.original()).unwrap();
-    let mut pending = PendingMarks::new(&operation).unwrap();
+    let mut pending = sorted_runs::SortOwner::new(&operation).unwrap();
     for index in 0..count {
-        pending.insert(&mut marks, page(index), &operation).unwrap();
+        pending.insert(page(index)).unwrap();
     }
-    pending.flush(&mut marks, &operation).unwrap();
+    pending.finish(&mut marks).unwrap();
     marks
 }
 
@@ -265,9 +265,12 @@ fn checked_membership_observes_new_root_and_missing_rows_after_accepted_lookup()
                 .contains_with_boundary(&page(1000), &mut || operation.check())
                 .unwrap()
         );
-        let mut pending = PendingMarks::new(&operation).unwrap();
-        pending.insert(&mut marks, page(1000), &operation).unwrap();
-        pending.flush(&mut marks, &operation).unwrap();
+        let mut pending = sorted_runs::SortOwner::new(&operation).unwrap();
+        for index in 0..128 {
+            pending.insert(page(index)).unwrap();
+        }
+        pending.insert(page(1000)).unwrap();
+        pending.finish(&mut marks).unwrap();
         assert!(
             marks
                 .contains_with_boundary(&page(1000), &mut || operation.check())

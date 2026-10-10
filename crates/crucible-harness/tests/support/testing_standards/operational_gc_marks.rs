@@ -1,52 +1,130 @@
-//! Classifies one asserted GC mark publication continuation under its original.
+//! Checks terminal sorted-run marking against its exact original fixture.
 //!
-//! The first flush actually publishes immutable nodes and returns a typed
-//! refusal. The same retained page then finishes once under the same healthy
-//! original; a failed test is never rerun. Exact body and fixture obligations
-//! keep additional attempts and changed custody visible to flaky-test scanning.
+//! Publication refusal retains the prior mark root, accepted heads and page.
+//! A second insert performs no publication; complete-tail refusal remains sticky.
+//! These contracts assert current obligations and grant no retry exemption.
 
-use super::{Companion, Contract};
+use super::Companion;
 
-const CONTINUATION: &str = r#"fn partial_checked_publication_does_not_install_a_mark_root_and_can_retry() {
-    let mut fixture = super::super::tests::operation::ComponentGcOperation::new();
+const CARRY_REFUSAL: &str = r#"fn failed_run_publication_retains_page_heads_and_original_mark_root() {
+    let mut fixture = ComponentGcOperation::new();
     let source_operation = fixture.context();
-    let original = source_operation.original();
     let backend = counted(source_operation.marks());
-    let mut marks = Reachability::with_backend(backend.clone(), original).unwrap();
-    let prior = marks.root;
     let mut boundary = || source_operation.check();
-    let operation =
-        CampaignGcOperationContext::new(backend.clone(), original, &mut boundary).unwrap();
-    let mut pending = PendingMarks::new(&operation).unwrap();
-    for index in 0..63 {
-        pending.insert(&mut marks, page(index), &operation).unwrap();
+    let operation = CampaignGcOperationContext::new(
+        backend.clone(),
+        source_operation.original(),
+        &mut boundary,
+    )
+    .unwrap();
+    let marks = Reachability::with_operation(&operation).unwrap();
+    let prior = marks.root;
+    let mut sorter = SortOwner::new(&operation).unwrap();
+    for index in 0..(3 * PAGE) as u64 {
+        sorter.insert(page(index)).unwrap();
     }
+    let accepted = sorter.levels;
+    for index in (3 * PAGE) as u64..(4 * PAGE - 1) as u64 {
+        sorter.insert(page(index)).unwrap();
+    }
+    // Accept the new page and the first two-page merge, then refuse the
+    // final carry after its real publication. Both old ranks must survive.
+    let before_carry = backend.publications.load(Ordering::Relaxed);
     backend
-        .refuse_after_publication
-        .store(true, Ordering::Relaxed);
+        .refuse_on_publication
+        .store(before_carry + 3, Ordering::Relaxed);
 
-    let error = pending.flush(&mut marks, &operation).unwrap_err();
-
-    assert!(
-        matches!(&error,
-            StoreError::StreamIo { source, .. }
-            if matches!(source.get_ref().and_then(|source| source.downcast_ref::<crucible_campaign::CampaignStoreError>()),
-                Some(crucible_campaign::CampaignStoreError::Store(StoreError::Unsupported {
-                    capability: "actual-mark-publication-then-refusal"
-                })))
-        ),
-        "actual typed first publication refusal: {error:?}"
+    let error = sorter.insert(page((4 * PAGE - 1) as u64)).unwrap_err();
+    assert_eq!(
+        backend.publications.load(Ordering::Relaxed),
+        before_carry + 3
     );
+    assert!(matches!(
+        error.original_failure(),
+        StoreError::Unsupported {
+            capability: "actual-mark-publication-then-refusal"
+        }
+    ));
     assert_eq!(marks.root, prior);
+    assert_eq!(sorter.page.len(), PAGE);
+    assert!(
+        sorter
+            .levels
+            .iter()
+            .zip(accepted)
+            .all(|(actual, expected)| {
+                actual.map(|run| run.node) == expected.map(|run| run.node)
+            })
+    );
     assert!(backend.objects.load(Ordering::Relaxed) > 0);
-    assert!(!marks.contains(&page(0)).unwrap());
-    original.verify_live().unwrap();
-    backend
-        .refuse_after_publication
-        .store(false, Ordering::Relaxed);
-    pending.flush(&mut marks, &operation).unwrap();
-    assert_eq!(marks.len(), 63);
-    assert!(marks.contains(&page(0)).unwrap());
+    let before = backend.publications.load(Ordering::Relaxed);
+    assert!(matches!(
+        sorter.insert(page(999_999)),
+        Err(StoreError::Unsupported {
+            capability: "failed-GC-run-owner"
+        })
+    ));
+    assert_eq!(sorter.page.len(), PAGE);
+    assert_eq!(backend.publications.load(Ordering::Relaxed), before);
+    operation.original().verify_live().unwrap();
+}"#;
+
+const COMPLETE_TAIL: &str = r#"fn complete_run_tail_and_fallible_builder_tail_keep_initiating_cause() {
+    let mut fixture = ComponentGcOperation::new();
+    let source_operation = fixture.context();
+    let refuse = AtomicBool::new(false);
+    let mut boundary = || {
+        if refuse.load(Ordering::Relaxed) {
+            Err(StoreError::Unsupported {
+                capability: "GC-tail-original-refusal",
+            })
+        } else {
+            source_operation.check()
+        }
+    };
+    let operation = CampaignGcOperationContext::new(
+        source_operation.marks(),
+        source_operation.original(),
+        &mut boundary,
+    )
+    .unwrap();
+    let backend = operation.marks();
+    let mut writer = RunWriter::new(backend.as_ref(), &operation).unwrap();
+    let entry = (mark_key(page(0)), page(0));
+    writer.push(entry).unwrap();
+    let run = writer.finish().unwrap().unwrap();
+    let mut cursor = Cursor::new(run, backend.as_ref(), &operation).unwrap();
+    assert_eq!(cursor.next_entry().unwrap(), Some(entry));
+    refuse.store(true, Ordering::Relaxed);
+    assert!(matches!(
+        cursor.next_entry(),
+        Err(StoreError::Unsupported {
+            capability: "GC-tail-original-refusal"
+        })
+    ));
+    assert!(!cursor.complete);
+    refuse.store(false, Ordering::Relaxed);
+    assert!(cursor.next_entry().is_err());
+
+    let marks = Reachability::with_operation(&operation).unwrap();
+    let account = mark_account(operation.original()).unwrap();
+    let input = [
+        Ok(entry),
+        Err(StoreError::Unsupported {
+            capability: "authenticated-input-tail-failure",
+        }),
+    ];
+    assert!(matches!(
+        marks
+            .map
+            .build_from_sorted_with_boundary(input, &account, &mut || operation.check(),),
+        Err(crucible_campaign::CampaignStoreError::Store(
+            StoreError::Unsupported {
+                capability: "authenticated-input-tail-failure"
+            }
+        ))
+    ));
+    assert_eq!(marks.len(), 0);
 }"#;
 
 const PUBLISHED_REFUSAL: &str = r#"fn put_many_if_absent_with_boundary(
@@ -55,13 +133,15 @@ const PUBLISHED_REFUSAL: &str = r#"fn put_many_if_absent_with_boundary(
         objects: &[(ContentId, BlobHandle)],
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<PutBatchReceipt, StoreError> {
-        self.publications.fetch_add(1, Ordering::Relaxed);
+        let ordinal = self.publications.fetch_add(1, Ordering::Relaxed) + 1;
         self.objects
             .fetch_add(objects.len() as u64, Ordering::Relaxed);
         let receipt = self
             .inner
             .put_many_if_absent_with_boundary(original, objects, boundary)?;
-        if self.refuse_after_publication.load(Ordering::Relaxed) {
+        if self.refuse_after_publication.load(Ordering::Relaxed)
+            || self.refuse_on_publication.load(Ordering::Relaxed) == ordinal
+        {
             return Err(StoreError::Unsupported {
                 capability: "actual-mark-publication-then-refusal",
             });
@@ -69,18 +149,8 @@ const PUBLISHED_REFUSAL: &str = r#"fn put_many_if_absent_with_boundary(
         Ok(receipt)
     }"#;
 
-pub(super) const CONTRACTS: &[Contract] = &[Contract {
-    package: "crucible-daemon",
-    target: "src/campaign_gc/reachability/batched_tests",
-    required: &[CONTINUATION, PUBLISHED_REFUSAL],
-    // Only this one declaration contains the reviewed lexical token. Its full
-    // body pins both flushes, their order, typed refusal, retained root and page,
-    // original health check and authenticated completion assertions.
-    expressions: &[(
-        "fn partial_checked_publication_does_not_install_a_mark_root_and_can_retry()",
-        1,
-    )],
-    companions: &[Companion {
+const COMPANIONS: &[Companion] = &[
+    Companion {
         path: "crates/crucible-daemon/src/campaign_gc/tests/operation.rs",
         required: &[
             r#"let decoding = DecodeBudget::for_store(Arc::clone(&resources))"#,
@@ -113,139 +183,235 @@ pub(super) const CONTRACTS: &[Contract] = &[Contract {
             (".begin(HostOperationClass::Transfer)", 1),
             ("DecodeBudget::for_store(", 1),
         ],
-    }],
-}];
+    },
+    Companion {
+        path: "crates/crucible-daemon/src/campaign_gc/reachability/batched_tests.rs",
+        required: &[PUBLISHED_REFUSAL],
+        counts: &[("fn put_many_if_absent_with_boundary(", 1)],
+    },
+    Companion {
+        path: "crates/crucible-daemon/src/campaign_gc/reachability/sorted_runs.rs",
+        required: &[
+            "if self.failed { return Err(terminal_failure()); }",
+            "self.failed = result.is_err(); result",
+            "if self.page.len() == PAGE { self.flush()?; }",
+            "let node = writer.finish()?.ok_or(StoreError::Quota)?;",
+            "run = self.merge(left, run)?; level += 1;",
+            "self.operation.check()?; if level >= self.levels.len() { return Err(StoreError::Quota); }",
+            "self.levels[..level].fill(None); self.levels[level] = Some(run); self.page.clear();",
+            "let mut left_entry = left_cursor.next_entry()?; let mut right_entry = right_cursor.next_entry()?;",
+            "while left_entry.is_some() || right_entry.is_some()",
+            "let node = writer.finish()?.ok_or(StoreError::Quota)?; self.operation.check()?; Ok(RunRef { node, weight })",
+            "self.flush()?; self.page = Vec::new();",
+            "build_from_sorted_with_boundary(cursor, &account, &mut || { self.operation.check() })",
+            "if root.entry_count() != run.node.count",
+            "account.check().map_err(|error| mark_admission(&account, error))?; self.operation.check()?;",
+            "if root.entry_count() > MAX_CAMPAIGN_CLOSURE_OBJECTS as u64",
+            "if root.entry_count() > MAX_CAMPAIGN_CLOSURE_OBJECTS as u64 { return Err(StoreError::Quota); } marks.root = root;",
+        ],
+        counts: &[("self.flush()?;", 2), ("marks.root = root;", 1)],
+    },
+    Companion {
+        path: "crates/crucible-daemon/src/campaign_gc/reachability/sorted_runs/cursor.rs",
+        required: &[
+            r#"if self.failed { return Err(StoreError::Unsupported { capability: "failed-GC-run-cursor", }); }"#,
+            "if result.is_err() { self.failed = true; }",
+            "if self.remaining == 0 { reader.finish()?; }",
+            "self.leaf = None;",
+            "if self.observed != self.root.count || self.previous != Some(self.root.last)",
+            "self.operation.check()?; self.complete = true; return Ok(None);",
+            "self.backend.read_with_boundary(self.operation.original(), expected.id, None, &mut || self.operation.check(),)?",
+            "source.read_all_with_boundary(self.operation.original(), format::MAX_PAGE_BYTES, &mut || self.operation.check(),)?",
+            "match format::decode(expected.id, &bytes)?",
+            "if node != expected { return Err(StoreError::Corrupt { id: expected.id }); }",
+            "if node != expected || self.depth + 2 > self.pending.len()",
+        ],
+        counts: &[("self.complete = true;", 1)],
+    },
+];
 
 #[cfg(test)]
 mod tests {
-    use super::super::{mask_with_companions, pattern, read_companions};
+    use super::super::pattern;
     use super::*;
 
-    fn scrub(source: &str) -> String {
-        super::super::super::super::scrub_comments_and_strings(source)
+    fn matches(source: &str, companions: &[String]) -> bool {
+        let source = pattern(source);
+        [CARRY_REFUSAL, COMPLETE_TAIL]
+            .iter()
+            .all(|body| source.contains(&pattern(body)))
+            && [
+                "fn failed_run_publication_retains_page_heads_and_original_mark_root(",
+                "fn complete_run_tail_and_fallible_builder_tail_keep_initiating_cause(",
+            ]
+            .iter()
+            .all(|name| source.match_indices(&pattern(name)).count() == 1)
+            && companions.len() == COMPANIONS.len()
+            && COMPANIONS.iter().zip(companions).all(|(binding, source)| {
+                let source = pattern(source);
+                binding
+                    .required
+                    .iter()
+                    .all(|part| source.contains(&pattern(part)))
+                    && binding
+                        .counts
+                        .iter()
+                        .all(|(part, count)| source.match_indices(&pattern(part)).count() == *count)
+            })
     }
 
-    fn rejected(source: &str, companions: &[String]) -> bool {
-        let code = mask_with_companions(&CONTRACTS[0], &scrub(source), companions);
-        super::super::super::super::flaky_escape_failures("unreviewed", "unreviewed", &code)
+    fn inputs() -> Result<(String, Vec<String>), Box<dyn std::error::Error>> {
+        let root = super::super::super::super::super::workspace_root();
+        let source = std::fs::read_to_string(
+            root.join("crates/crucible-daemon/src/campaign_gc/reachability/sorted_runs/tests.rs"),
+        )?;
+        let companions = COMPANIONS
             .iter()
-            .any(|finding| finding.contains("`retry`"))
+            .map(|binding| std::fs::read_to_string(root.join(binding.path)))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((source, companions))
     }
 
     #[test]
-    fn gc_mark_continuation_requires_exact_outcome_and_two_publication_attempts()
+    fn gc_sorted_runs_require_retained_heads_terminal_refusal_and_complete_tails()
     -> Result<(), Box<dyn std::error::Error>> {
-        let contract = &CONTRACTS[0];
-        let root = super::super::super::super::super::workspace_root();
-        let source = std::fs::read_to_string(
-            root.join("crates/crucible-daemon")
-                .join(format!("{}.rs", contract.target)),
-        )?;
-        let companions = read_companions(contract)?;
-        assert!(!rejected(&source, &companions));
+        let (source, companions) = inputs()?;
+        assert!(matches(&source, &companions));
         let compact = pattern(&source);
-        for (before, after) in [
+        for (required_body, before, after) in [
             (
-                "pending.flush(&mut marks, &operation).unwrap_err();",
-                "pending.flush(&mut marks, &operation).unwrap();",
+                CARRY_REFUSAL,
+                "sorter.insert(page((4 * PAGE - 1) as u64)).unwrap_err()",
+                "sorter.insert(page((4 * PAGE - 1) as u64)).unwrap()",
             ),
-            ("assert_eq!(marks.root, prior);", "removed_prior_root();"),
+            (CARRY_REFUSAL, "before_carry + 3", "before_carry + 2"),
             (
-                "assert!(!marks.contains(&page(0)).unwrap());",
-                "removed_absence_authentication();",
-            ),
-            (
-                "original.verify_live().unwrap();",
-                "foreign.verify_live().unwrap();",
+                CARRY_REFUSAL,
+                "error.original_failure()",
+                "error.foreign_failure()",
             ),
             (
-                "pending.flush(&mut marks, &operation).unwrap();",
-                "loop { pending.flush(&mut marks, &operation).unwrap(); }",
+                CARRY_REFUSAL,
+                "assert_eq!(marks.root, prior);",
+                "removed_root_custody();",
             ),
             (
-                "assert_eq!(marks.len(), 63);",
-                "removed_completion_count();",
+                CARRY_REFUSAL,
+                "assert_eq!(sorter.page.len(), PAGE);",
+                "removed_page_custody();",
             ),
             (
-                "assert!(marks.contains(&page(0)).unwrap());",
-                "removed_completion_authentication();",
+                CARRY_REFUSAL,
+                "actual.map(|run| run.node) == expected.map(|run| run.node)",
+                "true",
             ),
             (
-                "source.downcast_ref::<crucible_campaign::CampaignStoreError>()",
-                "source.downcast_ref::<DifferentError>()",
+                CARRY_REFUSAL,
+                "assert_eq!(backend.publications.load(Ordering::Relaxed), before);",
+                "removed_zero_effects();",
             ),
             (
-                "let original = source_operation.original();",
-                "let original = foreign.original();",
+                CARRY_REFUSAL,
+                "operation.original().verify_live().unwrap();",
+                "foreign.original().verify_live().unwrap();",
             ),
             (
-                "self.inner.put_many_if_absent_with_boundary(original, objects, boundary)?",
-                "self.inner.put_many_if_absent(objects)?",
+                COMPLETE_TAIL,
+                "assert!(!cursor.complete);",
+                "removed_tail_acceptance();",
             ),
             (
-                "let receipt = self.inner.put_many_if_absent_with_boundary(original, objects, boundary)?;",
-                "let extra = self.inner.put_many_if_absent(objects)?; let receipt = self.inner.put_many_if_absent_with_boundary(original, objects, boundary)?;",
+                COMPLETE_TAIL,
+                "assert!(cursor.next_entry().is_err());",
+                "removed_sticky_tail();",
+            ),
+            (
+                COMPLETE_TAIL,
+                r#"let input = [ Ok(entry), Err(StoreError::Unsupported { capability: "authenticated-input-tail-failure", }), ];"#,
+                "let input = [Ok(entry), Ok(entry)];",
+            ),
+            (
+                COMPLETE_TAIL,
+                "build_from_sorted_with_boundary(input, &account, &mut || operation.check(),)",
+                "build_from_sorted_with_boundary(input, &account, &mut || foreign.check(),)",
             ),
         ] {
+            let body = pattern(required_body);
             let before = pattern(before);
+            assert!(compact.contains(&body), "missing required control body");
             assert!(
-                compact.contains(&before),
+                body.contains(&before),
                 "missing mutation preimage: {before}"
             );
-            let continuation = pattern(CONTINUATION);
-            let changed = if continuation.contains(&before) {
-                compact.replacen(
-                    &continuation,
-                    &continuation.replacen(&before, &pattern(after), 1),
-                    1,
-                )
-            } else {
-                compact.replacen(&before, &pattern(after), 1)
-            };
+            let changed_body = body.replacen(&before, &pattern(after), 1);
+            let changed = compact.replacen(&body, &changed_body, 1);
             assert!(
-                rejected(&changed, &companions),
-                "changed mark continuation admitted: {before}"
+                !matches(&changed, &companions),
+                "removed current mark obligation: {before}"
             );
         }
         for addition in [
             "fn conceal() { retry(); }",
             "fn conceal() { retry!(); }",
             "fn conceal() { retry_failed_test(); }",
-            "fn conceal() { partial_checked_publication_does_not_install_a_mark_root_and_can_retry(); }",
-            "fn conceal() { loop { retry_failed_test(); } }",
-            "fn partial_checked_publication_does_not_install_a_mark_root_and_can_retry() {}",
         ] {
+            let code = super::super::super::super::scrub_comments_and_strings(&format!(
+                "{source}\n{addition}"
+            ));
+            let code = super::super::mask(
+                "crucible-daemon",
+                "src/campaign_gc/reachability/sorted_runs/tests",
+                &code,
+            );
             assert!(
-                rejected(&format!("{source}\n{addition}"), &companions),
-                "additional attempt admitted: {addition}"
+                super::super::super::super::flaky_escape_failures(
+                    "unreviewed",
+                    "unreviewed",
+                    &code
+                )
+                .iter()
+                .any(|finding| finding.contains("`retry`")),
+                "unreviewed retry admitted: {addition}"
             );
         }
-        let foreign = super::super::mask("foreign", contract.target, &scrub(&source));
-        assert!(
-            super::super::super::super::flaky_escape_failures("unreviewed", "unreviewed", &foreign)
-                .iter()
-                .any(|finding| finding.contains("`retry`"))
-        );
-        let foreign = super::super::mask(contract.package, "foreign", &scrub(&source));
-        assert!(
-            super::super::super::super::flaky_escape_failures("unreviewed", "unreviewed", &foreign)
-                .iter()
-                .any(|finding| finding.contains("`retry`"))
-        );
         Ok(())
     }
 
     #[test]
-    fn gc_mark_continuation_requires_one_original_fixture_clock_and_catalog()
+    fn gc_sorted_runs_require_one_original_fixture_clock_catalog_and_tail_owner()
     -> Result<(), Box<dyn std::error::Error>> {
-        let contract = &CONTRACTS[0];
-        let root = super::super::super::super::super::workspace_root();
-        let source = std::fs::read_to_string(
-            root.join("crates/crucible-daemon")
-                .join(format!("{}.rs", contract.target)),
-        )?;
-        let companions = read_companions(contract)?;
-        assert!(rejected(&source, &[]));
+        let (source, companions) = inputs()?;
+        assert!(matches(&source, &companions));
+        assert!(!matches(&source, &[]));
+        for (index, binding) in COMPANIONS.iter().enumerate() {
+            let compact = pattern(&companions[index]);
+            for obligation in binding.required {
+                let before = pattern(obligation);
+                assert!(
+                    compact.contains(&before),
+                    "missing companion obligation: {} {before}",
+                    binding.path
+                );
+                let mut changed = companions.clone();
+                changed[index] = compact.replace(&before, "removed_original_obligation()");
+                assert!(
+                    !matches(&source, &changed),
+                    "removed companion obligation admitted: {} {before}",
+                    binding.path
+                );
+            }
+            for (part, count) in binding.counts {
+                let part = pattern(part);
+                assert_eq!(compact.match_indices(&part).count(), *count);
+                let mut changed = companions.clone();
+                changed[index] = format!("{compact}{part}");
+                assert!(
+                    !matches(&source, &changed),
+                    "additional original action admitted: {} {part}",
+                    binding.path
+                );
+            }
+        }
         for (before, after) in [
             ("Duration::from_secs(300)", "Duration::from_secs(301)"),
             (
@@ -268,15 +434,16 @@ mod tests {
                 "foreign.supervisor.clone()",
             ),
         ] {
-            let compact = pattern(&companions[0]);
             let before = pattern(before);
+            let compact = pattern(&companions[0]);
             assert!(
                 compact.contains(&before),
                 "missing fixture preimage: {before}"
             );
-            let changed = vec![compact.replacen(&before, &pattern(after), 1)];
+            let mut changed = companions.clone();
+            changed[0] = compact.replace(&before, &pattern(after));
             assert!(
-                rejected(&source, &changed),
+                !matches(&source, &changed),
                 "changed original fixture admitted: {before}"
             );
         }

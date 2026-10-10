@@ -5,6 +5,8 @@
 //! the append-only arena. Split and merge outputs therefore do not accumulate
 //! one allocated page per tree level.
 
+mod insert_batch;
+
 use super::index_arena::Arena;
 use super::index_format::{self as wire, Header, Key, Node, PageReference, Value};
 use super::index_io::{Bytes, Operation};
@@ -146,7 +148,8 @@ impl Update {
         self.apply_known(backend, key, value, prior, operation)
     }
 
-    /// Inserts only after this update confirms absence, without a second read.
+    /// Retains the point-insertion reference for differential component controls.
+    #[cfg(test)]
     pub(super) fn insert_absent(
         &mut self,
         backend: &PackedBlobBackend,

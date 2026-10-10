@@ -31,6 +31,44 @@ impl Deref for OwnedBlobBytes {
 }
 
 impl OwnedBlobBytes {
+    /// Writes one exactly sized buffer under the caller's original boundary.
+    ///
+    /// The writer receives fixed storage and cannot grow its allocation. Its
+    /// returned byte count must match the admitted length. The buffer closes
+    /// before its original credit on success, error and unwind.
+    ///
+    /// # Errors
+    /// Returns original refusal, allocation failure, writer failure or a
+    /// mismatched completed length. No replacement account is created.
+    pub fn write_with_boundary(
+        original: &DecodeBudget,
+        length: usize,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+        write: impl FnOnce(&mut [u8]) -> Result<usize, StoreError>,
+    ) -> Result<Self, StoreError> {
+        super::checked_reader::check(original, boundary)?;
+        let extent = length
+            .checked_add(std::mem::size_of::<Self>())
+            .ok_or(StoreError::Quota)?;
+        let credit = original
+            .reserve_scratch_bytes(u64::try_from(extent).map_err(|_| StoreError::Quota)?)
+            .map_err(|error| admission_under(original, error))?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(length)
+            .map_err(|error| allocation_under(original, error))?;
+        bytes.resize(length, 0);
+
+        let written = write(&mut bytes)?;
+        if written != length {
+            return Err(StoreError::InvalidComposition {
+                reason: "prepaid writer did not complete its admitted length",
+            });
+        }
+        super::checked_reader::check(original, boundary)?;
+        Ok(Self::prepared(bytes, credit))
+    }
+
     pub(crate) fn prepared(bytes: Vec<u8>, credit: DecodeScratch) -> Self {
         Self {
             bytes,

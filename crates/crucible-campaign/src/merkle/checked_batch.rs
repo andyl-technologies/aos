@@ -253,28 +253,36 @@ impl BatchWriter<'_> {
         if self.pending.is_empty() {
             return Ok(());
         }
-        check(self.original, self.boundary)?;
-        let receipts = self.map.backend.put_many_if_absent_with_boundary(
-            self.original,
-            &self.pending,
-            self.boundary,
-        )?;
-        if receipts.len() != self.pending.len()
-            || receipts
-                .iter()
-                .zip(&self.pending)
-                .any(|(receipt, (id, _))| receipt.id != *id)
-        {
-            return Err(invalid("store-batch-receipt-mismatch"));
-        }
-        check(self.original, self.boundary)?;
+        let _receipts = publish_nodes(self.map, self.original, self.boundary, &self.pending)?;
         self.pending.clear();
         self.pending_bytes = 0;
         Ok(())
     }
 }
 
-fn check(
+pub(super) fn publish_nodes(
+    map: &MerkleMap,
+    original: &DecodeBudget,
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    pending: &[(ContentId, BlobHandle)],
+) -> Result<crucible_cas::content_store::PutBatchReceipt, CampaignStoreError> {
+    check(original, boundary)?;
+    let receipts = map
+        .backend
+        .put_many_if_absent_with_boundary(original, pending, boundary)?;
+    if receipts.len() != pending.len()
+        || receipts
+            .iter()
+            .zip(pending)
+            .any(|(receipt, (id, _))| receipt.id != *id)
+    {
+        return Err(invalid("store-batch-receipt-mismatch"));
+    }
+    check(original, boundary)?;
+    Ok(receipts)
+}
+
+pub(super) fn check(
     original: &DecodeBudget,
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
 ) -> Result<(), CampaignStoreError> {

@@ -25,6 +25,8 @@ mod metadata_lifecycle;
 #[cfg(test)]
 mod batched_tests;
 
+mod sorted_runs;
+
 #[cfg(test)]
 mod membership_tests;
 
@@ -45,8 +47,8 @@ impl Reachability {
         operation: &CampaignGcOperationContext<'_>,
     ) -> Result<Self, StoreError> {
         operation.check()?;
-        let mut marks = Self::with_backend(operation.marks(), operation.original())?;
-        let mut pending = PendingMarks::new(operation)?;
+        let mut marks = Self::with_operation(operation)?;
+        let mut pending = sorted_runs::SortOwner::new(operation)?;
         let closure = repository
             .authenticated_storage_closure_with_boundary(roots, inventory, &mut || {
                 operation.check().map_err(Into::into)
@@ -60,11 +62,11 @@ impl Reachability {
             })?;
         for id in closure.objects().iter().copied().chain(direct) {
             operation.check()?;
-            pending.insert(&mut marks, id, operation)?;
+            pending.insert(id)?;
         }
 
         if closure.ram_roots().is_empty() {
-            pending.flush(&mut marks, operation)?;
+            pending.finish(&mut marks)?;
             return Ok(marks);
         }
 
@@ -86,9 +88,7 @@ impl Reachability {
                 &mut || operation.check().map_err(Into::into),
                 &mut |id| {
                     operation.check()?;
-                    pending
-                        .insert(&mut marks, id, operation)
-                        .map_err(Into::into)
+                    pending.insert(id).map_err(Into::into)
                 },
             )
             .map_err(|error| match error {
@@ -96,10 +96,36 @@ impl Reachability {
                 other => marks.failure("authenticate GC RAM graph", other),
             })?;
         }
-        pending.flush(&mut marks, operation)?;
+        pending.finish(&mut marks)?;
         Ok(marks)
     }
 
+    fn with_operation(operation: &CampaignGcOperationContext<'_>) -> Result<Self, StoreError> {
+        operation.check()?;
+        let backend = operation.marks();
+        backend.metadata_resources()?;
+        let original = operation.original();
+        let account = mark_account(original)?;
+        let map = MerkleMap::new(backend);
+        let root = map
+            .build_from_sorted_with_boundary(std::iter::empty(), &account, &mut || {
+                operation.check()
+            })
+            .map_err(|source| mark_builder_error(original, source))?;
+        account
+            .check()
+            .map_err(|error| mark_admission(&account, error))?;
+        operation.check()?;
+        Ok(Self {
+            map,
+            root,
+            #[cfg(test)]
+            directory: None,
+            original: original.clone(),
+        })
+    }
+
+    #[cfg(test)]
     fn with_backend(
         backend: Arc<dyn ImmutableBlobBackend>,
         original: &DecodeBudget,
@@ -243,256 +269,7 @@ impl Reachability {
     }
 }
 
-// A fixed first-byte table coalesces sixteen neighboring mature pages under
-// one canonical first-nibble branch. Small passes retain the original 64-entry
-// page; promotion begins after one page per first-level trie branch. Capacity
-// never follows RAM size. Both vectors close before their original credits, and a failed
-// publication leaves every unaccepted entry intact.
 type MarkEntry = (CampaignHash, ContentId);
-
-const MARK_PREFIXES: usize = 1 << u8::BITS;
-const MARK_PAGE: usize = MerkleMap::MAX_CHECKED_BATCH_UPSERTS;
-const MARK_SLOTS: usize = MARK_PREFIXES * MARK_PAGE;
-const MARK_GROUP_PREFIXES: usize = 16;
-const MARK_GROUP_PAGE: usize = MerkleMap::MAX_CHECKED_PREFIX_UPSERTS;
-const MARK_PROMOTION: usize = (1 << 4) * MARK_PAGE;
-
-struct PendingMarks {
-    slots: Vec<Option<MarkEntry>>,
-    page: Vec<MarkEntry>,
-    counts: [u8; MARK_PREFIXES],
-    observed: usize,
-    staged: usize,
-    _prefix_credit: Option<crucible_cas::owned_decode::ResourceLoan>,
-    _credit: crucible_cas::owned_decode::ResourceLoan,
-}
-
-impl PendingMarks {
-    fn initial_bytes() -> Result<u64, StoreError> {
-        MARK_PAGE
-            .checked_mul(std::mem::size_of::<MarkEntry>())
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>()))
-            .and_then(|bytes| u64::try_from(bytes).ok())
-            .ok_or(StoreError::Quota)
-    }
-
-    fn prefix_bytes() -> Result<u64, StoreError> {
-        MARK_SLOTS
-            .checked_mul(std::mem::size_of::<Option<MarkEntry>>())
-            .and_then(|bytes| {
-                bytes.checked_add(MARK_GROUP_PAGE.checked_mul(std::mem::size_of::<MarkEntry>())?)
-            })
-            .and_then(|bytes| u64::try_from(bytes).ok())
-            .ok_or(StoreError::Quota)
-    }
-
-    fn new(operation: &CampaignGcOperationContext<'_>) -> Result<Self, StoreError> {
-        let credit = operation.reserve_bytes(Self::initial_bytes()?)?;
-        let mut page = Vec::new();
-        page.try_reserve_exact(MARK_PAGE)
-            .map_err(allocation_error)?;
-        operation.check()?;
-        Ok(Self {
-            slots: Vec::new(),
-            page,
-            counts: [0; MARK_PREFIXES],
-            observed: 0,
-            staged: 0,
-            _prefix_credit: None,
-            _credit: credit,
-        })
-    }
-
-    fn promote(&mut self, operation: &CampaignGcOperationContext<'_>) -> Result<(), StoreError> {
-        let credit = operation.reserve_bytes(Self::prefix_bytes()?)?;
-        let mut slots = Vec::new();
-        slots
-            .try_reserve_exact(MARK_SLOTS)
-            .map_err(allocation_error)?;
-        slots.resize(MARK_SLOTS, None);
-        // The old 64-entry allocation remains paid while its replacement is
-        // prepared. Both local allocations close before this new credit on error.
-        let mut page = Vec::new();
-        page.try_reserve_exact(MARK_GROUP_PAGE)
-            .map_err(allocation_error)?;
-        operation.check()?;
-        self.page = page;
-        self.slots = slots;
-        self._prefix_credit = Some(credit);
-        Ok(())
-    }
-
-    fn insert(
-        &mut self,
-        marks: &mut Reachability,
-        id: ContentId,
-        operation: &CampaignGcOperationContext<'_>,
-    ) -> Result<(), StoreError> {
-        operation.check()?;
-        if self.slots.is_empty() && self.observed >= MARK_PROMOTION {
-            // Promotion is allowed only after the initial page has committed.
-            // A retained failed page must complete before admitting another ID.
-            if !self.page.is_empty() {
-                self.publish_page(marks, operation)?;
-            }
-            self.promote(operation)?;
-        }
-        self.observed = self.observed.checked_add(1).ok_or(StoreError::Quota)?;
-        let key = mark_key(id);
-        if self.slots.is_empty() {
-            if self.page.len() == MARK_PAGE {
-                self.publish_page(marks, operation)?;
-            }
-            self.page.push((key, id));
-            self.staged += 1;
-            if self.page.len() == MARK_PAGE {
-                self.publish_page(marks, operation)?;
-            }
-            return Ok(());
-        }
-
-        let prefix = usize::from(key.as_bytes()[0]);
-        let start = prefix * MARK_PAGE;
-        let position = (start..start + MARK_PAGE)
-            .find(|position| self.slots[*position].is_none())
-            .ok_or(StoreError::Quota)?;
-        self.slots[position] = Some((key, id));
-        self.counts[prefix] += 1;
-        self.staged += 1;
-        if usize::from(self.counts[prefix]) == MARK_PAGE {
-            self.publish_group(marks, prefix / MARK_GROUP_PREFIXES, operation)?;
-        }
-        Ok(())
-    }
-
-    fn flush(
-        &mut self,
-        marks: &mut Reachability,
-        operation: &CampaignGcOperationContext<'_>,
-    ) -> Result<(), StoreError> {
-        if self.staged == 0 {
-            return Ok(());
-        }
-        if self.slots.is_empty() {
-            return self.publish_page(marks, operation);
-        }
-        for group in 0..MARK_PREFIXES / MARK_GROUP_PREFIXES {
-            let start = group * MARK_GROUP_PREFIXES;
-            if self.counts[start..start + MARK_GROUP_PREFIXES]
-                .iter()
-                .any(|count| *count != 0)
-            {
-                self.publish_group(marks, group, operation)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn publish_group(
-        &mut self,
-        marks: &mut Reachability,
-        group: usize,
-        operation: &CampaignGcOperationContext<'_>,
-    ) -> Result<(), StoreError> {
-        operation.check()?;
-        let first = group * MARK_GROUP_PREFIXES;
-        let end = first + MARK_GROUP_PREFIXES;
-        self.page.clear();
-        for prefix in first..end {
-            operation.check()?;
-            let start = prefix * MARK_PAGE;
-            self.page.extend(
-                self.slots[start..start + MARK_PAGE]
-                    .iter()
-                    .flatten()
-                    .copied(),
-            );
-        }
-        let positions = self.page.len();
-        self.page.sort_unstable_by_key(|entry| entry.0);
-        if self
-            .page
-            .windows(2)
-            .any(|pair| pair[0].0 == pair[1].0 && pair[0].1 != pair[1].1)
-        {
-            return Err(StoreError::Corrupt {
-                id: marks.root.content_id(),
-            });
-        }
-        self.page.dedup_by_key(|entry| entry.0);
-        let account = mark_account(&marks.original)?;
-        let root = marks
-            .map
-            .insert_prefix_batch_with_boundary(
-                marks.root.content_id(),
-                &self.page,
-                &account,
-                &mut || operation.check(),
-            )
-            .map_err(|source| marks.failure("insert GC mark batch", source))?;
-        account
-            .check()
-            .map_err(|error| mark_admission(&account, error))?;
-        operation.check()?;
-        if root.entry_count() > MAX_CAMPAIGN_CLOSURE_OBJECTS as u64 {
-            return Err(StoreError::Quota);
-        }
-
-        marks.root = root;
-        for prefix in first..end {
-            let start = prefix * MARK_PAGE;
-            self.slots[start..start + MARK_PAGE].fill(None);
-            self.counts[prefix] = 0;
-        }
-        self.staged -= positions;
-        self.page.clear();
-        Ok(())
-    }
-
-    fn publish_page(
-        &mut self,
-        marks: &mut Reachability,
-        operation: &CampaignGcOperationContext<'_>,
-    ) -> Result<(), StoreError> {
-        operation.check()?;
-        self.page.sort_unstable_by_key(|entry| entry.0);
-        if self
-            .page
-            .windows(2)
-            .any(|pair| pair[0].0 == pair[1].0 && pair[0].1 != pair[1].1)
-        {
-            return Err(StoreError::Corrupt {
-                id: marks.root.content_id(),
-            });
-        }
-        self.page.dedup_by_key(|entry| entry.0);
-        let account = mark_account(&marks.original)?;
-        let root = marks
-            .map
-            .insert_batch_with_boundary(marks.root.content_id(), &self.page, &account, &mut || {
-                operation.check()
-            })
-            .map_err(|source| marks.failure("insert GC mark batch", source))?;
-        account
-            .check()
-            .map_err(|error| mark_admission(&account, error))?;
-        operation.check()?;
-        if root.entry_count() > MAX_CAMPAIGN_CLOSURE_OBJECTS as u64 {
-            return Err(StoreError::Quota);
-        }
-        marks.root = root;
-        self.staged = 0;
-        self.page.clear();
-        Ok(())
-    }
-}
-
-fn allocation_error(source: std::collections::TryReserveError) -> StoreError {
-    StoreError::StreamIo {
-        operation: "allocate bounded GC mark prefixes",
-        source: io::Error::other(source),
-    }
-}
 
 // Mark operations return only scalar identities. Their decoded nodes, source
 // handles and publication buffers close before this child account; immutable
@@ -513,6 +290,22 @@ fn mark_admission(
     StoreError::DecodeAdmission {
         source,
         custody: Some(original.custody()),
+    }
+}
+
+fn mark_builder_error(
+    original: &DecodeBudget,
+    source: crucible_campaign::CampaignStoreError,
+) -> StoreError {
+    match source {
+        crucible_campaign::CampaignStoreError::Store(source) => source,
+        crucible_campaign::CampaignStoreError::Codec(
+            crucible_campaign::CampaignCodecError::DecodeAdmission(source),
+        ) => mark_admission(original, source),
+        source => StoreError::StreamIo {
+            operation: "build canonical GC marks",
+            source: io::Error::other(source),
+        },
     }
 }
 

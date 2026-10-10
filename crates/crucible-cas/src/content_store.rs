@@ -45,6 +45,7 @@ mod namespace;
 mod packed;
 pub(crate) use packed::read_view::View as PackedReadView;
 mod physical_quota;
+mod prepaid_source;
 mod profile;
 mod provider_diagnostic;
 mod publication;
