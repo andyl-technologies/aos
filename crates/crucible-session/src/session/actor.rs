@@ -666,7 +666,11 @@ impl<L> SessionActor<L> {
         let mut coordinate = self.debug_index_configuration.clone();
         for entry in entries {
             if let SchedulerEventLogPayload::Decision(decision) = entry.payload()
-                && current.schedule.decisions().get(coordinate.schedule.len()) == Some(decision)
+                && current
+                    .schedule
+                    .decision_history()
+                    .get(coordinate.schedule.len())
+                    == Some(decision)
             {
                 coordinate = Configuration {
                     def: current.def.clone(),

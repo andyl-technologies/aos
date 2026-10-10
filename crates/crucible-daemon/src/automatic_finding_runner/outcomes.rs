@@ -316,7 +316,7 @@ fn automatic_finding_replays_both_passes_under_the_original_budget_and_path() {
     let minimized =
         crucible::ReproductionArtifact::from_compact_binary(finding.minimized().payload())
             .expect("minimized reproduction");
-    assert!(minimized.schedule().decisions().is_empty());
+    assert!(minimized.schedule().decision_history().is_empty());
     assert_eq!(main_calls.load(Ordering::SeqCst), 1);
     assert_eq!(replay_calls.load(Ordering::SeqCst), 4);
     assert_eq!(quarantines.load(Ordering::SeqCst), 0);
@@ -797,7 +797,7 @@ fn descendant_finding_replay_preserves_controls_signature_and_retained_world() {
     let minimized =
         crucible::ReproductionArtifact::from_compact_binary(finding.minimized().payload())
             .expect("minimized descendant reproduction");
-    assert!(minimized.schedule().decisions().is_empty());
+    assert!(minimized.schedule().decision_history().is_empty());
     assert_eq!(replay_calls.load(Ordering::SeqCst), 4);
     assert_eq!(controlled_calls.load(Ordering::SeqCst), 4);
     assert_eq!(retained_calls.load(Ordering::SeqCst), 4);

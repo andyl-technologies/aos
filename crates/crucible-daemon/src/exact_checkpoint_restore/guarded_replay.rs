@@ -174,7 +174,7 @@ where
                 }
                 ReplayStep::Decision { index } => index,
             };
-            let decision = &configuration.schedule.decisions()[decision_index];
+            let decision = &configuration.schedule.decision_history()[decision_index];
             let next = crucible::try_step(&current, decision.clone()).map_err(|source| {
                 QemuVmRealizationError::InvalidCheckpoint {
                     role: "baked-genesis replay target",

@@ -425,7 +425,7 @@ fn campaign_branch_replay_eligible(
     // crucible-lint: allow host-nondeterminism-state -- replay routing reads authenticated artifact evidence without modifying semantic state.
     schedule: &crucible::Schedule,
 ) -> bool {
-    let supported_schedule = schedule.decisions().iter().all(|decision| {
+    let supported_schedule = schedule.decision_history().iter().all(|decision| {
         matches!(
             decision,
             // crucible-lint: allow host-nondeterminism-state -- replay routing inspects authenticated scheduler evidence only to select its execution owner.
@@ -437,7 +437,7 @@ fn campaign_branch_replay_eligible(
                 // crucible-lint: allow host-nondeterminism-state -- replay routing inspects authenticated scheduler evidence only to select its execution owner.
                 | crucible::Decision::Selection(_)
         )
-    }) && schedule.decisions().iter().all(|decision| {
+    }) && schedule.decision_history().iter().all(|decision| {
         // crucible-lint: allow host-nondeterminism-state -- replay routing rejects unsupported typed selection origins before execution.
         let crucible::Decision::Selection(decision) = decision else {
             return true;
@@ -530,7 +530,7 @@ fn replay_indexed_network_choices(
         .map(|index| {
             let index = usize::try_from(*index)
                 .map_err(|_| artifact_error("network choice index cannot be represented"))?;
-            match schedule.decisions().get(index) {
+            match schedule.decision_history().get(index) {
                 Some(crucible::Decision::Selection(decision))
                     if decision.selection().is_ok_and(|selection| {
                         decision.is_campaign_branch()

@@ -86,8 +86,8 @@ pub(super) fn materialized_state_hash(
 }
 
 fn write_schedule(hasher: &mut MaterialHasher, schedule: &Schedule) {
-    hasher.write_u64(schedule.decisions().len() as u64);
-    for decision in schedule.decisions() {
+    hasher.write_u64(schedule.decision_history().len() as u64);
+    for decision in schedule.decision_history() {
         write_decision(hasher, decision);
     }
 }

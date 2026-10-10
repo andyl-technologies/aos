@@ -43,7 +43,7 @@ pub(super) fn has_unselected_discovery<'a>(
 ) -> Result<bool, QemuFreshModeledDriverError> {
     let selected = configuration
         .schedule
-        .decisions()
+        .decision_history()
         .iter()
         .filter_map(|decision| match decision {
             Decision::Selection(selection) => Some(selection),

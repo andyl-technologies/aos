@@ -71,7 +71,7 @@ pub(super) fn authenticated_replay_steps(
             SchedulerEventLogPayload::Decision(decision) => {
                 let expected = configuration
                     .schedule
-                    .decisions()
+                    .decision_history()
                     .get(next_decision)
                     .ok_or_else(|| invalid_input("event log has an extra replay decision"))?;
                 if entry.class() != SchedulerEventLogClass::Causal || decision != expected {
@@ -132,7 +132,7 @@ pub(super) fn authenticated_replay_steps(
             _ => {}
         }
     }
-    if next_decision != configuration.schedule.decisions().len() {
+    if next_decision != configuration.schedule.decision_history().len() {
         return Err(invalid_input(
             "event log omits an authenticated replay decision",
         ));

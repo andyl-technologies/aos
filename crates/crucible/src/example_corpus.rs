@@ -1340,7 +1340,7 @@ fn fault_campaign_violation_observations_from_artifact(
     artifact: &ReproductionArtifact,
 ) -> Result<Vec<ObservableEvent>, ExampleCorpusError> {
     let mut decoded = None;
-    for decision in artifact.schedule().decisions() {
+    for decision in artifact.schedule().decision_history() {
         let Decision::Override(override_decision) = decision else {
             continue;
         };

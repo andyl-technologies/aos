@@ -55,7 +55,7 @@ pub(crate) fn recorded_assertion_log_from_schedule_for_search(
 ) -> Result<RecordedAssertionLog, OfflineAssertionCheckError> {
     let mut entries = Vec::with_capacity(schedule.len().saturating_add(1));
     let mut terminal_ticks = 0_u64;
-    for (index, decision) in schedule.decisions().iter().enumerate() {
+    for (index, decision) in schedule.decision_history().iter().enumerate() {
         let sequence = u64::try_from(index)
             .map_err(|_| OfflineAssertionCheckError::PrefixLengthOverflow { prefix_len: index })?;
         let at = search_schedule_decision_event_time(decision, sequence);

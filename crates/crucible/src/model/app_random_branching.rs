@@ -117,7 +117,7 @@ fn resolve_app_random_site(
     observed: &SelectionDecision,
     discovery: &ChoiceDiscovery,
 ) -> Result<(AppRandomSelectable, u64), AppRandomBranchError> {
-    let Some(Decision::RngDraw(draw)) = parent.schedule.decisions().last() else {
+    let Some(Decision::RngDraw(draw)) = parent.schedule.decision_history().last() else {
         return Err(AppRandomBranchError::MissingParentDraw);
     };
     let selection = observed

@@ -156,7 +156,7 @@ pub(crate) fn run_finding_bundle_branch(
         .map_err(|error| backend_error(format!("finding reproduction is invalid: {error}")))?;
     let original = model
         .schedule()
-        .decisions()
+        .decision_history()
         .iter()
         .find_map(|decision| match decision {
             crucible::Decision::Selection(selection) => Some(selection.selection()),

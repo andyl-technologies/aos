@@ -38,7 +38,7 @@ pub(super) fn ensure_session_replay_evidence_supported(
     }
     if evidence
         .schedule
-        .decisions()
+        .decision_history()
         .iter()
         .any(|decision| matches!(decision, crucible::Decision::Selection(_)))
     {

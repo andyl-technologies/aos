@@ -132,7 +132,7 @@ impl GuardedCampaignReplayClosure {
         index: usize,
         schedule: &Schedule,
     ) -> Result<Option<&GuardedCampaignReplaySelection>, GuardedCampaignReplayClosureError> {
-        let Some(decision) = schedule.decisions().get(index) else {
+        let Some(decision) = schedule.decision_history().get(index) else {
             return Err(GuardedCampaignReplayClosureError::Invalid {
                 reason: "replay decision index is outside the schedule",
             });
@@ -347,7 +347,7 @@ impl GuardedCampaignReplayClosure {
             .collect::<Result<BTreeMap<_, _>, GuardedCampaignReplayClosureError>>()?;
         let mut used = BTreeSet::new();
 
-        for (index, decision) in schedule.decisions().iter().enumerate() {
+        for (index, decision) in schedule.decision_history().iter().enumerate() {
             let Decision::Selection(decision) = decision else {
                 continue;
             };

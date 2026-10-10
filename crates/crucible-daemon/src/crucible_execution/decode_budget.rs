@@ -186,7 +186,7 @@ fn decoded_configuration_logical_bytes(configuration: &Configuration) -> Option<
     )?;
     bytes = bytes.checked_add(RETAINED_ALLOCATION_OVERHEAD)?;
 
-    for decision in configuration.schedule.decisions() {
+    for decision in configuration.schedule.decision_history() {
         let variable = match decision {
             Decision::DeliveryOrder(decision) => {
                 let mut retained = u64::try_from(decision.order.len())

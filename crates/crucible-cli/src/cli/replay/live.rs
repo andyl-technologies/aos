@@ -477,7 +477,9 @@ fn validate_live_qemu_terminal(
             .and_then(|index| expected_schedule.decisions().get(index))
             .map_or_else(|| String::from("none"), |decision| format!("{decision:?}"));
         let actual_decision = first_different_decision
-            .and_then(|index| actual_schedule.and_then(|schedule| schedule.decisions().get(index)))
+            .and_then(|index| {
+                actual_schedule.and_then(|schedule| schedule.decision_history().get(index))
+            })
             .map_or_else(|| String::from("none"), |decision| format!("{decision:?}"));
         return Err(CliError::ReplayCheck(format!(
             "live QEMU terminal tuple diverged: expected status={} outcome={} configuration={} frontier={} quanta={} budget_timeout={} decisions={}, got status={} outcome={} configuration={} frontier={} quanta={} budget_timeout={} decisions={} first_different_decision={} expected_decision={} actual_decision={}",

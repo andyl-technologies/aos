@@ -323,7 +323,7 @@ pub(super) fn validate_owned_replay_selections(
     };
     let selection_count = configuration
         .schedule
-        .decisions()
+        .decision_history()
         .iter()
         .filter(|decision| matches!(decision, Decision::Selection(_)))
         .count();
@@ -344,7 +344,7 @@ pub(super) fn validate_owned_replay_selections(
     {
         return Err(CrucibleArtifactError::SelectionResolutionLimit);
     }
-    for (index, decision) in configuration.schedule.decisions().iter().enumerate() {
+    for (index, decision) in configuration.schedule.decision_history().iter().enumerate() {
         let Decision::Selection(decision) = decision else {
             continue;
         };
@@ -423,7 +423,7 @@ pub(super) fn validate_owned_replay_selections(
     }
     if configuration
         .schedule
-        .decisions()
+        .decision_history()
         .iter()
         .enumerate()
         .any(|(index, decision)| {

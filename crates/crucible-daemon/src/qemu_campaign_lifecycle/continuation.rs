@@ -338,7 +338,7 @@ pub(super) fn production_lifecycle_config_for_start(
     for selection in authenticated_network_selections {
         if !start
             .schedule
-            .decisions()
+            .decision_history()
             .contains(&Decision::Selection(selection.clone()))
         {
             return Err(
@@ -980,7 +980,7 @@ pub(super) fn unsupported_fresh_replay_decision(
         .collect::<BTreeSet<_>>();
     target
         .schedule
-        .decisions()
+        .decision_history()
         .iter()
         .enumerate()
         .find_map(|(index, decision)| match decision {

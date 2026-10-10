@@ -1739,7 +1739,7 @@ fn validate_resume_replay_closure_presence(
 ) -> Result<(), LifecycleApiError> {
     let requires_closure = has_validator
         || schedule
-            .decisions()
+            .decision_history()
             .iter()
             .any(|decision| matches!(decision, Decision::Selection(_)));
     let Some(closure) = closure else {

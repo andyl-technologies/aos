@@ -264,8 +264,8 @@ pub(super) fn read_scenario_form_binary(
 
 pub(super) fn write_schedule_binary(schedule: &Schedule, writer: &mut ScenarioBinaryWriter) {
     writer.write_hash(schedule.content_hash());
-    writer.write_count(schedule.decisions().len());
-    for decision in schedule.decisions() {
+    writer.write_count(schedule.decision_history().len());
+    for decision in schedule.decision_history() {
         write_decision_binary(decision, writer);
     }
 }
@@ -279,7 +279,7 @@ pub(super) fn read_schedule_binary(
     for _ in 0..count {
         decisions.push(read_decision_binary(reader)?);
     }
-    let schedule = Schedule { decisions };
+    let schedule = Schedule::from_decisions(decisions);
     validate_serialized_id("schedule", expected, schedule.content_hash())?;
     Ok(schedule)
 }

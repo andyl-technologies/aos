@@ -5,9 +5,7 @@ use std::collections::BTreeMap;
 use crucible_sim::{DecisionRng, DecisionStream};
 
 use super::DecisionRecorder;
-use crate::{Configuration, Decision, DecisionRngState, RngStreamId, Seed};
-
-use super::app_random_selectable::is_app_random_schedule_decision;
+use crate::{Configuration, DecisionRngState, RngStreamId, Seed};
 
 impl DecisionRecorder {
     /// Builds a recorder from an explicit seed and authoritative stream cursors.
@@ -23,7 +21,7 @@ impl DecisionRecorder {
     ) -> Self {
         let rng = seed.decision_rng();
         let streams = hydrate_stream_positions(&rng, positions);
-        let app_random_draws = count_app_random_draws(configuration.schedule.decisions());
+        let app_random_draws = configuration.schedule.app_random_decisions();
         Self {
             configuration,
             rng,
@@ -31,14 +29,6 @@ impl DecisionRecorder {
             app_random_draws,
         }
     }
-}
-
-pub(super) fn count_app_random_draws(decisions: &[Decision]) -> u64 {
-    decisions
-        .iter()
-        .enumerate()
-        .filter(|(index, _decision)| is_app_random_schedule_decision(decisions, *index))
-        .count() as u64
 }
 
 fn hydrate_stream_positions(

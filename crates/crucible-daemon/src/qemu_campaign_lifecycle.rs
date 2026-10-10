@@ -2381,7 +2381,7 @@ pub(crate) fn materialize_start_from<F, D>(
         ));
     }
 
-    lifecycle.set_live_network_choice_pause(target.schedule.decisions().iter().any(|decision| {
+    lifecycle.set_live_network_choice_pause(target.schedule.decision_history().iter().any(|decision| {
         matches!(decision, Decision::Selection(selection) if selection.is_campaign_branch())
     }));
 
@@ -2438,7 +2438,7 @@ pub(crate) fn materialize_start_from<F, D>(
                 &choice,
                 target
                     .schedule
-                    .decisions()
+                    .decision_history()
                     .get(outcome.configuration.schedule.len()),
             )
         }) {
@@ -2488,9 +2488,17 @@ pub(crate) fn materialize_start_from<F, D>(
                 }),
             ));
         }
-        if let Some(offset) = next.schedule.decisions()[prior_len..]
-            .iter()
-            .zip(&target.schedule.decisions()[prior_len..next_len])
+        if let Some(offset) = next
+            .schedule
+            .decision_history()
+            .iter_from(prior_len)
+            .zip(
+                target
+                    .schedule
+                    .decision_history()
+                    .iter_from(prior_len)
+                    .take(next_len - prior_len),
+            )
             .position(|(observed, expected)| observed != expected)
         {
             let index = prior_len + offset;
@@ -2498,8 +2506,8 @@ pub(crate) fn materialize_start_from<F, D>(
                 QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::DivergedAt {
                     reason: "decision prefix",
                     index,
-                    expected: replay_decision_detail(target.schedule.decisions().get(index)),
-                    observed: replay_decision_detail(next.schedule.decisions().get(index)),
+                    expected: replay_decision_detail(target.schedule.decision_history().get(index)),
+                    observed: replay_decision_detail(next.schedule.decision_history().get(index)),
                 }),
             ));
         }
@@ -2577,7 +2585,7 @@ fn apply_replayed_live_network_selection<F, D>(
     let index = current.schedule.len();
     let Some(Decision::Selection(selection)) = target
         .schedule
-        .decisions()
+        .decision_history()
         .get(index)
         .filter(|decision| reserved_live_network_choice_matches(&choice, Some(decision)))
     else {
@@ -2586,7 +2594,7 @@ fn apply_replayed_live_network_selection<F, D>(
                 reason: "reserved live-network choice",
                 index,
                 expected: String::from("Selection"),
-                observed: replay_decision_detail(target.schedule.decisions().get(index)),
+                observed: replay_decision_detail(target.schedule.decision_history().get(index)),
             }),
         ));
     };

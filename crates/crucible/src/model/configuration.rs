@@ -1,5 +1,8 @@
 //! Scenario forms, configurations, decisions, and schedules.
 
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, OnceLock};
+
 use super::*;
 
 /// A fully materialized scenario definition form for storage and exchange.
@@ -528,18 +531,54 @@ impl Decision {
 }
 
 /// A totally ordered sequence of [`Decision`] values.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+///
+/// Decisions are stored in a structurally shared [`crate::History`], so a
+/// configuration can be cloned and extended once per quantum without copying
+/// everything recorded before it. [`Schedule::decision_history`] reads that
+/// storage directly; [`Schedule::decisions`] additionally offers a contiguous
+/// slice, materialized once per schedule value on first use.
+#[derive(Clone, Default)]
 pub struct Schedule {
-    pub(super) decisions: Vec<Decision>,
+    decisions: crate::History<Decision>,
+    // Standardized app-random selections among `decisions`. It is a pure
+    // function of the decisions, maintained on append so draw-cap validation
+    // never rescans the recorded history.
+    app_random_decisions: u64,
+    // Contiguous copy of `decisions` for slice readers. Clones share it until
+    // one of them appends, which discards its own handle.
+    contiguous: Arc<OnceLock<Vec<Decision>>>,
+}
+
+// Equality, hashing, and debug output cover the decisions alone; the count and
+// the contiguous copy are derived from them.
+impl PartialEq for Schedule {
+    fn eq(&self, other: &Self) -> bool {
+        self.decisions == other.decisions
+    }
+}
+
+impl Eq for Schedule {}
+
+impl Hash for Schedule {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.decisions.hash(state);
+    }
+}
+
+impl fmt::Debug for Schedule {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Schedule")
+            .field("decisions", &self.decisions)
+            .finish()
+    }
 }
 
 impl Schedule {
     /// Builds an empty schedule.
     #[must_use]
     pub fn empty() -> Self {
-        Self {
-            decisions: Vec::new(),
-        }
+        Self::default()
     }
 
     /// Builds a schedule from decisions in recorded order.
@@ -551,11 +590,11 @@ impl Schedule {
     where
         I: IntoIterator<Item = Decision>,
     {
-        decisions
-            .into_iter()
-            .fold(Self::empty(), |schedule, decision| {
-                schedule.appended(decision)
-            })
+        let mut schedule = Self::empty();
+        for decision in decisions {
+            schedule.push(decision);
+        }
+        schedule
     }
 
     /// Returns whether the schedule has no decisions.
@@ -570,10 +609,25 @@ impl Schedule {
         self.decisions.len()
     }
 
-    /// Returns the decisions in their canonical order.
+    /// Returns the decisions in their canonical order as a contiguous slice.
+    ///
+    /// The first call on a schedule value copies its decisions once; clones
+    /// share that copy until they append. Readers on a per-quantum path should
+    /// prefer [`Schedule::decision_history`], which never copies.
     #[must_use]
     pub fn decisions(&self) -> &[Decision] {
+        self.contiguous.get_or_init(|| self.decisions.to_vec())
+    }
+
+    /// Returns the decisions in their canonical order without copying them.
+    #[must_use]
+    pub fn decision_history(&self) -> &crate::History<Decision> {
         &self.decisions
+    }
+
+    /// Returns the number of standardized app-random selections recorded.
+    pub(crate) fn app_random_decisions(&self) -> u64 {
+        self.app_random_decisions
     }
 
     /// Returns the latest virtual-time coordinate carried by recorded decisions.
@@ -612,9 +666,9 @@ impl Schedule {
             });
         }
 
-        Ok(Self {
-            decisions: self.decisions[..len].to_vec(),
-        })
+        Ok(Self::from_decisions(
+            self.decisions.iter().take(len).cloned(),
+        ))
     }
 
     /// Returns the suffix after the first `len` decisions.
@@ -631,17 +685,33 @@ impl Schedule {
             });
         }
 
-        Ok(Self {
-            decisions: self.decisions[len..].to_vec(),
-        })
+        Ok(Self::from_decisions(
+            self.decisions.iter().skip(len).cloned(),
+        ))
     }
 
     /// Returns a new schedule with `decision` appended.
     #[must_use]
     pub fn appended(&self, decision: Decision) -> Self {
-        let mut decisions = self.decisions.clone();
-        decisions.push(decision);
-        Self { decisions }
+        let mut schedule = self.clone();
+        schedule.push(decision);
+        schedule
+    }
+
+    fn push(&mut self, decision: Decision) {
+        if crate::decision::is_app_random_decision_after(self.decisions.last(), &decision) {
+            self.app_random_decisions = self.app_random_decisions.saturating_add(1);
+        }
+        self.decisions.push(decision);
+
+        // The contiguous copy no longer matches. Reuse an unshared cell;
+        // leave a shared one to the clones that still match it.
+        match Arc::get_mut(&mut self.contiguous) {
+            Some(cell) => {
+                cell.take();
+            }
+            None => self.contiguous = Arc::default(),
+        }
     }
 
     /// Computes the canonical identity of this schedule.

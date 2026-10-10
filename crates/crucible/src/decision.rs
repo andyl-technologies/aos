@@ -23,7 +23,7 @@ pub use app_random_selectable::{
     validate_app_random_model_selection,
 };
 pub(crate) use app_random_selectable::{
-    is_app_random_model_selection, is_app_random_schedule_decision,
+    is_app_random_decision_after, is_app_random_model_selection,
 };
 pub use network_fault_selectable::{
     NETWORK_FAULT_CAMPAIGN_ADAPTER, NetworkFaultCampaignBranch, NetworkFaultCampaignReplayPlan,
@@ -65,8 +65,8 @@ impl DecisionRecorder {
     #[must_use]
     pub fn new(configuration: Configuration) -> Self {
         let rng = configuration.def.seed().decision_rng();
-        let streams = hydrate_streams(&rng, configuration.schedule.decisions());
-        let app_random_draws = reseed::count_app_random_draws(configuration.schedule.decisions());
+        let streams = hydrate_streams(&rng, configuration.schedule.decision_history());
+        let app_random_draws = configuration.schedule.app_random_decisions();
         Self {
             configuration,
             rng,
@@ -426,7 +426,7 @@ fn mask_to_width(value: u64, width: u8) -> u64 {
 
 fn hydrate_streams(
     rng: &DecisionRng,
-    decisions: &[Decision],
+    decisions: &crate::History<Decision>,
 ) -> BTreeMap<RngStreamId, DecisionStream> {
     let mut streams = BTreeMap::new();
 
@@ -508,16 +508,16 @@ mod tests {
 
         assert_eq!(baseline_draw, edited_draw);
         assert!(matches!(
-            baseline.schedule().decisions().first(),
+            baseline.schedule().decision_history().first(),
             Some(Decision::RngDraw(RngDecision { stream, value }))
                 if stream == &stable_stream && *value == baseline_draw
         ));
         assert!(matches!(
-            edited.schedule().decisions().first(),
+            edited.schedule().decision_history().first(),
             Some(Decision::RngDraw(RngDecision { stream, .. })) if stream == &unrelated_stream
         ));
         assert!(matches!(
-            edited.schedule().decisions().get(1),
+            edited.schedule().decision_history().get(1),
             Some(Decision::RngDraw(RngDecision { stream, value }))
                 if stream == &stable_stream && *value == edited_draw
         ));
@@ -821,7 +821,7 @@ mod tests {
         assert_eq!(resumed_draw, expected_resumed);
         assert_eq!(resumed.schedule().len(), 3);
         assert!(matches!(
-            resumed.schedule().decisions().last(),
+            resumed.schedule().decision_history().last(),
             Some(Decision::RngDraw(RngDecision { stream: recorded, value }))
                 if recorded == &stream && *value == expected_resumed
         ));

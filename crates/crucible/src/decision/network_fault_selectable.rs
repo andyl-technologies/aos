@@ -480,7 +480,7 @@ impl NetworkFaultCampaignReplayPlan {
                 || end != start + 1
                 || end > target.schedule.len()
                 || branch.parent.schedule.decisions() != &target.schedule.decisions()[..start]
-                || branch.decision != target.schedule.decisions()[start]
+                || branch.decision != target.schedule.decision_history()[start]
                 || branch.selected.schedule.decisions() != &target.schedule.decisions()[..end]
                 || !phases.insert(branch.phase)
                 || (branch.phase == NetworkFaultPhase::Followup

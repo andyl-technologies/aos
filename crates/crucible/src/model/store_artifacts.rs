@@ -249,9 +249,9 @@ pub(super) fn schedule_delta_store_bytes(schedule: &Schedule) -> Vec<u8> {
     let mut lines = vec![
         String::from("crucible.dag-store.schedule-delta.v3"),
         format!("id={}", content_hash_hex(schedule.content_hash())),
-        format!("decisions={}", schedule.decisions().len()),
+        format!("decisions={}", schedule.decision_history().len()),
     ];
-    for (index, decision) in schedule.decisions().iter().enumerate() {
+    for (index, decision) in schedule.decision_history().iter().enumerate() {
         push_decision_lines(index, decision, &mut lines);
     }
     lines.join("\n").into_bytes()

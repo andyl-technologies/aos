@@ -457,20 +457,23 @@ pub(crate) fn is_app_random_model_selection(selection: &Selection) -> bool {
     app_random_model_ids().contains(&evidence.model())
 }
 
-pub(crate) fn is_app_random_schedule_decision(decisions: &[Decision], index: usize) -> bool {
-    match decisions.get(index) {
-        Some(Decision::Selection(selection)) if selection.is_app_random_model_sample() => true,
-        Some(Decision::Selection(selection)) if selection.is_campaign_branch() => {
-            let Some(previous) = index.checked_sub(1).and_then(|index| decisions.get(index)) else {
-                return false;
-            };
-            matches!(
-                previous,
-                Decision::RngDraw(RngDecision { stream, .. })
-                    if stream.is_default_domain()
-                        && app_random_stream_name_is_canonical(&stream.name)
-            )
-        }
+/// Returns whether `decision`, recorded directly after `previous`, is a
+/// standardized app-random selection.
+///
+/// A campaign-branch selection counts only when it consumes the canonical
+/// default-domain app-random stream drawn immediately before it.
+pub(crate) fn is_app_random_decision_after(
+    previous: Option<&Decision>,
+    decision: &Decision,
+) -> bool {
+    match decision {
+        Decision::Selection(selection) if selection.is_app_random_model_sample() => true,
+        Decision::Selection(selection) if selection.is_campaign_branch() => matches!(
+            previous,
+            Some(Decision::RngDraw(RngDecision { stream, .. }))
+                if stream.is_default_domain()
+                    && app_random_stream_name_is_canonical(&stream.name)
+        ),
         _ => false,
     }
 }

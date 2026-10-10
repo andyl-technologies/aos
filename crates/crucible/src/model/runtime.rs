@@ -212,7 +212,7 @@ pub(super) fn validate_app_random_draw_cap(
     def: &ScenarioDef,
     schedule: &Schedule,
 ) -> Result<(), EngineError> {
-    let actual = count_app_random_decisions(schedule);
+    let actual = schedule.app_random_decisions();
     if actual > def.app_random_draw_cap {
         return Err(EngineError::AppRandomDrawCapExceeded {
             scenario: def.id,
@@ -235,17 +235,6 @@ pub(super) fn validate_debug_gdb_endpoint(
     } else {
         Ok(())
     }
-}
-
-pub(super) fn count_app_random_decisions(schedule: &Schedule) -> u64 {
-    let decisions = schedule.decisions();
-    decisions
-        .iter()
-        .enumerate()
-        .filter(|(index, _decision)| {
-            crate::decision::is_app_random_schedule_decision(decisions, *index)
-        })
-        .count() as u64
 }
 
 /// Selects adaptive exploration arms deterministically for `budget` steps.

@@ -87,7 +87,7 @@ pub(super) fn apply_replayed_guest_selectables<F, D>(
         let Some(Decision::Selection(decision)) = replay_context
             .target
             .schedule
-            .decisions()
+            .decision_history()
             .get(replayed.schedule.len())
         else {
             return Err(AttemptWorkerFailure::Terminal(
@@ -99,7 +99,7 @@ pub(super) fn apply_replayed_guest_selectables<F, D>(
                         replay_context
                             .target
                             .schedule
-                            .decisions()
+                            .decision_history()
                             .get(replayed.schedule.len()),
                     ),
                 }),

@@ -43,7 +43,7 @@ pub(super) fn guarded_campaign_resume_eligible(
 }
 
 fn campaign_resume_evidence_supported(evidence: &ResumeHandleEvidence) -> bool {
-    evidence.schedule.decisions().iter().all(|decision| {
+    evidence.schedule.decision_history().iter().all(|decision| {
         matches!(
             decision,
             crucible::Decision::DeliveryOrder(_)
@@ -51,7 +51,7 @@ fn campaign_resume_evidence_supported(evidence: &ResumeHandleEvidence) -> bool {
                 | crucible::Decision::Preemption(_)
                 | crucible::Decision::Selection(_)
         )
-    }) && evidence.schedule.decisions().iter().all(|decision| {
+    }) && evidence.schedule.decision_history().iter().all(|decision| {
         let crucible::Decision::Selection(decision) = decision else {
             return true;
         };
@@ -432,7 +432,7 @@ fn campaign_save_workflow_report(
 }
 
 fn validate_portable_campaign_save_schedule(schedule: &Schedule) -> Result<(), CliError> {
-    let supports_portable_resume = schedule.decisions().iter().all(|decision| {
+    let supports_portable_resume = schedule.decision_history().iter().all(|decision| {
         matches!(
             decision,
             crucible::Decision::DeliveryOrder(_)

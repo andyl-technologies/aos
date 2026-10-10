@@ -98,7 +98,7 @@ pub fn decode_crucible_configuration_artifact(
         decode_crucible_configuration_artifact_structural(scenario, scenario_artifact, artifact)?;
     if configuration
         .schedule
-        .decisions()
+        .decision_history()
         .iter()
         .any(|decision| matches!(decision, Decision::Selection(_)))
     {
@@ -346,7 +346,7 @@ where
 {
     let mut selections = Vec::new();
     let mut campaign_branch_count = 0usize;
-    for (index, decision) in configuration.schedule.decisions().iter().enumerate() {
+    for (index, decision) in configuration.schedule.decision_history().iter().enumerate() {
         let Decision::Selection(decision) = decision else {
             continue;
         };
@@ -376,7 +376,7 @@ where
         .map(|guard| guard(configuration, campaign_branch_count))
         .transpose()?;
     if selections.is_empty() {
-        if configuration.schedule.decisions().iter().any(|decision| {
+        if configuration.schedule.decision_history().iter().any(|decision| {
             matches!(decision, Decision::Override(override_decision) if override_decision.point.key.starts_with("signal-fault/"))
         }) {
             return Err(CrucibleArtifactError::UnboundSignalFaultOverride);
@@ -469,7 +469,7 @@ where
     }
     if configuration
         .schedule
-        .decisions()
+        .decision_history()
         .iter()
         .enumerate()
         .any(|(index, decision)| {

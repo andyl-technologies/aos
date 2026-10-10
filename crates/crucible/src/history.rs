@@ -120,6 +120,47 @@ impl<T> History<T> {
         }
     }
 
+    /// Returns an iterator over the elements from `start` onward.
+    ///
+    /// Positioning costs constant time, so iterating a recent suffix does not
+    /// walk the retained prefix. A `start` at or beyond the end yields nothing.
+    pub fn iter_from(&self, start: usize) -> Iter<'_, T> {
+        let len = self.len();
+        if start >= len {
+            return Iter {
+                chunks: [].iter(),
+                front: [].iter(),
+                back: [].iter(),
+                remaining: 0,
+            };
+        }
+        let sealed_len = self.sealed.len() * CHUNK_LEN;
+        if start >= sealed_len {
+            return Iter {
+                chunks: [].iter(),
+                front: [].iter(),
+                back: self.tail[start - sealed_len..].iter(),
+                remaining: len - start,
+            };
+        }
+        let chunk = start / CHUNK_LEN;
+        Iter {
+            chunks: self.sealed[chunk + 1..].iter(),
+            front: self.sealed[chunk][start % CHUNK_LEN..].iter(),
+            back: self.tail.iter(),
+            remaining: len - start,
+        }
+    }
+
+    /// Returns `true` when `prefix` equals the first `prefix.len()` elements.
+    #[must_use]
+    pub fn starts_with(&self, prefix: &Self) -> bool
+    where
+        T: PartialEq,
+    {
+        prefix.len() <= self.len() && self.iter().zip(prefix.iter()).all(|(a, b)| a == b)
+    }
+
     /// Returns `true` when the history holds an element equal to `value`.
     #[must_use]
     pub fn contains(&self, value: &T) -> bool
@@ -259,6 +300,18 @@ impl<T: PartialEq> PartialEq<Vec<T>> for History<T> {
     }
 }
 
+impl<T: PartialEq> PartialEq<Vec<T>> for &History<T> {
+    fn eq(&self, other: &Vec<T>) -> bool {
+        **self == other[..]
+    }
+}
+
+impl<T: PartialEq, const N: usize> PartialEq<[T; N]> for &History<T> {
+    fn eq(&self, other: &[T; N]) -> bool {
+        **self == other[..]
+    }
+}
+
 impl<T: PartialEq> PartialEq<History<T>> for Vec<T> {
     fn eq(&self, other: &History<T>) -> bool {
         *other == self[..]
@@ -273,7 +326,8 @@ impl<T: PartialEq> PartialEq<History<T>> for [T] {
 
 impl<T: Hash> Hash for History<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // Matches the slice encoding: length prefix, then elements in order.
+        // Length prefix, then every element in order, so equal histories hash
+        // equally regardless of how their storage is shared.
         state.write_usize(self.len());
         for element in self {
             element.hash(state);

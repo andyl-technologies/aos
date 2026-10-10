@@ -316,7 +316,7 @@ fn authenticate_qemu_fuzz_campaign(
         override_observations += usize::from(
             configuration
                 .schedule
-                .decisions()
+                .decision_history()
                 .iter()
                 .any(|decision| matches!(decision, crucible::Decision::Override(_))),
         );
