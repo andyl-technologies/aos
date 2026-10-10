@@ -1969,9 +1969,17 @@ pub(crate) async fn proxy_origin(
         )
         .await;
     }
-    let Some(body) = read_bounded_response(response, MAX_CONTROL_RESPONSE_BYTES).await? else {
-        worker::console_error!("hybrid_origin_response_rejected reason=control_response_limit");
-        return Response::error("hybrid control response is too large", 502);
+    // HEAD describes the selected representation without transferring its
+    // body. Its Content-Length can exceed the control body limit legitimately.
+    let head = request.method() == worker::Method::Head;
+    let body = if head {
+        Vec::new()
+    } else {
+        let Some(body) = read_bounded_response(response, MAX_CONTROL_RESPONSE_BYTES).await? else {
+            worker::console_error!("hybrid_origin_response_rejected reason=control_response_limit");
+            return Response::error("hybrid control response is too large", 502);
+        };
+        body
     };
     let route_class = if assertion.method == "GET" && assertion.path_and_query == "/-/instance" {
         "instance_page"
@@ -1994,7 +2002,9 @@ pub(crate) async fn proxy_origin(
         worker_elapsed_ms,
         native_elapsed_log,
     );
-    headers.delete("content-length")?;
+    if !head {
+        headers.delete("content-length")?;
+    }
     Ok(Response::from_body(if body.is_empty() {
         ResponseBody::Empty
     } else {
