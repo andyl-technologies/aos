@@ -75,7 +75,6 @@ def prepare_proxy_oci(worker, native, tools, original_configuration):
         json.dumps({reviewer_id: materials["reviewerPublicKey"]}).encode())
     install_direct_guest_file(native, tools["python"], files["HUB_DIRECT_UPLOAD_GUARD_KEY"],
         materials["roles"]["HUB_DIRECT_UPLOAD_GUARD_KEY"].encode())
-    private_guest_command(native, shlex.join([tools["chown"], "-R", tools["nativeObserverUser"], root]))
     return {"coordinates": coordinates, "configurationFile": configuration_file,
         "configurationSha256": hashlib.sha256(body).hexdigest(), "nativeFiles": files,
         "reviewerKeyId": reviewer_id, "registryKey": materials["registryKey"],
@@ -136,7 +135,7 @@ def qualify_proxy_oci(native, worker, tools, prepared, worker_process):
         prepared["coordinates"]["nativeOrigin"] + "/-/health", "GET", {"401"},
         "proxy-oci-native-startup", 90)
     native_process = json.loads(direct_guest_python(native, tools["python"], """
-        import subprocess
+        import os, pwd, stat, subprocess
         from pathlib import Path
 
         result = subprocess.run([selected['systemctl'], 'show', '-p', 'MainPID', '--value',
@@ -145,9 +144,25 @@ def qualify_proxy_oci(native, worker, tools, prepared, worker_process):
         if pid <= 0:
             raise ValueError('Proxy Native service has no running process')
         proc = Path('/proc')/str(pid)
+        account = pwd.getpwnam(selected['user'])
+        if proc.stat().st_uid != account.pw_uid:
+            raise ValueError('Proxy Native service owner differs from the observer')
+        # Establish observation custody after startup, on the ready service's
+        # current filesystem, rather than relying on the preparation-time owner.
+        root = Path(selected['root'])
+        paths = [root, *(Path(path) for path in selected['files'])]
+        for path in paths:
+            if path.is_symlink():
+                raise ValueError('Proxy Native observation custody follows a link')
+            os.chown(path, account.pw_uid, account.pw_gid)
+            actual = path.stat()
+            if actual.st_uid != account.pw_uid or stat.S_IMODE(actual.st_mode) & 0o077:
+                raise ValueError('Proxy Native observation custody was not established')
         print(json.dumps({'pid': pid, 'startTicks': (proc/'stat').read_text().rpartition(') ')[2].split()[19],
             'ownerUid': proc.stat().st_uid}))
-    """, {"systemctl": tools["systemctl"]}))
+    """, {"systemctl": tools["systemctl"], "user": tools["nativeObserverUser"],
+        "root": prepared["coordinates"]["nativeRoot"],
+        "files": [path for name, path in prepared["nativeFiles"].items() if name != "acceptance"]}))
     processes = {"worker": worker_process, "native": native_process}
     observed = observe_managed_pair(native, worker, tools, prepared, processes)
     artifacts = json.loads(direct_guest_python(worker, tools["python"], """

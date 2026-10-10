@@ -80,8 +80,11 @@ class ProxyConfigurationTests(unittest.TestCase):
     def test_native_startup_precedes_process_and_provider_observations(self):
         native, worker = object(), object()
         tools = {"python": "python", "systemctl": "systemctl", "curl": "curl",
-            "workerSourcePath": "/nix/store/source", "workerDistribution": "/nix/store/dist", "nixBin": "/nix/store/nix/bin"}
-        prepared = {"coordinates": {"nativeOrigin": "https://native.fleet.test:8443", "workerRoot": "/private"}}
+            "workerSourcePath": "/nix/store/source", "workerDistribution": "/nix/store/dist", "nixBin": "/nix/store/nix/bin",
+            "nativeObserverUser": "aos-hub"}
+        prepared = {"coordinates": {"nativeOrigin": "https://native.fleet.test:8443", "workerRoot": "/private",
+            "nativeRoot": "/private/native"}, "nativeFiles": {"reviewers": "/private/native/reviewers.json",
+                "HUB_DIRECT_UPLOAD_GUARD_KEY": "/private/native/guard.key", "acceptance": "/private/native/acceptance.json"}}
         events = []
 
         def command(*args, **kwargs):
@@ -94,6 +97,10 @@ class ProxyConfigurationTests(unittest.TestCase):
         def guest(machine, *args, **kwargs):
             if machine is native:
                 self.assertEqual(events, ["restart", "TLS"])
+                selected = args[2]
+                self.assertEqual(selected["user"], "aos-hub")
+                self.assertEqual(selected["root"], "/private/native")
+                self.assertEqual(selected["files"], ["/private/native/reviewers.json", "/private/native/guard.key"])
                 events.append("Native")
                 return '{"pid":123,"startTicks":"456","ownerUid":802}'
             return '{"files":{}}'
