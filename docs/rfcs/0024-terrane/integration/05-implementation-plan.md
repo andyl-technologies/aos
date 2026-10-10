@@ -627,6 +627,39 @@ first, retaining the complete conformance prerequisite closure. Every original
 selector and independent case execution remains required. A separate reviewer
 checks both worklines while historical-fixture investigation proceeds in another
 checkout. These preparations do not advance a task checkbox or milestone exit.
+Reviewed ordinary harness commit `0543d2b0b0` preserves all forty-two ordered
+selectors across its five owned files. Reviewed copied/permanent commit
+`e5058e171d` preserves twenty-five and thirty-four ordered selectors across its
+two files. Both use the existing source-bound image with whole-inventory and
+exact single-thread execution checks, printing raw output before validation or
+refusal. Independent review preserves all ten ordinary prerequisites and the
+complete three-branch owning GC graph. Parent review reads both full diffs and
+verifies all eighty-four sealed payload hashes and both archives; runtime gates
+remain unrun for these changes.
+Historical-fixture follow-up `55dc9f3ae9` corrects a source-proven namespace
+registration mismatch: the shared Legacy constructor has no preserved later
+names, while the candidate owner carries `index-roots`. The local test fixture
+explicitly preserves that name during revision-1 authoring, keeping independent
+revision-3 historical verification, protected Original retention and all prior
+relationship, producer, current-policy and backend checks. The old unregistered
+constructor must still return the exact typed Commit denial. Both source reviews
+pass; the three sealed payloads match the committed sole test-file change. A
+separate archived diagnostic stops at bucket open before reaching the original
+denial and establishes no runtime cause.
+Private composition `6bac442f86` contains exactly ten reviewed changed files
+relative to `178824f9a1`, with every owned blob preserved. Its frozen qualification
+`c2daf3f55c` matches the reviewed tree and all 6,224 tracked inputs. The native
+build and strict all-target Clippy pass; genuine fresh test compilation is
+running. Regression, collector, growing-population, feature, complete native
+suite and owning-gate results remain pending, with unchanged limits and tracing.
+The earlier frozen property qualification `fb8c86423e` finishes all three owning
+checks: forty-seven property-resolution cases, seven required-attribute cases
+and fifteen domain-reference cases pass with no ignored tests. Parent review
+verifies all twenty-six owning packet hashes, all 6,216 tracked inputs and
+5,162 filtered inputs, the actual native executable and 3,207 image input hashes,
+raw per-gate passing case sets, and all three store results and derivers. The
+original runner exits zero; these earlier-source results do not qualify the
+later composition or advance T-PROP-1.
 The frozen GC observation qualification `9a16f49c8a` stops at its first
 auxiliary case after genuine compilation and an inventory of 1,016 tests.
 Baseline fixture publication returns `Unsupported` before observation or
