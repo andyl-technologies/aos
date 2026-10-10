@@ -13,6 +13,7 @@ struct ProductQemuResources {
     writable_shared_guest_mappings: usize,
     ring_backings: BTreeSet<(String, u64)>,
     overlay_backings: BTreeSet<(u64, u64)>,
+    read_only_overlay_backings: BTreeSet<(u64, u64)>,
 }
 
 /// One `/proc` sample: a complete audit, or why the World is not yet auditable.
@@ -147,19 +148,33 @@ fn sample_envoy_hot_fork_resources(service_pid: u32) -> Result<HotForkResourceSa
                 child.parent_pid
             ));
         };
+        // PREPARE seals the source root read-only, so only the child must hold
+        // a writable overlay; this matches the one-guest pair predicate.
         if source.ring_backings.is_empty()
             || child.ring_backings.is_empty()
-            || source.overlay_backings.is_empty()
+            || source.read_only_overlay_backings.is_empty()
             || child.overlay_backings.is_empty()
         {
             return pending(format!(
-                "source {} rings={} overlays={}, child {} rings={} overlays={}",
+                "source {} rings={} read-only overlays={}, child {} rings={} writable overlays={}",
                 source.pid,
                 source.ring_backings.len(),
-                source.overlay_backings.len(),
+                source.read_only_overlay_backings.len(),
                 child.pid,
                 child.ring_backings.len(),
                 child.overlay_backings.len()
+            ));
+        }
+        if !source
+            .read_only_overlay_backings
+            .is_disjoint(&source.overlay_backings)
+            || !source
+                .read_only_overlay_backings
+                .is_disjoint(&child.overlay_backings)
+        {
+            return pending(format!(
+                "sealed basis of source QEMU {} still has a writable alias",
+                source.pid
             ));
         }
         if !source.ring_backings.is_disjoint(&child.ring_backings) {
@@ -280,6 +295,7 @@ fn product_qemu_resources(pid: u32) -> Result<Option<ProductQemuResources>, Stri
     };
     let mut descriptor_count = 0;
     let mut overlay_backings = BTreeSet::new();
+    let mut read_only_overlay_backings = BTreeSet::new();
     for descriptor in descriptors {
         let Ok(descriptor) = descriptor else {
             return Ok(None);
@@ -306,13 +322,15 @@ fn product_qemu_resources(pid: u32) -> Result<Option<ProductQemuResources>, Stri
         else {
             return Ok(None);
         };
-        if flags & 0o3 == 0 {
-            continue;
-        }
         let Ok(metadata) = fs::metadata(descriptor.path()) else {
             return Ok(None);
         };
-        overlay_backings.insert((metadata.dev(), metadata.ino()));
+        let identity = (metadata.dev(), metadata.ino());
+        if flags & 0o3 == 0 {
+            read_only_overlay_backings.insert(identity);
+        } else {
+            overlay_backings.insert(identity);
+        }
     }
     let Ok(status) = fs::read_to_string(process.join("status")) else {
         return Ok(None);
@@ -335,6 +353,7 @@ fn product_qemu_resources(pid: u32) -> Result<Option<ProductQemuResources>, Stri
         writable_shared_guest_mappings,
         ring_backings,
         overlay_backings,
+        read_only_overlay_backings,
     }))
 }
 
