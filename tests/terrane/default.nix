@@ -220,7 +220,7 @@
             inherit pkgs lib sourceGate structureGate;
             forkPrerequisites = builtins.attrValues nativeForkPrerequisites;
           }
-          // lib.optionalAttrs (builtins.elem file ["algebra.nix" "properties.nix" "cdc.nix" "gc.nix"]) {inherit nativeSdkGate;}
+          // lib.optionalAttrs (builtins.elem file ["algebra.nix" "properties.nix" "cdc.nix" "gc.nix" "index.nix"]) {inherit nativeSdkGate;}
           // lib.optionalAttrs (file == "gc.nix") {inherit localTwoPhaseGc;}
         );
         duplicates = builtins.filter (name: builtins.hasAttr name accumulated) (builtins.attrNames added);
