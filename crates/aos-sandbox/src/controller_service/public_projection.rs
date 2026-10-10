@@ -1,9 +1,9 @@
 //! Authorized native journal queries over canonical public projections.
 //!
-//! Protocol owns the projection DATA and codec reexported here. This owner keeps
-//! bounded native query selection, project authorization, and borrowed Journal
-//! access. A checked projection does not establish observed-success evidence;
-//! authoritative broker receipts and inventory supply that evidence.
+//! Protocol owns projection DATA and codecs; callers import them directly.
+//! This owner keeps bounded native queries, authorized read carriers and
+//! Journal borrows. Observed-success evidence comes from authoritative broker
+//! receipts and inventory.
 
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, SandboxId};
 

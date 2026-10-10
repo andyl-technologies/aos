@@ -1,8 +1,8 @@
-//! Journal validation and public projections shared by controller services.
+//! Native projection queries and dormant public-observation handlers.
 //!
-//! HTTP application assembly lives in the sandbox-services crate; protected
-//! runtime integration remains in the broker-session-security crate,
-//! above both the controller core and the authenticated broker transports.
+//! HTTP assembly lives in sandbox-services. Protected runtime integration
+//! lives in sandbox-controller-runtime; Controller Journal admission and
+//! identity binding belong to [`crate::journal::controller`].
 
 pub mod public_observation;
 pub mod public_projection;

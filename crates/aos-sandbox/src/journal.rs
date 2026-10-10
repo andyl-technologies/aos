@@ -24,6 +24,8 @@
 //! to the journal's native owner or issuing domain authority.
 //! The private `original_currentness` group keeps original native history,
 //! fixed writer loans, signing bookends, and postcommit readbacks together.
+//! The Linux-only `controller` owner retains Controller journal admission,
+//! node identity binding, fixed limits, and the original paid writer construction.
 
 use crate::journal::semantic_append::{AppendScope, PreflightScope};
 
