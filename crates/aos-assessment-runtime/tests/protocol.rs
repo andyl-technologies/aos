@@ -70,6 +70,8 @@ fn installed_credentials_require_exact_partition_provider_version_and_current_au
     };
     assert!(grants.resolve(&changed, &now()?).is_err());
     let mut expired = grants.clone();
+    expired.grants[0].expires_at = Timestamp::from_unix_seconds(now()?.unix_seconds() + 1)?;
+    assert!(expired.resolve(&work, &now()?).is_err());
     expired.grants[0].expires_at = now()?;
     assert!(expired.resolve(&work, &now()?).is_err());
     let bytes = aos_contract::canonical::to_vec(&grants)?;

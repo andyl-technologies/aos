@@ -35,6 +35,16 @@ pub enum AssessmentEventPayload {
         /// Exact resulting revision including the acknowledgement audit.
         alert: Box<AssessmentAlertV1>,
     },
+    /// Reports a revision-bound recurring review without private credentials.
+    #[serde(rename_all = "camelCase")]
+    ScheduleChanged {
+        /// Public identity within the authorized registry.
+        schedule_id: String,
+        /// New review revision.
+        revision: u64,
+        /// Current due-execution setting.
+        enabled: bool,
+    },
     /// Reports admitted results, including results with unknown coverage.
     #[serde(rename_all = "camelCase")]
     ScanCompleted {
@@ -82,6 +92,16 @@ impl AssessmentEventV1 {
                 alert.validate()?;
                 if alert.updated_at > self.occurred_at {
                     bail!("assessment event embeds a future attention revision");
+                }
+            }
+            AssessmentEventPayload::ScheduleChanged {
+                schedule_id,
+                revision,
+                ..
+            } => {
+                text(schedule_id, 128, "assessment schedule identity")?;
+                if *revision == 0 || *revision > 9_007_199_254_740_991 {
+                    bail!("assessment schedule event revision is invalid");
                 }
             }
             AssessmentEventPayload::ScanCompleted { scan_id, .. } => {

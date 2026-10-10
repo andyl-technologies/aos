@@ -48,6 +48,57 @@ pub struct InstalledSourceRoutesV1 {
     pub routes: Vec<InstalledSourceRoute>,
 }
 
+/// Declares one global provider/account allowance shared by all execution modes.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct InstalledSourceBudget {
+    /// Exact quota domain selected only by installed source routes.
+    pub key: String,
+    /// Fixed UTC window length, one to eighty-six thousand seconds.
+    pub window_seconds: u32,
+    /// Conservatively consumed requests per window, at most one million.
+    pub allowance: u32,
+    /// Minimum reservation spacing, at most one hour.
+    pub min_interval_seconds: u32,
+}
+
+/// Validates a complete finite quota declaration for exact installed routes.
+///
+/// # Errors
+/// Returns an error for unbounded, missing, repeated or unused quota domains.
+pub fn validate_source_budgets(
+    routes: &InstalledSourceRoutesV1,
+    budgets: &[InstalledSourceBudget],
+) -> Result<()> {
+    routes.validate()?;
+    if budgets.is_empty()
+        || budgets.len() > 128
+        || budgets.windows(2).any(|pair| pair[0].key >= pair[1].key)
+    {
+        bail!("installed source budgets require sorted unique bounded quota domains");
+    }
+    for budget in budgets {
+        text(&budget.key, 128, "installed source quota domain")?;
+        if !(1..=86400).contains(&budget.window_seconds)
+            || !(1..=1_000_000).contains(&budget.allowance)
+            || budget.min_interval_seconds > 3600
+        {
+            bail!("installed source budget exceeds its effect ceilings");
+        }
+    }
+    let declared: std::collections::BTreeSet<_> =
+        budgets.iter().map(|budget| budget.key.as_str()).collect();
+    let required: std::collections::BTreeSet<_> = routes
+        .routes
+        .iter()
+        .map(|route| route.budget_key.as_str())
+        .collect();
+    if declared != required {
+        bail!("installed source quota domains differ from exact routed accounts");
+    }
+    Ok(())
+}
+
 impl InstalledSourceRoutesV1 {
     /// Decodes the closed deployment route configuration before physical effects.
     ///
@@ -87,7 +138,13 @@ impl InstalledSourceRoutesV1 {
             text(&route.budget_key, 128, "installed source quota domain")?;
             if !matches!(
                 route.provider.as_str(),
-                "github-tags" | "github-releases" | "go-proxy" | "repology" | "osv" | "nvd" | "kev"
+                "github-tags"
+                    | "github-releases"
+                    | "go-releases"
+                    | "repology"
+                    | "osv"
+                    | "nvd"
+                    | "cisa-kev"
             ) {
                 bail!("installed assessment route names an unsupported source");
             }
@@ -100,25 +157,13 @@ impl InstalledSourceRoutesV1 {
         Ok(())
     }
 
-    /// Resolves exact current source scope and prevents partition-local quota forks.
-    ///
-    /// Each credential binding/provider pair uses the same quota domain across
-    /// partitions. Anonymous source profiles likewise share a global quota key.
-    /// The executor independently rechecks credential custody before dispatch.
+    /// Validates exact credential bindings and shared quota domains before installation.
     ///
     /// # Errors
-    /// Returns an error for absent/expired routes, unsupported operations,
-    /// revoked credential scope or inconsistent installed global quota domains.
-    pub fn resolve<'a>(
-        &'a self,
-        partition: &str,
-        operation: &ProviderOperation,
-        credentials: &SourceCredentialSetV1,
-        now: &Timestamp,
-    ) -> Result<&'a InstalledSourceRoute> {
+    /// Returns an error for missing grants or quota forks across partitions.
+    pub fn validate_credentials(&self, credentials: &SourceCredentialSetV1) -> Result<()> {
         self.validate()?;
         credentials.validate()?;
-        operation.validate()?;
         let mut budgets = BTreeMap::new();
         for route in &self.routes {
             let account = if let Some(reference) = &route.credential_ref {
@@ -145,6 +190,27 @@ impl InstalledSourceRoutesV1 {
                 bail!("installed source quota differs across authorization partitions");
             }
         }
+        Ok(())
+    }
+
+    /// Resolves exact current source scope and prevents partition-local quota forks.
+    ///
+    /// Each credential binding/provider pair uses the same quota domain across
+    /// partitions. Anonymous source profiles likewise share a global quota key.
+    /// The executor independently rechecks credential custody before dispatch.
+    ///
+    /// # Errors
+    /// Returns an error for absent/expired routes, unsupported operations,
+    /// revoked credential scope or inconsistent installed global quota domains.
+    pub fn resolve<'a>(
+        &'a self,
+        partition: &str,
+        operation: &ProviderOperation,
+        credentials: &SourceCredentialSetV1,
+        now: &Timestamp,
+    ) -> Result<&'a InstalledSourceRoute> {
+        self.validate_credentials(credentials)?;
+        operation.validate()?;
         let route = self
             .routes
             .iter()

@@ -87,6 +87,9 @@ impl IssueObservation {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Acknowledgement {
+    /// Optional actor-scoped retry identity retained with the exact episode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
     /// Original stable issue key, retained through lineage changes.
     pub issue_key: Sha256Digest,
     /// Exact episode acknowledged; later reopenings are independent.
@@ -161,6 +164,9 @@ impl AssessmentAlertV1 {
         sorted(&self.acknowledgements, "alert acknowledgement history")?;
         sorted(&self.lineage_keys, "alert lineage keys")?;
         for acknowledgement in &self.acknowledgements {
+            if let Some(key) = &acknowledgement.idempotency_key {
+                text(key, 128, "acknowledgement retry key")?;
+            }
             if acknowledgement.episode == 0 || acknowledgement.acknowledged_at > self.updated_at {
                 bail!("alert acknowledgement has invalid historical scope");
             }

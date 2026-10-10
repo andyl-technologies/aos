@@ -227,6 +227,9 @@ impl AssessmentStatusV1 {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ScanReceiptV1 {
+    /// Optional stable terminal diagnostic without raw exception or source detail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<String>,
     /// Exact receipt discriminator.
     pub schema: String,
     /// Unpredictable durable operation identity.
@@ -276,6 +279,18 @@ impl ScanReceiptV1 {
     fn validate(&self) -> Result<()> {
         self.usage
             .consume(&ScanUsage::default(), &self.request.limits)?;
+        if let Some(code) = &self.failure_code
+            && (!matches!(
+                self.state,
+                ScanState::Failed | ScanState::Superseded | ScanState::Cancelled
+            ) || code.is_empty()
+                || code.len() > 128
+                || !code
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'))
+        {
+            bail!("assessment receipt has an invalid terminal diagnostic");
+        }
         if self.schema != "aos.assessment-scan-receipt/v1"
             || self.request.digest()? != self.request_digest
             || self.generation == 0

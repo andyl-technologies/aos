@@ -9,6 +9,67 @@ use aos_assessment_runtime::provider::{ProviderLimits, ProviderOperation};
 use aos_assessment_runtime::routes::{InstalledSourceRoute, InstalledSourceRoutesV1};
 
 #[test]
+fn go_and_known_exploitation_routes_use_the_shared_operation_provider_names() -> Result<()> {
+    let now = Timestamp::parse("2026-10-09T00:00:00Z")?;
+    let credentials = SourceCredentialSetV1 {
+        schema: "aos.assessment-source-credentials/v1".into(),
+        grants: vec![],
+    };
+    let operations = [
+        ProviderOperation::ObserveGoReleases,
+        ProviderOperation::RefreshKev { offset: 0 },
+    ];
+    let mut routes = InstalledSourceRoutesV1 {
+        schema: "aos.assessment-source-routes/v1".into(),
+        deployment_id: "deployment".into(),
+        coordinator_id: "coordinator".into(),
+        executor_id: "executor".into(),
+        routes: operations
+            .iter()
+            .map(|operation| InstalledSourceRoute {
+                partition: "partition".into(),
+                provider: operation.provider().into(),
+                budget_key: format!("global-{}", operation.provider()),
+                credential_ref: None,
+                expires_at: Timestamp::parse("2026-10-09T00:01:00Z").unwrap(),
+                limits: ProviderLimits::default(),
+            })
+            .collect(),
+    };
+    routes
+        .routes
+        .sort_by(|left, right| left.provider.cmp(&right.provider));
+    for operation in operations {
+        assert_eq!(
+            routes
+                .resolve("partition", &operation, &credentials, &now)?
+                .provider,
+            operation.provider()
+        );
+    }
+    use aos_assessment_runtime::routes::{InstalledSourceBudget, validate_source_budgets};
+    let budgets: Vec<_> = routes
+        .routes
+        .iter()
+        .map(|route| InstalledSourceBudget {
+            key: route.budget_key.clone(),
+            window_seconds: 3600,
+            allowance: 100,
+            min_interval_seconds: 0,
+        })
+        .collect();
+    validate_source_budgets(&routes, &budgets)?;
+    assert!(validate_source_budgets(&routes, &budgets[..1]).is_err());
+    let mut invalid = budgets.clone();
+    invalid[0].allowance = 0;
+    assert!(validate_source_budgets(&routes, &invalid).is_err());
+    invalid = budgets.clone();
+    invalid[0].key = "arbitrary-quota-fork".into();
+    assert!(validate_source_budgets(&routes, &invalid).is_err());
+    Ok(())
+}
+
+#[test]
 fn source_routes_share_account_quota_and_refuse_fallback_or_expired_project_authority() -> Result<()>
 {
     let now = Timestamp::parse("2026-10-09T00:00:00Z")?;

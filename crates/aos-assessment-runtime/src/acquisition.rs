@@ -806,9 +806,12 @@ async fn install_upstream<E: EvidenceStore>(
     }
     source_refs.sort();
     source_refs.dedup();
-    let bundle = aos_contract::canonical::to_vec(&serde_json::json!({
-        "schema": "aos.source-chain-custody/v1", "operation": chain.initial, "sources": source_refs,
-    }))?;
+    let bundle = aos_contract::canonical::to_vec(&crate::source_chain::SourceChainCustodyV1 {
+        schema: "aos.source-chain-custody/v1".into(),
+        operation: chain.initial.clone(),
+        sources: source_refs.clone(),
+    })?;
+    crate::source_chain::SourceChainCustodyV1::from_slice(&bundle)?;
     let digest = evidence.retain(partition, &bundle).await?;
     if digest != Sha256Digest::of_bytes(&bundle) {
         bail!("upstream chain custody returned a different retained identity");

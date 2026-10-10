@@ -92,6 +92,7 @@ fn exact_complete_resolution_then_reopening_creates_a_new_unacknowledged_episode
     let acknowledged = previous.acknowledge(
         previous.sequence,
         Acknowledgement {
+            idempotency_key: None,
             issue_key: previous.issue_key,
             episode: 1,
             actor_ref: "authorized-reviewer".into(),
@@ -119,6 +120,7 @@ fn exact_complete_resolution_then_reopening_creates_a_new_unacknowledged_episode
             .acknowledge(
                 reopened.alert.sequence,
                 Acknowledgement {
+                    idempotency_key: None,
                     issue_key: reopened.alert.issue_key,
                     episode: 1,
                     actor_ref: "reviewer".into(),
@@ -140,6 +142,7 @@ fn aliases_merge_into_one_open_issue_without_losing_acknowledgement_history() ->
         *alert = alert.acknowledge(
             alert.sequence,
             Acknowledgement {
+                idempotency_key: None,
                 issue_key: alert.issue_key,
                 episode: alert.episode,
                 actor_ref: "reviewer".into(),
@@ -174,6 +177,7 @@ fn alias_split_retains_parent_lineage_and_does_not_extend_old_acknowledgements()
     let parent = parent.acknowledge(
         parent.sequence,
         Acknowledgement {
+            idempotency_key: None,
             issue_key: parent.issue_key,
             episode: 1,
             actor_ref: "reviewer".into(),
@@ -230,6 +234,7 @@ fn source_identity_removal_cannot_resolve_old_artifact_and_stale_acknowledgement
             .acknowledge(
                 previous.sequence + 1,
                 Acknowledgement {
+                    idempotency_key: None,
                     issue_key: previous.issue_key,
                     episode: 1,
                     actor_ref: "reviewer".into(),

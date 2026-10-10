@@ -167,12 +167,16 @@ impl SourceCredentialSetV1 {
             .credential_ref
             .as_ref()
             .context("source credential reference is absent")?;
-        self.resolve_operation(
+        let grant = self.resolve_operation(
             reference,
             &plan.authorization_partition,
             &plan.operation,
             now,
-        )
+        )?;
+        if plan.expires_at > grant.expires_at {
+            bail!("physical source work outlives its installed credential grant");
+        }
+        Ok(grant)
     }
 
     /// Checks installed project authority before a coordinator issues physical work.
