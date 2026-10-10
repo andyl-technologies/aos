@@ -20,6 +20,7 @@
 
 use std::collections::BTreeMap;
 
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::{NodeId, ObjectDigest, OperationId};
 use sha2::{Digest as _, Sha256};
 
@@ -41,8 +42,8 @@ use crate::local_inventory::reducer_state::{
 
 use super::{
     AuthenticatedEvidenceContextV1, InvalidMultiNodeJournal, MAXIMUM_PROTECTED_STORE_HISTORY_BYTES,
-    ProtectedMultiNodeAuthorityOwnerV1, ProtectedStoreCommitGrantV1, ProtectedStoreHistoryDecoderV1,
-    ProtectedStoreHistoryEntryV1, ProtectedStoreObjectKindV1,
+    ProtectedMultiNodeAuthorityOwnerV1, ProtectedStoreCommitGrantV1, ProtectedStoreHistoryEntryV1,
+    ProtectedStoreObjectKindV1,
 };
 
 const PROTECTED_STORE_HISTORY_MAGIC: &[u8; 8] = b"AOSMPS01";
@@ -190,18 +191,20 @@ pub(super) fn decode_protected_store_history(
     if retained_digest != expected_digest {
         return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
     }
-    let mut decoder = ProtectedStoreHistoryDecoderV1::new(payload)?;
-    if decoder.read_exact(8)? != PROTECTED_STORE_HISTORY_MAGIC
-        || decoder.read_u16()? != 1
-        || decoder.read_exact(6)? != [0; 6]
-        || ObjectDigest::from_bytes(decoder.read_array()?) != expected_storage_domain_digest
-        || ObjectDigest::from_bytes(decoder.read_array()?) != expected_replay_fence
-        || decoder.read_u64()? != expected_base_generation
-        || ObjectDigest::from_bytes(decoder.read_array()?) != expected_base_root_digest
+    let mut decoder = BoundedReader::new(payload, |_| {
+        InvalidMultiNodeJournal::ProtectedStoreMismatch
+    });
+    if decoder.bytes(8)? != PROTECTED_STORE_HISTORY_MAGIC
+        || decoder.u16()? != 1
+        || decoder.bytes(6)? != [0; 6]
+        || ObjectDigest::from_bytes(decoder.array()?) != expected_storage_domain_digest
+        || ObjectDigest::from_bytes(decoder.array()?) != expected_replay_fence
+        || decoder.u64()? != expected_base_generation
+        || ObjectDigest::from_bytes(decoder.array()?) != expected_base_root_digest
     {
         return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
     }
-    let count = usize::try_from(decoder.read_u32()?)
+    let count = usize::try_from(decoder.u32()?)
         .map_err(|_| InvalidMultiNodeJournal::ProtectedStoreMismatch)?;
     if count > super::super::journal::MAX_MULTI_NODE_JOURNAL_REPLAY_RECORDS {
         return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
@@ -210,7 +213,7 @@ pub(super) fn decode_protected_store_history(
     let mut predecessor_generation = expected_base_generation;
     let mut predecessor_root = expected_base_root_digest;
     for _ in 0..count {
-        let domain = match decoder.read_u8()? {
+        let domain = match decoder.u8()? {
             0 => super::super::journal::MultiNodeJournalDomainV1::Capability,
             1 => super::super::journal::MultiNodeJournalDomainV1::Assignment,
             2 => super::super::journal::MultiNodeJournalDomainV1::Drain,
@@ -218,44 +221,44 @@ pub(super) fn decode_protected_store_history(
             4 => super::super::journal::MultiNodeJournalDomainV1::Watch,
             _ => return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch),
         };
-        let kind = match decoder.read_u8()? {
+        let kind = match decoder.u8()? {
             1 => ProtectedStoreObjectKindV1::Record,
             2 => ProtectedStoreObjectKindV1::Checkpoint,
             _ => return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch),
         };
-        let operation_present = decoder.read_u8()?;
-        let operation_bytes = decoder.read_array()?;
+        let operation_present = decoder.u8()?;
+        let operation_bytes = decoder.array()?;
         let operation = match operation_present {
             0 if operation_bytes == [0; 16] => None,
             1 if operation_bytes != [0; 16] => Some(OperationId::from_bytes(operation_bytes)),
             _ => return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch),
         };
-        if decoder.read_u8()? != 0 {
+        if decoder.u8()? != 0 {
             return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
         }
-        let canonical_length = usize::try_from(decoder.read_u32()?)
+        let canonical_length = usize::try_from(decoder.u32()?)
             .map_err(|_| InvalidMultiNodeJournal::ProtectedStoreMismatch)?;
         if canonical_length == 0
             || canonical_length > super::super::journal::MAX_MULTI_NODE_JOURNAL_PAYLOAD_BYTES
         {
             return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
         }
-        let canonical_bytes = decoder.read_exact(canonical_length)?.to_vec();
-        let canonical_bytes_digest = ObjectDigest::from_bytes(decoder.read_array()?);
-        let binding_present = decoder.read_u8()?;
-        let binding_bytes = decoder.read_array()?;
+        let canonical_bytes = decoder.bytes(canonical_length)?.to_vec();
+        let canonical_bytes_digest = ObjectDigest::from_bytes(decoder.array()?);
+        let binding_present = decoder.u8()?;
+        let binding_bytes = decoder.array()?;
         let authority_binding_digest = match binding_present {
             0 if binding_bytes == [0; 32] => None,
             1 if binding_bytes != [0; 32] => Some(ObjectDigest::from_bytes(binding_bytes)),
             _ => return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch),
         };
-        let durability_generation = decoder.read_u64()?;
-        let predecessor_root_digest = ObjectDigest::from_bytes(decoder.read_array()?);
-        let protected_root_digest = ObjectDigest::from_bytes(decoder.read_array()?);
-        let transaction_digest = ObjectDigest::from_bytes(decoder.read_array()?);
-        let opaque_receipt_commitment = ObjectDigest::from_bytes(decoder.read_array()?);
-        let context_digest = ObjectDigest::from_bytes(decoder.read_array()?);
-        let verified_at_unix_seconds = decoder.read_u64()?;
+        let durability_generation = decoder.u64()?;
+        let predecessor_root_digest = ObjectDigest::from_bytes(decoder.array()?);
+        let protected_root_digest = ObjectDigest::from_bytes(decoder.array()?);
+        let transaction_digest = ObjectDigest::from_bytes(decoder.array()?);
+        let opaque_receipt_commitment = ObjectDigest::from_bytes(decoder.array()?);
+        let context_digest = ObjectDigest::from_bytes(decoder.array()?);
+        let verified_at_unix_seconds = decoder.u64()?;
         if ObjectDigest::from_bytes(Sha256::digest(&canonical_bytes).into())
             != canonical_bytes_digest
             || predecessor_generation.checked_add(1) != Some(durability_generation)
@@ -319,7 +322,7 @@ pub(super) fn decode_protected_store_history(
         predecessor_generation = durability_generation;
         predecessor_root = protected_root_digest;
     }
-    if !decoder.is_finished() {
+    if !decoder.is_empty() {
         return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
     }
     if encode_protected_store_history(

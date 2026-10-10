@@ -33,7 +33,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest as _, Sha256};
 
-use aos_sandbox_core::{NodeId, ObjectDigest, OperationId};
+use aos_sandbox_core::{NodeId, ObjectDigest, OperationId, bounded_codec::BoundedReader};
 
 use crate::journal::{
     Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
@@ -53,7 +53,7 @@ use super::journal::{
 };
 use super::protected_artifact_store::ProtectedArtifactStoreV1;
 use super::protocol::{
-    BoundedFrameDecoderV1, CanonicalNodeFrameV1, CanonicalNodeSemanticCodecV1, InvalidMultiNodeProtocol,
+    CanonicalNodeFrameV1, CanonicalNodeSemanticCodecV1, InvalidMultiNodeProtocol,
 };
 use super::reducer_state::{
     CapabilityJournalStateV1, DurableEvidenceBindingV1, MultiNodeReducerStateV1,
@@ -1717,83 +1717,29 @@ impl<'a> ProtectedStoreAuthoritySessionV1<'a> {
     }
 }
 
-// The cursor adapter is shared by retained history, bootstrap and clock-floor DATA.
-struct ProtectedStoreHistoryDecoderV1<'a> {
-    decoder: BoundedFrameDecoderV1<'a>,
-}
-
-impl<'a> ProtectedStoreHistoryDecoderV1<'a> {
-    fn new(bytes: &'a [u8]) -> Result<Self, InvalidMultiNodeJournal> {
-        let decoder = BoundedFrameDecoderV1::new(bytes, MAXIMUM_PROTECTED_STORE_HISTORY_BYTES)
-            .map_err(|_| InvalidMultiNodeJournal::ProtectedStoreMismatch)?;
-        Ok(Self { decoder })
-    }
-
-    fn read_exact(&mut self, length: usize) -> Result<&'a [u8], InvalidMultiNodeJournal> {
-        self.decoder
-            .read_exact(length)
-            .map_err(|_| InvalidMultiNodeJournal::ProtectedStoreMismatch)
-    }
-
-    fn read_array<const N: usize>(&mut self) -> Result<[u8; N], InvalidMultiNodeJournal> {
-        self.decoder
-            .read_array()
-            .map_err(|_| InvalidMultiNodeJournal::ProtectedStoreMismatch)
-    }
-
-    fn read_u8(&mut self) -> Result<u8, InvalidMultiNodeJournal> {
-        self.decoder
-            .read_u8()
-            .map_err(|_| InvalidMultiNodeJournal::ProtectedStoreMismatch)
-    }
-
-    fn read_u16(&mut self) -> Result<u16, InvalidMultiNodeJournal> {
-        self.decoder
-            .read_u16()
-            .map_err(|_| InvalidMultiNodeJournal::ProtectedStoreMismatch)
-    }
-
-    fn read_u32(&mut self) -> Result<u32, InvalidMultiNodeJournal> {
-        self.decoder
-            .read_u32()
-            .map_err(|_| InvalidMultiNodeJournal::ProtectedStoreMismatch)
-    }
-
-    fn read_u64(&mut self) -> Result<u64, InvalidMultiNodeJournal> {
-        self.decoder
-            .read_u64()
-            .map_err(|_| InvalidMultiNodeJournal::ProtectedStoreMismatch)
-    }
-
-    fn is_finished(&self) -> bool {
-        self.decoder.is_finished()
-    }
-
-    fn position(&self) -> usize {
-        self.decoder.position()
-    }
-}
-
 #[cfg(test)]
 mod protected_store_history_decoder_tests {
-    use super::{InvalidMultiNodeJournal, ProtectedStoreHistoryDecoderV1};
+    use super::{BoundedReader, InvalidMultiNodeJournal};
 
     #[test]
     fn truncated_and_overflowing_fields_preserve_cursor_and_store_error() {
-        let mut decoder = ProtectedStoreHistoryDecoderV1::new(&[7, 8]).unwrap();
+        let bytes = [7, 8];
+        let mut decoder = BoundedReader::new(&bytes, |_| {
+            InvalidMultiNodeJournal::ProtectedStoreMismatch
+        });
 
         assert_eq!(
-            decoder.read_array::<4>(),
+            decoder.array::<4>(),
             Err(InvalidMultiNodeJournal::ProtectedStoreMismatch)
         );
-        assert_eq!(decoder.read_u8(), Ok(7));
+        assert_eq!(decoder.u8(), Ok(7));
         assert_eq!(
-            decoder.read_exact(usize::MAX),
+            decoder.bytes(usize::MAX),
             Err(InvalidMultiNodeJournal::ProtectedStoreMismatch)
         );
-        assert_eq!(decoder.read_u8(), Ok(8));
-        assert!(decoder.is_finished());
-        assert_eq!(decoder.position(), 2);
+        assert_eq!(decoder.u8(), Ok(8));
+        assert!(decoder.is_empty());
+        assert_eq!(bytes.len() - decoder.remaining(), bytes.len());
     }
 }
 
@@ -2168,18 +2114,20 @@ fn decode_protected_multi_node_clock_floor(
     if checksum != expected_checksum {
         return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
     }
-    let mut decoder = ProtectedStoreHistoryDecoderV1::new(payload)?;
-    if decoder.read_exact(8)? != PROTECTED_MULTI_NODE_CLOCK_MAGIC {
+    let mut decoder = BoundedReader::new(payload, |_| {
+        InvalidMultiNodeJournal::ProtectedStoreMismatch
+    });
+    if decoder.bytes(8)? != PROTECTED_MULTI_NODE_CLOCK_MAGIC {
         return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
     }
     let floor = ProtectedMultiNodeClockFloorV1 {
-        config_digest: ObjectDigest::from_bytes(decoder.read_array()?),
-        coordinator_epoch: decoder.read_u64()?,
-        replay_fence: ObjectDigest::from_bytes(decoder.read_array()?),
-        observed_unix_seconds: decoder.read_u64()?,
-        predecessor_unix_seconds: decoder.read_u64()?,
+        config_digest: ObjectDigest::from_bytes(decoder.array()?),
+        coordinator_epoch: decoder.u64()?,
+        replay_fence: ObjectDigest::from_bytes(decoder.array()?),
+        observed_unix_seconds: decoder.u64()?,
+        predecessor_unix_seconds: decoder.u64()?,
     };
-    if !decoder.is_finished()
+    if !decoder.is_empty()
         || floor.config_digest.as_bytes() == &[0; 32]
         || floor.coordinator_epoch == 0
         || floor.replay_fence.as_bytes() == &[0; 32]
@@ -2229,17 +2177,19 @@ fn decode_protected_multi_node_bootstrap(
         return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
     }
 
-    let mut decoder = ProtectedStoreHistoryDecoderV1::new(payload)?;
-    if decoder.read_exact(8)? != b"AOSMBC01" {
+    let mut decoder = BoundedReader::new(payload, |_| {
+        InvalidMultiNodeJournal::ProtectedStoreMismatch
+    });
+    if decoder.bytes(8)? != b"AOSMBC01" {
         return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
     }
-    let node = NodeId::from_bytes(decoder.read_array()?);
-    let boot = NodeBootId::new(decoder.read_array()?)
+    let node = NodeId::from_bytes(decoder.array()?);
+    let boot = NodeBootId::new(decoder.array()?)
         .map_err(|_| InvalidMultiNodeJournal::ProtectedStoreMismatch)?;
-    let generation = decoder.read_u64()?;
-    let predecessor_present = decoder.read_u8()?;
-    let predecessor_boot_bytes = decoder.read_array()?;
-    let predecessor_digest_bytes = decoder.read_array()?;
+    let generation = decoder.u64()?;
+    let predecessor_present = decoder.u8()?;
+    let predecessor_boot_bytes = decoder.array()?;
+    let predecessor_digest_bytes = decoder.array()?;
     let (predecessor_boot, predecessor_digest) = match predecessor_present {
         0 if predecessor_boot_bytes == [0; 16] && predecessor_digest_bytes == [0; 32] => {
             (None, None)
@@ -2258,39 +2208,39 @@ fn decode_protected_multi_node_bootstrap(
         generation,
         predecessor_boot,
         predecessor_digest,
-        ObjectDigest::from_bytes(decoder.read_array()?),
+        ObjectDigest::from_bytes(decoder.array()?),
     )
     .map_err(|_| InvalidMultiNodeJournal::ProtectedStoreMismatch)?;
-    let authenticated_channel_binding = decoder.read_array()?;
-    let canonical_frame_length = usize::try_from(decoder.read_u32()?)
+    let authenticated_channel_binding = decoder.array()?;
+    let canonical_frame_length = usize::try_from(decoder.u32()?)
         .map_err(|_| InvalidMultiNodeJournal::ProtectedStoreMismatch)?;
     if canonical_frame_length == 0
         || canonical_frame_length > super::protocol::MAX_NODE_RESPONSE_BYTES as usize
     {
         return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
     }
-    let canonical_frame = decoder.read_exact(canonical_frame_length)?.to_vec();
-    let coordinator_epoch = decoder.read_u64()?;
-    let authenticated_at_unix_seconds = decoder.read_u64()?;
-    let valid_until_unix_seconds = decoder.read_u64()?;
-    let maximum_request_bytes = decoder.read_u32()?;
-    let maximum_response_bytes = decoder.read_u32()?;
-    let replay_fence = ObjectDigest::from_bytes(decoder.read_array()?);
-    let signed_payload = payload[..decoder.position()].to_vec();
-    let trust_policy_length = usize::try_from(decoder.read_u32()?)
+    let canonical_frame = decoder.bytes(canonical_frame_length)?.to_vec();
+    let coordinator_epoch = decoder.u64()?;
+    let authenticated_at_unix_seconds = decoder.u64()?;
+    let valid_until_unix_seconds = decoder.u64()?;
+    let maximum_request_bytes = decoder.u32()?;
+    let maximum_response_bytes = decoder.u32()?;
+    let replay_fence = ObjectDigest::from_bytes(decoder.array()?);
+    let signed_payload = payload[..payload.len() - decoder.remaining()].to_vec();
+    let trust_policy_length = usize::try_from(decoder.u32()?)
         .map_err(|_| InvalidMultiNodeJournal::ProtectedStoreMismatch)?;
     if trust_policy_length == 0 || trust_policy_length > 64 * 1024 {
         return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
     }
-    let canonical_trust_policy = decoder.read_exact(trust_policy_length)?.to_vec();
-    let public_key = decoder.read_array()?;
-    let signature_length = usize::try_from(decoder.read_u32()?)
+    let canonical_trust_policy = decoder.bytes(trust_policy_length)?.to_vec();
+    let public_key = decoder.array()?;
+    let signature_length = usize::try_from(decoder.u32()?)
         .map_err(|_| InvalidMultiNodeJournal::ProtectedStoreMismatch)?;
     if signature_length == 0 || signature_length > 64 * 1024 {
         return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
     }
-    let canonical_signature = decoder.read_exact(signature_length)?.to_vec();
-    if !decoder.is_finished()
+    let canonical_signature = decoder.bytes(signature_length)?.to_vec();
+    if !decoder.is_empty()
         || node.as_bytes() == &[0; 16]
         || coordinator_epoch == 0
         || valid_until_unix_seconds <= authenticated_at_unix_seconds

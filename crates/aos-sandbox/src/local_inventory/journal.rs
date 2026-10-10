@@ -26,10 +26,9 @@ use std::sync::Arc;
 
 use sha2::{Digest as _, Sha256};
 
-use aos_sandbox_core::{ObjectDigest, OperationId};
+use aos_sandbox_core::{ObjectDigest, OperationId, bounded_codec::BoundedReader};
 
 use super::evidence::AuthenticatedEvidenceContextV1;
-use super::protocol::BoundedFrameDecoderV1;
 use super::reducer_state::{MultiNodeReducerStateV1, decode_state, encode_state};
 use super::store_authority::{
     ProtectedStoreCommitGrantV1, ProtectedStoreObjectKindV1, ProtectedStoreRestoreGrantV1,
@@ -292,18 +291,20 @@ impl CanonicalJournalPayloadV1 {
         {
             return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
         }
-        let mut decoder = JournalPayloadDecoderV1::new(bytes)?;
-        decoder.expect_magic(b"AOSJDOM1")?;
-        let domain = decode_domain(decoder.read_u8()?)?;
-        let length = usize::try_from(decoder.read_u32()?)
+        let mut decoder = BoundedReader::new(bytes, |_| {
+            InvalidMultiNodeJournal::NonCanonicalPayload
+        });
+        expect_journal_magic(&mut decoder, b"AOSJDOM1")?;
+        let domain = decode_domain(decoder.u8()?)?;
+        let length = usize::try_from(decoder.u32()?)
             .map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)?;
         if length > domain_state_budget(domain) {
             return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
         }
-        let canonical_state = decoder.read_exact(length)?;
+        let canonical_state = decoder.bytes(length)?;
         let state = decode_state(domain, canonical_state)?;
         let payload = Self::new(state)?;
-        let digest = ObjectDigest::from_bytes(decoder.read_array()?);
+        let digest = ObjectDigest::from_bytes(decoder.array()?);
         decoder.finish()?;
         if digest != payload.digest() || payload.encode_canonical().as_slice() != bytes {
             return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
@@ -537,17 +538,19 @@ impl MultiNodeJournalRecordV1 {
         if bytes.len() < 215 || bytes.len() > MAX_MULTI_NODE_JOURNAL_PAYLOAD_BYTES {
             return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
         }
-        let mut decoder = JournalPayloadDecoderV1::new(bytes)?;
-        decoder.expect_magic(b"AOSJREC1")?;
-        let domain = decode_domain(decoder.read_u8()?)?;
-        let operation = OperationId::from_bytes(decoder.read_array()?);
-        let sequence = decoder.read_u64()?;
-        let predecessor_digest = ObjectDigest::from_bytes(decoder.read_array()?);
-        let payload_digest = ObjectDigest::from_bytes(decoder.read_array()?);
-        let state_payload = decoder.read_domain_payload(domain)?;
-        let effect_state = decode_effect_state(decoder.read_u8()?)?;
-        let effect_digest = ObjectDigest::from_bytes(decoder.read_array()?);
-        let encoded_digest = ObjectDigest::from_bytes(decoder.read_array()?);
+        let mut decoder = BoundedReader::new(bytes, |_| {
+            InvalidMultiNodeJournal::NonCanonicalPayload
+        });
+        expect_journal_magic(&mut decoder, b"AOSJREC1")?;
+        let domain = decode_domain(decoder.u8()?)?;
+        let operation = OperationId::from_bytes(decoder.array()?);
+        let sequence = decoder.u64()?;
+        let predecessor_digest = ObjectDigest::from_bytes(decoder.array()?);
+        let payload_digest = ObjectDigest::from_bytes(decoder.array()?);
+        let state_payload = read_journal_domain_payload(&mut decoder, domain)?;
+        let effect_state = decode_effect_state(decoder.u8()?)?;
+        let effect_digest = ObjectDigest::from_bytes(decoder.array()?);
+        let encoded_digest = ObjectDigest::from_bytes(decoder.array()?);
         decoder.finish()?;
         let record = Self::new(
             domain,
@@ -750,20 +753,22 @@ impl MultiNodeJournalCheckpointV1 {
         if bytes.len() < 227 || bytes.len() > MAX_MULTI_NODE_JOURNAL_PAYLOAD_BYTES {
             return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
         }
-        let mut decoder = JournalPayloadDecoderV1::new(bytes)?;
-        decoder.expect_magic(b"AOSJCHK1")?;
-        let domain = decode_domain(decoder.read_u8()?)?;
-        let floor_sequence = decoder.read_u64()?;
-        let floor_record_digest = ObjectDigest::from_bytes(decoder.read_array()?);
-        let reduced_state = decoder.read_domain_payload(domain)?;
+        let mut decoder = BoundedReader::new(bytes, |_| {
+            InvalidMultiNodeJournal::NonCanonicalPayload
+        });
+        expect_journal_magic(&mut decoder, b"AOSJCHK1")?;
+        let domain = decode_domain(decoder.u8()?)?;
+        let floor_sequence = decoder.u64()?;
+        let floor_record_digest = ObjectDigest::from_bytes(decoder.array()?);
+        let reduced_state = read_journal_domain_payload(&mut decoder, domain)?;
         let floor_effect = DurableJournalEffectV1 {
-            operation: OperationId::from_bytes(decoder.read_array()?),
-            payload_digest: ObjectDigest::from_bytes(decoder.read_array()?),
-            state: decode_effect_state(decoder.read_u8()?)?,
-            effect_digest: ObjectDigest::from_bytes(decoder.read_array()?),
+            operation: OperationId::from_bytes(decoder.array()?),
+            payload_digest: ObjectDigest::from_bytes(decoder.array()?),
+            state: decode_effect_state(decoder.u8()?)?,
+            effect_digest: ObjectDigest::from_bytes(decoder.array()?),
         };
-        let compaction_generation = decoder.read_u64()?;
-        let digest = ObjectDigest::from_bytes(decoder.read_array()?);
+        let compaction_generation = decoder.u64()?;
+        let digest = ObjectDigest::from_bytes(decoder.array()?);
         decoder.finish()?;
         if floor_sequence == 0
             || floor_record_digest.as_bytes() == &[0; 32]
@@ -1359,14 +1364,16 @@ impl PartialEffectRecoveryV1 {
         if bytes.len() != 153 || bytes.len() > MAX_MULTI_NODE_JOURNAL_PAYLOAD_BYTES {
             return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
         }
-        let mut decoder = JournalPayloadDecoderV1::new(bytes)?;
-        decoder.expect_magic(b"AOSJSTA1")?;
-        let operation = OperationId::from_bytes(decoder.read_array()?);
-        let tuple_digest = ObjectDigest::from_bytes(decoder.read_array()?);
-        let state = decode_effect_state(decoder.read_u8()?)?;
-        let effect_digest = ObjectDigest::from_bytes(decoder.read_array()?);
-        let protected_receipt_commitment = ObjectDigest::from_bytes(decoder.read_array()?);
-        let encoded_digest = ObjectDigest::from_bytes(decoder.read_array()?);
+        let mut decoder = BoundedReader::new(bytes, |_| {
+            InvalidMultiNodeJournal::NonCanonicalPayload
+        });
+        expect_journal_magic(&mut decoder, b"AOSJSTA1")?;
+        let operation = OperationId::from_bytes(decoder.array()?);
+        let tuple_digest = ObjectDigest::from_bytes(decoder.array()?);
+        let state = decode_effect_state(decoder.u8()?)?;
+        let effect_digest = ObjectDigest::from_bytes(decoder.array()?);
+        let protected_receipt_commitment = ObjectDigest::from_bytes(decoder.array()?);
+        let encoded_digest = ObjectDigest::from_bytes(decoder.array()?);
         decoder.finish()?;
         if operation.as_bytes() == &[0; 16]
             || tuple_digest.as_bytes() == &[0; 32]
@@ -1431,91 +1438,48 @@ fn decode_effect_state(byte: u8) -> Result<JournalEffectStateV1, InvalidMultiNod
     }
 }
 
-struct JournalPayloadDecoderV1<'a> {
-    decoder: BoundedFrameDecoderV1<'a>,
+fn expect_journal_magic(
+    reader: &mut BoundedReader<'_, InvalidMultiNodeJournal>,
+    magic: &[u8; 8],
+) -> Result<(), InvalidMultiNodeJournal> {
+    if reader.bytes(8)? != magic {
+        return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
+    }
+    Ok(())
 }
 
-impl<'a> JournalPayloadDecoderV1<'a> {
-    fn new(bytes: &'a [u8]) -> Result<Self, InvalidMultiNodeJournal> {
-        let decoder = BoundedFrameDecoderV1::new(bytes, MAX_MULTI_NODE_JOURNAL_PAYLOAD_BYTES)
-            .map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)?;
-        Ok(Self { decoder })
+fn read_journal_domain_payload(
+    reader: &mut BoundedReader<'_, InvalidMultiNodeJournal>,
+    domain: MultiNodeJournalDomainV1,
+) -> Result<CanonicalJournalPayloadV1, InvalidMultiNodeJournal> {
+    let length =
+        usize::try_from(reader.u32()?).map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)?;
+    if length > MAX_MULTI_NODE_DOMAIN_STATE_BYTES + CANONICAL_DOMAIN_ENVELOPE_BYTES {
+        return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
     }
 
-    fn expect_magic(&mut self, magic: &[u8; 8]) -> Result<(), InvalidMultiNodeJournal> {
-        if self.read_exact(8)? != magic {
-            return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
-        }
-        Ok(())
+    let payload = CanonicalJournalPayloadV1::decode_canonical(reader.bytes(length)?)?;
+    if payload.domain() != domain {
+        return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
     }
-
-    fn read_u8(&mut self) -> Result<u8, InvalidMultiNodeJournal> {
-        self.decoder
-            .read_u8()
-            .map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)
-    }
-
-    fn read_u32(&mut self) -> Result<u32, InvalidMultiNodeJournal> {
-        self.decoder
-            .read_u32()
-            .map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)
-    }
-
-    fn read_u64(&mut self) -> Result<u64, InvalidMultiNodeJournal> {
-        self.decoder
-            .read_u64()
-            .map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)
-    }
-
-    fn read_domain_payload(
-        &mut self,
-        domain: MultiNodeJournalDomainV1,
-    ) -> Result<CanonicalJournalPayloadV1, InvalidMultiNodeJournal> {
-        let length = usize::try_from(self.read_u32()?)
-            .map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)?;
-        if length > MAX_MULTI_NODE_DOMAIN_STATE_BYTES + CANONICAL_DOMAIN_ENVELOPE_BYTES {
-            return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
-        }
-
-        let payload = CanonicalJournalPayloadV1::decode_canonical(self.read_exact(length)?)?;
-        if payload.domain() != domain {
-            return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
-        }
-        Ok(payload)
-    }
-
-    fn read_array<const N: usize>(&mut self) -> Result<[u8; N], InvalidMultiNodeJournal> {
-        self.decoder
-            .read_array()
-            .map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)
-    }
-
-    fn read_exact(&mut self, length: usize) -> Result<&'a [u8], InvalidMultiNodeJournal> {
-        self.decoder
-            .read_exact(length)
-            .map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)
-    }
-
-    fn finish(self) -> Result<(), InvalidMultiNodeJournal> {
-        self.decoder
-            .finish()
-            .map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)
-    }
+    Ok(payload)
 }
 
 #[cfg(test)]
 mod journal_payload_decoder_tests {
-    use super::{InvalidMultiNodeJournal, JournalPayloadDecoderV1};
+    use super::{BoundedReader, InvalidMultiNodeJournal};
 
     #[test]
     fn truncated_field_preserves_cursor_and_domain_error() {
-        let mut decoder = JournalPayloadDecoderV1::new(&[7, 8]).unwrap();
+        let mut decoder = BoundedReader::new(&[7, 8], |_| {
+            InvalidMultiNodeJournal::NonCanonicalPayload
+        });
 
         assert_eq!(
-            decoder.read_array::<4>(),
+            decoder.array::<4>(),
             Err(InvalidMultiNodeJournal::NonCanonicalPayload)
         );
-        assert_eq!(decoder.read_u8(), Ok(7));
+        assert_eq!(decoder.u8(), Ok(7));
         assert_eq!(
             decoder.finish(),
             Err(InvalidMultiNodeJournal::NonCanonicalPayload)
