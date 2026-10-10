@@ -574,10 +574,45 @@ async fn issue_lease(
     #[cfg(feature = "do-e2e")]
     super::lease_scale::emit_dispatch_observation(observation);
     let response = issuer.fetch_request(provider).await?;
+    #[cfg(feature = "do-e2e")]
+    if response.status_code() != 200 {
+        worker::console_error!(
+            "external_issuer_request_refused status={} issued_at={} expires_at={}",
+            response.status_code(),
+            request.issued_at.get(),
+            request.expires_at.get(),
+        );
+    }
     ensure!(response.status_code() == 200, "issuer renewal refused");
     let bytes = crate::direct_digest::read_bounded_native(response, MAX_ISSUER_REPLY).await?;
     let verifier = object.verifier()?;
-    let reply = verify_issuer_reply_at_time(&verifier, &request, &bytes, || Ok(object.clock()))?;
+    let reply = verify_issuer_reply_at_time(&verifier, &request, &bytes, || Ok(object.clock()));
+    #[cfg(feature = "do-e2e")]
+    if let Err(error) = &reply {
+        let reason = [
+            "unqualified or rolled-back clock",
+            "issuer request is stale",
+            "lease not yet valid or expired under qualified uncertainty",
+        ]
+        .into_iter()
+        .position(|message| error.chain().any(|cause| cause.to_string() == message));
+        let issuer_floor = aos_hub_core::storage_authority::lease::control::verify_issuer_reply(
+            &verifier, &request, &bytes,
+        )
+        .ok()
+        .map_or(-1, |reply| reply.current.journal.clock_floor.get());
+        let clock = object.clock();
+        worker::console_error!(
+            "external_issuer_reply_refused category={} observed_at={} uncertainty={} issuer_floor={} issued_at={} expires_at={}",
+            reason.map_or(0, |index| index + 1),
+            clock.observed_at,
+            clock.uncertainty,
+            issuer_floor,
+            request.issued_at.get(),
+            request.expires_at.get(),
+        );
+    }
+    let reply = reply?;
     ensure!(
         reply.installation == *installation
             && reply.current.journal.policy.timing_profile == object.timing_profile,
