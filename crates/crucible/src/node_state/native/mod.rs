@@ -12,6 +12,8 @@
 mod capture;
 mod driver;
 pub(crate) mod extensions;
+mod lineage_capture;
+mod lineage_source;
 mod storage;
 mod typed_index;
 
@@ -35,6 +37,11 @@ use super::{
 
 pub use driver::NativeWorldRestoreDriver;
 pub use extensions::NativeExtensionPreservationPolicy;
+pub use lineage_capture::OriginalLineageCaptureRequest;
+pub use lineage_source::{
+    AuthenticatedOriginalLineageSource, ORIGINAL_LINEAGE_COORDINATOR_MEDIA,
+    ORIGINAL_LINEAGE_RUNTIME_MEDIA, OriginalLineageSourcePinFailure, PinnedOriginalLineageSource,
+};
 pub use storage::{NativeArchive, NativeArchiveRecord, NativeArtifactState, NativeOwnerState};
 
 /// Bounds metadata and streamed native preservation independently.
@@ -137,6 +144,64 @@ pub trait NativeWorldFactory {
     ) -> Result<(), StateError> {
         Err(refused(
             "installed factory has no selected scheduling epoch codec",
+        ))
+    }
+
+    /// Authenticates complete original coordinator7 and native/Tape2 journals.
+    ///
+    /// The distinct source reader has already authenticated the signed typed
+    /// closure and exact selected policy. This callback must independently check
+    /// original preparation, producer/consumer windows, consumed inputs, pending
+    /// operations, ACKs and the consumed tape cutoff under the installed source
+    /// codec. Its default refuses; selection alone never grants preservation.
+    ///
+    /// # Errors
+    /// Refuses unsupported original-lineage scope or changed complete native journals.
+    fn authenticate_original_lineage_source(
+        &self,
+        _graph: &AdmittedGraph,
+        _source: &AuthenticatedOriginalLineageSource<'_>,
+    ) -> Result<(), StateError> {
+        Err(refused(
+            "installed factory has no original-lineage source codec",
+        ))
+    }
+
+    /// Authenticates the exact live conditional capture scope before model callbacks.
+    ///
+    /// This separate callback must bind the source-authenticated original tapes,
+    /// conditional code/context, unchanged world cut and complete native journal
+    /// coverage. Ordinary source qualification is not sufficient.
+    ///
+    /// # Errors
+    /// Refuses unqualified Runtime7 capture or unsupported combined scope.
+    fn authenticate_original_lineage_capture(
+        &self,
+        _graph: &AdmittedGraph,
+        _runtime: &crate::node_contract::OriginalLineageRuntimeRecord,
+        _scheduler: &crate::node_scheduling::SchedulingSnapshot,
+    ) -> Result<(), StateError> {
+        Err(refused(
+            "installed complete original-lineage capture is unsupported",
+        ))
+    }
+
+    /// Authenticates one original typed body and its complete selected dependency row.
+    ///
+    /// Missing codec support must refuse; an empty row requires positive leaf
+    /// validation. The bound applies before constructing the returned vector.
+    ///
+    /// # Errors
+    /// Refuses unknown body roles, changed original bytes or excessive adjacency.
+    fn original_lineage_capture_dependencies(
+        &self,
+        _graph: &AdmittedGraph,
+        _reference: &crucible_node_contract::ContentRef,
+        _bytes: &[u8],
+        _maximum: usize,
+    ) -> Result<Vec<crucible_node_contract::ContentRef>, StateError> {
+        Err(refused(
+            "installed original-lineage dependency codec is unsupported",
         ))
     }
 

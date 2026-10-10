@@ -12,6 +12,7 @@
 //! CNP/1 [`crucible_node_contract::CaptureManifest`] remains a separate portable
 //! contract; native bytes are interpreted only by their qualified adapter.
 
+mod admitted_graph_references;
 mod closure;
 mod evidence;
 mod host;
@@ -23,6 +24,7 @@ mod validation;
 #[cfg(test)]
 mod tests;
 
+pub use admitted_graph_references::{AdmittedGraphRecord, admitted_graph_records};
 pub use closure::VerifiedStateContent;
 pub use evidence::*;
 pub use host::*;
@@ -85,3 +87,6 @@ pub(super) fn schema(error: impl std::fmt::Display) -> StateError {
 
 #[cfg(test)]
 mod typed_closure_tests;
+
+#[cfg(test)]
+pub(crate) use closure::synthetic_typed_content;

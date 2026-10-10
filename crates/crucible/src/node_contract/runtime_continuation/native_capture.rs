@@ -556,3 +556,6 @@ fn failure(error: impl std::fmt::Display) -> OperationFailure {
         reason: error.to_string(),
     }
 }
+
+#[path = "native_capture_lineage.rs"]
+mod lineage;

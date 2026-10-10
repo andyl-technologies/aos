@@ -1790,6 +1790,42 @@ and data routing controls; they supply no new backend, native class, readiness,
 capture, mixed restoration or serialization authority. Earlier private tool and
 source-quality refusals remain separately recorded. Raw evidence stays local.
 
+## Original lineage preservation with bounded ownership
+
+Runtime7 and Tape2 preserve the original input, evaluation, publication,
+acknowledgment and continuation records. Native archive projection retains the
+admitted dependency graph and authentic source identities. Restoration validates
+the complete original role closure before installing ownership. Source pins share
+verified immutable bodies across owners, and refused transfers return the
+original content rather than discarding it. Metadata, code artifacts and recorded
+payloads use explicit finite credits before copies or effects; the recorded-input
+limit does not expand to accommodate executable artifacts.
+
+The current 52-path prerequisite join passes all 1,019 core tests, 37 source-quality
+checks, strict all-target checks for core, provider and daemon, and formatting of
+51 Rust files. All 8,711 source files match before and after verification. Its
+final receipt has SHA256
+`7be355d069645156ca891d27b617db40f00dec1c66dc55b527f8a5eb4d137000`;
+local retention preserves 91 source, log and command files and five actual
+test/scanner executables.
+
+The existing native Source-to-Block pending-transfer regression also passes
+against the changed source in 25.96 seconds. It reclaims the original world,
+deletes both source paths, and restores two independent owners that recover the
+original reply and private disk state. Its separate receipt has SHA256
+`a209ba24386084d9d53f8839de7305c1b4d94bedb0f70597157623a04d05b109`.
+The test and companion executables, commands and logs remain local. The fixture
+removed its transient archive namespace during cleanup; those archive bodies are
+not retained for independent reinspection. This checks the existing
+HostArchive/Scheduling1 path and supplies no Runtime7 conditional-capture,
+installed typed-source, class or readiness qualification.
+
+A fresh local hermetic application test-target compilation is in progress.
+Its frozen source contains all 51 changed core Rust files and excludes only
+the engineering baseline from this join. Completion and test execution are not
+claimed. Earlier application compilation receipts remain bound to their original
+selected source images. Raw evidence stays local.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

@@ -316,6 +316,23 @@ pub(super) fn limit(component: &str) -> StateError {
     )
 }
 
+/// Forms only test-local typed content; it attests byte geometry, never native state.
+#[cfg(test)]
+pub(crate) fn synthetic_typed_content(
+    objects: &[crate::node_scheduling::InputPayload],
+) -> Result<VerifiedStateContent, StateError> {
+    let mut result = VerifiedStateContent {
+        objects: BTreeMap::new(),
+        total_bytes: 0,
+        references: BTreeSet::new(),
+        edition: ContentInventoryEdition::Typed,
+    };
+    for object in objects {
+        result.include_payload(&object.reference, &object.bytes, StateLimits::default())?;
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod payload_tests {
     // Panics identify a regression in authenticated object or byte-budget bounds.

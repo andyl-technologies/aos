@@ -23,7 +23,9 @@ use super::{
 };
 
 #[path = "continuation.rs"]
-mod continuation;
+pub(super) mod continuation;
+#[path = "node_lineage.rs"]
+mod lineage;
 
 pub use continuation::{
     AuthenticatedReplayContinuation, TRANSCRIPT_REPLAY_PRESERVATION_PROFILE,
@@ -78,6 +80,10 @@ pub struct TranscriptReplayNode {
     preservation: Option<ReplayFacet>,
     restored: Option<AuthenticatedReplayContinuation>,
     custody_objects: BTreeMap<ContentRef, InputPayload>,
+    lineage_activation: Option<WorldActivation>,
+    restored_lineage: Option<super::PinnedTape2Continuation>,
+    restored_lineage_target: Option<ActivationRecord>,
+    lineage_continuation: Option<(ReplayFacet, super::ReplayQualification)>,
 }
 
 impl TranscriptReplayNode {
@@ -172,8 +178,10 @@ impl TranscriptReplayNode {
         } else {
             None
         };
+        let lineage_continuation =
+            Self::qualify_tape2_capture(&cursor, graph, &route, context, policy)?;
         let mut facets = vec![execution, FacetKind::Replay];
-        if preservation.is_some() {
+        if preservation.is_some() || lineage_continuation.is_some() {
             facets.push(FacetKind::Preservation);
         }
         facets.sort();
@@ -209,6 +217,10 @@ impl TranscriptReplayNode {
             preservation,
             restored: None,
             custody_objects: BTreeMap::new(),
+            lineage_activation: None,
+            restored_lineage: None,
+            restored_lineage_target: None,
+            lineage_continuation,
         })
     }
 
@@ -342,7 +354,12 @@ impl TranscriptReplayNode {
         // Reserve the complete initial replay-model ACK before consuming its
         // original source interaction. The physical proof remains unchanged
         // beneath this distinct current-model custody receipt.
-        let custody = if self.preservation.is_some() {
+        let custody = if self.preservation.is_some()
+            || self
+                .cursor
+                .as_ref()
+                .is_some_and(|cursor| cursor.original_lineage.is_some())
+        {
             let cursor = self
                 .cursor
                 .as_ref()
@@ -476,14 +493,24 @@ impl SimulationNode for TranscriptReplayNode {
             .cursor
             .as_ref()
             .ok_or_else(|| failure("replay model unavailable", EffectKnowledge::None))?;
-        if self.preservation.is_some() {
+        if self.preservation.is_some() || self.lineage_continuation.is_some() {
             continuation::validate_preservation_trajectory(&cursor.source)
                 .map_err(|error| failure(error, EffectKnowledge::None))?;
         }
-        let cut = self
-            .restored
-            .as_ref()
-            .map_or(self.boundary, |source| source.wire.runtime.capture_cut);
+        if self.restored_lineage.is_some() && self.restored_lineage_target.as_ref() != Some(world) {
+            return Err(failure(
+                "Tape2 restored readiness requires the actual authenticated runtime context",
+                EffectKnowledge::None,
+            ));
+        }
+        let cut = self.restored_lineage.as_ref().map_or_else(
+            || {
+                self.restored
+                    .as_ref()
+                    .map_or(self.boundary, |source| source.wire.runtime.capture_cut)
+            },
+            |source| source.source.runtime().capture_cut,
+        );
         if self.quarantined
             || world.world_binding_hash != cursor.qualification.target_world
             || world.boundary != cut
@@ -508,9 +535,14 @@ impl SimulationNode for TranscriptReplayNode {
         let ready = ReadyAttestation {
             owners: self.route.owners.clone(),
             boundary: world.boundary,
-            state_inventory: self.restored.as_ref().map_or_else(
-                || cursor.source.reference.clone(),
-                |source| source.reference.clone(),
+            state_inventory: self.restored_lineage.as_ref().map_or_else(
+                || {
+                    self.restored.as_ref().map_or_else(
+                        || cursor.source.reference.clone(),
+                        |source| source.reference.clone(),
+                    )
+                },
+                |source| source.source.native_state_reference().clone(),
             ),
             ready_receipt: receipt,
         };
@@ -801,6 +833,12 @@ impl SimulationNode for TranscriptReplayNode {
         &mut self,
         batch: &RuntimeInputBatch,
     ) -> Result<NativeInputAcknowledgement, OperationFailure> {
+        if self.requires_original_input_lineage(batch) {
+            return Err(failure(
+                "conditional Tape2 requires original input lineage",
+                EffectKnowledge::None,
+            ));
+        }
         self.replay_stage(batch, None)
     }
 
@@ -809,7 +847,120 @@ impl SimulationNode for TranscriptReplayNode {
         batch: &RuntimeInputBatch,
         provenance: &InputProvenanceClosure,
     ) -> Result<NativeInputAcknowledgement, OperationFailure> {
+        if self.requires_original_input_lineage(batch) {
+            return Err(failure(
+                "conditional Tape2 requires original input lineage",
+                EffectKnowledge::None,
+            ));
+        }
         self.replay_stage(batch, Some(provenance))
+    }
+
+    fn requires_original_input_lineage(&self, batch: &RuntimeInputBatch) -> bool {
+        batch.node() == &self.route.node
+            && !batch.deliveries().is_empty()
+            && self
+                .cursor
+                .as_ref()
+                .is_some_and(|cursor| cursor.original_lineage.is_some())
+    }
+
+    fn original_input_lineage_scope(
+        &mut self,
+        batch: &RuntimeInputBatch,
+    ) -> Result<Option<SavedOriginalInputScope>, OperationFailure> {
+        if !self.requires_original_input_lineage(batch) {
+            return Ok(None);
+        }
+        self.same_world(batch.activation())?;
+        if batch.node() != &self.route.node || batch.owners() != self.route.owners {
+            return Err(failure(
+                "foreign conditional input target",
+                EffectKnowledge::None,
+            ));
+        }
+        if self
+            .lineage_activation
+            .as_ref()
+            .is_some_and(|actual| !Rc::ptr_eq(&actual.authority, &batch.activation().authority))
+        {
+            return Err(failure(
+                "foreign conditional runtime authority",
+                EffectKnowledge::None,
+            ));
+        }
+        let scope = self
+            .conditional_input_scope(batch)
+            .map_err(|error| self.divergence(&error.reason))?;
+        if self.lineage_activation.is_none() {
+            self.lineage_activation = Some(batch.activation().clone());
+        }
+        Ok(Some(scope))
+    }
+
+    fn validate_original_input_lineage_scope(
+        &self,
+        batch: &RuntimeInputBatch,
+        scope: &SavedOriginalInputScope,
+    ) -> Result<(), OperationFailure> {
+        if self.conditional_input_scope(batch)? != *scope {
+            return Err(failure(
+                "conditional first input scope changed",
+                EffectKnowledge::None,
+            ));
+        }
+        Ok(())
+    }
+
+    fn original_publication_lineage(
+        &self,
+        original: &OperationAdmission,
+        outcome: &OperationOutcome,
+        publication: &NativePublication,
+        limits: OriginalInputLineageLimits,
+    ) -> Result<OriginalPublicationClaim, OperationFailure> {
+        self.conditional_publication(original, outcome, publication, limits)
+    }
+
+    fn validate_original_publication_lineage(
+        &self,
+        original: &OperationAdmission,
+        outcome: &OperationOutcome,
+        publication: &NativePublication,
+        claim: &OriginalPublicationClaim,
+    ) -> Result<(), OperationFailure> {
+        self.validate_conditional_publication(original, outcome, publication, claim)
+    }
+
+    fn validate_original_publication_target(
+        &self,
+        original: &OperationAdmission,
+        outcome: &OperationOutcome,
+        publication: &NativePublication,
+        claim: &OriginalPublicationClaim,
+        scope: &SavedOriginalInputScope,
+    ) -> Result<(), OperationFailure> {
+        self.validate_conditional_publication(original, outcome, publication, claim)?;
+        let cursor = self
+            .cursor
+            .as_ref()
+            .ok_or_else(|| failure("conditional source is unavailable", EffectKnowledge::None))?;
+        if scope.source_activation != cursor.source.data.origin.activation {
+            return Err(failure(
+                "conditional producer first world differs",
+                EffectKnowledge::None,
+            ));
+        }
+        Ok(())
+    }
+
+    fn stage_inputs_with_original_lineage(
+        &mut self,
+        batch: &RuntimeInputBatch,
+        provenance: &InputProvenanceClosure,
+        lineage: &OriginalInputLineage,
+    ) -> Result<NativeInputAcknowledgement, OperationFailure> {
+        self.replay_original_lineage(batch, provenance, lineage)
     }
 
     fn requires_input_provenance(&self, batch: &RuntimeInputBatch) -> bool {
@@ -1080,6 +1231,7 @@ impl SimulationNode for TranscriptReplayNode {
             FacetKind::Preservation => self
                 .preservation
                 .as_ref()
+                .or_else(|| self.lineage_continuation.as_ref().map(|(facet, _)| facet))
                 .map(|facet| NodeFacet::Preservation(facet as &dyn FacetDescription))
                 .ok_or_else(|| Refusal {
                     reason: "complete replay preservation absent".into(),
@@ -1101,6 +1253,43 @@ impl SimulationNode for TranscriptReplayNode {
         limits: NativeCaptureLimits,
     ) -> Result<InstalledNativeCapture, OperationFailure> {
         self.capture_replay_state(activation, source, limits)
+    }
+
+    fn capture_original_lineage_continuation(
+        &mut self,
+        activation: &WorldActivation,
+        source: &OriginalLineageRuntimeRecord,
+        runtime_object: &InputPayload,
+        limits: NativeCaptureLimits,
+    ) -> Result<InstalledNativeCapture, OperationFailure> {
+        self.capture_tape2_state(activation, source, runtime_object, limits)
+    }
+
+    fn validate_original_lineage_restoration(
+        &self,
+        source_record: &ContentRef,
+        record: &OriginalLineageRuntimeRecord,
+        scope: &OriginalLineageNativeScope,
+        content: &crate::node_state::VerifiedStateContent,
+    ) -> Result<(), OperationFailure> {
+        self.validate_tape2_restoration(source_record, record, scope, content)
+    }
+
+    fn admit_original_lineage_restoration(
+        &mut self,
+        context: &OriginalLineageRestoration<'_>,
+    ) -> Result<(), OperationFailure> {
+        self.admit_tape2_restoration(context)
+    }
+
+    fn install_original_lineage_restored_custody(
+        &mut self,
+        context: &OriginalLineageRestoration<'_>,
+        activation: &WorldActivation,
+        operations: &[OperationAdmission],
+        inputs: &[Rc<RuntimeInputBatch>],
+    ) -> Result<(), OperationFailure> {
+        self.install_tape2_custody(context, activation, operations, inputs)
     }
 
     fn install_restored_custody(
@@ -1132,6 +1321,8 @@ impl SimulationNode for TranscriptReplayNode {
         self.observations.clear();
         self.ready.take();
         self.restored.take();
+        self.restored_lineage.take();
+        self.restored_lineage_target.take();
         self.custody_objects.clear();
         let result = (|| {
             let bytes=encode(&serde_json::json!({"format":"crucible.transcript-replay-reclaimed.v1","owner":owner,"boundary":self.boundary,"mutable_cursor_destroyed":true})).map_err(|error|failure(error,EffectKnowledge::None))?;
@@ -1160,3 +1351,14 @@ impl SimulationNode for TranscriptReplayNode {
         Ok(())
     }
 }
+
+#[path = "tape2_restoration.rs"]
+mod tape2_restoration;
+
+pub use tape2_restoration::Tape2PreparationFailure;
+
+#[path = "tape2_custody.rs"]
+mod tape2_custody;
+
+#[path = "tape2_capture_state.rs"]
+mod tape2_capture_state;

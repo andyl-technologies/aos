@@ -8,6 +8,7 @@
 use super::*;
 use crate::node_scheduling::{InputPayload, RuntimeInputBatch};
 use crucible_node_contract::*;
+use serde::{Deserialize, Serialize};
 use std::rc::Rc;
 
 /// Bounds a complete selected lineage lookup before consumer-native effects.
@@ -32,7 +33,7 @@ impl Default for OriginalInputLineageLimits {
 }
 
 /// Describes inert original native scope, separately from producer-local IDs.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OriginalPublicationOrigin {
     /// Binds the complete original owner compatibility.
@@ -64,7 +65,7 @@ pub struct OriginalPublicationOrigin {
 }
 
 /// Declares one inert direct codec row; an empty row does not authenticate a leaf.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OriginalLineageRow {
     /// Preserves the complete original typed role.
@@ -104,13 +105,15 @@ pub struct OriginalInputLineage {
 
 #[derive(Debug)]
 struct OriginalInputLineageData {
-    original: RuntimeInputBatch,
-    publications: Vec<OriginalPublicationClaim>,
     source_scope: SavedOriginalInputScope,
+    original: Rc<RuntimeInputBatch>,
+    publications: Vec<OriginalPublicationClaim>,
 }
 
 impl OriginalInputLineage {
-    /// Borrows the exact original opaque consumer input cut.
+    /// Borrows the actual current opaque consumer input cut.
+    ///
+    /// Its runtime authority remains separate from the first source scope.
     pub fn original(&self) -> &RuntimeInputBatch {
         &self.data.original
     }
@@ -138,4 +141,29 @@ mod geometry;
 mod preservation;
 pub use preservation::{
     SavedOriginalInputLineage, SavedOriginalInputScope, SavedOriginalPublication,
+};
+
+#[path = "runtime_original_input_lineage/record.rs"]
+mod record;
+pub use record::{
+    OriginalLineageInputRecord, OriginalLineageProvenanceRecord, OriginalLineageRuntimeRecord,
+};
+
+#[path = "runtime_original_input_lineage/record_validation.rs"]
+mod record_validation;
+
+#[path = "runtime_original_input_lineage/body_validation.rs"]
+mod body_validation;
+
+#[path = "runtime_original_input_lineage/snapshot_credit.rs"]
+pub(in crate::node_contract::runtime) mod snapshot_credit;
+
+#[path = "runtime_original_input_lineage/snapshot.rs"]
+mod snapshot;
+
+#[path = "runtime_original_input_lineage/restoration.rs"]
+mod restoration;
+pub use restoration::{
+    OriginalLineageJournal, OriginalLineageNativeScope, OriginalLineageOwnerMapping,
+    OriginalLineageRestoration, OriginalLineageRestorationLimits,
 };

@@ -26,7 +26,7 @@ impl ActivationPublisher for Publisher {
     }
 }
 
-fn model() -> (
+pub(super) fn model() -> (
     TranscriptReplayNode,
     NodeRuntime,
     WorldActivation,
@@ -124,6 +124,10 @@ fn model() -> (
         preservation: None,
         restored: None,
         custody_objects: BTreeMap::new(),
+        lineage_activation: None,
+        restored_lineage: None,
+        restored_lineage_target: None,
+        lineage_continuation: None,
     };
     node.arm(activation.record()).unwrap();
     let outcome = OperationOutcome {

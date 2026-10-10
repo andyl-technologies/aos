@@ -311,6 +311,28 @@ pub trait SimulationNode {
         })
     }
 
+    /// Installs complete Runtime7 custody beneath an actually published fresh world.
+    ///
+    /// The distinct opaque context retains original source ancestry and complete
+    /// producer/consumer journals. This hook must attach original pending/input
+    /// and outcome/ACK knowledge without resubmitting Begin, Stage or native work.
+    /// Legacy continuation hooks do not accept a projected Runtime7 snapshot.
+    ///
+    /// # Errors
+    /// Refuses unsupported selected codecs, changed original custody or foreign handles.
+    fn install_original_lineage_restored_custody(
+        &mut self,
+        _context: &super::OriginalLineageRestoration<'_>,
+        _activation: &super::WorldActivation,
+        _operations: &[OperationAdmission],
+        _inputs: &[std::rc::Rc<crate::node_scheduling::RuntimeInputBatch>],
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "complete original-lineage custody installation is unsupported".into(),
+        })
+    }
+
     /// Rebinds authenticated original native custody to genuine fresh local handles.
     ///
     /// The runtime invokes this hook only after complete world publication and
@@ -356,6 +378,27 @@ pub trait SimulationNode {
         Err(OperationFailure {
             effects: super::EffectKnowledge::None,
             reason: "complete installed host native capture is unsupported".into(),
+        })
+    }
+
+    /// Captures separately selected complete Runtime7 model journals without execution.
+    ///
+    /// The owning runtime must independently match the complete record and its
+    /// canonical object before this hook. Physical recording and default adapters
+    /// refuse; neither a source DTO nor a live replay facet qualifies capture.
+    ///
+    /// # Errors
+    /// Refuses unsupported complete lineage codecs or changed original custody.
+    fn capture_original_lineage_continuation(
+        &mut self,
+        _activation: &super::WorldActivation,
+        _source: &super::OriginalLineageRuntimeRecord,
+        _runtime_object: &crate::node_scheduling::InputPayload,
+        _limits: super::NativeCaptureLimits,
+    ) -> Result<super::InstalledNativeCapture, OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "complete original lineage capture is unsupported".into(),
         })
     }
 
@@ -438,6 +481,59 @@ pub trait SimulationNode {
         false
     }
 
+    /// Reads an independently qualified first scope for conditional input replay.
+    ///
+    /// Returning historical data grants no permission. The runtime requires the
+    /// same owning consumer's validator and every actual producer's target
+    /// validator before issuing a lineage seal. Native current-scope consumers
+    /// retain the default and follow the original strict activation checks.
+    ///
+    /// # Errors
+    /// Refuses unsupported source-to-target applicability or changed input scope.
+    fn original_input_lineage_scope(
+        &mut self,
+        _batch: &crate::node_scheduling::RuntimeInputBatch,
+    ) -> Result<Option<super::SavedOriginalInputScope>, OperationFailure> {
+        Ok(None)
+    }
+
+    /// Authenticates a conditional first scope against this actual current input.
+    ///
+    /// # Errors
+    /// Refuses missing independent source qualification or changed original input.
+    fn validate_original_input_lineage_scope(
+        &self,
+        _batch: &crate::node_scheduling::RuntimeInputBatch,
+        _scope: &super::SavedOriginalInputScope,
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "conditional original input scope validation is unsupported".into(),
+        })
+    }
+
+    /// Binds a historical producer to its actual current terminal permission.
+    ///
+    /// This selected conditional hook must independently check original native
+    /// journals, consumed tape cutoff and current cached terminal custody. It
+    /// cannot derive ancestry from coordinates or a parsed historical claim.
+    ///
+    /// # Errors
+    /// Refuses unsupported target association or changed source/current custody.
+    fn validate_original_publication_target(
+        &self,
+        _original: &OperationAdmission,
+        _outcome: &OperationOutcome,
+        _publication: &crate::node_scheduling::NativePublication,
+        _claim: &super::OriginalPublicationClaim,
+        _scope: &super::SavedOriginalInputScope,
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "conditional original publication target is unsupported".into(),
+        })
+    }
+
     /// Reads selected original producer rows beneath actual terminal custody.
     ///
     /// The returned claim is inert until the owning runtime checks its original
@@ -473,6 +569,46 @@ pub trait SimulationNode {
         Err(OperationFailure {
             effects: super::EffectKnowledge::None,
             reason: "original source lineage validation is unsupported".into(),
+        })
+    }
+
+    /// Authenticates actual preserved native journals before a Runtime7 context exists.
+    ///
+    /// This read-only selected hook must check the complete signed source roster,
+    /// original permissions and input/ACK history against this actual fresh node.
+    /// Hashes and parsed scope labels do not attest native state. It must retain
+    /// original custody if inspection fails or unwinds; it performs no execution.
+    ///
+    /// # Errors
+    /// Refuses unsupported selected codecs, missing journals or changed native custody.
+    fn validate_original_lineage_restoration(
+        &self,
+        _source_record: &crucible_node_contract::ContentRef,
+        _record: &super::OriginalLineageRuntimeRecord,
+        _scope: &super::OriginalLineageNativeScope,
+        _content: &crate::node_state::VerifiedStateContent,
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "original lineage native restoration is unsupported".into(),
+        })
+    }
+
+    /// Admits one core-authenticated lineage context before restored readiness.
+    ///
+    /// The context is opaque and bound to the actual inactive owning runtime.
+    /// This step prepares original journal custody only; it does not install
+    /// operation tokens, dispatch work or publish Ready. Unsupported nodes refuse.
+    ///
+    /// # Errors
+    /// Refuses another source/target, changed native journals or unsupported codecs.
+    fn admit_original_lineage_restoration(
+        &mut self,
+        _context: &super::OriginalLineageRestoration<'_>,
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "original lineage context admission is unsupported".into(),
         })
     }
 

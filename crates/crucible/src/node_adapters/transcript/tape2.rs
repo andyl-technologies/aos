@@ -14,6 +14,7 @@ use crucible_node_contract::{ContentRef, Event, Id, Validate, canonical};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    node_contract::Submission,
     node_contract::{
         OriginalInputLineageLimits, SavedOriginalInputLineage, SavedOriginalPublication,
         SavedRuntimeActivation,
@@ -187,6 +188,80 @@ impl<'a> OriginalLineageTapePrefix<'a> {
         found.ok_or_else(|| invalid("original Tape2 input Stage is beyond consumed cutoff"))
     }
 
+    pub(super) fn publication_matching(
+        &self,
+        operation: &Id,
+        native: &crate::node_scheduling::NativePublication,
+    ) -> Result<SavedOriginalPublication, TranscriptError> {
+        let mut found = None;
+        for record in &self.source.data.records[..self.consumed] {
+            if record.request.identity != *operation
+                || record.request.action != TranscriptAction::Complete
+            {
+                continue;
+            }
+            for object in &record.evidence {
+                let Some(tape) = RecordedTape2::decode(object, &self.source.data.origin, record)?
+                else {
+                    continue;
+                };
+                let RecordedLineage::Publication { publication } = tape.lineage else {
+                    continue;
+                };
+                let bytes = self
+                    .body(&publication.published)
+                    .ok_or_else(|| invalid("original Tape2 publication body is absent"))?;
+                let event: Event = canonical::decode(bytes, bytes.len()).map_err(invalid)?;
+                if event.id == native.publication_id
+                    && event.source == native.endpoint
+                    && event.source_sequence == native.native_sequence
+                    && event.publication_position == native.publication
+                    && event.payload == native.payload
+                    && native.causal_parents.is_empty()
+                {
+                    if found.is_some() {
+                        return Err(invalid("original Tape2 terminal tuple is ambiguous"));
+                    }
+                    found = Some(*publication);
+                }
+            }
+        }
+        found.ok_or_else(|| invalid("original terminal tuple is beyond the consumed cutoff"))
+    }
+
+    pub(super) fn validate_publication_limits(
+        &self,
+        publication: &SavedOriginalPublication,
+        limits: OriginalInputLineageLimits,
+    ) -> Result<(), TranscriptError> {
+        validate_publication(publication, limits, |reference| self.body(reference))?;
+        Ok(())
+    }
+
+    pub(super) fn matches_original_bodies(
+        &self,
+        objects: &[InputPayload],
+    ) -> Result<(), TranscriptError> {
+        if objects.len() > 4096 {
+            return Err(TranscriptError::CaptureLimit);
+        }
+        let mut total = 0usize;
+        for object in objects {
+            total = total
+                .checked_add(object.bytes.len())
+                .filter(|total| *total <= 64 * 1024 * 1024)
+                .ok_or(TranscriptError::CaptureLimit)?;
+            let original = self
+                .body(&object.reference)
+                .ok_or_else(|| invalid("original Tape2 typed role is beyond the cutoff"))?;
+            if original != object.bytes {
+                return Err(invalid("original Tape2 typed role body changed"));
+            }
+            object.reference.verify(original).map_err(invalid)?;
+        }
+        Ok(())
+    }
+
     fn body(&self, reference: &ContentRef) -> Option<&[u8]> {
         self.source.data.records[..self.consumed]
             .iter()
@@ -300,7 +375,10 @@ impl RecordedTape2 {
                         "Tape2 publication has no original scheduling observation",
                     ));
                 };
-                if observation.proof_ref != publication.origin.measurement
+                if outcome.operation != tape.interaction
+                    || outcome.node != origin.route.node
+                    || outcome.owners != origin.route.owners
+                    || observation.proof_ref != publication.origin.measurement
                     || observation
                         .publications
                         .iter()
@@ -485,4 +563,97 @@ pub(super) fn bounded_metadata(
         value,
     )
     .map_err(|_| TranscriptError::CaptureLimit)
+}
+
+/// Requires complete selected metadata independently of a permissive qualifier.
+pub(super) fn validate_selected_source(
+    source: &super::archive::AuthenticatedTranscript,
+) -> Result<(), TranscriptError> {
+    for record in &source.data.records {
+        let request: ControlRequest =
+            serde_json::from_slice(&record.request.bytes).map_err(invalid)?;
+        let response: ControlResponse =
+            serde_json::from_slice(&record.response_bytes).map_err(invalid)?;
+        let expected_publications = match (&request, &response) {
+            (ControlRequest::Stage { input }, ControlResponse::Input(_)) => {
+                if input.deliveries.is_empty()
+                    && (!input.payloads.is_empty() || input.provenance.is_some())
+                {
+                    return Err(invalid("Tape2 empty Stage retains unexpected input bodies"));
+                }
+                None
+            }
+            (ControlRequest::Complete { .. }, ControlResponse::Outcome(outcome)) => {
+                validate_original_outcome_scope(outcome, &source.data.origin)?;
+                Some(
+                    outcome
+                        .scheduling
+                        .as_ref()
+                        .ok_or_else(|| {
+                            invalid("Tape2 source terminal has no original scheduling custody")
+                        })?
+                        .publications
+                        .len(),
+                )
+            }
+            (ControlRequest::Begin { .. }, ControlResponse::Submission(Submission::Accepted))
+            | (
+                ControlRequest::Close { .. },
+                ControlResponse::Submission(Submission::Accepted | Submission::Refused(_)),
+            )
+            | (ControlRequest::Observe, ControlResponse::Observation(_))
+            | (ControlRequest::Acknowledge { .. }, ControlResponse::Acknowledged) => continue,
+            _ => return Err(invalid("Tape2 source control trajectory is unsupported")),
+        };
+        let mut inputs = 0usize;
+        let mut publications = std::collections::BTreeSet::new();
+        for object in &record.evidence {
+            let Some(metadata) = RecordedTape2::decode(object, &source.data.origin, record)? else {
+                continue;
+            };
+            match metadata.lineage {
+                RecordedLineage::Input { .. } => inputs += 1,
+                RecordedLineage::Publication { publication } => {
+                    if !publications.insert(publication.published) {
+                        return Err(invalid("Tape2 source publication metadata is ambiguous"));
+                    }
+                }
+            }
+        }
+        // No event was consumed by an empty Stage. Its original request and ACK
+        // remain recorded custody, without inventing a first-sealed ancestry.
+        let expected_inputs = match &request {
+            ControlRequest::Stage { input } => usize::from(!input.deliveries.is_empty()),
+            _ => 0,
+        };
+        if expected_publications.map_or(
+            inputs != expected_inputs || !publications.is_empty(),
+            |expected| inputs != 0 || publications.len() != expected,
+        ) {
+            return Err(invalid(
+                "Tape2 source interaction omits complete original lineage metadata",
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn validate_original_outcome_scope(
+    outcome: &crate::node_contract::OperationOutcome,
+    origin: &TranscriptOrigin,
+) -> Result<(), TranscriptError> {
+    let observation = outcome
+        .scheduling
+        .as_ref()
+        .ok_or_else(|| invalid("Tape2 original scheduling custody absent"))?;
+    if outcome.node != origin.route.node
+        || outcome.owners != origin.route.owners
+        || observation.node != origin.route.node
+        || observation.owners != origin.route.owners
+    {
+        return Err(invalid(
+            "Tape2 original outcome/observation owner scope differs",
+        ));
+    }
+    Ok(())
 }

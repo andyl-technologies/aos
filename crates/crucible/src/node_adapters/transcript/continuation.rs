@@ -34,14 +34,14 @@ pub const TRANSCRIPT_REPLAY_PRESERVATION_PROFILE: &str =
     "transcript/complete-replay-continuation-v1";
 
 const SPECIFICATION: &str = "crucible/transcript-replay-continuation-v1: complete original authenticated transcript and context, conditional source uncertainty and taint, exact sticky cursor, original local request boundary, whole source runtime ledger and capture cut, cached original operation permission/outcome/evidence/close/ACK knowledge, immutable staged deliveries/payloads/provenance/ACK, and consumed boundary observations. The complete model accepts only structurally typed positive Begin/Outcome/Input/Observation/ACK records and authentic subordinate Close Accepted/Refused records. Original Failure, Cancel, Unknown and unsupported control trajectories are refused before readiness even under a permissive installed qualifier. Source bytes and proofs retain original lineage. No serialized token, native process restoration claim, counterfactual resampling or caller-selected cursor. Fresh installed qualification and complete-world original-token reminting are mandatory.";
-const MAXIMUM_STATE_BYTES: usize = 64 * 1024 * 1024;
-const MAXIMUM_OBJECTS: usize = 8192;
+pub(in crate::node_adapters::transcript) const MAXIMUM_STATE_BYTES: usize = 64 * 1024 * 1024;
+pub(in crate::node_adapters::transcript) const MAXIMUM_OBJECTS: usize = 8192;
 
 /// Refuses unsupported original controls before complete-model readiness.
 ///
 /// Recording preserves authentic negative responses, but this preservation
 /// codec does not claim to reconstruct their native failure or uncertainty.
-pub(super) fn validate_preservation_trajectory(
+pub(in crate::node_adapters::transcript) fn validate_preservation_trajectory(
     source: &AuthenticatedTranscript,
 ) -> Result<(), TranscriptError> {
     for record in &source.data.records {
@@ -130,7 +130,7 @@ pub(super) struct ReplayContinuationWire {
 /// A closed replay-model custody receipt, distinct from physical-source proof.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ReplayInputCustody {
+pub(in crate::node_adapters::transcript) struct ReplayInputCustody {
     pub schema: String,
     pub source_state: ContentRef,
     pub source_ack: NativeInputAcknowledgement,
@@ -403,7 +403,7 @@ pub(super) fn validate_wire(
     validation::validate_consumed_prefix(wire, source)
 }
 
-pub(super) fn bounded_canonical(
+pub(in crate::node_adapters::transcript) fn bounded_canonical(
     value: &impl Serialize,
     maximum: usize,
 ) -> Result<Vec<u8>, OperationFailure> {

@@ -51,6 +51,26 @@ pub trait InstalledReplayPolicy {
         target_context: &[InputPayload],
     ) -> Result<ReplayQualification, TranscriptError>;
 
+    /// Qualifies complete conditional Tape2 model capture separately from live replay.
+    ///
+    /// The default refuses. Installed policy must authenticate complete original
+    /// producer/consumer journals, the selected reference-only Runtime7 codec and
+    /// exact target model semantics. Live lineage qualification is insufficient.
+    ///
+    /// # Errors
+    /// Refuses unsupported capture scope, source journals or target substitution.
+    fn qualify_original_lineage_continuation(
+        &self,
+        _source: &AuthenticatedTranscript,
+        _target: &AdmittedGraph,
+        _route: &NodeRoute,
+        _target_context: &[InputPayload],
+    ) -> Result<ReplayQualification, TranscriptError> {
+        Err(TranscriptError::Unqualified(
+            "installed complete Tape2 continuation is unsupported".into(),
+        ))
+    }
+
     /// Qualifies explicit original-lineage Tape2 applicability independently.
     ///
     /// The default refuses. A source-selected installer must authenticate the
@@ -203,6 +223,7 @@ impl ReplayCursor {
                     "original lineage Tape2 facet edition is unsupported".into(),
                 ));
             }
+            super::tape2::validate_selected_source(&source)?;
             let lineage =
                 policy.qualify_original_lineage(&source, target, &route, target_context)?;
             lineage

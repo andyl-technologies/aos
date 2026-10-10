@@ -719,7 +719,7 @@ impl CaptureEvidence for Evidence<'_> {
     }
 }
 
-struct Objects<'a> {
+pub(super) struct Objects<'a> {
     archive: &'a NativeArchive,
     objects: BTreeMap<ContentRef, Object>,
     hashes: BTreeMap<HashRef, ContentRef>,
@@ -728,7 +728,7 @@ struct Objects<'a> {
 }
 
 impl<'a> Objects<'a> {
-    fn new(archive: &'a NativeArchive, edition: ContentInventoryEdition) -> Self {
+    pub(super) fn new(archive: &'a NativeArchive, edition: ContentInventoryEdition) -> Self {
         Self {
             archive,
             objects: BTreeMap::new(),
@@ -738,7 +738,7 @@ impl<'a> Objects<'a> {
         }
     }
 
-    fn insert(
+    pub(super) fn insert(
         &mut self,
         reference: ContentRef,
         mut bytes: &[u8],
@@ -786,7 +786,7 @@ impl<'a> Objects<'a> {
         Ok(())
     }
 
-    fn record(
+    pub(super) fn record(
         &mut self,
         record: &impl Serialize,
         dependencies: Vec<ContentRef>,
@@ -799,7 +799,7 @@ impl<'a> Objects<'a> {
         Ok(reference)
     }
 
-    fn finish(self) -> Vec<Object> {
+    pub(super) fn finish(self) -> Vec<Object> {
         self.objects.into_values().collect()
     }
 }

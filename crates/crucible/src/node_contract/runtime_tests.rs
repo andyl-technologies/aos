@@ -52,9 +52,19 @@ struct NativeState {
     terminal_scheduling: Option<crate::node_scheduling::NativeSchedulingObservation>,
     lineage_claim: Option<OriginalPublicationClaim>,
     lineage_required: bool,
+    conditional_lineage_scope: Option<SavedOriginalInputScope>,
+    conditional_scope_validations: usize,
+    conditional_target_supported: bool,
+    conditional_target_validations: usize,
     lineage_invalid: bool,
     lineage_reads: usize,
     lineage_validations: usize,
+    lineage_restoration_supported: bool,
+    lineage_restoration_calls: usize,
+    lineage_restoration_refuse: bool,
+    lineage_restoration_admit: bool,
+    lineage_install_supported: bool,
+    lineage_install_calls: usize,
     arm_fail: bool,
     change_declarations_on_arm: bool,
     changed_declarations: bool,
@@ -132,6 +142,48 @@ impl SimulationNode for TestNode {
         self.state.borrow().lineage_required
     }
 
+    fn original_input_lineage_scope(
+        &mut self,
+        _batch: &crate::node_scheduling::RuntimeInputBatch,
+    ) -> Result<Option<SavedOriginalInputScope>, OperationFailure> {
+        Ok(self.state.borrow().conditional_lineage_scope.clone())
+    }
+
+    fn validate_original_input_lineage_scope(
+        &self,
+        _batch: &crate::node_scheduling::RuntimeInputBatch,
+        scope: &SavedOriginalInputScope,
+    ) -> Result<(), OperationFailure> {
+        let mut state = self.state.borrow_mut();
+        state.conditional_scope_validations += 1;
+        if state.conditional_lineage_scope.as_ref() != Some(scope) {
+            return Err(OperationFailure {
+                effects: EffectKnowledge::None,
+                reason: "model conditional scope changed".into(),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_original_publication_target(
+        &self,
+        _original: &OperationAdmission,
+        _outcome: &OperationOutcome,
+        _publication: &crate::node_scheduling::NativePublication,
+        _claim: &OriginalPublicationClaim,
+        _scope: &SavedOriginalInputScope,
+    ) -> Result<(), OperationFailure> {
+        let mut state = self.state.borrow_mut();
+        state.conditional_target_validations += 1;
+        if !state.conditional_target_supported {
+            return Err(OperationFailure {
+                effects: EffectKnowledge::None,
+                reason: "model has no independently qualified target association".into(),
+            });
+        }
+        Ok(())
+    }
+
     fn original_publication_lineage(
         &self,
         original: &OperationAdmission,
@@ -176,6 +228,55 @@ impl SimulationNode for TestNode {
             return Err(OperationFailure {
                 effects: EffectKnowledge::None,
                 reason: "model rejected original source claim".into(),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_original_lineage_restoration(
+        &self,
+        _source_record: &ContentRef,
+        _record: &OriginalLineageRuntimeRecord,
+        _scope: &OriginalLineageNativeScope,
+        _content: &crate::node_state::VerifiedStateContent,
+    ) -> Result<(), OperationFailure> {
+        let mut state = self.state.borrow_mut();
+        state.lineage_restoration_calls += 1;
+        if !state.lineage_restoration_supported || state.lineage_restoration_refuse {
+            return Err(OperationFailure {
+                effects: EffectKnowledge::None,
+                reason: "synthetic native journals unavailable".into(),
+            });
+        }
+        Ok(())
+    }
+
+    fn admit_original_lineage_restoration(
+        &mut self,
+        _context: &OriginalLineageRestoration<'_>,
+    ) -> Result<(), OperationFailure> {
+        if !self.state.borrow().lineage_restoration_admit {
+            return Err(OperationFailure {
+                effects: EffectKnowledge::None,
+                reason: "synthetic model does not admit lineage readiness".into(),
+            });
+        }
+        Ok(())
+    }
+
+    fn install_original_lineage_restored_custody(
+        &mut self,
+        _context: &OriginalLineageRestoration<'_>,
+        _activation: &WorldActivation,
+        _operations: &[OperationAdmission],
+        _inputs: &[Rc<crate::node_scheduling::RuntimeInputBatch>],
+    ) -> Result<(), OperationFailure> {
+        let mut state = self.state.borrow_mut();
+        state.lineage_install_calls += 1;
+        if !state.lineage_install_supported {
+            return Err(OperationFailure {
+                effects: EffectKnowledge::None,
+                reason: "synthetic model does not install lineage custody".into(),
             });
         }
         Ok(())

@@ -194,6 +194,46 @@ pub struct RuntimeSnapshot {
 
 /// Authenticates complete native runtime-ledger continuation at an unchanged cut.
 pub trait NativeRuntimeContinuationVerifier {
+    /// Authenticates the installed coordinator7 source and complete native journals.
+    ///
+    /// The returned fields remain inert. Core compares the complete signed source,
+    /// first-sealed scopes, source-to-target owner mapping and every pending,
+    /// completed and acknowledged operation before accepting a restoration context.
+    /// Actual producer and consumer callbacks are mandatory independently.
+    ///
+    /// # Errors
+    /// Refuses unsupported selection, foreign source/target or missing native journals.
+    fn verify_original_lineage_scope(
+        &mut self,
+        _source_record: &ContentRef,
+        _snapshot: &OriginalLineageRuntimeRecord,
+        _scheduling: &SchedulingSnapshot,
+        _target: &ActivationRecord,
+        _limits: RuntimeLimits,
+    ) -> Result<OriginalLineageNativeScope, RuntimeError> {
+        Err(RuntimeError::UnsupportedFacet)
+    }
+
+    /// Authenticates exact original lineage under selected fresh native custody.
+    ///
+    /// An installed Runtime7 codec must verify complete original body inventory,
+    /// producer/consumer closed-window and input/ACK history, first-sealed source
+    /// scopes and the complete genuine fresh owner mapping before readiness.
+    /// Parsing the record or verifying hashes never issues that native authority.
+    /// Legacy and unqualified implementations refuse this distinct format.
+    ///
+    /// # Errors
+    /// Refuses unsupported codecs, incomplete original closure or unavailable
+    /// genuine restored producer and consumer custody.
+    fn verify_original_lineage_continuation(
+        &mut self,
+        _snapshot: &OriginalLineageRuntimeRecord,
+        _scheduling: &SchedulingSnapshot,
+        _target: &ActivationRecord,
+    ) -> Result<NativeRuntimeContinuationEvidence, RuntimeError> {
+        Err(RuntimeError::UnsupportedFacet)
+    }
+
     /// Authenticates inherited original scheduling permission bodies under fresh custody.
     ///
     /// Legacy adapters return no policy for edition one and refuse edition two.

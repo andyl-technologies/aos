@@ -271,3 +271,147 @@ fn tape2_missing_or_changed_original_acknowledgement_refuses() {
         );
     }
 }
+
+pub(in crate::node_adapters::transcript) fn input_model_cursor() -> ReplayCursor {
+    let (_directory, source, _, _) = tape_source();
+    qualified_model_cursor(source)
+}
+
+/// Supplies an inert event occurrence whose zero-byte payload still needs ancestry.
+pub(in crate::node_adapters::transcript) fn zero_byte_delivery(
+    consumer: &Id,
+) -> crate::node_scheduling::event::Delivery {
+    let endpoint = crucible_node_contract::Endpoint {
+        node_id: id("synthetic/producer"),
+        port_id: id("synthetic/port"),
+        lane_id: id("synthetic/output"),
+    };
+    crate::node_scheduling::event::Delivery {
+        connection_id: Some(id("synthetic/connection")),
+        connection_policy_ref: Some(object(b"{}").reference),
+        external_root: None,
+        provenance_ref: object(b"{\"synthetic_proof\":true}").reference,
+        publication_id: id("original/zero-byte-event"),
+        producer: endpoint.node_id.clone(),
+        consumer: consumer.clone(),
+        producer_endpoint: endpoint,
+        consumer_endpoint: crucible_node_contract::Endpoint {
+            node_id: consumer.clone(),
+            port_id: id("synthetic/port"),
+            lane_id: id("synthetic/input"),
+        },
+        source_sequence: 0.into(),
+        native_sequence: 0.into(),
+        evaluation: None,
+        causal_parents: Vec::new(),
+        publication: Position::new(0.into(), 0.into(), Phase::Publication),
+        delivery: Position::new(0.into(), 0.into(), Phase::Delivery),
+        payload: object(b"").reference,
+    }
+}
+
+#[test]
+fn tape2_empty_stage_retains_original_ack_without_lineage_claim() -> Result<(), TranscriptError> {
+    let (_directory, mut source, _, _) = tape_source();
+    // The older inert prefix fixture deliberately has empty ancestry metadata.
+    // Selected source validation rejects that fabricated empty-event claim.
+    assert!(super::super::tape2::validate_selected_source(&source).is_err());
+    let data = std::rc::Rc::make_mut(&mut source.data);
+    let record = &mut data.records[0];
+    record.evidence.remove(0);
+    assert!(super::super::tape2::validate_selected_source(&source).is_ok());
+    let response: ControlResponse = serde_json::from_slice(&source.data.records[0].response_bytes)
+        .map_err(super::super::codec::invalid)?;
+    assert!(matches!(response, ControlResponse::Input(_)));
+    Ok(())
+}
+
+#[test]
+fn tape2_zero_byte_event_still_requires_original_metadata_before_qualification()
+-> Result<(), TranscriptError> {
+    let (_directory, mut source, _, _) = tape_source();
+    let data = std::rc::Rc::make_mut(&mut source.data);
+    let record = &mut data.records[0];
+    record.evidence.remove(0);
+    let mut request: ControlRequest =
+        serde_json::from_slice(&record.request.bytes).map_err(super::super::codec::invalid)?;
+    let ControlRequest::Stage { input } = &mut request else {
+        return Err(super::super::codec::invalid("synthetic Stage absent"));
+    };
+    input.deliveries.push(zero_byte_delivery(&input.node));
+    input.payloads.push(object(b""));
+    record.request.bytes = encode(&request)?;
+    record.request.content = canonical::content_ref(&record.request.bytes, "application/json")
+        .map_err(super::super::codec::invalid)?;
+    assert!(super::super::tape2::validate_selected_source(&source).is_err());
+    Ok(())
+}
+
+#[test]
+fn tape2_original_scheduling_owners_refuse_before_capture_owner_association()
+-> Result<(), super::TranscriptError> {
+    use crate::node_contract::{OperationOutcome, ProgressEvidence};
+    use crate::node_scheduling::NativeSchedulingObservation;
+    let original = origin();
+    let proof = object(b"inert-stopped-receipt");
+    let observation = NativeSchedulingObservation {
+        node: original.route.node.clone(),
+        owners: original.route.owners.clone(),
+        reached: position(0),
+        closed_prefix: position(0),
+        bounds: Vec::new(),
+        publications: Vec::new(),
+        input_progress: None,
+        external_inputs: Vec::new(),
+        proof_ref: proof.reference.clone(),
+    };
+    let outcome = OperationOutcome {
+        operation: id("original/empty-completion"),
+        node: original.route.node.clone(),
+        owners: original.route.owners.clone(),
+        progress: ProgressEvidence::Administrative,
+        retained_outputs: Vec::new(),
+        scheduling: Some(observation),
+    };
+    for (changed_node, changed_owner) in [(false, false), (true, false), (false, true)] {
+        let mut value = outcome.clone();
+        if changed_node || changed_owner {
+            let observation = value.scheduling.as_mut().ok_or_else(|| {
+                crate::node_adapters::transcript::codec::invalid("synthetic scheduling absent")
+            })?;
+            if changed_node {
+                observation.node = id("foreign/original-node");
+            }
+            if changed_owner {
+                observation.owners[0].incarnation = id("foreign/original-owner");
+            }
+        }
+        let mut capture = CaptureSession::new(original.clone(), limits())?;
+        let request = request(
+            TranscriptAction::Complete,
+            outcome.operation.clone(),
+            position(0),
+            capture.context()?,
+            &ControlRequest::Complete {
+                operation: outcome.operation.clone(),
+            },
+        )?;
+        let reservation = capture.reserve()?;
+        capture.retain(
+            reservation,
+            request,
+            encode(&ControlResponse::Outcome(Box::new(value)))?,
+            vec![proof.clone()],
+            Vec::new(),
+            PhysicalTimingUncertainty::Unbounded,
+        )?;
+        let captured = capture.finish()?;
+        let directory = Directory::new();
+        let source = TranscriptArchive::open(&directory.0, limits())?.persist(captured)?;
+        assert_eq!(
+            crate::node_adapters::transcript::tape2::validate_selected_source(&source).is_err(),
+            changed_node || changed_owner
+        );
+    }
+    Ok(())
+}

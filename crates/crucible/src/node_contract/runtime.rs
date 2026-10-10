@@ -1166,7 +1166,10 @@ mod condition_debug_runtime;
 #[path = "runtime_original_input_lineage.rs"]
 mod original_input_lineage;
 pub use original_input_lineage::{
-    OriginalInputLineage, OriginalInputLineageLimits, OriginalLineageRow, OriginalPublicationClaim,
+    OriginalInputLineage, OriginalInputLineageLimits, OriginalLineageInputRecord,
+    OriginalLineageJournal, OriginalLineageNativeScope, OriginalLineageOwnerMapping,
+    OriginalLineageProvenanceRecord, OriginalLineageRestoration, OriginalLineageRestorationLimits,
+    OriginalLineageRow, OriginalLineageRuntimeRecord, OriginalPublicationClaim,
     OriginalPublicationOrigin, SavedOriginalInputLineage, SavedOriginalInputScope,
     SavedOriginalPublication,
 };

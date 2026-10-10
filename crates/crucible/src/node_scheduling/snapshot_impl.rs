@@ -20,6 +20,9 @@ pub struct PreparedSchedulingRestore {
     epochs: Option<super::super::SchedulingEpochEvidence>,
 }
 
+#[path = "lineage_restore.rs"]
+mod original_lineage;
+
 impl PreparedSchedulingRestore {
     /// Validates unresolved original operations under mandatory native continuation proof.
     ///

@@ -20,7 +20,7 @@ use super::{capture::CaptureSession, codec::encode, control::*, replay::ReplayCu
 mod byte_wire_models;
 
 #[path = "tape2/tests.rs"]
-mod tape2_models;
+pub(super) mod tape2_models;
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
 struct Directory(PathBuf);
