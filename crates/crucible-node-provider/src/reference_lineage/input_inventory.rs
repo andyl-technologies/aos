@@ -300,6 +300,7 @@ impl InputLineageInventory {
         // labels here cannot establish that ordered native consumption premise.
         Ok(())
     }
+
     fn check_event_row(&self, reference: &ContentRef, event: &Event) -> Result<(), ProviderError> {
         let row = &self.dependencies[locate(&self.dependencies, reference)?];
         let expected: Vec<_> =

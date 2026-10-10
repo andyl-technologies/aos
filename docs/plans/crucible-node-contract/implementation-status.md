@@ -1323,8 +1323,13 @@ missing from the source; a documented allowance now applies only to that
 allowances supply no equivalent strict credit. Original failures are retained.
 All 8,608 source leaves are verified before and after the functional checks;
 seven actual test/scanner executables and complete native evidence are retained
-outside Git. A separate presentation successor addresses declaration spacing,
-module ordering and exact owned metadata.
+outside Git. A separate presentation commit adds 14 declaration-separating blank
+lines, sorts the reader module declaration with its existing attribute and
+refreshes only affected source-review digests. All 76 selected Rust files pass
+formatting; current-source hygiene passes all 37 cases. Its initial hygiene
+failure identified the factory digest changed by module sorting; the exact
+owned digest is corrected without changing counts, rules or limits. This
+presentation stage reruns no native/model tests and adds no functional credit.
 
 These results supply the installed input-lineage mechanism evidence. They do
 not qualify ordinary selection, accepted classes, Ready, source-gone restore,

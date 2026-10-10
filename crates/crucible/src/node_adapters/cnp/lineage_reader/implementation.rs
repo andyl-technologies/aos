@@ -100,21 +100,27 @@ impl ControlledReference for ReaderState {
     fn status(&self) -> DeviceStatus {
         self.status
     }
+
     fn child_pid(&self) -> u32 {
         self.companion_pid
     }
+
     fn supervision_id(&self) -> U64 {
         self.supervision
     }
+
     fn owner_id(&self) -> &Id {
         &self.owner_binding.owner.id
     }
+
     fn incarnation_id(&self) -> &Id {
         &self.binding.authority.incarnation_id
     }
+
     fn generation(&self) -> U64 {
         self.binding.authority.owner_generation
     }
+
     fn output_media_type(&self) -> &str {
         "application/octet-stream"
     }
@@ -137,9 +143,11 @@ impl ControlledReference for ReaderState {
     fn stage(&mut self, grant: DeviceGrant, bytes: &[u8]) -> Result<(), ProviderError> {
         self.stage_window(grant, bytes)
     }
+
     fn activate(&mut self, grant: &DeviceGrant) -> Result<(), ProviderError> {
         self.activate_window(grant)
     }
+
     fn close(&mut self, grant: &DeviceGrant) -> Result<DeviceReceipt, ProviderError> {
         self.close_window(grant)
     }
@@ -161,6 +169,7 @@ impl ControlledReference for ReaderState {
     fn acknowledge_publication(&mut self, grant: &DeviceGrant) -> Result<(), ProviderError> {
         self.acknowledge_window(grant)
     }
+
     fn quarantine(&mut self) -> Result<bool, ProviderError> {
         self.quarantine_public()
     }

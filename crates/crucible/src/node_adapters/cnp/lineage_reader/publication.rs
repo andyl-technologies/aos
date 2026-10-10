@@ -276,6 +276,7 @@ impl ReaderState {
 fn invalid() -> ProviderError {
     ProviderError::Correlation("original native/public terminal association changed")
 }
+
 fn failure(error: OperationFailure) -> ProviderError {
     ProviderError::Io(std::io::Error::other(error.reason))
 }

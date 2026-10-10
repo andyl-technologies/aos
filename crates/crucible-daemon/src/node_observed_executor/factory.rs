@@ -16,9 +16,9 @@ mod controlled;
 mod faulted;
 mod native_state;
 mod profile;
-mod reference_public;
 #[cfg(test)]
 mod reference_lineage_reader;
+mod reference_public;
 mod scripted;
 mod seeded;
 mod semantics;

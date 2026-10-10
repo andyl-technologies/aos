@@ -120,6 +120,7 @@ impl TrustedHandshakeVerifier for Installed {
 
 #[derive(Default)]
 struct Supervisor(RefCell<Vec<ConnectionIncident>>);
+
 impl ConnectionSupervisor for Supervisor {
     fn quarantine(&self, incident: ConnectionIncident) {
         self.0.borrow_mut().push(incident);
@@ -296,6 +297,7 @@ fn controller(
     .unwrap();
     (controller, handshake)
 }
+
 struct SourceSlot {
     identity: U64,
     retained: Rc<RefCell<Option<LineageSourceCustody>>>,
@@ -633,6 +635,7 @@ fn launch(
     )
     .unwrap_or_else(|failure| panic!("selected control refused: {}", failure.error))
 }
+
 struct World {
     graph: Option<AdmittedGraph>,
     activation: Option<WorldActivation>,
