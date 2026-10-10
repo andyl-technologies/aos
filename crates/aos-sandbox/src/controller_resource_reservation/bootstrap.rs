@@ -10,17 +10,16 @@
 
 use std::os::unix::fs::{FileExt as _, MetadataExt as _};
 
-use aos_sandbox_core::{ResourceAccount, ResourceCeilings, ResourceVector};
 use aos_sandbox_linux::boot::{KernelBootId, RootOriginalKernelBootIdAttemptV1};
 use rustix::fs::{OFlags, SealFlags, fcntl_get_seals, fcntl_getfl, fstatfs};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    AccountHead, AccountKind, Claim, ClaimCut, ClaimPurpose, ClaimState,
+    AccountHead, Claim,
     ControllerResourceEnrollmentCaptureV1, EnrollmentIdentity, ImageBootstrapPolicy,
-    ResourceReservationErrorV1, Transition, TransitionOriginal, codec, matches_record, replay,
+    ResourceReservationErrorV1, State, Transition, TransitionOriginal, bank,
 };
-use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
+use crate::{Journal, JournalError, JournalTransaction};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct OriginalEnrollment {
@@ -39,7 +38,7 @@ impl ControllerResourceEnrollmentCaptureV1 {
         }
         let (invocation, producer) = profile.require_resource_producer()?;
         let original = observe_original_pair(&self.policy, &self.enrollment)?;
-        if original.recipient_invocation != invocation || original.identity.invocation != producer
+        if original.recipient_invocation != invocation || original.identity.native_fields().invocation != producer
             || profile.require_resource_producer()? != (invocation, producer)
         {
             return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
@@ -76,7 +75,7 @@ impl OriginalEnrollmentPairAttemptV1 {
         Self {
             observations: OriginalPairObservations::default(),
             bytes: OriginalPairBytes {
-                policy: [0; codec::ROOT_IMAGE_POLICY_BYTES],
+                policy: [0; bank::ROOT_IMAGE_POLICY_BYTES],
                 delivery: [0; 152],
             },
             boot: RootOriginalKernelBootIdAttemptV1::new(),
@@ -129,7 +128,7 @@ impl OriginalEnrollmentPairAttemptV1 {
 }
 
 struct OriginalPairBytes {
-    policy: [u8; codec::ROOT_IMAGE_POLICY_BYTES],
+    policy: [u8; bank::ROOT_IMAGE_POLICY_BYTES],
     delivery: [u8; 152],
 }
 
@@ -236,12 +235,12 @@ fn observe_original_pair_into<const RETAINED: bool>(
     let shape = (|| {
         if !policy_metadata.is_file()
             || ![
-                codec::IMAGE_POLICY_BYTES as u64,
-                codec::HOST_IMAGE_POLICY_BYTES as u64,
-                codec::FIRST_GLOBAL_IMAGE_POLICY_BYTES as u64,
-                codec::NIX_INTAKE_IMAGE_POLICY_BYTES as u64,
-                codec::Q04_INTAKE_IMAGE_POLICY_BYTES as u64,
-                codec::ROOT_IMAGE_POLICY_BYTES as u64,
+                bank::IMAGE_POLICY_BYTES as u64,
+                bank::HOST_IMAGE_POLICY_BYTES as u64,
+                bank::FIRST_GLOBAL_IMAGE_POLICY_BYTES as u64,
+                bank::NIX_INTAKE_IMAGE_POLICY_BYTES as u64,
+                bank::Q04_INTAKE_IMAGE_POLICY_BYTES as u64,
+                bank::ROOT_IMAGE_POLICY_BYTES as u64,
             ].contains(&policy_length)
             || policy_metadata.uid() != 0 || policy_metadata.gid() != 0
             || policy_metadata.mode() & 0o222 != 0
@@ -265,34 +264,33 @@ fn observe_original_pair_into<const RETAINED: bool>(
     original_pair_outcome!(RETAINED, observations.shape, shape);
 
     let (policy, identity, recipient_invocation, manifest) =
-        if policy_length == codec::IMAGE_POLICY_BYTES as u64 {
-            read_original_pair::<{ codec::IMAGE_POLICY_BYTES }, RETAINED>(
+        if policy_length == bank::IMAGE_POLICY_BYTES as u64 {
+            read_original_pair::<{ bank::IMAGE_POLICY_BYTES }, RETAINED>(
                 policy_file, enrollment_file, observations, bytes,
             )?
-        } else if policy_length == codec::HOST_IMAGE_POLICY_BYTES as u64 {
-            read_original_pair::<{ codec::HOST_IMAGE_POLICY_BYTES }, RETAINED>(
+        } else if policy_length == bank::HOST_IMAGE_POLICY_BYTES as u64 {
+            read_original_pair::<{ bank::HOST_IMAGE_POLICY_BYTES }, RETAINED>(
                 policy_file, enrollment_file, observations, bytes,
             )?
-        } else if policy_length == codec::FIRST_GLOBAL_IMAGE_POLICY_BYTES as u64 {
-            read_original_pair::<{ codec::FIRST_GLOBAL_IMAGE_POLICY_BYTES }, RETAINED>(
+        } else if policy_length == bank::FIRST_GLOBAL_IMAGE_POLICY_BYTES as u64 {
+            read_original_pair::<{ bank::FIRST_GLOBAL_IMAGE_POLICY_BYTES }, RETAINED>(
                 policy_file, enrollment_file, observations, bytes,
             )?
-        } else if policy_length == codec::NIX_INTAKE_IMAGE_POLICY_BYTES as u64 {
-            read_original_pair::<{ codec::NIX_INTAKE_IMAGE_POLICY_BYTES }, RETAINED>(
+        } else if policy_length == bank::NIX_INTAKE_IMAGE_POLICY_BYTES as u64 {
+            read_original_pair::<{ bank::NIX_INTAKE_IMAGE_POLICY_BYTES }, RETAINED>(
                 policy_file, enrollment_file, observations, bytes,
             )?
-        } else if policy_length == codec::Q04_INTAKE_IMAGE_POLICY_BYTES as u64 {
-            read_original_pair::<{ codec::Q04_INTAKE_IMAGE_POLICY_BYTES }, RETAINED>(
+        } else if policy_length == bank::Q04_INTAKE_IMAGE_POLICY_BYTES as u64 {
+            read_original_pair::<{ bank::Q04_INTAKE_IMAGE_POLICY_BYTES }, RETAINED>(
                 policy_file, enrollment_file, observations, bytes,
             )?
         } else {
-            read_original_pair::<{ codec::ROOT_IMAGE_POLICY_BYTES }, RETAINED>(
+            read_original_pair::<{ bank::ROOT_IMAGE_POLICY_BYTES }, RETAINED>(
                 policy_file, enrollment_file, observations, bytes,
             )?
         };
-    if identity.node != policy.node || identity.epoch != policy.epoch
-        || identity.manifest != manifest
-        || identity.boot != original_pair_boot::<RETAINED>(observations, retained_boot)?
+    if !identity.matches_image(policy, manifest)
+        || identity.native_fields().boot != original_pair_boot::<RETAINED>(observations, retained_boot)?
     {
         return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
     }
@@ -361,10 +359,12 @@ fn read_original_pair_buffers<const RETAINED: bool>(
     );
 
     let policy = *original_pair_outcome!(
-        RETAINED, observations.policy_decode, codec::decode_image_policy(policy_bytes)
+        RETAINED, observations.policy_decode, bank::decode_image_policy(policy_bytes, super::q04_intake::native_layout())
+            .map_err(ResourceReservationErrorV1::from)
     );
     let (identity, recipient_invocation) = *original_pair_outcome!(
-        RETAINED, observations.delivery_decode, codec::decode_pid1_delivery(delivery_bytes)
+        RETAINED, observations.delivery_decode, bank::decode_pid1_delivery(delivery_bytes)
+            .map_err(ResourceReservationErrorV1::from)
     );
     let manifest = <[u8; 32]>::from(Sha256::digest(policy_bytes));
     observations.manifest = Some(manifest);
@@ -386,122 +386,14 @@ impl EnrollmentTransition {
     fn prepare(original: &OriginalEnrollment) -> Result<Self, ResourceReservationErrorV1> {
         let identity = original.identity;
         let policy = original.policy;
-        policy.validate()?;
-        let node = policy.node;
-        let controller = account_id(identity, b"controller");
-        let components = account_id(identity, b"components");
-        let root_account = ResourceAccount::from_usage(
-            ResourceCeilings::bounded(policy.capacity), policy.baseline, ResourceVector::ZERO,
-        )?.reserve(policy.controller)?.reserve(policy.components)?;
-        let head = |id, parent, kind, account, baseline| AccountHead {
-            enrollment: identity, id, parent, kind, generation: 1,
-            project: [0; 16], sandbox: [0; 16], tree_revision: [0; 32], account, baseline,
-        };
-
-        // Fixed aggregate demand stays committed inside the once-paid grant;
-        // only the explicit Host and Root subdivisions remain reserved.
-        let components_baseline = match policy.host {
-            Some(host) => policy.components
-                .checked_sub(host.service)?.checked_sub(host.control)?,
-            None => policy.components,
-        }
-        .checked_sub(policy.root_receiving.unwrap_or(ResourceVector::ZERO))?;
-        let child_account = |amount, baseline| ResourceAccount::from_usage(
-            ResourceCeilings::bounded(amount), baseline, ResourceVector::ZERO,
-        );
-
-        let mut heads = [
-            head(node, [0; 16], AccountKind::Node, root_account, policy.baseline),
-            head(
-                controller, node, AccountKind::Controller,
-                child_account(policy.controller, policy.controller)?, policy.controller,
-            ),
-            head(
-                components, node, AccountKind::Components,
-                child_account(policy.components, components_baseline)?, components_baseline,
-            ),
-        ];
-        let claim = |child: [u8; 16], amount, purpose| Claim {
-            enrollment: identity, id: account_id(identity, &child), account: node, child,
-            owner: identity.manifest, purpose, operation: [0; 16], project: [0; 16],
-            sandbox: [0; 16], tree_revision: [0; 32], cut: ClaimCut::BootLifetime,
-            genesis_instance: [0; 32],
-            amount, state: ClaimState::Reserved,
-        };
-        let first_global = if let Some(prefix) = policy.first_global_prefix {
-            let retained_service = policy.controller.checked_sub(prefix)?
-                .checked_sub(policy.nix_original_start_intake.unwrap_or(ResourceVector::ZERO))?
-                .checked_sub(policy.q04_original_intake.unwrap_or(ResourceVector::ZERO))?;
-            heads[1].baseline = retained_service;
-            heads[1].account = ResourceAccount::from_usage(
-                ResourceCeilings::bounded(policy.controller),
-                retained_service,
-                ResourceVector::ZERO,
-            )?.reserve(prefix)?
-                .reserve(policy.nix_original_start_intake.unwrap_or(ResourceVector::ZERO))?
-                .reserve(policy.q04_original_intake.unwrap_or(ResourceVector::ZERO))?;
-            Some(Claim {
-                id: account_id(identity, b"controller-first-global-prefix-v1"),
-                account: controller,
-                ..claim([0; 16], prefix, ClaimPurpose::ControllerFirstGlobalPrefix)
-            })
-        } else {
-            None
-        };
-        let nix_intake = policy.nix_original_start_intake.map(|amount| Claim {
-            id: account_id(identity, b"controller-nix-original-start-intake-v1"),
-            account: controller,
-            ..claim([0; 16], amount, ClaimPurpose::NixOriginalStartIntake)
-        });
-        let q04_intake = policy.q04_original_intake.map(|amount| Claim {
-            id: account_id(identity, b"controller-q04-original-intake-v1"),
-            account: controller,
-            ..claim([0; 16], amount, ClaimPurpose::Q04OriginalIntake)
-        });
-        let host = if let Some(host_policy) = policy.host {
-            let host_id = account_id(identity, b"host-component-v2");
-            let amount = host_policy.service.checked_add(host_policy.control)?;
-            heads[2].account = heads[2].account.reserve(amount)?;
-            let host_account = ResourceAccount::from_usage(
-                ResourceCeilings::bounded(amount),
-                host_policy.service,
-                ResourceVector::ZERO,
-            )?.reserve(host_policy.control)?;
-            let host_head = head(
-                host_id, components, AccountKind::Operation,
-                host_account, host_policy.service,
-            );
-            let host_claim = Claim {
-                account: components,
-                ..claim(host_id, amount, ClaimPurpose::HostComponentBootstrap)
-            };
-            let control_claim = Claim {
-                id: account_id(identity, b"host-control-v2"),
-                account: host_id,
-                ..claim([0; 16], host_policy.control, ClaimPurpose::HostControlInterval)
-            };
-            Some((host_head, [host_claim, control_claim]))
-        } else {
-            None
-        };
-        let root_receiving = if let Some(amount) = policy.root_receiving {
-            heads[2].account = heads[2].account.reserve(amount)?;
-            Some(Claim {
-                id: account_id(identity, b"root-receiving-v1"),
-                account: components,
-                ..claim([0; 16], amount, ClaimPurpose::RootReceiving)
-            })
-        } else {
-            None
-        };
+        let (heads, host, first_global, nix_intake, q04_intake, root_receiving) =
+            bank::prepare_enrollment_subdivisions(identity, policy, super::q04_intake::native_layout())
+                .map_err(ResourceReservationErrorV1::from)?;
 
         Ok(Self {
             transaction_id: aos_sandbox_core::OperationId::new().into_bytes(),
             heads,
-            claims: [
-                claim(controller, policy.controller, ClaimPurpose::ControllerBootstrap),
-                claim(components, policy.components, ClaimPurpose::ComponentEnvelope),
-            ],
+            claims: bank::initial_enrollment_claims(identity, policy, &heads),
             host,
             first_global,
             nix_intake,
@@ -510,74 +402,20 @@ impl EnrollmentTransition {
         })
     }
 
+    fn history(&self) -> bank::EnrollmentMutation<'_> {
+        bank::EnrollmentMutation::new((
+            &self.transaction_id, &self.heads, &self.claims, &self.host,
+            &self.first_global, &self.nix_intake, &self.q04_intake, &self.root_receiving,
+        ))
+    }
+
     fn transaction(&self) -> Result<JournalTransaction, ResourceReservationErrorV1> {
-        let members = if self.root_receiving.is_some() { 12 } else if self.q04_intake.is_some() { 11 } else if self.nix_intake.is_some() { 10 }
-            else if self.first_global.is_some() { 9 } else if self.host.is_some() { 8 } else { 5 };
-        let mut records = Vec::with_capacity(members);
-        for head in self.heads {
-            records.push(JournalRecord::put(
-                RecordNamespace::ControllerResourceReservation,
-                replay::key(replay::HEAD_PREFIX, head.id).to_vec(),
-                codec::encode_head(head)?.to_vec(),
-            ));
-        }
-        if let Some((head, _)) = self.host {
-            records.push(JournalRecord::put(
-                RecordNamespace::ControllerResourceReservation,
-                replay::key(replay::HEAD_PREFIX, head.id).to_vec(),
-                codec::encode_head(head)?.to_vec(),
-            ));
-        }
-        for claim in self.claims {
-            records.push(JournalRecord::put(
-                RecordNamespace::ControllerResourceReservation,
-                replay::key(replay::CLAIM_PREFIX, claim.id).to_vec(),
-                codec::encode_claim(claim)?.to_vec(),
-            ));
-        }
-        if let Some((_, claims)) = self.host {
-            for claim in claims {
-                records.push(JournalRecord::put(
-                    RecordNamespace::ControllerResourceReservation,
-                    replay::key(replay::CLAIM_PREFIX, claim.id).to_vec(),
-                    codec::encode_claim(claim)?.to_vec(),
-                ));
-            }
-        }
-        if let Some(claim) = self.first_global {
-            records.push(JournalRecord::put(
-                RecordNamespace::ControllerResourceReservation,
-                replay::key(replay::CLAIM_PREFIX, claim.id).to_vec(),
-                codec::encode_claim(claim)?.to_vec(),
-            ));
-        }
-        if let Some(claim) = self.nix_intake {
-            records.push(JournalRecord::put(
-                RecordNamespace::ControllerResourceReservation,
-                replay::key(replay::CLAIM_PREFIX, claim.id).to_vec(),
-                codec::encode_claim(claim)?.to_vec(),
-            ));
-        }
-        if let Some(claim) = self.q04_intake {
-            records.push(JournalRecord::put(
-                RecordNamespace::ControllerResourceReservation,
-                replay::key(replay::CLAIM_PREFIX, claim.id).to_vec(),
-                codec::encode_claim(claim)?.to_vec(),
-            ));
-        }
-        if let Some(claim) = self.root_receiving {
-            records.push(JournalRecord::put(
-                RecordNamespace::ControllerResourceReservation,
-                replay::key(replay::CLAIM_PREFIX, claim.id).to_vec(),
-                codec::encode_claim(claim)?.to_vec(),
-            ));
-        }
-        Ok(JournalTransaction::new(self.transaction_id, records).map_err(JournalError::from)?)
+        self.history().transaction().map_err(ResourceReservationErrorV1::from)
     }
 
     pub(super) fn require_current(
         &self,
-        state: &replay::State,
+        state: &State,
         transaction: &JournalTransaction,
     ) -> Result<(), JournalError> {
         self.require_exact(state, transaction).map_err(|_| JournalError::ProtectedBoundary)
@@ -585,152 +423,23 @@ impl EnrollmentTransition {
 
     fn require_exact(
         &self,
-        state: &replay::State,
+        state: &State,
         transaction: &JournalTransaction,
     ) -> Result<(), ResourceReservationErrorV1> {
-        if replay::validate(state)?.is_some()
-            || transaction.id() != &self.transaction_id
-            || transaction.records().len() != if self.root_receiving.is_some() { 12 }
-                else if self.q04_intake.is_some() { 11 }
-                else if self.nix_intake.is_some() { 10 }
-                else if self.first_global.is_some() { 9 }
-                else if self.host.is_some() { 8 } else { 5 }
-        {
-            return Err(ResourceReservationErrorV1::Conflict);
-        }
-        for (record, head) in transaction.records()[..3].iter().zip(self.heads) {
-            if !matches_record(record, replay::HEAD_PREFIX, head.id, &codec::encode_head(head)?) {
-                return Err(ResourceReservationErrorV1::Conflict);
-            }
-        }
-        let claim_offset = if self.host.is_some() { 4 } else { 3 };
-        if let Some((head, claims)) = self.host {
-            if !matches_record(
-                &transaction.records()[3], replay::HEAD_PREFIX, head.id,
-                &codec::encode_head(head)?,
-            ) {
-                return Err(ResourceReservationErrorV1::Conflict);
-            }
-            for (record, claim) in transaction.records()[6..].iter().zip(claims) {
-                if !matches_record(record, replay::CLAIM_PREFIX, claim.id, &codec::encode_claim(claim)?) {
-                    return Err(ResourceReservationErrorV1::Conflict);
-                }
-            }
-        }
-        for (record, claim) in transaction.records()[claim_offset..claim_offset + 2].iter().zip(self.claims) {
-            if !matches_record(record, replay::CLAIM_PREFIX, claim.id, &codec::encode_claim(claim)?) {
-                return Err(ResourceReservationErrorV1::Conflict);
-            }
-        }
-        if let Some(claim) = self.first_global {
-            if !matches_record(
-                &transaction.records()[8], replay::CLAIM_PREFIX, claim.id,
-                &codec::encode_claim(claim)?,
-            ) {
-                return Err(ResourceReservationErrorV1::Conflict);
-            }
-        }
-        if let Some(claim) = self.nix_intake {
-            if !matches_record(
-                &transaction.records()[9], replay::CLAIM_PREFIX, claim.id,
-                &codec::encode_claim(claim)?,
-            ) {
-                return Err(ResourceReservationErrorV1::Conflict);
-            }
-        }
-        if let Some(claim) = self.q04_intake {
-            if !matches_record(
-                &transaction.records()[10], replay::CLAIM_PREFIX, claim.id,
-                &codec::encode_claim(claim)?,
-            ) {
-                return Err(ResourceReservationErrorV1::Conflict);
-            }
-        }
-        if let Some(claim) = self.root_receiving {
-            if !matches_record(
-                &transaction.records()[11], replay::CLAIM_PREFIX, claim.id,
-                &codec::encode_claim(claim)?,
-            ) {
-                return Err(ResourceReservationErrorV1::Conflict);
-            }
-        }
-        Ok(())
+        self.history().require_exact(state, transaction).map_err(ResourceReservationErrorV1::from)
     }
 
     fn require_returned(&self, journal: &Journal) -> Result<(), ResourceReservationErrorV1> {
         let state = journal.controller_resource_state_v1()?;
-        if replay::validate(state)? != Some(self.heads[0].enrollment)
+        if bank::validate(state).map_err(ResourceReservationErrorV1::from)? != Some(self.heads[0].native_fields().enrollment)
             || !journal.controller_resource_contains_transaction_v1(&self.transaction_id)?
         {
             return Err(ResourceReservationErrorV1::Conflict);
         }
-        for expected in self.heads {
-            if replay::find_head(state, expected.id)? != expected {
-                return Err(ResourceReservationErrorV1::Conflict);
-            }
-        }
-        for expected in self.claims {
-            let actual = replay::record_bytes(state, replay::CLAIM_PREFIX, expected.id)
-                .ok_or(ResourceReservationErrorV1::Conflict)?;
-            if codec::decode_claim(actual)? != expected {
-                return Err(ResourceReservationErrorV1::Conflict);
-            }
-        }
-        if let Some((head, claims)) = self.host {
-            if replay::find_head(state, head.id)? != head {
-                return Err(ResourceReservationErrorV1::Conflict);
-            }
-            for expected in claims {
-                let actual = replay::record_bytes(state, replay::CLAIM_PREFIX, expected.id)
-                    .ok_or(ResourceReservationErrorV1::Conflict)?;
-                if codec::decode_claim(actual)? != expected {
-                    return Err(ResourceReservationErrorV1::Conflict);
-                }
-            }
-        }
-        if let Some(expected) = self.first_global {
-            let actual = replay::record_bytes(state, replay::CLAIM_PREFIX, expected.id)
-                .ok_or(ResourceReservationErrorV1::Conflict)?;
-            if codec::decode_claim(actual)? != expected {
-                return Err(ResourceReservationErrorV1::Conflict);
-            }
-        }
-        if let Some(expected) = self.nix_intake {
-            let actual = replay::record_bytes(state, replay::CLAIM_PREFIX, expected.id)
-                .ok_or(ResourceReservationErrorV1::Conflict)?;
-            if codec::decode_claim(actual)? != expected {
-                return Err(ResourceReservationErrorV1::Conflict);
-            }
-        }
-        if let Some(expected) = self.q04_intake {
-            let actual = replay::record_bytes(state, replay::CLAIM_PREFIX, expected.id)
-                .ok_or(ResourceReservationErrorV1::Conflict)?;
-            if codec::decode_claim(actual)? != expected {
-                return Err(ResourceReservationErrorV1::Conflict);
-            }
-        }
-        if let Some(expected) = self.root_receiving {
-            let actual = replay::record_bytes(state, replay::CLAIM_PREFIX, expected.id)
-                .ok_or(ResourceReservationErrorV1::Conflict)?;
-            if codec::decode_claim(actual)? != expected {
-                return Err(ResourceReservationErrorV1::Conflict);
-            }
-        }
-        Ok(())
+        self.history().require_returned_rows(state).map_err(ResourceReservationErrorV1::from)
     }
 }
 
-pub(super) fn account_id(identity: EnrollmentIdentity, role: &[u8]) -> [u8; 16] {
-    let mut hash = Sha256::new();
-    hash.update(b"AOS-resource-account-v1\0");
-    hash.update(identity.node);
-    hash.update(identity.epoch);
-    hash.update(role);
-    let hash = hash.finalize();
-    let mut id = [0; 16];
-    id.copy_from_slice(&hash[..16]);
-    id
-}
 
 /// Keeps the first bank-open transaction and every native/post result resident.
 ///
@@ -768,7 +477,7 @@ impl ControllerResourceBankOpeningV1 {
         }
         let original = self.observed.as_ref().and_then(|result| result.as_ref().ok())
             .copied().ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-        if original.policy.q04_original_intake.is_none() {
+        if original.policy.bootstrap_provisions().q04_original_intake.is_none() {
             return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
         }
         // This first short borrow uses the actual already-enrolled owner.
@@ -791,7 +500,7 @@ impl ControllerResourceBankOpeningV1 {
         }
         let original = self.observed.as_ref().and_then(|result| result.as_ref().ok())
             .copied().ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-        let provision = original.policy.nix_original_start_intake
+        let provision = original.policy.bootstrap_provisions().nix_original_start_intake
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
         provision.checked_sub(super::nix_intake::minimum_failure_demand()?)?;
 
@@ -807,7 +516,7 @@ impl ControllerResourceBankOpeningV1 {
     #[must_use]
     pub fn selects_first_global_prefix(&self) -> bool {
         self.observed.as_ref().and_then(|result| result.as_ref().ok())
-            .is_some_and(|original| original.policy.first_global_prefix.is_some())
+            .is_some_and(|original| original.policy.bootstrap_provisions().first_global_prefix.is_some())
     }
 
     // Only the entered FirstGlobal constructor uses this genuine held origin
@@ -828,7 +537,7 @@ impl ControllerResourceBankOpeningV1 {
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
         let actual = observe_original_pair(&self.original.policy, &self.original.enrollment)?;
         if actual != original || journal.protected_writer_physical_names_v1()? != *names
-            || replay::validate(journal.controller_resource_state_v1()?)? != Some(original.identity)
+            || bank::validate(journal.controller_resource_state_v1()?).map_err(ResourceReservationErrorV1::from)? != Some(original.identity)
         {
             return Err(ResourceReservationErrorV1::Conflict);
         }
@@ -854,7 +563,7 @@ impl ControllerResourceBankOpeningV1 {
         if current.identity != original.identity || current.policy != original.policy
             || current.recipient_invocation != original.recipient_invocation
             || journal.protected_writer_physical_names_v1()? != *names
-            || replay::validate(journal.controller_resource_state_v1()?)? != Some(original.identity)
+            || bank::validate(journal.controller_resource_state_v1()?).map_err(ResourceReservationErrorV1::from)? != Some(original.identity)
         {
             return Err(ResourceReservationErrorV1::Conflict);
         }
@@ -944,7 +653,7 @@ impl ControllerResourceBankOpeningV1 {
             return Err(self.failure().unwrap_or(&CLOSED));
         }
         self.observed = Some(self.original.observe(profile).and_then(|original| {
-            if original.identity.node != node {
+            if original.identity.native_fields().node != node {
                 return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
             }
             Ok(original)
@@ -1019,7 +728,7 @@ impl ControllerResourcePreopenLoanV1<'_> {
             .and_then(|post| post.pair.as_ref())
             .and_then(|result| result.as_ref().ok())
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-        if original.identity.node != node {
+        if original.identity.native_fields().node != node {
             return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
         }
         Ok(())
@@ -1072,7 +781,7 @@ impl ControllerResourcePreopenPostV1 {
             let after = self.after.as_ref().and_then(|result| result.as_ref().ok())
                 .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
             if original.process != std::process::id() || before != after
-                || pair.recipient_invocation != before.0 || pair.identity.invocation != before.1
+                || pair.recipient_invocation != before.0 || pair.identity.native_fields().invocation != before.1
                 || admitted.is_some_and(|previous| {
                     previous.identity != pair.identity || previous.policy != pair.policy
                         || previous.recipient_invocation != pair.recipient_invocation

@@ -22,6 +22,8 @@
 //! [`execution_observe_reservation`] owns the complete canonical Observe binding;
 //! [`create_q04_history`] owns the closed Q04 historical record family and its
 //! shared private codec. Native signing, custody and continuation stay upper.
+//! [`resource_bank`] owns the complete passive account/claim codecs, inclusive
+//! replay, co-issuance and terminal history. Native resource loans stay upper.
 
 pub mod capacity;
 pub mod create_q04_history;
@@ -32,6 +34,7 @@ pub mod project_source;
 pub mod protected_names;
 pub mod public_operation;
 pub mod records;
+pub mod resource_bank;
 pub mod root_project_history;
 pub mod source_project_history;
 pub mod transaction;

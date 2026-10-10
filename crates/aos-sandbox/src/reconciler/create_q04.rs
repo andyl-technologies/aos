@@ -1083,7 +1083,7 @@ pub(crate) fn read_original_q04_rows_v1(
 pub(crate) fn require_original_pending(journal: &Journal) -> Result<bool, ReconcilerError> {
     let has_history = journal.records(RecordNamespace::ControllerPolicyHold)
         .any(|(key, _)| key == CONTROLLER_IDENTITY_KEY || key.starts_with(CONTROLLER_PHASE_PREFIX)
-            || key == crate::policy_compiler::create_q04::CONTROLLER_INPUT_ORIGIN_KEY);
+            || key == aos_sandbox_protocol::domain_ledger::resource_bank::CONTROLLER_INPUT_ORIGIN_KEY);
     let has_gate = journal.records(RecordNamespace::Effect)
         .any(|(_, bytes)| bytes.first() == Some(&6));
     if !has_history && !has_gate {

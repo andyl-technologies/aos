@@ -533,7 +533,8 @@ impl ControllerNixStartRecipeSelectorV2 {
         // The existing two-member bank framer bounds each smaller time-floor
         // TX (revision128/head48 and fixed keys), as well as I's own TX. It
         // does not substitute a transaction ceiling for measured framing.
-        let one_append = Journal::first_global_prefix_append_bytes_v1()?;
+        let one_append = aos_sandbox_protocol::domain_ledger::resource_bank::first_global_prefix_append_bytes()
+            .map_err(crate::JournalError::from)?;
         let append = one_append.checked_mul(7).ok_or_else(refused)?;
         if one_append > u64::try_from(controller.maximum_transaction_bytes).map_err(|_| refused())?
             || controller.maximum_record_bytes < 945

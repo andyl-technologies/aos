@@ -1,4 +1,4 @@
-//! Encodes the closed native Controller resource-account and claim formats.
+//! Owns the closed historical image, enrollment, account and claim codecs.
 //!
 //! ```text
 //! head  = AOSRSH01 || enrollment[96] || id[16] || parent[16] || kind:u8
@@ -50,7 +50,7 @@
 use aos_sandbox_core::{ResourceAccount, ResourceCeilings, ResourceDimension, ResourceLimit, ResourceVector};
 use sha2::{Digest as _, Sha256};
 
-use super::{AccountHead, AccountKind, Claim, ClaimCut, ClaimPurpose, ClaimState, EnrollmentIdentity, ImageBootstrapPolicy, ResourceReservationErrorV1};
+use super::{AccountHead, AccountKind, Claim, ClaimCut, ClaimPurpose, ClaimState, EnrollmentIdentity, ImageBootstrapPolicy, ResourceBankDataError};
 use super::PreparationBinding;
 
 pub(super) const HEAD_BYTES: usize = 945;
@@ -58,17 +58,35 @@ pub(super) const CLAIM_BYTES: usize = 531;
 pub(super) const PREPARATION_BYTES: usize = 787;
 const HEAD_MAGIC: &[u8; 8] = b"AOSRSH01";
 const CLAIM_MAGIC: &[u8; 8] = b"AOSRSC02";
-pub(super) const IMAGE_POLICY_BYTES: usize = 776;
-pub(super) const HOST_IMAGE_POLICY_BYTES: usize = 1128;
-pub(super) const FIRST_GLOBAL_IMAGE_POLICY_BYTES: usize = 1304;
-pub(super) const NIX_INTAKE_IMAGE_POLICY_BYTES: usize = 1480;
-pub(super) const Q04_INTAKE_IMAGE_POLICY_BYTES: usize = 1656;
-pub(super) const ROOT_IMAGE_POLICY_BYTES: usize = 1832;
+/// Specifies the complete AOSRSB01 policy width, including checksum.
+pub const IMAGE_POLICY_BYTES: usize = 776;
+/// Specifies the complete AOSRSB02 policy width, including checksum.
+pub const HOST_IMAGE_POLICY_BYTES: usize = 1128;
+/// Specifies the complete AOSRSB03 policy width, including checksum.
+pub const FIRST_GLOBAL_IMAGE_POLICY_BYTES: usize = 1304;
+/// Specifies the complete AOSRSB04 policy width, including checksum.
+pub const NIX_INTAKE_IMAGE_POLICY_BYTES: usize = 1480;
+/// Specifies the complete AOSRSB05 policy width, including checksum.
+pub const Q04_INTAKE_IMAGE_POLICY_BYTES: usize = 1656;
+/// Specifies the complete AOSRSB06 policy width, including checksum.
+pub const ROOT_IMAGE_POLICY_BYTES: usize = 1832;
 const IMAGE_POLICY_MAGIC: &[u8; 8] = b"AOSRSB01";
 
-pub(super) fn decode_image_policy(
+/// Decodes and validates one complete closed image-policy format.
+///
+/// The format tag selects its exact width and optional fields. Framing and checksum
+/// are checked before semantic fields; Native layout arithmetic is reached only
+/// for an included Q04 subdivision. Decoding does not bind an original image FD.
+///
+/// # Errors
+///
+/// Rejects malformed framing or checksum, unavailable identity or required
+/// subdivisions, insufficient resource amounts, and reached layout arithmetic
+/// overflow or an allowance exceeded by the supplied widths.
+pub fn decode_image_policy(
     bytes: &[u8],
-) -> Result<ImageBootstrapPolicy, ResourceReservationErrorV1> {
+    layout: super::NativeLayoutDemand,
+) -> Result<ImageBootstrapPolicy, ResourceBankDataError> {
     let (length, magic) = match bytes.get(..8) {
         Some(magic) if magic == b"AOSRSB06" => (ROOT_IMAGE_POLICY_BYTES, b"AOSRSB06"),
         Some(magic) if magic == b"AOSRSB05" => (Q04_INTAKE_IMAGE_POLICY_BYTES, b"AOSRSB05"),
@@ -117,23 +135,29 @@ pub(super) fn decode_image_policy(
             None
         },
     };
-    policy.validate()?;
+    policy.validate(layout)?;
     Ok(policy)
 }
 
-pub(super) fn decode_pid1_delivery(
+/// Decodes the complete historical PID1 enrollment delivery and recipient identity.
+///
+/// # Errors
+///
+/// Rejects malformed framing, checksum or enrollment identities; a zero recipient
+/// invocation returns `EnrollmentUnavailable`. No descriptor custody is created.
+pub fn decode_pid1_delivery(
     bytes: &[u8],
-) -> Result<(EnrollmentIdentity, [u8; 16]), ResourceReservationErrorV1> {
+) -> Result<(EnrollmentIdentity, [u8; 16]), ResourceBankDataError> {
     require_record(bytes, 152, b"AOSRSE01")?;
     let enrollment = decode_enrollment(&bytes[8..104])?;
     let invocation = fixed(&bytes[104..120])?;
     if invocation == [0; 16] {
-        return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
+        return Err(ResourceBankDataError::EnrollmentUnavailable);
     }
     Ok((enrollment, invocation))
 }
 
-pub(super) fn encode_head(head: AccountHead) -> Result<[u8; HEAD_BYTES], ResourceReservationErrorV1> {
+pub(super) fn encode_head(head: AccountHead) -> Result<[u8; HEAD_BYTES], ResourceBankDataError> {
     validate_head(head)?;
     let mut bytes = [0; HEAD_BYTES];
     bytes[..8].copy_from_slice(HEAD_MAGIC);
@@ -161,7 +185,7 @@ pub(super) fn encode_head(head: AccountHead) -> Result<[u8; HEAD_BYTES], Resourc
     Ok(bytes)
 }
 
-pub(super) fn decode_head(bytes: &[u8]) -> Result<AccountHead, ResourceReservationErrorV1> {
+pub(super) fn decode_head(bytes: &[u8]) -> Result<AccountHead, ResourceBankDataError> {
     require_record(bytes, HEAD_BYTES, HEAD_MAGIC)?;
     let kind = match bytes[136] {
         1 => AccountKind::Node,
@@ -170,7 +194,7 @@ pub(super) fn decode_head(bytes: &[u8]) -> Result<AccountHead, ResourceReservati
         4 => AccountKind::Project,
         5 => AccountKind::Sandbox,
         6 => AccountKind::Operation,
-        _ => return Err(ResourceReservationErrorV1::CorruptLedger),
+        _ => return Err(ResourceBankDataError::CorruptLedger),
     };
     let head = AccountHead {
         enrollment: decode_enrollment(&bytes[8..104])?,
@@ -192,7 +216,7 @@ pub(super) fn decode_head(bytes: &[u8]) -> Result<AccountHead, ResourceReservati
     Ok(head)
 }
 
-pub(super) fn encode_claim(claim: Claim) -> Result<[u8; CLAIM_BYTES], ResourceReservationErrorV1> {
+pub(super) fn encode_claim(claim: Claim) -> Result<[u8; CLAIM_BYTES], ResourceBankDataError> {
     validate_claim(claim)?;
     let mut bytes = [0; CLAIM_BYTES];
     bytes[..8].copy_from_slice(CLAIM_MAGIC);
@@ -258,7 +282,7 @@ pub(super) fn encode_claim(claim: Claim) -> Result<[u8; CLAIM_BYTES], ResourceRe
     Ok(bytes)
 }
 
-pub(super) fn decode_claim(bytes: &[u8]) -> Result<Claim, ResourceReservationErrorV1> {
+pub(super) fn decode_claim(bytes: &[u8]) -> Result<Claim, ResourceBankDataError> {
     let host = bytes.get(..8) == Some(b"AOSRSC03".as_slice());
     let first_global = bytes.get(..8) == Some(b"AOSRSC04".as_slice());
     let intake = bytes.get(..8) == Some(b"AOSRSC06".as_slice());
@@ -296,7 +320,7 @@ pub(super) fn decode_claim(bytes: &[u8]) -> Result<Claim, ResourceReservationErr
             11 if intake => ClaimPurpose::NixOriginalStartIntake,
             12 if q04_intake => ClaimPurpose::Q04OriginalIntake,
             13 if root => ClaimPurpose::RootReceiving,
-            _ => return Err(ResourceReservationErrorV1::CorruptLedger),
+            _ => return Err(ResourceBankDataError::CorruptLedger),
         },
         operation: fixed(&bytes[185..201])?,
         project: fixed(&bytes[201..217])?,
@@ -309,7 +333,7 @@ pub(super) fn decode_claim(bytes: &[u8]) -> Result<Claim, ResourceReservationErr
                 original_boottime_nanoseconds: u64::from_be_bytes(fixed(&bytes[274..282])?),
                 deadline_boottime_nanoseconds: u64::from_be_bytes(fixed(&bytes[282..290])?),
             },
-            _ => return Err(ResourceReservationErrorV1::CorruptLedger),
+            _ => return Err(ResourceBankDataError::CorruptLedger),
         },
         amount: decode_vector(&bytes[290..466])?,
         genesis_instance: fixed(&bytes[467..499])?,
@@ -317,21 +341,21 @@ pub(super) fn decode_claim(bytes: &[u8]) -> Result<Claim, ResourceReservationErr
             1 => ClaimState::Reserved,
             2 => ClaimState::Committed,
             3 => ClaimState::Released,
-            _ => return Err(ResourceReservationErrorV1::CorruptLedger),
+            _ => return Err(ResourceBankDataError::CorruptLedger),
         },
     };
     validate_claim(claim)?;
     Ok(claim)
 }
 
-// This native association retains actual original joins, not a transferable
+// This historical association retains original joins, not a transferable
 // Root or Source loan. The nested claim uses the same sole canonical codec.
-pub(super) fn encode_preparation(binding: PreparationBinding) -> Result<[u8; PREPARATION_BYTES], ResourceReservationErrorV1> {
+pub(super) fn encode_preparation(binding: PreparationBinding) -> Result<[u8; PREPARATION_BYTES], ResourceBankDataError> {
     if binding.claim.purpose != ClaimPurpose::ProjectPreparation
         || binding.nonce == [0; 16] || binding.source_sequence == 0
         || [binding.floor, binding.tree_head, binding.lineage_head].contains(&[0; 32])
     {
-        return Err(ResourceReservationErrorV1::CorruptLedger);
+        return Err(ResourceBankDataError::CorruptLedger);
     }
     let mut bytes = [0; PREPARATION_BYTES];
     bytes[..8].copy_from_slice(b"AOSRSP01");
@@ -348,59 +372,59 @@ pub(super) fn encode_preparation(binding: PreparationBinding) -> Result<[u8; PRE
     Ok(bytes)
 }
 
-pub(super) fn decode_preparation(bytes: &[u8]) -> Result<PreparationBinding, ResourceReservationErrorV1> {
+pub(super) fn decode_preparation(bytes: &[u8]) -> Result<PreparationBinding, ResourceBankDataError> {
     require_record(bytes, PREPARATION_BYTES, b"AOSRSP01")?;
     let binding = PreparationBinding {
         claim: decode_claim(&bytes[8..539])?,
         nonce: fixed(&bytes[539..555])?,
-        controller_names: crate::journal::ProtectedJournalNamesV1::from_bytes(&bytes[555..603])
-            .map_err(crate::journal::JournalError::from)?,
-        source_names: crate::journal::ProtectedJournalNamesV1::from_bytes(&bytes[603..651])
-            .map_err(crate::journal::JournalError::from)?,
+        controller_names: super::ProtectedJournalNamesV1::from_bytes(&bytes[555..603])
+            .map_err(ResourceBankDataError::Names)?,
+        source_names: super::ProtectedJournalNamesV1::from_bytes(&bytes[603..651])
+            .map_err(ResourceBankDataError::Names)?,
         source_sequence: u64::from_be_bytes(fixed(&bytes[651..659])?),
         floor: fixed(&bytes[659..691])?,
         tree_head: fixed(&bytes[691..723])?,
         lineage_head: fixed(&bytes[723..755])?,
     };
     if encode_preparation(binding)?.as_slice() != bytes {
-        return Err(ResourceReservationErrorV1::CorruptLedger);
+        return Err(ResourceBankDataError::CorruptLedger);
     }
     Ok(binding)
 }
 
-fn validate_head(head: AccountHead) -> Result<(), ResourceReservationErrorV1> {
+fn validate_head(head: AccountHead) -> Result<(), ResourceBankDataError> {
     validate_enrollment(head.enrollment)?;
     if head.id == [0; 16] || head.generation == 0
         || (head.kind == AccountKind::Node) != (head.parent == [0; 16])
         || head.id == head.parent
     {
-        return Err(ResourceReservationErrorV1::CorruptLedger);
+        return Err(ResourceBankDataError::CorruptLedger);
     }
     head.account.committed().checked_sub(head.baseline)?;
     match head.kind {
         AccountKind::Node | AccountKind::Controller | AccountKind::Components
             if head.project != [0; 16] || head.sandbox != [0; 16] || head.tree_revision != [0; 32] =>
-                return Err(ResourceReservationErrorV1::CorruptLedger),
+                return Err(ResourceBankDataError::CorruptLedger),
         AccountKind::Project if head.project == [0; 16] || head.sandbox != [0; 16]
-            || head.tree_revision == [0; 32] => return Err(ResourceReservationErrorV1::CorruptLedger),
+            || head.tree_revision == [0; 32] => return Err(ResourceBankDataError::CorruptLedger),
         AccountKind::Sandbox if head.project == [0; 16] || head.sandbox == [0; 16]
-            || head.tree_revision == [0; 32] => return Err(ResourceReservationErrorV1::CorruptLedger),
+            || head.tree_revision == [0; 32] => return Err(ResourceBankDataError::CorruptLedger),
         _ => {}
     }
     for dimension in ResourceDimension::ALL {
         if !matches!(head.account.ceilings().get(dimension), ResourceLimit::Bounded(_)) {
-            return Err(ResourceReservationErrorV1::CorruptLedger);
+            return Err(ResourceBankDataError::CorruptLedger);
         }
     }
     Ok(())
 }
 
-fn validate_claim(claim: Claim) -> Result<(), ResourceReservationErrorV1> {
+fn validate_claim(claim: Claim) -> Result<(), ResourceBankDataError> {
     validate_enrollment(claim.enrollment)?;
     if claim.id == [0; 16] || claim.account == [0; 16] || claim.owner == [0; 32]
         || claim.child == claim.account
     {
-        return Err(ResourceReservationErrorV1::CorruptLedger);
+        return Err(ResourceBankDataError::CorruptLedger);
     }
     match (claim.purpose, claim.cut) {
         (ClaimPurpose::RootReceiving, ClaimCut::BootLifetime)
@@ -443,7 +467,7 @@ fn validate_claim(claim: Claim) -> Result<(), ResourceReservationErrorV1> {
                 || (claim.purpose == ClaimPurpose::Q04Preparation && claim.genesis_instance != [0; 32]))
             && original_boottime_nanoseconds < deadline_boottime_nanoseconds => {}
         (ClaimPurpose::Snapshot | ClaimPurpose::Q04Preparation, _) =>
-            return Err(ResourceReservationErrorV1::CorruptLedger),
+            return Err(ResourceBankDataError::CorruptLedger),
         (ClaimPurpose::InclusiveGrant, ClaimCut::Operation {
             original_boottime_nanoseconds, deadline_boottime_nanoseconds, ..
         }) if claim.child != [0; 16] && claim.operation != [0; 16]
@@ -453,16 +477,16 @@ fn validate_claim(claim: Claim) -> Result<(), ResourceReservationErrorV1> {
         (ClaimPurpose::ControllerBootstrap | ClaimPurpose::ComponentEnvelope, ClaimCut::BootLifetime)
             if claim.child != [0; 16]
             && claim.operation == [0; 16] && claim.genesis_instance == [0; 32] => {}
-        _ => return Err(ResourceReservationErrorV1::CorruptLedger),
+        _ => return Err(ResourceBankDataError::CorruptLedger),
     }
     Ok(())
 }
 
-fn validate_enrollment(value: EnrollmentIdentity) -> Result<(), ResourceReservationErrorV1> {
+fn validate_enrollment(value: EnrollmentIdentity) -> Result<(), ResourceBankDataError> {
     if value.node == [0; 16] || value.epoch == [0; 16] || value.boot == [0; 16]
         || value.invocation == [0; 16] || value.manifest == [0; 32]
     {
-        return Err(ResourceReservationErrorV1::CorruptLedger);
+        return Err(ResourceBankDataError::CorruptLedger);
     }
     Ok(())
 }
@@ -475,7 +499,7 @@ fn encode_enrollment(value: EnrollmentIdentity, bytes: &mut [u8]) {
     bytes[64..96].copy_from_slice(&value.manifest);
 }
 
-fn decode_enrollment(bytes: &[u8]) -> Result<EnrollmentIdentity, ResourceReservationErrorV1> {
+fn decode_enrollment(bytes: &[u8]) -> Result<EnrollmentIdentity, ResourceBankDataError> {
     let value = EnrollmentIdentity {
         node: fixed(&bytes[..16])?,
         epoch: fixed(&bytes[16..32])?,
@@ -493,29 +517,29 @@ fn encode_vector(vector: ResourceVector, bytes: &mut [u8]) {
     }
 }
 
-fn decode_vector(bytes: &[u8]) -> Result<ResourceVector, ResourceReservationErrorV1> {
+fn decode_vector(bytes: &[u8]) -> Result<ResourceVector, ResourceBankDataError> {
     let mut values = [0; ResourceDimension::COUNT];
     for (index, chunk) in bytes.chunks_exact(8).enumerate() {
-        let slot = values.get_mut(index).ok_or(ResourceReservationErrorV1::CorruptLedger)?;
+        let slot = values.get_mut(index).ok_or(ResourceBankDataError::CorruptLedger)?;
         *slot = u64::from_be_bytes(fixed(chunk)?);
     }
     if bytes.len() != ResourceDimension::COUNT * 8 {
-        return Err(ResourceReservationErrorV1::CorruptLedger);
+        return Err(ResourceBankDataError::CorruptLedger);
     }
     Ok(ResourceVector::new(values))
 }
 
-fn require_record(bytes: &[u8], length: usize, magic: &[u8; 8]) -> Result<(), ResourceReservationErrorV1> {
+fn require_record(bytes: &[u8], length: usize, magic: &[u8; 8]) -> Result<(), ResourceBankDataError> {
     if bytes.len() != length || &bytes[..8] != magic
         || Sha256::digest(&bytes[..length - 32])[..] != bytes[length - 32..]
     {
-        return Err(ResourceReservationErrorV1::CorruptLedger);
+        return Err(ResourceBankDataError::CorruptLedger);
     }
     Ok(())
 }
 
-fn fixed<const N: usize>(bytes: &[u8]) -> Result<[u8; N], ResourceReservationErrorV1> {
-    bytes.try_into().map_err(|_| ResourceReservationErrorV1::CorruptLedger)
+fn fixed<const N: usize>(bytes: &[u8]) -> Result<[u8; N], ResourceBankDataError> {
+    bytes.try_into().map_err(|_| ResourceBankDataError::CorruptLedger)
 }
 
 #[cfg(test)]
@@ -525,10 +549,13 @@ mod image_policy_tests {
     use super::{
         FIRST_GLOBAL_IMAGE_POLICY_BYTES, HOST_IMAGE_POLICY_BYTES, IMAGE_POLICY_BYTES,
         ImageBootstrapPolicy, NIX_INTAKE_IMAGE_POLICY_BYTES, Q04_INTAKE_IMAGE_POLICY_BYTES,
-        ROOT_IMAGE_POLICY_BYTES, ResourceDimension, ResourceReservationErrorV1, ResourceVector,
+        ROOT_IMAGE_POLICY_BYTES, ResourceDimension, ResourceBankDataError, ResourceVector,
         decode_image_policy, encode_vector,
     };
-    use crate::controller_resource_reservation::HostComponentPolicy;
+    use super::super::{HostComponentPolicy, NativeLayoutDemand};
+
+    // These grammar/error fixtures carry no Native layout or admission evidence.
+    const INERT_LAYOUT: NativeLayoutDemand = NativeLayoutDemand::new(0, 0);
 
     const FORMATS: [(&[u8; 8], usize); 6] = [
         (b"AOSRSB01", IMAGE_POLICY_BYTES),
@@ -607,7 +634,7 @@ mod image_policy_tests {
         for version in 1..=6 {
             let (expected, bytes) = fixture(version);
 
-            let actual = decode_image_policy(&bytes).unwrap();
+            let actual = decode_image_policy(&bytes, INERT_LAYOUT).unwrap();
 
             assert_eq!(actual, expected, "version {version}");
             assert_eq!(actual.host.is_some(), version >= 2);
@@ -626,8 +653,8 @@ mod image_policy_tests {
             for end in 0..bytes.len() {
                 assert!(
                     matches!(
-                        decode_image_policy(&bytes[..end]),
-                        Err(ResourceReservationErrorV1::CorruptLedger)
+                        decode_image_policy(&bytes[..end], INERT_LAYOUT),
+                        Err(ResourceBankDataError::CorruptLedger)
                     ),
                     "version {version}, prefix {end}"
                 );
@@ -636,8 +663,8 @@ mod image_policy_tests {
 
             assert!(
                 matches!(
-                    decode_image_policy(&bytes),
-                    Err(ResourceReservationErrorV1::CorruptLedger)
+                    decode_image_policy(&bytes, INERT_LAYOUT),
+                    Err(ResourceBankDataError::CorruptLedger)
                 ),
                 "version {version}, trailing byte"
             );
@@ -659,8 +686,8 @@ mod image_policy_tests {
                 refresh_checksum(&mut wrong_width);
 
                 assert!(matches!(
-                    decode_image_policy(&wrong_width),
-                    Err(ResourceReservationErrorV1::CorruptLedger)
+                    decode_image_policy(&wrong_width, INERT_LAYOUT),
+                    Err(ResourceBankDataError::CorruptLedger)
                 ));
             }
 
@@ -670,16 +697,16 @@ mod image_policy_tests {
             refresh_checksum(&mut unknown);
 
             assert!(matches!(
-                decode_image_policy(&unknown),
-                Err(ResourceReservationErrorV1::CorruptLedger)
+                decode_image_policy(&unknown, INERT_LAYOUT),
+                Err(ResourceBankDataError::CorruptLedger)
             ));
 
             let mut bad_checksum = bytes.clone();
             bad_checksum[8..24].fill(0);
 
             assert!(matches!(
-                decode_image_policy(&bad_checksum),
-                Err(ResourceReservationErrorV1::CorruptLedger)
+                decode_image_policy(&bad_checksum, INERT_LAYOUT),
+                Err(ResourceBankDataError::CorruptLedger)
             ));
 
             let mut zero_identity = bytes;
@@ -687,8 +714,8 @@ mod image_policy_tests {
             refresh_checksum(&mut zero_identity);
 
             assert!(matches!(
-                decode_image_policy(&zero_identity),
-                Err(ResourceReservationErrorV1::EnrollmentUnavailable)
+                decode_image_policy(&zero_identity, INERT_LAYOUT),
+                Err(ResourceBankDataError::EnrollmentUnavailable)
             ));
         }
     }
@@ -697,15 +724,15 @@ mod image_policy_tests {
     fn image_policy_q_failure_precedes_invalid_root_service() {
         let (expected, mut bytes) = fixture(6);
         let minimum =
-            crate::controller_resource_reservation::q04_intake::minimum_failure_demand().unwrap();
+            super::super::minimum_q04_failure_demand(INERT_LAYOUT).unwrap();
         let undersized = minimum.with(ResourceDimension::MemoryBytes, 0);
         encode_vector(undersized, &mut bytes[1448..1624]);
         encode_vector(ResourceVector::ZERO, &mut bytes[1624..1800]);
         refresh_checksum(&mut bytes);
 
         assert!(matches!(
-            decode_image_policy(&bytes),
-            Err(ResourceReservationErrorV1::Accounting(
+            decode_image_policy(&bytes, INERT_LAYOUT),
+            Err(ResourceBankDataError::Accounting(
                 aos_sandbox_core::AccountingError::InsufficientAmount {
                     dimension: ResourceDimension::MemoryBytes,
                     available: 0,
@@ -721,13 +748,66 @@ mod image_policy_tests {
         refresh_checksum(&mut bytes);
 
         assert!(matches!(
-            decode_image_policy(&bytes),
-            Err(ResourceReservationErrorV1::EnrollmentUnavailable)
+            decode_image_policy(&bytes, INERT_LAYOUT),
+            Err(ResourceBankDataError::EnrollmentUnavailable)
         ));
 
         encode_vector(expected.root_receiving.unwrap(), &mut bytes[1624..1800]);
         refresh_checksum(&mut bytes);
 
-        assert_eq!(decode_image_policy(&bytes).unwrap(), expected);
+        assert_eq!(decode_image_policy(&bytes, INERT_LAYOUT).unwrap(), expected);
+    }
+
+    #[test]
+    fn complete_retained_enrollment_replays_and_refuses_a_changed_claim() {
+        for version in 1..=6 {
+            let (policy, _) = fixture(version);
+            let identity = super::super::EnrollmentIdentity {
+                node: policy.node, epoch: policy.epoch, boot: [3; 16],
+                invocation: [4; 16], manifest: [5; 32],
+            };
+            let (heads, host, first_global, nix_intake, q04_intake, root_receiving) =
+                super::super::prepare_enrollment_subdivisions(identity, policy, INERT_LAYOUT).unwrap();
+            let claims = super::super::initial_enrollment_claims(identity, policy, &heads);
+            let transaction_id = [6; 16];
+            let mutation = super::super::EnrollmentMutation::new((
+                &transaction_id, &heads, &claims, &host, &first_global,
+                &nix_intake, &q04_intake, &root_receiving,
+            ));
+            let transaction = mutation.transaction().unwrap();
+            mutation.require_exact(&super::super::State::new(), &transaction).unwrap();
+            let mut retained = transaction.records().iter().map(|record| (
+                (record.namespace(), record.key().to_vec()), record.value().unwrap().to_vec(),
+            )).collect::<super::super::State>();
+
+            // Independent owned rows reproduce the same complete replay and joins.
+            assert_eq!(super::super::validate(&retained).unwrap(), Some(identity));
+            mutation.require_returned_rows(&retained).unwrap();
+            let claim_key = (aos_sandbox_core::RecordNamespace::ControllerResourceReservation,
+                super::super::replay::key(super::super::replay::CLAIM_PREFIX, claims[0].id).to_vec());
+            retained.insert(claim_key.clone(), super::encode_claim(super::super::Claim {
+                amount: claims[0].amount.checked_sub(ResourceVector::new([1; ResourceDimension::COUNT])).unwrap(),
+                ..claims[0]
+            }).unwrap().to_vec());
+            assert!(matches!(super::super::validate(&retained), Err(ResourceBankDataError::CorruptLedger)));
+            assert!(matches!(mutation.require_returned_rows(&retained), Err(ResourceBankDataError::Conflict)));
+
+            retained.insert(claim_key, super::encode_claim(claims[0]).unwrap().to_vec());
+            assert_eq!(super::super::validate(&retained).unwrap(), Some(identity));
+        }
+    }
+
+    #[test]
+    fn overflowing_layout_refuses_only_at_the_reached_q04_subdivision() {
+        let (_, mut bytes) = fixture(6);
+        let overflow = NativeLayoutDemand::new(usize::MAX, 1);
+
+        assert!(matches!(decode_image_policy(&bytes, overflow), Err(ResourceBankDataError::Conflict)));
+        bytes[8..24].fill(0);
+        refresh_checksum(&mut bytes);
+        assert!(matches!(decode_image_policy(&bytes, overflow), Err(ResourceBankDataError::EnrollmentUnavailable)));
+
+        let (policy, _) = fixture(4);
+        policy.validate(overflow).unwrap();
     }
 }

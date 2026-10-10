@@ -1378,18 +1378,6 @@ impl Journal {
         })
     }
 
-    // Uses the same framing layouts before the prefix's two record Vecs exist.
-    pub(crate) fn first_global_prefix_append_bytes_v1() -> Result<u64, JournalError> {
-        let begin = EncodedFrameLayout::new(std::mem::size_of::<u32>())?;
-        let head = EncodedFrameLayout::new(EncodedRecordLayout::new(17, Some(945))?.payload_bytes)?;
-        let claim = EncodedFrameLayout::new(EncodedRecordLayout::new(17, Some(531))?.payload_bytes)?;
-        let commit = EncodedFrameLayout::new(COMMIT_PAYLOAD_BYTES)?;
-        [begin.frame_bytes, head.frame_bytes, claim.frame_bytes, commit.frame_bytes]
-            .into_iter().try_fold(0_u64, |bytes, frame| {
-                bytes.checked_add(frame as u64).ok_or(JournalError::JournalTooLarge)
-            })
-    }
-
     // Closed Global recipes: acceptance, Tree/lineage/receipt/pending, floor
     // ACK, Source ACK, Complete, inclusive Project grant, and prefix first use.
     // Fixed genesis values fit the largest existing strict phase payload;

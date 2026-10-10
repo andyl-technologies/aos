@@ -269,7 +269,7 @@ pub(super) struct Q04NativeRecipeAuditV1<'recipes> {
     previous_end: u64,
     previous_next: u64,
     original_next: Option<u64>,
-    bank_history: Option<crate::controller_resource_reservation::ResourceNativeHistoryV1<'recipes>>,
+    bank_history: Option<aos_sandbox_protocol::domain_ledger::resource_bank::PhysicalHistory<'recipes>>,
 }
 
 #[cfg(target_os = "linux")]
@@ -283,7 +283,8 @@ impl Q04NativeRecipeAuditV1<'_> {
         end_offset: u64,
     ) -> Result<(), JournalError> {
         if let Some(history) = self.bank_history.as_mut() {
-            history.observe(transaction, begin_sequence, commit_sequence, begin_offset, end_offset)?;
+            history.observe(transaction, begin_sequence, commit_sequence, begin_offset, end_offset)
+                .map_err(|_| JournalError::ProtectedBoundary)?;
         }
         let next = commit_sequence.checked_add(1).ok_or(JournalError::SequenceExhausted)?;
         let frames = u64::try_from(transaction.records().len())
@@ -535,7 +536,7 @@ impl Journal {
                 previous_end: 0,
                 previous_next: 1,
                 original_next,
-                bank_history: crate::controller_resource_reservation::ResourceNativeHistoryV1::new(
+                bank_history: aos_sandbox_protocol::domain_ledger::resource_bank::PhysicalHistory::new(
                     self.native.state(),
                 ),
             };
@@ -550,7 +551,8 @@ impl Journal {
                 Some(DeploymentHistoryObserverV1::Q04(&mut history)),
             )?;
             if let Some(history) = history.bank_history.as_ref() {
-                history.finish(&replayed.transaction_ids, self.protected_writer_physical_names_v1()?)?;
+                history.finish(&replayed.transaction_ids, self.protected_writer_physical_names_v1()?)
+                    .map_err(|_| JournalError::ProtectedBoundary)?;
             }
             if history.matched != recipe_count
                 || (recipe_count == 0

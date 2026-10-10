@@ -17,9 +17,9 @@ use crate::policy_compiler::create_q04::{
 use crate::Journal;
 
 use super::{
-    AccountKind, AccountTransition, Claim, ClaimCut, ClaimPurpose, ClaimState,
+    AccountKind, AccountTransition, ClaimCut,
     ControllerResourceBankOpeningV1, EnrollmentIdentity, ResourceReservationErrorV1,
-    ReturnedAppend, replay,
+    ReturnedAppend, bank,
 };
 
 // Fixed original association DATA is never an allocation permit. Only the
@@ -578,57 +578,45 @@ impl OriginalPreparationData {
     ) -> Result<AccountTransition, ResourceReservationErrorV1> {
         let state = journal.controller_resource_state_v1()?;
         let mut projects = state.iter().filter_map(|((namespace, key), value)| {
-            (*namespace == crate::RecordNamespace::ControllerResourceReservation
-                && key.first() == Some(&replay::HEAD_PREFIX))
-                .then(|| super::codec::decode_head(value))
+            bank::is_head_entry(*namespace, key)
+                .then(|| super::AccountHead::decode(value).map_err(ResourceReservationErrorV1::from))
         });
         let mut selected = None;
         for head in &mut projects {
             let head = head?;
-            if head.kind == AccountKind::Project && head.project == self.project {
+            if head.native_fields().kind == AccountKind::Project && head.native_fields().project == self.project {
                 if selected.replace(head).is_some() {
                     return Err(ResourceReservationErrorV1::Conflict);
                 }
             }
         }
         let before = selected.ok_or(ResourceReservationErrorV1::Conflict)?;
-        if before.enrollment != enrollment || enrollment.boot != self.original.host_boot_id()
-            || before.tree_revision != self.tree || replay::finite_ceilings(before)? != self.amount
+        if before.native_fields().enrollment != enrollment || enrollment.native_fields().boot != self.original.host_boot_id()
+            || before.native_fields().tree_revision != self.tree || before.finite_ceilings().map_err(ResourceReservationErrorV1::from)? != self.amount
         {
             return Err(ResourceReservationErrorV1::Conflict);
         }
-        let claim = Claim {
-            enrollment,
-            id: self.operation,
-            account: before.id,
-            child: [0; 16],
-            owner: self.authorization,
-            purpose: ClaimPurpose::ProjectPreparation,
-            operation: self.operation,
-            project: self.project,
-            sandbox: [0; 16],
-            tree_revision: self.tree,
-            genesis_instance: self.instance,
-            cut: ClaimCut::Operation {
-                original_wall_seconds: self.original.wall_seconds(),
-                original_boottime_nanoseconds: self.original.boottime_nanoseconds(),
-                deadline_boottime_nanoseconds: self.deadline,
-            },
-            amount: self.amount,
-            state: ClaimState::Reserved,
+        let operation = self.operation;
+        let account = before.native_fields().id;
+        let authorization = self.authorization;
+        let project = self.project;
+        let tree = self.tree;
+        let instance = self.instance;
+        let cut = ClaimCut::Operation {
+            original_wall_seconds: self.original.wall_seconds(),
+            original_boottime_nanoseconds: self.original.boottime_nanoseconds(),
+            deadline_boottime_nanoseconds: self.deadline,
         };
+        let amount = self.amount;
+        let claim = bank::project_preparation_claim(
+            enrollment, operation, account, authorization, project, tree, cut, instance, amount,
+        );
         let mut transition = AccountTransition::reserve(before, claim)?;
         transition.original_clock = Some(self.original);
-        transition.preparation = Some(super::PreparationBinding {
-            claim,
-            nonce: self.nonce,
-            controller_names: self.controller_names,
-            source_names: self.source_names,
-            source_sequence: self.source_sequence,
-            floor: self.floor,
-            tree_head: self.tree_head,
-            lineage_head: self.lineage_head,
-        });
+        transition.preparation = Some(super::PreparationBinding::from_parts((
+            claim, self.nonce, self.controller_names, self.source_names,
+            self.source_sequence, self.floor, self.tree_head, self.lineage_head,
+        )));
         Ok(transition)
     }
 }

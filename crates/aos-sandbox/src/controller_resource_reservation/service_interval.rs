@@ -17,7 +17,7 @@ use aos_sandbox_core::{RawPairedClockSample, ResourceDimension as D, ResourceVec
 
 use super::{
     AccountTransition, ClaimState, ControllerResourceBankOpeningV1,
-    ResourceReservationErrorV1, ReturnedAppend, bootstrap, codec, replay,
+    ResourceReservationErrorV1, ReturnedAppend, bank, bootstrap,
 };
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 use crate::normal_root::ProductionControllerNormalRootProfileV1;
@@ -99,9 +99,9 @@ impl OriginalControllerCpuContainment<'_> {
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
         let (quota, period) = self.prefix.cpu.quota_and_period()
             .ok_or(ResourceReservationErrorV1::Conflict)?;
-        let provision = original.policy.nix_original_start_intake
+        let provision = (original.policy.bootstrap_provisions().nix_original_start_intake)
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-        let prefix = original.policy.first_global_prefix
+        let prefix = (original.policy.bootstrap_provisions().first_global_prefix)
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
         if held != original || period != 100_000 || quota > provision.get(D::CpuMicrosPerPeriod)
             || prefix.get(D::CpuMicrosPerPeriod) > provision.get(D::CpuMicrosPerPeriod)
@@ -221,7 +221,7 @@ impl ObserverAdmission<'_> {
     pub(crate) fn belongs_to_q04_intake(&self, profile: &ProductionControllerNormalRootProfileV1) -> bool {
         self.purpose == ObserverPurpose::Q04Intake
             && std::ptr::eq(self.profile, profile)
-            && self.original.policy.q04_original_intake.is_some()
+            && (self.original.policy.bootstrap_provisions().q04_original_intake).is_some()
     }
 
     pub(super) fn for_q04_intake<'original>(
@@ -236,13 +236,13 @@ impl ObserverAdmission<'_> {
     pub(crate) fn belongs_to(&self, profile: &ProductionControllerNormalRootProfileV1) -> bool {
         self.purpose == ObserverPurpose::FirstGlobal
             && std::ptr::eq(self.profile, profile)
-            && self.original.policy.first_global_prefix.is_some()
+            && (self.original.policy.bootstrap_provisions().first_global_prefix).is_some()
     }
 
     pub(crate) fn belongs_to_nix_intake(&self, profile: &ProductionControllerNormalRootProfileV1) -> bool {
         self.purpose == ObserverPurpose::NixIntake
             && std::ptr::eq(self.profile, profile)
-            && self.original.policy.nix_original_start_intake.is_some()
+            && (self.original.policy.bootstrap_provisions().nix_original_start_intake).is_some()
     }
 
     pub(super) fn for_nix_intake<'original>(
@@ -447,7 +447,7 @@ impl ControllerFirstGlobalPrefixAttemptV1 {
         let original = self.original.as_ref()
             .and_then(|result| result.as_ref().ok())
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-        let Some(provision) = original.policy.first_global_prefix else {
+        let Some(provision) = (original.policy.bootstrap_provisions().first_global_prefix) else {
             // Old image families retain their existing ordinary observation
             // recipe. They do not gain a prefix borrower from this no-op arm.
             return Ok(());
@@ -456,7 +456,7 @@ impl ControllerFirstGlobalPrefixAttemptV1 {
             .and_then(|result| result.as_ref().ok())
             .copied()
             .ok_or(ResourceReservationErrorV1::Conflict)?;
-        if clock.host_boot_id() != original.identity.boot {
+        if clock.host_boot_id() != original.identity.native_fields().boot {
             return Err(ResourceReservationErrorV1::Conflict);
         }
         let controller = journal.first_global_allocation_shape_v1()?;
@@ -513,11 +513,13 @@ impl ControllerFirstGlobalPrefixAttemptV1 {
             }
         }
         let state = journal.controller_resource_state_v1()?;
-        let id = bootstrap::account_id(original.identity, b"controller-first-global-prefix-v1");
-        let claim = codec::decode_claim(replay::record_bytes(state, replay::CLAIM_PREFIX, id)
-            .ok_or(ResourceReservationErrorV1::Conflict)?)?;
-        let before = replay::find_head(state, claim.account)?;
-        if claim.amount != provision || claim.state != ClaimState::Reserved {
+        let id = original.identity.account_id(b"controller-first-global-prefix-v1");
+        let claim = super::Claim::decode(bank::claim_bytes(state, id)
+            .ok_or(ResourceReservationErrorV1::Conflict)?)
+            .map_err(ResourceReservationErrorV1::from)?;
+        let before = bank::find_head(state, claim.native_fields().account)
+            .map_err(ResourceReservationErrorV1::from)?;
+        if claim.native_fields().amount != provision || claim.native_fields().state != ClaimState::Reserved {
             return Err(ResourceReservationErrorV1::Conflict);
         }
         let mut transition = AccountTransition::settle(before, claim, true)?;

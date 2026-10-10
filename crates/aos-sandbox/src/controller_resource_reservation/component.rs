@@ -101,7 +101,7 @@ impl StorageComponentEnvelopeOriginalV1 {
             if self.process != std::process::id() || before != after
                 || before_producer != after_producer
                 || original.recipient_invocation != before.invocation()
-                || original.identity.invocation != *before_producer
+                || original.identity.native_fields().invocation != *before_producer
             {
                 return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
             }

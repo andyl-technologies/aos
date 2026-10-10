@@ -9,26 +9,10 @@ use std::error::Error;
 use std::fs::File;
 use std::os::fd::OwnedFd;
 
-use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+use aos_sandbox_core::ResourceVector;
 use aos_sandbox_linux::inherited_fd::RootInitialActivationTableV1;
 
-use super::{ResourceReservationErrorV1, bootstrap};
-
-pub(super) fn require_service_envelope(
-    envelope: ResourceVector,
-) -> Result<(), ResourceReservationErrorV1> {
-    let cpu = envelope.get(D::CpuMicrosPerPeriod);
-    let memory = envelope.get(D::MemoryBytes);
-    if cpu == 0 || cpu % 1000 != 0 || cpu.checked_mul(10).is_none()
-        || memory == 0 || memory % 4096 != 0
-        || envelope.get(D::Pids) < 2 || envelope.get(D::Pids) == u64::MAX
-        || envelope.get(D::OpenFiles) < 80 || envelope.get(D::OpenFiles) == u64::MAX
-        || envelope.get(D::ConcurrentOperations) == 0
-    {
-        return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
-    }
-    Ok(())
-}
+use super::{ResourceReservationErrorV1, bank, bootstrap};
 
 // This owner captures only the current process's original four-role table.
 // No descriptor, vector, observation or receipt argument constructs payment.
@@ -126,13 +110,14 @@ impl RootReceivingOriginalV1 {
         });
         let original = self.original.as_ref().and_then(|result| result.as_ref().ok())
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-        self.shape = Some(original.policy.root_receiving
+        self.shape = Some((original.policy.bootstrap_provisions().root_receiving)
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)
-            .and_then(require_service_envelope));
+            .and_then(|envelope| bank::require_root_service_envelope(envelope)
+                .map_err(ResourceReservationErrorV1::from)));
         if !matches!(self.shape, Some(Ok(()))) {
             return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
         }
-        original.policy.root_receiving
+        (original.policy.bootstrap_provisions().root_receiving)
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)
     }
 

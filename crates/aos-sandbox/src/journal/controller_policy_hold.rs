@@ -715,7 +715,7 @@ fn current_readback(
             }
             #[cfg(target_os = "linux")]
             key if key == CONTROLLER_IDENTITY_KEY || key.starts_with(CONTROLLER_PHASE_PREFIX)
-                || key == crate::policy_compiler::create_q04::CONTROLLER_INPUT_ORIGIN_KEY => {
+                || key == aos_sandbox_protocol::domain_ledger::resource_bank::CONTROLLER_INPUT_ORIGIN_KEY => {
                 q04 = true;
             }
             _ => return Err(JournalError::ProtectedBoundary),
@@ -809,7 +809,7 @@ fn has_q04_history(state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>) -> boo
         .take_while(|((namespace, _), _)| *namespace == RecordNamespace::ControllerPolicyHold)
         .any(|((_, key), _)| {
             key == CONTROLLER_IDENTITY_KEY || key.starts_with(CONTROLLER_PHASE_PREFIX)
-                || key == crate::policy_compiler::create_q04::CONTROLLER_INPUT_ORIGIN_KEY
+                || key == aos_sandbox_protocol::domain_ledger::resource_bank::CONTROLLER_INPUT_ORIGIN_KEY
         })
 }
 
@@ -825,7 +825,7 @@ pub(super) fn require_q04_ordinary_boundary(
         || transaction.records().iter().any(|record| {
             (record.namespace() == RecordNamespace::ControllerPolicyHold
                 && (record.key() == CONTROLLER_IDENTITY_KEY
-                    || record.key() == crate::policy_compiler::create_q04::CONTROLLER_INPUT_ORIGIN_KEY
+                    || record.key() == aos_sandbox_protocol::domain_ledger::resource_bank::CONTROLLER_INPUT_ORIGIN_KEY
                     || record.key().starts_with(CONTROLLER_PHASE_PREFIX)))
                 || (record.namespace() == RecordNamespace::Effect
                     && record.value().is_some_and(|bytes| bytes.first() == Some(&6)))
@@ -846,8 +846,8 @@ fn q04_history(
         .ok_or(JournalError::ProtectedBoundary)?;
     let identity = Q04CutIdentityV1::decode(identity)?;
     let origin = state.get(&(RecordNamespace::ControllerPolicyHold,
-        crate::policy_compiler::create_q04::CONTROLLER_INPUT_ORIGIN_KEY.to_vec()));
-    crate::controller_resource_reservation::require_q04_input_history_v1(
+        aos_sandbox_protocol::domain_ledger::resource_bank::CONTROLLER_INPUT_ORIGIN_KEY.to_vec()));
+    aos_sandbox_protocol::domain_ledger::resource_bank::require_input_history(
         state, &identity, origin.map(Vec::as_slice),
     ).map_err(|_| JournalError::ProtectedBoundary)?;
     if hold.operation() != identity.operation()

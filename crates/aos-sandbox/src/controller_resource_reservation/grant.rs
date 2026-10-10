@@ -8,8 +8,7 @@
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
-use aos_sandbox_core::{ResourceAccount, ResourceCeilings, ResourceVector};
-use sha2::{Digest as _, Sha256};
+use aos_sandbox_core::ResourceVector;
 
 use crate::hierarchy::controller_genesis::HeldControllerSourceGenesisV1;
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
@@ -23,9 +22,9 @@ use crate::policy_compiler::CompletedRootSourceGenesisFloorV1;
 use crate::Journal;
 
 use super::{
-    AccountHead, AccountKind, AccountTransition, Claim, ClaimCut, ClaimPurpose,
-    ClaimState, ControllerResourceBankOpeningV1, EnrollmentIdentity,
-    ResourceReservationErrorV1, ReturnedAppend, replay,
+    AccountKind, AccountTransition, Claim, ClaimCut,
+    ControllerResourceBankOpeningV1, EnrollmentIdentity,
+    ResourceReservationErrorV1, ReturnedAppend, bank,
 };
 
 struct OriginalProjectGrantData {
@@ -302,56 +301,26 @@ fn prepare(
 }
 
 impl OriginalProjectGrantData {
-    fn child(
-        &self,
-        before: AccountHead,
-        enrollment: EnrollmentIdentity,
-    ) -> Result<AccountHead, ResourceReservationErrorV1> {
-        let mut hash = Sha256::new();
-        hash.update(b"AOS-resource-project-v1\0");
-        hash.update(enrollment.node);
-        hash.update(enrollment.epoch);
-        hash.update(self.project);
-        let hash = hash.finalize();
-        let mut child_id = [0; 16];
-        child_id.copy_from_slice(&hash[..16]);
-        Ok(AccountHead {
-            enrollment,
-            id: child_id,
-            parent: before.id,
-            kind: AccountKind::Project,
-            generation: 1,
-            project: self.project,
-            sandbox: [0; 16],
-            tree_revision: self.tree,
-            baseline: ResourceVector::ZERO,
-            account: ResourceAccount::from_usage(
-                ResourceCeilings::bounded(self.amount),
-                ResourceVector::ZERO,
-                ResourceVector::ZERO,
-            )?,
-        })
-    }
-
     fn prior_payment(
         &self,
         journal: &Journal,
         enrollment: EnrollmentIdentity,
     ) -> Result<Option<Claim>, ResourceReservationErrorV1> {
         let state = journal.controller_resource_state_v1()?;
-        if replay::validate(state)? != Some(enrollment) || enrollment.boot != self.original_boot {
+        if bank::validate(state).map_err(ResourceReservationErrorV1::from)? != Some(enrollment) || enrollment.native_fields().boot != self.original_boot {
             return Err(ResourceReservationErrorV1::Conflict);
         }
-        let parent = replay::find_head(state, enrollment.node)?;
-        if parent.kind != AccountKind::Node {
+        let parent = bank::find_head(state, enrollment.native_fields().node).map_err(ResourceReservationErrorV1::from)?;
+        if parent.native_fields().kind != AccountKind::Node {
             return Err(ResourceReservationErrorV1::Conflict);
         }
-        replay::prior_initial_project_grant(
+        bank::prior_initial_project_grant(
             state,
-            self.child(parent, enrollment)?,
+            bank::project_child(enrollment, parent, self.project, self.tree, self.amount)
+                .map_err(ResourceReservationErrorV1::from)?,
             self.acceptance,
             self.instance,
-        )
+        ).map_err(ResourceReservationErrorV1::from)
     }
 
     fn transition(
@@ -359,28 +328,19 @@ impl OriginalProjectGrantData {
         journal: &Journal,
         enrollment: EnrollmentIdentity,
     ) -> Result<AccountTransition, ResourceReservationErrorV1> {
-        let before = replay::find_head(journal.controller_resource_state_v1()?, enrollment.node)?;
-        if before.kind != AccountKind::Node || enrollment.boot != self.original_boot {
+        let before = bank::find_head(journal.controller_resource_state_v1()?, enrollment.native_fields().node).map_err(ResourceReservationErrorV1::from)?;
+        if before.native_fields().kind != AccountKind::Node || enrollment.native_fields().boot != self.original_boot {
             return Err(ResourceReservationErrorV1::Conflict);
         }
-        let child = self.child(before, enrollment)?;
+        let child = bank::project_child(enrollment, before, self.project, self.tree, self.amount)
+            .map_err(ResourceReservationErrorV1::from)?;
         let operation = aos_sandbox_core::OperationId::new().into_bytes();
-        let claim = Claim {
-            enrollment,
-            id: operation,
-            account: before.id,
-            child: child.id,
-            owner: self.acceptance,
-            purpose: ClaimPurpose::InclusiveGrant,
-            operation,
-            project: self.project,
-            sandbox: [0; 16],
-            tree_revision: self.tree,
-            cut: self.cut,
-            genesis_instance: self.instance,
-            amount: self.amount,
-            state: ClaimState::Reserved,
-        };
+        let claim = bank::project_grant_claim(
+            enrollment, operation,
+            before.native_fields().id,
+            child.native_fields().id,
+            self.acceptance, self.project, self.tree, self.cut, self.instance, self.amount,
+        );
         AccountTransition::grant(before, child, claim, self.original_clock)
     }
 }

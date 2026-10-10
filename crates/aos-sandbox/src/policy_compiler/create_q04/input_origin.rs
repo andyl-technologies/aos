@@ -11,8 +11,6 @@ use crate::controller_resource_reservation::ResourceReservationErrorV1;
 use crate::journal::JournalShape;
 use super::CreateQ04ErrorV1;
 
-pub(crate) const CONTROLLER_INPUT_ORIGIN_KEY: &[u8] = b"\0aos-controller-q04-input-origin-v1\0";
-
 pub(crate) fn cache_replay_cell_bytes() -> Result<usize, ResourceReservationErrorV1> {
     std::mem::size_of::<crate::cache_residency::CacheAtomicObjectPayloadV1>()
         .checked_add(std::mem::size_of::<crate::cache_residency::CacheGlobalRecoveryStateV1>())
@@ -70,23 +68,16 @@ impl Q04PreparedInputOriginV1 {
         &self,
         identity: &super::Q04CutIdentityV1,
     ) -> Result<(), CreateQ04ErrorV1> {
-        require_origin_identity(&self.bytes, identity)
+        aos_sandbox_protocol::domain_ledger::resource_bank::require_origin_identity(&self.bytes, identity)
+            .map_err(|error| match error {
+                aos_sandbox_protocol::domain_ledger::resource_bank::OriginIdentityDataError::Policy(error) => {
+                    CreateQ04ErrorV1::InputOrigin(crate::publisher_policy::PublisherPolicyError::from(error))
+                }
+                aos_sandbox_protocol::domain_ledger::resource_bank::OriginIdentityDataError::IdentityMismatch => {
+                    CreateQ04ErrorV1::ChangedCut
+                }
+            })
     }
-}
-
-pub(crate) fn require_origin_identity(
-    bytes: &[u8],
-    identity: &super::Q04CutIdentityV1,
-) -> Result<(), CreateQ04ErrorV1> {
-    let original = super::super::RetainedPublisherCompilerOriginV3::from_record_bytes(bytes)
-        .map_err(crate::publisher_policy::PublisherPolicyError::from)?;
-    if original.project() != identity.project() || original.original_target() != identity.sandbox()
-        || original.normalized_input() != ObjectDigest::from_bytes(super::fixed(identity.bytes(), 456))
-        || original.candidate() != ObjectDigest::from_bytes(super::fixed(identity.bytes(), 488))
-    {
-        return Err(CreateQ04ErrorV1::ChangedCut);
-    }
-    Ok(())
 }
 
 pub(crate) struct Q04OriginalInputDemandV1 {

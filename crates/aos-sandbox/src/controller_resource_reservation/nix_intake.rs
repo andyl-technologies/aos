@@ -24,7 +24,7 @@ use super::service_interval::{
 };
 use super::{
     AccountTransition, ClaimState, ControllerResourceBankOpeningV1, ResourceReservationErrorV1,
-    ReturnedAppend, bootstrap, codec, replay,
+    ReturnedAppend, bank, bootstrap,
 };
 use crate::cli_model::authorization_adapter::{
     CurrentCapabilityDecisionV1, RetainedAuthorizationTimeFloorV1,
@@ -291,11 +291,11 @@ impl NixOriginalStartIntakeAttemptV1 {
             .ok_or(ResourceReservationErrorV1::Conflict)?;
         let original = self.original.as_ref().and_then(|result| result.as_ref().ok())
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-        let provision = original.policy.nix_original_start_intake
+        let provision = (original.policy.bootstrap_provisions().nix_original_start_intake)
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
         let clock = self.initial_clock.as_ref().and_then(|result| result.as_ref().ok())
             .copied().ok_or(ResourceReservationErrorV1::Conflict)?;
-        if clock.host_boot_id() != original.identity.boot {
+        if clock.host_boot_id() != original.identity.native_fields().boot {
             return Err(ResourceReservationErrorV1::Conflict);
         }
         // This fixed cgroup/membership read needs no property archive rows.
@@ -331,13 +331,15 @@ impl NixOriginalStartIntakeAttemptV1 {
             return Err(ResourceReservationErrorV1::Conflict);
         }
         let state = controller.controller_resource_state_v1()?;
-        let id = bootstrap::account_id(original.identity, b"controller-nix-original-start-intake-v1");
-        let claim = codec::decode_claim(replay::record_bytes(state, replay::CLAIM_PREFIX, id)
-            .ok_or(ResourceReservationErrorV1::Conflict)?)?;
-        if claim.amount != provision || claim.state != ClaimState::Reserved {
+        let id = original.identity.account_id(b"controller-nix-original-start-intake-v1");
+        let claim = super::Claim::decode(bank::claim_bytes(state, id)
+            .ok_or(ResourceReservationErrorV1::Conflict)?)
+            .map_err(ResourceReservationErrorV1::from)?;
+        if claim.native_fields().amount != provision || claim.native_fields().state != ClaimState::Reserved {
             return Err(ResourceReservationErrorV1::Conflict);
         }
-        let mut transition = AccountTransition::settle(replay::find_head(state, claim.account)?, claim, true)?;
+        let mut transition = AccountTransition::settle(bank::find_head(state, claim.native_fields().account)
+            .map_err(ResourceReservationErrorV1::from)?, claim, true)?;
         transition.original_clock = Some(clock);
         self.append.append_into(controller, Ok(transition));
         self.append.require_committed()?;

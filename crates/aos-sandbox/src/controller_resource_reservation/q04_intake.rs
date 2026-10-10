@@ -11,12 +11,13 @@ use aos_sandbox_core::{RawPairedClockSample, ResourceDimension as D, ResourceVec
 use aos_sandbox_linux::cgroup::FirstGlobalCpuReadbackV1;
 
 use crate::journal::JournalShape;
+use super::bank::FAILURE_MEMORY_BYTES;
 use super::service_interval::{
     ObserverAdmission, ObserverLifetime, OriginalReceiver, capacity_for, multiply,
 };
 use super::{
     AccountTransition, ClaimPurpose, ClaimState, ControllerResourceBankOpeningV1,
-    ResourceReservationErrorV1, ReturnedAppend, bootstrap, codec, replay,
+    ResourceReservationErrorV1, ReturnedAppend, bank, bootstrap,
 };
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
@@ -30,50 +31,16 @@ use crate::{Journal, JournalError};
 // observation consume the same prepaid retained-row quota before growth.
 const ENTRANCE_OBSERVER_ROWS: usize = 3 + 4 + 1 + 5 + 2 + 10 + 2;
 
-// Failure before archive attachment still owes fixed name/CPU/clock posts.
-// The image reserves this closed negative allowance even when the larger
-// whole-history/observer recipe cannot fit. It never spends service baseline.
-const FAILURE_MEMORY_BYTES: u64 = 2 * 1024 * 1024;
+pub(super) fn native_layout() -> super::bank::NativeLayoutDemand {
+    super::bank::NativeLayoutDemand::new(
+        std::mem::size_of::<Q04OriginalIntakeAttemptV1>(),
+        std::mem::size_of::<crate::ProjectPreparationReservationAttemptV1>(),
+    )
+}
 
 pub(super) fn minimum_failure_demand() -> Result<ResourceVector, ResourceReservationErrorV1> {
-    // These are fixed retained slots, not observations or retry allowances:
-    // original, receiver, preparation, initial clock, Controller/Source/profile/
-    // CPU posts, LAST, clock comparison, and the CPU owner's native failure.
-    // Before attachment, journal errors carry static reasons or raw errno;
-    // Linux path/CPU/boot errors have only closed messages below 128 bytes.
-    let error_slots = 1_usize + 1 + 1 + 1 + 4 + 1 + 1 + 1;
-    let errors = error_slots.checked_mul(128)
-        .ok_or(ResourceReservationErrorV1::Conflict)?;
-    // Journal basenames are bounded at 255 bytes. The lock suffix adds five;
-    // the two writers' name checks and two independent posts are distinct.
-    // Source's fixed ancestry walk holds only its current directory pair.
-    let names = (255_usize + 5 + 1).checked_mul(4)
-        .and_then(|bytes| bytes.checked_add(2 * (4096 + 1)))
-        .ok_or(ResourceReservationErrorV1::Conflict)?;
-    // kernel_pair reads boot_id twice per sample. Its genuine procfs ABI is
-    // 37 bytes; Rust 1.98.1 fs::read/default_read_to_end uses a 32-byte probe
-    // and at most a 64-byte Vec for this zero-size, 37-byte kernel file.
-    // Include both samples, probes, and the fixed pathname conversion.
-    let clocks = 2_usize * 2 * (64 + 32 + 37);
-    let payload = std::mem::size_of::<Q04OriginalIntakeAttemptV1>()
-        .checked_add(errors)
-        .and_then(|bytes| bytes.checked_add(names))
-        .and_then(|bytes| bytes.checked_add(clocks))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<crate::ProjectPreparationReservationAttemptV1>()))
-        // Existing fixed policy/enrollment buffers and the two CPU read arrays
-        // are included even though their owning readers need not enter on no-fit.
-        .and_then(|bytes| bytes.checked_add(codec::Q04_INTAKE_IMAGE_POLICY_BYTES + 152 + 2 * 257))
-        .ok_or(ResourceReservationErrorV1::Conflict)?;
-    if u64::try_from(payload).map_err(|_| ResourceReservationErrorV1::Conflict)? > FAILURE_MEMORY_BYTES {
-        return Err(ResourceReservationErrorV1::Conflict);
-    }
-    Ok(ResourceVector::new([
-        // One cell per possible owned byte bounds the fixed owners without an
-        // invented entry count. Full history, native append and archive rows
-        // are priced separately before their first allocation or effect.
-        1, FAILURE_MEMORY_BYTES, 1, 4, 0, 0, 0, 0, 0, 0, FAILURE_MEMORY_BYTES, 0, 0, 0,
-        FAILURE_MEMORY_BYTES, 0, 0, 0, 0, FAILURE_MEMORY_BYTES, FAILURE_MEMORY_BYTES, 1,
-    ]))
+    super::bank::minimum_q04_failure_demand(native_layout())
+        .map_err(ResourceReservationErrorV1::from)
 }
 
 pub(super) struct Q04OriginalIntakeAttemptV1 {
@@ -212,19 +179,21 @@ impl Q04OriginalIntakeAttemptV1 {
             .ok_or(ResourceReservationErrorV1::Conflict)?;
         let original = self.original.as_ref().and_then(|result| result.as_ref().ok())
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-        let provision = original.policy.q04_original_intake
+        let provision = (original.policy.bootstrap_provisions().q04_original_intake)
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-        let id = bootstrap::account_id(original.identity, b"controller-q04-original-intake-v1");
+        let id = original.identity.account_id(b"controller-q04-original-intake-v1");
         let state = controller.controller_resource_state_v1()?;
-        let claim = codec::decode_claim(replay::record_bytes(state, replay::CLAIM_PREFIX, id)
-            .ok_or(ResourceReservationErrorV1::Conflict)?)?;
-        if claim.purpose != ClaimPurpose::Q04OriginalIntake
-            || claim.enrollment != original.identity || claim.amount != provision
-            || claim.state != ClaimState::Reserved
+        let claim = super::Claim::decode(bank::claim_bytes(state, id)
+            .ok_or(ResourceReservationErrorV1::Conflict)?)
+            .map_err(ResourceReservationErrorV1::from)?;
+        if claim.native_fields().purpose != ClaimPurpose::Q04OriginalIntake
+            || claim.native_fields().enrollment != original.identity || claim.native_fields().amount != provision
+            || claim.native_fields().state != ClaimState::Reserved
         {
             return Err(ResourceReservationErrorV1::Conflict);
         }
-        let mut transition = AccountTransition::settle(replay::find_head(state, claim.account)?, claim, true)?;
+        let mut transition = AccountTransition::settle(bank::find_head(state, claim.native_fields().account)
+            .map_err(ResourceReservationErrorV1::from)?, claim, true)?;
         self.source_shape = Some(source.journal().first_global_allocation_shape_v1()?);
         let fixed = fixed_demand(&controller.first_global_allocation_shape_v1()?,
             self.source_shape.as_ref().ok_or(ResourceReservationErrorV1::Conflict)?, provision)?;
@@ -248,7 +217,7 @@ impl Q04OriginalIntakeAttemptV1 {
         self.initial_clock = Some(crate::policy_compiler::observe_root_first_source_successor_clock_v2(None));
         let clock = self.initial_clock.as_ref().and_then(|result| result.as_ref().ok())
             .copied().ok_or(ResourceReservationErrorV1::Conflict)?;
-        if clock.host_boot_id() != original.identity.boot {
+        if clock.host_boot_id() != original.identity.native_fields().boot {
             return Err(ResourceReservationErrorV1::Conflict);
         }
         self.lifetime = Some(ObserverLifetime::begin());
@@ -258,7 +227,7 @@ impl Q04OriginalIntakeAttemptV1 {
         );
         profile.attach_q04_intake_observers(&admission)?;
         let (recipient, producer) = profile.require_resource_producer()?;
-        if recipient != original.recipient_invocation || producer != original.identity.invocation
+        if recipient != original.recipient_invocation || producer != original.identity.native_fields().invocation
             || self.bank.lock().map_err(|_| ResourceReservationErrorV1::EnrollmentUnavailable)?
                 .first_global_original(controller)? != *original
         {
@@ -300,7 +269,7 @@ impl Q04OriginalIntakeAttemptV1 {
         let original = self.original.as_ref().and_then(|result| result.as_ref().ok())
             .ok_or(ResourceReservationErrorV1::Conflict)?;
         let capacity = self.observation_capacity.ok_or(ResourceReservationErrorV1::Conflict)?;
-        Ok((bootstrap::account_id(original.identity, b"controller-q04-original-intake-v1"),
+        Ok((original.identity.account_id(b"controller-q04-original-intake-v1"),
             u64::try_from(capacity).map_err(|_| ResourceReservationErrorV1::Conflict)?))
     }
 
@@ -395,4 +364,22 @@ fn fixed_demand(
         0, 0, native, 0, 0, 0, cells, 0, 0, 0, memory, 0, 0, 0,
         wire, wire, memory, 1,
     ]))
+}
+
+#[cfg(test)]
+mod layout_bridge_tests {
+    use super::*;
+
+    #[test]
+    fn authentic_native_intake_and_preparation_fit_the_failure_allowance() {
+        let actual_native_bytes = std::mem::size_of::<Q04OriginalIntakeAttemptV1>()
+            .checked_add(std::mem::size_of::<crate::ProjectPreparationReservationAttemptV1>())
+            .unwrap();
+        let demand = minimum_failure_demand().unwrap();
+
+        assert!(u64::try_from(actual_native_bytes).unwrap() < demand.get(D::MemoryBytes));
+        assert!(matches!(ResourceReservationErrorV1::from(
+            bank::minimum_q04_failure_demand(bank::NativeLayoutDemand::new(usize::MAX, 1)).unwrap_err(),
+        ), ResourceReservationErrorV1::Conflict));
+    }
 }
