@@ -373,6 +373,14 @@ impl StateStore {
                 closure_digest,
                 input_digest: input.digest()?,
             };
+            self.retain_local_assessment_evidence(
+                journal
+                    .receipts
+                    .get(scan_id)
+                    .context("completed evidence receipt")?
+                    .digest,
+                &head,
+            )?;
             for subject in &receipt.request.subjects {
                 for profile in &receipt.request.profiles {
                     journal

@@ -74,6 +74,29 @@ reproducing supplied evidence establishes semantic agreement, not independent
 source authority. It does not import that evidence into Hub or change package
 status. The local command rejects tampered bundles and performs no source HTTP.
 
+Export an exact retained local result or reproduce a supplied bundle:
+
+```sh
+aos maintain evidence export ASSESSMENT_DIGEST --output bundle.json
+aos maintain evidence import bundle.json --json
+```
+
+Export creates a new private file and verifies the committed receipt, frozen
+input, closure and result. New scans retain references for historical exports;
+older journals can export their retained global and profile heads. Unavailable
+or inconsistent custody fails explicitly. Exports use the reference profile, so
+raw provider bytes remain external references.
+
+Import validates the complete bundle and reproduces its assessment without
+contacting providers. Its `aos.assessment-bundle-reproduction/v1` receipt binds
+the bundle manifest, inventory, input, result, engine and local state namespace.
+The receipt reports `reproduced` and `not-established` authority: it does not
+establish provider or publisher trust, authorize a release, or advance local
+assessment heads. Equivalent reimports return the original receipt. The private
+import index retains at most 64 distinct manifests and rejects further admission
+explicitly; malformed, oversized, nonregular or altered evidence is rejected.
+The existing `aos maintain evidence RUN_ID` still creates an upgrade-run dossier.
+
 A fresh, actionable source assessment can export a typed update recommendation
 alongside its evidence bundle:
 

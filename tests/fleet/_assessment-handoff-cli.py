@@ -92,6 +92,32 @@ for field in ["target", "source", "expiry", "commands"]:
     cli("plan", "fixture-1", "--assessment-intent", altered, "--assessment-evidence", bundle_path, okay=False)
     assert list((envelope.parent / "plans").glob("*.json")) == retained_plans
 
+# Import/export uses real CLI processes and retains a separate reproduction
+# receipt. It must not alter the active journal or candidate discovery head.
+journal_path = envelope.parent / "assessments/journal.json"
+journal_before = journal_path.read_bytes()
+exported_path = artifacts / "exported-evidence.json"
+assessment_digest = scan["execution"]["scan"]["assessmentDigest"]
+exported = json.loads(cli("evidence", "export", assessment_digest, "--output", exported_path).stdout)
+assert exported["data"]["assessmentDigest"] == assessment_digest
+assert (exported_path.stat().st_mode & 0o777) == 0o600
+command([support, "assessment-verify", exported_path])
+imported = json.loads(cli("evidence", "import", exported_path).stdout)["data"]
+assert imported["classification"] == "reproduced"
+assert imported["authority"] == "not-established"
+assert imported["assessmentDigest"] == assessment_digest
+assert json.loads(cli("evidence", "import", exported_path).stdout)["data"] == imported
+assert journal_path.read_bytes() == journal_before
+assert discovery_path.read_bytes() == before
+cli("evidence", "export", assessment_digest, "--output", exported_path, okay=False)
+altered_bundle = json.loads(exported_path.read_text())
+altered_bundle["manifest"]["assessmentDigest"] = "sha256:" + "f" * 64
+invalid_bundle = artifacts / "invalid-import.json"
+write(invalid_bundle, json.dumps(altered_bundle))
+cli("evidence", "import", invalid_bundle, okay=False)
+assert journal_path.read_bytes() == journal_before
+print("PASS: actual CLI evidence export and non-authoritative idempotent import")
+
 original_intent = intent_path.read_bytes()
 cli("scan", "--profile", "updates", "--freshness", "offline", "--assessment-input", input_path,
     "--evidence-output", artifacts / "replacement-bundle.json",

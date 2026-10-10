@@ -28,6 +28,7 @@ use std::collections::BTreeSet;
 use super::*;
 
 mod cache;
+mod evidence;
 mod operations;
 mod profiles;
 mod status;

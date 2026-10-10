@@ -35,6 +35,13 @@ pub async fn aos_main() {
         color,
     );
     if let Commands::Maintain(args) = &cli.command {
+        if let Some(MaintainCommand::Evidence(evidence)) = &args.command
+            && let Some(command) = &evidence.command
+        {
+            let result =
+                commands::maintain::run_local_assessment_evidence(&cli, args, command, &printer);
+            exit_with_result(result, &printer);
+        }
         if let Some(MaintainCommand::Status(command)) = &args.command
             && !command.profiles.is_empty()
         {

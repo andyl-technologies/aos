@@ -3,6 +3,7 @@
 mod confinement;
 mod assessment;
 mod assessment_handoff;
+mod assessment_evidence;
 mod assessment_scans;
 mod assessment_status;
 mod advisories;
@@ -43,6 +44,7 @@ use crate::cli::{Cli, ColorChoice, MaintainArgs, MaintainCommand, ProgressChoice
 const MAX_SCAN_DIAGNOSTICS: usize = 128;
 
 pub use assessment::run_assessment;
+pub use assessment_evidence::run_local_assessment_evidence;
 pub use assessment_scans::run_local_scans;
 pub use assessment_status::run_local_status;
 pub use advisories::run_advisory;
@@ -253,7 +255,12 @@ pub async fn run(cli: &Cli, args: &MaintainArgs, printer: &Printer) -> Result<Co
         Some(MaintainCommand::Commit(command)) => commit_command(args, command),
         Some(MaintainCommand::Test(command)) => test_command(args, command, printer),
         Some(MaintainCommand::Repair(command)) => repair_command(cli, args, command, printer).await,
-        Some(MaintainCommand::Evidence(command)) => evidence_command(args, command),
+        Some(MaintainCommand::Evidence(command)) => {
+            let run = command.run.clone().ok_or_else(|| {
+                anyhow::anyhow!("assessment evidence commands require their independent dispatcher")
+            })?;
+            evidence_command(args, &crate::cli::MaintainRunIdentityArgs { run })
+        }
         Some(MaintainCommand::PreparePr(command)) => prepare_pr_command(args, command),
         Some(MaintainCommand::PublishPr(command)) => publish_pr_command(args, command).await,
         Some(MaintainCommand::ObservePr(command)) => observe_pr_command(args, command).await,

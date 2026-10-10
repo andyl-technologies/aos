@@ -14,6 +14,9 @@ mod common;
 #[path = "cache_tests.rs"]
 mod cache;
 
+#[path = "evidence_tests.rs"]
+mod evidence;
+
 fn store() -> Result<(tempfile::TempDir, StateStore)> {
     let root = tempfile::tempdir()?;
     let repository = root

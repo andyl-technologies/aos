@@ -45,5 +45,6 @@ in {
           timeout=240,
       )
       assert "PASS: actual CLI exact assessment handoff, independent local discovery and stale-source refusal" in output, output
+      assert "PASS: actual CLI evidence export and non-authoritative idempotent import" in output, output
     '';
 }

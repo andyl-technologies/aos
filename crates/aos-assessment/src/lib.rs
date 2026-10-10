@@ -49,6 +49,7 @@ pub mod nvd;
 pub mod observation;
 pub mod ranges;
 pub mod result;
+pub mod reproduction;
 pub mod scan_inventory;
 pub mod security;
 pub mod time;

@@ -71,8 +71,8 @@ pub enum MaintainCommand {
     Test(MaintainTestArgs),
     /// Run or accept one bounded local repair-agent proposal
     Repair(MaintainRepairArgs),
-    /// Generate and verify the complete local candidate evidence dossier
-    Evidence(MaintainRunIdentityArgs),
+    /// Generate a run dossier or import and export assessment evidence
+    Evidence(MaintainEvidenceArgs),
     /// Render reviewed pull-request title, body, and publication inputs offline
     PreparePr(MaintainRunIdentityArgs),
     /// Publish only the exact final-gated branch and matching pull request
@@ -430,6 +430,38 @@ pub struct MaintainRunIdentityArgs {
 }
 
 #[derive(Args)]
+#[command(
+    args_conflicts_with_subcommands = true,
+    subcommand_precedence_over_arg = true,
+    arg_required_else_help = true
+)]
+pub struct MaintainEvidenceArgs {
+    /// Generate the dossier for this exact or unambiguous local run identity
+    pub run: Option<String>,
+
+    #[command(subcommand)]
+    pub command: Option<MaintainAssessmentEvidenceCommand>,
+}
+
+#[derive(Subcommand)]
+pub enum MaintainAssessmentEvidenceCommand {
+    /// Export the exact locally committed assessment as a reference bundle
+    Export {
+        /// Select an exact retained assessment digest
+        assessment_digest: String,
+
+        /// Create a new protected bundle file
+        #[arg(long, value_name = "PATH")]
+        output: PathBuf,
+    },
+    /// Reproduce and retain a bundle without advancing assessment heads
+    Import {
+        /// Read a bounded regular bundle file without following symlinks
+        input: PathBuf,
+    },
+}
+
+#[derive(Args)]
 pub struct MaintainPublishPrArgs {
     /// Exact or unambiguous local run identity
     pub run: String,
@@ -556,6 +588,43 @@ mod tests {
 
     use super::*;
     use crate::cli::{Cli, Commands};
+
+    #[test]
+    fn evidence_subcommands_preserve_the_legacy_run_dossier_interface() {
+        assert!(Cli::try_parse_from(["aos", "maintain", "evidence", "run-fixture"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["aos", "maintain", "evidence", "import", "bundle.json"]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "maintain",
+                "evidence",
+                "export",
+                "sha256:fixture",
+                "--output",
+                "bundle.json"
+            ])
+            .is_ok()
+        );
+        assert!(Cli::try_parse_from(["aos", "maintain", "evidence"]).is_err());
+        assert!(Cli::try_parse_from(["aos", "maintain", "evidence", "import"]).is_err());
+        assert!(
+            Cli::try_parse_from(["aos", "maintain", "evidence", "export", "sha256:fixture"])
+                .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "maintain",
+                "evidence",
+                "run-fixture",
+                "import",
+                "bundle.json"
+            ])
+            .is_err()
+        );
+    }
 
     #[test]
     fn parses_inventory_check_with_an_explicit_target() {
