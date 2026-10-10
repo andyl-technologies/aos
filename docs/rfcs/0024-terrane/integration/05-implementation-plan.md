@@ -342,7 +342,21 @@ implementation: protected reopen and maintenance of an existing required binding
 The worker separates these independent scenarios while retaining every original
 assertion, genuine histories, populations, authority checks and unchanged limits.
 The required read population grows from ninety-three to ninety-five cases; no
-case is removed. Runtime qualification and the complete aggregate remain pending.
+case is removed. Reviewed fixture-only implementation `34024000ff` preserves
+all twenty-eight original assertions across three genuine independent histories
+and additionally checks the reopened winning commit and exact object set.
+Composition `759c4c9e52` passes its native build, strict all-target Clippy,
+actual all-target test compilation and genuine executable-bound inventory of
+1,004 cases. Its three positive backfill cases pass in 89.776, 87.857 and
+19.569 seconds, respectively (197.207 seconds overall; run
+`1135df38-0ed6-488b-b559-9ff32840da2b`). Both diagnostic trace variables are
+unset, and the default 120-second process and original writer/reader budgets
+are unchanged. All 6,209 tracked source entries and executable seals remain
+unchanged. The mandatory ninety-five-case read qualification now proceeds on
+that frozen source. Sixteen pack and four codec gates qualify separately on
+the same candidate with private hermetic Cargo targets; the twenty-six core
+and foundation gates and twenty-nine application target compilation retain
+their earlier frozen `4a1ff5d5fb` source. The complete aggregate remains pending.
 No owning gate or task is accepted by these results.
 The same frozen retained-read candidate passes all twenty-nine mandatory
 native read cases in 46.960 seconds and the public SDK case in 0.009 seconds,
