@@ -18,11 +18,12 @@ pub mod engine {
     pub use crucible::model::{
         Aggregation, BoundarySelector, CohortPolicy, EffectSpecification, FaultCoordinate,
         FaultDirection, FaultOperation, FaultReplayMode, FaultResourceLimits,
-        MeasurementDefinition, MeasurementDefinitions, MeasurementId, MetricDefinition, MetricId,
-        MetricSource, MetricValueType, ModeledMeasurementTimeout, NetworkEffectSpecification,
-        ResolvedEffectTrace, SignalId, UnitId, WorldFaultDomain, WorldFaultTargetRef,
-        WorldFaultTopology, WorldNetworkInterface, WorldNetworkPath, WorldNetworkPathHop,
-        WorldNetworkSegment, WorldNetworkSegmentKind, WorldNetworkTechnology, reduce,
+        MeasurementDefinition, MeasurementDefinitions, MeasurementId, MeasurementInstanceKey,
+        MetricDefinition, MetricId, MetricSource, MetricValueType, ModeledMeasurementTimeout,
+        NetworkEffectSpecification, ResolvedEffectTrace, SignalId, UnitId, WorldFaultDomain,
+        WorldFaultTargetRef, WorldFaultTopology, WorldNetworkInterface, WorldNetworkPath,
+        WorldNetworkPathHop, WorldNetworkSegment, WorldNetworkSegmentKind, WorldNetworkTechnology,
+        reduce,
     };
     pub use crucible::{
         Action, AssertionDef, AssertionId, AssertionPhase, AssertionQuantifierKind,
@@ -33,7 +34,7 @@ pub mod engine {
         DebugCheckpointStride, DebugCliSurfaceContract, DebugCoordinate, DebugGdbEndpoint,
         DebugReverseStepGrain, Decision, DeliveryOrderDecision, EngineError, EventAttributeValue,
         EventDiagnosticPayload, EventGraph, EventId, EventKey, EventLevel, EventLog,
-        EventLogCoverageFeedback, EventLogCoverageObservation, EventLogTickStamp, EventLogOffset,
+        EventLogCoverageFeedback, EventLogCoverageObservation, EventLogOffset, EventLogTickStamp,
         EventLogTime, EventPayload, EventSource, ExampleCorpusError, ExampleScenarioVerifyReport,
         ExecutionFingerprint, FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION,
         FAULT_CAMPAIGN_FAMILY_NAME, FailureCluster, FailureClusterFinding, FailureClusterReport,
@@ -69,12 +70,12 @@ pub mod engine {
         TemporalGraph, TemporalGraphReplayEvidence, TemporalGraphSampledSearchRun,
         TemporalGraphSearchRun, TemporalGraphStoreError, TimerId, TopologyShape, TopologySizeRange,
         UnifiedGraphOperationEvidence, UnifiedGraphOperationKind, UnifiedGraphOperationReport,
-        VcpuId, VirtualInstant, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldBlockLatency,
-        WorldIoCoreConfig, WorldIoNode, WorldIoNodeKind, WorldNinePLatency, WorldNode,
-        WorldNodeDef, bake, built_in_example_corpus, crash_restart_scenario, fault_campaign_family,
-        happy_path_scenario, is_live_world_network_selection, materialize_search_plans,
-        partition_recovery_scenario, run_fault_campaign_example, try_step,
-        verify_example_scenario_runs,
+        VcpuId, VirtualInstant, VirtualTime, VmArchitecture, WhiteBoxPolicy, World,
+        WorldBlockLatency, WorldIoCoreConfig, WorldIoNode, WorldIoNodeKind, WorldNinePLatency,
+        WorldNode, WorldNodeDef, bake, built_in_example_corpus, crash_restart_scenario,
+        fault_campaign_family, happy_path_scenario, is_live_world_network_selection,
+        materialize_search_plans, partition_recovery_scenario, run_fault_campaign_example,
+        try_step, verify_example_scenario_runs,
     };
 }
 

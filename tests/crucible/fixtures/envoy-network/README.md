@@ -44,6 +44,17 @@ hops, and concurrent response-completion inversions. Completion inversions are
 application observations; packet-order claims need the modeled fabric's own
 evidence.
 
+Every semantic marker carries instance `instance-1`, and the generated
+scenario declares each one as an exact measurement boundary for a cohort that
+contains its emitter, because the campaign driver rejects undeclared markers.
+The recovery, packet-loss, and router A work windows run from A's
+`fault.transport.signaled` to west's `recovery.measured`. West's
+`traffic-window` guest measurement spans `network.converged` to
+`recovery.measured`. Additional windows bound the hold-down
+(`fault.transport.primary-probed` to `fault.transport.signaled`), the observed
+failover (`fault.transport.signaled` to `network.failover.observed`), and the
+follow-up (`fault.followup.primary-probed` to `campaign.complete`).
+
 The campaign materializer must bind its typed environment fault choices to
 Crucible's modeled network adapters and deliver the RFC-0014 fault signal at
 the transport boundary. The guest image does not inject host-side faults.

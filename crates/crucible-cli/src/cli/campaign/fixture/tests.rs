@@ -101,7 +101,7 @@ fn worked_network_fixture_validates_imports_and_creates_on_a_blank_repository() 
             .len(),
         4
     );
-    assert_eq!(scenario.measurements().definitions().len(), 3);
+    assert_eq!(scenario.measurements().definitions().len(), 7);
     assert_eq!(scenario.plan().event_graph().events().len(), 7);
     assert_eq!(scenario.properties().assertions().len(), 5);
     assert_eq!(scenario.selectables().declarations().len(), 2);
@@ -258,6 +258,62 @@ fn worked_network_guest_catalog_matches_envoy_registration_after_artifact_round_
     assert_eq!(
         decoded.default_value(),
         response.default().canonical_bytes()
+    );
+}
+
+/// Mirrors the semantic markers the Envoy guest images emit.
+const ENVOY_SEMANTIC_MARKERS: [(&str, &str); 7] = [
+    ("traffic-west", "network.converged"),
+    ("router-a", "fault.transport.primary-probed"),
+    ("router-a", "fault.transport.signaled"),
+    ("traffic-west", "recovery.measured"),
+    ("traffic-west", "network.failover.observed"),
+    ("router-a", "fault.followup.primary-probed"),
+    ("traffic-west", "campaign.complete"),
+];
+
+#[test]
+fn worked_network_measurements_declare_every_envoy_semantic_marker() {
+    let fixture = worked_network_fixture(None, None).expect("worked-network fixture");
+    let definitions = fixture.scenario.measurements().definitions();
+    let instance = MeasurementInstanceKey::parse(WORKED_NETWORK_MARKER_INSTANCE)
+        .expect("worked-network marker instance");
+
+    for (emitter, marker) in ENVOY_SEMANTIC_MARKERS {
+        let expected = BoundarySelector::GuestMarker {
+            marker: MarkerId::from_name(marker),
+            instance: Some(instance.clone()),
+        };
+        let declared = definitions.iter().any(|definition| {
+            let CohortPolicy::Any(cohort) = &definition.cohort else {
+                return false;
+            };
+            cohort.contains(&node(emitter))
+                && (definition.begin == expected || definition.end == expected)
+        });
+        assert!(
+            declared,
+            "{emitter} marker {marker} has no declared boundary"
+        );
+    }
+
+    let traffic = definitions
+        .iter()
+        .find(|definition| definition.id.as_str() == "traffic-window")
+        .expect("west traffic-window measurement");
+    let guest_metrics = traffic
+        .metrics
+        .iter()
+        .filter(|metric| matches!(metric.source, MetricSource::Guest))
+        .map(|metric| metric.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        guest_metrics,
+        [
+            "response_completion_inversions",
+            "traffic_loss_packets",
+            "traffic_success_packets",
+        ]
     );
 }
 

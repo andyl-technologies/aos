@@ -12,12 +12,13 @@ use crucible::{
     Action, Aggregation, AssertionDef, AssertionId, BoundarySelector, CohortPolicy,
     ContentAddressedBlobRef, ContentHash, EventGraph, FaultDirection, LinkDef, LinkLossProbability,
     LogLevel, MarkerId, MeasurementDefinition, MeasurementDefinitions, MeasurementId,
-    MetricDefinition, MetricId, MetricSource, MetricValueType, ModeledMeasurementTimeout, NodeId,
-    NodeTemplate, Plan, Predicate, Properties, ReadyPoint, ScenarioDefForm,
-    ScenarioSelectableLimits, ScenarioSelectables, Schedule, Seed, SignalId, SimDuration, UnitId,
-    VmArchitecture, WhiteBoxPolicy, World, WorldFaultDomain, WorldFaultTargetRef,
-    WorldFaultTopology, WorldNetworkInterface, WorldNetworkPath, WorldNetworkPathHop,
-    WorldNetworkSegment, WorldNetworkSegmentKind, WorldNetworkTechnology, WorldNode,
+    MeasurementInstanceKey, MetricDefinition, MetricId, MetricSource, MetricValueType,
+    ModeledMeasurementTimeout, NodeId, NodeTemplate, Plan, Predicate, Properties, ReadyPoint,
+    ScenarioDefForm, ScenarioSelectableLimits, ScenarioSelectables, Schedule, Seed, SignalId,
+    SimDuration, UnitId, VmArchitecture, WhiteBoxPolicy, World, WorldFaultDomain,
+    WorldFaultTargetRef, WorldFaultTopology, WorldNetworkInterface, WorldNetworkPath,
+    WorldNetworkPathHop, WorldNetworkSegment, WorldNetworkSegmentKind, WorldNetworkTechnology,
+    WorldNode,
 };
 use crucible_campaign::{
     AlternativeId, BooleanDomain, CampaignHash, CampaignLineage, CampaignMode, CampaignPolicy,
@@ -474,71 +475,160 @@ fn worked_network_plan(world: &World, properties: &Properties) -> Result<Plan, C
         .map_err(|error| fixture_error(format!("build worked-network plan: {error}")))
 }
 
+/// Instance key carried by every worked-network guest semantic marker.
+const WORKED_NETWORK_MARKER_INSTANCE: &str = "instance-1";
+
+/// Declares every worked-network window and guest semantic-marker boundary.
+///
+/// The fresh campaign driver admits a guest semantic marker only when a
+/// measurement whose cohort contains the emitting node names that exact
+/// marker and instance as a boundary. Router A emits the primary-probe and
+/// `fault.transport.signaled` markers; west emits `network.converged`,
+/// `recovery.measured`, `network.failover.observed`, and `campaign.complete`
+/// (`tests/crucible/fixtures/envoy-network`). Fault-ready phases are guest
+/// events and need no declaration.
 fn worked_network_measurements(
     world: &World,
     plan: &Plan,
     properties: &Properties,
 ) -> Result<MeasurementDefinitions, CliError> {
-    let routers = [node("router-a"), node("router-b"), node("router-c")];
-    let begin = BoundarySelector::GuestMarker {
-        marker: MarkerId::from_name("fault.transport.signaled"),
-        instance: None,
-    };
-    let end = BoundarySelector::GuestMarker {
-        marker: MarkerId::from_name("recovery.measured"),
-        instance: None,
-    };
+    let router_a = node("router-a");
+    let west = node("traffic-west");
     let timeout = Some(ModeledMeasurementTimeout::VirtualTime {
         nanos: 30_000_000_000,
     });
+    let window = |id: &str,
+                  begin: &str,
+                  end: &str,
+                  cohort: &[&NodeId],
+                  metrics: Vec<MetricDefinition>|
+     -> Result<MeasurementDefinition, CliError> {
+        Ok(MeasurementDefinition {
+            id: measurement_id(id)?,
+            begin: semantic_marker_boundary(begin)?,
+            end: semantic_marker_boundary(end)?,
+            timeout: timeout.clone(),
+            cohort: CohortPolicy::Any(cohort.iter().map(|node| (*node).clone()).collect()),
+            metrics,
+        })
+    };
+    let model_metric = |id: &str, unit: &str, source: MetricSource| {
+        Ok::<_, CliError>(MetricDefinition {
+            id: metric_id(id)?,
+            value_type: MetricValueType::UnsignedInteger,
+            unit: unit_id(unit)?,
+            source,
+            aggregation: Aggregation::EventDelta,
+        })
+    };
+    let guest_metric = |id: &str, unit: &str| {
+        Ok::<_, CliError>(MetricDefinition {
+            id: metric_id(id)?,
+            value_type: MetricValueType::UnsignedInteger,
+            unit: unit_id(unit)?,
+            source: MetricSource::Guest,
+            aggregation: Aggregation::Last,
+        })
+    };
+
+    // The first recovery window opens when router A applies its response and
+    // closes when west commits the measured traffic window.
+    let recovery = ("fault.transport.signaled", "recovery.measured");
+    let recovery_cohort = [&router_a, &west];
     let definitions = vec![
-        MeasurementDefinition {
-            id: measurement_id("recovery_time_us")?,
-            begin: begin.clone(),
-            end: end.clone(),
-            timeout: timeout.clone(),
-            cohort: CohortPolicy::All(routers.to_vec()),
-            metrics: vec![MetricDefinition {
-                id: metric_id("elapsed_virtual_time")?,
-                value_type: MetricValueType::UnsignedInteger,
-                unit: unit_id("virtual_ticks")?,
-                source: MetricSource::VirtualTime,
-                aggregation: Aggregation::EventDelta,
-            }],
-        },
-        MeasurementDefinition {
-            id: measurement_id("traffic_loss_packets")?,
-            begin: begin.clone(),
-            end: end.clone(),
-            timeout: timeout.clone(),
-            cohort: CohortPolicy::All(routers.to_vec()),
-            metrics: vec![MetricDefinition {
-                id: metric_id("modeled_drop_count")?,
-                value_type: MetricValueType::UnsignedInteger,
-                unit: unit_id("packets")?,
-                source: MetricSource::NetworkModeledDropCount { link: None },
-                aggregation: Aggregation::EventDelta,
-            }],
-        },
-        MeasurementDefinition {
-            id: measurement_id("control_plane_cpu_us")?,
-            begin,
-            end,
-            timeout,
-            cohort: CohortPolicy::All(routers.to_vec()),
-            metrics: vec![MetricDefinition {
-                id: metric_id("router_a_instruction_work")?,
-                value_type: MetricValueType::UnsignedInteger,
-                unit: unit_id("instructions")?,
-                source: MetricSource::NodeIcount {
-                    node: node("router-a"),
+        window(
+            "recovery_time_us",
+            recovery.0,
+            recovery.1,
+            &recovery_cohort,
+            vec![model_metric(
+                "elapsed_virtual_time",
+                "virtual_ticks",
+                MetricSource::VirtualTime,
+            )?],
+        )?,
+        window(
+            "traffic_loss_packets",
+            recovery.0,
+            recovery.1,
+            &recovery_cohort,
+            vec![model_metric(
+                "modeled_drop_count",
+                "packets",
+                MetricSource::NetworkModeledDropCount { link: None },
+            )?],
+        )?,
+        window(
+            "control_plane_cpu_us",
+            recovery.0,
+            recovery.1,
+            &recovery_cohort,
+            vec![model_metric(
+                "router_a_instruction_work",
+                "instructions",
+                MetricSource::NodeIcount {
+                    node: router_a.clone(),
                 },
-                aggregation: Aggregation::EventDelta,
-            }],
-        },
+            )?],
+        )?,
+        // West reports its own request outcomes between convergence and the
+        // committed recovery measurement.
+        window(
+            "traffic-window",
+            "network.converged",
+            "recovery.measured",
+            &[&west],
+            vec![
+                guest_metric("response_completion_inversions", "dimensionless")?,
+                guest_metric("traffic_loss_packets", "packets")?,
+                guest_metric("traffic_success_packets", "packets")?,
+            ],
+        )?,
+        window(
+            "recovery_hold_us",
+            "fault.transport.primary-probed",
+            "fault.transport.signaled",
+            &[&router_a],
+            vec![model_metric(
+                "elapsed_virtual_time",
+                "virtual_ticks",
+                MetricSource::VirtualTime,
+            )?],
+        )?,
+        window(
+            "failover_observed_us",
+            "fault.transport.signaled",
+            "network.failover.observed",
+            &recovery_cohort,
+            vec![model_metric(
+                "elapsed_virtual_time",
+                "virtual_ticks",
+                MetricSource::VirtualTime,
+            )?],
+        )?,
+        window(
+            "followup_completion_us",
+            "fault.followup.primary-probed",
+            "campaign.complete",
+            &recovery_cohort,
+            vec![model_metric(
+                "elapsed_virtual_time",
+                "virtual_ticks",
+                MetricSource::VirtualTime,
+            )?],
+        )?,
     ];
     MeasurementDefinitions::new(world, plan, properties, definitions)
         .map_err(|error| fixture_error(format!("build worked-network measurements: {error}")))
+}
+
+fn semantic_marker_boundary(marker: &str) -> Result<BoundarySelector, CliError> {
+    let instance = MeasurementInstanceKey::parse(WORKED_NETWORK_MARKER_INSTANCE)
+        .map_err(|error| fixture_error(format!("invalid marker instance: {error}")))?;
+    Ok(BoundarySelector::GuestMarker {
+        marker: MarkerId::from_name(marker),
+        instance: Some(instance),
+    })
 }
 
 fn worked_network_generators() -> Result<Vec<(&'static str, CandidateGeneratorSpec)>, CliError> {
