@@ -216,8 +216,13 @@ seconds, then times out added-cycle staging recovery at 120.007 seconds;
 thirteen cases remain unrun. A separate archived diagnostic completes that
 exact case and all final assertions in 144.04 seconds, including four durable
 progress events, seven observations, both actual reclaims and native reopen.
-Its exact-case 180-second runner preparation awaits untraced qualification.
-Operation, staging and whole-lease clocks remain unchanged. The earlier
+Its exact-case 180-second runner preparation passes untraced qualification in
+112.849 seconds. Eleven subsequent cases pass, then restore preserving fresh
+serving, quarantine and unrelated retirement times out at 120.005 seconds;
+the final secure-pack restore case remains unrun. A separate archived trace
+passes that exact restore and all final reopen assertions in 140.99 seconds.
+Its reviewed exact-case 180-second runner preparation awaits untraced
+qualification. Operation, staging and whole-lease clocks remain unchanged. The earlier
 fourteen passes retain their original source binding and do not establish
 complete qualification of this candidate.
 The reviewed closed-absence diagnosis in `3f598fed48`
@@ -242,15 +247,22 @@ returns `Denied(commit)` in 82.05 seconds without a malformed-stage marker;
 a separate denial-callsite diagnostic returns `Advance(Expired)` in 103.47
 seconds without a retained-deadline sample. Neither reproduces or identifies
 the original malformed request's cause.
+A positive-only fixture policy now uses validated C6h/G24h while preserving
+ordinary deadline/refusal fixtures. On combined tree `f6618ce65b`, the actual
+owning native-index-rebuild check passes verification in 136.06 seconds, then
+recovery fails with `Advance(Store(Invalid(MalformedRequest)))` in 260.27
+seconds; the final case remains unrun. The capacity policy does not resolve
+that failure. A distinct traced diagnosis is pending.
 A broader earlier feature-matrix run is cancelled after seven actual
 missing-placement failures; it is not a passing matrix result. A separate archive diagnostic
 reproduces `Unsupported` in signed fixture setup before the intended loss
 operation. The reviewed `fba4f01132` forwarding correction preserves scalar
 unavailable reads and every Raw durability observer. Its focused seven-case Nix
 check passes all seven actual cases, with independent source and execution
-review; it does not establish the broader feature matrix. Six of fourteen
-owning bucket checks pass on combined tree `5962ddef64`; the remaining checks
-are in progress, without claiming task or aggregate qualification.
+review; it does not establish the broader feature matrix. All fourteen owning
+bucket checks pass on combined tree `5962ddef64`: 209 exact executions, zero
+failures or ignored tests. New retained-decoding witnesses and the complete
+current floor still require qualification; no task checkbox advances.
 On combined tree `7cba666072`, required application compilation passes all 114
 test targets across 29 packages. Six current foundation checks pass; role
 selection stops before execution at its existing `cargo-nextest` vendor hash.

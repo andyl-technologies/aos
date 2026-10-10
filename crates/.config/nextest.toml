@@ -50,6 +50,14 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 filter = 'package(terrane) & test(=gc::runner::permanent_local_tests::recovery::staging::permanent_local_staging_added_cycle_keeps_late_residue_unselected)'
 slow-timeout = { period = "60s", terminate-after = 3 }
 
+# This restore case performs two fresh admissions, a full ownership barrier,
+# restoration and reopen while preserving unrelated serving and quarantine
+# rows. Its archived trace completes in 141 seconds. Reserve a finite third
+# runner minute; collector, publication and whole-lease clocks stay unchanged.
+[[profile.default.overrides]]
+filter = 'package(terrane) & test(=gc::runner::permanent_local_tests::restore::permanent_local_restore_preserves_fresh_serving_quarantine_and_unrelated_retirement)'
+slow-timeout = { period = "60s", terminate-after = 3 }
+
 # The ten native local-deletion cases include real grace waits and repeated
 # durable fault/recovery prefixes. Their owning Nix run measured 100-210 seconds
 # per case. Reserve all test slots and bound each runner process to five minutes;
