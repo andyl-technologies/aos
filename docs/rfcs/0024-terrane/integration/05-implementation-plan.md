@@ -133,6 +133,25 @@ Workers retain disjoint file ownership and separate worktrees. Independent
 review remains separate. One coordinated compiler serves build and Nix requests.
 T2 and branch worklines remain deferred.
 
+Additional isolated worklines inspect growing-index completion, indexed replay
+and permanent recovery, while a separate worker executes the five public SDK
+checkout cases against the retained `d116ffe6239a` archive. The first two source
+reviews find no justified correction before the newly registered phase markers
+execute; their file ownership is released. Permanent recovery review identifies
+an interrupted-unlink durability gap: a fresh absence observation can discharge
+a Planned duty before synchronizing the affected family directory. An isolated
+correction and genuine recovery-fault witness are in progress under GC-15,
+GC-24 and GC-29, preserving the original bounds and current physical checks.
+
+Frozen private tree `17feb7b5b1c8` passes the exact formatter pair in 23.364
+seconds, with unchanged 6,246 tracked entries and 3,237 compiler inputs.
+Independent review verifies its actual terminal and raw hashes. Available
+storage subsequently recovers above the six-GiB compiler start threshold,
+allowing coordinated native qualification to resume with the two-GiB reserve.
+Fresh SDK compilation, strict Clippy, the full current T1 gate set and the
+mandatory application-target check remain pending on this tree. These source
+reviews and formatter results do not complete a task or milestone.
+
 Frozen private tree `d66765bf3c76` passes the native library build, fresh
 all-target SDK test compilation, strict all-target Clippy and the exact
 formatter pair. Its actual SDK inventory contains 1,085 tests across three
