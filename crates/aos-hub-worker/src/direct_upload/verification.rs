@@ -450,11 +450,19 @@ pub(crate) async fn run_fixture(
     let replayed = Cell::new(true);
     let source_dispatch = || replayed.set(false);
     qualification_attempt::enter(attempt, Phase::ImmutableIntegrityRead);
-    let proof = storage::effect(env, &job.admission, operation_id.clone(), job, true, || async {
-        let proof = verify_with_attempt(env, job, &operation_id, &source_dispatch, attempt).await?;
-        qualification_attempt::enter(attempt, Phase::RetainedProof);
-        Ok(proof)
-    })
+    let proof = storage::effect(
+        env,
+        &job.admission,
+        operation_id.clone(),
+        job,
+        true,
+        || async {
+            let proof =
+                verify_with_attempt(env, job, &operation_id, &source_dispatch, attempt).await?;
+            qualification_attempt::enter(attempt, Phase::RetainedProof);
+            Ok(proof)
+        },
+    )
     .await?;
 
     // A retained replay may skip source consumption altogether.
