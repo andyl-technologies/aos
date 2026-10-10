@@ -876,6 +876,7 @@ async fn upload_registry_part(mut request: Request, env: &Env) -> Result<Respons
     {
         return Response::error("publication multipart part shape is invalid", 502);
     }
+    let read_started_ms = js_sys::Date::now();
     let Some(bytes) =
         read_bounded_body(&mut request, preflight.expected_part_size as usize).await?
     else {
@@ -884,6 +885,8 @@ async fn upload_registry_part(mut request: Request, env: &Env) -> Result<Respons
     if bytes.len() as u64 != preflight.expected_part_size {
         return Response::error("publication multipart part has the wrong size", 400);
     }
+    let read_elapsed_ms = (js_sys::Date::now() - read_started_ms).max(0.0) as u64;
+    let hash_started_ms = js_sys::Date::now();
     let Some(hashed_size) = preflight.prior_hashed_size.checked_add(bytes.len() as u64) else {
         return Response::error("publication multipart hash length overflowed", 502);
     };
@@ -901,6 +904,7 @@ async fn upload_registry_part(mut request: Request, env: &Env) -> Result<Respons
     }
     let body_sha256 =
         crate::digest::sha256_hex(&bytes, preflight.expected_part_size as usize).await?;
+    let hash_elapsed_ms = (js_sys::Date::now() - hash_started_ms).max(0.0) as u64;
     let admission_body = serde_json::to_vec(&HybridPublicationPartAdmissionRequest {
         size: bytes.len() as u64,
         body_sha256: body_sha256.clone(),
@@ -942,6 +946,7 @@ async fn upload_registry_part(mut request: Request, env: &Env) -> Result<Respons
     {
         return Response::error("publication multipart destinations are invalid", 502);
     }
+    let storage_started_ms = js_sys::Date::now();
     let mut placements = Vec::with_capacity(admission.destinations.len());
     for destination in &admission.destinations {
         let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
@@ -965,6 +970,17 @@ async fn upload_registry_part(mut request: Request, env: &Env) -> Result<Respons
             etag,
         });
     }
+    let storage_elapsed_ms = (js_sys::Date::now() - storage_started_ms).max(0.0) as u64;
+    // Report byte-path costs separately from Native control calls without
+    // logging object identifiers, provider URLs, or authorization material.
+    worker::console_log!(
+        "hybrid_publication_part_stored bytes={} placements={} read_ms={} hash_ms={} storage_ms={}",
+        bytes.len(),
+        placements.len(),
+        read_elapsed_ms,
+        hash_elapsed_ms,
+        storage_elapsed_ms,
+    );
     let completion_body = serde_json::to_vec(&HybridPublicationPartCompletionRequest {
         admission,
         size: bytes.len() as u64,
