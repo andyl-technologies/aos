@@ -19,6 +19,9 @@
 //! death; the V8 pending marker preserves that freeze until Root settlement.
 //! Neither record grants publication or effect authority.
 
+use crate::journal::{CacheMutationGateV1, PreflightTransactionViewV1};
+use crate::journal::semantic_append::{AppendScope, PreflightScope};
+
 use std::collections::BTreeMap;
 
 use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId};
@@ -948,19 +951,30 @@ impl Journal {
         let legacy_release = release_transaction(hold)?;
         let [v8_release, v8_clear] = v8_retirement_and_clear_transactions(hold)?;
         // No ordinary source-domain commit can race after acquisition.
-        self.preflight_transactions_with_capacity_scope(
-            &[acquire.clone(), legacy_release],
-            None,
-            false,
-            true,
+        self.preflight_in_scope(
+            PreflightTransactionViewV1::Ordinary(&[acquire.clone(), legacy_release]),
+            PreflightScope {
+                allow_policy_hold_transition: true,
+                ..PreflightScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )?;
-        self.preflight_transactions_with_capacity_scope(
-            &[acquire.clone(), v8_release, v8_clear],
-            None,
-            false,
-            true,
+        self.preflight_in_scope(
+            PreflightTransactionViewV1::Ordinary(&[acquire.clone(), v8_release, v8_clear]),
+            PreflightScope {
+                allow_policy_hold_transition: true,
+                ..PreflightScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )?;
-        self.commit_with_capacity_scope(&acquire, None, false, true, false, false, false)?;
+        self.commit_in_scope(
+            &acquire,
+            AppendScope {
+                allow_policy_hold_transition: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+        )?;
         if current(self.native.state())? != Some(hold) {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -1048,14 +1062,13 @@ impl Journal {
         let marker = SourceDomainPolicyV8PendingSettlementV1::new(expected)?;
         match current_with_v8_pending(self.native.state())? {
             (Some(current), None) if current == expected => {
-                self.commit_with_capacity_scope(
+                self.commit_in_scope(
                     &v8_retirement_transaction(expected)?,
-                    None,
-                    false,
-                    true,
-                    false,
-                    false,
-                    false,
+                    AppendScope {
+                        allow_policy_hold_transition: true,
+                        ..AppendScope::default()
+                    },
+                    CacheMutationGateV1::Ordinary,
                 )?;
                 if current_with_v8_pending(self.native.state())? != (Some(released), Some(marker)) {
                     return Err(JournalError::ProtectedBoundary);
@@ -1092,14 +1105,13 @@ impl Journal {
         }
         match current_with_v8_pending(self.native.state())? {
             (Some(current), Some(_)) if current == expected_released => {
-                self.commit_with_capacity_scope(
+                self.commit_in_scope(
                     &v8_clear_transaction(expected_released)?,
-                    None,
-                    false,
-                    true,
-                    false,
-                    false,
-                    false,
+                    AppendScope {
+                        allow_policy_hold_transition: true,
+                        ..AppendScope::default()
+                    },
+                    CacheMutationGateV1::Ordinary,
                 )?;
             }
             (Some(current), None) if current == expected_released => {}
@@ -1119,14 +1131,13 @@ impl Journal {
             held: false,
             ..expected
         };
-        self.commit_with_capacity_scope(
+        self.commit_in_scope(
             &release_transaction(expected)?,
-            None,
-            false,
-            true,
-            false,
-            false,
-            false,
+            AppendScope {
+                allow_policy_hold_transition: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )?;
         if current(self.native.state())? != Some(released) {
             return Err(JournalError::ProtectedBoundary);

@@ -11,6 +11,9 @@
 //! read-only signer independently replays it; Root must later prove it spent
 //! the challenge under its last-acquired writer. A row alone authorizes nothing.
 
+use crate::journal::{CacheMutationGateV1, PreflightTransactionViewV1};
+use crate::journal::semantic_append::{AppendScope, PreflightScope};
+
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use sha2::{Digest as _, Sha256};
 
@@ -246,19 +249,30 @@ impl Journal {
         let [v8_release, v8_clear] =
             source_domain_policy_hold::v8_retirement_and_clear_transactions(expected_hold)?;
         // This challenge spends held-writer capacity before either release path.
-        self.preflight_transactions_with_capacity_scope(
-            &[transaction.clone(), release],
-            None,
-            false,
-            true,
+        self.preflight_in_scope(
+            PreflightTransactionViewV1::Ordinary(&[transaction.clone(), release]),
+            PreflightScope {
+                allow_policy_hold_transition: true,
+                ..PreflightScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )?;
-        self.preflight_transactions_with_capacity_scope(
-            &[transaction.clone(), v8_release, v8_clear],
-            None,
-            false,
-            true,
+        self.preflight_in_scope(
+            PreflightTransactionViewV1::Ordinary(&[transaction.clone(), v8_release, v8_clear]),
+            PreflightScope {
+                allow_policy_hold_transition: true,
+                ..PreflightScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )?;
-        self.commit_with_capacity_scope(&transaction, None, false, true, false, false, false)?;
+        self.commit_in_scope(
+            &transaction,
+            AppendScope {
+                allow_policy_hold_transition: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+        )?;
         if replay_source_domain_challenge_v1(self)? != Some(row)
             || self.protected_writer_physical_names_v1()? != names
             || self.source_domain_policy_hold_v1()? != Some(expected_hold)
@@ -488,7 +502,14 @@ mod tests {
         )
         .expect("offline mutation fixture");
         writer
-            .commit_with_capacity_scope(&mutation, None, false, true, false, false, false)
+            .commit_in_scope(
+                &mutation,
+                AppendScope {
+                    allow_policy_hold_transition: true,
+                    ..AppendScope::default()
+                },
+                CacheMutationGateV1::Ordinary,
+            )
             .expect("offline malformed row");
         assert!(replay_source_domain_challenge_v1(&writer).is_err());
         drop(writer);

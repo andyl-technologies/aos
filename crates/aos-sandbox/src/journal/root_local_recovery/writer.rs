@@ -1,5 +1,8 @@
 //! Named kind2/kind5 physical writers sharing one private append/readback core.
 
+use crate::journal::PreflightTransactionViewV1;
+use crate::journal::semantic_append::{AppendScope, PreflightScope};
+
 use std::path::Path;
 
 use aos_sandbox_protocol::mount_source_acquisition_state::{
@@ -13,8 +16,7 @@ use super::{
 use crate::journal::{
     CacheMutationGateV1, CommitResult, Journal, JournalError, JournalTransaction,
     ProtectedAuthorityScope, ProtectedJournalAuthority, ProtectedJournalSnapshot, RecordNamespace,
-    RootOwnerEdge, RootSourceGenesisTransitionV1, SourceProjectAdmissionTransition,
-    authority_preflight_digest, controller_source_genesis, source_tree_genesis,
+    RootOwnerEdge, authority_preflight_digest,
 };
 
 /// Borrows one of the two closed fixed Mount local physical scopes.
@@ -256,15 +258,13 @@ impl<'journal> LocalRecoveryWriter<'journal> {
     }
 
     fn preflight(&self, transaction: &JournalTransaction, edge: Edge) -> Result<(), JournalError> {
-        self.authority.journal.preflight_with_cache_gate(
-            std::slice::from_ref(transaction),
-            None,
-            true,
-            false,
-            None,
-            None,
-            None,
-            Some(RootOwnerEdge::Local(edge)),
+        self.authority.journal.preflight_in_scope(
+            PreflightTransactionViewV1::Ordinary(std::slice::from_ref(transaction)),
+            PreflightScope {
+                allow_capacity_records: true,
+                root_local_edge: Some(RootOwnerEdge::Local(edge)),
+                ..PreflightScope::default()
+            },
             CacheMutationGateV1::Ordinary,
         )
     }
@@ -275,19 +275,13 @@ impl<'journal> LocalRecoveryWriter<'journal> {
         edge: Edge,
     ) -> Result<CommitResult, JournalError> {
         self.require_current()?;
-        self.authority.journal.commit_with_cache_gate(
+        self.authority.journal.commit_in_scope(
             transaction,
-            None,
-            true,
-            false,
-            false,
-            false,
-            false,
-            SourceProjectAdmissionTransition::None,
-            controller_source_genesis::ControllerSourceGenesisTransition::None,
-            source_tree_genesis::SourceGenesisTransitionV1::None,
-            RootSourceGenesisTransitionV1::None,
-            Some(RootOwnerEdge::Local(edge)),
+            AppendScope {
+                allow_capacity_records: true,
+                root_local_edge: Some(RootOwnerEdge::Local(edge)),
+                ..AppendScope::default()
+            },
             CacheMutationGateV1::Ordinary,
         )
     }

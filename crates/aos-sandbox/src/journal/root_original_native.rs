@@ -5,6 +5,9 @@
 //! custody or Mount's actual table installation; those owners must compare the
 //! same retained originals before private signing or carrier IO.
 
+use crate::journal::PreflightTransactionViewV1;
+use crate::journal::semantic_append::PreflightScope;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -29,9 +32,8 @@ use super::native_held::OriginalRootCapacityRecordV5;
 use super::{
     CacheMutationGateV1, CommitResult, Journal, JournalError, JournalLimits, JournalRecord,
     JournalTransaction, ProtectedAuthorityScope, ProtectedJournalAuthority,
-    ProtectedJournalSnapshot, RecordNamespace, RootOwnerEdge, RootSourceGenesisTransitionV1,
-    SourceProjectAdmissionTransition, authority_preflight_digest, controller_source_genesis,
-    source_tree_genesis, validate_transaction,
+    ProtectedJournalSnapshot, RecordNamespace, RootOwnerEdge, authority_preflight_digest,
+    validate_transaction,
 };
 
 type State = BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
@@ -1164,15 +1166,13 @@ impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
         transaction: &JournalTransaction,
         attempt: [u8; 32],
     ) -> Result<(), JournalError> {
-        self.authority.journal.preflight_with_cache_gate(
-            std::slice::from_ref(transaction),
-            None,
-            true,
-            false,
-            None,
-            None,
-            None,
-            Some(RootOwnerEdge::OriginalNative(attempt)),
+        self.authority.journal.preflight_in_scope(
+            PreflightTransactionViewV1::Ordinary(std::slice::from_ref(transaction)),
+            PreflightScope {
+                allow_capacity_records: true,
+                root_local_edge: Some(RootOwnerEdge::OriginalNative(attempt)),
+                ..PreflightScope::default()
+            },
             CacheMutationGateV1::Ordinary,
         )
     }

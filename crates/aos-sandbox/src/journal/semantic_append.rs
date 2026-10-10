@@ -37,6 +37,105 @@ use super::{
     is_q04_lower_history_record_v1, nix_offline_provisioning,
 };
 
+/// Contains private append selectors without admission or reusable rights.
+///
+/// Genuine gates and final-crossing loans remain separate engine arguments.
+#[derive(Clone, Copy)]
+pub(super) struct AppendScope {
+    pub(super) settling_reservation: Option<[u8; 32]>,
+    pub(super) allow_capacity_records: bool,
+    pub(super) allow_policy_hold_transition: bool,
+    pub(super) allow_host_fence_acquisition: bool,
+    pub(super) allow_host_currentness_fence_acquisition: bool,
+    pub(super) allow_host_settlement_admission_append: bool,
+    pub(super) project_admission_transition: SourceProjectAdmissionTransition,
+    pub(super) controller_genesis_transition:
+        controller_source_genesis::ControllerSourceGenesisTransition,
+    pub(super) source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1,
+    pub(super) root_genesis_transition: RootSourceGenesisTransitionV1,
+    pub(super) root_local_edge: Option<RootOwnerEdge>,
+    pub(super) successor_issuance_transition:
+        Option<controller_source_successor_issuance::Transition>,
+    pub(super) first_successor: Option<FirstSourceSuccessorNativePhaseV2>,
+}
+
+impl Default for AppendScope {
+    fn default() -> Self {
+        Self {
+            settling_reservation: None,
+            allow_capacity_records: false,
+            allow_policy_hold_transition: false,
+            allow_host_fence_acquisition: false,
+            allow_host_currentness_fence_acquisition: false,
+            allow_host_settlement_admission_append: false,
+            project_admission_transition: SourceProjectAdmissionTransition::None,
+            controller_genesis_transition:
+                controller_source_genesis::ControllerSourceGenesisTransition::None,
+            source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1::None,
+            root_genesis_transition: RootSourceGenesisTransitionV1::None,
+            root_local_edge: None,
+            successor_issuance_transition: None,
+            first_successor: None,
+        }
+    }
+}
+
+/// Borrows immutable forecast selectors without original final-crossing loans.
+///
+/// The Q04 recipe view and Cache gate retain independent borrow lifetimes.
+#[derive(Default)]
+pub(super) struct PreflightScope<'phases> {
+    pub(super) settling_reservation: Option<[u8; 32]>,
+    pub(super) allow_capacity_records: bool,
+    pub(super) allow_policy_hold_transition: bool,
+    pub(super) project_transitions: Option<&'phases [SourceProjectAdmissionTransition]>,
+    pub(super) controller_genesis_transitions:
+        Option<&'phases [controller_source_genesis::ControllerSourceGenesisTransition]>,
+    pub(super) genesis_transitions:
+        Option<&'phases [source_tree_genesis::SourceGenesisTransitionV1]>,
+    pub(super) root_local_edge: Option<RootOwnerEdge>,
+    pub(super) successor_issuance_transitions:
+        Option<&'phases [controller_source_successor_issuance::Transition]>,
+    pub(super) first_successors: Option<&'phases [FirstSourceSuccessorNativePhaseV2]>,
+}
+
+impl Journal {
+    /// Dispatches ordinary selectors without original final-crossing loans.
+    ///
+    /// # Errors
+    /// Returns the original semantic, capacity, gate or durable append failure.
+    pub(super) fn commit_in_scope(
+        &mut self,
+        transaction: &JournalTransaction,
+        scope: AppendScope,
+        cache_gate: CacheMutationGateV1<'_>,
+    ) -> Result<CommitResult, JournalError> {
+        self.commit_with_native_scope(
+            transaction,
+            scope,
+            cache_gate,
+            #[cfg(target_os = "linux")]
+            None,
+            None,
+            #[cfg(target_os = "linux")]
+            None,
+        )
+    }
+
+    /// Advises ordinary transactions without selecting project-genesis phases.
+    ///
+    /// # Errors
+    /// Returns the original semantic, capacity, gate or forecast failure.
+    pub(super) fn preflight_in_scope(
+        &self,
+        transactions: PreflightTransactionViewV1<'_>,
+        scope: PreflightScope<'_>,
+        cache_gate: CacheMutationGateV1<'_>,
+    ) -> Result<(), JournalError> {
+        self.preflight_with_project_genesis(transactions, scope, cache_gate, None)
+    }
+}
+
 #[cfg(target_os = "linux")]
 impl GlobalGenesisNativeCutV2<'_> {
     fn final_crossing(
@@ -253,30 +352,10 @@ impl Journal {
         &mut self,
         transaction: &JournalTransaction,
     ) -> Result<CommitResult, JournalError> {
-        self.commit_with_capacity_scope(transaction, None, false, false, false, false, false)
-    }
-
-    pub(super) fn commit_with_capacity_scope(
-        &mut self,
-        transaction: &JournalTransaction,
-        settling_reservation: Option<[u8; 32]>,
-        allow_capacity_records: bool,
-        allow_policy_hold_transition: bool,
-        allow_host_fence_acquisition: bool,
-        allow_host_currentness_fence_acquisition: bool,
-        allow_host_settlement_admission_append: bool,
-    ) -> Result<CommitResult, JournalError> {
-        self.commit_with_capacity_scope_and_project_admission(
+        self.commit_in_scope(
             transaction,
-            settling_reservation,
-            allow_capacity_records,
-            allow_policy_hold_transition,
-            allow_host_fence_acquisition,
-            allow_host_currentness_fence_acquisition,
-            allow_host_settlement_admission_append,
-            SourceProjectAdmissionTransition::None,
-            controller_source_genesis::ControllerSourceGenesisTransition::None,
-            RootSourceGenesisTransitionV1::None,
+            AppendScope::default(),
+            CacheMutationGateV1::Ordinary,
         )
     }
 
@@ -285,17 +364,13 @@ impl Journal {
         transaction: &JournalTransaction,
         transition: SourceProjectAdmissionTransition,
     ) -> Result<CommitResult, JournalError> {
-        self.commit_with_capacity_scope_and_project_admission(
+        self.commit_in_scope(
             transaction,
-            None,
-            false,
-            false,
-            false,
-            false,
-            false,
-            transition,
-            controller_source_genesis::ControllerSourceGenesisTransition::None,
-            RootSourceGenesisTransitionV1::None,
+            AppendScope {
+                project_admission_transition: transition,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )
     }
 
@@ -304,17 +379,13 @@ impl Journal {
         transaction: &JournalTransaction,
         transition: controller_source_genesis::ControllerSourceGenesisTransition,
     ) -> Result<CommitResult, JournalError> {
-        self.commit_with_capacity_scope_and_project_admission(
+        self.commit_in_scope(
             transaction,
-            None,
-            false,
-            false,
-            false,
-            false,
-            false,
-            SourceProjectAdmissionTransition::None,
-            transition,
-            RootSourceGenesisTransitionV1::None,
+            AppendScope {
+                controller_genesis_transition: transition,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )
     }
 
@@ -323,77 +394,12 @@ impl Journal {
         &mut self,
         transaction: &JournalTransaction,
     ) -> Result<CommitResult, JournalError> {
-        self.commit_with_capacity_scope_and_project_admission(
+        self.commit_in_scope(
             transaction,
-            None,
-            false,
-            false,
-            false,
-            false,
-            false,
-            SourceProjectAdmissionTransition::None,
-            controller_source_genesis::ControllerSourceGenesisTransition::None,
-            RootSourceGenesisTransitionV1::Initialize,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn commit_with_capacity_scope_and_project_admission(
-        &mut self,
-        transaction: &JournalTransaction,
-        settling_reservation: Option<[u8; 32]>,
-        allow_capacity_records: bool,
-        allow_policy_hold_transition: bool,
-        allow_host_fence_acquisition: bool,
-        allow_host_currentness_fence_acquisition: bool,
-        allow_host_settlement_admission_append: bool,
-        project_admission_transition: SourceProjectAdmissionTransition,
-        controller_genesis_transition: controller_source_genesis::ControllerSourceGenesisTransition,
-        root_genesis_transition: RootSourceGenesisTransitionV1,
-    ) -> Result<CommitResult, JournalError> {
-        self.commit_with_capacity_scope_and_source_genesis(
-            transaction,
-            settling_reservation,
-            allow_capacity_records,
-            allow_policy_hold_transition,
-            allow_host_fence_acquisition,
-            allow_host_currentness_fence_acquisition,
-            allow_host_settlement_admission_append,
-            project_admission_transition,
-            controller_genesis_transition,
-            source_tree_genesis::SourceGenesisTransitionV1::None,
-            root_genesis_transition,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn commit_with_capacity_scope_and_source_genesis(
-        &mut self,
-        transaction: &JournalTransaction,
-        settling_reservation: Option<[u8; 32]>,
-        allow_capacity_records: bool,
-        allow_policy_hold_transition: bool,
-        allow_host_fence_acquisition: bool,
-        allow_host_currentness_fence_acquisition: bool,
-        allow_host_settlement_admission_append: bool,
-        project_admission_transition: SourceProjectAdmissionTransition,
-        controller_genesis_transition: controller_source_genesis::ControllerSourceGenesisTransition,
-        source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1,
-        root_genesis_transition: RootSourceGenesisTransitionV1,
-    ) -> Result<CommitResult, JournalError> {
-        self.commit_with_cache_gate(
-            transaction,
-            settling_reservation,
-            allow_capacity_records,
-            allow_policy_hold_transition,
-            allow_host_fence_acquisition,
-            allow_host_currentness_fence_acquisition,
-            allow_host_settlement_admission_append,
-            project_admission_transition,
-            controller_genesis_transition,
-            source_genesis_transition,
-            root_genesis_transition,
-            None,
+            AppendScope {
+                root_genesis_transition: RootSourceGenesisTransitionV1::Initialize,
+                ..AppendScope::default()
+            },
             CacheMutationGateV1::Ordinary,
         )
     }
@@ -419,159 +425,7 @@ impl Journal {
         transaction: &JournalTransaction,
         gate: CacheMutationGateV1<'_>,
     ) -> Result<CommitResult, JournalError> {
-        self.commit_with_cache_gate(
-            transaction,
-            None,
-            false,
-            false,
-            false,
-            false,
-            false,
-            SourceProjectAdmissionTransition::None,
-            controller_source_genesis::ControllerSourceGenesisTransition::None,
-            source_tree_genesis::SourceGenesisTransitionV1::None,
-            RootSourceGenesisTransitionV1::None,
-            None,
-            gate,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn commit_with_cache_gate(
-        &mut self,
-        transaction: &JournalTransaction,
-        settling_reservation: Option<[u8; 32]>,
-        allow_capacity_records: bool,
-        allow_policy_hold_transition: bool,
-        allow_host_fence_acquisition: bool,
-        allow_host_currentness_fence_acquisition: bool,
-        allow_host_settlement_admission_append: bool,
-        project_admission_transition: SourceProjectAdmissionTransition,
-        controller_genesis_transition: controller_source_genesis::ControllerSourceGenesisTransition,
-        source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1,
-        root_genesis_transition: RootSourceGenesisTransitionV1,
-        root_local_edge: Option<RootOwnerEdge>,
-        cache_gate: CacheMutationGateV1<'_>,
-    ) -> Result<CommitResult, JournalError> {
-        self.commit_with_cache_gate_and_successor_issuance(
-            transaction,
-            settling_reservation,
-            allow_capacity_records,
-            allow_policy_hold_transition,
-            allow_host_fence_acquisition,
-            allow_host_currentness_fence_acquisition,
-            allow_host_settlement_admission_append,
-            project_admission_transition,
-            controller_genesis_transition,
-            source_genesis_transition,
-            root_genesis_transition,
-            root_local_edge,
-            cache_gate,
-            None,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn commit_with_cache_gate_and_successor_issuance(
-        &mut self,
-        transaction: &JournalTransaction,
-        settling_reservation: Option<[u8; 32]>,
-        allow_capacity_records: bool,
-        allow_policy_hold_transition: bool,
-        allow_host_fence_acquisition: bool,
-        allow_host_currentness_fence_acquisition: bool,
-        allow_host_settlement_admission_append: bool,
-        project_admission_transition: SourceProjectAdmissionTransition,
-        controller_genesis_transition: controller_source_genesis::ControllerSourceGenesisTransition,
-        source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1,
-        root_genesis_transition: RootSourceGenesisTransitionV1,
-        root_local_edge: Option<RootOwnerEdge>,
-        cache_gate: CacheMutationGateV1<'_>,
-        successor_issuance_transition: Option<controller_source_successor_issuance::Transition>,
-    ) -> Result<CommitResult, JournalError> {
-        self.commit_with_cache_gate_and_q04_transition(
-            transaction, settling_reservation, allow_capacity_records,
-            allow_policy_hold_transition, allow_host_fence_acquisition,
-            allow_host_currentness_fence_acquisition, allow_host_settlement_admission_append,
-            project_admission_transition, controller_genesis_transition,
-            source_genesis_transition, root_genesis_transition, root_local_edge, cache_gate,
-            successor_issuance_transition,
-            #[cfg(target_os = "linux")]
-            None,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn commit_with_cache_gate_and_q04_transition(
-        &mut self,
-        transaction: &JournalTransaction,
-        settling_reservation: Option<[u8; 32]>,
-        allow_capacity_records: bool,
-        allow_policy_hold_transition: bool,
-        allow_host_fence_acquisition: bool,
-        allow_host_currentness_fence_acquisition: bool,
-        allow_host_settlement_admission_append: bool,
-        project_admission_transition: SourceProjectAdmissionTransition,
-        controller_genesis_transition: controller_source_genesis::ControllerSourceGenesisTransition,
-        source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1,
-        root_genesis_transition: RootSourceGenesisTransitionV1,
-        root_local_edge: Option<RootOwnerEdge>,
-        cache_gate: CacheMutationGateV1<'_>,
-        successor_issuance_transition: Option<controller_source_successor_issuance::Transition>,
-        #[cfg(target_os = "linux")]
-        q04_transition: Option<
-            Q04JournalTransitionV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_>,
-        >,
-    ) -> Result<CommitResult, JournalError> {
-        self.commit_with_first_source_successor_transition_v2(
-            transaction, settling_reservation, allow_capacity_records,
-            allow_policy_hold_transition, allow_host_fence_acquisition,
-            allow_host_currentness_fence_acquisition, allow_host_settlement_admission_append,
-            project_admission_transition, controller_genesis_transition,
-            source_genesis_transition, root_genesis_transition, root_local_edge, cache_gate,
-            successor_issuance_transition,
-            #[cfg(target_os = "linux")]
-            q04_transition,
-            None,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn commit_with_first_source_successor_transition_v2(
-        &mut self,
-        transaction: &JournalTransaction,
-        settling_reservation: Option<[u8; 32]>,
-        allow_capacity_records: bool,
-        allow_policy_hold_transition: bool,
-        allow_host_fence_acquisition: bool,
-        allow_host_currentness_fence_acquisition: bool,
-        allow_host_settlement_admission_append: bool,
-        project_admission_transition: SourceProjectAdmissionTransition,
-        controller_genesis_transition: controller_source_genesis::ControllerSourceGenesisTransition,
-        source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1,
-        root_genesis_transition: RootSourceGenesisTransitionV1,
-        root_local_edge: Option<RootOwnerEdge>,
-        cache_gate: CacheMutationGateV1<'_>,
-        successor_issuance_transition: Option<controller_source_successor_issuance::Transition>,
-        #[cfg(target_os = "linux")]
-        q04_transition: Option<
-            Q04JournalTransitionV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_>,
-        >,
-        first_successor: Option<FirstSourceSuccessorNativePhaseV2>,
-    ) -> Result<CommitResult, JournalError> {
-        self.commit_with_project_genesis_transition_v3(
-            transaction, settling_reservation, allow_capacity_records,
-            allow_policy_hold_transition, allow_host_fence_acquisition,
-            allow_host_currentness_fence_acquisition, allow_host_settlement_admission_append,
-            project_admission_transition, controller_genesis_transition,
-            source_genesis_transition, root_genesis_transition, root_local_edge, cache_gate,
-            successor_issuance_transition,
-            #[cfg(target_os = "linux")]
-            q04_transition,
-            first_successor, None,
-            #[cfg(target_os = "linux")]
-            None,
-        )
+        self.commit_in_scope(transaction, AppendScope::default(), gate)
     }
 
     #[cfg(target_os = "linux")]
@@ -590,10 +444,14 @@ impl Journal {
             [Genesis::Anchor] if transactions.len() == 1 => &phases[1..],
             _ => return Err(JournalError::ProtectedBoundary),
         };
-        self.preflight_with_project_genesis_v3(
-            PreflightTransactionViewV1::Ordinary(transactions), None, false, false,
-            None, None, Some(transitions), None, CacheMutationGateV1::Ordinary,
-            None, None, Some(selected),
+        self.preflight_with_project_genesis(
+            PreflightTransactionViewV1::Ordinary(transactions),
+            PreflightScope {
+                genesis_transitions: Some(transitions),
+                ..PreflightScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+            Some(selected),
         )
     }
 
@@ -603,14 +461,19 @@ impl Journal {
         transaction: &JournalTransaction,
         root: &crate::policy_compiler::HeldRootSourceGenesisIntentV1<'_>,
     ) -> Result<CommitResult, JournalError> {
-        self.commit_with_project_genesis_transition_v3(
-            transaction, None, false, false, false, false, false,
-            SourceProjectAdmissionTransition::None,
-            controller_source_genesis::ControllerSourceGenesisTransition::None,
-            source_tree_genesis::SourceGenesisTransitionV1::Append,
-            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
-            None, None, None,
-            Some(ProjectNativeTransitionV3::GlobalGenesis(GlobalGenesisNativeCutV2::SourcePrepared(root))),
+        self.commit_with_native_scope(
+            transaction,
+            AppendScope {
+                source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1::Append,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+            #[cfg(target_os = "linux")]
+            None,
+            Some(ProjectNativeTransitionV3::GlobalGenesis(
+                GlobalGenesisNativeCutV2::SourcePrepared(root),
+            )),
+            #[cfg(target_os = "linux")]
             None,
         )
     }
@@ -621,14 +484,19 @@ impl Journal {
         transaction: &JournalTransaction,
         root: &crate::policy_compiler::RootSourceGenesisFloorProofV1<'_>,
     ) -> Result<CommitResult, JournalError> {
-        self.commit_with_project_genesis_transition_v3(
-            transaction, None, false, false, false, false, false,
-            SourceProjectAdmissionTransition::None,
-            controller_source_genesis::ControllerSourceGenesisTransition::None,
-            source_tree_genesis::SourceGenesisTransitionV1::Anchor,
-            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
-            None, None, None,
-            Some(ProjectNativeTransitionV3::GlobalGenesis(GlobalGenesisNativeCutV2::SourceAnchored(root))),
+        self.commit_with_native_scope(
+            transaction,
+            AppendScope {
+                source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1::Anchor,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+            #[cfg(target_os = "linux")]
+            None,
+            Some(ProjectNativeTransitionV3::GlobalGenesis(
+                GlobalGenesisNativeCutV2::SourceAnchored(root),
+            )),
+            #[cfg(target_os = "linux")]
             None,
         )
     }
@@ -640,13 +508,19 @@ impl Journal {
         transition: controller_source_genesis::ControllerSourceGenesisTransition,
         root: &crate::policy_compiler::RootSourceGenesisFloorProofV1<'_>,
     ) -> Result<CommitResult, JournalError> {
-        self.commit_with_project_genesis_transition_v3(
-            transaction, None, false, false, false, false, false,
-            SourceProjectAdmissionTransition::None, transition,
-            source_tree_genesis::SourceGenesisTransitionV1::None,
-            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
-            None, None, None,
-            Some(ProjectNativeTransitionV3::GlobalGenesis(GlobalGenesisNativeCutV2::ControllerAnchored(root))),
+        self.commit_with_native_scope(
+            transaction,
+            AppendScope {
+                controller_genesis_transition: transition,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+            #[cfg(target_os = "linux")]
+            None,
+            Some(ProjectNativeTransitionV3::GlobalGenesis(
+                GlobalGenesisNativeCutV2::ControllerAnchored(root),
+            )),
+            #[cfg(target_os = "linux")]
             None,
         )
     }
@@ -661,14 +535,20 @@ impl Journal {
         if self.protected_owner_uid()? != root.record().source_uid() {
             return Err(JournalError::ProtectedBoundary);
         }
-        self.commit_with_project_genesis_transition_v3(
-            transaction, None, false, false, false, false, false,
-            SourceProjectAdmissionTransition::None,
-            controller_source_genesis::ControllerSourceGenesisTransition::None,
-            source_tree_genesis::SourceGenesisTransitionV1::Append,
-            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
-            None, None, None,
-            Some(ProjectNativeTransitionV3::Genesis(Phase::SourceAppend(root.record().project()), Cut::SourcePrepared(root))),
+        self.commit_with_native_scope(
+            transaction,
+            AppendScope {
+                source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1::Append,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+            #[cfg(target_os = "linux")]
+            None,
+            Some(ProjectNativeTransitionV3::Genesis(
+                Phase::SourceAppend(root.record().project()),
+                Cut::SourcePrepared(root),
+            )),
+            #[cfg(target_os = "linux")]
             None,
         )
     }
@@ -683,14 +563,20 @@ impl Journal {
         if self.protected_owner_uid()? != root.source_uid() {
             return Err(JournalError::ProtectedBoundary);
         }
-        self.commit_with_project_genesis_transition_v3(
-            transaction, None, false, false, false, false, false,
-            SourceProjectAdmissionTransition::None,
-            controller_source_genesis::ControllerSourceGenesisTransition::None,
-            source_tree_genesis::SourceGenesisTransitionV1::Anchor,
-            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
-            None, None, None,
-            Some(ProjectNativeTransitionV3::Genesis(Phase::SourceAck(root.floor().project()), Cut::SourceAnchored(root))),
+        self.commit_with_native_scope(
+            transaction,
+            AppendScope {
+                source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1::Anchor,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+            #[cfg(target_os = "linux")]
+            None,
+            Some(ProjectNativeTransitionV3::Genesis(
+                Phase::SourceAck(root.floor().project()),
+                Cut::SourceAnchored(root),
+            )),
+            #[cfg(target_os = "linux")]
             None,
         )
     }
@@ -709,12 +595,20 @@ impl Journal {
             Transition::Complete => Phase::ControllerComplete(root.floor().project()),
             _ => return Err(JournalError::ProtectedBoundary),
         };
-        self.commit_with_project_genesis_transition_v3(
-            transaction, None, false, false, false, false, false,
-            SourceProjectAdmissionTransition::None, transition,
-            source_tree_genesis::SourceGenesisTransitionV1::None,
-            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
-            None, None, None, Some(ProjectNativeTransitionV3::Genesis(phase, Cut::SourceAnchored(root))),
+        self.commit_with_native_scope(
+            transaction,
+            AppendScope {
+                controller_genesis_transition: transition,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+            #[cfg(target_os = "linux")]
+            None,
+            Some(ProjectNativeTransitionV3::Genesis(
+                phase,
+                Cut::SourceAnchored(root),
+            )),
+            #[cfg(target_os = "linux")]
             None,
         )
     }
@@ -725,14 +619,20 @@ impl Journal {
         transition: controller_source_successor_issuance::Transition,
         completed: &crate::policy_compiler::CompletedRootSourceProjectGenesisFloorV3<'_, '_>,
     ) -> Result<CommitResult, JournalError> {
-        self.commit_with_project_genesis_transition_v3(
-            transaction, None, false, false, false, false, false,
-            SourceProjectAdmissionTransition::None,
-            controller_source_genesis::ControllerSourceGenesisTransition::None,
-            source_tree_genesis::SourceGenesisTransitionV1::None,
-            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
-            Some(transition), None, None,
-            Some(ProjectNativeTransitionV3::Issuance { transition, completed }),
+        self.commit_with_native_scope(
+            transaction,
+            AppendScope {
+                successor_issuance_transition: Some(transition),
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+            #[cfg(target_os = "linux")]
+            None,
+            Some(ProjectNativeTransitionV3::Issuance {
+                transition,
+                completed,
+            }),
+            #[cfg(target_os = "linux")]
             None,
         )
     }
@@ -749,9 +649,13 @@ impl Journal {
             || transaction.id() != &prepared.admission_transaction_id
             || transaction.records().iter().filter(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation).ne([prepared.record()])
         { return Err(JournalError::AuthorityPreflightMismatch); }
-        self.preflight_with_project_genesis_v3(
-            PreflightTransactionViewV1::Ordinary(std::slice::from_ref(transaction)), None, true, false,
-            None, None, None, None, CacheMutationGateV1::Ordinary, None, None,
+        self.preflight_with_project_genesis(
+            PreflightTransactionViewV1::Ordinary(std::slice::from_ref(transaction)),
+            PreflightScope {
+                allow_capacity_records: true,
+                ..PreflightScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
             Some(&[source_tree_successor::ProjectGenesisNativePhaseV3::RootPrepared(project)]),
         )
     }
@@ -767,14 +671,20 @@ impl Journal {
     ) -> Result<(CommitResult, GlobalCapacityReservationV1), JournalError> {
         self.preflight_root_project_genesis_prepared_v3(&prepared, transaction, project)?;
         let record_digest = Sha256::digest(prepared.record.value().ok_or(JournalError::InvalidTransaction)?).into();
-        let result = self.commit_with_project_genesis_transition_v3(
-            transaction, None, true, false, false, false, false,
-            SourceProjectAdmissionTransition::None,
-            controller_source_genesis::ControllerSourceGenesisTransition::None,
-            source_tree_genesis::SourceGenesisTransitionV1::None,
-            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
-            None, None, None, Some(ProjectNativeTransitionV3::Genesis(source_tree_successor::ProjectGenesisNativePhaseV3::RootPrepared(project),
-                source_tree_successor::ProjectGenesisNativeCutV3::RootServer { original, deadline })),
+        let result = self.commit_with_native_scope(
+            transaction,
+            AppendScope {
+                allow_capacity_records: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+            #[cfg(target_os = "linux")]
+            None,
+            Some(ProjectNativeTransitionV3::Genesis(
+                source_tree_successor::ProjectGenesisNativePhaseV3::RootPrepared(project),
+                source_tree_successor::ProjectGenesisNativeCutV3::RootServer { original, deadline },
+            )),
+            #[cfg(target_os = "linux")]
             None,
         )?;
         Ok((result, GlobalCapacityReservationV1 {
@@ -794,9 +704,14 @@ impl Journal {
             return Err(JournalError::ProtectedBoundary);
         }
         capacity_reservation::validate_settlement_shape(self, reservation, transaction)?;
-        self.preflight_with_project_genesis_v3(
-            PreflightTransactionViewV1::Ordinary(std::slice::from_ref(transaction)), Some(reservation.reservation_id), true, false,
-            None, None, None, None, CacheMutationGateV1::Ordinary, None, None,
+        self.preflight_with_project_genesis(
+            PreflightTransactionViewV1::Ordinary(std::slice::from_ref(transaction)),
+            PreflightScope {
+                settling_reservation: Some(reservation.reservation_id),
+                allow_capacity_records: true,
+                ..PreflightScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
             Some(&[source_tree_successor::ProjectGenesisNativePhaseV3::RootAnchor(project)]),
         )
     }
@@ -811,14 +726,21 @@ impl Journal {
         deadline: std::time::Instant,
     ) -> Result<CommitResult, JournalError> {
         self.preflight_root_project_genesis_anchor_v3(&reservation, transaction, project)?;
-        self.commit_with_project_genesis_transition_v3(
-            transaction, Some(reservation.reservation_id), true, false, false, false, false,
-            SourceProjectAdmissionTransition::None,
-            controller_source_genesis::ControllerSourceGenesisTransition::None,
-            source_tree_genesis::SourceGenesisTransitionV1::None,
-            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
-            None, None, None, Some(ProjectNativeTransitionV3::Genesis(source_tree_successor::ProjectGenesisNativePhaseV3::RootAnchor(project),
-                source_tree_successor::ProjectGenesisNativeCutV3::RootServer { original, deadline })),
+        self.commit_with_native_scope(
+            transaction,
+            AppendScope {
+                settling_reservation: Some(reservation.reservation_id),
+                allow_capacity_records: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+            #[cfg(target_os = "linux")]
+            None,
+            Some(ProjectNativeTransitionV3::Genesis(
+                source_tree_successor::ProjectGenesisNativePhaseV3::RootAnchor(project),
+                source_tree_successor::ProjectGenesisNativeCutV3::RootServer { original, deadline },
+            )),
+            #[cfg(target_os = "linux")]
             None,
         )
     }
@@ -831,13 +753,18 @@ impl Journal {
         original: &crate::policy_compiler::GlobalRootGenesisNativeCutV2<'_>,
     ) -> Result<CommitResult, JournalError> {
         self.preflight_transactions(std::slice::from_ref(transaction))?;
-        self.commit_with_project_genesis_transition_v3(
-            transaction, None, false, false, false, false, false,
-            SourceProjectAdmissionTransition::None,
-            controller_source_genesis::ControllerSourceGenesisTransition::None,
-            source_tree_genesis::SourceGenesisTransitionV1::None,
-            RootSourceGenesisTransitionV1::Initialize, None, CacheMutationGateV1::Ordinary,
-            None, None, None, Some(ProjectNativeTransitionV3::GlobalRootGenesis(original)), None,
+        self.commit_with_native_scope(
+            transaction,
+            AppendScope {
+                root_genesis_transition: RootSourceGenesisTransitionV1::Initialize,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+            #[cfg(target_os = "linux")]
+            None,
+            Some(ProjectNativeTransitionV3::GlobalRootGenesis(original)),
+            #[cfg(target_os = "linux")]
+            None,
         )
     }
 
@@ -854,13 +781,18 @@ impl Journal {
         self.claim_global_capacity_reservation_authority(prepared.request.purpose)?
             .preflight_global_capacity_reservation_v1(&prepared, transaction)?;
         let record_digest = Sha256::digest(prepared.record.value().ok_or(JournalError::InvalidTransaction)?).into();
-        let result = self.commit_with_project_genesis_transition_v3(
-            transaction, None, true, false, false, false, false,
-            SourceProjectAdmissionTransition::None,
-            controller_source_genesis::ControllerSourceGenesisTransition::None,
-            source_tree_genesis::SourceGenesisTransitionV1::None,
-            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
-            None, None, None, Some(ProjectNativeTransitionV3::GlobalRootGenesis(original)), None,
+        let result = self.commit_with_native_scope(
+            transaction,
+            AppendScope {
+                allow_capacity_records: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+            #[cfg(target_os = "linux")]
+            None,
+            Some(ProjectNativeTransitionV3::GlobalRootGenesis(original)),
+            #[cfg(target_os = "linux")]
+            None,
         )?;
         Ok((result, GlobalCapacityReservationV1 {
             request: prepared.request,
@@ -881,13 +813,19 @@ impl Journal {
         }
         self.claim_global_capacity_reservation_authority(reservation.request.purpose)?
             .preflight_reserved_terminal_v1(&reservation, transaction)?;
-        self.commit_with_project_genesis_transition_v3(
-            transaction, Some(reservation.reservation_id), true, false, false, false, false,
-            SourceProjectAdmissionTransition::None,
-            controller_source_genesis::ControllerSourceGenesisTransition::None,
-            source_tree_genesis::SourceGenesisTransitionV1::None,
-            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
-            None, None, None, Some(ProjectNativeTransitionV3::GlobalRootGenesis(original)), None,
+        self.commit_with_native_scope(
+            transaction,
+            AppendScope {
+                settling_reservation: Some(reservation.reservation_id),
+                allow_capacity_records: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+            #[cfg(target_os = "linux")]
+            None,
+            Some(ProjectNativeTransitionV3::GlobalRootGenesis(original)),
+            #[cfg(target_os = "linux")]
+            None,
         )
     }
 
@@ -899,45 +837,51 @@ impl Journal {
         original: &crate::controller_resource_reservation::Transition,
     ) -> Result<CommitResult, JournalError> {
         self.validate_held_protected_names()?;
-        self.commit_with_project_genesis_transition_v3(
-            transaction, None, false, false, false, false, false,
-            SourceProjectAdmissionTransition::None,
-            controller_source_genesis::ControllerSourceGenesisTransition::None,
-            source_tree_genesis::SourceGenesisTransitionV1::None,
-            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
-            None,
+        self.commit_with_native_scope(
+            transaction,
+            AppendScope::default(),
+            CacheMutationGateV1::Ordinary,
             #[cfg(target_os = "linux")]
             None,
-            None, None, Some(original),
+            None,
+            #[cfg(target_os = "linux")]
+            Some(original),
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn commit_with_project_genesis_transition_v3(
+    /// Appends with the original private selectors and separate Native loans.
+    ///
+    /// # Errors
+    /// Returns the original validation, final-crossing or durability failure.
+    pub(super) fn commit_with_native_scope(
         &mut self,
         transaction: &JournalTransaction,
-        settling_reservation: Option<[u8; 32]>,
-        allow_capacity_records: bool,
-        allow_policy_hold_transition: bool,
-        allow_host_fence_acquisition: bool,
-        allow_host_currentness_fence_acquisition: bool,
-        allow_host_settlement_admission_append: bool,
-        project_admission_transition: SourceProjectAdmissionTransition,
-        controller_genesis_transition: controller_source_genesis::ControllerSourceGenesisTransition,
-        source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1,
-        root_genesis_transition: RootSourceGenesisTransitionV1,
-        root_local_edge: Option<RootOwnerEdge>,
+        scope: AppendScope,
         mut cache_gate: CacheMutationGateV1<'_>,
-        successor_issuance_transition: Option<controller_source_successor_issuance::Transition>,
-        #[cfg(target_os = "linux")]
-        q04_transition: Option<
+        #[cfg(target_os = "linux")] q04_transition: Option<
             Q04JournalTransitionV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_>,
         >,
-        first_successor: Option<FirstSourceSuccessorNativePhaseV2>,
         project_genesis: Option<ProjectNativeTransitionV3<'_, '_>>,
-        #[cfg(target_os = "linux")]
-        resource_reservation: Option<&crate::controller_resource_reservation::Transition>,
+        #[cfg(target_os = "linux")] resource_reservation: Option<
+            &crate::controller_resource_reservation::Transition,
+        >,
     ) -> Result<CommitResult, JournalError> {
+        let AppendScope {
+            settling_reservation,
+            allow_capacity_records,
+            allow_policy_hold_transition,
+            allow_host_fence_acquisition,
+            allow_host_currentness_fence_acquisition,
+            allow_host_settlement_admission_append,
+            project_admission_transition,
+            controller_genesis_transition,
+            source_genesis_transition,
+            root_genesis_transition,
+            root_local_edge,
+            successor_issuance_transition,
+            first_successor,
+        } = scope;
+
         #[cfg(target_os = "linux")]
         if matches!(root_local_edge, Some(RootOwnerEdge::NixOfflineClosureData)) {
             // Synthetic upper-size values are preview DATA, never an effect.
@@ -1329,23 +1273,10 @@ impl Journal {
         &self,
         transactions: &[JournalTransaction],
     ) -> Result<(), JournalError> {
-        self.preflight_transactions_with_capacity_scope(transactions, None, false, false)
-    }
-
-    pub(super) fn preflight_transactions_with_capacity_scope(
-        &self,
-        transactions: &[JournalTransaction],
-        settling_reservation: Option<[u8; 32]>,
-        allow_capacity_records: bool,
-        allow_policy_hold_transition: bool,
-    ) -> Result<(), JournalError> {
-        self.preflight_transactions_with_capacity_scope_and_project_admission(
-            transactions,
-            settling_reservation,
-            allow_capacity_records,
-            allow_policy_hold_transition,
-            None,
-            None,
+        self.preflight_in_scope(
+            PreflightTransactionViewV1::Ordinary(transactions),
+            PreflightScope::default(),
+            CacheMutationGateV1::Ordinary,
         )
     }
 
@@ -1354,59 +1285,12 @@ impl Journal {
         transactions: &[JournalTransaction],
         transitions: &[controller_source_genesis::ControllerSourceGenesisTransition],
     ) -> Result<(), JournalError> {
-        self.preflight_transactions_with_capacity_scope_and_project_admission(
-            transactions,
-            None,
-            false,
-            false,
-            None,
-            Some(transitions),
-        )
-    }
-
-    pub(super) fn preflight_transactions_with_capacity_scope_and_project_admission(
-        &self,
-        transactions: &[JournalTransaction],
-        settling_reservation: Option<[u8; 32]>,
-        allow_capacity_records: bool,
-        allow_policy_hold_transition: bool,
-        project_transitions: Option<&[SourceProjectAdmissionTransition]>,
-        controller_genesis_transitions: Option<
-            &[controller_source_genesis::ControllerSourceGenesisTransition],
-        >,
-    ) -> Result<(), JournalError> {
-        self.preflight_transactions_with_capacity_scope_and_source_genesis(
-            transactions,
-            settling_reservation,
-            allow_capacity_records,
-            allow_policy_hold_transition,
-            project_transitions,
-            controller_genesis_transitions,
-            None,
-        )
-    }
-
-    pub(super) fn preflight_transactions_with_capacity_scope_and_source_genesis(
-        &self,
-        transactions: &[JournalTransaction],
-        settling_reservation: Option<[u8; 32]>,
-        allow_capacity_records: bool,
-        allow_policy_hold_transition: bool,
-        project_transitions: Option<&[SourceProjectAdmissionTransition]>,
-        controller_genesis_transitions: Option<
-            &[controller_source_genesis::ControllerSourceGenesisTransition],
-        >,
-        genesis_transitions: Option<&[source_tree_genesis::SourceGenesisTransitionV1]>,
-    ) -> Result<(), JournalError> {
-        self.preflight_with_cache_gate(
-            transactions,
-            settling_reservation,
-            allow_capacity_records,
-            allow_policy_hold_transition,
-            project_transitions,
-            controller_genesis_transitions,
-            genesis_transitions,
-            None,
+        self.preflight_in_scope(
+            PreflightTransactionViewV1::Ordinary(transactions),
+            PreflightScope {
+                controller_genesis_transitions: Some(transitions),
+                ..PreflightScope::default()
+            },
             CacheMutationGateV1::Ordinary,
         )
     }
@@ -1435,36 +1319,21 @@ impl Journal {
         transactions: &[JournalTransaction],
         gate: CacheMutationGateV1<'_>,
     ) -> Result<(), JournalError> {
-        self.preflight_with_cache_gate(
-            transactions,
-            None,
-            false,
-            false,
-            None,
-            None,
-            None,
-            None,
+        self.preflight_in_scope(
+            PreflightTransactionViewV1::Ordinary(transactions),
+            PreflightScope::default(),
             gate,
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn preflight_with_cache_gate(
+    fn preflight_with_project_genesis(
         &self,
-        transactions: &[JournalTransaction],
-        settling_reservation: Option<[u8; 32]>,
-        allow_capacity_records: bool,
-        allow_policy_hold_transition: bool,
-        project_transitions: Option<&[SourceProjectAdmissionTransition]>,
-        controller_genesis_transitions: Option<
-            &[controller_source_genesis::ControllerSourceGenesisTransition],
-        >,
-        genesis_transitions: Option<&[source_tree_genesis::SourceGenesisTransitionV1]>,
-        root_local_edge: Option<RootOwnerEdge>,
-        cache_gate: CacheMutationGateV1<'_>,
+        transactions: PreflightTransactionViewV1<'_>,
+        scope: PreflightScope<'_>,
+        mut cache_gate: CacheMutationGateV1<'_>,
+        project_genesis: Option<&[source_tree_successor::ProjectGenesisNativePhaseV3]>,
     ) -> Result<(), JournalError> {
-        self.preflight_with_cache_gate_and_successor_issuance(
-            transactions,
+        let PreflightScope {
             settling_reservation,
             allow_capacity_records,
             allow_policy_hold_transition,
@@ -1472,99 +1341,10 @@ impl Journal {
             controller_genesis_transitions,
             genesis_transitions,
             root_local_edge,
-            cache_gate,
-            None,
-        )
-    }
+            successor_issuance_transitions,
+            first_successors,
+        } = scope;
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn preflight_with_cache_gate_and_successor_issuance(
-        &self,
-        transactions: &[JournalTransaction],
-        settling_reservation: Option<[u8; 32]>,
-        allow_capacity_records: bool,
-        allow_policy_hold_transition: bool,
-        project_transitions: Option<&[SourceProjectAdmissionTransition]>,
-        controller_genesis_transitions: Option<
-            &[controller_source_genesis::ControllerSourceGenesisTransition],
-        >,
-        genesis_transitions: Option<&[source_tree_genesis::SourceGenesisTransitionV1]>,
-        root_local_edge: Option<RootOwnerEdge>,
-        cache_gate: CacheMutationGateV1<'_>,
-        successor_issuance_transitions: Option<&[controller_source_successor_issuance::Transition]>,
-    ) -> Result<(), JournalError> {
-        self.preflight_with_q04_transaction_view(
-            PreflightTransactionViewV1::Ordinary(transactions), settling_reservation,
-            allow_capacity_records, allow_policy_hold_transition, project_transitions,
-            controller_genesis_transitions, genesis_transitions, root_local_edge,
-            cache_gate, successor_issuance_transitions,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn preflight_with_q04_transaction_view(
-        &self,
-        transactions: PreflightTransactionViewV1<'_>,
-        settling_reservation: Option<[u8; 32]>,
-        allow_capacity_records: bool,
-        allow_policy_hold_transition: bool,
-        project_transitions: Option<&[SourceProjectAdmissionTransition]>,
-        controller_genesis_transitions: Option<
-            &[controller_source_genesis::ControllerSourceGenesisTransition],
-        >,
-        genesis_transitions: Option<&[source_tree_genesis::SourceGenesisTransitionV1]>,
-        root_local_edge: Option<RootOwnerEdge>,
-        cache_gate: CacheMutationGateV1<'_>,
-        successor_issuance_transitions: Option<&[controller_source_successor_issuance::Transition]>,
-    ) -> Result<(), JournalError> {
-        self.preflight_with_first_source_successor_v2(
-            transactions, settling_reservation, allow_capacity_records,
-            allow_policy_hold_transition, project_transitions, controller_genesis_transitions,
-            genesis_transitions, root_local_edge, cache_gate, successor_issuance_transitions, None,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn preflight_with_first_source_successor_v2(
-        &self,
-        transactions: PreflightTransactionViewV1<'_>,
-        settling_reservation: Option<[u8; 32]>,
-        allow_capacity_records: bool,
-        allow_policy_hold_transition: bool,
-        project_transitions: Option<&[SourceProjectAdmissionTransition]>,
-        controller_genesis_transitions: Option<&[controller_source_genesis::ControllerSourceGenesisTransition]>,
-        genesis_transitions: Option<&[source_tree_genesis::SourceGenesisTransitionV1]>,
-        root_local_edge: Option<RootOwnerEdge>,
-        cache_gate: CacheMutationGateV1<'_>,
-        successor_issuance_transitions: Option<&[controller_source_successor_issuance::Transition]>,
-        first_successors: Option<&[FirstSourceSuccessorNativePhaseV2]>,
-    ) -> Result<(), JournalError> {
-        self.preflight_with_project_genesis_v3(
-            transactions, settling_reservation, allow_capacity_records,
-            allow_policy_hold_transition, project_transitions, controller_genesis_transitions,
-            genesis_transitions, root_local_edge, cache_gate, successor_issuance_transitions,
-            first_successors, None,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn preflight_with_project_genesis_v3(
-        &self,
-        transactions: PreflightTransactionViewV1<'_>,
-        settling_reservation: Option<[u8; 32]>,
-        allow_capacity_records: bool,
-        allow_policy_hold_transition: bool,
-        project_transitions: Option<&[SourceProjectAdmissionTransition]>,
-        controller_genesis_transitions: Option<
-            &[controller_source_genesis::ControllerSourceGenesisTransition],
-        >,
-        genesis_transitions: Option<&[source_tree_genesis::SourceGenesisTransitionV1]>,
-        root_local_edge: Option<RootOwnerEdge>,
-        mut cache_gate: CacheMutationGateV1<'_>,
-        successor_issuance_transitions: Option<&[controller_source_successor_issuance::Transition]>,
-        first_successors: Option<&[FirstSourceSuccessorNativePhaseV2]>,
-        project_genesis: Option<&[source_tree_successor::ProjectGenesisNativePhaseV3]>,
-    ) -> Result<(), JournalError> {
         self.ensure_healthy()?;
         if first_successors.is_some_and(|phases| phases.len() != transactions.len()) {
             return Err(JournalError::ProtectedBoundary);
@@ -1829,9 +1609,13 @@ impl Journal {
         &self,
         hold: &Journal,
     ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
-        self.preflight_with_q04_transaction_view(
-            PreflightTransactionViewV1::CacheQ04ReadOnlyBase { hold, transactions: &[] },
-            None, false, false, None, None, None, None, CacheMutationGateV1::Ordinary, None,
+        self.preflight_in_scope(
+            PreflightTransactionViewV1::CacheQ04ReadOnlyBase {
+                hold,
+                transactions: &[],
+            },
+            PreflightScope::default(),
+            CacheMutationGateV1::Ordinary,
         )?;
         Ok(())
     }
@@ -1843,9 +1627,10 @@ impl Journal {
         transactions: &[JournalTransaction],
     ) -> Result<(), JournalError> {
         crate::policy_compiler::create_q04::require_root_q04_fixed_writer(self)?;
-        self.preflight_with_q04_transaction_view(
+        self.preflight_in_scope(
             PreflightTransactionViewV1::RootQ04Capacity(transactions),
-            None, false, false, None, None, None, None, CacheMutationGateV1::Ordinary, None,
+            PreflightScope::default(),
+            CacheMutationGateV1::Ordinary,
         )
     }
 
@@ -1864,21 +1649,26 @@ impl Journal {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
         history.require_fixed_original(self)?;
-        self.preflight_with_q04_transaction_view(
+        self.preflight_in_scope(
             PreflightTransactionViewV1::RootQ04 {
-                history, first: index, end: history.transactions().len(),
+                history,
+                first: index,
+                end: history.transactions().len(),
             },
-            None, false, false, None, None, None, None, CacheMutationGateV1::Ordinary, None,
+            PreflightScope::default(),
+            CacheMutationGateV1::Ordinary,
         )?;
         history.require_fixed_original(self)?;
         original.recheck_cut(history.identity())?;
-        self.commit_with_cache_gate_and_q04_transition(
-            &history.transactions()[index], None, false, false, false, false, false,
-            SourceProjectAdmissionTransition::None,
-            controller_source_genesis::ControllerSourceGenesisTransition::None,
-            source_tree_genesis::SourceGenesisTransitionV1::None,
-            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
-            None, Some(Q04JournalTransitionV1::Root(history, index, Some(original))),
+        self.commit_with_native_scope(
+            &history.transactions()[index],
+            AppendScope::default(),
+            CacheMutationGateV1::Ordinary,
+            #[cfg(target_os = "linux")]
+            Some(Q04JournalTransitionV1::Root(history, index, Some(original))),
+            None,
+            #[cfg(target_os = "linux")]
+            None,
         ).map_err(Into::into)
     }
 
@@ -1907,10 +1697,10 @@ impl Journal {
             transition.require_fixed_owner(self)?;
         }
         ledger.require_original(self)?;
-        self.preflight_with_q04_transaction_view(
+        self.preflight_in_scope(
             PreflightTransactionViewV1::ControllerQ04(transitions),
-            None, false, false, None, None, None, None,
-            CacheMutationGateV1::Ordinary, None,
+            PreflightScope::default(),
+            CacheMutationGateV1::Ordinary,
         )?;
         ledger.require_original(self)?;
         Ok(())
@@ -1950,10 +1740,10 @@ impl Journal {
         // The first full suffix is advisory, not a reusable funding token.
         // Re-enter the same native engine from this actual committed prefix
         // before every append, including all still-eligible terminal phases.
-        self.preflight_with_q04_transaction_view(
+        self.preflight_in_scope(
             PreflightTransactionViewV1::ControllerQ04(&transitions[index..]),
-            None, false, false, None, None, None, None,
-            CacheMutationGateV1::Ordinary, None,
+            PreflightScope::default(),
+            CacheMutationGateV1::Ordinary,
         )?;
         transition.ledger().require_original(self)?;
         if !std::ptr::eq(root.identity(), transition.identity()) {
@@ -1964,14 +1754,15 @@ impl Journal {
         // In particular, an acknowledged append is not replaced by a later
         // currentness error and its original native position remains owned.
         let resource = transition.resource_transfer().map(|resource| resource.crossing());
-        self.commit_with_project_genesis_transition_v3(
-            transition.transaction(), None, false, false, false, false, false,
-            SourceProjectAdmissionTransition::None,
-            controller_source_genesis::ControllerSourceGenesisTransition::None,
-            source_tree_genesis::SourceGenesisTransitionV1::None,
-            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
-            None, Some(Q04JournalTransitionV1::Controller(transition, Some(root))),
-            None, None, resource.as_ref(),
+        self.commit_with_native_scope(
+            transition.transaction(),
+            AppendScope::default(),
+            CacheMutationGateV1::Ordinary,
+            #[cfg(target_os = "linux")]
+            Some(Q04JournalTransitionV1::Controller(transition, Some(root))),
+            None,
+            #[cfg(target_os = "linux")]
+            resource.as_ref(),
         ).map_err(Into::into)
     }
 
@@ -1998,10 +1789,14 @@ impl Journal {
         recipes.require_fixed_journal(self)?;
         recipes.require_prefix(self.native.state(), first)?;
         self.require_q04_native_recipe_prefix_v1(&recipes.transactions()[..first], recipes.original_next())?;
-        self.preflight_with_q04_transaction_view(
-            PreflightTransactionViewV1::SourceQ04 { recipes, first, end: 3 },
-            None, false, false, None, None, None, None,
-            CacheMutationGateV1::Ordinary, None,
+        self.preflight_in_scope(
+            PreflightTransactionViewV1::SourceQ04 {
+                recipes,
+                first,
+                end: 3,
+            },
+            PreflightScope::default(),
+            CacheMutationGateV1::Ordinary,
         )?;
         recipes.require_fixed_journal(self)?;
         recipes.require_prefix(self.native.state(), first)?;
@@ -2030,10 +1825,14 @@ impl Journal {
         recipes.require_fixed_journal(self)?;
         recipes.require_prefix(self.native.state(), first)?;
         self.require_q04_native_recipe_prefix_v1(&recipes.transactions()[..first], recipes.original_next())?;
-        self.preflight_with_q04_transaction_view(
-            PreflightTransactionViewV1::CacheQ04 { recipes, first, end: 3 },
-            None, false, false, None, None, None, None,
-            CacheMutationGateV1::Ordinary, None,
+        self.preflight_in_scope(
+            PreflightTransactionViewV1::CacheQ04 {
+                recipes,
+                first,
+                end: 3,
+            },
+            PreflightScope::default(),
+            CacheMutationGateV1::Ordinary,
         )?;
         recipes.require_fixed_journal(self)?;
         recipes.require_prefix(self.native.state(), first)?;
@@ -2060,13 +1859,20 @@ impl Journal {
         }
         // No postappend check can consume this original result. The actual
         // Source owner parks it before full native/name/Root/Cache readback.
-        self.commit_with_cache_gate_and_q04_transition(
-            &recipes.transactions()[index], None, false, false, false, false, false,
-            SourceProjectAdmissionTransition::None,
-            controller_source_genesis::ControllerSourceGenesisTransition::None,
-            source_tree_genesis::SourceGenesisTransitionV1::None,
-            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
-            None, Some(Q04JournalTransitionV1::Source(recipes, index, Some(root), clearance)),
+        self.commit_with_native_scope(
+            &recipes.transactions()[index],
+            AppendScope::default(),
+            CacheMutationGateV1::Ordinary,
+            #[cfg(target_os = "linux")]
+            Some(Q04JournalTransitionV1::Source(
+                recipes,
+                index,
+                Some(root),
+                clearance,
+            )),
+            None,
+            #[cfg(target_os = "linux")]
+            None,
         ).map_err(Into::into)
     }
 
@@ -2081,13 +1887,15 @@ impl Journal {
         }
         root.require_lower_transition(index, recipes.release_authorization())?;
         self.preflight_cache_q04_remaining_v1(recipes, index)?;
-        self.commit_with_cache_gate_and_q04_transition(
-            &recipes.transactions()[index], None, false, false, false, false, false,
-            SourceProjectAdmissionTransition::None,
-            controller_source_genesis::ControllerSourceGenesisTransition::None,
-            source_tree_genesis::SourceGenesisTransitionV1::None,
-            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
-            None, Some(Q04JournalTransitionV1::Cache(recipes, index, Some(root))),
+        self.commit_with_native_scope(
+            &recipes.transactions()[index],
+            AppendScope::default(),
+            CacheMutationGateV1::Ordinary,
+            #[cfg(target_os = "linux")]
+            Some(Q04JournalTransitionV1::Cache(recipes, index, Some(root))),
+            None,
+            #[cfg(target_os = "linux")]
+            None,
         ).map_err(Into::into)
     }
 }

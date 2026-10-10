@@ -5,6 +5,9 @@
 //! readback. Source independently authenticates archived/current configurations
 //! and every retained signature before calling these private-owner operations.
 
+use crate::journal::PreflightTransactionViewV1;
+use crate::journal::semantic_append::{AppendScope, PreflightScope};
+
 use super::{
     SourceCapacityUnionComparisonDataV5, SourceOriginalAdmissionDataV5,
     SourceOriginalChallengeHistoryViewV5, SourceOriginalPhysicalCutV5, State, invalid,
@@ -13,9 +16,7 @@ use super::{
 use super::super::{
     CacheMutationGateV1, FixedSourceProviderJournalHandoffV1, Journal, JournalError,
     JournalTransaction, ProtectedAuthorityScope, ProtectedJournalAuthority,
-    ProtectedJournalSnapshot, RecordNamespace, RootOwnerEdge, RootSourceGenesisTransitionV1,
-    SourceProjectAdmissionTransition, authority_preflight_digest, controller_source_genesis,
-    source_tree_genesis,
+    ProtectedJournalSnapshot, RecordNamespace, RootOwnerEdge, authority_preflight_digest,
 };
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_ledger::ledger::{
@@ -1378,17 +1379,17 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             if actual.before() != candidate.before() || actual.after() != candidate.after() {
                 return Err(JournalError::StaleAuthoritySnapshot);
             }
-            journal.preflight_with_cache_gate(
-                std::slice::from_ref(&prepared.owners),
-                None,
-                prepared.owners.records().iter().any(|record| {
-                    record.namespace() == RecordNamespace::GlobalCapacityReservation
-                }),
-                false,
-                None,
-                None,
-                None,
-                Some(RootOwnerEdge::SourceOriginal),
+            journal.preflight_in_scope(
+                PreflightTransactionViewV1::Ordinary(std::slice::from_ref(&prepared.owners)),
+                PreflightScope {
+                    allow_capacity_records: prepared
+                        .owners
+                        .records()
+                        .iter()
+                        .any(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation),
+                    root_local_edge: Some(RootOwnerEdge::SourceOriginal),
+                    ..PreflightScope::default()
+                },
                 CacheMutationGateV1::Ordinary,
             )
         })();
@@ -1422,21 +1423,17 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             }
 
             prepared.attempted = true;
-            self.authority.journal.commit_with_cache_gate(
+            self.authority.journal.commit_in_scope(
                 &prepared.owners,
-                None,
-                prepared.owners.records().iter().any(|record| {
-                    record.namespace() == RecordNamespace::GlobalCapacityReservation
-                }),
-                false,
-                false,
-                false,
-                false,
-                SourceProjectAdmissionTransition::None,
-                controller_source_genesis::ControllerSourceGenesisTransition::None,
-                source_tree_genesis::SourceGenesisTransitionV1::None,
-                RootSourceGenesisTransitionV1::None,
-                Some(RootOwnerEdge::SourceOriginal),
+                AppendScope {
+                    allow_capacity_records: prepared
+                        .owners
+                        .records()
+                        .iter()
+                        .any(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation),
+                    root_local_edge: Some(RootOwnerEdge::SourceOriginal),
+                    ..AppendScope::default()
+                },
                 CacheMutationGateV1::Ordinary,
             )?;
             *readback = Some(OriginalSourceProtectedReadbackV5 {

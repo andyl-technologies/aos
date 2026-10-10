@@ -13,6 +13,9 @@
 //! other kinds remain opaque to protected producers. Generic append gates stay
 //! closed, and no original native admission follows from canonical floor DATA.
 
+use crate::journal::CacheMutationGateV1;
+use crate::journal::semantic_append::AppendScope;
+
 use aos_sandbox_protocol::domain_ledger::operation::effect_key;
 use aos_sandbox_protocol::domain_ledger::project_admission_metadata::{
     ProjectAdmissionMetadataV1 as ProjectAdmissionMetadata,
@@ -227,14 +230,14 @@ impl Journal {
             reservation.reservation_id,
             successor.reservation_id,
         )?;
-        self.commit_with_capacity_scope(
+        self.commit_in_scope(
             transaction,
-            Some(reservation.reservation_id),
-            true,
-            false,
-            false,
-            false,
-            false,
+            AppendScope {
+                settling_reservation: Some(reservation.reservation_id),
+                allow_capacity_records: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )?;
         self.recover_global_capacity_reservation_v1(successor.reservation_id)
     }
@@ -268,14 +271,14 @@ impl Journal {
             reservation.reservation_id,
             successor.reservation_id,
         )?;
-        self.commit_with_capacity_scope(
+        self.commit_in_scope(
             transaction,
-            Some(reservation.reservation_id),
-            true,
-            false,
-            false,
-            false,
-            false,
+            AppendScope {
+                settling_reservation: Some(reservation.reservation_id),
+                allow_capacity_records: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )?;
         self.recover_global_capacity_reservation_v1(successor.reservation_id)
     }
@@ -401,7 +404,14 @@ impl Journal {
             return Err(JournalError::InvalidTransaction);
         }
         let result =
-            self.commit_with_capacity_scope(transaction, None, true, false, false, false, false)?;
+            self.commit_in_scope(
+                transaction,
+                AppendScope {
+                    allow_capacity_records: true,
+                    ..AppendScope::default()
+                },
+                CacheMutationGateV1::Ordinary,
+            )?;
         let record_digest = digest_bytes(
             prepared
                 .record
@@ -522,14 +532,14 @@ impl Journal {
         transaction: &JournalTransaction,
     ) -> Result<CommitResult, JournalError> {
         validate_settlement_shape(self, &reservation, transaction)?;
-        self.commit_with_capacity_scope(
+        self.commit_in_scope(
             transaction,
-            Some(reservation.reservation_id),
-            true,
-            false,
-            false,
-            false,
-            false,
+            AppendScope {
+                settling_reservation: Some(reservation.reservation_id),
+                allow_capacity_records: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )
     }
 }

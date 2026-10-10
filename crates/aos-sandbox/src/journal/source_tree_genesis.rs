@@ -14,6 +14,9 @@
 //! checksum[32]
 //! ```
 
+use crate::journal::{CacheMutationGateV1, PreflightTransactionViewV1};
+use crate::journal::semantic_append::{AppendScope, PreflightScope};
+
 use std::collections::BTreeMap;
 
 use aos_sandbox_core::{ObjectDigest, ProjectId};
@@ -382,18 +385,13 @@ impl Journal {
         transaction: &JournalTransaction,
         transition: SourceGenesisTransitionV1,
     ) -> Result<(), JournalError> {
-        self.commit_with_capacity_scope_and_source_genesis(
+        self.commit_in_scope(
             transaction,
-            None,
-            false,
-            false,
-            false,
-            false,
-            false,
-            super::SourceProjectAdmissionTransition::None,
-            super::controller_source_genesis::ControllerSourceGenesisTransition::None,
-            transition,
-            super::RootSourceGenesisTransitionV1::None,
+            AppendScope {
+                source_genesis_transition: transition,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )?;
         Ok(())
     }
@@ -403,14 +401,13 @@ impl Journal {
         transactions: &[JournalTransaction],
         transitions: &[SourceGenesisTransitionV1],
     ) -> Result<(), JournalError> {
-        self.preflight_transactions_with_capacity_scope_and_source_genesis(
-            transactions,
-            None,
-            false,
-            false,
-            None,
-            None,
-            Some(transitions),
+        self.preflight_in_scope(
+            PreflightTransactionViewV1::Ordinary(transactions),
+            PreflightScope {
+                genesis_transitions: Some(transitions),
+                ..PreflightScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )
     }
 }

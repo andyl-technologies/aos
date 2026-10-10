@@ -22,6 +22,9 @@
 //! Root-history-floor-digest:32 | domain-separated-checksum:32
 //! ```
 
+use crate::journal::{CacheMutationGateV1, PreflightTransactionViewV1};
+use crate::journal::semantic_append::PreflightScope;
+
 use std::collections::BTreeMap;
 
 #[cfg(test)]
@@ -662,23 +665,23 @@ impl Journal {
                 .encode(),
             )
         };
-        self.preflight_transactions_with_capacity_scope_and_project_admission(
-            &[
+        self.preflight_in_scope(
+            PreflightTransactionViewV1::Ordinary(&[
                 reservation_write,
                 acquisition,
                 settlement_transaction(settlement_row)?,
                 retirement_ack(terminal)?,
-            ],
-            None,
-            false,
-            false,
-            Some(&[
-                SourceProjectAdmissionTransition::Reserve,
-                SourceProjectAdmissionTransition::Acquire,
-                SourceProjectAdmissionTransition::Settle,
-                SourceProjectAdmissionTransition::AcknowledgeRetirement,
             ]),
-            None,
+            PreflightScope {
+                project_transitions: Some(&[
+                    SourceProjectAdmissionTransition::Reserve,
+                    SourceProjectAdmissionTransition::Acquire,
+                    SourceProjectAdmissionTransition::Settle,
+                    SourceProjectAdmissionTransition::AcknowledgeRetirement,
+                ]),
+                ..PreflightScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )?;
         self.preflight_source_project_negative_capacity_v1(client_nonce, project, names)
     }
@@ -716,8 +719,8 @@ impl Journal {
             terminal.source_terminal_digest(),
             ObjectDigest::from_bytes([16; 32]),
         );
-        self.preflight_transactions_with_capacity_scope_and_project_admission(
-            &[
+        self.preflight_in_scope(
+            PreflightTransactionViewV1::Ordinary(&[
                 reservation_transaction(
                     reservation,
                     rows.settlement().is_some(),
@@ -725,16 +728,16 @@ impl Journal {
                 )?,
                 cancellation_transaction(cancellation)?,
                 single_record_transaction(RETIREMENT_ACK_KEY, &ack.encode())?,
-            ],
-            None,
-            false,
-            false,
-            Some(&[
-                SourceProjectAdmissionTransition::Reserve,
-                SourceProjectAdmissionTransition::CancelReservation,
-                SourceProjectAdmissionTransition::AcknowledgeRetirement,
             ]),
-            None,
+            PreflightScope {
+                project_transitions: Some(&[
+                    SourceProjectAdmissionTransition::Reserve,
+                    SourceProjectAdmissionTransition::CancelReservation,
+                    SourceProjectAdmissionTransition::AcknowledgeRetirement,
+                ]),
+                ..PreflightScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )
     }
 

@@ -17,6 +17,9 @@
 //! Consumer completion preserves every issuer row, including the immutable
 //! issuance intent named `pending`; only the active consumer fence is released.
 
+use crate::journal::PreflightTransactionViewV1;
+use crate::journal::semantic_append::{AppendScope, PreflightScope};
+
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Write as _;
@@ -785,17 +788,13 @@ impl Journal {
             Some(saved) if saved.packet == *packet && saved.delivered => return Ok(()),
             Some(_) => return Err(JournalError::ProtectedBoundary),
         };
-        self.preflight_with_cache_gate_and_successor_issuance(
-            &transactions,
-            None,
-            false,
-            false,
-            None,
-            None,
-            None,
-            None,
+        self.preflight_in_scope(
+            PreflightTransactionViewV1::Ordinary(&transactions),
+            PreflightScope {
+                successor_issuance_transitions: Some(&transitions),
+                ..PreflightScope::default()
+            },
             CacheMutationGateV1::Ordinary,
-            Some(&transitions),
         )
     }
 
@@ -840,21 +839,13 @@ impl Journal {
         packet: &SourceSuccessorApprovalDataV2,
         transition: Transition,
     ) -> Result<(), JournalError> {
-        self.commit_with_cache_gate_and_successor_issuance(
+        self.commit_in_scope(
             &transaction(packet, transition)?,
-            None,
-            false,
-            false,
-            false,
-            false,
-            false,
-            super::SourceProjectAdmissionTransition::None,
-            super::controller_source_genesis::ControllerSourceGenesisTransition::None,
-            super::source_tree_genesis::SourceGenesisTransitionV1::None,
-            super::RootSourceGenesisTransitionV1::None,
-            None,
+            AppendScope {
+                successor_issuance_transition: Some(transition),
+                ..AppendScope::default()
+            },
             CacheMutationGateV1::Ordinary,
-            Some(transition),
         ).map(|_| ())
     }
 

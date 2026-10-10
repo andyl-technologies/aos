@@ -8,6 +8,9 @@
 //! captured DATA or latches; their caller must fail the enclosing install/send
 //! boundary on any error.
 
+use crate::journal::PreflightTransactionViewV1;
+use crate::journal::semantic_append::{AppendScope, PreflightScope};
+
 use std::path::Path;
 
 use aos_sandbox_protocol::mount_source_acquisition_state::StoredRecordV2;
@@ -15,9 +18,8 @@ use aos_sandbox_protocol::mount_source_acquisition_state::StoredRecordV2;
 use super::*;
 use crate::journal::{
     CacheMutationGateV1, Journal, OriginalRootProtectedReadbackV5, ProtectedAuthorityScope,
-    ProtectedJournalAuthority, ProtectedJournalSnapshot, RootSourceGenesisTransitionV1,
-    SourceProjectAdmissionTransition, authority_preflight_digest, controller_source_genesis,
-    source_tree_genesis, validate_reserved_capacity,
+    ProtectedJournalAuthority, ProtectedJournalSnapshot, authority_preflight_digest,
+    validate_reserved_capacity,
 };
 
 /// Borrows the same fixed Mount journal for exact original-root Query6 edges.
@@ -304,15 +306,13 @@ impl<'journal> MountOriginalInventoryJournalAuthorityV6<'journal> {
             .ok_or(JournalError::SequenceExhausted)?;
 
         require_sequence_headroom(&materialize(journal.native.state(), &derived.transaction), next)?;
-        journal.preflight_with_cache_gate(
-            std::slice::from_ref(&derived.transaction),
-            None,
-            true,
-            false,
-            None,
-            None,
-            None,
-            Some(edge(derived)),
+        journal.preflight_in_scope(
+            PreflightTransactionViewV1::Ordinary(std::slice::from_ref(&derived.transaction)),
+            PreflightScope {
+                allow_capacity_records: true,
+                root_local_edge: Some(edge(derived)),
+                ..PreflightScope::default()
+            },
             CacheMutationGateV1::Ordinary,
         )
     }
@@ -361,19 +361,13 @@ impl<'journal> MountOriginalInventoryJournalAuthorityV6<'journal> {
 
             prepared.attempted = true;
             *append_entered = true;
-            writer.authority.journal.commit_with_cache_gate(
+            writer.authority.journal.commit_in_scope(
                 &derived.transaction,
-                None,
-                true,
-                false,
-                false,
-                false,
-                false,
-                SourceProjectAdmissionTransition::None,
-                controller_source_genesis::ControllerSourceGenesisTransition::None,
-                source_tree_genesis::SourceGenesisTransitionV1::None,
-                RootSourceGenesisTransitionV1::None,
-                Some(edge(derived)),
+                AppendScope {
+                    allow_capacity_records: true,
+                    root_local_edge: Some(edge(derived)),
+                    ..AppendScope::default()
+                },
                 CacheMutationGateV1::Ordinary,
             )?;
 

@@ -14,6 +14,8 @@
 //! Root stored floor = logical floor688 | complete original intent1248 or1424
 //! ```
 
+use crate::journal::semantic_append::{AppendScope, PreflightScope};
+
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -1495,24 +1497,14 @@ impl Journal {
         transaction: &JournalTransaction,
         phase: FirstSourceSuccessorNativePhaseV2,
     ) -> Result<CommitResult, JournalError> {
-        self.commit_with_first_source_successor_transition_v2(
+        self.commit_in_scope(
             transaction,
-            None,
-            phase.has_capacity_records(),
-            false,
-            false,
-            false,
-            false,
-            super::SourceProjectAdmissionTransition::None,
-            super::controller_source_genesis::ControllerSourceGenesisTransition::None,
-            super::source_tree_genesis::SourceGenesisTransitionV1::None,
-            super::RootSourceGenesisTransitionV1::None,
-            None,
+            AppendScope {
+                allow_capacity_records: phase.has_capacity_records(),
+                first_successor: Some(phase),
+                ..AppendScope::default()
+            },
             CacheMutationGateV1::Ordinary,
-            None,
-            #[cfg(target_os = "linux")]
-            None,
-            Some(phase),
         )
     }
 
@@ -1527,14 +1519,18 @@ impl Journal {
         phase: FirstSourceSuccessorNativePhaseV2,
         original: FirstSuccessorNativeCutV3<'_, '_>,
     ) -> Result<CommitResult, JournalError> {
-        self.commit_with_project_genesis_transition_v3(
-            transaction, None, phase.has_capacity_records(), false, false, false, false,
-            super::SourceProjectAdmissionTransition::None,
-            super::controller_source_genesis::ControllerSourceGenesisTransition::None,
-            super::source_tree_genesis::SourceGenesisTransitionV1::None,
-            super::RootSourceGenesisTransitionV1::None, None,
-            CacheMutationGateV1::Ordinary, None, None, Some(phase),
+        self.commit_with_native_scope(
+            transaction,
+            AppendScope {
+                allow_capacity_records: phase.has_capacity_records(),
+                first_successor: Some(phase),
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+            #[cfg(target_os = "linux")]
+            None,
             Some(super::ProjectNativeTransitionV3::FirstSuccessor(original)),
+            #[cfg(target_os = "linux")]
             None,
         )
     }
@@ -1549,18 +1545,13 @@ impl Journal {
         transactions: &[JournalTransaction],
         phases: &[FirstSourceSuccessorNativePhaseV2],
     ) -> Result<(), JournalError> {
-        self.preflight_with_first_source_successor_v2(
+        self.preflight_in_scope(
             PreflightTransactionViewV1::Ordinary(transactions),
-            None,
-            false,
-            false,
-            None,
-            None,
-            None,
-            None,
+            PreflightScope {
+                first_successors: Some(phases),
+                ..PreflightScope::default()
+            },
             CacheMutationGateV1::Ordinary,
-            None,
-            Some(phases),
         )
     }
 }

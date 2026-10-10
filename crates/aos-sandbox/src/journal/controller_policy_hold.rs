@@ -23,6 +23,9 @@
 //! policy publication, or Apply. The AOSQ8F01 and AOSQ8S01 rows have private
 //! codecs in `v8_pre_release_floor` and `v8_settlement`.
 
+use crate::journal::{CacheMutationGateV1, PreflightTransactionViewV1};
+use crate::journal::semantic_append::{AppendScope, PreflightScope};
+
 use std::collections::BTreeMap;
 
 use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId};
@@ -1645,26 +1648,37 @@ impl Journal {
         let v8_settlement = v8_settlement_capacity_transaction(hold)?;
         // The V1 and V8 continuations are alternatives. Reserve each complete
         // path without charging either path for the other's records.
-        self.preflight_transactions_with_capacity_scope(
-            &[acquire.clone(), ack, release],
-            None,
-            false,
-            true,
+        self.preflight_in_scope(
+            PreflightTransactionViewV1::Ordinary(&[acquire.clone(), ack, release]),
+            PreflightScope {
+                allow_policy_hold_transition: true,
+                ..PreflightScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )?;
-        self.preflight_transactions_with_capacity_scope(
-            &[
+        self.preflight_in_scope(
+            PreflightTransactionViewV1::Ordinary(&[
                 acquire.clone(),
                 attempt,
                 v8_ack,
                 v8_root_receipt,
                 v8_floor,
                 v8_settlement,
-            ],
-            None,
-            false,
-            true,
+            ]),
+            PreflightScope {
+                allow_policy_hold_transition: true,
+                ..PreflightScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )?;
-        self.commit_with_capacity_scope(&acquire, None, false, true, false, false, false)?;
+        self.commit_in_scope(
+            &acquire,
+            AppendScope {
+                allow_policy_hold_transition: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+        )?;
         if current(self.native.state())? != Some(hold) {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -1741,14 +1755,13 @@ impl Journal {
             Some(_) => return Err(JournalError::ProtectedBoundary),
             None => {}
         }
-        self.commit_with_capacity_scope(
+        self.commit_in_scope(
             &v8_attempt_transaction(attempt)?,
-            None,
-            false,
-            true,
-            false,
-            false,
-            false,
+            AppendScope {
+                allow_policy_hold_transition: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )?;
         if current_v8_attempt(self.native.state())? != Some(attempt) {
             return Err(JournalError::ProtectedBoundary);
@@ -1798,14 +1811,13 @@ impl Journal {
             Some(_) => return Err(JournalError::ProtectedBoundary),
             None => {}
         }
-        self.commit_with_capacity_scope(
+        self.commit_in_scope(
             &v8_ack_transaction(ack)?,
-            None,
-            false,
-            true,
-            false,
-            false,
-            false,
+            AppendScope {
+                allow_policy_hold_transition: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )?;
         if current_v8_ack(self.native.state())? != Some(ack) {
             return Err(JournalError::ProtectedBoundary);
@@ -1852,14 +1864,13 @@ impl Journal {
             Some(_) => return Err(JournalError::ProtectedBoundary),
             None => {}
         }
-        self.commit_with_capacity_scope(
+        self.commit_in_scope(
             &v8_root_receipt_transaction(receipt)?,
-            None,
-            false,
-            true,
-            false,
-            false,
-            false,
+            AppendScope {
+                allow_policy_hold_transition: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )?;
         if current_v8_root_receipt(self.native.state())? != Some(receipt) {
             return Err(JournalError::ProtectedBoundary);
@@ -1912,14 +1923,13 @@ impl Journal {
             None => {}
         }
 
-        self.commit_with_capacity_scope(
+        self.commit_in_scope(
             &v8_floor_transaction(floor)?,
-            None,
-            false,
-            true,
-            false,
-            false,
-            false,
+            AppendScope {
+                allow_policy_hold_transition: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )?;
         if current(self.native.state())? != Some(expected) || current_v8_floor(self.native.state())? != Some(floor)
         {
@@ -2007,14 +2017,13 @@ impl Journal {
             _ => return Err(JournalError::ProtectedBoundary),
         }
 
-        self.commit_with_capacity_scope(
+        self.commit_in_scope(
             &v8_settlement_transaction(released, settlement)?,
-            None,
-            false,
-            true,
-            false,
-            false,
-            false,
+            AppendScope {
+                allow_policy_hold_transition: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )?;
         if current(self.native.state())? != Some(released)
             || current_v8_root_receipt(self.native.state())? != Some(receipt)
@@ -2063,14 +2072,13 @@ impl Journal {
             Some(_) => return Err(JournalError::ProtectedBoundary),
             None => {}
         }
-        self.commit_with_capacity_scope(
+        self.commit_in_scope(
             &ack_transaction(ack)?,
-            None,
-            false,
-            true,
-            false,
-            false,
-            false,
+            AppendScope {
+                allow_policy_hold_transition: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )?;
         if current_ack(self.native.state())? != Some(ack) {
             return Err(JournalError::ProtectedBoundary);
@@ -2097,7 +2105,14 @@ impl Journal {
             ..expected
         };
         let transaction = transaction(released)?;
-        self.commit_with_capacity_scope(&transaction, None, false, true, false, false, false)?;
+        self.commit_in_scope(
+            &transaction,
+            AppendScope {
+                allow_policy_hold_transition: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+        )?;
         if current(self.native.state())? != Some(released) {
             return Err(JournalError::ProtectedBoundary);
         }

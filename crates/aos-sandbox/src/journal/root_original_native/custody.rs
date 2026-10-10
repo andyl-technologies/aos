@@ -5,6 +5,8 @@
 //! partial capture as a protected readback. Drop only fails custody and poisons
 //! a Journal if this invocation actually entered its append.
 
+use crate::journal::semantic_append::AppendScope;
+
 use super::*;
 
 pub(super) struct ActualOriginalRootAppendV5 {
@@ -332,19 +334,13 @@ impl MountOriginalNativeJournalAuthorityV5<'_> {
 
         input.attempted.set(true);
         boundary.append_entered = true;
-        let _: CommitResult = writer.authority.journal.commit_with_cache_gate(
+        let _: CommitResult = writer.authority.journal.commit_in_scope(
             input.transaction,
-            None,
-            true,
-            false,
-            false,
-            false,
-            false,
-            SourceProjectAdmissionTransition::None,
-            controller_source_genesis::ControllerSourceGenesisTransition::None,
-            source_tree_genesis::SourceGenesisTransitionV1::None,
-            RootSourceGenesisTransitionV1::None,
-            Some(RootOwnerEdge::OriginalNative(input.attempt)),
+            AppendScope {
+                allow_capacity_records: true,
+                root_local_edge: Some(RootOwnerEdge::OriginalNative(input.attempt)),
+                ..AppendScope::default()
+            },
             CacheMutationGateV1::Ordinary,
         )?;
 

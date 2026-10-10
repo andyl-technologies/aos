@@ -25,6 +25,8 @@
 //! The private `original_currentness` group keeps original native history,
 //! fixed writer loans, signing bookends, and postcommit readbacks together.
 
+use crate::journal::semantic_append::{AppendScope, PreflightScope};
+
 use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -2599,7 +2601,14 @@ impl ProtectedJournalAuthority<'_> {
             return Err(JournalError::ProtectedBoundary);
         }
         self.journal
-            .commit_with_capacity_scope(transaction, None, false, false, true, false, false)
+            .commit_in_scope(
+                transaction,
+                AppendScope {
+                    allow_host_fence_acquisition: true,
+                    ..AppendScope::default()
+                },
+                CacheMutationGateV1::Ordinary,
+            )
     }
 
     #[cfg(test)]
@@ -2613,7 +2622,14 @@ impl ProtectedJournalAuthority<'_> {
             return Err(JournalError::ProtectedBoundary);
         }
         self.journal
-            .commit_with_capacity_scope(transaction, None, false, false, true, false, false)
+            .commit_in_scope(
+                transaction,
+                AppendScope {
+                    allow_host_fence_acquisition: true,
+                    ..AppendScope::default()
+                },
+                CacheMutationGateV1::Ordinary,
+            )
     }
 
     /// Acquires the nonauthorizing HostState half of a retained Effect fence.
@@ -2659,7 +2675,14 @@ impl ProtectedJournalAuthority<'_> {
             return Err(JournalError::ProtectedBoundary);
         }
         self.journal
-            .commit_with_capacity_scope(transaction, None, false, false, false, true, false)
+            .commit_in_scope(
+                transaction,
+                AppendScope {
+                    allow_host_currentness_fence_acquisition: true,
+                    ..AppendScope::default()
+                },
+                CacheMutationGateV1::Ordinary,
+            )
     }
 
     #[cfg(test)]
@@ -2673,7 +2696,14 @@ impl ProtectedJournalAuthority<'_> {
             return Err(JournalError::ProtectedBoundary);
         }
         self.journal
-            .commit_with_capacity_scope(transaction, None, false, false, false, true, false)
+            .commit_in_scope(
+                transaction,
+                AppendScope {
+                    allow_host_currentness_fence_acquisition: true,
+                    ..AppendScope::default()
+                },
+                CacheMutationGateV1::Ordinary,
+            )
     }
 
     /// Appends one structurally exact, nonauthorizing admission-time witness.
@@ -2748,7 +2778,14 @@ impl ProtectedJournalAuthority<'_> {
             return Err(JournalError::ProtectedBoundary);
         }
         self.journal
-            .commit_with_capacity_scope(transaction, None, false, false, false, false, true)
+            .commit_in_scope(
+                transaction,
+                AppendScope {
+                    allow_host_settlement_admission_append: true,
+                    ..AppendScope::default()
+                },
+                CacheMutationGateV1::Ordinary,
+            )
     }
 
     #[cfg(test)]
@@ -2762,7 +2799,14 @@ impl ProtectedJournalAuthority<'_> {
             return Err(JournalError::ProtectedBoundary);
         }
         self.journal
-            .commit_with_capacity_scope(transaction, None, false, false, false, false, true)
+            .commit_in_scope(
+                transaction,
+                AppendScope {
+                    allow_host_settlement_admission_append: true,
+                    ..AppendScope::default()
+                },
+                CacheMutationGateV1::Ordinary,
+            )
     }
 
     /// Prepares capacity reservation bound to this protected owner namespace.
@@ -2807,11 +2851,13 @@ impl ProtectedJournalAuthority<'_> {
         {
             return Err(JournalError::AuthorityPreflightMismatch);
         }
-        self.journal.preflight_transactions_with_capacity_scope(
-            std::slice::from_ref(transaction),
-            None,
-            true,
-            false,
+        self.journal.preflight_in_scope(
+            PreflightTransactionViewV1::Ordinary(std::slice::from_ref(transaction)),
+            PreflightScope {
+                allow_capacity_records: true,
+                ..PreflightScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )?;
         Ok(ProtectedJournalPreflight {
             snapshot: self.current_snapshot(),
@@ -3016,11 +3062,14 @@ impl ProtectedJournalAuthority<'_> {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
         capacity_reservation::validate_settlement_shape(self.journal, reservation, transaction)?;
-        self.journal.preflight_transactions_with_capacity_scope(
-            std::slice::from_ref(transaction),
-            Some(reservation.reservation_id),
-            true,
-            false,
+        self.journal.preflight_in_scope(
+            PreflightTransactionViewV1::Ordinary(std::slice::from_ref(transaction)),
+            PreflightScope {
+                settling_reservation: Some(reservation.reservation_id),
+                allow_capacity_records: true,
+                ..PreflightScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )?;
         Ok(ProtectedJournalPreflight {
             snapshot: self.current_snapshot(),

@@ -17,6 +17,9 @@
 //! Effect keys: Q|T + job16 + attempt1|2 + ordinalu16be1..6
 //! ```
 
+use crate::journal::PreflightTransactionViewV1;
+use crate::journal::semantic_append::{AppendScope, PreflightScope};
+
 use std::fs::File;
 use std::io::{self, Seek as _, SeekFrom};
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
@@ -1443,17 +1446,21 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
     fn commit_parked_transition(&mut self) -> Result<(), Error> {
         let transaction = self.transition.as_ref().ok_or(Error::Rejected)?;
         let journal = self.journal.as_mut().ok_or(Error::Rejected)?;
-        journal.preflight_with_cache_gate(
-            std::slice::from_ref(transaction), None, false, false, None, None, None,
-            Some(RootOwnerEdge::NixOffline), CacheMutationGateV1::Ordinary,
+        journal.preflight_in_scope(
+            PreflightTransactionViewV1::Ordinary(std::slice::from_ref(transaction)),
+            PreflightScope {
+                root_local_edge: Some(RootOwnerEdge::NixOffline),
+                ..PreflightScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )?;
-        journal.commit_with_cache_gate(
-            transaction, None, false, false, false, false, false,
-            super::SourceProjectAdmissionTransition::None,
-            super::controller_source_genesis::ControllerSourceGenesisTransition::None,
-            super::source_tree_genesis::SourceGenesisTransitionV1::None,
-            super::RootSourceGenesisTransitionV1::None,
-            Some(RootOwnerEdge::NixOffline), CacheMutationGateV1::Ordinary,
+        journal.commit_in_scope(
+            transaction,
+            AppendScope {
+                root_local_edge: Some(RootOwnerEdge::NixOffline),
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )?;
         Ok(())
     }
@@ -1919,9 +1926,13 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
         {
             return Err(Error::Rejected);
         }
-        journal.preflight_with_cache_gate(
-            &self.closure, None, false, false, None, None, None,
-            Some(RootOwnerEdge::NixOfflineClosureData), CacheMutationGateV1::Ordinary,
+        journal.preflight_in_scope(
+            PreflightTransactionViewV1::Ordinary(&self.closure),
+            PreflightScope {
+                root_local_edge: Some(RootOwnerEdge::NixOfflineClosureData),
+                ..PreflightScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
         )?;
         Ok(())
     }
