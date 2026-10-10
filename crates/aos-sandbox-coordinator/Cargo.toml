@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 aos-proto.workspace = true
-aos-sandbox = { workspace = true, default-features = false, features = ["multi-node"] }
+aos-sandbox = { path = "../aos-sandbox", default-features = false, features = ["multi-node"] }
 aos-sandbox-coordinator-protocol.workspace = true
 aos-sandbox-core.workspace = true
 buffa.workspace = true
