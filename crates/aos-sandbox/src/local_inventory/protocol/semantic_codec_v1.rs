@@ -2610,6 +2610,7 @@ impl CanonicalNodeSemanticCodecV1 {
     pub fn protobuf_cursor(value: NodeWatchCursorV1) -> protobuf::WatchCursor {
         pb_cursor(value.into())
     }
+
     /// Reconstructs a structurally validated watch position from protobuf data.
     ///
     /// This conversion validates structure; callers also check canonical carrier equality.
@@ -2622,11 +2623,13 @@ impl CanonicalNodeSemanticCodecV1 {
     ) -> Result<NodeWatchCursorV1, InvalidMultiNodeProtocol> {
         wire_cursor(value)?.model()
     }
+
     /// Projects a watch binding into its generated protobuf data carrier.
     #[must_use]
     pub fn protobuf_binding(value: NodeWatchBindingV1) -> protobuf::WatchBinding {
         pb_watch_binding(value.into())
     }
+
     /// Reconstructs a structurally validated watch binding from protobuf data.
     ///
     /// This conversion validates structure; callers also check canonical carrier equality.
@@ -2639,13 +2642,13 @@ impl CanonicalNodeSemanticCodecV1 {
     ) -> Result<NodeWatchBindingV1, InvalidMultiNodeProtocol> {
         wire_watch_binding(value)?.model()
     }
+
     /// Projects one canonical watch event into its generated protobuf data carrier.
     #[must_use]
-    pub fn protobuf_ordered_event(
-        value: &NodeWatchEventV1,
-    ) -> protobuf::WatchEvent {
+    pub fn protobuf_ordered_event(value: &NodeWatchEventV1) -> protobuf::WatchEvent {
         protobuf_event(value)
     }
+
     /// Reconstructs canonical watch history without granting current authority.
     ///
     /// This conversion validates structure; callers also check canonical carrier equality.

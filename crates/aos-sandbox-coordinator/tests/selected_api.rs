@@ -4,9 +4,9 @@
 
 #[test]
 fn explicit_multi_node_selection_exposes_remote_adapters() {
+    use aos_sandbox_coordinator::lease_projection::committed_lease_to_protobuf;
     use aos_sandbox_coordinator::placement::place_deterministically;
     use aos_sandbox_coordinator::watch_service::DormantOrderedWatchServiceV1;
-    use aos_sandbox_coordinator::lease_projection::committed_lease_to_protobuf;
 
     let _watch = DormantOrderedWatchServiceV1::new;
     let _placement = place_deterministically;

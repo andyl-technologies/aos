@@ -17,6 +17,8 @@ use aos_sandbox_core::{
     supported_protocol_version,
 };
 
+pub use aos_sandbox::local_inventory::AffinityPlacementV1;
+pub use aos_sandbox::local_inventory::InvalidPlacementInput;
 use aos_sandbox::local_inventory::assignment::{
     AssignmentIntentV1, InvalidAssignmentModel, SelectedCapabilityBindingV1,
 };
@@ -25,8 +27,6 @@ use aos_sandbox::local_inventory::capability::{
     CarrierValidatedCapabilityObservationV1, NodeAdmissionStateV1, NodeBootId, NodeBootLineageV1,
     NodeCapabilitySnapshotV1, NodeProtocolV1,
 };
-pub use aos_sandbox::local_inventory::AffinityPlacementV1;
-pub use aos_sandbox::local_inventory::InvalidPlacementInput;
 
 /// Maximum candidate nodes considered by one placement decision.
 pub const MAX_PLACEMENT_CANDIDATES: usize = 4_096;
@@ -123,7 +123,11 @@ impl PlacementSelectionV1 {
         let selected_capability =
             SelectedCapabilityBindingV1::from_observation(self.capability_observation())?;
 
-        AssignmentIntentV1::from_canonical_binding(assignment, desired_lifecycle, selected_capability)
+        AssignmentIntentV1::from_canonical_binding(
+            assignment,
+            desired_lifecycle,
+            selected_capability,
+        )
     }
 
     /// Returns the sandbox whose request was evaluated.
@@ -186,7 +190,6 @@ impl PlacementSelectionV1 {
         self.projected_headroom
     }
 }
-
 
 /// Reports either a selected node or a complete bounded placement block.
 #[derive(Clone, Debug, Eq, PartialEq)]

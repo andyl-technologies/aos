@@ -287,22 +287,26 @@
   # Compiles every application test target, including the `tests/`
   # integration crates that `cargo test --lib` skips, without running them.
   # This gives a fast compile gate that does not wait on the full suite.
-  mkTestTargets = {pname, cargoFlags}: mkCargoPackage {
-    inherit pname;
-    inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
-    cargoRoot = "crates";
-    cargoBuildCommands = [
-      "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${cargoFlags}"
-    ];
-    buildDeps =
-      [buildPerl buildPkgConfig buildProtobuf buildCmake]
-      ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
-    runtimeDeps =
-      [openssl sqlite libssh2 zlib]
-      ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
-    installBins = false;
-    doCheck = false;
-  };
+  mkTestTargets = {
+    pname,
+    cargoFlags,
+  }:
+    mkCargoPackage {
+      inherit pname;
+      inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
+      cargoRoot = "crates";
+      cargoBuildCommands = [
+        "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${cargoFlags}"
+      ];
+      buildDeps =
+        [buildPerl buildPkgConfig buildProtobuf buildCmake]
+        ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
+      runtimeDeps =
+        [openssl sqlite libssh2 zlib]
+        ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
+      installBins = false;
+      doCheck = false;
+    };
   testTargets = mkTestTargets {
     pname = "aos-test-targets";
     cargoFlags = applicationTestFlags;

@@ -198,10 +198,8 @@ impl DormantOrderedWatchServiceV1 {
             DormantWatchReadOutcomeV1::ResyncRequired(binding) => wire::OrderedWatchBatch {
                 events: Vec::new(),
                 next_cursor: Default::default(),
-                resync_binding: Some(CanonicalNodeSemanticCodecV1::protobuf_binding(
-                    binding,
-                ))
-                .into(),
+                resync_binding: Some(CanonicalNodeSemanticCodecV1::protobuf_binding(binding))
+                    .into(),
                 ..Default::default()
             },
         };
@@ -325,10 +323,8 @@ impl DormantOrderedWatchClientV1 {
             let canonical_batch = wire::OrderedWatchBatch {
                 events: Vec::new(),
                 next_cursor: Default::default(),
-                resync_binding: Some(CanonicalNodeSemanticCodecV1::protobuf_binding(
-                    binding,
-                ))
-                .into(),
+                resync_binding: Some(CanonicalNodeSemanticCodecV1::protobuf_binding(binding))
+                    .into(),
                 ..Default::default()
             };
             if canonical_batch != signed_batch {
@@ -398,7 +394,8 @@ fn validate_generated_batch(
     batch: &wire::OrderedWatchBatch,
 ) -> Result<(), InvalidMultiNodeProtocol> {
     if batch.compute_size(&mut buffa::SizeCache::new()) == 0
-        || batch.compute_size(&mut buffa::SizeCache::new()) > aos_sandbox::local_inventory::MAX_NODE_RESPONSE_BYTES
+        || batch.compute_size(&mut buffa::SizeCache::new())
+            > aos_sandbox::local_inventory::MAX_NODE_RESPONSE_BYTES
         || (batch.resync_binding.is_set()
             && (!batch.events.is_empty() || batch.next_cursor.is_set()))
         || (batch.resync_binding.is_unset() && batch.next_cursor.is_unset())
