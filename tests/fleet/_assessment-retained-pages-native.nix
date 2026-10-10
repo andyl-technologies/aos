@@ -7,6 +7,7 @@
   vendor = builtins.elemAt native.passthru.evidenceSources 1;
   selector = "db::assessment::read_snapshot_tests::actual_cli_retains_scan_pages_across_database_reopen";
   subscriptionSelector = "db::assessment::subscription_snapshot::tests::actual_cli_retains_subscription_pages_across_database_reopen";
+  alertSelector = "db::assessment::alert_snapshot::tests::actual_cli_retains_alert_revisions_across_database_reopen";
 in
   assert builtins.pathExists (source + "/crates/aos-hub-worker/src/oci_manifest_ingress.rs");
     pkgs.mkCargoPackage {
@@ -45,8 +46,11 @@ in
         grep -Fx '${selector}: test' "$out/nix-support/test-registration.txt"
         "$out/bin/aos-assessment-retained-pages-fixture" --list --ignored --exact '${subscriptionSelector}' > "$out/nix-support/subscription-test-registration.txt"
         grep -Fx '${subscriptionSelector}: test' "$out/nix-support/subscription-test-registration.txt"
+        "$out/bin/aos-assessment-retained-pages-fixture" --list --ignored --exact '${alertSelector}' > "$out/nix-support/alert-test-registration.txt"
+        grep -Fx '${alertSelector}: test' "$out/nix-support/alert-test-registration.txt"
       '';
       passthru.testSelector = selector;
       passthru.subscriptionTestSelector = subscriptionSelector;
-      meta.description = "Retained assessment scan and subscription database and CLI acceptance fixture";
+      passthru.alertTestSelector = alertSelector;
+      meta.description = "Retained assessment scan, subscription and alert database and CLI acceptance fixture";
     }

@@ -172,7 +172,7 @@ impl RpcService {
                     query.after_subscription.as_deref(),
                 )
                 .await
-                .map_err(subscription_page_error)?
+                .map_err(retained_page_error)?
         };
         let document_json = page.to_bytes().map_err(RpcError::internal)?;
         self.recheck_assessment(&claims, &registry, "assessment.read")
@@ -232,7 +232,7 @@ impl RpcService {
     }
 }
 
-fn subscription_page_error(error: anyhow::Error) -> RpcError {
+pub(super) fn retained_page_error(error: anyhow::Error) -> RpcError {
     use aos_assessment_runtime::read_snapshot::ScanPageError;
 
     match error.downcast_ref::<ScanPageError>() {

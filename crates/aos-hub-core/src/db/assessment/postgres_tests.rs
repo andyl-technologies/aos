@@ -10,8 +10,8 @@ use crate::db::Database;
 
 #[tokio::test]
 #[ignore = "Requires AOS_ASSESSMENT_PG_URL_FILE pointing to a disposable PostgreSQL database"]
-async fn serving_inventory_scan_heads_alerts_acknowledgements_and_events_are_atomic_on_postgresql()
--> Result<()> {
+async fn serving_inventory_scan_heads_alerts_acknowledgements_and_events_are_atomic_on_postgresql(
+) -> Result<()> {
     let path = std::env::var_os("AOS_ASSESSMENT_PG_URL_FILE")
         .context("disposable PostgreSQL URL file required")?;
     let url = std::fs::read_to_string(path)?;
@@ -78,20 +78,18 @@ async fn serving_inventory_scan_heads_alerts_acknowledgements_and_events_are_ato
         db.assessment_event_page(registry_id, 0, 100).await?.len(),
         4
     );
-    assert!(
-        db.check_assessment_scan_claim(registry_id, &claim)
-            .await
-            .is_err()
-    );
-    assert!(
-        db.assessment_object(
+    assert!(db
+        .check_assessment_scan_claim(registry_id, &claim)
+        .await
+        .is_err());
+    assert!(db
+        .assessment_object(
             "different-partition",
             super::AssessmentObjectKind::Assessment,
             result.digest()?
         )
         .await?
-        .is_none()
-    );
+        .is_none());
     // PostgreSQL binds every original claim parameter through the guarded
     // INSERT, and yielding never converts refusal into quota or result authority.
     request.idempotency_key = "postgres-resumable-refusal".into();
@@ -116,11 +114,10 @@ async fn serving_inventory_scan_heads_alerts_acknowledgements_and_events_are_ato
             .await?,
         Some(super::AssessmentProviderReplay::Failed)
     ));
-    assert!(
-        db.check_assessment_scan_claim(registry_id, &first_claim)
-            .await
-            .is_err()
-    );
+    assert!(db
+        .check_assessment_scan_claim(registry_id, &first_claim)
+        .await
+        .is_err());
     assert_eq!(
         db.assessment_scan(registry_id, &resumed_scan.scan_id)
             .await?
@@ -184,4 +181,23 @@ async fn retained_public_subscription_pages_on_postgresql() -> Result<()> {
     let backend = SqlxBackend::connect_postgres(url.trim()).await?;
     let db = Database::with_backend(Box::new(backend)).await?;
     super::subscription_snapshot::tests::storage_bounds(db).await
+}
+
+#[tokio::test]
+#[ignore = "Requires AOS_ASSESSMENT_PG_URL_FILE pointing to a disposable PostgreSQL database"]
+async fn retained_attention_revisions_and_capture_capacity_on_postgresql() -> Result<()> {
+    let path = std::env::var_os("AOS_ASSESSMENT_PG_URL_FILE")
+        .context("disposable PostgreSQL URL file required")?;
+    let url = std::fs::read_to_string(path)?;
+    let backend = SqlxBackend::connect_postgres(url.trim()).await?;
+    let db = Database::with_backend(Box::new(backend)).await?;
+    super::alert_snapshot::tests::retained_episodes(db).await?;
+
+    let backend = SqlxBackend::connect_postgres(url.trim()).await?;
+    let db = Database::with_backend(Box::new(backend)).await?;
+    super::alert_snapshot::tests::storage_bounds(db).await?;
+
+    let backend = SqlxBackend::connect_postgres(url.trim()).await?;
+    let db = Database::with_backend(Box::new(backend)).await?;
+    super::alert_snapshot::tests::oversized_capture(db).await
 }

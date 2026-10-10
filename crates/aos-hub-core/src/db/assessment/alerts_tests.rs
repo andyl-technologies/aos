@@ -117,7 +117,7 @@ async fn acknowledgement_replay_is_atomic_and_conflicting_or_revoked_retries_hav
     Ok(())
 }
 
-async fn commit_fixture(
+pub(super) async fn commit_fixture(
     db: &Database,
     registry_id: i64,
     request: &ScanRequestV1,

@@ -280,10 +280,10 @@ pub(super) fn RegistryAssessmentAttention(client: ApiClient, slug: String) -> im
                                         request_key.set(idempotency_key("assessment-acknowledgement")); failure.set(None);
                                     }>"Inspect episode"</button></td></tr> }
                             }).collect_view();
-                            let next = page.next_issue;
+                            let next = page.next_issue.clone();
                             view! { <p>{format!("Observed at {}", page.as_of)}</p>
                                 <table><thead><tr><th>"Issue"</th><th>"State"</th><th>"Episode"</th><th>"Evidence"</th><th>"Attention"</th><th>"Details"</th></tr></thead><tbody>{rows}</tbody></table>
-                                {next.map(|next| view! { <button disabled=move || busy.get() on:click=move |_| position.set(Some(next))>"Next alerts"</button> })}
+                                {next.map(|next| view! { <button disabled=move || busy.get() on:click=move |_| position.set(Some(next.clone()))>"Next alerts"</button> })}
                             }.into_any()
                         }
                     }

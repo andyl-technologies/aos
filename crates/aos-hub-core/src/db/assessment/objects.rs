@@ -73,6 +73,8 @@ pub enum AssessmentObjectKind {
     ScanReadSnapshot,
     /// Immutable, expiring public subscription reviews and opaque page handles.
     SubscriptionReadSnapshot,
+    /// Immutable scoped attention revisions for bounded pagination.
+    AlertReadSnapshot,
 }
 
 impl AssessmentObjectKind {
@@ -83,6 +85,9 @@ impl AssessmentObjectKind {
     #[must_use]
     pub fn domain(self) -> &'static str {
         match self {
+            Self::AlertReadSnapshot => {
+                aos_assessment_runtime::read_snapshot::alerts::ALERT_READ_SNAPSHOT_V1
+            }
             Self::Definition => aos_assessment::definition::PACKAGE_SCAN_DEFINITION_V1,
             Self::Inventory => aos_assessment::scan_inventory::SCAN_INVENTORY_V1,
             Self::Policy => aos_assessment::input::ASSESSMENT_POLICY_V1,
@@ -110,6 +115,7 @@ impl AssessmentObjectKind {
 
     fn normalize(self, bytes: &[u8]) -> Result<Vec<u8>> {
         match self {
+            Self::AlertReadSnapshot => aos_assessment_runtime::read_snapshot::alerts::AlertReadSnapshotV1::from_slice(bytes)?.to_bytes(),
             Self::SubscriptionReadSnapshot => {
                 aos_assessment_runtime::read_snapshot::subscriptions::SubscriptionReadSnapshotV1::from_slice(bytes)?.to_bytes()
             }
@@ -204,7 +210,7 @@ impl AssessmentObjectKind {
     fn is_read_snapshot(self) -> bool {
         matches!(
             self,
-            Self::ScanReadSnapshot | Self::SubscriptionReadSnapshot
+            Self::ScanReadSnapshot | Self::SubscriptionReadSnapshot | Self::AlertReadSnapshot
         )
     }
 }

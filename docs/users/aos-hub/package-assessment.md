@@ -250,6 +250,16 @@ Local conditional metadata requires an exact settled source receipt, retains
 at most 4,096 operation entries per partition, and cannot roll back when an old
 receipt is replayed. A full index returns a capacity error.
 
+`aos hub maintain alerts --registry REGISTRY` reads complete alert episodes,
+including resolved and retired history. Continue with the returned opaque
+`--after-issue` token, the same `--limit`, and `--resource-scope`. All pages retain
+their original observation time and revisions across acknowledgement, subsequent
+scans and database restart. Refresh from the first page to see later changes.
+Each resource admits sixteen active alert captures, bounded to 128 complete
+records and eight MiB per capture. Captures expire after fifteen minutes;
+oversized listings return an explicit capacity error. Every continuation checks
+current read access. A historical page confers no acknowledgement authority.
+
 ## Native controller
 
 Supply an owner-private JSON file with `aos-hub serve

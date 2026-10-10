@@ -1,4 +1,4 @@
-//! Retained scan-list snapshots and opaque, scope-bound continuation tokens.
+//! Retained read snapshots and opaque, scope-bound continuation tokens.
 //!
 //! Tokens name a stored immutable snapshot and one random page handle. They
 //! contain no registry IDs, query text, actor claims or mutable row positions.
@@ -22,6 +22,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::control::{ScanListV1, ScanSummary};
 use crate::validation::{reject_null, text};
+
+pub mod alerts;
 
 pub mod subscriptions;
 

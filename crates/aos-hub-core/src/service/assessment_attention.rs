@@ -27,36 +27,16 @@ impl RpcService {
             .authorize_assessment(auth, &registry, "assessment.read")
             .await?;
         require_scope(query.resource_scope.as_deref(), &registry.scope_key)?;
-        let after = query
-            .after_issue
-            .map(|key| key.to_string())
-            .unwrap_or_default();
-        let alerts = self
+        let page = self
             .db
-            .assessment_alert_page(registry.id, &after, query.limit)
+            .assessment_retained_alert_page(
+                registry.id,
+                &registry.scope_key,
+                query.limit,
+                query.after_issue.as_deref(),
+            )
             .await
-            .map_err(RpcError::internal)?;
-        let next_issue = if let Some(last) = alerts.last() {
-            let more = self
-                .db
-                .assessment_alert_page(registry.id, &last.issue_key.to_string(), 1)
-                .await
-                .map_err(RpcError::internal)?;
-            (!more.is_empty()).then_some(last.issue_key)
-        } else {
-            None
-        };
-        let page = AlertPageV1 {
-            schema: "aos.assessment-alert-page/v1".into(),
-            resource_scope: registry.scope_key.clone(),
-            as_of: self
-                .db
-                .assessment_database_time()
-                .await
-                .map_err(RpcError::internal)?,
-            alerts,
-            next_issue,
-        };
+            .map_err(super::assessment_notifications::retained_page_error)?;
         let document_json = page.to_bytes().map_err(RpcError::internal)?;
         self.recheck_assessment(&claims, &registry, "assessment.read")
             .await?;

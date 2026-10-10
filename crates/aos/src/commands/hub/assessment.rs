@@ -109,10 +109,7 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
             let query = AlertQueryV1 {
                 schema: "aos.assessment-alert-query/v1".into(),
                 limit: *limit,
-                after_issue: after_issue
-                    .as_deref()
-                    .map(Sha256Digest::parse)
-                    .transpose()?,
+                after_issue: after_issue.clone(),
                 resource_scope: resource_scope.clone(),
             };
             AlertQueryV1::from_slice(&serde_json::to_vec(&query)?)?;
@@ -401,6 +398,10 @@ fn render_alerts(printer: &Printer, page: &AlertPageV1) {
                 ""
             }
         ));
+    }
+    if let Some(cursor) = &page.next_issue {
+        printer.info(&format!("Next alert page: {cursor}"));
+        printer.info(&format!("Resource scope: {}", page.resource_scope));
     }
 }
 

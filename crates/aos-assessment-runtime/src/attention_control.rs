@@ -28,9 +28,9 @@ pub struct AlertQueryV1 {
     pub schema: String,
     /// Maximum complete records, between one and ten.
     pub limit: u32,
-    /// Exclusive issue position; possession grants no access.
+    /// Opaque retained-page position; possession grants no access.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub after_issue: Option<Sha256Digest>,
+    pub after_issue: Option<String>,
     /// Non-reusable scope required for a continuation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_scope: Option<String>,
@@ -51,6 +51,9 @@ impl AlertQueryV1 {
             query.after_issue.is_some(),
             &query.resource_scope,
         )?;
+        if let Some(cursor) = &query.after_issue {
+            crate::read_snapshot::alerts::parse_alert_cursor(cursor)?;
+        }
         Ok(query)
     }
 }
@@ -152,9 +155,9 @@ pub struct AlertPageV1 {
     pub as_of: Timestamp,
     /// Complete records in ascending issue-key order.
     pub alerts: Vec<AssessmentAlertV1>,
-    /// Exclusive continuation when more records exist.
+    /// Opaque retained-page continuation when more records exist.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_issue: Option<Sha256Digest>,
+    pub next_issue: Option<String>,
 }
 
 impl AlertPageV1 {
@@ -184,15 +187,14 @@ impl AlertPageV1 {
                 .alerts
                 .windows(2)
                 .any(|pair| pair[0].issue_key >= pair[1].issue_key)
-            || self.next_issue.is_some_and(|key| {
-                self.alerts
-                    .last()
-                    .is_none_or(|alert| alert.issue_key != key)
-            })
+            || (self.next_issue.is_some() && self.alerts.is_empty())
         {
             bail!("invalid assessment alert page or continuation");
         }
         text(&self.resource_scope, 128, "alert page resource scope")?;
+        if let Some(cursor) = &self.next_issue {
+            crate::read_snapshot::alerts::parse_alert_cursor(cursor)?;
+        }
         for alert in &self.alerts {
             alert.validate()?;
             if alert.updated_at > self.as_of {

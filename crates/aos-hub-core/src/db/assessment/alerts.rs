@@ -383,7 +383,7 @@ impl Database {
     }
 }
 
-fn decode_alert(bytes: &[u8]) -> Result<AssessmentAlertV1> {
+pub(super) fn decode_alert(bytes: &[u8]) -> Result<AssessmentAlertV1> {
     let value: serde_json::Value = ALERT_LIMITS.decode(bytes, "assessment alert")?;
     super::objects::reject_null(&value)?;
     let alert: AssessmentAlertV1 = serde_json::from_value(value)?;

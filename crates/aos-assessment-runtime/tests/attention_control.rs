@@ -10,7 +10,11 @@ use serde_json::json;
 fn attention_continuations_require_scope_and_refuse_caller_authority() -> Result<()> {
     let mut alerts = json!({"schema":"aos.assessment-alert-query/v1", "limit":10});
     AlertQueryV1::from_slice(&serde_json::to_vec(&alerts)?)?;
-    alerts["afterIssue"] = json!(Sha256Digest::of_bytes("issue"));
+    alerts["afterIssue"] = json!(format!(
+        "a1:{}:{}",
+        Sha256Digest::of_bytes("capture").hex(),
+        "0123456789abcdef0123456789abcdef"
+    ));
     assert!(AlertQueryV1::from_slice(&serde_json::to_vec(&alerts)?).is_err());
     alerts["resourceScope"] = json!("registry:fixture-incarnation");
     AlertQueryV1::from_slice(&serde_json::to_vec(&alerts)?)?;
@@ -58,7 +62,7 @@ fn idle_replay_preserves_the_reconnect_cursor_and_explicit_database_time() -> Re
         resource_scope: page.resource_scope,
         as_of: page.as_of,
         alerts: vec![],
-        next_issue: Some(Sha256Digest::of_bytes("missing issue")),
+        next_issue: Some(Sha256Digest::of_bytes("missing issue").to_string()),
     };
     assert!(alerts.to_bytes().is_err());
     Ok(())

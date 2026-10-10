@@ -15,10 +15,9 @@ use clap::{Args, Subcommand};
 use std::path::PathBuf;
 
 use super::{
-    AssessmentProfileArg,
-    HubAccessTokenCmd, HubContainerCmd, HubIdentityProviderCmd, HubInstanceSettingsSectionCmd,
-    HubInvitationCmd, HubOrgMemberCmd, HubOrganizationDomainCmd, HubServiceAccountCmd,
-    HubSigningKeyCmd,
+    AssessmentProfileArg, HubAccessTokenCmd, HubContainerCmd, HubIdentityProviderCmd,
+    HubInstanceSettingsSectionCmd, HubInvitationCmd, HubOrgMemberCmd, HubOrganizationDomainCmd,
+    HubServiceAccountCmd, HubSigningKeyCmd,
 };
 
 #[derive(Args, Debug, Clone)]
@@ -469,7 +468,7 @@ pub enum HubAssessmentCmd {
         /// Bound the number of complete alerts in this page
         #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=10))]
         limit: u32,
-        /// Continue after an exact issue in the preceding resource scope
+        /// Use the opaque alert continuation from the preceding page
         #[arg(long, requires = "resource_scope")]
         after_issue: Option<String>,
         /// Pin the non-reusable resource scope returned by the preceding page
