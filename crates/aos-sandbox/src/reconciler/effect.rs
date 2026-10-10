@@ -415,7 +415,7 @@ impl EffectPlan {
         method: aos_sandbox_protocol::public_api::PublicOperationMethodV1,
         effect: PublicMutationEffectV1,
     ) -> Result<Self, ReconcilerError> {
-        Self::public_mutation(method, effect.encode()?)
+        Self::from_public_mutation_bytes(method, effect.encode()?)
     }
 
     /// Constructs a bounded generic broker effect from validated request bytes.
@@ -445,19 +445,8 @@ impl EffectPlan {
         })
     }
 
-    /// Constructs a bounded controller-orchestration effect for one exact
-    /// authenticated public mutation envelope.
-    ///
-    /// The method is stored independently from the envelope and revalidated on
-    /// recovery. This keeps high-level lifecycle work out of the fixed broker
-    /// method registry while preserving one closed, restart-stable dispatch
-    /// identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ReconcilerError::InvalidPlan`] when the envelope is malformed,
-    /// names another public method, or exceeds the effect-request bound.
-    pub fn public_mutation(
+    // Construction and recovery use the same context-bearing request validator.
+    fn from_public_mutation_bytes(
         method: aos_sandbox_protocol::public_api::PublicOperationMethodV1,
         request: Vec<u8>,
     ) -> Result<Self, ReconcilerError> {
@@ -466,11 +455,10 @@ impl EffectPlan {
                 "invalid controller effect request length",
             ));
         }
-        let authenticated = PublicMutationEffectV1::decode(&request)?;
-        let canonical_request = authenticated.as_ref().map_or(
-            request.as_slice(),
-            PublicMutationEffectV1::canonical_request,
-        );
+        let authenticated = PublicMutationEffectV1::decode(&request)?.ok_or(
+            ReconcilerError::InvalidPlan("controller effect lacks authenticated admission context"),
+        )?;
+        let canonical_request = authenticated.canonical_request();
         if method == aos_sandbox_protocol::public_api::PublicOperationMethodV1::OperatorRecover {
             let envelope = crate::cli_model::PublicMutationRequestV1::decode(canonical_request)
                 .map_err(|_| ReconcilerError::InvalidPlan("invalid controller effect request"))?;
@@ -531,8 +519,8 @@ impl EffectPlan {
 
     /// Decodes authenticated admission context for a controller mutation.
     ///
-    /// Legacy controller effects contain only the canonical public envelope
-    /// and return `None`. New production admissions always return `Some`.
+    /// Controller mutations retain a context. Broker effects and reserved
+    /// Observe children return `None`.
     ///
     /// # Errors
     ///
@@ -1796,7 +1784,7 @@ fn decode_effect_with_extensions(
                 "controller effect has invalid domain or authority",
             ));
         }
-        EffectPlan::public_mutation(method, request.clone()).map_err(|_| {
+        EffectPlan::from_public_mutation_bytes(method, request.clone()).map_err(|_| {
             ReconcilerError::CorruptLedger("controller effect method/request mismatch")
         })?;
     }
@@ -1953,7 +1941,7 @@ fn validate_lengths(
                 "controller effect has an invalid dispatch identity",
             ));
         }
-        EffectPlan::public_mutation(method, plan.request.clone())?;
+        EffectPlan::from_public_mutation_bytes(method, plan.request.clone())?;
     } else if plan.domain == EffectDomain::Controller && !plan.is_reserved_observe() {
         return Err(ReconcilerError::InvalidPlan(
             "controller effect has no dispatch method",
@@ -2173,7 +2161,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_capability_handle_effect_checks_method_without_resource_uid() {
+    fn retained_capability_effect_requires_context_and_checks_method_without_resource_uid() {
         let body = AttenuateCapabilityRequest {
             parent_capability_handle: vec![7; 32],
             attenuation: b"{}".to_vec(),
@@ -2189,11 +2177,41 @@ mod tests {
         )
         .unwrap();
 
-        EffectPlan::public_mutation(
-            aos_sandbox_protocol::public_api::PublicOperationMethodV1::AttenuateCapability,
+        let method = aos_sandbox_protocol::public_api::PublicOperationMethodV1::AttenuateCapability;
+        let context = PublicMutationEffectV1::new(
+            PrincipalId::from_bytes([1; 16]),
+            ProjectId::from_bytes([2; 16]),
+            123,
             request.encode(),
         )
         .unwrap();
+        let plan = EffectPlan::authorized_public_mutation(method, context.clone()).unwrap();
+        assert_eq!(plan.public_mutation_context().unwrap(), Some(context));
+        let record = EffectLedgerRecord {
+            plan,
+            state: EffectState::Planned,
+            dispatch: None,
+            project_admission: None,
+        };
+        assert_eq!(
+            decode_effect(&encode_effect(&record).unwrap()).unwrap(),
+            record
+        );
+
+        assert!(matches!(
+            EffectPlan::from_public_mutation_bytes(method, request.encode()),
+            Err(ReconcilerError::InvalidPlan(
+                "controller effect lacks authenticated admission context"
+            ))
+        ));
+        let mut bare = record;
+        bare.plan.request = request.encode();
+        assert!(matches!(
+            encode_effect(&bare),
+            Err(ReconcilerError::InvalidPlan(
+                "controller effect lacks authenticated admission context"
+            ))
+        ));
     }
 
     #[test]

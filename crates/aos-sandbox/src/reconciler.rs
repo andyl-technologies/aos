@@ -5582,6 +5582,120 @@ mod tests {
     }
 
     #[test]
+    fn bare_controller_effect_recovery_preserves_rows_before_executor_activity() {
+        let cases = [
+            (1, 0_u32, &[][..], &[][..], OperationState::Accepted),
+            (2, 1, &[][..], &b"try"[..], OperationState::Applying),
+            (3, 1, &[1][..], &[][..], OperationState::Succeeded),
+            (
+                4,
+                1,
+                &[][..],
+                &b"blocked"[..],
+                OperationState::PermanentlyBlocked,
+            ),
+            (255, 0, &[][..], &[][..], OperationState::Accepted),
+        ];
+        for (state, attempt, receipt, diagnostic, operation_state) in cases {
+            let directory = TestDirectory::new();
+            let plan = cancelable_controller_operation();
+            let operation_id = plan.operation_id();
+            let key = effect_key(operation_id, 0);
+            let context = plan.effects[0].public_mutation_context().unwrap().unwrap();
+            let request = context.canonical_request();
+            let mut reconciler =
+                Reconciler::new(protected_runtime_journal(&directory), Executor::default());
+            reconciler.accept(&plan).unwrap();
+
+            // Assemble the retired V3 layout independently of the live encoder.
+            // State 255 also pins missing-context refusal before state decoding.
+            let mut legacy = vec![3, 7, state, 0];
+            legacy.extend_from_slice(&attempt.to_le_bytes());
+            legacy.extend_from_slice(&u32::try_from(request.len()).unwrap().to_le_bytes());
+            legacy.extend_from_slice(&u32::try_from(receipt.len()).unwrap().to_le_bytes());
+            legacy.extend_from_slice(&u16::try_from(diagnostic.len()).unwrap().to_le_bytes());
+            legacy.extend_from_slice(
+                &i32::from(public_operation_method_record_code_v1(
+                    plan.effects[0].public_mutation_method().unwrap(),
+                ))
+                .to_be_bytes(),
+            );
+            legacy.extend_from_slice(request);
+            legacy.extend_from_slice(receipt);
+            legacy.extend_from_slice(diagnostic);
+            let operation = transition_operation(
+                reconciler.load_operation(operation_id).unwrap(),
+                operation_state,
+                Some(101),
+            )
+            .unwrap();
+            let operation_bytes = encode_operation_record(operation);
+            reconciler
+                .journal_mut()
+                .commit(
+                    &JournalTransaction::new(
+                        [0xa8; 16],
+                        vec![
+                            JournalRecord::put(
+                                RecordNamespace::Effect,
+                                key.to_vec(),
+                                legacy.clone(),
+                            ),
+                            JournalRecord::put(
+                                RecordNamespace::Operation,
+                                operation_id.into_bytes().to_vec(),
+                                operation_bytes.clone(),
+                            ),
+                        ],
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            drop(reconciler);
+
+            let mut recovered =
+                Reconciler::new(protected_runtime_journal(&directory), Executor::default());
+            let retained_sequence = recovered.journal.snapshot_sequence();
+            let retained_file = fs::read(directory.journal()).unwrap();
+            assert!(
+                matches!(
+                    recovered.reconcile_once_at(operation_id, 102),
+                    Err(ReconcilerError::CorruptLedger(
+                        "controller effect method/request mismatch"
+                    ))
+                ),
+                "state {state}"
+            );
+            assert!(
+                matches!(
+                    recovered_public_operation_resource_v1(&recovered.journal, operation_id),
+                    Err(ReconcilerError::CorruptLedger(
+                        "controller effect method/request mismatch"
+                    ))
+                ),
+                "state {state}"
+            );
+
+            assert_eq!(recovered.executor.observe_calls, 0, "state {state}");
+            assert_eq!(recovered.executor.apply_calls, 0, "state {state}");
+            assert_eq!(recovered.executor.timing_calls, 0, "state {state}");
+            assert!(recovered.executor.guardian_plan_requests.is_empty());
+            assert_eq!(
+                recovered.journal.get(RecordNamespace::Effect, &key),
+                Some(legacy.as_slice())
+            );
+            assert_eq!(
+                recovered
+                    .journal
+                    .get(RecordNamespace::Operation, operation_id.as_bytes()),
+                Some(operation_bytes.as_slice()),
+            );
+            assert_eq!(recovered.journal.snapshot_sequence(), retained_sequence);
+            assert_eq!(fs::read(directory.journal()).unwrap(), retained_file);
+        }
+    }
+
+    #[test]
     fn runtime_holder_admission_activation_and_reopen_retain_exact_intent() {
         use aos_sandbox_core::PrincipalId;
         let directory = TestDirectory::new();
