@@ -1325,6 +1325,7 @@
         "ListSchedules",
         "WriteSchedule",
         "ListSubscriptions",
+        "ListNotificationDeliveries",
         "WriteSubscription",
         "ReviewNotificationDestination"
       ]

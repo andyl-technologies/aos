@@ -9,6 +9,7 @@ use aos_assessment_runtime::notifications::{
 };
 use leptos::prelude::*;
 
+use super::assessment_deliveries::RegistryAssessmentDeliveries;
 use super::assessments::{start_status_poll, AssessmentReadGuard};
 use crate::components::InlineError;
 use crate::mutation::scoped_workflow_tasks;
@@ -333,6 +334,7 @@ pub(super) fn RegistryAssessmentNotifications(client: ApiClient, slug: String) -
                     {move || failure.get().map(|detail| view! { <InlineError detail=detail/> })}
                 </div>
             })}
+            <RegistryAssessmentDeliveries client=context.get_value().0 slug=context.get_value().1/>
         </section>
     }
 }

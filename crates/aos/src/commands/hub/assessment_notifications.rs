@@ -2,15 +2,16 @@
 
 use anyhow::{Result, bail, ensure};
 use aos_assessment_runtime::notifications::{
-    DestinationReviewQueryV1, NotificationDestinationV1, SubscriptionPageV1, SubscriptionQueryV1,
-    SubscriptionV1, SubscriptionWriteV1,
+    DestinationReviewQueryV1, NotificationDeliveryPageV1, NotificationDeliveryQueryV1,
+    NotificationDestinationV1, SubscriptionPageV1, SubscriptionQueryV1, SubscriptionV1,
+    SubscriptionWriteV1,
 };
 use aos_core::output::{OutputMode, Printer};
 use aos_maintain::presentation::escape_terminal;
 use aos_remote::{hub_rpc, hub_types};
 
 use super::client::hub_client;
-use crate::cli::HubAssessmentCmd;
+use crate::cli::{HubAccessArgs, HubAssessmentCmd};
 use crate::commands::input::read_bounded_file;
 
 /// Executes closed notification reviews through the normal scoped Hub credentials.
@@ -19,6 +20,50 @@ use crate::commands::input::read_bounded_file;
 /// Returns an error for invalid requests, unavailable authority, failed RPCs or mismatched receipts.
 pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result<()> {
     match command {
+        HubAssessmentCmd::Deliveries {
+            access,
+            registry,
+            subscription_id,
+            after_delivery,
+            resource_scope,
+            limit,
+        } => {
+            read_deliveries(
+                printer,
+                access,
+                registry,
+                NotificationDeliveryQueryV1 {
+                    schema: "aos.assessment-notification-delivery-query/v1".into(),
+                    resource_scope: resource_scope.clone(),
+                    delivery_id: None,
+                    subscription_id: subscription_id.clone(),
+                    after_delivery: after_delivery.clone(),
+                    limit: *limit,
+                },
+            )
+            .await
+        }
+        HubAssessmentCmd::Delivery {
+            access,
+            registry,
+            delivery_id,
+            resource_scope,
+        } => {
+            read_deliveries(
+                printer,
+                access,
+                registry,
+                NotificationDeliveryQueryV1 {
+                    schema: "aos.assessment-notification-delivery-query/v1".into(),
+                    resource_scope: resource_scope.clone(),
+                    delivery_id: Some(delivery_id.clone()),
+                    subscription_id: None,
+                    after_delivery: None,
+                    limit: 1,
+                },
+            )
+            .await
+        }
         HubAssessmentCmd::Subscriptions {
             access,
             registry,
@@ -142,6 +187,78 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
         }
         _ => bail!("unsupported assessment notification command"),
     }
+}
+
+async fn read_deliveries(
+    printer: &Printer,
+    access: &HubAccessArgs,
+    registry: &str,
+    query: NotificationDeliveryQueryV1,
+) -> Result<()> {
+    query.validate()?;
+    let client = hub_client(&access.hub, access.token.as_deref()).await?;
+    let response = client
+        .call_topology(
+            hub_rpc::ListAssessmentNotificationDeliveries,
+            &hub_types::AssessmentControlRequest {
+                registry_slug: registry.to_owned(),
+                document_json: serde_json::to_vec(&query)?,
+            },
+        )
+        .await?;
+    let page = NotificationDeliveryPageV1::from_slice(&response.document_json)?;
+    ensure!(
+        query
+            .resource_scope
+            .as_ref()
+            .is_none_or(|scope| scope == &page.resource_scope)
+            && query.subscription_id == page.subscription_id
+            && page.deliveries.len() <= query.limit as usize
+            && query
+                .delivery_id
+                .as_ref()
+                .is_none_or(|identity| page.deliveries.len() == 1
+                    && page.deliveries[0].delivery_id == *identity),
+        "notification delivery page differs from the selected query"
+    );
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({"schema_version":"aos.hub.cli/v1", "kind":"assessment-notification-deliveries", "data":page}));
+    } else {
+        printer.info(&format!("Delivery status observed at {}", page.as_of));
+        for delivery in &page.deliveries {
+            let state = serde_json::to_value(delivery.state)?;
+            printer.info(&format!(
+                "{}: {} (attempt {})\n  subscription {} revision {}, event {}\n  eligible {}{}",
+                escape_terminal(&delivery.delivery_id, 128),
+                state.as_str().unwrap_or("unknown"),
+                delivery.attempt,
+                escape_terminal(&delivery.subscription_id, 128),
+                delivery.subscription_revision,
+                delivery.event_sequence,
+                delivery.not_before,
+                delivery
+                    .lease_expires_at
+                    .as_ref()
+                    .map(|time| format!(", lease expires {time}"))
+                    .unwrap_or_default()
+            ));
+            if let Some(batch) = &delivery.batch_delivery_id {
+                printer.info(&format!("  physical batch {}", escape_terminal(batch, 128)));
+            }
+            if let Some(failure) = delivery.last_error_code {
+                let failure = serde_json::to_value(failure)?;
+                printer.info(&format!("  {}", failure.as_str().unwrap_or("unknown")));
+            }
+        }
+        if let Some(next) = &page.next_delivery {
+            printer.info(&format!(
+                "Continue with --resource-scope {} --after-delivery {}",
+                escape_terminal(&page.resource_scope, 128),
+                escape_terminal(next, 128)
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn render(printer: &Printer, subscription: &SubscriptionV1) {

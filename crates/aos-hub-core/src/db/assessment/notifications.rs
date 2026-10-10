@@ -389,7 +389,7 @@ impl Database {
     }
 }
 
-fn subscription_key(resource: &str, identity: &str) -> Result<String> {
+pub(super) fn subscription_key(resource: &str, identity: &str) -> Result<String> {
     ensure!(
         !identity.is_empty() && identity.len() <= 128 && !identity.chars().any(char::is_control),
         "invalid subscription identity"

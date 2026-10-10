@@ -290,6 +290,40 @@ impl From<AssessmentProfileArg> for aos_assessment::input::Profile {
 
 #[derive(Subcommand)]
 pub enum HubAssessmentCmd {
+    /// Read notification delivery status without claiming or retrying callbacks
+    Deliveries {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Select the registry whose delivery status is read
+        #[arg(long)]
+        registry: String,
+        /// Filter by a public notification subscription identity
+        #[arg(long)]
+        subscription_id: Option<String>,
+        /// Continue after a delivery identity from the preceding page
+        #[arg(long, requires = "resource_scope")]
+        after_delivery: Option<String>,
+        /// Pin the registry incarnation from the preceding page
+        #[arg(long)]
+        resource_scope: Option<String>,
+        /// Bound the number of delivery status projections
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=10))]
+        limit: u32,
+    },
+    /// Read one retained notification delivery and its physical batch linkage
+    Delivery {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Select the registry that owns the delivery
+        #[arg(long)]
+        registry: String,
+        /// Select the exact public event-intent identity
+        #[arg(long)]
+        delivery_id: String,
+        /// Pin an expected registry incarnation
+        #[arg(long)]
+        resource_scope: Option<String>,
+    },
     /// Read reviewed notification subscriptions without dispatching callbacks
     Subscriptions {
         #[command(flatten)]

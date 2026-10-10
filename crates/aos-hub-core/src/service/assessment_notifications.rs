@@ -1,12 +1,79 @@
 //! Explicit notification review controls with current IAM checks and closed documents.
 
 use aos_assessment_runtime::notifications::{
-    DestinationReviewQueryV1, SubscriptionPageV1, SubscriptionQueryV1, SubscriptionWriteV1,
+    DestinationReviewQueryV1, NotificationDeliveryPageV1, NotificationDeliveryQueryV1,
+    SubscriptionPageV1, SubscriptionQueryV1, SubscriptionWriteV1,
 };
 
 use super::{pb, RpcError, RpcService};
 
 impl RpcService {
+    /// Reads finite delivery status without scheduling or retrying any callback.
+    ///
+    /// # Errors
+    /// Returns an error for invalid selectors, changed resource scope, absent detail,
+    /// revoked current read authority or inconsistent retained delivery facts.
+    pub async fn list_assessment_notification_deliveries(
+        &self,
+        auth: Option<&str>,
+        req: pb::AssessmentControlRequest,
+    ) -> Result<pb::AssessmentDocumentResponse, RpcError> {
+        let query = NotificationDeliveryQueryV1::from_slice(&req.document_json)
+            .map_err(|error| RpcError::invalid(error.to_string()))?;
+        let registry = self.registry_or_not_found(&req.registry_slug).await?;
+        let claims = self
+            .authorize_assessment(auth, &registry, "assessment.read")
+            .await?;
+        if query
+            .resource_scope
+            .as_ref()
+            .is_some_and(|scope| scope != &registry.scope_key)
+        {
+            return Err(RpcError::not_found(
+                "assessment notification resource was replaced",
+            ));
+        }
+        let mut deliveries = self
+            .db
+            .assessment_notification_delivery_page(
+                registry.id,
+                query.after_delivery.as_deref().unwrap_or(""),
+                query.subscription_id.as_deref(),
+                query.delivery_id.as_deref(),
+                query.limit + 1,
+            )
+            .await
+            .map_err(RpcError::internal)?;
+        if query.delivery_id.is_some() && deliveries.is_empty() {
+            return Err(RpcError::not_found("assessment notification delivery"));
+        }
+        let has_more = deliveries.len() > query.limit as usize;
+        deliveries.truncate(query.limit as usize);
+        let next_delivery = if has_more {
+            deliveries
+                .last()
+                .map(|delivery| delivery.delivery_id.clone())
+        } else {
+            None
+        };
+        let page = NotificationDeliveryPageV1 {
+            schema: "aos.assessment-notification-delivery-page/v1".into(),
+            resource_scope: registry.scope_key.clone(),
+            as_of: self
+                .db
+                .assessment_database_time()
+                .await
+                .map_err(RpcError::internal)?,
+            subscription_id: query.subscription_id,
+            deliveries,
+            next_delivery,
+        };
+        let document_json = page.to_bytes().map_err(RpcError::internal)?;
+        self.recheck_assessment(&claims, &registry, "assessment.read")
+            .await?;
+        Ok(pb::AssessmentDocumentResponse { document_json })
+    }
+
     /// Creates, replaces or disables a reviewed notification subscription.
     ///
     /// # Errors

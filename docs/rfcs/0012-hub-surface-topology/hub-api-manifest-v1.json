@@ -3266,6 +3266,13 @@
          "service" : "AssessmentService"
       },
       {
+         "method" : "ListNotificationDeliveries",
+         "path" : "aos.hub.v1.AssessmentService/ListNotificationDeliveries",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
          "method" : "WriteSubscription",
          "path" : "aos.hub.v1.AssessmentService/WriteSubscription",
          "request" : "AssessmentControlRequest",

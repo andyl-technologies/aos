@@ -36,7 +36,9 @@ fn escape_terminal(text: &str) -> String {
 /// calls or incompatible canonical inner documents.
 pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result<()> {
     match command {
-        HubAssessmentCmd::Subscriptions { .. }
+        HubAssessmentCmd::Deliveries { .. }
+        | HubAssessmentCmd::Delivery { .. }
+        | HubAssessmentCmd::Subscriptions { .. }
         | HubAssessmentCmd::Subscription { .. }
         | HubAssessmentCmd::NotificationDestination { .. } => {
             super::assessment_notifications::run(printer, command).await

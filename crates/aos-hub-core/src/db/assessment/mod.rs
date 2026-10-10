@@ -14,6 +14,7 @@ mod evaluation;
 mod inventory;
 mod job_authority;
 mod notifications;
+mod notification_journal;
 mod notification_work;
 mod objects;
 mod provider_index;

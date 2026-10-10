@@ -4,7 +4,8 @@ use anyhow::{Context as _, Result};
 use aos_assessment::time::Timestamp;
 use aos_assessment_runtime::events::AssessmentEventPayload;
 use aos_assessment_runtime::notifications::{
-    DeliveryOutcome, NotificationDestinationV1, NotificationFrequency, NotificationWorkReceiptV1,
+    DeliveryOutcome, NotificationDestinationV1, NotificationFailureCode, NotificationFrequency,
+    NotificationIntentState, NotificationWorkReceiptV1,
 };
 use aos_contract::Sha256Digest;
 
@@ -139,6 +140,133 @@ async fn claims_consume_quota_once_and_current_attempt_receipts_settle_atomicall
 }
 
 #[tokio::test]
+async fn delivery_inspection_pages_status_without_claiming_or_disclosing_execution_authority(
+) -> Result<()> {
+    let (db, registry, mut request, identity, fences) =
+        super::notifications_tests::fixture().await?;
+    db.write_assessment_subscription_fenced(registry, &request, &identity, &fences)
+        .await?;
+    let placement = install(&db).await?;
+    let destination = destination(&db, registry, &request).await?;
+    emit(&db, registry, 3, &db.assessment_database_time().await?).await?;
+
+    let first = db
+        .assessment_notification_delivery_page(
+            registry,
+            "",
+            Some(&request.subscription_id),
+            None,
+            1,
+        )
+        .await?;
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].state, NotificationIntentState::Pending);
+    assert_eq!(first[0].attempt, 0);
+    assert!(first[0].body_digest.is_none());
+    let rest = db
+        .assessment_notification_delivery_page(
+            registry,
+            &first[0].delivery_id,
+            Some(&request.subscription_id),
+            None,
+            11,
+        )
+        .await?;
+    assert_eq!(rest.len(), 2);
+    assert!(rest
+        .iter()
+        .all(|delivery| delivery.delivery_id > first[0].delivery_id));
+    assert!(db
+        .assessment_notification_delivery_page(registry, "", Some("other-subscription"), None, 10)
+        .await?
+        .is_empty());
+    assert!(db
+        .assessment_notification_delivery_page(registry, "", None, None, 12)
+        .await
+        .is_err());
+    assert!(db
+        .assessment_notification_delivery_page(registry, "", None, Some(""), 1)
+        .await
+        .is_err());
+    assert_eq!(consumed(&db, &placement).await?, 0);
+    assert_eq!(states(&db, registry, "pending").await?, 3);
+
+    let id = &first[0].delivery_id;
+    let work = db
+        .claim_assessment_notification_work_fenced(registry, id, &placement, &destination, &fences)
+        .await?;
+    let leased = db
+        .assessment_notification_delivery_page(registry, "", None, Some(id), 1)
+        .await?
+        .remove(0);
+    assert_eq!(leased.state, NotificationIntentState::Leased);
+    assert_eq!(leased.attempt, 1);
+    assert_eq!(leased.lease_expires_at, Some(work.plan.deadline.clone()));
+    assert_eq!(leased.batch_delivery_id.as_deref(), Some(id.as_str()));
+    assert_eq!(leased.body_digest, Some(work.plan.body_digest));
+    assert!(leased.receipt_digest.is_none());
+    let encoded = String::from_utf8(aos_contract::canonical::to_vec(&leased)?)?;
+    for private in [
+        work.plan.claim_token.as_str(),
+        destination.url.as_str(),
+        identity.sub.as_str(),
+    ] {
+        assert!(!encoded.contains(private));
+    }
+
+    let accepted = receipt(
+        &work,
+        db.assessment_database_time().await?,
+        DeliveryOutcome::Accepted,
+    )?;
+    db.admit_assessment_notification_receipt_fenced(&work, &accepted, &fences)
+        .await?;
+    let delivered = db
+        .assessment_notification_delivery_page(registry, "", None, Some(id), 1)
+        .await?
+        .remove(0);
+    assert_eq!(delivered.state, NotificationIntentState::Delivered);
+    assert!(delivered.lease_expires_at.is_none());
+    assert!(delivered.receipt_digest.is_some());
+    assert_eq!(consumed(&db, &placement).await?, 1);
+
+    // An inconsistent retained lease must fail the read contract, rather than
+    // being silently omitted from a successful delivered projection.
+    db.backend.execute("UPDATE assessment_notification_outbox SET lease_expires_at = ?3 WHERE registry_id = ?1 AND delivery_id = ?2", &vals![@slice registry, id, work.plan.deadline.unix_seconds()]).await?;
+    assert!(db
+        .assessment_notification_delivery_page(registry, "", None, Some(id), 1)
+        .await
+        .is_err());
+    db.backend.execute("UPDATE assessment_notification_outbox SET lease_expires_at = NULL WHERE registry_id = ?1 AND delivery_id = ?2", &vals![@slice registry, id]).await?;
+
+    request.enabled = false;
+    request.expected_revision = 1;
+    db.write_assessment_subscription_fenced(registry, &request, &identity, &fences)
+        .await?;
+    let page = db
+        .assessment_notification_delivery_page(registry, "", None, None, 10)
+        .await?;
+    assert_eq!(
+        page.iter()
+            .filter(|delivery| delivery.state == NotificationIntentState::Delivered)
+            .count(),
+        1
+    );
+    assert_eq!(
+        page.iter()
+            .filter(
+                |delivery| delivery.state == NotificationIntentState::Revoked
+                    && delivery.last_error_code
+                        == Some(NotificationFailureCode::SubscriptionReviewReplaced)
+            )
+            .count(),
+        2
+    );
+    assert_eq!(consumed(&db, &placement).await?, 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn denied_claims_roll_back_quota_and_revocation_fences_prepared_receipts() -> Result<()> {
     let (db, registry, mut request, identity, fences) =
         super::notifications_tests::fixture().await?;
@@ -213,6 +341,14 @@ async fn digest_claims_pin_fifty_members_and_retries_never_include_newer_events(
     assert_eq!(first.plan.body.events.len(), 50);
     assert_eq!(states(&db, registry, "leased").await?, 50);
     assert_eq!(states(&db, registry, "pending").await?, 10);
+    let member = db.backend.query_opt("SELECT delivery_id FROM assessment_notification_outbox WHERE registry_id = ?1 AND state = 'leased' AND delivery_id != ?2 ORDER BY delivery_id LIMIT 1", &vals![@slice registry, id]).await?.context("digest member")?.get::<String>(0)?;
+    let projected = db
+        .assessment_notification_delivery_page(registry, "", None, Some(&member), 1)
+        .await?
+        .remove(0);
+    assert_eq!(projected.batch_delivery_id.as_deref(), Some(id.as_str()));
+    assert_eq!(projected.body_digest, Some(first.plan.body_digest));
+    assert_eq!(consumed(&db, &placement).await?, 1);
     let retryable = receipt(
         &first,
         db.assessment_database_time().await?,
@@ -400,6 +536,26 @@ async fn notification_admission_claims_quota_and_receipts_are_atomic_on_postgres
     db.admit_assessment_notification_receipt_fenced(&work, &accepted, &fences)
         .await?;
     assert_eq!(states(&db, registry, "delivered").await?, 3);
+    let projected = db
+        .assessment_notification_delivery_page(
+            registry,
+            "",
+            Some(&request.subscription_id),
+            None,
+            10,
+        )
+        .await?;
+    assert_eq!(projected.len(), 3);
+    assert!(projected.iter().all(
+        |delivery| delivery.state == NotificationIntentState::Delivered
+            && delivery.batch_delivery_id.as_deref() == Some(id.as_str())
+            && delivery.body_digest == Some(work.plan.body_digest)
+            && delivery.receipt_digest.is_some()
+    ));
+    assert!(db
+        .assessment_notification_delivery_page(registry, "", Some("other-subscription"), None, 1)
+        .await?
+        .is_empty());
     request.expected_revision = 1;
     request.enabled = false;
     db.write_assessment_subscription_fenced(registry, &request, &identity, &fences)

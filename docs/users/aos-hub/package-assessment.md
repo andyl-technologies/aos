@@ -248,6 +248,21 @@ the complete physical timeout. Per-attempt durable objects pin work before any
 effect. Completed replay returns the exact receipt; interrupted replay cannot
 dispatch again. Uncertain retries wait until the original dispatch deadline.
 
+`aos hub maintain deliveries --registry REGISTRY` reads a finite delivery-status
+page; `--subscription-id NAME` applies a public subscription filter.
+`aos hub maintain delivery --registry REGISTRY --delivery-id ID` reads one retained
+event intent. JSON output preserves decimal event/revision counters, state,
+attempt count, eligibility, lease expiry, closed failure categories and compact
+receipt/body commitments. Continue a list with the returned `--resource-scope`
+and `--after-delivery`, retaining the same subscription filter. The web
+notification panel exposes the same status and physical batch linkage.
+
+Status reads neither reconcile nor retry delivery. Digest members share one
+physical delivery identity after their first claim. A leased record can have an
+uncertain physical outcome, even after its lease expires; a delivered record
+means the destination accepted the callback. Projections omit claim tokens,
+callback URLs, credentials, callback bodies and private review claims.
+
 Assessment permission policy remains pending, so this draft does not yet provide
 authorized end-user delivery through these controls. The callback Worker fleet
 suite exercises physical execution and durable replay with paired protocol fixtures;
