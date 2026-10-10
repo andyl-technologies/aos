@@ -99,10 +99,11 @@ mod hot_fork;
 #[cfg(target_os = "linux")]
 pub use hot_fork::{
     ProductionHotForkCleanupObserver, ProductionVmExactHotForkSourceBoundary,
-    ProductionVmHotForkIoNodeBoundary, ProductionVmHotForkIoNodeKind,
-    ProductionVmHotForkNodeBoundary, ProductionVmHotForkNodeServiceState,
-    ProductionVmHotForkSourceWorld, ProductionVmHotForkSourceWorldPreparationFailure,
-    ProductionVmHotForkSourceWorldResourceUsage, ProductionVmHotForkWorldContinuation,
+    ProductionVmHotForkContinuationUnavailable, ProductionVmHotForkIoNodeBoundary,
+    ProductionVmHotForkIoNodeKind, ProductionVmHotForkNodeBoundary,
+    ProductionVmHotForkNodeServiceState, ProductionVmHotForkSourceWorld,
+    ProductionVmHotForkSourceWorldPreparationFailure, ProductionVmHotForkSourceWorldResourceUsage,
+    ProductionVmHotForkWorldContinuation,
 };
 #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
 pub use hot_fork::{
@@ -386,8 +387,10 @@ pub trait ProductionHostRamRegistrationFactory: Send + Sync {
 
 mod ram_resources;
 pub use ram_resources::{
-    HostRamAdmissionError, HostRamBootstrapLimits, ProductionHostRamLaunchRequirements,
-    ProductionHostRamLaunchShape, ProductionHostRamNativeWorldLimits, ProductionHostRamPartition,
+    HostRamAdmissionError, HostRamBootstrapLimits, HostRamProcessFamilyNativeAllowances,
+    HostRamProcessFamilyPartition, HostRamProcessNativeAllowance,
+    ProductionHostRamLaunchRequirements, ProductionHostRamLaunchShape,
+    ProductionHostRamNativeWorldLimits, ProductionHostRamPartition,
     partition_host_ram_launch_resources,
 };
 
@@ -1999,6 +2002,49 @@ impl ProductionVmNodeLaunch {
 /// containment authority from their `Drop` path when lifecycle construction,
 /// unwinding, or caller abandonment prevents an explicit [`Self::finish`].
 pub trait ProductionVmNodeLauncher: Send {
+    /// Reports exclusion by a retained park owner, without issuing phase authority.
+    ///
+    /// Complete source-world operations use this negative gate before touching
+    /// any installed Node or launcher. Implementations keep it set on refusal.
+    fn parent_park_drain_is_owned(&self) -> bool {
+        false
+    }
+
+    /// Invokes a fixed later phase while the complete lifecycle retains its source.
+    ///
+    /// # Errors
+    /// Refuses an absent authentic factory/host/original route or retained cause.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_drain(
+        &mut self,
+        _source: &mut crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        _request: ProductionVmParentParkDrainRequest<'_>,
+    ) -> Result<crucible_qemu::QmpParentParkDrainReceipt, ProductionVmParentParkDrainRefusal> {
+        Err(ProductionVmParentParkDrainRefusal::Unavailable(
+            "launcher has no original park issuer",
+        ))
+    }
+
+    /// Transfers the actual containing attempt into its existing quarantine.
+    ///
+    /// The complete source and phase credit remain retained independently of
+    /// cleanup; this does not attest reap, native disposition or resource refund.
+    ///
+    /// # Errors
+    /// Refuses a launcher without the fixed actual-owner containment route.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn contain_parent_park_drain(&mut self) -> Result<(), ProductionVmParentParkDrainRefusal> {
+        Err(ProductionVmParentParkDrainRefusal::Unavailable(
+            "launcher has no original containment route",
+        ))
+    }
+
+    /// Borrows the retained typed phase cause without exposing physical authority.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_drain_failure(&self) -> Option<ProductionVmParentParkDrainFailure<'_>> {
+        None
+    }
+
     /// Admits one scheduler quantum under the retained attempt authority.
     ///
     /// Attempt-scoped launchers use this boundary to check sticky cancellation
@@ -2884,3 +2930,15 @@ mod run_lock_schema_tests {
         Ok(())
     }
 }
+
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+mod parent_park_drain;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub use parent_park_drain::{
+    ProductionVmParentParkDrain, ProductionVmParentParkDrainCause,
+    ProductionVmParentParkDrainFailure, ProductionVmParentParkDrainRefusal,
+    ProductionVmParentParkDrainRequest, ProductionVmParentParkStageAdmissionCause,
+    ProductionVmParentParkStageEarlyCause, ProductionVmParentParkStageEnteredCause,
+    ProductionVmParentParkStageFailure, ProductionVmParentParkStageOwnerCause,
+    ProductionVmParentParkStageReborrowCause,
+};

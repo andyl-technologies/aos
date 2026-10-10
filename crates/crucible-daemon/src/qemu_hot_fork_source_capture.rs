@@ -287,7 +287,17 @@ where
             .map_err(|source| {
                 ProductionQemuHotForkExactSourceCaptureError::Preparation(Box::new(source))
             })?;
-        let continuation = source.continuation();
+        let continuation = match source.continuation() {
+            Ok(continuation) => continuation,
+            Err(cause) => {
+                // A missing complete identity cannot authorize cleanup. Keep
+                // this existing owner intact without a new diagnostic allocation.
+                std::mem::forget(source);
+                return Err(ProductionQemuHotForkExactSourceCaptureError::Continuation(
+                    cause,
+                ));
+            }
+        };
         let actual_configuration = continuation.configuration().id();
         let proof_matches = match boundary
             .proof()
@@ -468,6 +478,9 @@ pub enum ProductionQemuHotForkSourceCaptureError {
 /// Failure while restoring an authenticated exact source world.
 #[derive(Debug, Error)]
 pub enum ProductionQemuHotForkExactSourceCaptureError {
+    /// The prepared continuation is unavailable; its complete source remains retained.
+    #[error("authenticate prepared exact source continuation; source retained")]
+    Continuation(#[source] crucible_api::vm_lifecycle::ProductionVmHotForkContinuationUnavailable),
     /// Exact capture requires an authenticated checkpoint execution origin.
     #[error("exact hot-fork source capture has no resume checkpoint")]
     MissingCheckpoint,
@@ -520,7 +533,8 @@ impl ProductionQemuHotForkExactSourceCaptureError {
             Self::Preparation(_) | Self::EventIdentity { .. } => {
                 SchedulerOperationalFailureClass::Retryable
             }
-            Self::MissingCheckpoint
+            Self::Continuation(_)
+            | Self::MissingCheckpoint
             | Self::Lineage(_)
             | Self::BasisMismatch
             | Self::PreparedBoundaryMismatch { .. } => SchedulerOperationalFailureClass::Terminal,

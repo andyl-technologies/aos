@@ -59,11 +59,20 @@ fn original_fingerprint_capture_replaces_same_icount_sample_without_completing_o
     fingerprint_capture_ack_fixture(CaptureOwner::Original)
 }
 
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+#[test]
+fn paired_fingerprint_capture_replaces_same_icount_sample_without_completing_either_owner()
+-> Result<(), Box<dyn std::error::Error>> {
+    fingerprint_capture_ack_fixture(CaptureOwner::Paired)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CaptureOwner {
     Fixture,
     Ambient,
     Original,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    Paired,
 }
 
 fn fingerprint_capture_ack_fixture(owner: CaptureOwner) -> Result<(), Box<dyn std::error::Error>> {
@@ -114,6 +123,41 @@ fn fingerprint_capture_ack_fixture(owner: CaptureOwner) -> Result<(), Box<dyn st
     let original = original_supervisor
         .begin(crucible_linux_resource::host_supervision::HostOperationClass::Preparation)?;
     let host = std::thread::spawn(move || {
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        if owner == CaptureOwner::Paired {
+            let pair = original_fingerprint::CapturePair::new().map_err(|source| {
+                QemuAsyncDriverRuntimeError::new(
+                    "create paired capture fixture",
+                    source.to_string(),
+                )
+            })?;
+            runtime
+                .publish_current_execution_fingerprint_under_originals(&pair.actor, &pair.family)?;
+            for guard in [&pair.actor, &pair.family] {
+                let status = guard.status().map_err(|source| {
+                    QemuAsyncDriverRuntimeError::operational_supervision(
+                        "paired original remains live",
+                        source,
+                    )
+                })?;
+                assert_eq!(status.completed_work_units, 0);
+                guard
+                    .check_original_quiescence_cancellation()
+                    .map_err(|source| {
+                        QemuAsyncDriverRuntimeError::operational_supervision(
+                            "paired subscription remains live",
+                            source,
+                        )
+                    })?;
+                guard.wait_slice().map_err(|source| {
+                    QemuAsyncDriverRuntimeError::operational_supervision(
+                        "paired original remains live",
+                        source,
+                    )
+                })?;
+            }
+            return Ok(());
+        }
         if owner == CaptureOwner::Original {
             runtime.publish_current_execution_fingerprint_under_original(&original)?;
             original.wait_slice().map_err(|source| {

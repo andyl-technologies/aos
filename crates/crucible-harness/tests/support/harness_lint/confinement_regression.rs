@@ -654,6 +654,31 @@ fn operational_boundary_regression_failures() -> Vec<String> {
             ));
         }
     }
+    // A reviewed typed refusal is the only added root export. Neither aliases,
+    // sibling exports nor a public raw-clock signature inherit that review.
+    let supervision = "crucible-linux-resource/src/host_supervision.rs";
+    let approved = operational_public_exports(
+        "crucible-linux-resource",
+        Path::new("crucible-linux-resource"),
+        Path::new(supervision),
+    );
+    for (source, accepted) in [
+        ("pub use quiescence::OriginalQuiescenceStartError;", true),
+        ("pub use quiescence::UnreviewedQuiescenceClock;", false),
+        (
+            "pub use quiescence::OriginalQuiescenceStartError as UnreviewedQuiescenceClock;",
+            false,
+        ),
+        ("pub use quiescence::*;", false),
+    ] {
+        let findings = public_export_findings(Path::new(supervision), source, approved);
+        if findings.is_empty() != accepted {
+            failures.push(format!(
+                "typed Quiescence export misclassified: {source}: {findings:?}"
+            ));
+        }
+    }
+
     let origin = "crucible-linux-resource/src/measurement_origin.rs";
     for source in [
         "pub(crate) struct MeasurementClock { pub(crate) start_ns: u64, pub(crate) end_ns: u64 }",

@@ -334,6 +334,8 @@ pub struct PackagedQemuExecutorConfig {
     verify_determinism_findings: bool,
     #[cfg(feature = "private-measurement-domain")]
     original_preparation: Option<crate::private_original_capture::OriginalPreparation>,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    original_park_caller: Option<crate::private_original_capture::OriginalPackagedParkCaller>,
 }
 
 impl PackagedQemuExecutorConfig {
@@ -344,6 +346,16 @@ impl PackagedQemuExecutorConfig {
         original: crate::private_original_capture::OriginalPreparation,
     ) -> Self {
         self.original_preparation = Some(original);
+        self
+    }
+
+    /// Retains only the closed issuer's prepaid authentic park caller.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn with_original_park_caller(
+        mut self,
+        caller: crate::private_original_capture::OriginalPackagedParkCaller,
+    ) -> Self {
+        self.original_park_caller = Some(caller);
         self
     }
 
@@ -452,6 +464,8 @@ impl PackagedQemuExecutorConfig {
             verify_determinism_findings: false,
             #[cfg(feature = "private-measurement-domain")]
             original_preparation: None,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            original_park_caller: None,
         })
     }
 

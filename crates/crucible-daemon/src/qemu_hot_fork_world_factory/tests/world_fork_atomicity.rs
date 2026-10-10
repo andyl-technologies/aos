@@ -188,7 +188,7 @@ fn three_source_world(
     }
     let (_nodes, source_world) =
         prepared_test_source_world(sources).expect("prepared source world");
-    let roster = source_world.continuation().nodes().to_vec();
+    let roster = source_world.continuation().unwrap().nodes().to_vec();
     (source_processes, roster, source_world)
 }
 
@@ -262,6 +262,7 @@ fn production_three_node_clean_rejection_is_atomic_at_every_launch_index() {
                 .as_ref()
                 .expect("restored source")
                 .continuation()
+                .unwrap()
                 .nodes(),
             original_roster
         );
@@ -343,7 +344,7 @@ fn production_three_node_adoption_failure_retains_the_complete_world() {
     for failure_index in 0..3 {
         let (source_processes, _roster, mut source_world) =
             three_source_world(usize::MAX, QemuTestHotForkOutcome::Forked);
-        let node = source_world.continuation().nodes()[failure_index]
+        let node = source_world.continuation().unwrap().nodes()[failure_index]
             .node()
             .clone();
         source_world

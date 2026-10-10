@@ -7,6 +7,7 @@ publish = false
 
 [features]
 default = []
+private-measurement-domain = ["crucible-qemu/private-measurement-domain"]
 test-support = ["crucible/test-support", "crucible-qemu/test-support", "crucible-cas/test-support"]
 
 [lints]

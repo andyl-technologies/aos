@@ -45,6 +45,48 @@ where
     S: QmpTimeoutStream,
 {
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn parent_park_stopped_generation(
+        &mut self,
+        actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<u64, QmpError> {
+        self.client.parent_park_stopped_generation(actor, family)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn parent_park_command(
+        &mut self,
+        request: super::parent_park_drain::ParentParkDrainRequest<'_>,
+        actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<super::parent_park_drain::QmpParentParkDrainReceipt, QmpError> {
+        self.client
+            .parent_park_drain_under_originals(&request, actor, family)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn parent_park_import(
+        &mut self,
+        imports: &crate::OriginalActorParkImports,
+        actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QmpError> {
+        use std::os::fd::AsFd;
+        self.client.install_parent_park_descriptor_under_originals(
+            &imports.basis_name,
+            imports.basis.as_fd(),
+            actor,
+            family,
+        )?;
+        self.client.install_parent_park_descriptor_under_originals(
+            &imports.cancellation_name,
+            imports.cancellation.as_fd(),
+            actor,
+            family,
+        )
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     pub(crate) fn capture_readonly_backing<'host, 'owner>(
         &mut self,
         observation: crate::linux_attempt_host::OriginalBoundBackingObservation<'host, 'owner>,

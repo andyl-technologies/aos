@@ -208,22 +208,29 @@ impl OriginalActorRoleIssuer {
     /// no second Linux factory, service account or capture route is constructed.
     ///
     /// # Errors
-    /// Refuses original custody, native pair admission or genuine packaged
-    /// preparation. Failed preparation retains its external roster and banks.
+    /// Refuses a different workflow decoder or Preparation, original custody,
+    /// native pair admission or genuine packaged preparation. Failed
+    /// preparation retains its external roster and banks.
     /// The supplied service and config still require authenticated physical
     /// storage, Source and prebirth purposes; account custody is not a grant.
     pub fn prepare_genuine_packaged_executor<'actor>(
         &'actor mut self,
         service: &crate::PreparedCampaignLocalService,
         config: crate::PackagedQemuExecutorConfig,
+        decoder: &crucible_qemu::OriginalActorDecodeOwner,
     ) -> Result<OriginalPreparedPackagedExecutor<'actor>, OriginalPackagedPreparationError> {
         let held = self
             .held
             .as_mut()
             .ok_or(OriginalActorAccountError::Unavailable)?;
         let original = held.retain_preparation()?;
+        let park_caller = original.retain_packaged_park_caller(decoder)?;
         let (roster, binding) = held.accounts.prepare_native_account_roster()?;
-        let executor = service.prepare_original_packaged_executor(config, original, binding)?;
+        let executor = service.prepare_original_packaged_executor(
+            config.with_original_park_caller(park_caller),
+            original,
+            binding,
+        )?;
         let owner = OriginalPreparedPackagedExecutor {
             _actor: self,
             roster: Some(roster),

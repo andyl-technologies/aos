@@ -46,6 +46,8 @@ mod guarded_reset;
 mod readonly_backing;
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 pub use readonly_backing::QemuReadOnlyBackingError;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+mod parent_park_drain;
 mod paused_observation;
 pub(crate) use channels::QemuQmpMachineControlChannel;
 pub use channels::{QemuNodePendingQuantum, QemuPluginIpcControlChannel, QemuShmemHotPathChannel};

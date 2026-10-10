@@ -2,6 +2,27 @@
 
 use super::*;
 
+/// Typed refusal lending the same attempt's process contract to its stage.
+#[cfg(any(test, all(target_os = "linux", feature = "private-measurement-domain")))]
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ProcessStageContractRefusal {
+    #[error("configured process stage belongs to another or retired attempt")]
+    NotCurrent,
+    #[error(transparent)]
+    Owner(QemuVmRealizationError),
+}
+
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+impl ProcessStageContractRefusal {
+    pub(crate) fn failure(&self) -> crucible_api::ProductionVmParentParkStageOwnerCause<'_> {
+        use crucible_api::ProductionVmParentParkStageOwnerCause as Cause;
+        match self {
+            Self::NotCurrent => Cause::NotCurrent,
+            Self::Owner(first) => Cause::Owner(first),
+        }
+    }
+}
+
 /// Attempt-wide guard owner with exact linear process-generation leases.
 ///
 /// The owner seals one resource guard behind a bounded generation registry.
@@ -242,6 +263,27 @@ impl<G> QemuAttemptGenerationResourceOwner<G>
 where
     G: QemuAttemptProcessResourceGuard,
 {
+    // This fixed callback borrows the actual owner's process contract only.
+    // It cannot select an event, descriptor, or independently supplied guard.
+    #[cfg(any(test, all(target_os = "linux", feature = "private-measurement-domain")))]
+    pub(crate) fn with_process_stage_contract<T>(
+        &mut self,
+        cancellation: &ExecutionCancellation,
+        invoke: impl FnOnce(&QemuChildProcessContract) -> T,
+    ) -> Result<T, ProcessStageContractRefusal> {
+        if self.terminal || !self.guard.cancellation().same_incarnation(cancellation) {
+            return Err(ProcessStageContractRefusal::NotCurrent);
+        }
+        self.guard
+            .check_operational_boundary()
+            .map_err(ProcessStageContractRefusal::Owner)?;
+        let contract = self
+            .guard
+            .child_process_contract()
+            .map_err(ProcessStageContractRefusal::Owner)?;
+        Ok(invoke(contract))
+    }
+
     /// Provisions one fresh generation directory under the aggregate guard.
     ///
     /// # Errors
@@ -447,5 +489,48 @@ impl Drop for QemuAttemptGenerationLease {
             Ok(mut state) => state.abandoned = true,
             Err(poisoned) => poisoned.into_inner().abandoned = true,
         }
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+impl<G: QemuAttemptProcessResourceGuard> QemuAttemptGenerationResourceOwner<G> {
+    /// Checks actual Node, host and Preparation custody before publication.
+    ///
+    /// # Errors
+    /// Refuses absent or different original physical custody without effects.
+    pub(crate) fn verify_parent_park_binding(
+        &self,
+        source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        original: &Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        decoder: &crucible_qemu::OriginalActorParkCaller,
+    ) -> Result<(), crucible_qemu::OriginalActorParkQuiescenceError> {
+        self.guard
+            .verify_parent_park_binding(source, original, decoder)
+    }
+
+    pub(crate) fn enter_parent_park_quiescence(
+        &self,
+        source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        original: &Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        decoder: &crucible_qemu::OriginalActorParkCaller,
+    ) -> Result<
+        crucible_qemu::OriginalActorParkQuiescence,
+        crucible_qemu::OriginalActorParkQuiescenceError,
+    > {
+        self.guard
+            .enter_parent_park_quiescence(source, original, decoder)
+    }
+
+    pub(crate) fn prepare_parent_park_imports(
+        &self,
+        source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        original: &Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        decoder: &crucible_qemu::OriginalActorParkCaller,
+        actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crucible_qemu::OriginalActorParkImports, crucible_qemu::OriginalActorParkImportError>
+    {
+        self.guard
+            .prepare_parent_park_imports(source, original, decoder, actor, family)
     }
 }

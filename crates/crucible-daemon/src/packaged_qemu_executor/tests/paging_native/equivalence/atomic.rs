@@ -369,6 +369,7 @@ impl AttemptExecutionModel for MixedResume<'_> {
         let running = assert_mixed_continuation(&world, &self.boundary.configuration);
         let source_processes = world
             .continuation()
+            .unwrap()
             .nodes()
             .iter()
             .filter_map(|node| node.process().cloned())
@@ -514,7 +515,7 @@ fn assert_mixed_continuation(
     world: &ProductionVmHotForkSourceWorld,
     configuration: &Configuration,
 ) -> Vec<crucible::NodeId> {
-    let continuation = world.continuation();
+    let continuation = world.continuation().unwrap();
     assert_eq!(continuation.configuration(), configuration);
     assert_eq!(continuation.nodes().len(), 3);
     let running = continuation

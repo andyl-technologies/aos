@@ -988,3 +988,62 @@ fn original_composed_retirement_keeps_healthy_finish_idempotent() {
     assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
     assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
 }
+
+#[test]
+fn process_stage_contract_refuses_foreign_cancellation_before_callback() {
+    let resources = resources(4);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = factory(resources, Arc::clone(&counters));
+    let cancellation = ExecutionCancellation::default();
+    let guard = factory
+        .begin(resources, cancellation.clone(), None)
+        .expect("resource guard");
+    let mut owner = QemuAttemptGenerationResourceOwner::new(guard, 1).expect("generation owner");
+    let mut called = false;
+    let checks = counters.checks.load(Ordering::SeqCst);
+
+    let refused = owner.with_process_stage_contract(&ExecutionCancellation::default(), |_| {
+        called = true;
+    });
+
+    assert!(matches!(
+        refused,
+        Err(ProcessStageContractRefusal::NotCurrent)
+    ));
+    assert!(!called);
+    assert_eq!(counters.checks.load(Ordering::SeqCst), checks);
+    owner.finish().expect("finish unused generation owner");
+}
+
+#[test]
+fn process_stage_contract_borrows_same_owner_and_refuses_later_cancellation() {
+    let resources = resources(4);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = factory(resources, Arc::clone(&counters));
+    let cancellation = ExecutionCancellation::default();
+    let guard = factory
+        .begin(resources, cancellation.clone(), None)
+        .expect("resource guard");
+    let mut owner = QemuAttemptGenerationResourceOwner::new(guard, 1).expect("generation owner");
+    let checks = counters.checks.load(Ordering::SeqCst);
+
+    let observed = owner
+        .with_process_stage_contract(&cancellation, |_| 73)
+        .expect("same owner contract");
+
+    assert_eq!(observed, 73);
+    assert_eq!(counters.checks.load(Ordering::SeqCst), checks + 1);
+    cancellation.cancel();
+    let mut called = false;
+    let refused = owner.with_process_stage_contract(&cancellation, |_| {
+        called = true;
+    });
+    assert!(matches!(
+        refused,
+        Err(ProcessStageContractRefusal::Owner(
+            QemuVmRealizationError::Canceled { .. }
+        ))
+    ));
+    assert!(!called);
+    owner.finish().expect("finish cancelled generation owner");
+}

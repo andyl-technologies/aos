@@ -41,13 +41,24 @@ impl OriginalPreparedCampaignServiceOwner {
         &self,
         issuer: &'actor mut crate::private_measurement_runtime::OriginalActorRoleIssuer,
         config: crate::PackagedQemuExecutorConfig,
+        decoder: &crucible_qemu::OriginalActorDecodeOwner,
     ) -> Result<
         crate::private_measurement_runtime::OriginalPreparedPackagedExecutor<'actor>,
         OriginalPreparedServiceError,
     > {
         self.artifact_operation(|service| {
+            let binding = match &self.original {
+                ServiceOriginal::Genuine(declaration) => declaration.verify_decoder(decoder),
+                #[cfg(test)]
+                ServiceOriginal::Fixture(_) => {
+                    Err(crucible_qemu::OriginalActorAccountError::Unavailable)
+                }
+            };
+            binding.map_err(
+                crate::private_measurement_runtime::OriginalPackagedPreparationError::from,
+            )?;
             issuer
-                .prepare_genuine_packaged_executor(service, config)
+                .prepare_genuine_packaged_executor(service, config, decoder)
                 .map_err(Into::into)
         })
     }

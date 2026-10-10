@@ -51,6 +51,35 @@ impl<S> QemuQmpMachineControlChannel for QemuQmpExactSnapshotControlChannel<S>
 where
     S: QmpTimeoutStream,
 {
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_stopped_generation(
+        &mut self,
+        actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<u64, crate::QmpError> {
+        self.vmstate.parent_park_stopped_generation(actor, family)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_command(
+        &mut self,
+        request: crate::qmp::parent_park_drain::ParentParkDrainRequest<'_>,
+        actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::parent_park_drain::QmpParentParkDrainReceipt, crate::QmpError> {
+        self.vmstate.parent_park_command(request, actor, family)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_import(
+        &mut self,
+        imports: &crate::OriginalActorParkImports,
+        actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), crate::QmpError> {
+        self.vmstate.parent_park_import(imports, actor, family)
+    }
+
     #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
     fn reset_selectable_under_original(
         &mut self,

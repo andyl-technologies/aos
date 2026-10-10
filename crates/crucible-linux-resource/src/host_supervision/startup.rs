@@ -111,6 +111,15 @@ impl HostOperationGuard {
         descriptor: OwnedFd,
         credit: HostServiceLease,
     ) -> Result<(), HostSupervisionError> {
+        self.retain_original_cancellation_for(HostOperationClass::Setup, descriptor, credit)
+    }
+
+    pub(super) fn retain_original_cancellation_for(
+        &self,
+        class: HostOperationClass,
+        descriptor: OwnedFd,
+        credit: HostServiceLease,
+    ) -> Result<(), HostSupervisionError> {
         let cancellation = SetupCancellation {
             descriptor,
             _credit: credit,
@@ -124,7 +133,7 @@ impl HostOperationGuard {
         let mut state = self.supervisor.lock()?;
         let decision = self.supervisor.evaluate_decision(&mut state, self.id)?;
         decision.require_running(self.id)?;
-        if decision.class != HostOperationClass::Setup {
+        if decision.class != class {
             return Err(HostSupervisionError::InvalidBudget);
         }
         let operation = state
@@ -143,6 +152,10 @@ impl HostOperationGuard {
     /// # Errors
     /// Refuses revoked, absent, terminal or uncertain startup custody.
     pub fn check_original_setup_cancellation(&self) -> Result<(), HostSupervisionError> {
+        self.check_original_cancellation()
+    }
+
+    pub(super) fn check_original_cancellation(&self) -> Result<(), HostSupervisionError> {
         let mut state = self.supervisor.lock()?;
         self.supervisor
             .evaluate_decision(&mut state, self.id)?
@@ -166,17 +179,50 @@ impl HostOperationGuard {
     /// Refuses another operation class, a terminal or uncertain owner, absent
     /// finite deadline, or unrepresentable shared-kernel coordinates.
     pub fn serialize_original_setup_basis(&self) -> Result<[u8; 80], HostSupervisionError> {
+        self.serialize_original_operation_basis(HostOperationClass::Setup, *b"CRUCSTP1", 2, 128)
+    }
+
+    pub(super) fn serialize_original_operation_basis(
+        &self,
+        class: HostOperationClass,
+        magic: [u8; 8],
+        schema: u32,
+        record_size: u32,
+    ) -> Result<[u8; 80], HostSupervisionError> {
+        #[cfg(feature = "private-measurement-domain")]
+        let preparation_limits = if let Some(original) = &self.original_preparation {
+            self.check_original_preparation()?;
+            let basis = original.serialize_original_operation_basis(
+                HostOperationClass::Preparation,
+                *b"CRUCPAU1",
+                1,
+                80,
+            )?;
+            let end = u64::from_be_bytes(
+                basis[64..72]
+                    .try_into()
+                    .map_err(|_| HostSupervisionError::InvalidBudget)?,
+            );
+            let poll = u64::from_be_bytes(
+                basis[72..80]
+                    .try_into()
+                    .map_err(|_| HostSupervisionError::InvalidBudget)?,
+            );
+            Some((end, poll))
+        } else {
+            None
+        };
         let mut state = self.supervisor.lock()?;
         let decision = self.supervisor.evaluate_decision(&mut state, self.id)?;
         decision.require_running(self.id)?;
-        if decision.class != HostOperationClass::Setup {
+        if decision.class != class {
             return Err(HostSupervisionError::InvalidBudget);
         }
         let operation = state
             .operations
             .get(&self.id)
             .ok_or(HostSupervisionError::Unavailable)?;
-        let budget = state.budgets.get(HostOperationClass::Setup);
+        let budget = state.budgets.get(class);
         let origin = self.supervisor.shared.original_monotonic_ns;
         #[cfg(feature = "private-measurement-domain")]
         let origin = self
@@ -215,15 +261,21 @@ impl HostOperationGuard {
         if let Some(clock) = self.supervisor.shared.measurement_clock {
             end = Some(end.map_or(clock.end_ns, |current| current.min(clock.end_ns)));
         }
+        #[cfg(feature = "private-measurement-domain")]
+        if let Some((preparation_end, _)) = preparation_limits {
+            end = Some(end.map_or(preparation_end, |current| current.min(preparation_end)));
+        }
         let end = end
             .filter(|end| *end > started)
             .ok_or(HostSupervisionError::InvalidBudget)?;
         let poll = u64::try_from(budget.poll_interval.as_nanos())
             .map_err(|_| HostSupervisionError::InvalidBudget)?;
+        #[cfg(feature = "private-measurement-domain")]
+        let poll = preparation_limits.map_or(poll, |(_, original_poll)| poll.min(original_poll));
         let mut bytes = [0; 80];
-        bytes[..8].copy_from_slice(b"CRUCSTP1");
-        bytes[8..12].copy_from_slice(&2_u32.to_be_bytes());
-        bytes[12..16].copy_from_slice(&128_u32.to_be_bytes());
+        bytes[..8].copy_from_slice(&magic);
+        bytes[8..12].copy_from_slice(&schema.to_be_bytes());
+        bytes[12..16].copy_from_slice(&record_size.to_be_bytes());
         bytes[16..48].copy_from_slice(&state.cap_id);
         for (offset, value) in [(48, self.id), (56, started), (64, end), (72, poll)] {
             bytes[offset..offset + 8].copy_from_slice(&value.to_be_bytes());

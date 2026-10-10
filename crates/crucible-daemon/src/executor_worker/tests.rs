@@ -202,7 +202,7 @@ fn lifecycle_retains_live_watchdog_owner_and_independent_operation_roster() {
     );
     assert_eq!(default.completion_timeout(), Duration::from_secs(240));
 
-    let configured =
+    let (configured, _park_drain_registration) =
         crate::qemu_campaign_lifecycle::config_for_assignment_host_watchdog(default, &context)
             .expect("policy-keyed lifecycle timeout");
 

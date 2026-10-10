@@ -189,6 +189,13 @@ pub use launch::{
     ROOT_DRIVE_ID, ROOT_OVERLAY_NODE_NAME, qemu_fault_target_hash, validate_aarch64_whitebox_setup,
     validate_pre_spawn_qemu_launch_args, validate_x86_whitebox_hmp_mtree,
 };
+#[cfg(all(
+    target_os = "linux",
+    feature = "private-measurement-domain",
+    any(test, feature = "test-support")
+))]
+#[doc(hidden)]
+pub use linux_attempt_host::ControlledOriginalActorParkFixture;
 #[cfg(target_os = "linux")]
 pub use linux_attempt_host::{
     AdmittedHostConfigurationError, LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory,
@@ -198,10 +205,12 @@ pub use linux_attempt_host::{
 #[doc(hidden)]
 pub use linux_attempt_host::{
     OriginalActorAccountCustody, OriginalActorAccountError, OriginalActorCatalogAccounts,
-    OriginalActorCatalogPurpose, OriginalActorDecodeOwner, OriginalActorServiceLaunchPurpose,
-    OriginalActorServicePolicy, OriginalBoundBackingObservation, OriginalCatalogAuditError,
-    OriginalCatalogPhysicalAudit, OriginalGuestServiceHandle, OriginalGuestServiceOwner,
-    OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster,
+    OriginalActorCatalogPurpose, OriginalActorDecodeOwner, OriginalActorParkCaller,
+    OriginalActorParkCallerLease, OriginalActorParkImportError, OriginalActorParkImports,
+    OriginalActorParkQuiescence, OriginalActorParkQuiescenceError,
+    OriginalActorServiceLaunchPurpose, OriginalActorServicePolicy, OriginalBoundBackingObservation,
+    OriginalCatalogAuditError, OriginalCatalogPhysicalAudit, OriginalGuestServiceHandle,
+    OriginalGuestServiceOwner, OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster,
     OriginalNativeControlRetirement, OriginalNativePhysicalRetirement,
 };
 #[cfg(target_os = "linux")]
@@ -285,6 +294,11 @@ pub(crate) use node_factory::{
 pub(crate) use node_factory::{QemuNodeFactoryRuntime, QemuQmpExactSnapshotControlChannel};
 #[cfg(target_os = "linux")]
 pub use node_set::QemuNodeSetPreparedHotForkSource;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub use node_set::parent_park_drain::{OriginalParkSourceError, OriginalParkSourceReborrowBinding};
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub use qmp::{QmpParentParkDrainReceipt, QmpParentParkDrainState};
+
 pub use node_set::{
     QemuCampaignMarkerBoundaryDiagnostic, QemuHostParallelismEvidence,
     QemuNodeSelectablePendingRequest, QemuNodeSet, QemuNodeTerminalReplacementPlan,
@@ -392,6 +406,8 @@ pub use shutdown::{
 #[cfg(target_os = "linux")]
 pub(crate) use spawn::spawn_prepared_qemu_child_with_fds_in_directory_guarded;
 #[cfg(target_os = "linux")]
+pub use spawn::{QemuProcessStageBinding, QemuProcessStageIdentityError};
+
 pub use spawn::{
     PluginStartupError, QemuChildProcessContract, QemuPreparedRunDirectory, QemuSpawnError,
     QemuSpawnHostResources, QemuSpawnSetupResources, QemuSpawnedChild,

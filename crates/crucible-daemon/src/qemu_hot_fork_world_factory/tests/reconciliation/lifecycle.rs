@@ -45,10 +45,17 @@ fn two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world() {
     let (nodes, source_world) =
         prepared_test_source_world(vec![first, second]).expect("prepared source world");
     assert_eq!(nodes.len(), 2);
-    assert!(source_world.continuation().nodes().iter().any(|boundary| {
-        boundary.service_state() == ProductionVmHotForkNodeServiceState::PermanentlyFailed
-            && boundary.process().is_none()
-    }));
+    assert!(
+        source_world
+            .continuation()
+            .unwrap()
+            .nodes()
+            .iter()
+            .any(|boundary| {
+                boundary.service_state() == ProductionVmHotForkNodeServiceState::PermanentlyFailed
+                    && boundary.process().is_none()
+            })
+    );
 
     let input = execution_input();
     let context = execution_context(&input, 0x79);
@@ -199,6 +206,7 @@ fn powered_off_node_forks_with_the_complete_world_and_releases_on_shutdown() {
         .expect("prepared world with powered-off source");
     let boundary = source_world
         .continuation()
+        .unwrap()
         .nodes()
         .iter()
         .find(|boundary| boundary.node() == &powered_off)
@@ -291,8 +299,13 @@ fn two_factories_keep_independent_live_children_from_one_managed_source() {
     let input = execution_input();
     let source_key = QemuHotForkSourceWorldKey::new(
         input.lineage().id().expect("lineage id"),
-        source_world.continuation().configuration().def.id(),
-        source_world.continuation().configuration().id(),
+        source_world
+            .continuation()
+            .unwrap()
+            .configuration()
+            .def
+            .id(),
+        source_world.continuation().unwrap().configuration().id(),
         ExecutorCompatibilityProfile::from_lineage(input.lineage()),
     );
     let usage = source_world
@@ -441,13 +454,18 @@ fn proven_first_child_rejection_restores_the_exact_source_world_for_retry() {
     let source_process = source.process_id();
     let (_nodes, source_world) =
         prepared_test_source_world(vec![source]).expect("prepared source world");
-    let checkout_nodes = source_world.continuation().nodes().to_vec();
+    let checkout_nodes = source_world.continuation().unwrap().nodes().to_vec();
     let input = execution_input();
     let observations = ScriptedWorldObservations::new();
     let source_key = QemuHotForkSourceWorldKey::new(
         input.lineage().id().expect("lineage id"),
-        source_world.continuation().configuration().def.id(),
-        source_world.continuation().configuration().id(),
+        source_world
+            .continuation()
+            .unwrap()
+            .configuration()
+            .def
+            .id(),
+        source_world.continuation().unwrap().configuration().id(),
         ExecutorCompatibilityProfile::from_lineage(input.lineage()),
     );
     let finish_count_at_restore = Arc::new(AtomicUsize::new(usize::MAX));
@@ -484,6 +502,7 @@ fn proven_first_child_rejection_restores_the_exact_source_world_for_retry() {
             .as_ref()
             .expect("restored source world")
             .continuation()
+            .unwrap()
             .nodes(),
         checkout_nodes
     );
@@ -836,4 +855,58 @@ fn world_fork_preflight_failure_restores_source_world() {
         .as_ref()
         .and_then(Weak::upgrade);
     assert!(guard.is_none());
+}
+
+#[test]
+fn same_provider_key_with_foreign_source_identity_refuses_without_taking_source() {
+    let _metadata_scope = component_metadata_scope();
+    let node =
+        scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("scripted source");
+    let (_, source) = prepared_test_source_world(vec![node]).expect("prepared source");
+    let input = execution_input();
+    let identity =
+        QemuHotForkSourceWorldCheckoutIdentity::capture(&source).expect("source identity");
+    let profile = ExecutorCompatibilityProfile::from_lineage(input.lineage());
+    let lineage = input.lineage().id().expect("lineage identity");
+    let foreign = ContentHash::from_bytes(b"foreign source identity");
+    assert_ne!(foreign, identity.scenario);
+    assert_ne!(foreign, identity.configuration);
+
+    let wrong_scenario =
+        QemuHotForkSourceWorldKey::new(lineage, foreign, identity.configuration, profile.clone());
+    let mut provider = QemuSingleHotForkSourceWorldProvider::new(wrong_scenario.clone(), source);
+    assert!(
+        provider
+            .checkout(&wrong_scenario)
+            .expect("checkout")
+            .is_none()
+    );
+    assert!(provider.available());
+    assert!(provider.checked_out.is_none());
+    assert!(identity.matches(provider.source.as_ref().expect("retained source")));
+
+    let wrong_configuration =
+        QemuHotForkSourceWorldKey::new(lineage, identity.scenario, foreign, profile.clone());
+    provider.key = wrong_configuration.clone();
+    assert!(
+        provider
+            .checkout(&wrong_configuration)
+            .expect("checkout")
+            .is_none()
+    );
+    assert!(provider.available());
+    assert!(provider.checked_out.is_none());
+    assert!(identity.matches(provider.source.as_ref().expect("retained source")));
+
+    let matching =
+        QemuHotForkSourceWorldKey::new(lineage, identity.scenario, identity.configuration, profile);
+    provider.key = matching.clone();
+    let lease = provider
+        .checkout(&matching)
+        .expect("checkout")
+        .expect("same source");
+    assert!(!provider.available());
+    provider.restore(lease);
+    assert!(provider.available());
+    assert!(identity.matches(provider.source.as_ref().expect("restored source")));
 }

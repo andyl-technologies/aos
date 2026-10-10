@@ -334,6 +334,10 @@ use session_contract::{
 /// Error returned by lifecycle unary API methods.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum LifecycleApiError {
+    /// The actual retained parent park phase excludes this lifecycle effect.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[error("parent park owns the source")]
+    ParentParkHeld,
     /// Protocol negotiation failed.
     #[error("lifecycle API RPC ABI negotiation failed: {source}")]
     RpcAbi {

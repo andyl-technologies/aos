@@ -562,6 +562,41 @@ impl QemuNodePendingQuantum {
 
 /// QMP machine-control channel for snapshot and quit commands.
 pub(crate) trait QemuQmpMachineControlChannel: Send {
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_stopped_generation(
+        &mut self,
+        _actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        _family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<u64, crate::QmpError> {
+        Err(crate::QmpError::InvalidBound {
+            operation: "paired park channel unavailable",
+        })
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_command(
+        &mut self,
+        _request: crate::qmp::parent_park_drain::ParentParkDrainRequest<'_>,
+        _actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        _family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::parent_park_drain::QmpParentParkDrainReceipt, crate::QmpError> {
+        Err(crate::QmpError::InvalidBound {
+            operation: "paired park channel unavailable",
+        })
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_import(
+        &mut self,
+        _imports: &crate::OriginalActorParkImports,
+        _actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        _family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), crate::QmpError> {
+        Err(crate::QmpError::InvalidBound {
+            operation: "paired park channel unavailable",
+        })
+    }
+
     #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
     fn reset_selectable_under_original(
         &mut self,

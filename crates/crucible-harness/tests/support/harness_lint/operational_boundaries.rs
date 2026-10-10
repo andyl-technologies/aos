@@ -47,6 +47,8 @@ const SUPERVISION_EXPORTS: &[&str] = &[
     "complete",
     "HostOperationGuard",
     "OriginalCaptureSupervisionError",
+    // This typed derivation refusal retains causes, not a raw clock or issuer.
+    "OriginalQuiescenceStartError",
     "original_capture_service_owner",
     "begin_original_capture_supervisor",
     "begin_original_cleanup_control",

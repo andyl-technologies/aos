@@ -155,6 +155,10 @@ pub struct QemuNodeSetPreparedHotForkSource<'a> {
     prepared: &'a QemuNodeSetPreparedHotForkTemplate,
 }
 
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+#[path = "node_set/parent_park_drain.rs"]
+pub(crate) mod parent_park_drain;
+
 #[cfg(target_os = "linux")]
 impl QemuNodeSetPreparedHotForkSource<'_> {
     /// Retains fresh independently admitted RAM resources before child creation.

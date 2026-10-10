@@ -638,6 +638,7 @@ fn close_source(factory: &mut Factory, service: &RetainedTemplateService) {
 fn second_live_node(world: &ProductionVmHotForkSourceWorld) -> crucible::NodeId {
     world
         .continuation()
+        .unwrap()
         .nodes()
         .iter()
         .filter(|node| node.process().is_some())
@@ -651,6 +652,7 @@ fn source_pid(world: &ProductionVmHotForkSourceWorld) -> u32 {
     let second = second_live_node(world);
     world
         .continuation()
+        .unwrap()
         .nodes()
         .iter()
         .find(|node| node.node() == &second)

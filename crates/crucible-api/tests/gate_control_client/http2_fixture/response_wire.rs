@@ -93,6 +93,13 @@ pub(crate) fn encode_get_reproduction_response(response: &GetReproductionRespons
 
 pub(crate) fn lifecycle_error_response(error: LifecycleApiError) -> axum::response::Response {
     match error {
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        LifecycleApiError::ParentParkHeld => typed_rpc_status_response(
+            axum::http::StatusCode::CONFLICT,
+            crucible_api::RpcStatusCode::InvalidState,
+            "parent-park-held",
+            "parent park disposition remains retained",
+        ),
         LifecycleApiError::EpochMismatch {
             session_id,
             expected,

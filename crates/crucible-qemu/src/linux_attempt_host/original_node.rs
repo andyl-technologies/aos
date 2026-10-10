@@ -365,6 +365,45 @@ impl LinuxQemuAttemptHostOwner {
         }
     }
 
+    pub(crate) fn verify_original_park_binding(
+        &self,
+        binding: &OriginalNativeNodeBinding,
+        decoder: &crate::OriginalActorParkCaller,
+        original: &Arc<HostOperationGuard>,
+    ) -> Result<(), crate::OriginalActorAccountError> {
+        if self.terminal {
+            return Err(crate::OriginalActorAccountError::Unavailable);
+        }
+        let attempt = self
+            .original_account
+            .as_ref()
+            .ok_or(crate::OriginalActorAccountError::Unavailable)?;
+        binding.verify_against(attempt, original)?;
+        decoder.verify_original(original)
+    }
+
+    pub(crate) fn enter_original_park_quiescence(
+        &self,
+        binding: &OriginalNativeNodeBinding,
+        decoder: &crate::OriginalActorParkCaller,
+        original: &Arc<HostOperationGuard>,
+    ) -> Result<crate::OriginalActorParkQuiescence, crate::OriginalActorParkQuiescenceError> {
+        use crate::OriginalActorParkQuiescenceError;
+
+        self.verify_original_park_binding(binding, decoder, original)
+            .map_err(|first| OriginalActorParkQuiescenceError::Binding {
+                first,
+                original_after: original.wait_slice().err(),
+            })?;
+        let contract = self.process_contract().map_err(|first| {
+            OriginalActorParkQuiescenceError::Contract {
+                first,
+                original_after: original.wait_slice().err(),
+            }
+        })?;
+        decoder.enter_park_quiescence(original, contract)
+    }
+
     pub(crate) fn bind_readonly_backing_observation<'host, 'owner>(
         &'host self,
         binding: &'host OriginalNativeNodeBinding,

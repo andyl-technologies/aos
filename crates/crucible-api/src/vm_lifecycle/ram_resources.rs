@@ -17,6 +17,12 @@ use crate::host_operational::{
 use crucible_campaign::AttemptResourceLimits;
 use crucible_linux_resource::ram_policy::HostResourceVector;
 
+mod process_family;
+pub use process_family::{
+    HostRamProcessFamilyNativeAllowances, HostRamProcessFamilyPartition,
+    HostRamProcessNativeAllowance,
+};
+
 /// Typed failure while retaining an exact host RAM launch contract.
 #[derive(Debug, thiserror::Error)]
 pub enum HostRamAdmissionError {

@@ -491,6 +491,37 @@ fn factory(
     )
 }
 
+// These existing resource-contract controls have no registered family issuer.
+// Their test-only launcher therefore cannot enter a parent park phase.
+impl QemuAttemptProductionVmLifecycleFactory<FakeResourceFactory> {
+    fn with_guard_only_attempt_launcher<T>(
+        &mut self,
+        context: &AttemptExecutionContext,
+        source: &ScenarioDefForm,
+        maximum_nodes: usize,
+        config: &ProductionVmLifecycleConfig,
+        build: impl FnOnce(
+            QemuAttemptProductionVmNodeLauncher<FakeResourceGuard>,
+        ) -> Result<T, LifecycleApiError>,
+    ) -> Result<T, QemuAttemptProductionVmLifecycleError> {
+        let guard = self.begin_native_world_guard(context, source, config)?;
+
+        let owner = QemuAttemptGenerationResourceOwner::new(guard, maximum_nodes)
+            .map_err(QemuAttemptProductionVmLifecycleError::Lifecycle)?;
+        let mut launcher = QemuAttemptProductionVmNodeLauncher::new(owner);
+        if let Some(checkpoints) = &self.terminal_checkpoints {
+            launcher = launcher.with_terminal_checkpoint_import(
+                Arc::clone(checkpoints),
+                source.try_clone_admitted().map_err(|source| {
+                    QemuAttemptProductionVmLifecycleError::ModelCopy(Box::new(source))
+                })?,
+                context.cancellation().clone(),
+            );
+        }
+        build(launcher).map_err(QemuAttemptProductionVmLifecycleError::Lifecycle)
+    }
+}
+
 #[test]
 fn exact_guard_is_transferred_to_lifecycle_launcher_hooks() {
     let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
@@ -502,7 +533,7 @@ fn exact_guard_is_transferred_to_lifecycle_launcher_hooks() {
     let mut factory = factory(limits, false, Arc::clone(&counters));
 
     factory
-        .with_attempt_launcher(
+        .with_guard_only_attempt_launcher(
             &context,
             &lifecycle_source_def(),
             1,
@@ -767,7 +798,7 @@ fn mismatched_guard_contract_is_released_before_rejection() {
     let mut factory = factory(installed, false, Arc::clone(&counters));
 
     let error = factory
-        .with_attempt_launcher(
+        .with_guard_only_attempt_launcher(
             &context,
             &lifecycle_source_def(),
             1,
@@ -794,7 +825,7 @@ fn mismatched_cancellation_incarnation_is_released_before_rejection() {
     let mut factory = factory(limits, true, Arc::clone(&counters));
 
     let error = factory
-        .with_attempt_launcher(
+        .with_guard_only_attempt_launcher(
             &context,
             &lifecycle_source_def(),
             1,
@@ -821,7 +852,7 @@ fn lifecycle_construction_failure_quarantines_installed_guard() {
     let mut factory = factory(limits, false, Arc::clone(&counters));
 
     let error = factory
-        .with_attempt_launcher(
+        .with_guard_only_attempt_launcher(
             &context,
             &lifecycle_source_def(),
             1,

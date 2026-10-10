@@ -637,6 +637,7 @@ impl AttemptExecutionModel for ResumeModel<'_> {
                 .with_cleanup_observer(service.clone());
             let processes = world
                 .continuation()
+                .unwrap()
                 .nodes()
                 .iter()
                 .filter_map(|node| node.process().map(|process| process.process_id))

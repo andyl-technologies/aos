@@ -64,6 +64,60 @@ pub trait QemuAttemptCancellationSignal: Send + Sync + 'static {
 /// artifact the child can mutate. Normal release is legal only after process
 /// reap; quarantine retains both process and filesystem enforcement.
 pub trait QemuAttemptHostResourceOwner {
+    /// Checks actual Node, host and Preparation custody before publication.
+    ///
+    /// # Errors
+    /// Refuses absent or different original physical custody without effects.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn verify_parent_park_binding(
+        &self,
+        _source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        original: &Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        _decoder: &crucible_qemu::OriginalActorParkCaller,
+    ) -> Result<(), crucible_qemu::OriginalActorParkQuiescenceError> {
+        Err(crucible_qemu::OriginalActorParkQuiescenceError::Binding {
+            first: crucible_qemu::OriginalActorAccountError::Unavailable,
+            original_after: original.wait_slice().err(),
+        })
+    }
+
+    /// Enters the fixed actor phase through the actual containing host owner.
+    ///
+    /// # Errors
+    /// Refuses missing original slot, actor or concrete physical host custody.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn enter_parent_park_quiescence(
+        &self,
+        _source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        original: &Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        _decoder: &crucible_qemu::OriginalActorParkCaller,
+    ) -> Result<
+        crucible_qemu::OriginalActorParkQuiescence,
+        crucible_qemu::OriginalActorParkQuiescenceError,
+    > {
+        Err(crucible_qemu::OriginalActorParkQuiescenceError::Binding {
+            first: crucible_qemu::OriginalActorAccountError::Unavailable,
+            original_after: original.wait_slice().err(),
+        })
+    }
+
+    /// Constructs the fixed pair imports through the actual retained host.
+    ///
+    /// # Errors
+    /// Refuses missing original physical custody or actual import admission.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn prepare_parent_park_imports(
+        &self,
+        _source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        _original: &Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        _decoder: &crucible_qemu::OriginalActorParkCaller,
+        _actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        _family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crucible_qemu::OriginalActorParkImports, crucible_qemu::OriginalActorParkImportError>
+    {
+        Err(crucible_qemu::OriginalActorAccountError::Unavailable.into())
+    }
+
     /// Independent cancellation capability registered with the supervisor.
     type CancellationSignal: QemuAttemptCancellationSignal;
 
@@ -444,6 +498,54 @@ impl QemuAttemptSelectedHostResourceFactory for LinuxQemuAttemptHostResourceFact
 }
 
 impl QemuAttemptHostResourceOwner for LinuxQemuAttemptHostResourceOwner {
+    /// Checks actual Node, host and Preparation custody before publication.
+    ///
+    /// # Errors
+    /// Refuses absent or different original physical custody without effects.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn verify_parent_park_binding(
+        &self,
+        source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        original: &Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        decoder: &crucible_qemu::OriginalActorParkCaller,
+    ) -> Result<(), crucible_qemu::OriginalActorParkQuiescenceError> {
+        source.verify_original_park_binding(&self.host, decoder, original)
+    }
+
+    /// Enters the fixed actor phase through the actual containing host owner.
+    ///
+    /// # Errors
+    /// Refuses missing original slot, actor or concrete physical host custody.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn enter_parent_park_quiescence(
+        &self,
+        source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        original: &Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        decoder: &crucible_qemu::OriginalActorParkCaller,
+    ) -> Result<
+        crucible_qemu::OriginalActorParkQuiescence,
+        crucible_qemu::OriginalActorParkQuiescenceError,
+    > {
+        source.enter_original_park_quiescence(&self.host, decoder, original)
+    }
+
+    /// Constructs the fixed pair imports through the actual retained host.
+    ///
+    /// # Errors
+    /// Refuses missing original physical custody or actual import admission.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn prepare_parent_park_imports(
+        &self,
+        source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        original: &Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        decoder: &crucible_qemu::OriginalActorParkCaller,
+        actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crucible_qemu::OriginalActorParkImports, crucible_qemu::OriginalActorParkImportError>
+    {
+        source.prepare_original_park_imports(&self.host, decoder, original, actor, family)
+    }
+
     type CancellationSignal = LinuxQemuAttemptCancellationSignal;
 
     fn resource_limits(&self) -> AttemptResourceLimits {
@@ -521,6 +623,8 @@ impl QemuHotForkChildProcessOwner for LinuxQemuAttemptHostResourceOwner {
 }
 
 mod generation_resource;
+#[cfg(any(test, all(target_os = "linux", feature = "private-measurement-domain")))]
+pub(crate) use generation_resource::ProcessStageContractRefusal;
 
 pub use generation_resource::*;
 
@@ -769,6 +873,57 @@ impl<H> QemuAttemptProcessResourceGuard for ComposedQemuAttemptResourceGuard<H>
 where
     H: QemuAttemptHostResourceOwner,
 {
+    /// Checks actual Node, host and Preparation custody before publication.
+    ///
+    /// # Errors
+    /// Refuses absent or different original physical custody without effects.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn verify_parent_park_binding(
+        &self,
+        source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        original: &Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        decoder: &crucible_qemu::OriginalActorParkCaller,
+    ) -> Result<(), crucible_qemu::OriginalActorParkQuiescenceError> {
+        self.host
+            .verify_parent_park_binding(source, original, decoder)
+    }
+
+    /// Enters the fixed actor phase through the actual containing host owner.
+    ///
+    /// # Errors
+    /// Refuses missing original slot, actor or concrete physical host custody.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn enter_parent_park_quiescence(
+        &self,
+        source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        original: &Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        decoder: &crucible_qemu::OriginalActorParkCaller,
+    ) -> Result<
+        crucible_qemu::OriginalActorParkQuiescence,
+        crucible_qemu::OriginalActorParkQuiescenceError,
+    > {
+        self.host
+            .enter_parent_park_quiescence(source, original, decoder)
+    }
+
+    /// Constructs the fixed pair imports through the actual retained host.
+    ///
+    /// # Errors
+    /// Refuses missing original physical custody or actual import admission.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn prepare_parent_park_imports(
+        &self,
+        source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        original: &Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        decoder: &crucible_qemu::OriginalActorParkCaller,
+        actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crucible_qemu::OriginalActorParkImports, crucible_qemu::OriginalActorParkImportError>
+    {
+        self.host
+            .prepare_parent_park_imports(source, original, decoder, actor, family)
+    }
+
     #[cfg(feature = "private-measurement-domain")]
     fn retain_original_native_registry(
         &mut self,

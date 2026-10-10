@@ -55,10 +55,9 @@ impl<'a> AdmittedFlightFactory<'a> {
         source: &'a ScenarioDefForm,
         evidence_bytes: u64,
     ) -> Result<Self, Box<dyn Error>> {
-        let lifecycle = Arc::new(config_for_assignment_host_watchdog(
-            config.admitted_lifecycle_config()?,
-            context,
-        )?);
+        let (lifecycle, _park_drain_registration) =
+            config_for_assignment_host_watchdog(config.admitted_lifecycle_config()?, context)?;
+        let lifecycle = Arc::new(lifecycle);
         let host = LinuxQemuAttemptHostResourceFactory::open(config.host.clone())?;
         let catalog = config
             .ram_catalog()

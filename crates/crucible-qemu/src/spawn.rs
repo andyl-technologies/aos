@@ -112,6 +112,9 @@ pub(crate) struct QemuChildFileLimits {
 #[derive(Debug)]
 struct AttemptResourceBinding;
 
+mod process_stage_binding;
+pub use process_stage_binding::{QemuProcessStageBinding, QemuProcessStageIdentityError};
+
 fn invalid_input(operation: &'static str, message: &'static str) -> QemuSpawnError {
     QemuSpawnError::Io {
         operation,

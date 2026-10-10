@@ -41,6 +41,10 @@ mod selectable_reset;
 pub use selectable_reset::QmpSelectableResetComplete;
 #[cfg(feature = "kernel-swap-measurement")]
 mod kernel_swap_residency;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub(crate) mod parent_park_drain;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub use parent_park_drain::{QmpParentParkDrainReceipt, QmpParentParkDrainState};
 mod paused_cpu;
 #[cfg(any(test, all(target_os = "linux", feature = "private-measurement-domain")))]
 pub(crate) mod readonly_backing_stream;
@@ -1456,7 +1460,7 @@ impl QmpDescriptorName {
 }
 
 struct QmpOperationDeadline<'a> {
-    supervision: HostSupervisionDeadline,
+    supervision: Option<HostSupervisionDeadline>,
     timeout: Duration,
     shared: Option<HostOperationGuard>,
     #[cfg(any(
@@ -1466,6 +1470,8 @@ struct QmpOperationDeadline<'a> {
         feature = "private-measurement-domain"
     ))]
     borrowed: Option<&'a HostOperationGuard>,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    paired: Option<&'a HostOperationGuard>,
     _lifetime: std::marker::PhantomData<&'a ()>,
 }
 
@@ -1474,7 +1480,7 @@ impl QmpOperationDeadline<'_> {
         // QMP lifecycle I/O uses host realtime only to bound child liveness; the
         // resulting timestamp is never folded into virtual-time ordering state.
         Self {
-            supervision: HostSupervisionDeadline::start(timeout),
+            supervision: Some(HostSupervisionDeadline::start(timeout)),
             timeout,
             shared: None,
             #[cfg(any(
@@ -1484,11 +1490,20 @@ impl QmpOperationDeadline<'_> {
                 feature = "private-measurement-domain"
             ))]
             borrowed: None,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            paired: None,
             _lifetime: std::marker::PhantomData,
         }
     }
 
     fn remaining(&self, operation: &'static str) -> Result<Duration, QmpError> {
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        if let Some(family) = self.paired {
+            let actor = self.borrowed.ok_or(QmpError::InvalidBound {
+                operation: "parent park/drain original pair",
+            })?;
+            return parent_park_drain::paired_wait_slice(actor, family, operation);
+        }
         #[cfg(any(
             test,
             feature = "test-support",
@@ -1513,7 +1528,11 @@ impl QmpOperationDeadline<'_> {
         }
         // See `new`: this deadline gates a host control-plane wait, not guest
         // ordering or replay-visible state.
-        let Some(remaining) = self.supervision.remaining() else {
+        let supervision = self
+            .supervision
+            .as_ref()
+            .ok_or(QmpError::InvalidBound { operation })?;
+        let Some(remaining) = supervision.remaining() else {
             return Err(QmpError::Timeout {
                 operation,
                 timeout: self.timeout,
@@ -1546,6 +1565,13 @@ impl QmpOperationDeadline<'_> {
     }
 
     fn complete(&self, operation: &'static str) -> Result<(), QmpError> {
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        if let Some(family) = self.paired {
+            let actor = self.borrowed.ok_or(QmpError::InvalidBound {
+                operation: "parent park/drain original pair",
+            })?;
+            return parent_park_drain::complete_pair(actor, family, operation);
+        }
         #[cfg(any(
             test,
             feature = "test-support",
@@ -1804,6 +1830,9 @@ pub enum QmpCommandKind {
     /// Correlated physical reset of an exact stopped selectable request.
     #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
     SelectableReset,
+    /// Retained later-operation parent park/drain ownership.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    ParentParkDrain,
     /// Authenticated terminal lifecycle completion.
     CompleteTerminalLifecycle,
     /// QEMU-owned sealed plugin-resource inventory query.
@@ -1889,6 +1918,8 @@ impl QmpCommandKind {
             Self::Cont => QMP_CONT_COMMAND,
             #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
             Self::SelectableReset => "crucible-selectable-reset-v1",
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            Self::ParentParkDrain => "crucible-parent-park-drain",
             Self::CompleteTerminalLifecycle => QMP_COMPLETE_TERMINAL_LIFECYCLE_COMMAND,
             Self::QueryHotForkPluginResourceInventory => {
                 QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND

@@ -42,6 +42,7 @@ pub(super) fn run(
 ) {
     let owner = world
         .continuation()
+        .unwrap()
         .io_nodes()
         .iter()
         .find(|node| node.kind() == ProductionVmHotForkIoNodeKind::NineP)

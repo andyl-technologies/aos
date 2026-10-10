@@ -139,9 +139,12 @@ pub enum QemuAttemptProductionVmLifecycleError {
 mod ram_registration;
 #[cfg(test)]
 pub(crate) use ram_registration::create_native_qualification_ram_registration_factory;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub(crate) use ram_registration::{ConfiguredStageOperation, StagePrepareError};
 mod resource_admission;
 pub(crate) use ram_registration::{
-    create_host_ram_registration_factory, host_ram_launch_requirements,
+    ConfiguredParkDrainRegistration, create_host_ram_registration_factory,
+    create_host_ram_registration_with_park_owner, host_ram_launch_requirements,
 };
 pub use resource_admission::{
     QemuFreshScenarioResourceError, validate_fresh_qemu_scenario_resources,
@@ -2057,7 +2060,10 @@ enum QemuFreshRunnerResult<P> {
 pub(crate) fn config_for_assignment_host_watchdog(
     config: ProductionVmLifecycleConfig,
     context: &AttemptExecutionContext,
-) -> Result<ProductionVmLifecycleConfig, QemuAttemptProductionVmLifecycleError> {
+) -> Result<
+    (ProductionVmLifecycleConfig, ConfiguredParkDrainRegistration),
+    QemuAttemptProductionVmLifecycleError,
+> {
     if context
         .remaining_host_watchdog()
         .is_some_and(|remaining| remaining.is_zero())
@@ -2067,11 +2073,15 @@ pub(crate) fn config_for_assignment_host_watchdog(
     let supervisor = context
         .host_operation_supervisor()
         .ok_or(QemuAttemptProductionVmLifecycleError::HostWatchdogExpired)?;
-    let registration = create_host_ram_registration_factory(context)
-        .map_err(QemuAttemptProductionVmLifecycleError::HostRamAdmission)?;
-    Ok(config
-        .with_host_operation_supervisor(supervisor.clone())
-        .with_host_ram_registration_factory(registration))
+    let (registration, park_drain_registration) =
+        create_host_ram_registration_with_park_owner(context)
+            .map_err(QemuAttemptProductionVmLifecycleError::HostRamAdmission)?;
+    Ok((
+        config
+            .with_host_operation_supervisor(supervisor.clone())
+            .with_host_ram_registration_factory(registration),
+        park_drain_registration,
+    ))
 }
 
 impl<R> QemuAttemptProductionVmLifecycleFactory<R> {
@@ -2170,11 +2180,21 @@ where
             None,
             &[],
         )?;
-        let config = config_for_assignment_host_watchdog(config, context)?;
+        let (config, park_drain_registration) =
+            config_for_assignment_host_watchdog(config, context)?;
         let decoded = installed.into_decoded();
-        self.with_attempt_launcher(context, source, maximum_nodes, &config, |launcher| {
-            build_production_vm_exact_resume_lifecycle(scenario, source, &config, decoded, launcher)
-        })
+        self.with_attempt_launcher(
+            context,
+            source,
+            maximum_nodes,
+            &config,
+            park_drain_registration,
+            |launcher| {
+                build_production_vm_exact_resume_lifecycle(
+                    scenario, source, &config, decoded, launcher,
+                )
+            },
+        )
     }
 
     /// Authenticates one resume boundary without launching a guest process.
@@ -2261,10 +2281,20 @@ where
             ));
         }
 
-        let config = config_for_assignment_host_watchdog(config, context)?;
-        self.with_attempt_launcher(context, source, maximum_nodes, &config, |launcher| {
-            build_production_vm_lifecycle_loop_with_launcher(scenario, source, &config, launcher)
-        })
+        let (config, park_drain_registration) =
+            config_for_assignment_host_watchdog(config, context)?;
+        self.with_attempt_launcher(
+            context,
+            source,
+            maximum_nodes,
+            &config,
+            park_drain_registration,
+            |launcher| {
+                build_production_vm_lifecycle_loop_with_launcher(
+                    scenario, source, &config, launcher,
+                )
+            },
+        )
     }
 
     fn with_attempt_launcher<T>(
@@ -2273,6 +2303,7 @@ where
         source: &ScenarioDefForm,
         maximum_nodes: usize,
         config: &ProductionVmLifecycleConfig,
+        park_drain_registration: ConfiguredParkDrainRegistration,
         build: impl FnOnce(
             QemuAttemptProductionVmNodeLauncher<R::Guard>,
         ) -> Result<T, LifecycleApiError>,
@@ -2281,7 +2312,8 @@ where
 
         let owner = QemuAttemptGenerationResourceOwner::new(guard, maximum_nodes)
             .map_err(QemuAttemptProductionVmLifecycleError::Lifecycle)?;
-        let mut launcher = QemuAttemptProductionVmNodeLauncher::new(owner);
+        let mut launcher =
+            QemuAttemptProductionVmNodeLauncher::new_registered(owner, park_drain_registration);
         if let Some(checkpoints) = &self.terminal_checkpoints {
             launcher = launcher.with_terminal_checkpoint_import(
                 Arc::clone(checkpoints),

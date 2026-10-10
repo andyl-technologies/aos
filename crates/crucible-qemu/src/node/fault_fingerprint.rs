@@ -17,6 +17,10 @@ impl QemuNode {
             OperationPollBudget::Borrowed(original) => self
                 .host_io_runtime
                 .publish_current_execution_fingerprint_under_original(original),
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            OperationPollBudget::BorrowedPair(actor, family) => self
+                .host_io_runtime
+                .publish_current_execution_fingerprint_under_originals(actor, family),
             OperationPollBudget::Fixture(_) => {
                 #[cfg(any(test, feature = "test-support"))]
                 {

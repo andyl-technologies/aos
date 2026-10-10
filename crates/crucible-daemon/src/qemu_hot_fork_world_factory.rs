@@ -184,18 +184,31 @@ pub(crate) struct QemuHotForkSourceWorldCheckoutIdentity {
 }
 
 impl QemuHotForkSourceWorldCheckoutIdentity {
-    pub(crate) fn capture(source: &ProductionVmHotForkSourceWorld) -> Self {
-        Self {
-            scenario: source.continuation().configuration().def.id(),
-            configuration: source.continuation().configuration().id(),
-            nodes: source.continuation().nodes().to_vec(),
+    pub(crate) fn capture(
+        source: &ProductionVmHotForkSourceWorld,
+    ) -> Result<Self, crucible_api::vm_lifecycle::ProductionVmHotForkContinuationUnavailable> {
+        let continuation = source.continuation()?;
+        Ok(Self {
+            scenario: continuation.configuration().def.id(),
+            configuration: continuation.configuration().id(),
+            nodes: continuation.nodes().to_vec(),
+        })
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn single_node(&self) -> Option<&crucible::NodeId> {
+        match self.nodes.as_slice() {
+            [boundary] => Some(boundary.node()),
+            _ => None,
         }
     }
 
     pub(crate) fn matches(&self, source: &ProductionVmHotForkSourceWorld) -> bool {
-        self.scenario == source.continuation().configuration().def.id()
-            && self.configuration == source.continuation().configuration().id()
-            && self.nodes == source.continuation().nodes()
+        source.continuation().is_ok_and(|continuation| {
+            self.scenario == continuation.configuration().def.id()
+                && self.configuration == continuation.configuration().id()
+                && self.nodes == continuation.nodes()
+        })
     }
 }
 
@@ -240,6 +253,22 @@ pub(crate) trait QemuHotForkSourceWorldProvider:
     ) -> Result<Option<QemuHotForkSourceWorldLease>, Self::Error> {
         let _ = (input, context);
         self.checkout(key)
+    }
+
+    /// Performs the selected actor's fixed park invocation before child aliases.
+    ///
+    /// Ordinary providers have no retained actor caller and perform no park
+    /// operation. This default is not a drain, eligibility or native receipt.
+    /// The genuine packaged provider overrides it using its closed issuer loan.
+    ///
+    /// # Errors
+    /// Preserves typed park refusal with the actual pool-held source custody.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_before_fork(
+        &mut self,
+        _lease: &QemuHotForkSourceWorldLease,
+    ) -> Result<(), crate::managed_qemu_hot_fork_source_world_pool::ManagedParentParkError> {
+        Ok(())
     }
 
     /// Classifies a checkout failure for the attempt supervisor.
@@ -306,17 +335,28 @@ impl QemuHotForkSourceWorldProvider for QemuSingleHotForkSourceWorldProvider {
         &mut self,
         key: &QemuHotForkSourceWorldKey,
     ) -> Result<Option<QemuHotForkSourceWorldLease>, Self::Error> {
-        let compatible = &self.key == key
-            && self.source.as_ref().is_some_and(|source| {
-                source.continuation().configuration().def.id() == key.scenario()
-                    && source.continuation().configuration().id() == key.configuration()
-            });
-        let source = compatible.then(|| self.source.take()).flatten();
-        self.checked_out = source
-            .as_ref()
-            .map(QemuHotForkSourceWorldCheckoutIdentity::capture);
-        Ok(source
-            .map(|source| QemuHotForkSourceWorldLease::exclusive(self.key.template_key(), source)))
+        let identity = self.source.as_ref().and_then(|source| {
+            let continuation = source.continuation().ok()?;
+            if &self.key != key
+                || continuation.configuration().def.id() != key.scenario()
+                || continuation.configuration().id() != key.configuration()
+            {
+                return None;
+            }
+            QemuHotForkSourceWorldCheckoutIdentity::capture(source).ok()
+        });
+        let Some(identity) = identity else {
+            return Ok(None);
+        };
+        let Some(source) = self.source.take() else {
+            return Ok(None);
+        };
+        self.checked_out = Some(identity.clone());
+        Ok(Some(QemuHotForkSourceWorldLease::exclusive(
+            self.key.template_key(),
+            source,
+            identity,
+        )))
     }
 
     fn restore(&mut self, source: QemuHotForkSourceWorldLease) {
@@ -610,6 +650,10 @@ pub(crate) enum QemuProductionHotForkWorldLifecycleFactoryError<P> {
     /// The source provider could not complete exact checkout.
     #[error("check out production hot-fork source world")]
     SourceProvider(#[source] P),
+    /// A selected genuine parent park retains its complete source on refusal.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[error("original managed parent park refused")]
+    ParentPark(#[source] crate::managed_qemu_hot_fork_source_world_pool::ManagedParentParkError),
     /// The attempt could not produce one exact retained-source lookup key.
     #[error("authenticate production hot-fork source-world key")]
     SourceKey(#[source] QemuHotForkSourceWorldKeyError),
@@ -800,6 +844,15 @@ where
         else {
             return Ok(QemuHotForkWorldLifecycleStart::Declined);
         };
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        if let Err(first) = self.sources.parent_park_before_fork(&source_lease) {
+            // No fresh-start fallback, supervisor replacement or source restore
+            // follows a selected refusal. Its pool record keeps the reservation
+            // and any published gate keeps the whole actual source and caller.
+            return Err(AttemptWorkerFailure::Terminal(Self::Error::ParentPark(
+                first,
+            )));
+        }
         let source_world = source_lease.source_owner();
         let mut source = match source_world.lock() {
             Ok(source) => source,
@@ -821,9 +874,10 @@ where
                 error.to_string(),
             )));
         }
-        let source_matches = source.continuation().configuration().def.id()
-            == source_key.scenario()
-            && source.continuation().configuration().id() == source_key.configuration();
+        let source_matches = source.continuation().is_ok_and(|continuation| {
+            continuation.configuration().def.id() == source_key.scenario()
+                && continuation.configuration().id() == source_key.configuration()
+        });
         if !source_matches {
             drop(source);
             drop(source_world);

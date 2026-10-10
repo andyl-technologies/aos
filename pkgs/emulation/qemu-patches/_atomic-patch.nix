@@ -6,26 +6,26 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "d85de74447a6de15ae11db4ed65eb9d3827c50e93ac0acfb93f7a365ca03a195";
-  subject = "Integrate original startup custody and x86 descriptor-table identity";
-  body = "Retain the installing owner's original monotonic deadline and cancellation\nevent through readiness and failed startup custody. Pin the original\nmetadata total and initial generation, and exclude retained owners from\nreset, uninstall, and initial fork effects.\n\nInclude GDTR and IDTR base and limit in version 3 of the x86 identity\nprojection. Register generated startup control slices as an include header\nso Meson preserves their generation dependency without compiling them as\na separate translation unit. Retain all reviewed component assertions.\n\nPreserve the reviewed native source tree in one integration change on the\npristine prerequisite. Workspace-purpose and separately admitted child\nstartup acceptance remain unsupported. This source integration does not\nestablish complete-state projection or configured emulator qualification.";
-  commit = "fcf3a33f36506fd0f8418ccf9d026d9ed1f35ec0";
-  tree = "4bfef8cff136f7f9d3002007569e2b5a93103703";
+  sha256 = "d4712671443b744eb7c6d67374a4990aaa38f5d4899c2cf27239295afd6ee604";
+  subject = "crucible: retain initial source and procfd descendant custody";
+  body = "Retain the initial installer's original deadline, cancellation event and\nmodule custody, with installer-qualified parent park callback registration.\nPreserve descriptor blocking flags on selected plain UNIX monitor sockets\nand inspect their immutable receive configuration. Include the x86\ndescriptor-table identity fields and the matching native fixture coverage.\n\nKeep the procfd fixture's original ten-second execution bound. Retain its\nowned process group under a Linux subreaper and verify actual descendant\nwait statuses within a separate three-second physical cleanup bound.\nPreserve every ordinary case, extracted production body and assertion.\n\nLater original dispatch, receiving namespace admission, workspace-purpose\nclaims and separately admitted child Source acceptance remain unavailable.\nThe callback registration and configuration predicate do not grant them.";
+  commit = "aa2d3d44b90bb166f69117800eb156b0312bfa2f";
+  tree = "3337d2c450f83e3b34dc0eff24905961ccae2a78";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/native-startup-source-projection-final";
+  branchRef = "dplecki/native-procfd-descendant-custody";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "c0a4585433976f023c7d92d0013137acd5c8da495a864793eca4000388a4d8ae";
+  bundleSha256 = "5977183a3584f9b926167c6b8ed9cfe3bfb8236c5c0bcfa67199a65a54e47495";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
-  deterministicPatchDate = "2026-10-10T03:21:01+00:00";
+  deterministicPatchDate = "2026-10-10T13:33:59+00:00";
 
   additionalCapabilities = [
     {

@@ -9,6 +9,8 @@ use super::*;
 /// Uses a live original-start owner when admitted, with a fixture-only fallback.
 pub(crate) enum OperationPollBudget<'a> {
     Borrowed(&'a HostOperationGuard),
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    BorrowedPair(&'a HostOperationGuard, &'a HostOperationGuard),
     Supervised(HostOperationGuard),
     Fixture(HostSupervisionDeadline),
 }
@@ -23,6 +25,36 @@ impl<'a> OperationPollBudget<'a> {
             .wait_slice()
             .map_err(|source| Self::failure(operation, source))?;
         Ok(Self::Borrowed(original))
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn borrow_quiescence_pair(
+        actor: &'a HostOperationGuard,
+        family: &'a HostOperationGuard,
+        operation: &'static str,
+    ) -> Result<Self, QemuAsyncDriverRuntimeError> {
+        let pair = Self::BorrowedPair(actor, family);
+        pair.remaining(operation)?;
+        Ok(pair)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn paired_slice(
+        actor: &HostOperationGuard,
+        family: &HostOperationGuard,
+        operation: &'static str,
+    ) -> Result<Duration, QemuAsyncDriverRuntimeError> {
+        let check = |guard: &HostOperationGuard| {
+            guard.check_original_quiescence_cancellation()?;
+            let slice = guard.wait_slice()?;
+            guard.check_original_quiescence_cancellation()?;
+            Ok(slice)
+        };
+        let actor_slice = check(actor);
+        let family_slice = check(family);
+        actor_slice
+            .and_then(|actor| family_slice.map(|family| actor.min(family)))
+            .map_err(|source| Self::failure(operation, source))
     }
 
     pub(crate) fn begin(
@@ -55,6 +87,10 @@ impl<'a> OperationPollBudget<'a> {
                 .wait_slice()
                 .map(Some)
                 .map_err(|source| Self::failure(operation, source)),
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            Self::BorrowedPair(actor, family) => {
+                Self::paired_slice(actor, family, operation).map(Some)
+            }
             Self::Supervised(guard) => guard
                 .wait_slice()
                 .map(Some)
@@ -71,6 +107,10 @@ impl<'a> OperationPollBudget<'a> {
         match self {
             Self::Borrowed(guard) => guard
                 .wait_for_change()
+                .map_err(|source| Self::failure(operation, source)),
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            Self::BorrowedPair(actor, family) => actor
+                .wait_for_quiescence_change_with(family)
                 .map_err(|source| Self::failure(operation, source)),
             Self::Supervised(guard) => guard
                 .wait_for_change()
@@ -92,6 +132,10 @@ impl<'a> OperationPollBudget<'a> {
             guard
                 .wait_slice()
                 .map_err(|source| Self::failure(operation, source))?;
+        }
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        if let Self::BorrowedPair(actor, family) = self {
+            Self::paired_slice(actor, family, operation)?;
         }
         if let Self::Supervised(guard) = self {
             guard

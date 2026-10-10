@@ -183,3 +183,13 @@ pub use streaming::{
 pub use transport_security::{
     DebugTransportIdentity, MutualTlsServerConfigError, mutual_tls_acceptor_from_pem,
 };
+
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub use vm_lifecycle::{
+    ProductionVmParentParkDrain, ProductionVmParentParkDrainCause,
+    ProductionVmParentParkDrainFailure, ProductionVmParentParkDrainRefusal,
+    ProductionVmParentParkDrainRequest, ProductionVmParentParkStageAdmissionCause,
+    ProductionVmParentParkStageEarlyCause, ProductionVmParentParkStageEnteredCause,
+    ProductionVmParentParkStageFailure, ProductionVmParentParkStageOwnerCause,
+    ProductionVmParentParkStageReborrowCause,
+};

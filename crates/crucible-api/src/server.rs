@@ -1825,6 +1825,13 @@ use response_wire::*;
 
 fn lifecycle_error_response(error: LifecycleApiError) -> Response {
     match error {
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        LifecycleApiError::ParentParkHeld => typed_rpc_status_response(
+            StatusCode::CONFLICT,
+            RpcStatusCode::InvalidState,
+            "parent-park-held",
+            "parent park disposition remains retained",
+        ),
         LifecycleApiError::EpochMismatch {
             session_id,
             expected,

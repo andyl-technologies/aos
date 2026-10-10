@@ -909,6 +909,8 @@ fn check_record(
 
 #[cfg(test)]
 mod tests {
+    mod original_quiescence;
+
     use super::*;
 
     mod capture_controls;

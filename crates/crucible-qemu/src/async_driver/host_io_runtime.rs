@@ -324,6 +324,27 @@ pub trait QemuHostIoRuntime: Send {
         ))
     }
 
+    /// Forces a fresh capture under both retained Quiescence originals.
+    ///
+    /// The live runtime checks both cancellation subscriptions before request
+    /// publication and between effects, then waits for the exact fresh request.
+    /// It admits and completes neither operation. Unsupported runtimes refuse.
+    ///
+    /// # Errors
+    /// Returns either owner's actual refusal or a transport failure. An older
+    /// pending capture is refused before waking the external executor.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn publish_current_execution_fingerprint_under_originals(
+        &mut self,
+        _actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        _family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "publish current execution fingerprint",
+            "runtime has no paired-original capture boundary",
+        ))
+    }
+
     /// Models a fresh capture for an explicit unsupervised test fixture.
     ///
     /// This method grants no live executor authority. Production captures use
@@ -376,6 +397,23 @@ pub trait QemuHostIoRuntime: Send {
         Err(QemuAsyncDriverRuntimeError::new(
             "quiesce for checkpoint",
             "runtime has no original-owned pause boundary",
+        ))
+    }
+
+    /// Parks at the existing exact Pause boundary under both retained owners.
+    ///
+    /// # Errors
+    /// Refuses an unsupported runtime, either original cancellation or expiry,
+    /// or an unavailable exact Pause/control/device-drain boundary.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn quiesce_for_parent_park_under_originals(
+        &mut self,
+        _actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        _family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "quiesce for parent park/drain",
+            "runtime has no paired original-owned Pause boundary",
         ))
     }
 

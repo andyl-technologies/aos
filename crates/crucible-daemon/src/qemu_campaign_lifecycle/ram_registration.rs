@@ -10,8 +10,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crucible_api::vm_lifecycle::{
-    HostRamAdmissionError, HostRamBootstrapLimits, ProductionHostRamLaunchRequirements,
-    ProductionHostRamLaunchShape, ProductionHostRamNativeWorldLimits, ProductionHostRamPartition,
+    HostRamAdmissionError, HostRamBootstrapLimits, HostRamProcessFamilyPartition,
+    ProductionHostRamLaunchRequirements, ProductionHostRamLaunchShape,
+    ProductionHostRamNativeWorldLimits, ProductionHostRamPartition,
     ProductionHostRamRegistrationFactory, partition_host_ram_launch_resources,
 };
 use crucible_campaign::AttemptResourceLimits;
@@ -22,6 +23,12 @@ use crucible_linux_resource::ram_policy::{
 use crucible_qemu::ram_control::RamControlRegistration;
 
 use crate::{AttemptExecutionContext, HostOperationalRegistry};
+
+mod park_drain_registration;
+mod process_family;
+pub(crate) use park_drain_registration::ConfiguredParkDrainRegistration;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub(crate) use process_family::{ConfiguredStageOperation, StagePrepareError};
 
 #[cfg(test)]
 mod native_initial;
@@ -38,11 +45,14 @@ struct PreparedWorld {
         String,
         Arc<dyn crucible_qemu::ram_control::RamControlRegistrar>,
     >,
-    prepared_nodes: std::collections::BTreeSet<String>,
+    families: Vec<process_family::ConfiguredProcessFamily>,
     services: std::collections::BTreeMap<
         String,
         crucible_linux_resource::host_services::HostServiceAllocator,
     >,
+    // The new fixed family array is destroyed before this SAME host-service
+    // lease; its inline supervisors never create another bank or deadline.
+    _family_control_resources: crucible_linux_resource::host_services::HostServiceLease,
 }
 
 struct AdmittedRamRegistrationFactory {
@@ -69,7 +79,30 @@ struct AdmittedRamRegistrationFactory {
 pub(crate) fn create_host_ram_registration_factory(
     context: &AttemptExecutionContext,
 ) -> Result<Arc<dyn ProductionHostRamRegistrationFactory>, HostRamAdmissionError> {
-    create_registration_factory(context, HostRamMode::Managed)
+    let registration = create_registration_factory(context, HostRamMode::Managed)?;
+    Ok(registration)
+}
+
+/// Creates setup's registration and its fixed later-stage issuer together.
+///
+/// Both aliases refer to the same existing factory allocation. The concrete
+/// factory and its private original context remain hidden behind the pair.
+///
+/// # Errors
+/// Refuses an absent, detached, or terminal original operational assignment.
+pub(crate) fn create_host_ram_registration_with_park_owner(
+    context: &AttemptExecutionContext,
+) -> Result<
+    (
+        Arc<dyn ProductionHostRamRegistrationFactory>,
+        ConfiguredParkDrainRegistration,
+    ),
+    HostRamAdmissionError,
+> {
+    let registration = create_registration_factory(context, HostRamMode::Managed)?;
+    let companion =
+        ConfiguredParkDrainRegistration::from_assignment(Arc::clone(&registration), context)?;
+    Ok((registration, companion))
 }
 
 #[cfg(test)]
@@ -82,13 +115,14 @@ pub(crate) fn create_native_qualification_ram_registration_factory(
             "strict child requires genuine native owner",
         ));
     }
-    create_registration_factory(context, mode)
+    let registration = create_registration_factory(context, mode)?;
+    Ok(registration)
 }
 
 fn create_registration_factory(
     context: &AttemptExecutionContext,
     initial_mode: HostRamMode,
-) -> Result<Arc<dyn ProductionHostRamRegistrationFactory>, HostRamAdmissionError> {
+) -> Result<Arc<AdmittedRamRegistrationFactory>, HostRamAdmissionError> {
     let registry = context
         .host_operational_registry()
         .cloned()
@@ -251,16 +285,44 @@ impl ProductionHostRamRegistrationFactory for AdmittedRamRegistrationFactory {
                     HostRamAdmissionError::contract("fault diagnostic metadata size overflow")
                 })?,
         )?;
+        let family_bytes = shapes
+            .len()
+            .checked_mul(std::mem::size_of::<process_family::ConfiguredProcessFamily>())
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    crucible_linux_resource::host_services::HostServiceLease::metadata_bytes(),
+                )
+            })
+            .ok_or_else(|| {
+                HostRamAdmissionError::contract("process family control extent overflow")
+            })?;
+        let family_control_resources =
+            diagnostic_allocator.reserve_resources(0, 0, family_bytes)?;
+        let mut families = Vec::with_capacity(shapes.len());
+        for shape in &shapes {
+            let resources = partition.nodes.get(&shape.node).copied().ok_or_else(|| {
+                HostRamAdmissionError::contract("configured family envelope is missing")
+            })?;
+            // The current backend declares one process. A retained template
+            // does not authorize another full-vector generation; a staged
+            // route must supply its matched floor before this initial issuance.
+            families.push(process_family::ConfiguredProcessFamily::new(
+                HostRamProcessFamilyPartition::single(resources)?,
+                self.supervisor.clone(),
+            ));
+        }
         *world = Some(PreparedWorld {
             _fault_diagnostic_resources: fault_diagnostic_resources,
             registrars: shapes
                 .iter()
                 .map(|shape| (shape.node.clone(), self.initial_registrar()))
                 .collect(),
-            prepared_nodes: std::collections::BTreeSet::new(),
+            families,
             shapes,
             partition,
             services,
+            _family_control_resources: family_control_resources,
         });
         Ok(())
     }
@@ -276,7 +338,12 @@ impl ProductionHostRamRegistrationFactory for AdmittedRamRegistrationFactory {
         let world = world
             .as_mut()
             .ok_or_else(|| HostRamAdmissionError::contract("world is not admitted"))?;
-        if world.prepared_nodes.contains(node) || !world.registrars.contains_key(node) {
+        let index = world.shapes.iter().position(|shape| shape.node == node);
+        if index
+            .and_then(|index| world.families.get(index))
+            .is_none_or(|family| family.is_issued())
+            || !world.registrars.contains_key(node)
+        {
             return Err(HostRamAdmissionError::contract(
                 "node registrar cannot replace a prepared or unknown node",
             ));
@@ -441,7 +508,7 @@ impl ProductionHostRamRegistrationFactory for AdmittedRamRegistrationFactory {
                 "host RAM process generation must be nonzero",
             ));
         }
-        let (resources, spill_quota_bytes, host_services, registrar) = {
+        let (target, resources, spill_quota_bytes, host_services, registrar) = {
             let mut world = self.world.lock().map_err(|_| {
                 HostRamAdmissionError::contract("host RAM world allocation ownership is uncertain")
             })?;
@@ -463,11 +530,45 @@ impl ProductionHostRamRegistrationFactory for AdmittedRamRegistrationFactory {
             let disk = world.partition.backing.get(node).ok_or_else(|| {
                 HostRamAdmissionError::contract("host RAM node has no retained backing partition")
             })?;
+            let arena_generation = NEXT_ARENA_GENERATION
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    current.checked_add(1)
+                })
+                .map_err(|_| {
+                    HostRamAdmissionError::contract("host RAM arena generation exhausted")
+                })?;
+            let target = HostRamTarget {
+                daemon_epoch: self.daemon_epoch,
+                owner_id: self.owner_id,
+                node_id: node_identity(self.owner_id, node),
+                owner_generation: process_generation,
+                arena_generation,
+                retained_template: self.retained_template,
+            };
+            let index = world
+                .shapes
+                .iter()
+                .position(|shape| shape.node == node)
+                .ok_or_else(|| {
+                    HostRamAdmissionError::contract("configured process family is missing")
+                })?;
+            let family = world.families.get_mut(index).ok_or_else(|| {
+                HostRamAdmissionError::contract("configured process family control is missing")
+            })?;
+            let assigned = family.prepare_initial(target)?;
+            family.verify_initial(target, resources)?;
+            if assigned != resources {
+                return Err(HostRamAdmissionError::contract(
+                    "initial process allowance differs from the configured family",
+                ));
+            }
+            // Registrar selection and one-shot publication share this lock.
+            // Replacement cannot slip between the snapshot and its issuer.
             let registrar = world.registrars.get(node).cloned().ok_or_else(|| {
                 HostRamAdmissionError::contract("node operational registrar is missing")
             })?;
-            world.prepared_nodes.insert(node.to_owned());
             (
+                target,
                 resources,
                 disk.spill_bytes,
                 world.services.get(node).cloned().ok_or_else(|| {
@@ -475,19 +576,6 @@ impl ProductionHostRamRegistrationFactory for AdmittedRamRegistrationFactory {
                 })?,
                 registrar,
             )
-        };
-        let arena_generation = NEXT_ARENA_GENERATION
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                current.checked_add(1)
-            })
-            .map_err(|_| HostRamAdmissionError::contract("host RAM arena generation exhausted"))?;
-        let target = HostRamTarget {
-            daemon_epoch: self.daemon_epoch,
-            owner_id: self.owner_id,
-            node_id: node_identity(self.owner_id, node),
-            owner_generation: process_generation,
-            arena_generation,
-            retained_template: self.retained_template,
         };
         let (_, latency) = self
             .supervisor

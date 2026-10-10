@@ -32,12 +32,19 @@ use native_resources::NativeResourceState;
 #[cfg(feature = "private-measurement-domain")]
 pub use native_resources::OriginalNativeControlRetirement;
 pub use native_resources::{LinuxQemuNativeResourceController, LinuxQemuNativeResourceError};
+#[cfg(all(
+    feature = "private-measurement-domain",
+    any(test, feature = "test-support")
+))]
+pub use original_actor::ControlledOriginalActorParkFixture;
 #[cfg(feature = "private-measurement-domain")]
 pub use original_actor::{
     OriginalActorAccountCustody, OriginalActorAccountError, OriginalActorCatalogAccounts,
-    OriginalActorCatalogPurpose, OriginalActorDecodeOwner, OriginalActorServiceLaunchPurpose,
-    OriginalActorServicePolicy, OriginalCatalogAuditError, OriginalCatalogPhysicalAudit,
-    OriginalGuestServiceHandle, OriginalGuestServiceOwner,
+    OriginalActorCatalogPurpose, OriginalActorDecodeOwner, OriginalActorParkCaller,
+    OriginalActorParkCallerLease, OriginalActorParkImportError, OriginalActorParkImports,
+    OriginalActorParkQuiescence, OriginalActorParkQuiescenceError,
+    OriginalActorServiceLaunchPurpose, OriginalActorServicePolicy, OriginalCatalogAuditError,
+    OriginalCatalogPhysicalAudit, OriginalGuestServiceHandle, OriginalGuestServiceOwner,
 };
 #[cfg(feature = "private-measurement-domain")]
 pub use original_host::OriginalNativePhysicalRetirement;

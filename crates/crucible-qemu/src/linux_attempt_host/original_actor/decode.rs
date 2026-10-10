@@ -18,6 +18,20 @@ use crucible_ram::ResourceLoan;
 
 use super::OriginalActorAccountError;
 
+#[cfg(any(test, feature = "test-support"))]
+mod park_fixture;
+#[cfg(any(test, feature = "test-support"))]
+pub use park_fixture::ControlledOriginalActorParkFixture;
+
+mod park_caller;
+pub use park_caller::{OriginalActorParkCaller, OriginalActorParkCallerLease};
+
+mod park_quiescence;
+pub use park_quiescence::{
+    OriginalActorParkImportError, OriginalActorParkImports, OriginalActorParkQuiescence,
+    OriginalActorParkQuiescenceError,
+};
+
 struct OriginalDecodeAuthority {
     original: Arc<HostOperationGuard>,
     resident: HostServiceAllocator,
@@ -168,7 +182,21 @@ impl OriginalActorDecodeOwner {
         Ok(())
     }
 
-    pub(super) fn verify_original(
+    /// Verifies the retained Preparation before a parent park world handover.
+    ///
+    /// This no-effect check compares the actual retained original allocation;
+    /// equal classes, times or account values do not substitute for that owner.
+    ///
+    /// # Errors
+    /// Refuses different, consumed or expired original custody.
+    pub fn verify_parent_park_preparation(
+        &self,
+        original: &Arc<HostOperationGuard>,
+    ) -> Result<(), OriginalActorAccountError> {
+        self.verify_original(original)
+    }
+
+    pub(crate) fn verify_original(
         &self,
         original: &Arc<HostOperationGuard>,
     ) -> Result<(), OriginalActorAccountError> {
@@ -379,6 +407,35 @@ mod tests {
             HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
         let guard = Arc::new(supervisor.begin(HostOperationClass::Preparation).unwrap());
         (supervisor, guard)
+    }
+
+    #[test]
+    fn parent_park_preflight_rejects_another_live_preparation_without_allocating() {
+        let (supervisor, original) = preparation();
+        let resident = HostServiceAllocator::new(1, 64, 1 << 20).unwrap();
+        let metadata = HostServiceAllocator::new(1, 64, 1 << 20).unwrap();
+        let owner =
+            OriginalActorDecodeOwner::prepare(&original, &resident, &metadata, 1 << 20).unwrap();
+        let different = Arc::new(supervisor.begin(HostOperationClass::Preparation).unwrap());
+        different.wait_slice().unwrap();
+        original.wait_slice().unwrap();
+
+        let (refusal, counts) =
+            TestAllocationObserver::count(|| owner.verify_parent_park_preparation(&different));
+
+        assert!(matches!(
+            refusal,
+            Err(OriginalActorAccountError::Unavailable)
+        ));
+        assert_eq!(counts.allocations, 0);
+        assert!(
+            owner
+                .verify_parent_park_preparation(&Arc::clone(&original))
+                .is_ok()
+        );
+        assert!(owner.try_close().is_ok());
+        assert!(resident.reserve_resources(1, 64, 1 << 20).is_ok());
+        assert!(metadata.reserve_resources(1, 64, 1 << 20).is_ok());
     }
 
     #[test]

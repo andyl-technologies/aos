@@ -84,6 +84,51 @@ impl QemuLiveHostIoRuntime {
         })
     }
 
+    /// Publishes only the paired capture control, retaining a pending request.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(super) fn publish_paired_fingerprint_control(
+        &mut self,
+        deadline: &OperationPollBudget<'_>,
+        fingerprint_capture_request: u32,
+    ) -> Result<PendingControlBoundary, QemuAsyncDriverRuntimeError> {
+        deadline.remaining("publish paired fingerprint control")?;
+        let fault_command_frontier = self
+            .region
+            .fault_command_write_index(self.vm_slot)
+            .map_err(map_slot_error)?;
+        let generation = self
+            .region
+            .node_slot(self.vm_slot)
+            .map_err(map_slot_error)?
+            .request_control_boundary(fault_command_frontier, Some(fingerprint_capture_request))
+            .map_err(|source| {
+                QemuAsyncDriverRuntimeError::new(
+                    "request plugin control boundary",
+                    source.to_string(),
+                )
+            })?;
+        Ok(PendingControlBoundary {
+            generation,
+            fault_command_frontier,
+            fingerprint_capture_request: Some(fingerprint_capture_request),
+        })
+    }
+
+    /// Rings a paired capture only after rechecking its already-published cut.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(super) fn wake_paired_fingerprint_control(
+        &mut self,
+        deadline: &OperationPollBudget<'_>,
+        request: PendingControlBoundary,
+    ) -> Result<PendingControlBoundary, QemuAsyncDriverRuntimeError> {
+        // Refusal does not retract the published request or pretend that the
+        // plugin consumed it. Its actual phase owner retains that uncertainty.
+        deadline.remaining("wake paired fingerprint control")?;
+        self.write_wake_doorbell()?;
+        deadline.complete("wake paired fingerprint control")?;
+        Ok(request)
+    }
+
     /// Aborts a coordinated pause and wakes both plugin wait mechanisms.
     pub(super) fn abort_checkpoint_pause_with_wake(
         &mut self,

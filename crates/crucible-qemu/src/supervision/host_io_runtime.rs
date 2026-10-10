@@ -1076,6 +1076,26 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         self.capture_execution_fingerprint(&deadline, remaining, request)
     }
 
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn publish_current_execution_fingerprint_under_originals(
+        &mut self,
+        actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let operation = "publish current execution fingerprint";
+        let deadline = OperationPollBudget::borrow_quiescence_pair(actor, family, operation)?;
+        let remaining = deadline.remaining(operation)?.ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::new(operation, "paired original operation has expired")
+        })?;
+        let request = self
+            .region
+            .fingerprint_sample(self.vm_slot)
+            .map_err(map_slot_error)?
+            .request_fresh_capture_v1()
+            .map_err(|source| QemuAsyncDriverRuntimeError::new(operation, source.to_string()))?;
+        self.capture_execution_fingerprint(&deadline, remaining, request)
+    }
+
     /// Requests an exact plugin boundary and hands QEMU's execution path to QMP.
     fn quiesce_for_checkpoint(
         &mut self,
@@ -1100,6 +1120,20 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
             QemuAsyncDriverRuntimeError::new(operation, "original operation has expired")
         })?;
         self.pause_checkpoint_boundary(&deadline, remaining, Some(original))
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn quiesce_for_parent_park_under_originals(
+        &mut self,
+        actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let operation = "quiesce for parent park/drain";
+        let deadline = OperationPollBudget::borrow_quiescence_pair(actor, family, operation)?;
+        let remaining = deadline.remaining(operation)?.ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::new(operation, "original pair has expired")
+        })?;
+        self.pause_checkpoint_boundary(&deadline, remaining, Some(actor))
     }
 
     fn clear_checkpoint_pause_while_stopped(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {

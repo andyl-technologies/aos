@@ -152,6 +152,8 @@ where
     checkpoints: Arc<ExactCheckpointStore>,
     factories: BTreeMap<CampaignLineageId, ProductionQemuHotForkSourceFactory<G>>,
     signals: HotCheckpointHotnessSignals,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    original_park_caller: Option<crate::private_original_capture::OriginalPackagedParkCaller>,
     service_factory: RetainedTemplateServiceFactory,
     services: Arc<std::sync::Mutex<Vec<Arc<RetainedTemplateService>>>>,
 }
@@ -293,6 +295,18 @@ where
                     failure,
                 ),
             ) => self.reconcile_exact_admission_failure(key, checkpoint, failure),
+        }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_before_fork(
+        &mut self,
+        lease: &QemuHotForkSourceWorldLease,
+    ) -> Result<(), crate::managed_qemu_hot_fork_source_world_pool::ManagedParentParkError> {
+        match &self.original_park_caller {
+            Some(caller) => self.provider.park_parent_before_fork(lease, caller),
+            // Ordinary configuration does not select or claim this authority.
+            None => Ok(()),
         }
     }
 
@@ -777,6 +791,8 @@ where
                     checkpoints: Arc::clone(checkpoints),
                     factories: demanded_factories,
                     signals: hot_fork.initial_signals(),
+                    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+                    original_park_caller: retained_service_config.original_park_caller.clone(),
                     service_factory: service_factory.clone(),
                     services: Arc::clone(&services),
                 };

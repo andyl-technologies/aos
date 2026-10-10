@@ -9,7 +9,7 @@ publish = false
 default = []
 destructive-recovery-faults = ["crucible-campaign/destructive-recovery-faults"]
 test-support = ["crucible-api/test-support", "crucible-qemu/test-support"]
-private-measurement-domain = ["crucible-linux-resource/private-measurement-domain", "crucible-qemu/private-measurement-domain"]
+private-measurement-domain = ["crucible-api/private-measurement-domain", "crucible-linux-resource/private-measurement-domain", "crucible-qemu/private-measurement-domain", "dep:crucible-ram"]
 
 [lints]
 workspace = true
@@ -24,6 +24,7 @@ crucible-cas = { workspace = true }
 crucible-linux-resource = { workspace = true }
 crucible-protocol = { path = "../crucible-protocol" }
 crucible-qemu = { path = "../crucible-qemu" }
+crucible-ram = { workspace = true, optional = true }
 crucible-shmem = { path = "../crucible-shmem" }
 crucible-s3-store = { workspace = true }
 crucible-session = { path = "../crucible-session" }

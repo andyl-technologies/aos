@@ -623,8 +623,12 @@ where
     ) -> Result<Option<QemuHotForkSourceWorldLease>, Self::Error> {
         self.checkout_for(DIRECT_SOURCE_WORLD_PROVIDER_ID, key)
             .map(|source| {
-                source.map(|source| {
-                    QemuHotForkSourceWorldLease::exclusive(manager_source_key(key), source)
+                source.map(|(source, identity)| {
+                    QemuHotForkSourceWorldLease::exclusive(
+                        manager_source_key(key),
+                        source,
+                        identity,
+                    )
                 })
             })
     }
@@ -653,8 +657,13 @@ where
         &mut self,
         provider: u64,
         key: &QemuHotForkSourceWorldKey,
-    ) -> Result<Option<ProductionVmHotForkSourceWorld>, ManagedQemuHotForkSourceWorldCheckoutError>
-    {
+    ) -> Result<
+        Option<(
+            ProductionVmHotForkSourceWorld,
+            QemuHotForkSourceWorldCheckoutIdentity,
+        )>,
+        ManagedQemuHotForkSourceWorldCheckoutError,
+    > {
         if self.checked_out.contains_key(&provider) || self.leased_out.contains_key(&provider) {
             return Err(ManagedQemuHotForkSourceWorldCheckoutError::PriorCheckoutPending);
         }
@@ -674,13 +683,17 @@ where
             .manager
             .admit_fork(tick)
             .map_err(ManagedQemuHotForkSourceWorldCheckoutError::ForkRate)?;
+        let Some(retained) = world.source.as_ref() else {
+            return Ok(None);
+        };
+        let identity = QemuHotForkSourceWorldCheckoutIdentity::capture(retained)
+            .map_err(ManagedQemuHotForkSourceWorldCheckoutError::Continuation)?;
         let Some(source) = world.take() else {
             return Ok(None);
         };
-        let identity = QemuHotForkSourceWorldCheckoutIdentity::capture(&source);
         self.checked_out
-            .insert(provider, (template, identity, permit));
-        Ok(Some(source))
+            .insert(provider, (template, identity.clone(), permit));
+        Ok(Some((source, identity)))
     }
 
     pub(super) fn checkout_lease_for(
@@ -743,7 +756,18 @@ where
             .ok_or(ManagedQemuHotForkSourceWorldCheckoutError::SourcePoisoned)?;
         let identity = match source.lock() {
             Ok(mut source) => {
-                let identity = QemuHotForkSourceWorldCheckoutIdentity::capture(&source);
+                let identity = match QemuHotForkSourceWorldCheckoutIdentity::capture(&source) {
+                    Ok(identity) => identity,
+                    Err(error) => {
+                        drop(source);
+                        if let Some(world) = self.worlds.get_mut(&template) {
+                            world.invalidate();
+                        }
+                        return Err(ManagedQemuHotForkSourceWorldCheckoutError::Continuation(
+                            error,
+                        ));
+                    }
+                };
                 let authenticated = identity.matches(&source) && source.fork_continuation().is_ok();
                 if !authenticated {
                     drop(source);
@@ -820,6 +844,15 @@ where
     }
 
     pub(super) fn restore_lease_for(&mut self, provider: u64, lease: QemuHotForkSourceWorldLease) {
+        if self
+            .worlds
+            .get(&lease.template)
+            .is_some_and(ManagedQemuHotForkSourceWorld::parent_park_owned)
+        {
+            // Keep the actual record, permit and reservation. The pool's gate
+            // retains the complete source even if this caller drops its facade.
+            return;
+        }
         let Some(record) = self.leased_out.get(&provider) else {
             let _retained_for_process_lifetime = Box::leak(Box::new(lease.source));
             return;
@@ -896,6 +929,13 @@ where
     }
 
     pub(super) fn abandon_lease_for(&mut self, provider: u64) {
+        if self.leased_out.get(&provider).is_some_and(|record| {
+            self.worlds
+                .get(&record.template)
+                .is_some_and(ManagedQemuHotForkSourceWorld::parent_park_owned)
+        }) {
+            return;
+        }
         let Some(record) = self.leased_out.remove(&provider) else {
             return;
         };

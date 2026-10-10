@@ -283,7 +283,7 @@ pub(super) fn prepared_world_evidence(
     world: &ProductionVmHotForkSourceWorld,
     topology: EquivalenceTopology,
 ) -> PreparedWorldEvidence {
-    let continuation = world.continuation();
+    let continuation = world.continuation().unwrap();
     assert_eq!(continuation.selectable_catalog_count(), 1);
     assert!(continuation.event_log_object_count() > 0);
     match topology {

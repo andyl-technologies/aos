@@ -549,7 +549,13 @@ impl OriginalResidentWorkflowOwner {
                     "retained original executor configuration",
                 ))?;
         let config = artifacts.take_executor_config(service)?;
-        Ok(service.prepare_packaged_executor(issuer, config)?)
+        let decoder =
+            self.decoder
+                .as_ref()
+                .ok_or(MeasurementRuntimeAdmissionError::MissingPurpose(
+                    "retained original workflow decoder for park caller",
+                ))?;
+        Ok(service.prepare_packaged_executor(issuer, config, decoder)?)
     }
 
     /// Advances actual created campaigns before the factory's physical retirement.

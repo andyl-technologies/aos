@@ -209,6 +209,31 @@ impl OriginalPreparation {
         node.capture_readonly_backing_under_original(host, decoder, &self.original, visitor)
     }
 
+    /// Prepays a fixed later phase before handing over the complete source world.
+    ///
+    /// The caller must hold the actual exclusive source-pool world. The returned
+    /// owner retains its NodeSet, pending ledger, boxed launcher and this exact
+    /// Preparation; no independent Node or host owner is extracted.
+    ///
+    /// # Errors
+    /// Refuses an absent world, original liveness, decoder identity or credit.
+    pub fn prepare_parent_park_under_original(
+        &self,
+        source: &mut Option<crucible_api::ProductionVmHotForkSourceWorld>,
+        node: crucible::NodeId,
+        decoder: crucible_qemu::OriginalActorParkCallerLease,
+    ) -> Result<
+        crucible_api::ProductionVmParentParkDrain,
+        crucible_api::ProductionVmParentParkDrainRefusal,
+    > {
+        crucible_api::ProductionVmParentParkDrain::prepare(
+            source,
+            node,
+            Arc::clone(&self.original),
+            decoder,
+        )
+    }
+
     pub(crate) fn boundary(&self) -> Result<(), HostSupervisionError> {
         self.original.wait_slice().map(|_| ())
     }
@@ -487,3 +512,8 @@ impl Drop for OriginalCaptureWatchdog {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub(crate) mod park_caller;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub(crate) use park_caller::OriginalPackagedParkCaller;

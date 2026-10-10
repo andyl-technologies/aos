@@ -269,6 +269,8 @@ impl HostSupervisionBootstrap {
         let preparation = HostOperationGuard {
             supervisor: supervisor.clone(),
             id: 1,
+            #[cfg(feature = "private-measurement-domain")]
+            original_preparation: None,
         };
         // Publication itself allocates the original controls and tree nodes.
         // Private invocation admission rechecks the SAME returned preparation

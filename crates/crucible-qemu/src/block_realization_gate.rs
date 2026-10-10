@@ -139,7 +139,7 @@ fn build_probe_argv(device: &CrucibleShmemBlockDevice, socket_file_name: &str) -
         "-serial".to_owned(),
         "none".to_owned(),
         "-qmp".to_owned(),
-        format!("unix:{socket_file_name},server=on,wait=off"),
+        format!("unix:{socket_file_name},server=on,wait=off,fd-preserve-blocking=on"),
     ];
     device.append_qemu_args(&mut argv);
     argv

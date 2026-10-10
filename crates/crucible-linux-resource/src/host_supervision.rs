@@ -16,7 +16,9 @@ use self::deadline::{OperationDecision, decide_operation, operation_status_from_
 
 mod bootstrap;
 mod deadline;
+mod quiescence;
 mod startup;
+pub use quiescence::OriginalQuiescenceStartError;
 
 pub use bootstrap::HostSupervisionBootstrap;
 
@@ -808,6 +810,8 @@ impl HostOperationSupervisor {
         Ok(HostOperationGuard {
             supervisor: self.clone(),
             id,
+            #[cfg(feature = "private-measurement-domain")]
+            original_preparation: None,
         })
     }
 
@@ -1245,6 +1249,8 @@ impl HostOperationSupervisor {
 pub struct HostOperationGuard {
     supervisor: HostOperationSupervisor,
     id: u64,
+    #[cfg(feature = "private-measurement-domain")]
+    original_preparation: Option<Arc<HostOperationGuard>>,
 }
 
 /// Retains private capture construction and original-boundary refusals separately.
@@ -1400,6 +1406,8 @@ impl HostOperationGuard {
     ///
     /// Returns an error when operational ownership is uncertain.
     pub fn status(&self) -> Result<HostOperationStatus, HostSupervisionError> {
+        #[cfg(feature = "private-measurement-domain")]
+        self.check_original_preparation()?;
         self.supervisor.operation_status(self.id)
     }
 
@@ -1409,6 +1417,8 @@ impl HostOperationGuard {
     ///
     /// Returns typed expiration or cancellation instead of a guest failure.
     pub fn wait_slice(&self) -> Result<Duration, HostSupervisionError> {
+        #[cfg(feature = "private-measurement-domain")]
+        let original_slice = self.check_original_preparation()?;
         let mut state = self.supervisor.lock()?;
         let decision = self.supervisor.evaluate_decision(&mut state, self.id)?;
         decision.require_running(self.id)?;
@@ -1418,6 +1428,8 @@ impl HostOperationGuard {
             .map_or(poll, |deadline| poll.min(deadline.remaining));
         #[cfg(feature = "private-measurement-domain")]
         let slice = self.supervisor.bound_measurement_wait(slice)?;
+        #[cfg(feature = "private-measurement-domain")]
+        let slice = original_slice.map_or(slice, |original| original.min(slice));
         Ok(slice)
     }
 
@@ -1427,6 +1439,8 @@ impl HostOperationGuard {
     ///
     /// Returns typed operational failure when a live allowance expires.
     pub fn wait_for_change(&self) -> Result<(), HostSupervisionError> {
+        #[cfg(feature = "private-measurement-domain")]
+        let original_slice = self.check_original_preparation()?;
         let mut state = self.supervisor.lock()?;
         let decision = self.supervisor.evaluate_decision(&mut state, self.id)?;
         decision.require_running(self.id)?;
@@ -1436,6 +1450,8 @@ impl HostOperationGuard {
             .map_or(poll, |deadline| poll.min(deadline.remaining));
         #[cfg(feature = "private-measurement-domain")]
         let slice = self.supervisor.bound_measurement_wait(slice)?;
+        #[cfg(feature = "private-measurement-domain")]
+        let slice = original_slice.map_or(slice, |original| original.min(slice));
         let waited = self
             .supervisor
             .shared
@@ -1443,6 +1459,8 @@ impl HostOperationGuard {
             .wait_timeout(state, slice)
             .map_err(|_| HostSupervisionError::Unavailable)?;
         drop(waited);
+        #[cfg(feature = "private-measurement-domain")]
+        self.check_original_preparation()?;
         let mut state = self.supervisor.lock()?;
         self.supervisor
             .evaluate_decision(&mut state, self.id)?
@@ -1457,6 +1475,8 @@ impl HostOperationGuard {
     ///
     /// Returns an error for regressing counts or terminal operations.
     pub fn progress(&self, completed_work_units: u64) -> Result<(), HostSupervisionError> {
+        #[cfg(feature = "private-measurement-domain")]
+        self.check_original_preparation()?;
         let mut state = self.supervisor.lock()?;
         let elapsed = self.supervisor.elapsed();
         self.supervisor
@@ -1485,6 +1505,8 @@ impl HostOperationGuard {
     ///
     /// Returns failure when expiration or sticky cancellation wins completion.
     pub fn complete(&self) -> Result<HostOperationStatus, HostSupervisionError> {
+        #[cfg(feature = "private-measurement-domain")]
+        self.check_original_preparation()?;
         let mut state = self.supervisor.lock()?;
         self.supervisor
             .evaluate_decision(&mut state, self.id)?
@@ -1502,7 +1524,11 @@ impl HostOperationGuard {
         // a revocation alias that can affect later work on the same event.
         drop(operation.startup_cancellation.take());
         drop(state);
-        self.status()
+        #[cfg(feature = "private-measurement-domain")]
+        if let Some(original) = &self.original_preparation {
+            original.wait_slice()?;
+        }
+        self.supervisor.operation_status(self.id)
     }
 }
 

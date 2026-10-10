@@ -15,7 +15,14 @@ pub use catalog_accounts::{
 };
 
 mod decode;
-pub use decode::OriginalActorDecodeOwner;
+pub use decode::{
+    OriginalActorDecodeOwner, OriginalActorParkCaller, OriginalActorParkCallerLease,
+    OriginalActorParkImportError, OriginalActorParkImports, OriginalActorParkQuiescence,
+    OriginalActorParkQuiescenceError,
+};
+
+#[cfg(any(test, feature = "test-support"))]
+pub use decode::ControlledOriginalActorParkFixture;
 
 mod service_accounts;
 pub use service_accounts::{OriginalGuestServiceHandle, OriginalGuestServiceOwner};

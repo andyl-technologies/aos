@@ -122,6 +122,60 @@ pub trait QemuAttemptResourceGuard: QemuAttemptOperationalBoundary {
 /// the same pinned physical reservation; neither capability releases cgroup,
 /// quota, watcher or quarantine ownership. Retirement closes their authority.
 pub trait QemuAttemptProcessResourceGuard: QemuAttemptResourceGuard {
+    /// Checks actual Node, host and Preparation custody before publication.
+    ///
+    /// # Errors
+    /// Refuses absent or different original physical custody without effects.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn verify_parent_park_binding(
+        &self,
+        _source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        original: &std::sync::Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        _decoder: &crucible_qemu::OriginalActorParkCaller,
+    ) -> Result<(), crucible_qemu::OriginalActorParkQuiescenceError> {
+        Err(crucible_qemu::OriginalActorParkQuiescenceError::Binding {
+            first: crucible_qemu::OriginalActorAccountError::Unavailable,
+            original_after: original.wait_slice().err(),
+        })
+    }
+
+    /// Enters the fixed actor phase through the actual containing host owner.
+    ///
+    /// # Errors
+    /// Refuses missing original slot, actor or concrete physical host custody.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn enter_parent_park_quiescence(
+        &self,
+        _source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        original: &std::sync::Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        _decoder: &crucible_qemu::OriginalActorParkCaller,
+    ) -> Result<
+        crucible_qemu::OriginalActorParkQuiescence,
+        crucible_qemu::OriginalActorParkQuiescenceError,
+    > {
+        Err(crucible_qemu::OriginalActorParkQuiescenceError::Binding {
+            first: crucible_qemu::OriginalActorAccountError::Unavailable,
+            original_after: original.wait_slice().err(),
+        })
+    }
+
+    /// Constructs the fixed pair imports through the actual retained host.
+    ///
+    /// # Errors
+    /// Refuses missing original physical custody or actual import admission.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn prepare_parent_park_imports(
+        &self,
+        _source: &crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
+        _original: &std::sync::Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+        _decoder: &crucible_qemu::OriginalActorParkCaller,
+        _actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        _family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crucible_qemu::OriginalActorParkImports, crucible_qemu::OriginalActorParkImportError>
+    {
+        Err(crucible_qemu::OriginalActorAccountError::Unavailable.into())
+    }
+
     /// Retains the existing registry through private original control retirement.
     ///
     /// This is a custody binding, not a resource grant or retirement assertion.

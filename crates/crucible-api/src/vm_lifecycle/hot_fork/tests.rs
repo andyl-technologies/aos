@@ -546,12 +546,19 @@ fn permanently_failed_world_prepares_without_source_processes() {
         .unwrap_or_else(|error| panic!("permanently failed world should prepare: {error}"));
 
     assert_eq!(
-        source_world.continuation().nodes().len(),
+        source_world.continuation().unwrap().nodes().len(),
         source.world().vm_nodes().len()
     );
-    assert!(source_world.continuation().nodes().iter().all(|boundary| {
-        boundary.service_state() == ProductionVmHotForkNodeServiceState::PermanentlyFailed
-    }));
+    assert!(
+        source_world
+            .continuation()
+            .unwrap()
+            .nodes()
+            .iter()
+            .all(|boundary| {
+                boundary.service_state() == ProductionVmHotForkNodeServiceState::PermanentlyFailed
+            })
+    );
 
     let recovered = source_world
         .recover()
@@ -574,7 +581,7 @@ fn source_world_forks_independent_process_neutral_continuations() {
         .unwrap_or_else(|error| panic!("process-neutral continuation should fork: {error}"));
     assert!(Arc::ptr_eq(
         &sibling.scheduler,
-        &source_world.continuation().scheduler
+        &source_world.continuation().unwrap().scheduler
     ));
     let node = sibling
         .nodes
@@ -584,6 +591,7 @@ fn source_world_forks_independent_process_neutral_continuations() {
         .clone();
     let original_generation = source_world
         .continuation()
+        .unwrap()
         .node_generations
         .get(&node)
         .copied();
@@ -592,6 +600,7 @@ fn source_world_forks_independent_process_neutral_continuations() {
     assert_eq!(
         source_world
             .continuation()
+            .unwrap()
             .node_generations
             .get(&node)
             .copied(),
@@ -599,7 +608,10 @@ fn source_world_forks_independent_process_neutral_continuations() {
     );
     assert_eq!(
         sibling.fault_checkpoint_identity(),
-        source_world.continuation().fault_checkpoint_identity()
+        source_world
+            .continuation()
+            .unwrap()
+            .fault_checkpoint_identity()
     );
     assert!(source_world.recover().is_ok());
 }
@@ -944,3 +956,6 @@ fn hot_fork_restore_replaces_only_the_durable_run_root() {
     assert!(ninep.is_empty());
     assert!(active_host_io.is_empty());
 }
+
+#[path = "tests/retained_continuation.rs"]
+mod retained_continuation;
