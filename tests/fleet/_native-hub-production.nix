@@ -29,7 +29,7 @@
         license = "MIT";
         maintainers = ["fleet-publisher@example.test"];
       };
-      runtimeDeps = lib.optional (dependency != null) dependency;
+      runtimeDeps = [pkgs.bash] ++ lib.optional (dependency != null) dependency;
       phases = [
         {
           name = "install";
