@@ -215,30 +215,48 @@ fn require_common_mutation_boundaries(
     scope: AppendScope,
 ) -> Result<(), JournalError> {
     controller_source_genesis::require_no_mutation(
-        state, transaction, scope.controller_genesis_transition,
+        state,
+        transaction,
+        scope.controller_genesis_transition,
     )?;
     controller_source_successor_issuance::require_no_mutation(
         state,
         transaction,
-        scope.first_successor.map(|phase| phase.controller_transition_for(transaction))
-            .transpose()?.flatten().or(scope.successor_issuance_transition),
+        scope
+            .first_successor
+            .map(|phase| phase.controller_transition_for(transaction))
+            .transpose()?
+            .flatten()
+            .or(scope.successor_issuance_transition),
     )?;
     source_tree_genesis::require_no_mutation(
         state,
         transaction,
-        scope.first_successor.map_or(scope.source_genesis_transition, |phase| phase.source_genesis_transition()),
+        scope
+            .first_successor
+            .map_or(scope.source_genesis_transition, |phase| {
+                phase.source_genesis_transition()
+            }),
     )?;
     source_project_admission_challenge::require_no_mutation(
-        state, transaction, scope.project_admission_transition,
+        state,
+        transaction,
+        scope.project_admission_transition,
     )?;
     host_settlement_admission_gate::require_no_mutation(
-        state, transaction, scope.allow_host_settlement_admission_append,
+        state,
+        transaction,
+        scope.allow_host_settlement_admission_append,
     )?;
     host_currentness_fence::require_no_mutation(
-        state, transaction, scope.allow_host_currentness_fence_acquisition,
+        state,
+        transaction,
+        scope.allow_host_currentness_fence_acquisition,
     )?;
     host_execution_fence::require_no_mutation(
-        state, transaction, scope.allow_host_fence_acquisition,
+        state,
+        transaction,
+        scope.allow_host_fence_acquisition,
     )?;
     Ok(())
 }
@@ -1456,7 +1474,9 @@ impl Journal {
                 AppendScope {
                     controller_genesis_transition: controller_genesis_transitions
                         .map(|transitions| transitions[index])
-                        .unwrap_or(controller_source_genesis::ControllerSourceGenesisTransition::None),
+                        .unwrap_or(
+                            controller_source_genesis::ControllerSourceGenesisTransition::None,
+                        ),
                     successor_issuance_transition: successor_issuance_transitions
                         .map(|transitions| transitions[index]),
                     source_genesis_transition: genesis_transitions
