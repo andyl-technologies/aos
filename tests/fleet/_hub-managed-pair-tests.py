@@ -147,7 +147,7 @@ class PairTests(unittest.TestCase):
         tools = {name: "/nix/store/selected/" + name for name in (
             "workerSourcePath", "python", "reviewer", "hub", "qualificationDriver",
             "ociNamespaceObserver", "ociAnchor", "node", "runner", "workerd", "miniflare", "wasm", "shim",
-            "runuser")}
+            "setpriv")}
         tools["nativeObserverUser"] = "aos-hub"
         native, worker = object(), object()
         processes = {"native": {"pid": 123}, "worker": {"pid": 456}}
@@ -168,7 +168,7 @@ class PairTests(unittest.TestCase):
 
         self.assertEqual(json.loads(transferred[0][2])["publicOrigin"], "https://aos.fleet.test")
         self.assertEqual(selections[0]["origin"], "https://aos.fleet.test")
-        self.assertIn("runuser -u aos-hub --", commands[0][1])
+        self.assertIn("setpriv --reuid aos-hub --regid aos-hub --init-groups --", commands[0][1])
         self.assertIn("oci-sdk-observe-native --pid 123", commands[0][1])
         self.assertEqual(len(transferred), 3)
 

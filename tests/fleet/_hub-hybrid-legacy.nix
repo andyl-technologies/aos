@@ -37,7 +37,7 @@
       "ociNamespaceObserver": "${managedFixtureModules}/_hub-oci-sdk-namespace.py",
       "ociAnchor": "${managedFixtureModules}/_hub-oci-sdk-anchor.py",
       "ociInstaller": "${managedFixtureModules}/_hub-oci-sdk-install.py",
-      "nativeObserverUser": "aos-hub", "runuser": "${pkgs.util-linux}/sbin/runuser",
+      "nativeObserverUser": "aos-hub", "setpriv": "${pkgs.util-linux}/bin/setpriv",
       "chown": "${pkgs.coreutils}/bin/chown", "systemctl": "${pkgs.systemd}/bin/systemctl",
   }
   proxy_prepared = prepare_proxy_oci(worker, native, proxy_tools, "${workerOptions}/value")
