@@ -1395,13 +1395,21 @@
   # The VM agent has no login HOME. Give each publication an explicit private
   # retry journal so uploads exercise the same durable custody as real users.
   client.succeed("${pkgs.coreutils}/bin/install -d -m 0700 /var/lib/hybrid-client/publication-journals")
-  bootstrap = json.loads(client.succeed(
-      f"{AOS} --json --progress off --color never hub registry publish upload fleet/containers "
-      "--root /tmp/hybrid-bootstrap-surface --hub https://aos.fleet.test "
-      "--direct-upload-journal /var/lib/hybrid-client/publication-journals/bootstrap.sqlite "
-      f"--token {shlex.quote(publisher_token)}",
-      timeout=900,
-  ))["data"]
+  try:
+      bootstrap = json.loads(client.succeed(
+          f"{AOS} --json --progress off --color never hub registry publish upload fleet/containers "
+          "--root /tmp/hybrid-bootstrap-surface --hub https://aos.fleet.test "
+          "--direct-upload-journal /var/lib/hybrid-client/publication-journals/bootstrap.sqlite "
+          f"--token {shlex.quote(publisher_token)}",
+          timeout=900,
+      ))["data"]
+  except Exception:
+      print("hybrid Worker process after bootstrap upload failure:", worker_runtime_status())
+      print("hybrid TLS health status after bootstrap upload failure:", client.execute(
+          f"{CURL} -sS --max-time 10 -o /dev/null -w '%{{http_code}}' "
+          "https://aos.fleet.test/healthz", timeout=15,
+      )[1].decode())
+      raise
   assert bootstrap["state"] == "ready", bootstrap
 
   client.succeed(textwrap.dedent(f"""
