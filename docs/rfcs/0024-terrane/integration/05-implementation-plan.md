@@ -137,8 +137,13 @@ Reviewed candidate `4431b3571c` (tree `d974908398`) includes that correction,
 the bounded collector candidate oracle, genuine retained payload-range
 forwarding, the isolated namespace-attribute fixture, bounded cancellation
 exclusion reacquisition and the genuine procfs body-read fixture. Its native
-library build and required formatter pair pass; fresh test compilation, strict
-all-target Clippy and current-source runtime qualification remain pending.
+library build, fresh all-target test compilation, strict all-target Clippy and
+required formatter pair pass. The archived native inventory contains 1,078
+tests. Independent ref, history and body-read workers qualify the same immutable
+executables without rebuilding; current-source runtime results remain pending.
+An independent cleanup review also replaces a potentially panicking stderr
+diagnostic with a best-effort write on the isolated fixture branch. That
+additional correction remains separately uncompiled and unqualified.
 The preceding frozen `8b70b0edf5` archive supplies 55 independently audited
 exact host diagnostics: 35 pass, 20 fail, none time out or are ignored.
 Those results remain bound to that preceding source. Three cancellation
@@ -146,9 +151,10 @@ cases additionally pass under their original finite limits; a storage failure
 prevents a terminal receipt for the fourth and leaves the next two unrun.
 An isolated registered harness probe verifies three genuine body-read EIOs,
 inode continuity and normal/unwind cleanup; native Rust and owning-gate
-qualification of the new fixture remain pending. The first ordinary 1,024
-entry index population passes in 1,397.98 seconds on its separate frozen
-owning source; the other five populations and the DRV-29 blocker remain.
+qualification of the new fixture remain pending. The ordinary and adversarial
+1,024-entry index populations pass in 1,397.98 and 1,252.25 seconds on their
+separate frozen owning source; the other four populations and the DRV-29
+blocker remain.
 These parallel results accept no additional task or milestone, and T2 remains
 deferred until the complete current T1 gate floor is green.
 
