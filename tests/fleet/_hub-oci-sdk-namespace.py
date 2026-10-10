@@ -253,5 +253,11 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
-        raise SystemExit("local OCI SDK namespace observation refused") from None
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
+        # Locate the failed check without printing exception text or inputs.
+        frame = error.__traceback__
+        while frame.tb_next is not None:
+            frame = frame.tb_next
+        raise SystemExit(
+            f"local OCI SDK namespace observation refused ({type(error).__name__}:{frame.tb_lineno})"
+        ) from None
