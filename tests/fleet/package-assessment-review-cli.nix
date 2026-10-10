@@ -12,7 +12,7 @@
   system = mkSystem [
     ../../systems/server-test.nix
     {
-      environment.systemPackages = [pkgs.aos pkgs.git pkgs.python3 pkgs.nix];
+      environment.systemPackages = [pkgs.aos pkgs.git pkgs.python3 pkgs.nix runner];
     }
   ];
 in {
