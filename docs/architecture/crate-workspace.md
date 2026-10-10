@@ -57,6 +57,13 @@ A shared domain format can remain under its owning project's directory while
 being consumed by another project. Dependencies establish reuse; directory
 placement establishes ownership.
 
+`tools/accache` remains an independent Cargo workspace so the compiler cache can
+build without the application workspace or its dependencies. Its `accache` and
+`accache-frontend` packages already have explicit project ownership. Small Cargo
+workspaces under test fixtures remain isolated for the artifact contracts they
+exercise. These independent workspaces are outside the 77-package application
+inventory.
+
 The [active inventory](crate-inventory.md) lists every package and the implemented
 merge and extraction boundaries. Future packages in open PRs are classified in
 [the unmerged inventory](unmerged-crates.md).
@@ -103,11 +110,11 @@ AOS JSON; exact validation behavior is part of the format contract.
 `aos-deployment-format` owns immutable inventory records and deployment schemas.
 `aos-deployment` evaluates inputs, retains store references, and performs
 activation, accepting inventory data from callers. Registry authoring and release
-coordination are independently consumable without importing package installation
-or a CLI parser. The native registry-authoring crate also owns APR command
-adapters, which use terminal presentation; its signing adapters and local staging
-operations accept domain inputs without a printer. Format libraries remain
-separate from native signing processes.
+coordination do not import package installation. Release coordination accepts
+domain inputs without a CLI parser. The native registry-authoring crate retains
+APR parser and terminal adapters alongside independently callable signing and
+local staging operations that accept domain inputs without a printer. Format
+libraries remain separate from native signing processes.
 
 `aos-linux-project-quota` is shared for its implemented quota capability. Crucible
 storage retains its project scope: its object kinds and persisted identities are

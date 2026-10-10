@@ -87,9 +87,9 @@ descriptor and SQLite promotion require API review; base extractions are already
 | #716 | `dispatch` | `dispatch-sdk` | `crates/dispatch/sdk/dispatch-sdk` |
 | #716 | `dispatch-conformance` | `dispatch-conformance` | `crates/dispatch/testing/dispatch-conformance` |
 
-## Uncommitted local crate observed separately
+## Uncommitted local crate observed at the pinned snapshot
 
-The #713 owning checkout also contains implemented, uncommitted `aos-assessment-http` at
+At the pinned snapshot, the #713 owning checkout contained uncommitted `aos-assessment-http` at
 `crates/aos-assessment-http/Cargo.toml`, separate from its three committed added crates.
 Proposed name/path: `aos-package-assessment-http` under `crates/aos/maintenance/`. It owns
 bounded native HTTPS source effects, explicit physical time and scoped credentials, with
@@ -99,6 +99,31 @@ fingerprints; this observation is not a PR-head member or a build/test claim. Re
 `aos-transfer` bounded transport primitives where exact timeout/streaming/TLS/redirect/proxy
 semantics fit; keep assessment credential custody, installed source profiles and domain policy
 with this adapter. Do not merge responsibilities merely because both implement HTTP.
+
+## Separate late inspection: assessment HTTP now committed
+
+A bounded discovery at `2026-10-10 00:10:22 UTC` found no new owning PRs. The same
+nine owners remain. PR #713 now commits the previously anticipated HTTP adapter
+at `2c6c78b601d1743bd2200496314945aaf383fe3a`, with four assessment packages and
+71 packages overall. The table above and original local fingerprints remain the
+historical `21:52` snapshot; this separate observation does not replace its pins.
+No other owning PR adds or removes a Cargo package relative to that snapshot.
+
+| Current package / manifest | Proposed full name | Proposed directory | Actual consumer |
+|---|---|---|---|
+| `aos-assessment-http` / `crates/aos-assessment-http/Cargo.toml` | `aos-package-assessment-http` | `crates/aos/maintenance/aos-package-assessment-http` | `aos` → `aos-cli` |
+
+The Apache-2.0 native adapter now has `executor`, `credentials` and `remote`
+modules. They bind process-local execution to installed pairing/limits, resolve
+current scoped secret custody and send independently authenticated bounded
+Native-to-Worker work. Source evaluation delegates to the shared coordinator;
+pure policy/parsing remain in assessment/coordinator/sources. Keep the proposed
+HTTP name, direct source-parser dependency and native feature/dependency boundary;
+Worker must not import this reqwest implementation. Reuse matching `aos-transfer`
+mechanics only where exact transport/security semantics fit, preserving separate
+domain admission, custody and evidence authority. The scratch bundle records the
+late head, committed source hashes and new exports. This is source review only,
+with no owning-branch build/test claim or addition to the 77-member base.
 
 ## Additional required future extractions
 
