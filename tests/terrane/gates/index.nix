@@ -89,6 +89,9 @@
   ];
 
   nativeTokioTests = [
+    "guard::history::completion::owner_preparation_tests::repeated_owner_preparation_reuses_only_fixed_canonical_tree_work"
+    "guard::history::completion::owner_preparation_tests::owner_preparation_reuse_preserves_each_occurrence_policy_and_role"
+    "guard::history::completion::owner_preparation_tests::owner_preparation_reuse_never_crosses_inputs_geometry_or_invocations"
     "guard::history::candidate_preparation_tests::identical_candidate_preparation_reuses_only_operation_local_pure_work"
     "guard::history::candidate_preparation_tests::candidate_preparation_reuse_distinguishes_complete_inputs_and_typed_geometry"
     "guard::history::candidate_preparation_tests::candidate_preparation_reuse_rechecks_physical_and_issuer_refusals"
