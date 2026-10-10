@@ -5,26 +5,40 @@
   options,
   ...
 }: let
-  generation = lib.mkOption {
-    type = lib.types.deferred lib.types.str;
-    default = config.aos.abilities.configurationLower.operations.install.effects.image.outputs.image;
-    description = "Mounted configuration generation required before realizing this resource.";
+  generation = config.aos.abilities.configurationLower.operations.install.effects.image.outputs.image;
+  orderedOperations = {
+    configuration = "file";
+    serviceManagement = "realize";
+    network = "configure";
   };
 in {
   imports = [./boot-policy.nix];
+
+  # Extend the invocation modules so ordering stays in the effect graph rather
+  # than adding host-specific arguments to otherwise portable handler inputs.
+  options.aos.abilities = lib.mkOption {
+    type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: let
+      abilityName = name;
+    in {
+      options.operations = lib.mkOption {
+        type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
+          options.effects = lib.mkOption {
+            type = lib.types.attrsOf (lib.types.submodule {
+              config.after =
+                lib.mkIf ((orderedOperations.${abilityName} or null) == name)
+                (lib.mkAfter [generation]);
+            });
+          };
+        }));
+      };
+    }));
+  };
+
   config = lib.mkMerge [
     {
       aos.login.profile.enable = true;
       aos.configurationLower.enable = true;
       aos.security.ebpfLsm.enable = lib.mkDefault true;
-
-      # This typed input reference orders handlers after the overlay mount without
-      # inspecting their effect keys. The lower consumes only literal file inputs.
-      aos.abilities = {
-        configuration.operations.file.input.options.configurationGeneration = generation;
-        serviceManagement.operations.realize.input.options.configurationGeneration = generation;
-        network.operations.configure.input.options.configurationGeneration = generation;
-      };
     }
     (lib.optionalAttrs (options.aos ? abilityCrucible) {
       aos.abilityCrucible.activationOwner = lib.mkIf config.aos.abilityCrucible.enable (lib.mkDefault "manager");

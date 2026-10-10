@@ -934,9 +934,15 @@
         ];
       };
     in
-      import ./_tests.nix {
+      (import ./_tests.nix {
         inherit testing pkgs;
         self = cliSuite;
+      })
+      // {
+        runtime-module-library = callPackage ./_runtime-library-check.nix {
+          package = self;
+          moduleLibrary = lib.packageModuleLibrary;
+        };
       };
 
     meta = {
