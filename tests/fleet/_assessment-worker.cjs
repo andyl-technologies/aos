@@ -112,15 +112,20 @@ async function main() {
     bindings: {
       HUB_RUNTIME_ROLE: 'hub_executor', HUB_DEPLOYMENT_ID: DEPLOYMENT,
       HUB_ASSESSMENT_COORDINATOR_ID: ISSUER, HUB_ASSESSMENT_EXECUTOR_ID: AUDIENCE,
-      HUB_ASSESSMENT_WORK_KEY: KEY,
+      HUB_ASSESSMENT_WORK_KEY: KEY, HUB_ASSESSMENT_SOURCE_TTL_SECONDS: "60",
       HUB_ASSESSMENT_CREDENTIALS: JSON.stringify({
         schema: 'aos.assessment-source-credentials/v1',
-        grants: [{
-          reference: 'github-read-v1', partition: PARTITION, provider: 'github-tags',
-          scope: { kind: 'github-repositories', repositories: ['example/fixture'] },
-          secretBinding: 'ASSESSMENT_GITHUB_V1',
-          expiresAt: timestamp(Math.floor(Date.now() / 1000) + 3600),
-        }],
+        grants: [
+          { reference: 'github-read-v1', partition: PARTITION, provider: 'github-tags',
+            scope: { kind: 'github-repositories', repositories: ['example/fixture'] },
+            secretBinding: 'ASSESSMENT_GITHUB_V1', expiresAt: timestamp(Math.floor(Date.now() / 1000) + 3600) },
+          { reference: 'github-short-v1', partition: PARTITION, provider: 'github-tags',
+            scope: { kind: 'github-repositories', repositories: ['example/fixture'] },
+            secretBinding: 'ASSESSMENT_GITHUB_V1', expiresAt: timestamp(Math.floor(Date.now() / 1000) + 30) },
+          { reference: 'github-expired-v1', partition: PARTITION, provider: 'github-tags',
+            scope: { kind: 'github-repositories', repositories: ['example/fixture'] },
+            secretBinding: 'ASSESSMENT_GITHUB_V1', expiresAt: timestamp(Math.floor(Date.now() / 1000) - 1) },
+        ].sort((left, right) => left.reference.localeCompare(right.reference)),
       }),
       ASSESSMENT_GITHUB_V1: 'fixture-only-upstream-credential',
     },
@@ -150,6 +155,15 @@ async function main() {
     for (const response of await Promise.all(refusals)) assert.equal(response.status, 409);
     assert.equal(physicalCalls, 0);
 
+    // Source authority must cover the whole issued physical deadline. Neither
+    // an expired grant nor a currently live thirty-second grant covers this
+    // sixty-second invocation, and neither may select an anonymous fallback.
+    for (const credentialRef of ['github-short-v1', 'github-expired-v1']) {
+      const refused = { ...plan(), credentialRef };
+      assert.equal((await request(runtime, WORK, refused, 'aos-provider-plan-v1')).status, 409);
+    }
+    assert.equal(physicalCalls, 0);
+
     // All simultaneous and sequential retries use the same physical result.
     const responses = await Promise.all(Array.from({ length: 4 }, () =>
       request(runtime, WORK, first, 'aos-provider-plan-v1')));
@@ -159,6 +173,10 @@ async function main() {
     assert.equal(receipts[0].document.usage.requests, 1);
     assert.equal(receipts[0].document.usage.decompressedBytes, 2);
     assert.equal(receipts[0].document.outcome, 'observed');
+    const observation = receipts[0].document.normalizedObjects
+      .map(projection => projection.object).find(object => object.kind === 'observation');
+    assert.ok(observation, 'admitted provider observation is absent');
+    assert.equal(Date.parse(observation.object.expiresAt) - Date.parse(observation.object.validatedAt), 60_000);
     assert.ok(!Object.hasOwn(receipts[0].document, 'rawBody'));
     const bucket = await runtime.getR2Bucket('ASSESSMENT_EVIDENCE');
     const evidenceKey = `assessment-evidence/v1/${digest(PARTITION)}/${digest('[]')}`;
