@@ -23,7 +23,7 @@ impl StateStore {
             .join("assessments/journal.json")
             .try_exists()?
         {
-            return self.local_committed_assessment_closure();
+            return self.local_cached_assessment_closure();
         }
         let path = self.assessment_directory()?.join("current-data.json");
         let bytes = read_optional::<serde_json::Value>(&path, "assessment closure")?;

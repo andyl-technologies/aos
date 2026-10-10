@@ -147,6 +147,17 @@ no provider calls and do not recover operations. Continuations require the exact
 Immutable inventory, policy, input, closure and result custody is verified;
 missing or inconsistent evidence fails the read instead of appearing clean.
 
+Cached local scans merge evidence from the independently committed profile heads
+for the same inventory and policy. An update scan finishing after a vulnerability
+scan does not discard the latter's source snapshot. The shared merger keeps
+original coverage and expiry, selects the latest admitted source validation, and
+retains the earliest candidate observation. Cache reads make no provider calls,
+do not publish journal changes, and verify every referenced immutable closure
+within a 64 MiB read allowance. Historical inventory evidence contributes only
+first-observation history when its inventory or policy differs. Current input
+dispositions remain authoritative; historical cache statements do not replace
+them.
+
 The first new admission upgrades a v1 journal atomically. It preserves the head
 v1 actually published and the latest desired requests, and seals active legacy
 operations as superseded (or cancelled when already cancelling), preserving

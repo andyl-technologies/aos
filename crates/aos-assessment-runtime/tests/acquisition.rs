@@ -251,6 +251,18 @@ async fn conditional_chain_renews_freshness_without_resetting_retrieval_or_candi
         original.observation.response_digest
     );
     assert_eq!(data.history, history);
+    let refreshed = data.clone();
+    let mut reused = original_upstream_cache(&refreshed, original.clone());
+    aos_assessment_runtime::cache::merge_committed_evidence(&mut reused, refreshed.clone())?;
+    aos_assessment_runtime::cache::merge_committed_evidence(
+        &mut reused,
+        original_upstream_cache(&refreshed, original.clone()),
+    )?;
+    assert_eq!(reused.upstream, refreshed.upstream);
+    assert_eq!(reused.history, history);
+    let mut foreign = refreshed.clone();
+    foreign.policy.upstream_max_age_seconds += 1;
+    assert!(aos_assessment_runtime::cache::merge_committed_evidence(&mut reused, foreign).is_err());
     assert_eq!(binding.validated_at_unix(), port.now.unix_seconds());
     assert_ne!(
         binding.page_observations[0].digest()?,
@@ -309,6 +321,15 @@ async fn conditional_chain_renews_freshness_without_resetting_retrieval_or_candi
             .is_err()
     );
     Ok(())
+}
+
+fn original_upstream_cache(
+    data: &aos_assessment::input::EvaluationData,
+    upstream: aos_assessment::input::UpstreamBinding,
+) -> aos_assessment::input::EvaluationData {
+    let mut original = data.clone();
+    original.upstream = vec![upstream];
+    original
 }
 
 #[tokio::test]

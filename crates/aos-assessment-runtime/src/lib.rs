@@ -18,6 +18,7 @@ pub mod alerts;
 pub mod advisories;
 pub mod acquisition;
 pub mod application;
+pub mod cache;
 pub mod control;
 pub mod credentials;
 pub mod attention;

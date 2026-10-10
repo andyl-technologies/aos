@@ -396,6 +396,7 @@ impl StateStore {
         })
     }
 
+    #[cfg(test)]
     pub(in crate::commands::maintain) fn local_committed_assessment_closure(
         &self,
     ) -> Result<Option<EvaluationData>> {

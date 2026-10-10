@@ -11,6 +11,9 @@ use super::*;
 #[path = "../../../../../../../aos-assessment/tests/common/mod.rs"]
 mod common;
 
+#[path = "cache_tests.rs"]
+mod cache;
+
 fn store() -> Result<(tempfile::TempDir, StateStore)> {
     let root = tempfile::tempdir()?;
     let repository = root

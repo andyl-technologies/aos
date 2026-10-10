@@ -111,9 +111,7 @@ pub async fn run_assessment(
         if cached.inventory.digest()? == data.inventory.digest()?
             && cached.policy.digest()? == data.policy.digest()?
         {
-            data.upstream = cached.upstream;
-            data.advisory_snapshot = cached.advisory_snapshot;
-            data.advisories = cached.advisories;
+            aos_assessment_runtime::cache::merge_committed_evidence(&mut data, cached)?;
         }
     }
     let mut subjects = data

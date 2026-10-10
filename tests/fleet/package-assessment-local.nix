@@ -222,5 +222,41 @@ in {
       assert completed[1]["assessmentDigest"] == update_receipt["assessmentDigest"] and not completed[1]["fresh"], completed
       assert completed[2]["assessmentDigest"] == security_receipt["assessmentDigest"] and completed[2]["fresh"], completed
       assert all(not profile["pending"] for profile in completed), completed
+
+      # Start from an empty namespace so the queued jobs freeze independent
+      # source closures. The highest admitted generation has update evidence
+      # only; a cached vulnerability scan must recover the other profile head.
+      cache_state = "/var/lib/assessment/cache-state"
+      cache_repository = cache_state + "/repositories/" + namespace
+      cache_lock = cache_repository + "/operation-locks/package-assessment.lock"
+      maintainer.succeed("install -d -m 700 " + cache_state + " " + cache_state + "/repositories " + cache_repository + " " + cache_repository + "/operation-locks")
+      maintainer.succeed("install -m 600 /dev/null " + cache_lock)
+      maintainer.succeed("aos-release-fleet-fixture assessment-input 1.2.0 > /var/lib/assessment/cache-security-input.json")
+      maintainer.succeed("jq 'del(.advisorySnapshot) | .advisories = []' /var/lib/assessment/cache-security-input.json > /var/lib/assessment/cache-updates-input.json")
+      cache_security_command = command.replace("/var/lib/assessment/state", cache_state).replace("/var/lib/assessment/input.json", "/var/lib/assessment/cache-security-input.json")
+      cache_updates_command = cache_security_command.replace("--profile vulnerabilities", "--profile updates").replace("cache-security-input.json", "cache-updates-input.json")
+      cache_scans = scans_command.replace("/var/lib/assessment/state", cache_state)
+      maintainer.succeed("systemd-run --unit=assessment-cache-lane-fixture aos-release-fleet-fixture assessment-lane-lock " + cache_lock + " /var/lib/assessment/cache-ready /var/lib/assessment/cache-release")
+      maintainer.wait_until_succeeds("test -f /var/lib/assessment/cache-ready")
+      maintainer.succeed("systemd-run --unit=assessment-cache-security " + unit_environment + " --property=StandardOutput=file:/var/lib/assessment/cache-security.json --property=StandardError=file:/var/lib/assessment/cache-security-error.txt ${pkgs.bash}/bin/bash -c " + shlex.quote(cache_security_command + "--idempotency-key fixture-cache-security"))
+      maintainer.wait_until_succeeds(cache_scans + "list | jq -e '[.data.scans[] | select(.state == \"queued\")] | length == 1'")
+      maintainer.succeed("systemd-run --unit=assessment-cache-updates " + unit_environment + " --property=StandardOutput=file:/var/lib/assessment/cache-updates.json --property=StandardError=file:/var/lib/assessment/cache-updates-error.txt ${pkgs.bash}/bin/bash -c " + shlex.quote(cache_updates_command + "--idempotency-key fixture-cache-updates"))
+      maintainer.wait_until_succeeds(cache_scans + "list | jq -e '[.data.scans[] | select(.state == \"queued\")] | length == 2'")
+      cache_queued = json.loads(maintainer.succeed(cache_scans + "list"))["data"]["scans"]
+      maintainer.succeed("touch /var/lib/assessment/cache-release")
+      for queued in cache_queued:
+          receipt = json.loads(maintainer.succeed(cache_scans + "wait " + queued["scanId"] + " --timeout 60"))["data"]
+          expected = "succeeded" if receipt["request"]["profiles"] == ["vulnerabilities"] else "partial"
+          assert receipt["state"] == expected, receipt
+      cache_global = json.loads(maintainer.succeed("cat " + cache_repository + "/assessments/journal.json"))["head"]
+      cache_input = json.loads(maintainer.succeed("cat " + cache_repository + "/assessments/input-" + cache_global["inputDigest"].removeprefix("sha256:") + ".json"))
+      assert cache_input["profiles"] == ["updates"], cache_input
+      cache_closure = json.loads(maintainer.succeed("cat " + cache_repository + "/assessments/data-" + cache_global["closureDigest"].removeprefix("sha256:") + ".json"))
+      assert "advisorySnapshot" not in cache_closure and cache_closure["advisories"] == [], cache_closure
+      reuse_command = cache_security_command.replace("cache-security-input.json", "cache-updates-input.json").replace("--offline", "--freshness cached")
+      reused = json.loads(maintainer.succeed(reuse_command + "--idempotency-key fixture-cache-reuse --token-env invalid/name --nvd-key-env invalid/name"))
+      assert reused["execution"]["scan"]["usage"]["providerRequests"] == 0, reused
+      reused_findings = reused["data"]["subjectResults"][0]["findings"]
+      assert len(reused_findings) == 1 and "CVE-2026-10001" in reused_findings[0]["advisoryIds"], reused
     '';
 }
