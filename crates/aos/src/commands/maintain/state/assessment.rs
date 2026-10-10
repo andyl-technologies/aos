@@ -4,13 +4,7 @@ use super::*;
 use aos_assessment::input::EvaluationData;
 use aos_assessment::result::PackageAssessmentV1;
 
-#[derive(Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct SourceBudget {
-    day: u64,
-    requests: u32,
-    next_eligible_at: u64,
-}
+mod budget;
 
 impl StateStore {
     pub(in crate::commands::maintain) fn assessment_directory(&self) -> Result<PathBuf> {
@@ -42,63 +36,6 @@ impl StateStore {
         )?;
         atomic_write(&directory, "current-data.json", data)?;
         atomic_write(&directory, "current-result.json", result)
-    }
-
-    pub(in crate::commands::maintain) fn claim_assessment_source(
-        &self,
-        provider: &str,
-        requests: u32,
-        now: u64,
-    ) -> Result<()> {
-        if !(1..=10).contains(&requests)
-            || ![
-                "github-releases",
-                "github-tags",
-                "go-releases",
-                "repology",
-                "osv",
-                "nvd",
-                "cisa-kev",
-            ]
-            .contains(&provider)
-        {
-            bail!("unsupported local assessment source quota request");
-        }
-        // Use the existing shared Repology budget, preserving the legacy CLI's
-        // host-wide limit instead of creating a second allowance for assessments.
-        if provider == "repology" {
-            return self.claim_repology_request(now);
-        }
-        self.with_provider_lock(|| {
-            let key = match provider {
-                "github-releases" | "github-tags" => "github",
-                provider => provider,
-            };
-            let filename = format!("assessment-budget-{key}.json");
-            let mut budget: SourceBudget =
-                read_optional(&self.root.join(&filename), "assessment source budget")?
-                    .unwrap_or_default();
-            let day = now / 86400;
-            if budget.day != day {
-                budget = SourceBudget {
-                    day,
-                    ..Default::default()
-                };
-            }
-            if now < budget.next_eligible_at
-                || budget
-                    .requests
-                    .checked_add(requests)
-                    .is_none_or(|count| count > 1000)
-            {
-                bail!("local assessment source quota is unavailable");
-            }
-            budget.requests += requests;
-            // Anonymous NVD requests are conservatively spaced at six seconds.
-            // A configured key does not enlarge the installed allowance here.
-            budget.next_eligible_at = now + if key == "nvd" { 6 } else { 0 };
-            atomic_write(&self.root, &filename, &budget)
-        })
     }
 
     pub(in crate::commands::maintain) fn retain_assessment_source(

@@ -72,6 +72,23 @@ in {
       second = json.loads(maintainer.succeed(command))
       assert second["data"]["subjectResults"][0]["findings"] == findings, second
 
+      # A cooldown admitted on the prior quota day survives a new online CLI
+      # process. Refused physical acquisition preserves retained evidence and
+      # cannot spend quota or clear the protected host-wide source budget.
+      now = int(maintainer.succeed("date +%s").strip())
+      budget = json.dumps({
+          "day": now // 86400 - 1,
+          "requests": 999,
+          "nextEligibleAt": now + 3600,
+      }, separators=(",", ":"))
+      budget_path = "/var/lib/assessment/state/assessment-budget-osv.json"
+      maintainer.succeed("printf '%s' " + shlex.quote(budget) + " > " + budget_path)
+      maintainer.succeed("chmod 600 " + budget_path)
+      throttled = json.loads(maintainer.succeed(command.replace("--offline ", "")))
+      assert "source-acquisition-incomplete" in throttled["execution"]["diagnostics"], throttled
+      assert maintainer.succeed("cat " + budget_path) == budget
+      assert throttled["data"]["subjectResults"][0]["findings"] == findings, throttled
+
       # An unknown selector and an existing export destination both fail before
       # publishing misleading success or overwriting the retained handoff.
       maintainer.fail(command.replace("fixture/example", "fixture/absent"))

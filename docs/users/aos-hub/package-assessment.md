@@ -155,7 +155,14 @@ quota preserves the later of the retry hint and `x-ratelimit-reset`. HTTP 429
 without a usable hint waits at least sixty seconds. Source-directed delays
 are capped at one day and never shorten existing cooldowns. A retryable
 response stops further source calls in that physical batch. Its exact
-observation and cooldown commit together; replay cannot extend the deadline.
+observation and cooldown commit together; replay cannot extend the deadline. Local shared-profile
+scans use the same outage classification, exponential delays and retry-header
+parser. Their protected host-wide budget atomically retains each consumed
+reservation and exact settlement receipt. GitHub release and tag scans share
+one allowance; shared and legacy Repology calls share the existing quota and
+respect assessment cooldowns. Day rollover resets allowance without erasing
+cooldowns. Expired unfinished attempts become uncertain once, and replay
+cannot execute a second call, refund quota or erase a concurrent cooldown.
 
 Authenticated source routes refer to immutable credential grants. Grants constrain
 provider, partition, source scope, secret binding and expiry. Native

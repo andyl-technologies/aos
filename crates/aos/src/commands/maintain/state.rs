@@ -1136,29 +1136,34 @@ impl StateStore {
     /// Claims one Repology request under the host-wide spacing and daily budget.
     pub(super) fn claim_repology_request(&self, now_unix: u64) -> Result<()> {
         self.with_provider_lock(|| {
-            let path = self.root.join("repology-budget.json");
-            let mut budget: RepologyBudget =
-                read_optional(&path, "Repology request budget")?.unwrap_or_default();
-            let day = now_unix / 86_400;
-            if budget.day != day {
-                budget = RepologyBudget {
-                    day,
-                    ..RepologyBudget::default()
-                };
-            }
-            if now_unix < budget.retry_after_unix {
-                bail!("Repology retry deadline has not elapsed");
-            }
-            if budget.requests >= 1_000 {
-                bail!("Repology daily request budget is exhausted");
-            }
-            if now_unix < budget.last_request_unix.saturating_add(1) {
-                bail!("Repology one-request-per-second lease is unavailable");
-            }
-            budget.requests += 1;
-            budget.last_request_unix = now_unix;
-            atomic_write(&self.root, "repology-budget.json", &budget)
+            self.check_assessment_source_health_unlocked("repology", now_unix)?;
+            self.claim_repology_request_unlocked(now_unix)
         })
+    }
+
+    // Callers hold the provider lock. Separate atomic quota files deliberately
+    // permit conservative loss of allowance after a crash, never a refund.
+    fn claim_repology_request_unlocked(&self, now_unix: u64) -> Result<()> {
+        let path = self.root.join("repology-budget.json");
+        let mut budget: RepologyBudget =
+            read_optional(&path, "Repology request budget")?.unwrap_or_default();
+        let day = now_unix / 86_400;
+        if budget.day != day {
+            budget.day = day;
+            budget.requests = 0;
+        }
+        if now_unix < budget.retry_after_unix {
+            bail!("Repology retry deadline has not elapsed");
+        }
+        if budget.requests >= 1_000 {
+            bail!("Repology daily request budget is exhausted");
+        }
+        if now_unix < budget.last_request_unix.saturating_add(1) {
+            bail!("Repology one-request-per-second lease is unavailable");
+        }
+        budget.requests += 1;
+        budget.last_request_unix = now_unix;
+        atomic_write(&self.root, "repology-budget.json", &budget)
     }
 
     /// Stores exact bounded public provider bytes by their content identity.

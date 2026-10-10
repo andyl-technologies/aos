@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 mod auth;
 mod capabilities;
 mod executor;
+mod health;
 mod page;
 mod projection;
 mod requests;
@@ -24,6 +25,10 @@ mod throttle;
 pub use auth::ProviderWorkAuth;
 pub use capabilities::{CapabilityChallenge, ProviderCapabilitiesV1};
 pub use executor::{SourceResponse, SourceTransport, execute_source};
+pub use health::{
+    MAX_PROVIDER_BACKOFF_SECONDS, PROVIDER_BACKOFF_STEPS, provider_backoff_jitter,
+    provider_backoff_seconds, provider_result_indicates_outage,
+};
 pub use page::{AdvisoryRevisionReference, ProviderPageV1};
 pub use projection::{
     NormalizedObject, ObjectProjection, ProviderUsage, ProviderWorkResultV1, WorkOutcome,

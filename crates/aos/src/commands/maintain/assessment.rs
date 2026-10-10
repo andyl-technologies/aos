@@ -368,11 +368,6 @@ impl AcquisitionPort for LocalPort<'_> {
                 &self.limits,
             )?;
         }
-        self.evidence.store.claim_assessment_source(
-            operation.provider(),
-            requests,
-            now.unix_seconds(),
-        )?;
         let expires = Timestamp::from_unix_seconds(now.unix_seconds() + 60)?;
         let id = Uuid::new_v4().to_string();
         let credential_ref = match operation.provider() {
@@ -422,7 +417,10 @@ impl AcquisitionPort for LocalPort<'_> {
                 ..Default::default()
             },
         };
-        let result = execute_source(
+        self.evidence
+            .store
+            .claim_assessment_source(&plan, &PhysicalClock.now()?)?;
+        let executed = execute_source(
             &self.transport,
             &self.evidence,
             &PhysicalClock,
@@ -430,8 +428,22 @@ impl AcquisitionPort for LocalPort<'_> {
             "aos-local/v1",
             86400,
         )
-        .await?;
-        result.validate_for(&plan, &PhysicalClock.now()?)?;
+        .await;
+        let settled_at = PhysicalClock.now()?;
+        let result = match executed {
+            Ok(result) => {
+                self.evidence
+                    .store
+                    .settle_assessment_source(&plan, Some(&result), &settled_at)?;
+                result
+            }
+            Err(error) => {
+                self.evidence
+                    .store
+                    .settle_assessment_source(&plan, None, &settled_at)?;
+                return Err(error);
+            }
+        };
         let bytes = serde_json::to_vec(&result)?.len() as u64;
         let mut usage = self
             .usage

@@ -5,32 +5,17 @@
 //! response cannot shorten a cooldown imposed by another concurrent attempt.
 
 use anyhow::Result;
-use aos_assessment_runtime::provider::{ProviderWorkResultV1, WorkOutcome};
+pub(super) use aos_assessment_runtime::provider::provider_result_indicates_outage as indicates_outage;
+use aos_assessment_runtime::provider::{
+    provider_backoff_jitter, MAX_PROVIDER_BACKOFF_SECONDS, PROVIDER_BACKOFF_STEPS,
+};
 use aos_assessment_runtime::scan::TaskClaim;
-use aos_contract::Sha256Digest;
 
 use crate::backend::{CheckedStatement, Statement};
 use crate::db::Database;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod retry_tests;
-
-/// Separates upstream outages from invalid questions and incomplete enumeration.
-pub(super) fn indicates_outage(result: &ProviderWorkResultV1) -> bool {
-    matches!(result.outcome, WorkOutcome::Failed | WorkOutcome::Partial)
-        && (result.retry.is_some()
-            || result.diagnostics.iter().any(|code| {
-                code == "source-request-incomplete"
-                    || code == "source-http-429"
-                    || code.strip_prefix("source-http-").is_some_and(|status| {
-                        status.len() == 3
-                            && status.bytes().all(|byte| byte.is_ascii_digit())
-                            && status
-                                .parse::<u16>()
-                                .is_ok_and(|status| (500..=599).contains(&status))
-                    })
-            }))
-}
 
 impl Database {
     /// Records one settled uncertain or retryable outage under its reservation.
@@ -43,21 +28,14 @@ impl Database {
         retry_not_before: Option<&aos_assessment::time::Timestamp>,
     ) -> Result<CheckedStatement> {
         let clock = self.backend.dialect().unix_time_expression();
-        let jitter = u32::from(
-            Sha256Digest::of_canonical("aos.assessment-provider-backoff-jitter/v1", claim)?
-                .as_bytes()[0],
-        ) % 21;
-        // SQL arithmetic uses the locked budget's current failure count, so
-        // concurrent settlements cannot lose increments. The portable CASE
-        // avoids backend-specific exponentiation and never exceeds one hour.
-        let delay = format!(
-            "CASE failure_count
-            WHEN 0 THEN 20 + {jitter} WHEN 1 THEN 40 + {jitter}
-            WHEN 2 THEN 80 + {jitter} WHEN 3 THEN 160 + {jitter}
-            WHEN 4 THEN 320 + {jitter} WHEN 5 THEN 640 + {jitter}
-            WHEN 6 THEN 1280 + {jitter} WHEN 7 THEN 2560 + {jitter}
-            ELSE 3600 END"
-        );
+        let jitter = provider_backoff_jitter(claim)?;
+        // The locked row supplies the count, preventing lost concurrent
+        // increments. Both SQL stores and local custody use the same delays.
+        let mut delay = String::from("CASE failure_count");
+        for (failures, seconds) in PROVIDER_BACKOFF_STEPS.iter().enumerate() {
+            delay.push_str(&format!(" WHEN {failures} THEN {}", seconds + jitter));
+        }
+        delay.push_str(&format!(" ELSE {MAX_PROVIDER_BACKOFF_SECONDS} END"));
         let circuit_delay = format!("CASE WHEN ({delay}) < 300 THEN 300 ELSE ({delay}) END");
         let eligible =
             format!("CASE WHEN ?5 > {clock} + ({delay}) THEN ?5 ELSE {clock} + ({delay}) END");
@@ -128,6 +106,8 @@ mod tests {
     use super::super::{AssessmentProviderWork, AssessmentSourceBudget};
     use super::*;
     use anyhow::Context as _;
+    use aos_assessment_runtime::provider::WorkOutcome;
+    use aos_contract::Sha256Digest;
 
     #[tokio::test]
     async fn question_errors_and_pagination_limits_do_not_open_global_circuits() -> Result<()> {
