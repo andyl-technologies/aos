@@ -23,6 +23,7 @@
       hub-tool = fixture.toolV1;
       nginx = pkgs.nginx;
       aos-hub = pkgs.aos-hub;
+      aos-configuration-provider = pkgs.aos-configuration-provider;
     };
   };
   updateProject = import ./_container-publication-project.nix {
@@ -72,7 +73,11 @@ in {
     consumer = {
       system = fixture.consumerSystem;
       bootMode = "image";
-      imageDiskMiB = 12288;
+      # Cache and import the complete image closure before staging its slot.
+      imageDiskMiB = 32768;
+      # Rollforward overlaps package reconciliation and boot commit. The full
+      # operator image needs room for both without killing either process.
+      memoryMiB = 4096;
       varProvisioning = "repart";
     };
     hub = {
@@ -123,6 +128,7 @@ in {
       TOOL_V2 = "${fixture.toolV2}"
       HELPER_V2 = "${fixture.helperV2}"
       NGINX = "${pkgs.nginx}"
+      CONFIGURATION_PROVIDER = "${pkgs.aos-configuration-provider}"
       AOS_HUB_PACKAGE = "${pkgs.aos-hub}"
       UPGRADE_TOPLEVEL = "${upgradeToplevel}"
       UPGRADE_IMAGE = "${upgradeImage}"
@@ -633,7 +639,11 @@ in {
             --key-id initial
           {APR} publish {AOS_HUB_PACKAGE} --registry production \\
             --key-id initial
+          {APR} publish {CONFIGURATION_PROVIDER} --registry production --key-id initial
           {APR} publish {TOOL_V1} --registry production --key-id initial
+          for dependency in ${lib.concatMapStringsSep " " builtins.toString publicationProject.dependencyPublicationRoots}; do
+            {APR} publish "$dependency" --registry production --key-id initial
+          done
           {APR} release 1.0.0 --registry production \\
             --key-id initial \\
             --channel stable --init-channel --cache-url {REGISTRY} \\
@@ -674,13 +684,15 @@ in {
           hub_command(
               "docs package nginx --registry acme/production",
               token,
-          ) + f" | {JQ} -e '.package.name == \"nginx\"'"
+          ) + f" | {JQ} -e '.schema == \"aos.module.documentation\" "
+          "and any(.packages[]; .name == \"nginx\")'"
       )
       publisher.succeed(
           hub_command(
               "docs package aos-hub --registry acme/production",
               token,
-          ) + f" | {JQ} -e '.package.name == \"aos-hub\"'"
+          ) + f" | {JQ} -e '.schema == \"aos.module.documentation\" "
+          "and any(.packages[]; .name == \"aos-hub\")'"
       )
       publisher.succeed(
           hub_command(
@@ -703,14 +715,15 @@ in {
 
       # Exercise the anonymous, content-bearing browser and stable API aliases
       # served by the same native Hub process. The selected endpoint publishes
-      # a strong ETag that addresses the immutable documentation object.
+      # a strong ETag that addresses the immutable documentation object. Browser
+      # aliases redirect to the selected release and digest before rendering.
       consumer.succeed(
-          f"{CURL} -fsS '{REGISTRY}-/docs?q=&kind=' "
-          "| grep -q 'high-performance HTTP and reverse proxy server'"
+          f"{CURL} -fsSL '{REGISTRY}-/docs?q=nginx&kind=package' "
+          "| grep -q 'href=\"/acme/production/-/docs/nginx/'"
       )
       consumer.succeed(
-          f"{CURL} -fsS {REGISTRY}-/docs/nginx/${pkgs.nginx.version}/x86_64-linux "
-          "| grep -q 'high-performance HTTP and reverse proxy server'"
+          f"{CURL} -fsSL {REGISTRY}-/docs/nginx/${pkgs.nginx.version}/x86_64-linux "
+          "| grep -q 'Scope: <strong>package / nginx</strong>'"
       )
       consumer.succeed(textwrap.dedent(f"""
           set -eu
@@ -768,17 +781,22 @@ in {
             "$HOME/.config/apm/registries.d/production.toml"
           {APM} registry list 2>&1 | grep production >/dev/null
           {APM} update --registry production
+          # The user profile selects its portable configuration backend;
+          # the system profile's backend is not inherited by package modules.
+          {APM} install aos-configuration-provider --registry production --yes
           {APM} install nginx --registry production --yes
       """), timeout=600)
       documentation_commands = (
           ("show installed package documentation",
-           f"{APM} docs show nginx | grep -q 'high-performance HTTP and reverse proxy server'"),
+           f"{APM} docs show nginx | grep -q 'Module documentation: package / nginx'"),
           ("install generated manpage",
            f"man_path=$({APM} docs man nginx --install --print-path); test -s \"$man_path\""),
           ("inspect documentation cache",
-           f"{APM} docs cache status | grep -q nginx"),
+           f"{APM} docs cache status --json | {JQ} -e "
+           "'.retained_documents > 0 and .generated_manpages == 1' >/dev/null"),
           ("export documentation schema",
-           f"{APM} docs schema | {JQ} -e '.title | contains(\"AOS\")' >/dev/null"),
+           f"{APM} docs schema | {JQ} -e "
+           "'.type == \"object\" and .properties.schema.const == \"aos.module.documentation\"' >/dev/null"),
       )
       for documentation_label, documentation_command in documentation_commands:
           status, stdout, stderr = consumer.execute(textwrap.dedent(f"""
@@ -794,15 +812,26 @@ in {
               stdout,
               stderr,
           )
+      package_queries = (
+          ("search package", f"{APM} search hub-tool --registry production", b"hub-tool"),
+          ("search package names", f"{APM} search hub --names-only --registry production", b"hub-tool"),
+          ("show package", f"{APM} show hub-tool --registry production", b"1.0.0"),
+          ("inspect package policy", f"{APM} policy hub-tool", b"1.0.0"),
+      )
+      for query_label, query_command, expected_text in package_queries:
+          status, stdout, stderr = consumer.execute(textwrap.dedent(f"""
+              set -eu
+              export HOME=/tmp/consumer USER=consumer
+              export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
+              {query_command}
+          """), timeout=300)
+          assert status == 0 and expected_text in stdout + stderr, (
+              query_label, status, stdout, stderr,
+          )
       install_status, install_stdout, install_stderr = consumer.execute(textwrap.dedent(f"""
           set -eu
           export HOME=/tmp/consumer USER=consumer
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
-          {APM} search hub-tool --registry production 2>&1 | grep hub-tool >/dev/null
-          {APM} search hub --names-only --registry production 2>&1 | grep hub-tool >/dev/null
-          {APM} show hub-tool --registry production 2>&1 | grep 1.0.0 >/dev/null
-          {APM} info hub-tool --registry production 2>&1 | grep hub-tool >/dev/null
-          {APM} policy hub-tool 2>&1 | grep 1.0.0 >/dev/null
           {APM} install hub-tool --registry production --dry-run
           {APM} install hub-tool --registry production --download-only --yes
           {APM} install hub-tool --registry production --yes 2>&1
@@ -857,21 +886,29 @@ in {
           set -eu
           export HOME=/tmp/consumer USER=consumer
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
-          {APM} docs show nginx | grep -q 'high-performance HTTP and reverse proxy server'
-          {APM} docs serve --listen 127.0.0.1:18080 --once \
+          {APM} docs show nginx >/tmp/apm-offline-nginx-docs.txt
+          grep -q 'Module documentation: package / nginx' /tmp/apm-offline-nginx-docs.txt
+          {APM} docs serve --listen 127.0.0.1:18080 \
             >/tmp/apm-docs-serve.log 2>&1 &
           docs_pid=$!
+          trap 'kill "$docs_pid"; wait "$docs_pid" || true' EXIT
           served=0
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            if {CURL} -fsS http://127.0.0.1:18080/packages/nginx \
-              | grep -q 'high-performance HTTP and reverse proxy server'; then
+            if {CURL} -fsS http://127.0.0.1:18080/ >/tmp/apm-offline-docs-index.html; then
               served=1
               break
             fi
             sleep 1
           done
-          wait "$docs_pid"
           test "$served" = 1
+          document_path=$(sed -n 's|.*href="\\(/documents/[0-9]*\\)">nginx .*|\\1|p' \
+            /tmp/apm-offline-docs-index.html)
+          test -n "$document_path"
+          {CURL} -fsS "http://127.0.0.1:18080$document_path" >/tmp/apm-offline-nginx-docs.html
+          grep -q 'Scope: <strong>package / nginx</strong>' /tmp/apm-offline-nginx-docs.html
+          kill "$docs_pid"
+          wait "$docs_pid" || true
+          trap - EXIT
 
           payload='{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{}}}}'
           printf 'Content-Length: %s\\r\\n\\r\\n%s' "''${{#payload}}" "$payload" \
@@ -990,7 +1027,16 @@ in {
       # Finally publish a locally built AOS toplevel and its authenticated raw
       # OTA image as a sysroot package. Stage it over the Hub, boot it through
       # UEFI, then exercise durable image rollback and roll-forward.
-      publication_system = publisher.succeed(textwrap.dedent(f"""
+      # Check the retained configuration after the package-management scenarios.
+      # Adding the image's baseline again would duplicate list-valued commands.
+      consumer.succeed(textwrap.dedent(f"""
+          set -eu
+          systemctl is-active --quiet aos-upgrade-removed.service
+          test ! -e /etc/aos/upgrade-test/marker.conf
+          ! systemctl is-active --quiet aos-upgrade-test-marker.service
+      """), timeout=600)
+      print("Native image: preparing the signed release", flush=True)
+      publisher.succeed(textwrap.dedent(f"""
           set -eu
           export HOME=/var/lib/aos-fleet-publisher USER=publisher
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:${pkgs.sbsigntools}/bin:${pkgs.binutils}/bin:${pkgs.systemd}/lib/systemd:$PATH
@@ -1008,19 +1054,30 @@ in {
           mkdir -p /var/tmp/aos-publication-system
           set -- {UPGRADE_UKI}/*.efi
           test "$#" -eq 1
-          candidate_uki="$1"
+          test -s "$1"
           {APR} release 3.0.0 --registry production \\
-            --store-path {UPGRADE_TOPLEVEL} --name aos --version test-2 \\
+            --store-path {UPGRADE_TOPLEVEL} --name aos --version 0.2.0 \\
             --sysroot --previous 0.1.0 \\
             --image-payload {UPGRADE_IMAGE} \\
             --image-disk {UPGRADE_IMAGE_DISK} \\
             --image-info {UPGRADE_IMAGE_INFO} --image-format raw \\
-            --image-uki "$candidate_uki" \\
+            --image-contract-schema aos.image.metadata/v1 \\
             --description 'AOS native Hub system upgrade fixture' --license MIT \\
             --maintainer publisher@example.test --key-id initial \\
             --channel stable --count 256 --cache-url {REGISTRY} \\
             --upload-url file:///var/tmp/aos-publication-system
           {APR} verify --registry production
+      """), timeout=1800)
+      # Image preparation can consume most of an API bearer's lifetime.
+      # Mint the upload credential after compression and signature checks.
+      token = refresh_browser_token()
+      print("Native image: uploading the prepared release", flush=True)
+      publication_system = publisher.succeed(textwrap.dedent(f"""
+          set -eu
+          export HOME=/var/lib/aos-fleet-publisher USER=publisher
+          export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
+          export NIX_REMOTE=""
+          export NIX_CONF_DIR="$HOME/.config/nix"
           {AOS} --json hub registry publish upload acme/production \\
             --hub {HUB} --token {shlex.quote(token)} \\
             --root /var/tmp/aos-publication-system
@@ -1029,7 +1086,7 @@ in {
       assert publication_system_data["state"] == "ready", publication_system_data
       publisher.wait_until_succeeds(
           hub_command("registry package show acme/production aos", token)
-          + f" | {JQ} -e '.data | tostring | contains(\"test-2\")'",
+          + f" | {JQ} -e '.data | tostring | contains(\"0.2.0\")'",
           timeout=240,
       )
       consumer.fail(
@@ -1037,28 +1094,33 @@ in {
           ">/tmp/expected-system-store-miss 2>&1"
       )
 
+      print("Native image: downloading and staging the upgrade", flush=True)
       system_status, system_stdout, system_stderr = consumer.execute(textwrap.dedent(f"""
           set -eu
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
           {APM} registry --system add {REGISTRY} --name production \\
             --priority 900 --channel stable --trust-key {shlex.quote(trust)}
           {APM} update --system --registry production
-          {APM} show aos --system --registry production 2>&1 | grep test-2 >/dev/null
-          {APM} list --system --upgradable 2>&1 | grep test-2 >/dev/null
-          {APM} image upgrade --dry-run 2>&1 | grep test-2 >/dev/null
+          {APM} show aos --system --registry production 2>&1 | grep 0.2.0 >/dev/null
+          {APM} list --system --upgradable 2>&1 | grep 0.2.0 >/dev/null
+          {APM} image upgrade --dry-run 2>&1 | grep 0.2.0 >/dev/null
           {APM} image upgrade --yes 2>&1
       """), timeout=1200)
       assert system_status == 0, (system_status, system_stdout, system_stderr)
       system_upgrade = system_stdout + system_stderr
       assert b"Downloading" in system_upgrade, system_upgrade
-      assert b"staged in slot" in system_upgrade, system_upgrade
+      # Verify durable selection below; the CLI no longer prints a slot summary.
       consumer.succeed(textwrap.dedent(f"""
           set -eu
           {NIX_STORE} --check-validity {UPGRADE_TOPLEVEL}
           grep -q 'VERSION_ID=0.1.0' /etc/os-release
-          {JQ} -e '.running == 1 and .default == 2 and .pending == 2' \\
+          {JQ} -e '.running == 1 and .pending == 2' \\
             /var/lib/profiles/image/state.json >/dev/null
       """), timeout=1200)
+      # The retained index owns running/pending state. The actual reboot below
+      # proves the provider selected the candidate, and rollback proves selection
+      # of its predecessor; there is no provider-neutral default field.
+      print("Native image: booting the staged upgrade", flush=True)
       consumer.reboot(timeout=600)
       consumer.wait_until_succeeds(
           "systemctl is-active --quiet aos-image-boot-commit.service",
@@ -1068,13 +1130,15 @@ in {
           "systemctl is-active --quiet multi-user.target",
           timeout=420,
       )
+      # Image transitions rebind the active operator configuration. The new
+      # image's initial marker policy must not replace that retained intent.
       consumer.succeed(textwrap.dedent(f"""
           set -eu
-          grep -q 'VERSION_ID=test-2' /etc/os-release
-          grep -qx 'marker = 1' /etc/aos/upgrade-test/marker.conf
-          systemctl is-active --quiet aos-upgrade-test-marker.service
-          ! systemctl is-active --quiet aos-upgrade-removed.service
-          {JQ} -e '.running == 2 and .default == 2 and .pending == null' \\
+          grep -q 'VERSION_ID=0.2.0' /etc/os-release
+          test ! -e /etc/aos/upgrade-test/marker.conf
+          systemctl is-active --quiet aos-upgrade-removed.service
+          ! systemctl is-active --quiet aos-upgrade-test-marker.service
+          {JQ} -e '.running == 2 and .pending == null' \\
             /var/lib/profiles/image/state.json >/dev/null
           {APM} image rollback --generation 1
       """), timeout=1200)
@@ -1088,7 +1152,7 @@ in {
           grep -q 'VERSION_ID=0.1.0' /etc/os-release
           test ! -e /etc/aos/upgrade-test/marker.conf
           systemctl is-active --quiet aos-upgrade-removed.service
-          {JQ} -e '.running == 1 and .default == 1 and .pending == null' \\
+          {JQ} -e '.running == 1 and .pending == null' \\
             /var/lib/profiles/image/state.json >/dev/null
           {APM} image rollback --generation 2
       """), timeout=1200)
@@ -1099,9 +1163,11 @@ in {
       )
       consumer.succeed(textwrap.dedent(f"""
           set -eu
-          grep -q 'VERSION_ID=test-2' /etc/os-release
-          grep -qx 'marker = 1' /etc/aos/upgrade-test/marker.conf
-          {JQ} -e '.running == 2 and .default == 2 and .pending == null' \\
+          grep -q 'VERSION_ID=0.2.0' /etc/os-release
+          test ! -e /etc/aos/upgrade-test/marker.conf
+          systemctl is-active --quiet aos-upgrade-removed.service
+          ! systemctl is-active --quiet aos-upgrade-test-marker.service
+          {JQ} -e '.running == 2 and .pending == null' \\
             /var/lib/profiles/image/state.json >/dev/null
       """), timeout=1200)
     '';

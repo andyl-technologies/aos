@@ -191,7 +191,7 @@ pub struct OciProjectionReply {
     pub object: StorageObjectIdentity,
     /// Metadata parsed from actual stored bytes after exact SHA/size validation.
     pub projection: OciDocumentProjection,
-    /// Conservative completion time after the read and parser.
+    /// Conservative UTC upper bound after the read and parser.
     pub observed_at: u64,
 }
 
@@ -366,13 +366,20 @@ fn validate_reply_checked(
         Some(now) => original.validate(&original.deployment_id, now)?,
         None => original.validate_observation_shape(&original.deployment_id)?,
     }
+    // The producer reports raw time plus its qualified uncertainty. Its UTC
+    // interval therefore starts two uncertainty widths below this upper bound.
+    // Compare that lower bound with the receiver's UTC upper bound; comparing
+    // two upper bounds rejects valid replies when the producer clock is ahead.
+    let earliest_observed_at = reply
+        .observed_at
+        .saturating_sub(2 * original.clock_uncertainty_seconds);
     ensure!(
         reply.request == *original
             && reply.object.key == original.key
             && reply.object.size == original.descriptor.size
             && crate::surface_write::strong_if_match_etag(&reply.object.etag)? == reply.object.etag
             && original.issued_at <= reply.observed_at
-            && latest_now.is_none_or(|now| reply.observed_at <= now)
+            && latest_now.is_none_or(|now| earliest_observed_at <= now)
             && reply.observed_at < original.expires_at,
         "OCI projection reply differs from its exact original"
     );

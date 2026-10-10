@@ -5,11 +5,14 @@
   containerPublicationInputs,
   databaseUrl,
   fixture,
+  managedFixtureModules,
+  nativeOriginUrl,
   nextPublication,
   parityRouteKeys,
   pkgs,
   processSampler,
   publication,
+  qualificationDriver,
   qualificationKeys,
   releasePublicationKeys,
   releaseReceiptKey,
@@ -17,28 +20,33 @@
   serverCertificate,
   serverPrivateKey,
   storageKey,
+  workerDist,
   workerOptions,
   workerRunner,
 }:
 # python
 ''
-  worker.succeed(textwrap.dedent("""
-      umask 077
-      install -d -m 0700 /var/lib/hybrid-worker
-      cd /var/lib/hybrid-worker
-      # The pinned Miniflare copies NODE_EXTRA_CA_CERTS into workerd's
-      # outbound TLS policy; SSL_CERT_FILE alone does not install that root.
-      NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt \\
-      SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \\
-        MINIFLARE_WORKERD_PATH=${pkgs.workerd-source}/bin/workerd \\
-        ${pkgs.nodejs}/bin/node ${workerRunner}/value \\
-        ${pkgs.miniflare} ${workerOptions}/value \\
-        > /var/lib/hybrid-worker/worker.log 2>&1 < /dev/null &
-      echo $! > /var/lib/hybrid-worker/worker.pid
-  """), timeout=30)
+  proxy_tools = {
+      "python": "${pkgs.python3}/bin/python3", "node": "${pkgs.nodejs}/bin/node",
+      "runner": "${workerRunner}/value", "miniflare": "${pkgs.miniflare}",
+      "workerd": "${pkgs.workerd-source}/bin/workerd", "curl": CURL,
+      "hub": "${pkgs.aos-hub}/bin/aos-hub", "reviewer": "${pkgs.aos-hub}/bin/aos-hub-direct-review",
+      "workerSourcePath": "${workerDist.src}", "workerDistribution": "${workerDist}",
+      "wasm": "${workerDist}/index.wasm", "shim": "${workerDist}/shim.mjs",
+      "nixBin": "${pkgs.nix}/bin", "qualificationDriver": "${qualificationDriver}/value",
+      "ociNamespaceObserver": "${managedFixtureModules}/_hub-oci-sdk-namespace.py",
+      "ociAnchor": "${managedFixtureModules}/_hub-oci-sdk-anchor.py",
+      "ociInstaller": "${managedFixtureModules}/_hub-oci-sdk-install.py",
+      "nativeObserverUser": "aos-hub", "setpriv": "${pkgs.util-linux}/bin/setpriv",
+      "chown": "${pkgs.coreutils}/bin/chown", "systemctl": "${pkgs.systemd}/bin/systemctl",
+  }
+  proxy_prepared = prepare_proxy_oci(worker, native, proxy_tools, "${workerOptions}/value")
+  proxy_worker_process = start_direct_worker(worker, proxy_tools,
+      proxy_prepared["configurationFile"], "worker")
   wait_worker_transport(
       worker, CURL, "${pkgs.python3}/bin/python3", EXTERNAL_DIRECT,
   )
+  proxy_oci_installation = qualify_proxy_oci(native, worker, proxy_tools, proxy_prepared, proxy_worker_process)
 
   def worker_runtime_status():
       return worker.succeed(textwrap.dedent("""
@@ -664,7 +672,7 @@
 
   worker.wait_until_succeeds(
       f"{CURL} -sS -o /dev/null -w '%{{http_code}}' "
-      "https://aos-origin.fleet.test/-/health | "
+      "${nativeOriginUrl}/-/health | "
       f"{GREP} -qx 401",
       timeout=180,
   )
@@ -701,7 +709,7 @@
       ! {GREP} -qi '^x-aos-hybrid-native-ms:' /tmp/hybrid-instance.headers
   """), timeout=120)
   client.succeed(
-      f"test \"$({CURL} -s -o /dev/null -w '%{{http_code}}' https://aos-origin.fleet.test/-/instance)\" = 401"
+      f"test \"$({CURL} -s -o /dev/null -w '%{{http_code}}' ${nativeOriginUrl}/-/instance)\" = 401"
   )
 
   def worker_process_counters():
@@ -1387,13 +1395,21 @@
   # The VM agent has no login HOME. Give each publication an explicit private
   # retry journal so uploads exercise the same durable custody as real users.
   client.succeed("${pkgs.coreutils}/bin/install -d -m 0700 /var/lib/hybrid-client/publication-journals")
-  bootstrap = json.loads(client.succeed(
-      f"{AOS} --json --progress off --color never hub registry publish upload fleet/containers "
-      "--root /tmp/hybrid-bootstrap-surface --hub https://aos.fleet.test "
-      "--direct-upload-journal /var/lib/hybrid-client/publication-journals/bootstrap.sqlite "
-      f"--token {shlex.quote(publisher_token)}",
-      timeout=900,
-  ))["data"]
+  try:
+      bootstrap = json.loads(client.succeed(
+          f"{AOS} --json --progress off --color never hub registry publish upload fleet/containers "
+          "--root /tmp/hybrid-bootstrap-surface --hub https://aos.fleet.test "
+          "--direct-upload-journal /var/lib/hybrid-client/publication-journals/bootstrap.sqlite "
+          f"--token {shlex.quote(publisher_token)}",
+          timeout=900,
+      ))["data"]
+  except Exception:
+      print("hybrid Worker process after bootstrap upload failure:", worker_runtime_status())
+      print("hybrid TLS health status after bootstrap upload failure:", client.execute(
+          f"{CURL} -sS --max-time 10 -o /dev/null -w '%{{http_code}}' "
+          "https://aos.fleet.test/healthz", timeout=15,
+      )[1].decode())
+      raise
   assert bootstrap["state"] == "ready", bootstrap
 
   client.succeed(textwrap.dedent(f"""
@@ -1418,15 +1434,24 @@
       {APR} --json stage show hybrid-container --registry containers \\
         > /var/lib/hybrid-container-registry-stage.json
   """), timeout=900)
-  registry_stage = json.loads(client.succeed("cat /var/lib/hybrid-container-registry-stage.json"))
+  # The agent mirrors stdout to the serial console. Query the asserted fields
+  # instead of sending the full retained stage through that slow transport.
+  registry_stage = json.loads(client.succeed(
+      "${pkgs.jq}/bin/jq -c '{state, registry: .revision.registry, revision: .revision.revision, "
+      "release_id: .revision.release_id, source_branch: .revision.source_branch, "
+      "index_digest: .revision.container.release.oci.index.digest}' "
+      "/var/lib/hybrid-container-registry-stage.json"
+  ))
   assert registry_stage["state"] == "ready", registry_stage
-  assert registry_stage["revision"]["registry"] == "fleet/containers", registry_stage
-  assert registry_stage["revision"]["revision"] == 1, registry_stage
-  assert registry_stage["revision"]["release_id"] == "1.0.0", registry_stage
-  assert registry_stage["revision"]["source_branch"] == "qualification/hybrid-container", registry_stage
-  assert registry_stage["revision"]["container"]["release"]["oci"]["index"]["digest"] == finalized_container["index_digest"]
+  assert registry_stage["registry"] == "fleet/containers", registry_stage
+  assert registry_stage["revision"] == 1, registry_stage
+  assert registry_stage["release_id"] == "1.0.0", registry_stage
+  assert registry_stage["source_branch"] == "qualification/hybrid-container", registry_stage
+  assert registry_stage["index_digest"] == finalized_container["index_digest"]
   session_token = refresh_session_token()
   client.succeed("install -d -m 0700 /var/lib/hybrid-container-upload-state")
+  # Guarded Hybrid uploads pin an API credential's current owner incarnation.
+  # Use the existing publisher credential rather than a browser session subject.
   container_stage = json.loads(client.succeed(
       "XDG_CACHE_HOME=/var/lib/hybrid-container-upload-state "
       f"{AOS} --json --progress off --color never container publish aos "
@@ -1435,10 +1460,10 @@
       f"--release-layout {shlex.quote(finalized_container['layout'])} "
       f"--signature-input {shlex.quote(finalized_container['signature_input'])} "
       "--registry fleet/containers --registry-origin https://aos.fleet.test "
-      f"--registry-token {shlex.quote(session_token)} "
+      f"--registry-token {shlex.quote(publisher_token)} "
       "--registry-stage /var/lib/hybrid-container-registry-stage.json "
       "--hub https://aos.fleet.test "
-      f"--token {shlex.quote(session_token)} "
+      f"--token {shlex.quote(publisher_token)} "
       "--idempotency-key hybrid-container-parity-stage --stage-only",
       timeout=900,
   ))
@@ -1799,7 +1824,7 @@
       native_page_commands.append(
           f"{CURL} -sS -o /dev/null -w {shlex.quote(PAGE_PERF_WRITEOUT)} "
           f"-H 'x-aos-hybrid-ingress: {compact}' -H \"Cookie: $cookie\" "
-          "https://aos-origin.fleet.test/-/instance"
+          "${nativeOriginUrl}/-/instance"
       )
 
   parallel_commands.extend([

@@ -119,7 +119,11 @@ pub(crate) async fn physical(
         Ok(value) => value,
         Err(_) => return Response::error("qualification authentication refused", 409),
     };
-    let diagnostics = matches!(&control.action, Action::Enqueue { .. }).then(Diagnostics::new);
+    let diagnostics = match &control.action {
+        Action::Begin { .. } => Some(Diagnostics::for_begin()),
+        Action::Enqueue { .. } => Some(Diagnostics::new()),
+        _ => None,
+    };
     let outcome = execute(&control, env, state, diagnostics.as_ref()).await;
     let (status, result) = match outcome {
         Ok(result) => (200, result),
@@ -129,10 +133,21 @@ pub(crate) async fn physical(
             serde_json::json!(qualification_failure::refused(diagnostics.as_ref())),
         ),
     };
+    // A Clock reply carries one measured instant in both signed locations.
+    // Reading the clock again can cross a millisecond and invalidate that join.
+    let observed_at_millis = if status == 200 && matches!(control.action, Action::Clock) {
+        result
+            .get("observedAtMillis")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| runtime_error("Clock observation absent"))?
+            .to_owned()
+    } else {
+        worker::Date::now().as_millis().to_string()
+    };
     let reply = serde_json::json!({"version":1,"requestSha256":hex::encode(sha2::Sha256::digest(&body)),
         "nonce":control.nonce,"sourceDigest":fixture::source().map_err(runtime_error)?,
         "scriptVersion":config::runtime_script_version(env).map_err(runtime_error)?,
-        "observedAtMillis":worker::Date::now().as_millis().to_string(),"result":result});
+        "observedAtMillis":observed_at_millis,"result":result});
     let bytes = encode_direct_control(&reply).map_err(runtime_error)?;
     let headers = Headers::new();
     headers.set("content-type", "application/json")?;
@@ -332,16 +347,25 @@ async fn execute(
         uncertainty: fixture::uncertainty(env)?,
     };
     fixture::installed(env, &original)?;
+    qualification_failure::enter_begin(
+        diagnostics,
+        qualification_failure::BeginPhase::ProtectedMaterial,
+    );
     authority
         .protected_material(env, &admission.placements[0])
         .await?;
+    qualification_failure::enter_begin(
+        diagnostics,
+        qualification_failure::BeginPhase::OriginalContext,
+    );
     super::provider_capacity::policy::configure_exact(env, u32::try_from(
         original.limits.maximum_provider_requests.get(),
     )?)?;
     let context = fixture::context(env, control, admission)?;
     match &control.action {
         Action::Begin { .. } => {
-            effects::begin(env, &authority, admission, &context).await?;
+            effects::begin_with_signal(env, &authority, admission, &context, None, diagnostics)
+                .await?;
             Ok(
                 serde_json::json!({"state":"created","session":session(admission),
                 "placement":admission.placements[0].public_ref(&context.deployment_id)?}),

@@ -218,13 +218,40 @@ test('streamed file hashing refuses bounds and symlink substitution', () => {
   }
 });
 
+test('child discovery without PROC_CHILDREN preserves parent and live-state selection', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'oci-process-scan-'));
+  function processStat(pid, parent, state = 'S') {
+    mkdirSync(path.join(root, pid));
+    const fields = [state, parent, ...Array(18).fill('0')];
+    writeFileSync(path.join(root, pid, 'stat'), `${pid} (controlled process) ${fields.join(' ')}`);
+  }
+  try {
+    processStat('43', '42');
+    processStat('44', '1');
+    processStat('45', '42', 'Z');
+    mkdirSync(path.join(root, '46')); // Exited between listing and stat read.
+    assert.deepEqual(observer.ociChildProcessIds(42, root), ['43']);
+    assert.deepEqual(observer.ociChildProcessIds(99, root), []);
+    writeFileSync(path.join(root, '44', 'stat'), '44 (incomplete) S 42');
+    assert.throws(() => observer.ociChildProcessIds(42, root), /stat is incomplete/);
+  } finally {
+    rmSync(root, { recursive: true });
+  }
+});
+
 test('owner-private socket keeps old variant and External verifier; new request is closed', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'oci-source-socket-'));
   chmodSync(root, 0o700);
   let sdkDispatches = 0;
+  let refuse = false;
   const server = observer.acceptanceRegistryServer({ getKVNamespace() { sdkDispatches++; } },
     path.join(root, 'control.sock'), {}, async () => ({ version: 1, kind: 'old-guard' }),
-    async () => ({ version: 1, observationScope: 'controlled-callback' }));
+    async () => {
+      if (refuse) throw new Error('private namespace diagnostic canary');
+      return { version: 1, observationScope: 'controlled-callback' };
+    }, async () => {
+      throw new Error('private anchor diagnostic canary');
+    });
   try {
     await server.ready;
     assert.deepEqual(await socketRequest(path.join(root, 'control.sock'),
@@ -239,6 +266,19 @@ test('owner-private socket keeps old variant and External verifier; new request 
       assert.deepEqual(await socketRequest(path.join(root, 'control.sock'), request),
         { version: 1, status: 'refused' });
     }
+    assert.equal(sdkDispatches, 0);
+    refuse = true;
+    const refusal = await socketRequest(path.join(root, 'control.sock'),
+      { version: 1, kind: 'oci-sdk-namespace-readback' });
+    assert.deepEqual(Object.keys(refusal).sort(), ['namespaceCheckLine', 'status', 'version']);
+    assert.equal(refusal.status, 'refused');
+    assert.equal(refusal.version, 1);
+    assert.match(refusal.namespaceCheckLine, /^[0-9]+$/);
+    const anchorRefusal = await socketRequest(path.join(root, 'control.sock'),
+      { version: 1, kind: 'oci-sdk-anchor-create' });
+    assert.deepEqual(Object.keys(anchorRefusal).sort(), ['anchorCheckLine', 'status', 'version']);
+    assert.equal(anchorRefusal.status, 'refused');
+    assert.match(anchorRefusal.anchorCheckLine, /^[0-9]+$/);
     assert.equal(sdkDispatches, 0);
   } finally {
     await server.close();

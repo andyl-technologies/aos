@@ -5,6 +5,10 @@
   packages,
 }: let
   system = pkgs.stdenv.hostPlatform.system;
+  moduleDependencies = import ../../lib/packages/module-dependencies.nix;
+  dependenciesFor = package:
+    packageArtifacts.dependencyValues (package.runtimeDeps or [])
+    ++ map moduleDependencies.seed (package.moduleDeps or []);
   # APR publishes all ordinary packages declared by one source build. Retain
   # the real named output packages, including their own native metadata.
   publicationClosure = builtins.genericClosure {
@@ -15,7 +19,7 @@
       })
       packages;
     operator = record:
-      lib.mapAttrsToList (name: definition: let
+      (lib.mapAttrsToList (name: definition: let
         package = packages.${name} or pkgs.${name}
         or (throw "Fixture source build declares unavailable subpackage '${name}'.");
         output = record.package.${definition.output};
@@ -26,7 +30,12 @@
           key = name;
           inherit package;
         })
-      (record.package.outputPackages or {});
+      (record.package.outputPackages or {}))
+      ++ map (package: {
+        key = packageArtifacts.nameFor package;
+        inherit package;
+      })
+      (dependenciesFor record.package);
   };
   publicationPackages = builtins.listToAttrs (map (record: {
       name = record.key;
@@ -49,18 +58,20 @@
   retainArtifact = artifact: [artifact (builtins.unsafeDiscardOutputDependency artifact.drvPath)];
   packageArtifacts = import ../../lib/packages/artifacts.nix {};
   selectedPackages = builtins.attrValues publicationPackages;
-  # Native envelopes authenticate every declared runtime dependency output,
-  # including development outputs that executable closures do not reference.
-  runtimeDependencies = lib.concatMap (package:
-    packageArtifacts.dependencyValues (package.runtimeDeps or []))
-  selectedPackages;
+  # Deployment modules resolve provider packages through the authenticated
+  # catalog, including providers absent from an executable's runtime closure.
+  dependencies = lib.concatMap dependenciesFor selectedPackages;
+  # Retaining dependency payloads alone does not authenticate an installation.
+  dependencyPublicationRoots = lib.filter (package:
+    !(builtins.elem package.drvPath (map (root: root.drvPath) (builtins.attrValues packages))))
+  (lib.uniqueBy (package: package.drvPath) dependencies);
   sourceOutputs = lib.concatMap (package:
     map (outputName:
       if outputName == "out"
       then package
       else package.${outputName})
     (package.outputs or ["out"]))
-  (selectedPackages ++ runtimeDependencies);
+  (selectedPackages ++ dependencies);
   # The release policy names a distinct deployment companion for each output.
   # Use its retention projection so the fixture and APR select the same roots.
   publicationRoots = policy.releaseDerivationRoots {
@@ -86,5 +97,5 @@
     '';
   };
 in {
-  inherit project inventory inventoryFile nativeRoots;
+  inherit project inventory inventoryFile nativeRoots dependencyPublicationRoots;
 }

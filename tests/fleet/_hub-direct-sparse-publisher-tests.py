@@ -4,13 +4,17 @@ SQLite rows below are explicitly controlled records. They are never VM,
 authenticated issuer, provider or runtime qualification evidence.
 """
 
+import contextlib
 import copy
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -158,6 +162,32 @@ class ContinuityFences(unittest.TestCase):
         with self.assertRaises(ValueError):
             sparse._pin(os.getpid(), arguments, executable, os.getuid(), str(int(current["startTicks"]) + 1))
 
+    def test_child_discovery_pins_a_real_process_without_proc_children(self):
+        arguments = [sys.executable, '-c', 'import sys; sys.stdin.read()']
+        child = subprocess.Popen(arguments, stdin=subprocess.PIPE)
+        try:
+            self.assertIn(child.pid, sparse._child_pids(os.getpid()))
+            pinned = sparse._pin(child.pid, arguments,
+                os.path.realpath(sys.executable), os.getuid())
+            self.assertEqual(pinned['pid'], child.pid)
+        finally:
+            child.communicate(timeout=5)
+
+    def test_child_scan_rejects_malformed_stats_and_ignores_exited_children(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for pid, state, parent in [(21, 'S', 17), (22, 'Z', 17), (23, 'S', 18)]:
+                directory = root / str(pid)
+                directory.mkdir()
+                fields = [state, str(parent)] + ['0'] * 18
+                (directory / 'stat').write_text(f'{pid} (controlled) ' + ' '.join(fields))
+            (root / '24').mkdir()
+            self.assertEqual(sparse._child_pids(17, root), [21])
+
+            (root / '24' / 'stat').write_text('24 (controlled) S 17')
+            with self.assertRaises(ValueError):
+                sparse._child_pids(17, root)
+
     def test_process_lifetime_pin_refuses_each_changed_coordinate(self):
         actual = {"pid": 17, "startTicks": "19", "uid": 0,
             "executable": "/controlled/aos", "argvSha256": "a" * 64}
@@ -230,6 +260,65 @@ class ContinuityFences(unittest.TestCase):
             guest["_client_writes_zero"](summary.replace("abort=0", "abort=1"))
         with self.assertRaises(ValueError):
             guest["_client_writes_zero"](summary.replace("status=0", "caps=0"))
+
+    def test_supervisor_disappearance_rechecks_its_actual_terminal_result(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            process = {
+                "label": "a", "attempt": 1, "directory": str(root),
+                "supervisorPid": 123, "supervisorArguments": [],
+                "supervisorExecutable": "controlled-python",
+                "supervisorUid": os.getuid(), "supervisorStartTicks": "456",
+            }
+            tools = {"python": "controlled-python"}
+            corpus = {"large_objects": []}
+
+            def execute(_client, _python, program, selected, **_options):
+                namespace = {
+                    "selected": selected, "Path": Path, "json": json,
+                    "_inputs": lambda *args: {}, "_pin": pin, "_child_pids": disappeared,
+                }
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    exec(compile(program, "<controlled-process-race>", "exec"), namespace)
+                return output.getvalue()
+
+            for retained_result, supervisor_live in [(True, False), (False, False), (False, True)]:
+                with self.subTest(retained_result=retained_result, supervisor_live=supervisor_live):
+                    result = root / "result.json"
+                    if result.exists():
+                        result.unlink()
+
+                    def disappeared(_pid):
+                        if retained_result:
+                            result.write_bytes(b'{"exitCode":1}')
+                        raise FileNotFoundError("controlled supervisor exited")
+
+                    pins = iter([{'pid': 123}, {'pid': 123}] if supervisor_live else [{'pid': 123}])
+
+                    def pin(*_args):
+                        try:
+                            return next(pins)
+                        except StopIteration:
+                            raise FileNotFoundError('controlled supervisor exited') from None
+
+                    with patch.object(sparse, "_guest_definitions", return_value=""), \
+                         patch.object(sparse, "direct_guest_python", execute, create=True):
+                        if retained_result:
+                            observed = sparse.observe_direct_sparse_publisher(
+                                None, tools, process, {}, corpus)
+                            self.assertEqual(observed,
+                                {"version": 1, "state": "terminal", "sparse": False})
+                            self.assertNotIn("exitCode", observed)
+                        elif supervisor_live:
+                            observed = sparse.observe_direct_sparse_publisher(
+                                None, tools, process, {}, corpus)
+                            self.assertEqual(observed,
+                                {"version": 1, "state": "settling", "sparse": False})
+                        else:
+                            with self.assertRaises(FileNotFoundError):
+                                sparse.observe_direct_sparse_publisher(
+                                    None, tools, process, {}, corpus)
 
     def test_each_actual_guest_program_compiles_before_any_execution(self):
         class CapturedProgram(Exception):

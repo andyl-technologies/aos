@@ -501,7 +501,8 @@ def run_mixed_prequalification(worker, s3, tools, root, run_id, arguments, encod
                     "bindings": mixed_bindings(value), "selection": {name: selection[name] for name in ("target", "host", "etag")},
                     "expectedSourceSha256": sources[0]["sha256"], "expectedSourceBytes": str(sources[0]["byte_size"]),
                     "expectedPrefixSha256": prefix["sha256"], "selectionContextSha256": mixed_document_digest(value),
-                    "selectionDeadlineUnixMillis": server_deadline, "pauseMillis": 35000}
+                    "selectionDeadlineUnixMillis": server_deadline, "pauseMillis": 35000,
+                    "streamMillis": 900000}
                 reply = mixed_owner_command(s3, tools, arm, cutoff=work_cutoff)
                 if reply != {"version": 1, "status": "armed", "cohortNonce": arm["cohortNonce"]}:
                     raise ValueError("mixed source owner did not arm exact cohort")

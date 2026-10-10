@@ -1,4 +1,4 @@
-//! Bodyless initial Distribution allocation for the genuine External OCI path.
+//! Bodyless initial Distribution allocation for Worker-controlled OCI uploads.
 //!
 //! This selects no Direct upload session or provider permission. The current
 //! OCI actor precedes repository creation and checked upload/quota allocation.
@@ -32,7 +32,7 @@ impl RpcService {
         ))
     }
 
-    pub(crate) async fn begin_external_oci_allocation_request(
+    pub(crate) async fn begin_worker_oci_allocation_request(
         &self,
         registry: &RegistryRecord,
         name: &RepositoryName,
@@ -47,7 +47,7 @@ impl RpcService {
                 return upload_error(
                     StatusCode::BAD_REQUEST,
                     DistributionErrorCode::BlobUploadInvalid,
-                    "external OCI allocation requires a Distribution upload request",
+                    "Worker OCI allocation requires a Distribution upload request",
                 );
             }
         };

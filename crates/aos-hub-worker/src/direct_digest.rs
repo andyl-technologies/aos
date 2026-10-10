@@ -55,7 +55,7 @@ pub(crate) async fn hash_response(
     let mut counted = 0_u64;
     if let Some(reader) = reader {
         loop {
-            let (value, done) = reader.read().await?;
+            let (value, done) = reader.read_for_digest().await?;
             ensure!(
                 value.length() <= CHUNK_BYTES,
                 "native hash chunk exceeds bound"
@@ -241,7 +241,7 @@ pub(crate) async fn verify_reader_observed(
 
     if let Some(reader) = &reader {
         loop {
-            let (value, done) = reader.read().await?;
+            let (value, done) = reader.read_for_digest().await?;
             let length = value.length();
             consumed(u64::from(length));
             ensure!(length <= CHUNK_BYTES, "stage runtime chunk exceeds bound");
@@ -461,10 +461,34 @@ impl Reader {
     /// # Errors
     /// Returns an error for failed reads or an oversized/unfinished empty view.
     pub(crate) async fn read(&self) -> Result<(Uint8Array, bool)> {
+        self.read_bounded(false).await
+    }
+
+    /// Fills the bounded digest view before returning, except at end of stream.
+    ///
+    /// Small network fragments otherwise create a separate buffer and several
+    /// digest-write promises per fragment. Native coalescing keeps the same
+    /// 64 KiB ceiling while reducing that allocation and scheduling overhead.
+    ///
+    /// # Errors
+    /// Returns an error for unavailable native coalescing, failed reads, or an
+    /// oversized/unfinished empty view.
+    async fn read_for_digest(&self) -> Result<(Uint8Array, bool)> {
+        self.read_bounded(true).await
+    }
+
+    async fn read_bounded(&self, coalesce: bool) -> Result<(Uint8Array, bool)> {
         let buffer = Uint8Array::new_with_length(CHUNK_BYTES);
-        let result = awaited(invoke(&self.reader, "read", &[buffer.into()])?)
-            .await
-            .context("native BYOB read failed")?;
+        let pending = if coalesce {
+            invoke(
+                &self.reader,
+                "readAtLeast",
+                &[JsValue::from_f64(f64::from(CHUNK_BYTES)), buffer.into()],
+            )?
+        } else {
+            invoke(&self.reader, "read", &[buffer.into()])?
+        };
+        let result = awaited(pending).await.context("native BYOB read failed")?;
         let done = Reflect::get(&result, &JsValue::from_str("done"))
             .map_err(|_| refused())?
             .as_bool()

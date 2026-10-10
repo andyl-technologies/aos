@@ -876,6 +876,7 @@ async fn upload_registry_part(mut request: Request, env: &Env) -> Result<Respons
     {
         return Response::error("publication multipart part shape is invalid", 502);
     }
+    let read_started_ms = js_sys::Date::now();
     let Some(bytes) =
         read_bounded_body(&mut request, preflight.expected_part_size as usize).await?
     else {
@@ -884,6 +885,8 @@ async fn upload_registry_part(mut request: Request, env: &Env) -> Result<Respons
     if bytes.len() as u64 != preflight.expected_part_size {
         return Response::error("publication multipart part has the wrong size", 400);
     }
+    let read_elapsed_ms = (js_sys::Date::now() - read_started_ms).max(0.0) as u64;
+    let hash_started_ms = js_sys::Date::now();
     let Some(hashed_size) = preflight.prior_hashed_size.checked_add(bytes.len() as u64) else {
         return Response::error("publication multipart hash length overflowed", 502);
     };
@@ -901,6 +904,7 @@ async fn upload_registry_part(mut request: Request, env: &Env) -> Result<Respons
     }
     let body_sha256 =
         crate::digest::sha256_hex(&bytes, preflight.expected_part_size as usize).await?;
+    let hash_elapsed_ms = (js_sys::Date::now() - hash_started_ms).max(0.0) as u64;
     let admission_body = serde_json::to_vec(&HybridPublicationPartAdmissionRequest {
         size: bytes.len() as u64,
         body_sha256: body_sha256.clone(),
@@ -942,6 +946,7 @@ async fn upload_registry_part(mut request: Request, env: &Env) -> Result<Respons
     {
         return Response::error("publication multipart destinations are invalid", 502);
     }
+    let storage_started_ms = js_sys::Date::now();
     let mut placements = Vec::with_capacity(admission.destinations.len());
     for destination in &admission.destinations {
         let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
@@ -965,6 +970,17 @@ async fn upload_registry_part(mut request: Request, env: &Env) -> Result<Respons
             etag,
         });
     }
+    let storage_elapsed_ms = (js_sys::Date::now() - storage_started_ms).max(0.0) as u64;
+    // Report byte-path costs separately from Native control calls without
+    // logging object identifiers, provider URLs, or authorization material.
+    worker::console_log!(
+        "hybrid_publication_part_stored bytes={} placements={} read_ms={} hash_ms={} storage_ms={}",
+        bytes.len(),
+        placements.len(),
+        read_elapsed_ms,
+        hash_elapsed_ms,
+        storage_elapsed_ms,
+    );
     let completion_body = serde_json::to_vec(&HybridPublicationPartCompletionRequest {
         admission,
         size: bytes.len() as u64,
@@ -1907,6 +1923,7 @@ pub(crate) async fn proxy_origin(
         headers.get(aos_hub_core::hybrid_ingress::live::HYBRID_LIVE_DELIVERY_HEADER)?
     {
         if status != 200 || headers.has(HYBRID_DELIVERY_HEADER)? {
+            worker::console_error!("hybrid_origin_response_rejected reason=live_delivery_shape");
             return Response::error("invalid live delivery response", 502);
         }
         if requested_range.is_some() {
@@ -1928,12 +1945,19 @@ pub(crate) async fn proxy_origin(
     if let Some(compact) = headers.get(HYBRID_DELIVERY_HEADER)? {
         if status != 200 || !matches!(request.method(), worker::Method::Get | worker::Method::Head)
         {
+            worker::console_error!("hybrid_origin_response_rejected reason=delivery_shape");
             return Response::error("invalid hybrid delivery response", 502);
         }
         let target =
             match key.verify_delivery(&compact, &assertion, aos_hub_core::clock::now_unix_secs()) {
                 Ok(target) => target,
-                Err(_) => return Response::error("hybrid delivery grant is invalid", 502),
+                Err(error) => {
+                    worker::console_error!(
+                        "hybrid_origin_response_rejected reason=delivery_grant category={:?}",
+                        error,
+                    );
+                    return Response::error("hybrid delivery grant is invalid", 502);
+                }
             };
         worker::console_log!(
             "hybrid_origin_delivery_grant id={} method={} request_bytes={} elapsed_ms={}",
@@ -1961,8 +1985,17 @@ pub(crate) async fn proxy_origin(
         )
         .await;
     }
-    let Some(body) = read_bounded_response(response, MAX_CONTROL_RESPONSE_BYTES).await? else {
-        return Response::error("hybrid control response is too large", 502);
+    // HEAD describes the selected representation without transferring its
+    // body. Its Content-Length can exceed the control body limit legitimately.
+    let head = request.method() == worker::Method::Head;
+    let body = if head {
+        Vec::new()
+    } else {
+        let Some(body) = read_bounded_response(response, MAX_CONTROL_RESPONSE_BYTES).await? else {
+            worker::console_error!("hybrid_origin_response_rejected reason=control_response_limit");
+            return Response::error("hybrid control response is too large", 502);
+        };
+        body
     };
     let route_class = if assertion.method == "GET" && assertion.path_and_query == "/-/instance" {
         "instance_page"
@@ -1985,7 +2018,9 @@ pub(crate) async fn proxy_origin(
         worker_elapsed_ms,
         native_elapsed_log,
     );
-    headers.delete("content-length")?;
+    if !head {
+        headers.delete("content-length")?;
+    }
     Ok(Response::from_body(if body.is_empty() {
         ResponseBody::Empty
     } else {

@@ -36,6 +36,9 @@ struct RegistryState {
     interrupt_blob_once: AtomicBool,
     stall_blob_once: AtomicBool,
     fail_patch_once: AtomicBool,
+    patch_delay_millis: AtomicU64,
+    active_delayed_patches: AtomicU64,
+    peak_delayed_patches: AtomicU64,
     cancel_failures_remaining: AtomicU64,
     delay_cancel_response_once: AtomicBool,
     cancel_response_stalled: Notify,
@@ -176,6 +179,10 @@ async fn signed_release_push_uploads_every_evidence_object_by_digest_only() {
     let fixture = support::fixture();
     let release = support::add_signed_release_graph(&fixture);
     let registry = spawn_registry(None, false, false, false).await;
+    registry
+        .state
+        .patch_delay_millis
+        .store(20, Ordering::SeqCst);
     let reference = RegistryReference::parse(&format!(
         "{}/aos@{}",
         registry.reference.authority(),
@@ -202,6 +209,27 @@ async fn signed_release_push_uploads_every_evidence_object_by_digest_only() {
         .expect("complete signed graph push");
     assert_eq!(pushed.root_index_digest, release.oci.index.digest);
     assert_eq!(pushed.object_count, 20);
+    let parallel = registry.state.peak_delayed_patches.load(Ordering::SeqCst);
+    assert!(parallel >= 2, "independent blobs must overlap");
+    assert!(
+        parallel <= 4,
+        "legacy uploads must respect their slot limit"
+    );
+    assert_eq!(
+        registry.state.active_delayed_patches.load(Ordering::SeqCst),
+        0
+    );
+
+    let events = registry.state.events.lock().expect("events");
+    let first_manifest = events
+        .iter()
+        .position(|event| event.starts_with("PUT:/v2/aos/manifests/"))
+        .expect("immutable documents published");
+    assert!(
+        events[first_manifest..]
+            .iter()
+            .all(|event| !event.contains("/blobs/uploads/"))
+    );
 
     let manifests = registry.state.manifests.lock().expect("manifest lock");
     for descriptor in [
@@ -1787,6 +1815,9 @@ async fn spawn_registry(
         interrupt_blob_once: AtomicBool::new(interrupt_blob_once),
         stall_blob_once: AtomicBool::new(false),
         fail_patch_once: AtomicBool::new(fail_patch_once),
+        patch_delay_millis: AtomicU64::new(0),
+        active_delayed_patches: AtomicU64::new(0),
+        peak_delayed_patches: AtomicU64::new(0),
         cancel_failures_remaining: AtomicU64::new(0),
         delay_cancel_response_once: AtomicBool::new(false),
         cancel_response_stalled: Notify::new(),
@@ -2187,6 +2218,15 @@ async fn upload_response(
         return builder.body(Body::empty()).expect("query upload response");
     }
     if method == Method::PATCH {
+        let delay = state.patch_delay_millis.load(Ordering::SeqCst);
+        if delay != 0 {
+            let active = state.active_delayed_patches.fetch_add(1, Ordering::SeqCst) + 1;
+            state
+                .peak_delayed_patches
+                .fetch_max(active, Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            state.active_delayed_patches.fetch_sub(1, Ordering::SeqCst);
+        }
         if state.stall_patch_once.swap(false, Ordering::SeqCst) {
             return std::future::pending::<Response<Body>>().await;
         }

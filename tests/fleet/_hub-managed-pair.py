@@ -189,6 +189,8 @@ def managed_native_arguments(hub, coordinates, files, *, acceptance=False):
     arguments = [hub, "--root", coordinates["nativeRoot"] + "/hub",
         "--database-url-file", files["database"], "serve", "--listen", "127.0.0.1:4646",
         "--topology", "hybrid", "--external-url", WORKER_ORIGIN,
+        # This pair exercises the R2 SDK without a presigning endpoint.
+        "--hybrid-upload-mode", "worker_proxy",
         "--hybrid-worker-url", WORKER_ORIGIN, "--hybrid-origin-url", NATIVE_ORIGIN,
         "--deployment-id", coordinates["deploymentId"], "--reindex-interval", "0",
         "--release-receipt-key-id", "staging-publication-v1",
@@ -221,18 +223,9 @@ def managed_forward_arguments(socat, target_address, port):
         "TCP4:" + str(address) + ":" + str(port)]
 
 
-def provision_managed_pair(worker, native, database, tools, original_configuration,
-                           run_id, database_host, native_address):
-    """Freeze fresh role keys, Rust-derived slot and ordinary Native init files."""
-    coordinates = managed_pair_coordinates(run_id)
-    fixture = tools["parityFixture"]
-    evidence_names = ("release_seed", "channel_seed", "publication_keys", "qualification_keys", "route_keys")
-    require_managed_pair(all(isinstance(fixture.get(name), str)
-            and fixture[name].startswith("/nix/store/") for name in evidence_names),
-            "Managed release and route inputs require selected source-built fixture files")
-    require_managed_pair(re.fullmatch(r"[a-z][a-z0-9-]{0,63}", database_host),
-            "Managed database must be the selected separate VM")
-    prepared = json.loads(direct_guest_python(worker, tools["python"], """
+def prepare_managed_oci_materials(worker, tools, coordinates):
+    """Create fresh role keys and encode the provider slot with the installed reviewer."""
+    return json.loads(direct_guest_python(worker, tools["python"], """
         import base64, os, secrets, subprocess
         from pathlib import Path
 
@@ -280,6 +273,20 @@ def provision_managed_pair(worker, native, database, tools, original_configurati
             "source": hashlib.sha256(tools["workerSourcePath"].encode()).hexdigest(),
             "reviewer": tools["reviewer"], "roles": list(PRIVATE_ROLES),
             "endpointId": coordinates["endpointId"], "probeSecretRef": coordinates["probeSecretRef"]}, timeout=260))
+
+
+def provision_managed_pair(worker, native, database, tools, original_configuration,
+                           run_id, database_host, native_address):
+    """Freeze fresh role keys, Rust-derived slot and ordinary Native init files."""
+    coordinates = managed_pair_coordinates(run_id)
+    fixture = tools["parityFixture"]
+    evidence_names = ("release_seed", "channel_seed", "publication_keys", "qualification_keys", "route_keys")
+    require_managed_pair(all(isinstance(fixture.get(name), str)
+            and fixture[name].startswith("/nix/store/") for name in evidence_names),
+            "Managed release and route inputs require selected source-built fixture files")
+    require_managed_pair(re.fullmatch(r"[a-z][a-z0-9-]{0,63}", database_host),
+            "Managed database must be the selected separate VM")
+    prepared = prepare_managed_oci_materials(worker, tools, coordinates)
     original_bytes = read_direct_guest_file(worker, tools["python"], original_configuration, 1024 * 1024)
     configuration = managed_worker_configuration(json.loads(original_bytes),
         {**tools, "runId": run_id}, prepared["roles"], prepared["registryKey"],
@@ -446,15 +453,29 @@ def observe_managed_pair(native, worker, tools, prepared, processes):
     identity_file = root + "/build-selected-identity.json"
     install_direct_guest_file(worker, tools["python"], identity_file, json.dumps({
         "sourceDigest": source, "scriptVersion": "emulated-" + source,
-        "publicOrigin": WORKER_ORIGIN,
+        "publicOrigin": coordinates["workerOrigin"],
     }, separators=(",", ":")).encode())
     native_observation = coordinates["nativeRoot"] + "/native-observation.json"
     native_configuration = coordinates["nativeRoot"] + "/native-observed-configuration.json"
-    private_guest_command(native, shlex.join([
+    observer_arguments = [
         tools["reviewer"], "oci-sdk-observe-native", "--pid", str(processes["native"]["pid"]),
         "--executable", tools["hub"], "--configuration-output", native_configuration,
         "--observation-output", native_observation,
-    ]), timeout=30)
+    ]
+    # The observer checks process ownership. Observe a system-service Hub as
+    # its actual service user; the isolated pair otherwise runs as the VM owner.
+    observer_user = tools.get("nativeObserverUser")
+    if observer_user is not None:
+        require_managed_pair(re.fullmatch(r"[a-z][a-z0-9-]{0,31}", observer_user),
+                "OCI observer requires an explicit service user")
+        # The minimal VM has no PAM login policy. Keep the actual service UID
+        # and give only this inspection process the capability needed to read
+        # a protected service's /proc environment and executable link.
+        observer_arguments = [tools["setpriv"], "--reuid", observer_user,
+            "--regid", observer_user, "--init-groups",
+            "--inh-caps", "+sys_ptrace", "--ambient-caps", "+sys_ptrace",
+            "--", *observer_arguments]
+    private_guest_command(native, shlex.join(observer_arguments), timeout=30)
     for path in (native_observation, native_configuration):
         install_direct_guest_file(worker, tools["python"], root + "/" + path.rsplit("/", 1)[1],
             read_direct_guest_file(native, tools["python"], path, 256 * 1024))
@@ -517,7 +538,7 @@ def observe_managed_pair(native, worker, tools, prepared, processes):
             'anchorReceipt':selected_file(anchor_root/'response.json'),
             'clocks':[{name:selected_file(path) for name,path in clock.items()} for clock in clocks],
             'scope':'actual prerequisite observations; no acceptance or business permission'}))
-    """, {"root": root, "origin": WORKER_ORIGIN, "identity": identity_file,
+    """, {"root": root, "origin": coordinates["workerOrigin"], "identity": identity_file,
         "process": processes["worker"], "configuration": prepared["configurationFile"],
         "driver": tools["qualificationDriver"], "namespaceObserver": tools["ociNamespaceObserver"],
         "anchor": tools["ociAnchor"], "source": tools["workerSourcePath"],
@@ -535,7 +556,7 @@ def prepare_managed_oci_candidate(worker, tools, prepared, observed, artifacts):
         "miniflareModule": module_root + "/index.js",
         "miniflareEntryWorker": module_root + "/workers/shared/object-entry.worker.js",
         "miniflareBucketWorker": module_root + "/workers/r2/bucket.worker.js",
-        "workerdExecutable": tools["workerd"], "nixExecutable": tools["nixBin"] + "/nix-store"}
+        "workerdExecutable": tools["workerd"], "nixExecutable": tools["nixBin"] + "/nix"}
     for name in ("sourceNar", "distributionNar"):
         require_managed_pair(re.fullmatch(r"[0-9a-f]{64}", artifacts["files"][name]["sha256"]),
                 "Managed reviewer requires actual same-source NAR captures")
@@ -586,7 +607,8 @@ def prepare_managed_oci_candidate(worker, tools, prepared, observed, artifacts):
             'scope':'unsigned shared-codec candidate; independent review and Worker consumption pending'}))
     """, {"root": coordinates["workerRoot"], "runId": coordinates["runId"],
         "reviewerId": prepared["reviewerKeyId"], "reviewerPublicFile": prepared["reviewerPublicFile"],
-        "deployment": coordinates["deploymentId"], "publicOrigin": WORKER_ORIGIN, "nativeOrigin": NATIVE_ORIGIN,
+        "deployment": coordinates["deploymentId"], "publicOrigin": coordinates["workerOrigin"],
+        "nativeOrigin": coordinates["nativeOrigin"],
         "sourceDigest": hashlib.sha256(tools["workerSourcePath"].encode()).hexdigest(),
         "sourceStorePath": tools["workerSourcePath"], "distributionStorePath": tools["workerDistribution"],
         "sourceNarSha256": artifacts["files"]["sourceNar"]["sha256"],
@@ -595,7 +617,8 @@ def prepare_managed_oci_candidate(worker, tools, prepared, observed, artifacts):
         "installed": installed, "reviewer": tools["reviewer"]}, timeout=220))
 
 
-def install_managed_oci_candidate(native, worker, tools, prepared, observed, candidate, processes):
+def install_managed_oci_candidate(native, worker, tools, prepared, observed, candidate, processes,
+                                  *, activate_native=None):
     """Sign independently reviewed bytes, stage exact KV, then activate Native."""
     coordinates = prepared["coordinates"]
     candidate_body = read_direct_guest_file(worker, tools["python"], candidate["candidate"]["path"], 65536)
@@ -656,13 +679,24 @@ def install_managed_oci_candidate(native, worker, tools, prepared, observed, can
         "candidate": candidate["candidate"], "privateKey": prepared["reviewerPrivateFile"],
         "publicKey": prepared["reviewerPublicFile"], "namespace": observed["namespaceObservation"],
         "reviewerId": prepared["reviewerKeyId"], "deployment": coordinates["deploymentId"],
-        "origin": WORKER_ORIGIN, "source": hashlib.sha256(tools["workerSourcePath"].encode()).hexdigest(),
+        "origin": coordinates["workerOrigin"],
+        "source": hashlib.sha256(tools["workerSourcePath"].encode()).hexdigest(),
         **{name: tools[name] for name in ("reviewer", "python", "node")},
         "installer": tools["ociInstaller"]}, timeout=260))
     artifact_body = read_direct_guest_file(worker, tools["python"], staged["artifact"]["path"], 32768)
     require_managed_pair(hashlib.sha256(artifact_body).hexdigest() == staged["artifact"]["sha256"],
             "Managed artifact changed during transfer")
     install_direct_guest_file(native, tools["python"], prepared["nativeFiles"]["acceptance"], artifact_body)
+    activation = (activate_native or activate_managed_oci_native)(native, tools, prepared, processes)
+    return {"artifactFile": staged["artifact"]["path"], "artifactSha256": staged["artifact"]["sha256"],
+        "publicKeyFile": prepared["reviewerPublicFile"], "reviewerKeyId": prepared["reviewerKeyId"],
+        "staging": staged, **activation,
+        "independentReview": reviewed, "scope": "actual installation; business Worker verification pending"}
+
+
+def activate_managed_oci_native(native, tools, prepared, processes):
+    """Replace the isolated Native process with its explicitly verified configuration."""
+    coordinates = prepared["coordinates"]
     stopped = stop_managed_native(native, tools, prepared, processes["native"])
     replacement = launch_managed_process(native, tools, coordinates["nativeRoot"], "native-accepted",
         managed_native_arguments(tools["hub"], coordinates, prepared["nativeFiles"], acceptance=True), {
@@ -671,11 +705,8 @@ def install_managed_oci_candidate(native, worker, tools, prepared, observed, can
             "HUB_DNS_JSON_ENDPOINT": tools["managedDnsJsonEndpoint"], "HUB_OCI_PULL_ENABLED": "true",
             "HUB_OCI_PUSH_ENABLED": "true", "HUB_OCI_GC_ENABLED": "true",
         })
-    readiness = await_managed_tls(native, tools, NATIVE_ORIGIN)
-    return {"artifactFile": staged["artifact"]["path"], "artifactSha256": staged["artifact"]["sha256"],
-        "publicKeyFile": prepared["reviewerPublicFile"], "reviewerKeyId": prepared["reviewerKeyId"],
-        "staging": staged, "nativeStop": stopped, "native": replacement, "nativeTls": readiness,
-        "independentReview": reviewed, "scope": "actual installation; business Worker verification pending"}
+    readiness = await_managed_tls(native, tools, coordinates["nativeOrigin"])
+    return {"nativeStop": stopped, "native": replacement, "nativeTls": readiness}
 
 
 def stop_managed_native(native, tools, prepared, process):
@@ -791,8 +822,9 @@ def launch_managed_process(machine, tools, root, label, arguments, environment, 
         log_path = root / (selected['label'] + '.log')
         fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, 'wb') as log:
+            # Binding state and process-created materials stay with this owner.
             child = subprocess.Popen(selected['arguments'], env=environment,
-                stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+                stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, umask=0o077)
         time.sleep(0.2)
         if child.poll() is not None:
             raise ValueError('Managed process exited before observation; retain its log')

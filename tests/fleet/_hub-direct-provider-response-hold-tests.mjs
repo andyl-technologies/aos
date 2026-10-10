@@ -652,7 +652,8 @@ function mixedArm(body, nonce = '1'.repeat(64), extra = {}) {
     selection: { target: FIRST_TARGET, host: 's3.fleet.test', etag: '"actual-etag"' },
     expectedSourceSha256: sha(body), expectedSourceBytes: String(body.length),
     expectedPrefixSha256: sha(body.subarray(0, 65536)), selectionContextSha256: '7'.repeat(64),
-    selectionDeadlineUnixMillis: Date.now() + 10000, pauseMillis: 5000, ...extra };
+    selectionDeadlineUnixMillis: Date.now() + 10000, pauseMillis: 5000,
+    streamMillis: extra.pauseMillis ?? 5000, ...extra };
 }
 
 function mixedCommand(arm, kind, extra = {}) {
@@ -702,6 +703,37 @@ test('mixed same upstream resumes once with exact bytes, EOF and replay refusal'
   });
 });
 
+test('mixed resumed stream can finish after its pause deadline within the original stream budget', async () => {
+  const body = Buffer.alloc(131072, 0x47);
+  await fixture((incoming, outgoing) => {
+    assert.equal(incoming.headers.authorization, authorization);
+    outgoing.writeHead(200, { ETag: '"actual-etag"', 'Content-Length': String(body.length) });
+    outgoing.write(body.subarray(0, 65536));
+    setTimeout(() => outgoing.end(body.subarray(65536)), 700);
+  }, async facts => {
+    const arm = mixedArm(body, '1'.repeat(64), { pauseMillis: 300, streamMillis: 2000 });
+    assert.equal((await control(facts.root, arm)).status, 'armed');
+    const reading = read(facts.port, { target: FIRST_TARGET });
+    const held = await awaitMixed(facts.root, arm, value => value.state === 'held');
+    const beginNonce = '8'.repeat(64);
+    await control(facts.root, mixedCommand(arm, 'bind_mixed_begin', { beginNonce }));
+    const resume = mixedCommand(arm, 'resume_mixed_read', { beginNonce,
+      heldReceiptSha256: held.receiptFile.sha256, metadataReceiptSha256: '9'.repeat(64) });
+    assert.equal((await control(facts.root, resume)).status, 'resume_dispatched');
+
+    const result = await reading;
+    assert.equal(sha(result.body), sha(body));
+    const ended = await awaitMixed(facts.root, arm, value => value.terminalFile !== null);
+    const terminal = JSON.parse(await fs.readFile(ended.terminalFile.path));
+    assert.equal(ended.state, 'eof');
+    assert.ok(terminal.endedAtUnixMillis > held.receipt.cutoffUnixMillis);
+    assert.equal(terminal.cutoffUnixMillis, held.receipt.selectedAtUnixMillis + arm.streamMillis);
+    assert.equal(terminal.downstreamOfferedBytes, String(body.length));
+    assert.equal(facts.received.length, 1);
+    assert.equal((await control(facts.root, resume)).status, 'refused');
+  });
+});
+
 test('mixed mismatched Begin or closed-job bindings cannot release an owned response', async () => {
   const body = Buffer.alloc(16 * 1024 * 1024, 0x43);
   await fixture(normal(body), async facts => {
@@ -721,6 +753,17 @@ test('mixed mismatched Begin or closed-job bindings cannot release an owned resp
     assert.equal(await reading, 'closed');
     const ended = await awaitMixed(facts.root, arm, value => value.terminalFile !== null);
     assert.equal(ended.state, 'cancelled');
+  });
+});
+
+test('mixed stream budget is bounded and cannot shorten the pause budget', async () => {
+  const body = Buffer.alloc(131072, 0x48);
+  await fixture(normal(body), async facts => {
+    for (const streamMillis of [0, 4999, 900001, 5000.5, true]) {
+      const arm = mixedArm(body, '1'.repeat(64), { streamMillis });
+      assert.equal((await control(facts.root, arm)).status, 'refused');
+    }
+    assert.equal(facts.received.length, 0);
   });
 });
 

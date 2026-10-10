@@ -383,6 +383,10 @@ def direct_restart_readiness(worker, tools, driver):
         except Exception:
             outputs = {"version": 1, "maximumFileBytes": 65536, "state": "refused_or_unknown"}
         retain_direct_flow("queue-restart-readiness-failure.json", {**observation, "childOutputs": outputs})
+        # Keep fixed categories and process facts visible if Nix removes the build.
+        summary = {name: observation[name] for name in (
+            "category", "ready", "custody", "processState", "exitCode", "stderrCategory")}
+        print("Queue restart child failed: " + json.dumps(summary, sort_keys=True), flush=True)
         raise AssertionError("queue restart child readiness observation refused")
     return observation["ready"]
 

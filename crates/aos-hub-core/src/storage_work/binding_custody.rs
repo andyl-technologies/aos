@@ -31,6 +31,9 @@ const PROBE_REQUEST: &[u8] = b"aos.storage-credential-custody.probe-request.v1\0
 const PROBE_REPLY: &[u8] = b"aos.storage-credential-custody.probe-reply.v1\0";
 const ADOPT_REQUEST: &[u8] = b"aos.storage-binding-custody.adopt-request.v1\0";
 const ADOPT_REPLY: &[u8] = b"aos.storage-binding-custody.adopt-reply.v1\0";
+// Match binding-snapshot issue tolerance across independently clocked hosts.
+// This allowance never changes the original exclusive expiration deadline.
+const MAX_CLOCK_SKEW_SECONDS: i64 = 5;
 
 /// Exact queued probe and current SQL credential identity, without secret bytes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,7 +78,7 @@ impl StorageCredentialCustodyProbe {
             || self.head_resource_version <= 0
             || self.snapshot.access_mode != "private"
             || self.snapshot.credentials.len() != 1
-            || self.snapshot.issued_at > now
+            || self.snapshot.issued_at > now.saturating_add(MAX_CLOCK_SKEW_SECONDS)
             || self.snapshot.expires_at <= now
             || self.snapshot.expires_at > self.expires_at
             || self.snapshot.expires_at - self.snapshot.issued_at > 30
@@ -221,7 +224,10 @@ impl StorageBindingAdoptionRequest {
             Some(now) => self.expected.validate(deployment, now)?,
             None => self.expected.validate_observation_shape(deployment)?,
         }
-        if now.is_some_and(|now| self.expected.issued_at > now || self.expected.expires_at <= now) {
+        if now.is_some_and(|now| {
+            self.expected.issued_at > now.saturating_add(MAX_CLOCK_SKEW_SECONDS)
+                || self.expected.expires_at <= now
+        }) {
             return Err(StorageWorkError::InvalidTime);
         }
         Ok(())
@@ -277,7 +283,8 @@ impl StorageBindingAdoptionReply {
         if self.request != *request
             || self.acknowledged != expected
             || now.is_some_and(|now| {
-                self.acknowledged.issued_at > now || self.acknowledged.expires_at <= now
+                self.acknowledged.issued_at > now.saturating_add(MAX_CLOCK_SKEW_SECONDS)
+                    || self.acknowledged.expires_at <= now
             })
         {
             return Err(StorageWorkError::InvalidSnapshot);
@@ -314,7 +321,9 @@ fn fresh_context(
     if version != 1
         || !digest(nonce)
         || issued <= 0
-        || now.is_some_and(|now| issued > now || now >= expires)
+        || now.is_some_and(|now| {
+            issued > now.saturating_add(MAX_CLOCK_SKEW_SECONDS) || now >= expires
+        })
         || expires <= issued
         || expires.saturating_sub(issued) > 30
     {
@@ -477,8 +486,8 @@ pub fn verify_storage_credential_custody_probe_reply(
     request.validate(&request.snapshot.deployment_id, now)?;
     let reply: StorageCredentialCustodyProbeReply = verify(key, PROBE_REPLY, signature, body)?;
     if reply.request != *request
-        || reply.observed_at < request.issued_at
-        || reply.observed_at > now
+        || reply.observed_at < request.issued_at.saturating_sub(MAX_CLOCK_SKEW_SECONDS)
+        || reply.observed_at > now.saturating_add(MAX_CLOCK_SKEW_SECONDS)
         || reply.observed_at >= request.expires_at
     {
         return Err(StorageWorkError::InvalidSnapshot);

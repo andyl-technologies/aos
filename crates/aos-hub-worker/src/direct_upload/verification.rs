@@ -450,11 +450,19 @@ pub(crate) async fn run_fixture(
     let replayed = Cell::new(true);
     let source_dispatch = || replayed.set(false);
     qualification_attempt::enter(attempt, Phase::ImmutableIntegrityRead);
-    let proof = storage::effect(env, &job.admission, operation_id.clone(), job, true, || async {
-        let proof = verify_with_attempt(env, job, &operation_id, &source_dispatch, attempt).await?;
-        qualification_attempt::enter(attempt, Phase::RetainedProof);
-        Ok(proof)
-    })
+    let proof = storage::effect(
+        env,
+        &job.admission,
+        operation_id.clone(),
+        job,
+        true,
+        || async {
+            let proof =
+                verify_with_attempt(env, job, &operation_id, &source_dispatch, attempt).await?;
+            qualification_attempt::enter(attempt, Phase::RetainedProof);
+            Ok(proof)
+        },
+    )
     .await?;
 
     // A retained replay may skip source consumption altogether.
@@ -550,6 +558,7 @@ async fn verify_with_attempt(
     source_dispatch: &dyn Fn(),
     attempt: Option<&Attempt>,
 ) -> Result<VerifiedPlacement> {
+    qualification_attempt::enter(attempt, Phase::ImmutableParts);
     let class = if job.admission.intent.dependency_phase == DirectDependencyPhase::Content {
         super::provider_capacity::Class::Bulk
     } else {
@@ -615,6 +624,7 @@ async fn verify_with_attempt(
                 _ => anyhow::bail!("direct external stage positive close absent"),
             };
             let operation = external_verification_operation(result)?;
+            qualification_attempt::enter(attempt, Phase::ImmutableStagePreparation);
             let work = crate::external_object::prepare_stage_read_recovery(
                 env,
                 &job.admission,
@@ -646,6 +656,7 @@ async fn verify_with_attempt(
                 });
             let verified = {
                 let _capacity = super::provider_capacity::acquire_class(1, class).await?;
+                qualification_attempt::enter(attempt, Phase::ImmutableStageDispatch);
                 #[cfg(feature = "do-e2e")]
                 let result = crate::external_object::execute_stage_observed_with_fault(
                     env,
@@ -666,6 +677,10 @@ async fn verify_with_attempt(
                 #[cfg(feature = "do-e2e")]
                 if let Some(observation) = fault_observation.as_ref() {
                     observation.finish(&result);
+                }
+                #[cfg(feature = "do-e2e")]
+                if let Err(error) = &result {
+                    super::qualification_attempt::record_read_failure(error);
                 }
                 result?
             };

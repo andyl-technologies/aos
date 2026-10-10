@@ -237,6 +237,19 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
   // this owner. Their consumed nonces remain recorded; no pause is rearmed.
   const mixedCohorts = new Map();
 
+  function mixedCutoff(selection) {
+    return selection.selectedAtUnixMillis + (selection.state === 'resuming'
+      ? selection.arm.streamMillis : selection.arm.pauseMillis);
+  }
+
+  function scheduleMixedCutoff(selection) {
+    // Resuming changes the phase deadline, never the original start time.
+    clearTimeout(selection.cutoffTimer);
+    selection.cutoffTimer = setTimeout(() => endMixed(selection, 'cutoff', 'owner_cutoff'),
+      Math.max(1, mixedCutoff(selection) - Date.now()));
+    return selection.cutoffTimer;
+  }
+
   function endMixed(selection, state, cause) {
     if (['eof', 'cutoff', 'disconnected', 'refused', 'cancelled'].includes(selection.state)) return;
     selection.state = state;
@@ -257,7 +270,8 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
         heldReceiptFile: selection.receiptFile, beginNonce: selection.beginNonce,
         metadataReceiptSha256: selection.metadataReceiptSha256, resumeAtUnixMillis: selection.resumeAtUnixMillis,
         state: selection.state, terminalCause: selection.terminalCause,
-        endedAtUnixMillis: selection.endedAtUnixMillis, cutoffUnixMillis: selection.selectedAtUnixMillis === undefined ? null : selection.selectedAtUnixMillis + arm.pauseMillis,
+        endedAtUnixMillis: selection.endedAtUnixMillis, cutoffUnixMillis: selection.selectedAtUnixMillis === undefined ? null
+          : selection.selectedAtUnixMillis + (selection.resumeAtUnixMillis === null ? arm.pauseMillis : arm.streamMillis),
         upstreamComplete: selection.upstreamComplete, downstreamOfferedBytes: String(selection.offeredBytes),
         remoteDrain: null }));
     })();
@@ -326,12 +340,13 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
       selection.state = 'held';
       await new Promise(resolve_ => { selection.wake = resolve_; });
       selection.wake = null;
-      requireFact(selection.state === 'resuming' && Date.now() < selection.receipt.cutoffUnixMillis,
+      requireFact(selection.state === 'resuming' && selection.resumeAtUnixMillis < selection.receipt.cutoffUnixMillis
+        && Date.now() < mixedCutoff(selection),
         'mixed stream was not resumed before original cutoff');
       response.writeHead(reply.statusCode, reply.rawHeaders);
       const offer = async block => {
         requireFact(selection.state === 'resuming'
-          && Date.now() < selection.receipt.cutoffUnixMillis
+          && Date.now() < mixedCutoff(selection)
           && selection.offeredBytes + block.length <= Number(arm.expectedSourceBytes),
         'mixed stream exceeded original length or cutoff');
         const accepted = response.write(block);
@@ -710,8 +725,7 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
         const upstream = upstreamRequest({ hostname: '127.0.0.1', port: ports.upstream,
           method: request.method, path: request.url, headers: request.rawHeaders,
           setHost: false, maxHeaderSize: HEADER_BOUND, agent: false });
-        const cutoff = kind === 'mixed' ? setTimeout(() => endMixed(mixed, 'cutoff', 'owner_cutoff'),
-          Math.max(1, mixed.selectedAtUnixMillis + mixed.arm.pauseMillis - Date.now()))
+        const cutoff = kind === 'mixed' ? scheduleMixedCutoff(mixed)
           : kind === 'queue' ? setTimeout(() => endQueuePause('cutoff'),
           Math.max(1, queuePause.selectedAtUnixMillis + queuePause.arm.pauseMillis - Date.now()))
           : kind && kind !== 'first' ? setTimeout(() => upstream.destroy(new Error('selected upstream deadline expired')),
@@ -749,6 +763,7 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
           });
         } finally {
           if (cutoff) clearTimeout(cutoff);
+          if (kind === 'mixed') clearTimeout(mixed.cutoffTimer);
         }
       } catch (error) {
         if (kind === 'mixed' && mixed) endMixed(mixed, 'refused', 'dispatch_refused');
@@ -769,7 +784,7 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
     if (value?.kind === 'arm_mixed_read') {
       requireFact(closed(value, ['version', 'kind', 'cohortNonce', 'bindings', 'selection',
         'expectedSourceSha256', 'expectedSourceBytes', 'expectedPrefixSha256',
-        'selectionContextSha256', 'selectionDeadlineUnixMillis', 'pauseMillis'])
+        'selectionContextSha256', 'selectionDeadlineUnixMillis', 'pauseMillis', 'streamMillis'])
         && value.version === 1 && HEX.test(value.cohortNonce) && !mixedCohorts.has(value.cohortNonce)
         && mixedCohorts.size < 2
         && closed(value.bindings, ['runId', 'objectId', 'originalSha256', 'closedSha256', 'jobProjectionSha256'])
@@ -785,7 +800,9 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
         && Number(value.expectedSourceBytes) > BODY_BOUND && Number(value.expectedSourceBytes) <= 2147483648
         && Number.isSafeInteger(value.selectionDeadlineUnixMillis) && value.selectionDeadlineUnixMillis > Date.now()
         && value.selectionDeadlineUnixMillis - Date.now() <= 1200000
-        && Number.isSafeInteger(value.pauseMillis) && value.pauseMillis > 0 && value.pauseMillis <= 35000,
+        && Number.isSafeInteger(value.pauseMillis) && value.pauseMillis > 0 && value.pauseMillis <= 35000
+        && Number.isSafeInteger(value.streamMillis) && value.streamMillis >= value.pauseMillis
+        && value.streamMillis <= 900000,
       'mixed arm differs from one-use bounded selection');
       requireFact(![...mixedCohorts.values()].some(item =>
         ['armed', 'selected', 'receiving_prefix', 'held', 'resuming'].includes(item.state)),
@@ -807,7 +824,7 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
         'mixed cohort or exact bindings differ');
       if (cohort.state === 'armed' && Date.now() >= cohort.arm.selectionDeadlineUnixMillis
         || ['selected', 'receiving_prefix', 'held', 'resuming'].includes(cohort.state)
-          && Date.now() >= cohort.selectedAtUnixMillis + cohort.arm.pauseMillis) {
+          && Date.now() >= mixedCutoff(cohort)) {
         endMixed(cohort, 'cutoff', 'owner_cutoff');
       }
       if (value.kind === 'bind_mixed_begin') {
@@ -823,6 +840,7 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
         cohort.metadataReceiptSha256 = value.metadataReceiptSha256;
         cohort.resumeAtUnixMillis = Date.now();
         cohort.state = 'resuming';
+        scheduleMixedCutoff(cohort);
         cohort.wake?.();
         return { version: 1, status: 'resume_dispatched', cohortNonce: value.cohortNonce,
           remoteDrain: null };

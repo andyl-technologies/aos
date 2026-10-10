@@ -770,8 +770,25 @@ async fn dispatch(
             )
         };
         let read_window = || {
+            let lease = validated_read()?;
+            // Test builds expose only timing and an operation commitment. This
+            // distinguishes a retained lease's remaining body window from the
+            // independent short dispatch authentication window.
+            #[cfg(feature = "do-e2e")]
+            worker::console_log!(
+                "direct_immutable_read_window {}",
+                serde_json::json!({
+                    "operationDigest": crate::direct_upload::observation::digest(&work.operation_id),
+                    "issuedAt": lease.payload.issued_at.get(),
+                    "notAfter": lease.payload.not_after.get(),
+                    "observedAt": object.clock().observed_at,
+                    "maximumLifetime": object.timing_profile.maximum_lifetime.get(),
+                    "bindingIssuedAt": publication.snapshot.issued_at,
+                    "bindingExpiresAt": publication.snapshot.expires_at,
+                })
+            );
             super::super::read_ownership::ReadWindow::from_lease(
-                &validated_read()?,
+                &lease,
                 &object.timing_profile,
                 object.clock_uncertainty,
             )

@@ -238,7 +238,19 @@ async fn prepare_stage_with_mode(
                     if let Some(diagnostics) = diagnostics {
                         diagnostics.recovery(RecoveryPhase::ReadLease);
                     }
-                    acquire_lease(env, &object, domain, &domain.read_cohort).await?
+                    // Uploading parts may have consumed most of a cached lease.
+                    // Start bulk verification with a newly issued read lease;
+                    // the stream keeps that original cutoff until completion.
+                    acquire_configured_lease_with_cache(
+                        env,
+                        &object,
+                        &domain.issuer_installation,
+                        &domain.read_cohort,
+                        &domain.staging_prefix,
+                        admission.intent.dependency_phase
+                            != aos_hub_core::direct_upload::DirectDependencyPhase::Content,
+                    )
+                    .await?
                 }
                 _ => anyhow::bail!("immutable read original lookup differs"),
             };
@@ -446,6 +458,17 @@ pub(in crate::external_object) async fn acquire_configured_lease(
     cohort: &LeaseCohort,
     cache_prefix: &str,
 ) -> Result<String> {
+    acquire_configured_lease_with_cache(env, object, installation, cohort, cache_prefix, true).await
+}
+
+async fn acquire_configured_lease_with_cache(
+    env: &Env,
+    object: &ObjectConfig,
+    installation: &aos_hub_core::storage_authority::lease::control::IssuerInstallation,
+    cohort: &LeaseCohort,
+    cache_prefix: &str,
+    reuse_cached: bool,
+) -> Result<String> {
     installation.validate()?;
     ensure!(
         installation.authority == cohort.authority
@@ -482,6 +505,7 @@ pub(in crate::external_object) async fn acquire_configured_lease(
         .with(Rc::clone)
         .acquire(
             cache_key,
+            reuse_cached,
             || Ok(object.clock()),
             || worker::Delay::from(std::time::Duration::from_millis(POLL_MILLIS)),
             |window| {
@@ -550,10 +574,45 @@ async fn issue_lease(
     #[cfg(feature = "do-e2e")]
     super::lease_scale::emit_dispatch_observation(observation);
     let response = issuer.fetch_request(provider).await?;
+    #[cfg(feature = "do-e2e")]
+    if response.status_code() != 200 {
+        worker::console_error!(
+            "external_issuer_request_refused status={} issued_at={} expires_at={}",
+            response.status_code(),
+            request.issued_at.get(),
+            request.expires_at.get(),
+        );
+    }
     ensure!(response.status_code() == 200, "issuer renewal refused");
     let bytes = crate::direct_digest::read_bounded_native(response, MAX_ISSUER_REPLY).await?;
     let verifier = object.verifier()?;
-    let reply = verify_issuer_reply_at_time(&verifier, &request, &bytes, || Ok(object.clock()))?;
+    let reply = verify_issuer_reply_at_time(&verifier, &request, &bytes, || Ok(object.clock()));
+    #[cfg(feature = "do-e2e")]
+    if let Err(error) = &reply {
+        let reason = [
+            "unqualified or rolled-back clock",
+            "issuer request is stale",
+            "lease not yet valid or expired under qualified uncertainty",
+        ]
+        .into_iter()
+        .position(|message| error.chain().any(|cause| cause.to_string() == message));
+        let issuer_floor = aos_hub_core::storage_authority::lease::control::verify_issuer_reply(
+            &verifier, &request, &bytes,
+        )
+        .ok()
+        .map_or(-1, |reply| reply.current.journal.clock_floor.get());
+        let clock = object.clock();
+        worker::console_error!(
+            "external_issuer_reply_refused category={} observed_at={} uncertainty={} issuer_floor={} issued_at={} expires_at={}",
+            reason.map_or(0, |index| index + 1),
+            clock.observed_at,
+            clock.uncertainty,
+            issuer_floor,
+            request.issued_at.get(),
+            request.expires_at.get(),
+        );
+    }
+    let reply = reply?;
     ensure!(
         reply.installation == *installation
             && reply.current.journal.policy.timing_profile == object.timing_profile,

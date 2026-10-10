@@ -29,7 +29,7 @@
         license = "MIT";
         maintainers = ["fleet-publisher@example.test"];
       };
-      runtimeDeps = lib.optional (dependency != null) dependency;
+      runtimeDeps = [pkgs.bash] ++ lib.optional (dependency != null) dependency;
       phases = [
         {
           name = "install";
@@ -151,15 +151,17 @@
     enable = true;
     lifecycle = {
       inherit description;
-      execution_model = "oneshot";
+      # Reboots must restore a live process. An unchanged one-shot action is
+      # deliberately not dispatched again by native reconciliation.
+      execution_model = "foreground";
       environment_files = [];
       condition = [];
       pre_start = [];
       start = [
         {
           executable = {
-            path = "${pkgs.coreutils}/bin/true";
-            arguments = [];
+            path = "${pkgs.coreutils}/bin/sleep";
+            arguments = ["infinity"];
           };
           ignore_failure = false;
         }
@@ -170,7 +172,7 @@
       restart = "never";
       restart_delay_millis = 0;
       configuration_change_action = "restart";
-      remain_after_exit = true;
+      remain_after_exit = false;
       start_timeout_millis = 30000;
       stop_timeout_millis = 30000;
     };
@@ -189,7 +191,7 @@
     ];
 
   consumerUpgrade = {
-    aos.system.version = "test-2";
+    aos.system.version = "0.2.0";
     aos.abilities.configuration.operations.file.effects.upgrade-marker.input = {
       path = "/etc/aos/upgrade-test/marker.conf";
       content = "marker = 1\n";
@@ -289,6 +291,19 @@
     qualificationImage
     consumerTools
     consumerUpgrade
+    # This candidate is published independently of the fleet's machine-image
+    # adapter. Carry the same control channel and network ABI across its boot.
+    (consumerSystem.config.aos.image.platform.testMachineModule {
+      bakeAgentUnit = true;
+      bootMode = "image";
+      varProvisioning = "repart";
+      varSizeMiB = 256;
+      debugMac = "52:54:00:12:01:01";
+      defaultAgentPackage = pkgs.aos-test-agent;
+      ip = "192.168.50.10";
+      mac = "52:54:00:12:00:01";
+      inherit (pkgs) writeTextFile;
+    })
     {aos.activation.stages.host.configuration = ["${consumerUpgradeModule}/module.nix"];}
   ];
 in {

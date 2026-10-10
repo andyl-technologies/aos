@@ -94,9 +94,14 @@ async function observe(kind, intent, dispatch, timeout = 30000) {
     if (cancelled) controller.abort();
     if (controller.signal.aborted) throw new Error("Cancelled before dispatch.");
     return await dispatch(controller.signal, name);
-  } catch {
+  } catch (error) {
+    // Retain only closed transport categories; exception text can contain URLs.
+    const code = error?.cause?.code ?? error?.code;
+    const transportCode = ["ECONNRESET", "ECONNREFUSED", "EPIPE", "ETIMEDOUT",
+      "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT",
+      "UND_ERR_BODY_TIMEOUT"].includes(code) ? code : "unclassified";
     await save(`${name}-unknown.json`, { ...intent, state: "unknown", cause: controller.signal.aborted
-      ? "deadline_or_cancellation" : "dispatch_or_reply_unknown" });
+      ? "deadline_or_cancellation" : "dispatch_or_reply_unknown", transportCode });
     throw new Error("Operation lacks an exact acknowledgement; evidence retained without replay.");
   } finally { clearTimeout(timer); active.delete(controller); }
 }
@@ -263,7 +268,12 @@ async function upload(source, grant) {
     const response = await fetch(grant.url, { method: "PUT", headers, body: stream,
       duplex: "half", redirect: "manual", signal });
     const responseBytes = await bounded(response, 8192), etag = response.headers.get("etag");
-    if (!response.ok || !etag || !/^"[^"\\\x00-\x1f\x7f]+"$/.test(etag)) throw new Error("Part lacks positive strong ETag.");
+    if (!response.ok || !etag || !/^"[^"\\\x00-\x1f\x7f]+"$/.test(etag)) {
+      await save(`${name}-rejected.json`, { status: response.status,
+        etagPresent: etag !== null, strongEtag: !!etag && /^"[^"\\\x00-\x1f\x7f]+"$/.test(etag),
+        responseSha256: hash(responseBytes) });
+      throw new Error("Part lacks positive strong ETag.");
+    }
     await save(`${name}-positive.json`, { objectId: source.plan.objectId, partNumber: part.partNumber,
       startedAtMillis: String(started), finishedAtMillis: String(Date.now()), status: response.status,
       responseSha256: hash(responseBytes), etag });
@@ -350,6 +360,7 @@ async function waitForMixedRelease(ready, stage = "admission") {
 async function enqueueMixedWithAdmission(bulkObjects, metadataObjects) {
   if (!bulkObjects.length || !metadataObjects.length) throw new Error("Mixed admission requires both classes.");
   const first = bulkObjects[0];
+  const concurrentBulk = bulkObjects[1];
   const closedCapture = await control({ kind: "inspect", objectId: first.objectId, afterAttempt: 0 });
   const closedPage = closedCapture.result;
   if (closedPage.objectId !== first.objectId || canonicalHash(closedPage.original) !== canonicalHash(original)
@@ -363,7 +374,9 @@ async function enqueueMixedWithAdmission(bulkObjects, metadataObjects) {
     closedSha256: canonicalHash(closedPage.closed), jobProjectionSha256: canonicalHash(closedPage.closed.job),
     inspectionSha256: closedCapture.responseSha256, inspectionFile: closedCapture.captureFile };
   await waitForMixedRelease(cohort, "arm");
-  await control({ kind: "enqueue", objectIds: [first.objectId] });
+  // A queue may serialize invocations. Fill both bulk slots in one batch so
+  // the held first stream does not prevent delivery of the second original.
+  await control({ kind: "enqueue", objectIds: [first, concurrentBulk].filter(Boolean).map(item => item.objectId) });
   const deadline = Date.now() + 35000;
   let pending;
   while (Date.now() < deadline) {
@@ -400,18 +413,39 @@ async function enqueueMixedWithAdmission(bulkObjects, metadataObjects) {
     throw new Error("Mixed Begin closed job changed after arming.");
   }
   await waitForMixedRelease(pending);
+  if (concurrentBulk) {
+    // Fill the second bulk slot before measuring the reserved metadata slot.
+    // The metadata completion receipt must independently confirm both are active.
+    let started = false;
+    while (Date.now() < deadline) {
+      if (cancelled) throw new Error("Cancelled before concurrent bulk Begin.");
+      const capture = await control({ kind: "inspect", objectId: concurrentBulk.objectId, afterAttempt: 0 });
+      const page = capture.result;
+      if (page.objectId !== concurrentBulk.objectId || canonicalHash(page.original) !== canonicalHash(original)
+          || !page.closed?.job || page.attempts.length > 1 || page.nextAttempt !== null) {
+        throw new Error("Concurrent bulk inspection differs from its original.");
+      }
+      const record = page.attempts[0];
+      if (record?.receipt) throw new Error("Concurrent bulk finished before metadata admission.");
+      if (record) {
+        started = true;
+        break;
+      }
+      await new Promise(done => setTimeout(done, 25));
+    }
+    if (!started) throw new Error("Concurrent bulk Begin was not observed before the mixed cutoff.");
+  }
   const metadata = metadataObjects[0];
-  // Preserve an actual object slot for this admission while the first bulk
-  // is held. Remaining originals still run once after the real metadata proof.
+  // Remaining originals still run once after the real metadata proof.
   await control({ kind: "enqueue", objectIds: [metadata.objectId] });
   await waitForObjects([metadata.objectId]);
   const verified = await inspectOriginalObjects([metadata.objectId], { deadline: Date.now() + 30000, maximumPages: 128 });
   const positive = verified.filter(item => item.receipt.verificationReplayed === false
-    && Number(item.receipt.objects.bulkActive) > 0
+    && Number(item.receipt.objects.bulkActive) === (concurrentBulk ? 2 : 1)
     && item.receipt.providerAfter.metadataAdmissionsDuringBulk > item.receipt.attempt.providerBefore.metadataAdmissionsDuringBulk);
   if (positive.length !== 1) throw new Error("Metadata lacks actual fresh admission under bulk.");
-  if (bulkObjects.length > 1) {
-    await control({ kind: "enqueue", objectIds: bulkObjects.slice(1).map(item => item.objectId) });
+  if (bulkObjects.length > 2) {
+    await control({ kind: "enqueue", objectIds: bulkObjects.slice(2).map(item => item.objectId) });
   }
   await save("mixed-admission-metadata-finish.json", { version: 1, runId,
     readySha256: canonicalHash(pending), record: positive[0] });

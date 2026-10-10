@@ -30,6 +30,18 @@ pub(crate) enum EnqueuePhase {
     QueueSend,
 }
 
+/// Names the existing stage creation step entered before a refused result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum BeginPhase {
+    OriginalContext,
+    AdmissionJournal,
+    ProtectedMaterial,
+    StageEffect,
+    ExternalPreparation,
+    ExternalExecution,
+}
+
 /// Names the existing recovery probe operation entered before fallback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -44,6 +56,7 @@ pub(crate) enum RecoveryPhase {
 
 /// Retains closed categories only, without retaining any failure payload.
 pub(crate) struct Diagnostics {
+    begin_phase: Cell<Option<BeginPhase>>,
     phase: Cell<EnqueuePhase>,
     recovery_phase: Cell<RecoveryPhase>,
     recovery_failure: Cell<Option<RecoveryPhase>>,
@@ -53,10 +66,20 @@ impl Diagnostics {
     /// Starts before the existing original/runtime checks for Enqueue only.
     pub(crate) fn new() -> Self {
         Self {
+            begin_phase: Cell::new(None),
             phase: Cell::new(EnqueuePhase::OriginalContext),
             recovery_phase: Cell::new(RecoveryPhase::Preparation),
             recovery_failure: Cell::new(None),
         }
+    }
+
+    /// Starts a stage creation trace without reporting an Enqueue phase.
+    pub(crate) fn for_begin() -> Self {
+        let diagnostics = Self::new();
+        diagnostics
+            .begin_phase
+            .set(Some(BeginPhase::OriginalContext));
+        diagnostics
     }
 
     /// Starts a new object's recovery probe without borrowing a previous failure.
@@ -76,6 +99,13 @@ impl Diagnostics {
 pub(crate) fn enter(diagnostics: Option<&Diagnostics>, phase: EnqueuePhase) {
     if let Some(diagnostics) = diagnostics {
         diagnostics.phase.set(phase);
+    }
+}
+
+/// Records only the fixed step name on an explicitly selected Begin trace.
+pub(crate) fn enter_begin(diagnostics: Option<&Diagnostics>, phase: BeginPhase) {
+    if let Some(diagnostics) = diagnostics {
+        diagnostics.begin_phase.set(Some(phase));
     }
 }
 
@@ -110,6 +140,8 @@ enum State {
 pub(crate) struct Refusal {
     state: State,
     #[serde(skip_serializing_if = "Option::is_none")]
+    begin_failure_phase: Option<BeginPhase>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     failure_phase: Option<EnqueuePhase>,
     #[serde(skip_serializing_if = "Option::is_none")]
     recovery_failure_phase: Option<RecoveryPhase>,
@@ -119,7 +151,10 @@ pub(crate) struct Refusal {
 pub(crate) fn refused(diagnostics: Option<&Diagnostics>) -> Refusal {
     Refusal {
         state: State::RefusedOrUnknown,
-        failure_phase: diagnostics.map(|diagnostics| diagnostics.phase.get()),
+        begin_failure_phase: diagnostics.and_then(|diagnostics| diagnostics.begin_phase.get()),
+        failure_phase: diagnostics
+            .filter(|diagnostics| diagnostics.begin_phase.get().is_none())
+            .map(|diagnostics| diagnostics.phase.get()),
         recovery_failure_phase: diagnostics
             .and_then(|diagnostics| diagnostics.recovery_failure.get()),
     }
@@ -128,6 +163,19 @@ pub(crate) fn refused(diagnostics: Option<&Diagnostics>) -> Refusal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn begin_reports_only_its_selected_step() {
+        let diagnostics = Diagnostics::for_begin();
+        enter_begin(Some(&diagnostics), BeginPhase::ExternalPreparation);
+
+        assert_eq!(
+            serde_json::to_value(refused(Some(&diagnostics))).unwrap(),
+            serde_json::json!({"state":"refused_or_unknown",
+                "beginFailurePhase":"external_preparation"})
+        );
+        assert_eq!(refused(None).begin_failure_phase, None);
+    }
 
     // Deliberately not Serialize: the production helper cannot capture errors.
     struct OpaqueFault(&'static str);

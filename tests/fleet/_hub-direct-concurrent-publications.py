@@ -68,6 +68,13 @@ def start_direct_publication(client, tools, registry_slug, signed, token, label,
                 os.fsync(output.fileno())
             os.link(temporary, root / name)
             temporary.unlink()
+            # The VM may be stopped immediately after an observer fails. Make
+            # the terminal result's directory entry durable before exiting.
+            descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
 
         fields = Path('/proc/self/stat').read_text().rsplit(')', 1)[1].split()
         pin = {'supervisorPid': os.getpid(), 'supervisorUid': os.getuid(),
@@ -89,6 +96,8 @@ def start_direct_publication(client, tools, registry_slug, signed, token, label,
                 outcome = {'exitCode': result.returncode, 'timedOut': False}
             except subprocess.TimeoutExpired:
                 outcome = {'exitCode': None, 'timedOut': True}
+            os.fsync(stdout.fileno())
+            os.fsync(stderr.fileno())
         outcome.update(version=1, startedUnixNs=str(started), finishedUnixNs=str(time.time_ns()),
             publicationLabel=selected['label'], attempt=selected['attempt'])
         retain_receipt('result.json', outcome)
@@ -99,6 +108,11 @@ def start_direct_publication(client, tools, registry_slug, signed, token, label,
 
         root = Path('/var/lib/hybrid-client/concurrent-' + selected['label'] + '-' + str(selected['attempt']))
         root.mkdir(mode=0o700, exist_ok=False)
+        descriptor = os.open(root.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
         inputs = {name: selected[name] for name in ('arguments', 'publisherHome', 'label', 'attempt')}
         files = {'input.json': json.dumps(inputs, separators=(',', ':')).encode(),
             'supervisor.py': base64.b64decode(selected['supervisor'], validate=True)}

@@ -92,6 +92,33 @@ def _same_pin(actual, expected):
         raise ValueError("publisher process lifetime or arguments changed")
 
 
+def _child_pids(parent_pid, proc_root=Path('/proc')):
+    # Minimal guest kernels may omit PROC_CHILDREN. Read the actual parent
+    # relationship instead; callers still pin the selected child's identity.
+    directories = [path for path in proc_root.iterdir()
+        if re.fullmatch(r'[1-9][0-9]{0,9}', path.name)]
+    if len(directories) > 4096:
+        raise ValueError("publisher process scan exceeds its bound")
+    children = []
+    for directory in directories:
+        try:
+            if directory.stat().st_uid != os.getuid():
+                continue
+            with (directory / 'stat').open('rb') as source:
+                body = source.read(8193)
+            if len(body) > 8192:
+                raise ValueError("publisher process stat exceeds its bound")
+            fields = body.decode().rsplit(')', 1)[1].split()
+            if len(fields) < 20:
+                raise ValueError("publisher process stat is incomplete")
+            if fields[0] != 'Z' and fields[1] == str(parent_pid):
+                children.append(int(directory.name))
+        except FileNotFoundError:
+            # An unrelated process may exit during enumeration.
+            continue
+    return children
+
+
 def _inputs(root, signed, process):
     _private_path(root / "input.json")
     _private_path(root / "supervisor.py")
@@ -378,22 +405,41 @@ def observe_direct_sparse_publisher(client, tools, process, signed, corpus):
             print(json.dumps({'version': 1, 'state': 'terminal', 'sparse': False}))
         else:
             inputs = _inputs(root, selected['signed'], process)
-            supervisor = _pin(process['supervisorPid'], process['supervisorArguments'],
-                process['supervisorExecutable'], process['supervisorUid'], process['supervisorStartTicks'])
-            children = (Path('/proc') / str(supervisor['pid']) / 'task' / str(supervisor['pid']) / 'children').read_text().split()
-            if len(children) != 1:
-                raise ValueError('recorded publisher supervisor has no unique CLI child')
-            publisher = _pin(int(children[0]), inputs['arguments'], os.path.realpath(inputs['arguments'][0]), os.getuid())
-            journal = Path(selected['signed']['publisherHome']) / 'direct-upload.sqlite'
             try:
-                snapshot = _snapshot(journal, selected['sources'])
-                admission = _snapshot(Path(str(journal) + '.admission'), selected['sources'])
-            except (FileNotFoundError, sqlite3.OperationalError):
-                snapshot, admission = None, None
-            sparse = snapshot is not None and any(item['sparseGaps'] and item['completeSha256'] is None for item in snapshot['sessions'])
-            print(json.dumps({'version': 1, 'state': 'live', 'sparse': sparse,
-                'publisher': publisher, 'supervisor': supervisor, 'checkpoint': snapshot, 'admission': admission,
-                'scope': 'actual higher positive part with a lower receipt hole; unknown grant outcomes retained'}))
+                supervisor = _pin(process['supervisorPid'], process['supervisorArguments'],
+                    process['supervisorExecutable'], process['supervisorUid'], process['supervisorStartTicks'])
+                children = _child_pids(supervisor['pid'])
+                if not children:
+                    # A live supervisor can be starting its child or persisting
+                    # an exited child's result. Neither is a sparse boundary.
+                    _pin(process['supervisorPid'], process['supervisorArguments'],
+                        process['supervisorExecutable'], process['supervisorUid'], process['supervisorStartTicks'])
+                    print(json.dumps({'version': 1, 'state': 'settling', 'sparse': False}))
+                    raise SystemExit(0)
+                if len(children) != 1:
+                    raise ValueError('recorded publisher supervisor has no unique CLI child')
+                publisher = _pin(int(children[0]), inputs['arguments'], os.path.realpath(inputs['arguments'][0]), os.getuid())
+                _pin(process['supervisorPid'], process['supervisorArguments'],
+                    process['supervisorExecutable'], process['supervisorUid'], process['supervisorStartTicks'])
+                journal = Path(selected['signed']['publisherHome']) / 'direct-upload.sqlite'
+                try:
+                    snapshot = _snapshot(journal, selected['sources'])
+                    admission = _snapshot(Path(str(journal) + '.admission'), selected['sources'])
+                except (FileNotFoundError, sqlite3.OperationalError):
+                    snapshot, admission = None, None
+                sparse = snapshot is not None and any(item['sparseGaps'] and item['completeSha256'] is None for item in snapshot['sessions'])
+                print(json.dumps({'version': 1, 'state': 'live', 'sparse': sparse,
+                    'publisher': publisher, 'supervisor': supervisor, 'checkpoint': snapshot, 'admission': admission,
+                    'scope': 'actual higher positive part with a lower receipt hole; unknown grant outcomes retained'}))
+            except FileNotFoundError:
+                # The supervisor publishes its terminal result before exiting.
+                # A process can disappear between the first check and /proc.
+                if not (root / 'result.json').is_file():
+                    _pin(process['supervisorPid'], process['supervisorArguments'],
+                        process['supervisorExecutable'], process['supervisorUid'], process['supervisorStartTicks'])
+                    print(json.dumps({'version': 1, 'state': 'settling', 'sparse': False}))
+                else:
+                    print(json.dumps({'version': 1, 'state': 'terminal', 'sparse': False}))
     """)
     return json.loads(direct_guest_python(client, tools["python"], program, selected))
 
@@ -534,8 +580,7 @@ def probe_direct_changed_source(client, tools, process, signed, source, token):
         result = _closed_json((root / 'result.json').read_bytes())
         if result['exitCode'] != -9 or result['timedOut']:
             raise ValueError('changed source probe requires the recorded interrupted invocation')
-        children = (Path('/proc') / str(process['supervisorPid']) / 'task' / str(process['supervisorPid']) / 'children')
-        if children.exists() and children.read_text().split():
+        if _child_pids(process['supervisorPid']):
             raise ValueError('a live publisher child can still read the original source')
         inputs = _inputs(root, selected['signed'], process)
         environment, environment_receipt = _original_environment(root, inputs['arguments'], process['supervisorUid'])

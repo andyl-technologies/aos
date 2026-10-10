@@ -71,7 +71,7 @@ in {
     src = ./modules/runtime-services;
     module = ./modules/runtime-services;
     moduleDeps = [service-management];
-    runtimeDeps = [coreutils nginx python3];
+    runtimeDeps = [bash coreutils nginx python3];
 
     phases = [
       {

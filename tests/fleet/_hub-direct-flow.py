@@ -575,6 +575,13 @@ def install_direct_reviewed_acceptance(native, worker, tools, process, identity,
         "/etc/systemd/system/aos-hub.service.d/external-direct.conf", dropin)
     native.succeed("systemctl daemon-reload; systemctl restart aos-hub.service", timeout=90)
     native.wait_for_unit("aos-hub.service", timeout=90)
+    # A simple service can be active before its child changes user and execs.
+    # Observe the running Hub only after its TLS listener handles a request.
+    refusal = wait_fixture_tls_response(native, tools["curl"], tools["python"],
+        tools["nativeOriginUrl"] + "/-/health", "GET", {"401"},
+        "native-accepted-runtime-unsigned-refusal", 90)
+    if base64.b64decode(refusal["body_base64"], validate=True) != b"":
+        raise ValueError("Native unsigned transport refusal body differs")
     return {"artifactSha256": artifact_sha, "workerReceipt": receipt,
             "scope": "actual separate verifier installation; live production capabilities pending"}
 
@@ -732,7 +739,8 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
             credentials["organization"], credentials["binding"], name,
             [sources[label]["trustKey"]], "primary",
             credentials["binding"]["spec"]["s3"]["prefix"] + "/registry-" + label,
-            credentials["currentSqlPins"]["currentWriteRevision"], False)
+            credentials["currentSqlPins"]["currentWriteRevision"], False,
+            label_prefix="fleet-direct-publication-" + label)
         retain_direct_flow("actual-registry-placement-" + label + ".json", registries[label])
     token = direct_root_browser_token(client, tools["curl"], tools["python"], private_guest_command, reuse_session=True)
     assert_direct_fifo_checkpoint(client, tools, registries["b"]["registry"]["slug"], sources["b"], token)

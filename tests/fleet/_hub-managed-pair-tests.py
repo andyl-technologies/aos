@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 
 HERE = Path(__file__).parent
@@ -114,6 +115,7 @@ class PairTests(unittest.TestCase):
         after = pair.managed_native_arguments("/nix/store/hub/bin/aos-hub", coordinates, files, acceptance=True)
 
         self.assertNotIn("--direct-upload-acceptance-file", before + after)
+        self.assertEqual(before[before.index("--hybrid-upload-mode") + 1], "worker_proxy")
         self.assertNotIn("--oci-sdk-emulator-acceptance-file", before)
         self.assertEqual(after[:-6], before)
         self.assertEqual(after[-6:], ["--oci-sdk-emulator-acceptance-file", files["acceptance"],
@@ -136,6 +138,40 @@ class PairTests(unittest.TestCase):
             del incomplete[missing]
             with self.subTest(missing=missing), self.assertRaisesRegex(ValueError, "complete private"):
                 pair.managed_native_arguments("/nix/store/hub/bin/aos-hub", coordinates, incomplete)
+
+    def test_observer_uses_selected_worker_origin_and_native_process_owner(self):
+        coordinates = pair.managed_pair_coordinates("a" * 32)
+        coordinates.update(workerOrigin="https://aos.fleet.test",
+            nativeOrigin="https://native.fleet.test:8443")
+        prepared = {"coordinates": coordinates, "configurationFile": "/private/configuration.json"}
+        tools = {name: "/nix/store/selected/" + name for name in (
+            "workerSourcePath", "python", "reviewer", "hub", "qualificationDriver",
+            "ociNamespaceObserver", "ociAnchor", "node", "runner", "workerd", "miniflare", "wasm", "shim",
+            "setpriv")}
+        tools["nativeObserverUser"] = "aos-hub"
+        native, worker = object(), object()
+        processes = {"native": {"pid": 123}, "worker": {"pid": 456}}
+        transferred, commands, selections = [], [], []
+
+        def install(machine, python, path, body):
+            transferred.append((machine, path, body))
+
+        def observe(machine, python, body, selected, timeout):
+            selections.append(selected)
+            return "{}"
+
+        with patch.object(pair, "install_direct_guest_file", install, create=True), \
+                patch.object(pair, "read_direct_guest_file", return_value=b"actual observation", create=True), \
+                patch.object(pair, "private_guest_command", side_effect=lambda *args, **kwargs: commands.append(args), create=True), \
+                patch.object(pair, "direct_guest_python", observe, create=True):
+            pair.observe_managed_pair(native, worker, tools, prepared, processes)
+
+        self.assertEqual(json.loads(transferred[0][2])["publicOrigin"], "https://aos.fleet.test")
+        self.assertEqual(selections[0]["origin"], "https://aos.fleet.test")
+        self.assertIn("setpriv --reuid aos-hub --regid aos-hub --init-groups", commands[0][1])
+        self.assertIn("--inh-caps +sys_ptrace --ambient-caps +sys_ptrace --", commands[0][1])
+        self.assertIn("oci-sdk-observe-native --pid 123", commands[0][1])
+        self.assertEqual(len(transferred), 3)
 
     def test_forwards_confined_to_real_private_vm_and_fixed_ports(self):
         arguments = pair.managed_forward_arguments("/nix/store/socat/bin/socat", "192.168.10.3", 4643)
