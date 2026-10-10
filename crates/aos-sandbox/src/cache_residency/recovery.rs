@@ -75,8 +75,7 @@ mod checkpoint;
 mod classification;
 mod codec;
 mod global;
-mod logical_pin_acquisition;
-mod logical_pin_release;
+mod logical_pin;
 #[cfg(target_os = "linux")]
 mod owner_reconcile;
 mod reducer;
