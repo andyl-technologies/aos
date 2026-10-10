@@ -5,9 +5,9 @@ This record accompanies [the workspace design](crate-workspace.md),
 Starting master is `2ee6311aea39bef7aef6ba4b566f9f502649f3f2`; the tracking change
 is [PR #715](https://github.com/andyl-technologies/aos/pull/715).
 
-Completed local validation and remaining checks are recorded below.
-It does not establish a green repository-wide result. All builds use AOS-built
-compilers and native tools. Production builds use `aos-dev --release`;
+All requested local build and test attempts have ended. The failures and
+prerequisite blocks below prevent a green repository-wide result. All builds
+use AOS-built compilers and native tools. Production builds use `aos-dev --release`;
 development checks select a user-owned cache. An inherited root-owned cache was
 correctly refused by the existing ownership guard; neither its permissions nor
 the guard was changed.
@@ -319,21 +319,77 @@ The corrected Rust scopes have no source-contract references to these Nix fields
 Their corrective fixtures bind immutable `f917962d70` Rust source and products,
 rather than creating another production build for changed test-Nix hashes.
 The corrected official store-composition gate passes, including its official
-store-equivalence prerequisite, at output
+store-equivalence prerequisite, at realized output
 `ahswqwlibnrzzyms9dl87xk9l2bz3167-crucible-phase5-campaign-store-composition-0`.
-Its command executions report 113 passes and 18 existing ignores, including the
-complete 70-case harness with 52 passes and 18 ignores. Repeated selected
-executions are not counted as unique tests. Eight additional native mode
-fixtures are still running. The full SQLite workflow and
-CLI selftest reruns are also still running; their preceding standalone software
-proofs are not substituted for official prerequisite or VM results.
+Its selected command executions report 113 passes and 18 existing ignores;
+that includes the complete 70-case harness with 52 passes and 18 ignores.
+Repeated selected executions are not counted as distinct unique tests. No
+standalone diagnostic substitutes for this official result.
 
-The unchanged million-admission stress test is running separately against its
-captured source and corrected installed suite. It retains its original
-1,000,000-admission workload and 604,800-second timeout. An early recorded
-snapshot shows 18,464 completed admissions; this is progress, not a passing result.
-Commands, captured inputs, and progress snapshots remain in local evidence.
-The final report and scratch bundle will be updated after the remaining runs.
+The eight additional corrected disabled-mode roots are terminal: six realized,
+and two parent wrappers were blocked by their actual failed fleet VM builders.
+The separate routing anchor is excluded from that count. Typed choice reaches
+the installed campaign test listing, then rejects its 426 tests against the
+unchanged fixture's expected 372. That expectation and the static source test
+inventory match starting master; no original-master VM result is claimed.
+Coverage passes its three coverage contracts and two QEMU-host contracts, then
+runs all 20 selected plugin tests: 19 pass and one fails during setup-region
+mapping. Its deeper mapping or OS cause remains unresolved. Artifact ownership
+and discovery succeed in both cases; neither failure is treated as a missing
+crate or a proven original runtime outcome.
+
+The corrected CLI selftest request is terminal with a dependency-blocked
+parent and an actual failed raw VM. Its invoked `f917962d70` suite retains the
+real Bash interpreter and launches QEMU, resolving the earlier scrubbed-launcher
+failure. The guest redirects its probe output to volatile files that are not
+exported on failure; the precise failed expectation cannot be recovered. Its
+original test script is byte-identical, but no original VM run establishes a
+runtime baseline.
+
+The earlier SQLite workflow attempt `87447` retains its own outcomes: its
+corrected inner native fixture realizes, while the captured outer graph is
+blocked by actual failed prerequisites, including an older scrubbed launcher
+and an obsolete campaign-model helper package selector. The latter is corrected
+in `6bb0f14a0c`: the complete official campaign-model graph, including its
+content-address dependencies, passes 430 test executions with no failures or
+ignores. Its exact helper audit covers 22 actual calls and seven definitions;
+all package owners match the workspace. The correction changes one package
+literal and preserves required test names and counts.
+
+The first final-bound SQLite workflow request `32099` also fails separately:
+its captured suite and caller-generated scenario used different root-image
+fixture outputs. That temporary overlay input mismatch is corrected by binding
+the exact fixture derivation already embedded in the retained suite. No Rust
+code, production product, workload, or assertion is changed.
+
+The fixture-consistent full official rerun `20869`, invoked from `6bb0f14a0c`,
+retains all prerequisites and exact `f917962d70` products, Rust source, and
+matching fixture artifact. Native fixture generation and the five CLI source
+checks pass. Its raw VM launches production QEMU and fails the scheduler
+invariant requiring the host-concurrent choice continuation for held physical
+RUN evidence. The failing check method is byte-identical to starting master;
+the triggering cause and original complete VM outcome remain unproven. The
+official workflow parent is blocked by that demonstrated VM failure and the
+separate atomic-patch prerequisite. Passing inner software checks are not
+substituted for a passing workflow.
+
+The original full million-admission attempt `35357` is terminal with driver
+exit 1 amid host disk exhaustion. It retained its original 1,000,000 admissions,
+62,500 requests, and 604,800-second timeout; no process was cancelled and no
+workload, timeout, or assertion was reduced. Its native test process was verified
+gone and its requested Nix output is invalid. The final native exit code and
+assertion result were not recovered: the result-manifest write failed with
+`ENOSPC` and left the original manifest empty, and no terminal test summary was
+retained.
+
+The last observed progress, at `2026-10-10 20:47:10 UTC`, was 336,768 admissions
+and 21,048 requests. This is neither a final achieved count nor a million-run
+PASS. Earlier observations of a ZFS read wait, telemetry disk exhaustion, and
+resumed progress remain separate diagnostic evidence. The recovered invocation
+manifest, terminal observations, and historical machine report were preserved
+in RAM and then persisted with byte and SHA-256 verification. These recovery
+steps change no test evidence or outcome. All requested attempts have ended;
+the stress test did not establish completion of its workload or assertions.
 
 Additional terminal failures expose inherited native fixture mismatches. The
 block-shmem gate creates `qemu/aio.h` and copies a nonexistent `block/aio.h`;
@@ -392,13 +448,13 @@ Use the documented [Cargo shell](../../AGENTS.md) and `aos-dev`. Set
 target rpath flags through `RUSTDOCFLAGS` inside that shell; do not export them
 globally into WebAssembly checks or leak OpenSSL through `LD_LIBRARY_PATH`.
 
-The published local snapshot under `~/scratch/aos-crate-monorepo-pr-715/` contains
-logs, exact commands, metadata, source checkpoints, outcome classifications,
-and compatibility audits. Its manifest hashes every copied artifact and records
-the captured branch head. Its status remains `in_progress` while the remaining
-runs execute; supervising agents will refresh this record and bundle afterward.
-The nine owning-PR handoffs include the pinned inspection
-snapshot and 242-symbol Crucible ownership map. They distinguish committed
+The local bundle under `~/scratch/aos-crate-monorepo-pr-715/` contains the
+available logs, exact commands, metadata, source checkpoints, outcome
+classifications, compatibility audits, and explicit evidence-recovery limits.
+Its manifest hashes every copied artifact and records the final documentation
+head, separately from invocation and tested-source heads. Its `complete` status
+means every requested attempt is terminal, not that every check passed. The
+nine owning-PR handoffs include the pinned inspection snapshot and 242-symbol Crucible ownership map. They distinguish committed
 code, dirty local observations, and future extractions; other owners' checkouts
 were not modified. Dispatch has five implemented crates. A separate discovery at
 `2026-10-10 00:10:22 UTC` found no new owning PRs. The already anticipated
