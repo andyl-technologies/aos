@@ -125,7 +125,21 @@ empty `terrane` binary.
 ### T1 — Local repository
 
 **Status:** In progress; eight of twenty-two T1 tasks are complete.
-The combined read candidate `be832963c4` failed strict native all-target
+Current combined candidate `6889de2180` passes native build, strict all-target
+Clippy, fresh compilation with 1,037 nonignored tests and the three new pure
+selection-memo tests. The independent application check compiles 114 test
+targets across 29 packages, including 77 integration targets, against the same
+immutable crate source. Its original GC stress run still times out at 120.014
+seconds after six completed observations. A separate diagnostic measures about
+77 seconds before reconciliation and 11-12 seconds per initial progress
+publication. The 4,100-family fixture requires at least 33 selected events.
+Normative review distinguishes the runner limit from C/G/D and live whole-lease
+deadlines; an exact-case 900-second runner override awaits fresh qualification.
+All original timeout receipts remain unchanged. Native index gates and sixteen
+independent permanent-authority controls are running. No task, exit or freeze
+advances from these partial results.
+
+The earlier combined read candidate `be832963c4` failed strict native all-target
 Clippy on two large enum variants. The reviewed enum, PACK-16 attribution,
 native fixture, producer-history and GC handoff corrections are composed on
 `f0d494fb01`. Its public SDK fixture's disallowed randomized `HashMap` is
@@ -3832,7 +3846,7 @@ owner promotion, and recurring permanent residue recovery, required by GC-15,
 GC-16 and GC-29. Existing local-v1 checks and pure record validation do not close
 those implementation gaps.
 
-The latest frozen composition `c2daf3f55c` passes native build, strict
+The earlier frozen composition `c2daf3f55c` passes native build, strict
 all-target Clippy and actual fresh test compilation. Its executable-bound
 inventory contains 1,034 nonignored tests across three binaries. The six
 metadata and paired-history cases pass in 17.135 seconds, including the real

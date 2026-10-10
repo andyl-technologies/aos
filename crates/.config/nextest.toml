@@ -11,10 +11,19 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 
 # Copied ownership and permanent recovery use genuine sixty-second barriers
 # before their independent fault checks. Reserve the outer runner slots so
-# unrelated test load cannot consume the unchanged two-minute process bound.
+# unrelated test load cannot consume their process bounds.
 [[profile.default.overrides]]
 filter = 'package(terrane) & (test(gc::runner::copied_retirement_tests::) | test(gc::runner::permanent_local_tests::))'
 threads-required = "num-test-threads"
+
+# This recovery stress case discovers 4,100 canonical trash families and selects
+# at least 33 durable events after a genuine sixty-second barrier. Its native
+# trace spends about 77 seconds before reconciliation and 11-12 seconds on each
+# initial progress publication. Allow a bounded fifteen-minute test process;
+# all collector, lease, commit and G/D deadlines and completion checks stay live.
+[[profile.default.overrides]]
+filter = 'package(terrane) & test(=gc::runner::permanent_local_tests::recovery::permanent_local_pass_reclaims_pack_index_and_all_observed_trash_cycles)'
+slow-timeout = { period = "60s", terminate-after = 15 }
 
 # The ten native local-deletion cases include real grace waits and repeated
 # durable fault/recovery prefixes. Their owning Nix run measured 100-210 seconds
