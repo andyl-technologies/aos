@@ -982,52 +982,7 @@ impl<'journal> PublisherAdmissionProtectedJournalV1<'journal> {
                     let Some(effect) = effect else {
                         return Ok(PublisherAdmissionColdRecoveryV1::StateOnly);
                     };
-                    let replay = reconstruct_semantic_projection(
-                        &projection,
-                        self.limits,
-                        self.capacity,
-                        self.maximum_source_releases,
-                        self.maximum_root_records,
-                    )?
-                    .ok_or(PublisherAdmissionJournalErrorV1::InvalidMutationBatch)?;
-                    let current = current_permit_for_effect(&replay, &effect)?;
-                    if replay.checkpoint.poisoned
-                        || matches!(
-                            current.state,
-                            CompletionPermitStateV1::Spent
-                                | CompletionPermitStateV1::RetiredWithoutEffect
-                        )
-                    {
-                        return Ok(PublisherAdmissionColdRecoveryV1::StateOnly);
-                    }
-                    let recovery_binding =
-                        capacity_recovery_binding_from_effect(&effect, self.limits)?;
-                    let reservation = self
-                        .inner
-                        .recover_unique_domain_capacity_reservation_by_binding(recovery_binding)?;
-                    if reservation.admission_transaction_id() != effect.transaction {
-                        return Err(PublisherAdmissionJournalErrorV1::InvalidMutationBatch);
-                    }
-                    let transaction_digest = reservation.owner_digest();
-                    let effect_digest = effect_record_digest(&projection, transaction_id, &effect)?;
-                    let permit_record_digest =
-                        current_permit_record_digest(&projection, &effect, self.limits)?;
-                    let current_digest = current_publication_digest(&projection)?;
-                    PublisherAdmissionColdRecoveryV1::ObservePending(
-                        PublisherAdmissionColdObservationV1 {
-                            snapshot: self.inner.snapshot()?,
-                            transaction_id,
-                            transaction_digest,
-                            effect_digest,
-                            permit_record_digest,
-                            current_digest,
-                            binding: effect,
-                            capacity: Some(PublisherCompletionCapacityV1 {
-                                inner: reservation,
-                                binding: CompletionCapacityBindingV1::from_effect(&effect),
-                            }),
-                        },
-                    )
+                    self.recover_retained_effect(&projection, effect, transaction_id)?
                 }
             },
         )
@@ -1060,8 +1015,18 @@ impl<'journal> PublisherAdmissionProtectedJournalV1<'journal> {
             }
         }
         let effect = retained.ok_or(PublisherAdmissionJournalErrorV1::InvalidMutationBatch)?;
+        self.recover_retained_effect(&projection, effect, effect.transaction)
+    }
+
+    /// Recovers the selected retained effect under the original transaction identity.
+    fn recover_retained_effect(
+        &mut self,
+        projection: &PublisherAdmissionJournalProjectionV1,
+        effect: CompletionEffectBindingV1,
+        transaction_id: [u8; 16],
+    ) -> Result<PublisherAdmissionColdRecoveryV1, PublisherAdmissionJournalErrorV1> {
         let replay = reconstruct_semantic_projection(
-            &projection,
+            projection,
             self.limits,
             self.capacity,
             self.maximum_source_releases,
@@ -1077,6 +1042,7 @@ impl<'journal> PublisherAdmissionProtectedJournalV1<'journal> {
         {
             return Ok(PublisherAdmissionColdRecoveryV1::StateOnly);
         }
+
         let recovery_binding = capacity_recovery_binding_from_effect(&effect, self.limits)?;
         let reservation = self
             .inner
@@ -1084,14 +1050,16 @@ impl<'journal> PublisherAdmissionProtectedJournalV1<'journal> {
         if reservation.admission_transaction_id() != effect.transaction {
             return Err(PublisherAdmissionJournalErrorV1::InvalidMutationBatch);
         }
+
         let transaction_digest = reservation.owner_digest();
-        let effect_digest = effect_record_digest(&projection, effect.transaction, &effect)?;
-        let permit_record_digest = current_permit_record_digest(&projection, &effect, self.limits)?;
-        let current_digest = current_publication_digest(&projection)?;
+        let effect_digest = effect_record_digest(projection, transaction_id, &effect)?;
+        let permit_record_digest = current_permit_record_digest(projection, &effect, self.limits)?;
+        let current_digest = current_publication_digest(projection)?;
+
         Ok(PublisherAdmissionColdRecoveryV1::ObservePending(
             PublisherAdmissionColdObservationV1 {
                 snapshot: self.inner.snapshot()?,
-                transaction_id: effect.transaction,
+                transaction_id,
                 transaction_digest,
                 effect_digest,
                 permit_record_digest,
