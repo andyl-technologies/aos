@@ -69,12 +69,23 @@ pub(super) fn publish(
         version.to_owned(),
         platform.to_owned(),
     )?;
+    publish_declaration(directory, &declaration)
+}
+
+/// Writes a declaration already frozen by an authenticated release plan.
+pub(crate) fn publish_declaration(
+    directory: &Path,
+    declaration: &PackageScanPublicationV1,
+) -> Result<()> {
+    declaration.validate()?;
+    let name = &declaration.package_name;
+    crate::types::validate_package_name(name)?;
     let path = directory
         .join("packages")
         .join(aos_registry_surface::manifest::package_name_bucket(name))
         .join(format!("{name}.toml"));
     let existing = fs::read_to_string(&path)?;
-    let content = record(&existing, &declaration)?;
+    let content = record(&existing, declaration)?;
     fs::write(path, content)?;
     Ok(())
 }
@@ -183,6 +194,48 @@ source_nar_hash = ""
         let authored = record(&catalog(), &declaration()?)?;
         let replayed = authored.replace("version = \"1.2.0\"", "version = \"9.0.0\"");
         assert!(aos_registry_surface::manifest::parse_package_file(&replayed).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn primary_output_republication_cannot_erase_a_bound_scan_policy() -> Result<()> {
+        let declaration = declaration()?;
+        let authored = record(&catalog(), &declaration)?;
+        let info = crate::registry_ops::store_paths::StorePathInfo {
+            path: "/nix/store/11111111111111111111111111111111-example".into(),
+            nar_hash: format!("sha256:{}", "0".repeat(64)),
+            nar_size: 1,
+            references: vec![],
+            closure_size: 1,
+        };
+        let republished = super::super::metadata::build_package_toml(
+            &authored,
+            "example",
+            "1.2.0",
+            "x86_64-linux",
+            &info,
+            Some("Publication fixture"),
+            None,
+            Some("MIT"),
+            Some("AOS test"),
+            false,
+            None,
+            &[],
+            None,
+        )?;
+        let parsed = aos_registry_surface::manifest::parse_package_file(&republished)?;
+        assert_eq!(
+            parsed.versions[1].platforms["x86_64-linux"].scan_declaration(
+                "example",
+                "1.2.0",
+                "x86_64-linux"
+            )?,
+            Some(declaration.clone())
+        );
+
+        let mut changed = declaration;
+        changed.definitions[0].reason = Some("Changed policy after publication".into());
+        assert!(record(&republished, &changed).is_err());
         Ok(())
     }
 }

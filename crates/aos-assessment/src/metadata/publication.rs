@@ -41,6 +41,26 @@ pub struct PackageScanPublicationV1 {
 }
 
 impl PackageScanPublicationV1 {
+    /// Returns the independent owner whose components the selected member follows.
+    ///
+    /// # Errors
+    /// Returns an error for invalid or missing exact selected-member ownership.
+    pub fn owner_definition(&self) -> Result<&PackageScanDefinitionV1> {
+        self.validate()?;
+        let mut definition = self
+            .definitions
+            .iter()
+            .find(|definition| definition.members.binary_search(&self.member_id).is_ok())
+            .context("published member definition is absent")?;
+        while let Some(owner) = &definition.owner_ref {
+            definition = self
+                .definitions
+                .iter()
+                .find(|definition| definition.unit_id == owner.unit_id)
+                .context("published exact owner is absent")?;
+        }
+        Ok(definition)
+    }
     /// Decodes a bounded, unambiguous declaration without conferring authority.
     ///
     /// # Errors

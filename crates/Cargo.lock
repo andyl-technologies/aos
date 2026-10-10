@@ -1084,6 +1084,7 @@ dependencies = [
  "anyhow",
  "aos-ability-model",
  "aos-ability-plan",
+ "aos-assessment",
  "aos-contract",
  "aos-registry-surface",
  "base64 0.22.1",

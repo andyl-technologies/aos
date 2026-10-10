@@ -639,6 +639,7 @@ fn release_plan(
             contributor_authorization_digest: digest("fleet-contributor-authorization"),
         },
         packages: vec![PackagePlan {
+            scan_declarations: Default::default(),
             platform_versions: Default::default(),
             name: "fleet-package".into(),
             publication: Some(PackagePublicationMetadata {

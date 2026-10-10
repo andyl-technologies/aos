@@ -161,7 +161,7 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
         completed_at: completed_at.clone(),
     };
     report.validate(&plan, plan_digest)?;
-    let sbom = SpdxDocument::from_build(&report);
+    let sbom = SpdxDocument::from_plan_and_build(&plan, &report)?;
     sbom.validate()?;
 
     let report_bytes = canonical::to_vec(&report)?;

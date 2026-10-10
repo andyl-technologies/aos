@@ -229,6 +229,7 @@ pub(crate) fn release_fixture() -> anyhow::Result<ReleaseFixture> {
             contributor_authorization_digest: digest("authorization"),
         },
         packages: vec![PackagePlan {
+            scan_declarations: Default::default(),
             platform_versions: BTreeMap::new(),
             name: "example".to_owned(),
             publication: Some(crate::inventory::PackagePublicationMetadata {

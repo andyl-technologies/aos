@@ -44,8 +44,8 @@
 //! dumb-HTTP object store metadata is refreshed so plain-file origins stay
 //! cloneable.
 
-mod attestation;
 mod assessment;
+mod attestation;
 mod cache_validation;
 mod channels;
 mod config;
@@ -73,6 +73,7 @@ pub(crate) mod test_support;
 mod trust;
 mod workflow;
 
+pub(crate) use assessment::publish_declaration as publish_scan_declaration;
 pub use cache_validation::validate;
 pub use channels::run_channel;
 pub use config::{local_registry_name, resolve_mirrors, resolve_mirrors_for_registry};

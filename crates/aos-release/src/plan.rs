@@ -196,6 +196,9 @@ pub struct PackagePlan {
     /// Exact versions for targets whose source port differs from the default.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub platform_versions: BTreeMap<Platform, String>,
+    /// Frozen target-specific scan policy authenticated with the package catalog.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub scan_declarations: BTreeMap<Platform, aos_assessment::metadata::PackageScanPublicationV1>,
     /// One explicit decision for each of the four platforms.
     pub platforms: Vec<PlatformCell<PlannedArtifactSet>>,
 }
@@ -427,6 +430,19 @@ impl ReleasePlan {
         }
         require_unique_by(&self.packages, |package| &package.name, "package")?;
         for package in &self.packages {
+            for (platform, declaration) in &package.scan_declarations {
+                declaration.to_json()?;
+                if declaration.package_name != package.name
+                    || Some(declaration.version.as_str()) != package.version_for(*platform)
+                    || declaration.platform != platform.as_str()
+                    || !package.platforms.iter().any(|cell| {
+                        cell.platform == *platform
+                            && matches!(cell.decision, MatrixCell::Artifact { .. })
+                    })
+                {
+                    bail!("frozen scan declaration differs from its publishable target coordinate");
+                }
+            }
             require_identifier(&package.name, "package name")?;
             if let Some(publication) = &package.publication {
                 publication.validate()?;
