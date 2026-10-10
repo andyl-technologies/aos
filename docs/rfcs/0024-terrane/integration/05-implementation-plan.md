@@ -125,11 +125,11 @@ empty `terrane` binary.
 ### T1 — Local repository
 
 **Status:** In progress; eight of twenty-two T1 tasks are complete.
-Parallel work now includes two additional isolated GPT 6.1 Sol worklines for
-T-DRV-3 index-format conformance and T-CDC-1 chunk/dictionary validation.
-The ref, history, collector, permanent-recovery, EIO, Memo and full-floor
-reviewers independently map remaining requirement and execution obligations;
-one coordinated host compiler serves their immutable executable requests.
+Four further isolated GPT 6.1 Sol implementation worklines now diagnose current
+index lookup, paired disclosure retry, collector timing and projection rebuild.
+Their file ownership is disjoint. Separate workers execute remaining recovery
+cases, qualify protected body-read behavior and review the signed-parent fix;
+one coordinated host compiler serves their executable requests.
 Fresh native test compilation of private tree `355ac2f7` reports a private
 pack-header field access in the collector fixture. Its owner corrects that
 single access to the public accessor without changing the identity assertion.
@@ -139,8 +139,17 @@ forwarding, the isolated namespace-attribute fixture, bounded cancellation
 exclusion reacquisition and the genuine procfs body-read fixture. Its native
 library build, fresh all-target test compilation, strict all-target Clippy and
 required formatter pair pass. The archived native inventory contains 1,078
-tests. Independent ref, history and body-read workers qualify the same immutable
-executables without rebuilding; current-source runtime results remain pending.
+tests. Current-source host receipts independently establish 68 distinct ref
+passes and three failures, sixteen historical passes, eleven additional history
+passes with a lookup failure, and a separate projection-rebuild failure. Three
+dictionary/preload witnesses pass. The ref failures are the losing-writer merge
+and two paired disclosure retries; the lookup returns `Unsupported`, and the
+positive rebuilt advance returns `Denied(commit)`. A reviewed private correction
+genuinely captures signed parent Originals before retention without relaxing
+missing-record refusal or final checks; its runtime qualification remains open.
+The collector's default/forged-context and copied-control cases pass; ancestry
+and reverse overlay reach the unchanged 120-second limit. These timeouts do not
+establish a source assertion failure.
 An independent cleanup review also replaces a potentially panicking stderr
 diagnostic with a best-effort write on the isolated fixture branch. That
 additional correction remains separately uncompiled and unqualified.
@@ -150,11 +159,15 @@ Those results remain bound to that preceding source. Three cancellation
 cases additionally pass under their original finite limits; a storage failure
 prevents a terminal receipt for the fourth and leaves the next two unrun.
 An isolated registered harness probe verifies three genuine body-read EIOs,
-inode continuity and normal/unwind cleanup; native Rust and owning-gate
-qualification of the new fixture remain pending. The ordinary and adversarial
+inode continuity and normal/unwind cleanup. All three native Rust cases also
+pass on the frozen host archive and in a registered protected runtime diagnostic
+that preserves the inherited procfs owner and requires both alias tools. The
+protected diagnostic consumes an opaque host archive; source-built SDK and owning
+gate qualification remain pending. The ordinary and adversarial
 1,024-entry index populations pass in 1,397.98 and 1,252.25 seconds on their
-separate frozen owning source; the other four populations and the DRV-29
-blocker remain.
+separate frozen owning source. The third, ordinary 2,048-entry population reaches
+the unchanged 1,800-second limit; the last three populations remain unrun, and
+the DRV-29 blocker remains.
 These parallel results accept no additional task or milestone, and T2 remains
 deferred until the complete current T1 gate floor is green.
 
