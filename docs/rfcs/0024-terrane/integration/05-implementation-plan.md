@@ -125,6 +125,31 @@ empty `terrane` binary.
 ### T1 — Local repository
 
 **Status:** In progress; eight of twenty-two T1 tasks are complete.
+Current qualification of frozen tree `a067e57b21` passes all 28 owning
+`derivation-memo` cases. Parent review confirms actual exact executions,
+registered Nix output and a nonempty result receipt. Native recovery authority
+and original-deadline counterproofs pass separately under the unchanged
+120-second default profile in 85.425 and 45.779 seconds; their source and
+executable seals remain unchanged and strict all-target Clippy passes.
+The two genuine native body-read error witnesses pass unchanged on the host.
+Their protected Nix namespace instead refuses an unmapped procfs ancestor;
+an isolated harness investigation preserves the physical ownership policy.
+Reviewed ref adapter forwarding, historical fixture corrections and collector
+reference/lease assertions are composed privately on `5474a07bdf` (tree
+`8b70b0edf5`). The required formatter pair passes; corrected runtime results
+are pending. Ten parallel worklines now separate these qualification and
+implementation obligations, including new permanent-recovery fault and index
+backfill investigations. A single coordinated compiler produces immutable
+test executables for independent workers after concurrent builds exhausted
+storage. Original interrupted attempts remain separate from completed results.
+The six growing index populations are still running against their frozen
+source; the DRV-29 blocker remains. No additional task, complete T1 floor,
+milestone exit or freeze is qualified, and T2 remains deferred.
+The separate trunk formatter request stops before its second command because
+the current shared `current_node_reads` module declaration has no implementation
+file on that branch. The private composition includes that implementation and
+passes both commands; neither result accepts a task merge.
+
 Latest independent review qualifies frozen `3f2e13e3b0` (tree `6bebc09752`):
 `algebra-merge` passes all 41 registered cases, and `derived-attr-record`
 passes its 21 core, 25 native and one SDK cases. Native build, strict
