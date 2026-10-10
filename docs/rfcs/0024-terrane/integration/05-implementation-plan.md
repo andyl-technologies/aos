@@ -165,6 +165,13 @@ an absent alias, and the reader tests import an unused trait. The required
 formatter pair also stops at the missing child-test path before its second
 command runs. Three disjoint owners correct these bindings and preserve every
 test assertion. Renewed Clippy, complete formatting and runtime remain pending.
+Candidate `d51b1ee4bc` passes native build and the full required formatter pair.
+Its strict all-target Clippy stops at one remaining visibility fault: the native
+store-namespace physical tests cannot call the existing bucket-only ordinary
+receipt helper. A reviewed crate-private visibility correction preserves that
+helper's complete body, original descriptor capture and refusal of protected
+effect conversion. Clippy, fresh target compilation and runtime remain pending
+after this source change.
 The two additional current-token/current-policy cases and four captured-input
 cases pass independent source review. Their owning gate registration extends
 the new current-history population to twenty-six cases while preserving every

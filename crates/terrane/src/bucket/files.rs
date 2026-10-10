@@ -295,7 +295,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     /// Preserves missing keys as absence, rejects incompatible layout nodes,
     /// and propagates descriptor, range and original-continuity failures.
     #[cfg(all(feature = "tokio", unix))]
-    pub(super) async fn read_optional_ordinary_retained(
+    pub(crate) async fn read_optional_ordinary_retained(
         &self,
         key: &BucketKey,
     ) -> Result<RecordRead, StoreFailure> {
