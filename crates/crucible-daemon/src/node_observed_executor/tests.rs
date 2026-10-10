@@ -399,3 +399,12 @@ mod cache_workflow;
 
 #[path = "tests/seeded_storage.rs"]
 mod seeded_storage;
+
+#[path = "tests/adverse_storage.rs"]
+mod adverse_storage;
+
+#[path = "tests/adverse_packet.rs"]
+mod adverse_packet;
+
+#[path = "tests/controlled_storage.rs"]
+mod controlled_storage;

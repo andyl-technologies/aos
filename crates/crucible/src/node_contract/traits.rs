@@ -44,6 +44,23 @@ pub trait SimulationNode {
     /// Returns the explicitly supported optional facets.
     fn facets(&self) -> &[FacetKind];
 
+    /// Reads the next immutable authored fault decision without applying it.
+    ///
+    /// The selected native controller owns the complete program and cursor.
+    /// This observation creates no mutation permission. The default refuses.
+    ///
+    /// # Errors
+    /// Refuses unsupported controllers, foreign activation or changed custody.
+    fn next_fault_mutation(
+        &self,
+        _activation: &super::WorldActivation,
+    ) -> Result<Option<super::FaultMutationRequest>, OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "admitted authored native fault controller is unsupported".into(),
+        })
+    }
+
     /// Reports lifecycle separately from physical suspension.
     ///
     /// # Errors
@@ -79,6 +96,97 @@ pub trait SimulationNode {
         Err(OperationFailure {
             effects: super::EffectKnowledge::None,
             reason: "complete native scheduling evidence validation is unsupported".into(),
+        })
+    }
+
+    /// Reads a genuine original event-condition hit without asserting a world stop.
+    ///
+    /// # Errors
+    /// The default refuses; selected adapters authenticate the actual evaluator,
+    /// original input and immutable program under this activation.
+    fn observe_condition_hit(
+        &self,
+        _activation: &super::WorldActivation,
+    ) -> Result<Option<crate::node_adapters::ConditionHitCandidate>, OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "original event-condition observation is unsupported".into(),
+        })
+    }
+
+    /// Authenticates the exact original hit against current native ownership.
+    ///
+    /// # Errors
+    /// The default refuses unknown, substituted or unavailable native evidence.
+    fn validate_condition_hit(
+        &self,
+        _activation: &super::WorldActivation,
+        _hit: &crate::node_adapters::ConditionHitCandidate,
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "original event-condition authentication is unsupported".into(),
+        })
+    }
+
+    /// Reads complete physical stop custody while retaining future native work.
+    ///
+    /// # Errors
+    /// The default refuses. Selected providers must own an effective physical
+    /// stop and cover native timers, pending buffers and original operation ledgers.
+    fn observe_condition_stop(
+        &self,
+        _activation: &super::WorldActivation,
+        _maximum_bytes: usize,
+    ) -> Result<super::NativeConditionStopInventory, OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "complete condition stop inventory is unsupported".into(),
+        })
+    }
+
+    /// Authenticates complete unchanged local custody at the original stop cut.
+    ///
+    /// # Errors
+    /// The default refuses rather than inferring a live fence from saved bytes.
+    fn validate_condition_stop(
+        &self,
+        _activation: &super::WorldActivation,
+        _inventory: &super::NativeConditionStopInventory,
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "condition stop custody authentication is unsupported".into(),
+        })
+    }
+
+    /// Reads the complete next autonomous native event frontier without progress.
+    ///
+    /// # Errors
+    /// The default refuses. Missing events do not imply EOF or absent input.
+    fn observe_condition_frontier(
+        &self,
+        _activation: &super::WorldActivation,
+        _maximum_bytes: usize,
+    ) -> Result<super::NativeConditionEventFrontier, OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "complete condition event frontier is unsupported".into(),
+        })
+    }
+
+    /// Authenticates a frontier against the actual unchanged original native state.
+    ///
+    /// # Errors
+    /// The default refuses incomplete, foreign or regenerated native evidence.
+    fn validate_condition_frontier(
+        &self,
+        _activation: &super::WorldActivation,
+        _frontier: &super::NativeConditionEventFrontier,
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "condition event frontier authentication is unsupported".into(),
         })
     }
 

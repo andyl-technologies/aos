@@ -58,6 +58,17 @@ pub(super) fn validate_inventory(
         let saved = definition.capture(link, 16 * 1024 * 1024)?;
         definition.restore(&saved, 16 * 1024 * 1024)?;
     }
+    if let HostModel::FaultedLink {
+        link,
+        definition,
+        decisions,
+    } = model
+    {
+        definition.capture(link, decisions, 64 * 1024 * 1024)?;
+    }
+    if let HostModel::ControlledFaultLink(controller) = model {
+        controller.capture(64 * 1024 * 1024)?;
+    }
     if let HostModel::Io(io) = model {
         let positive = if let Some(block) = io.block_device() {
             let latency = block.latency_model();
@@ -106,6 +117,12 @@ pub(super) fn validate_inventory(
                 "integer host clock has no guest timer or external I/O lanes",
             ));
         }
+    } else if matches!(model, HostModel::ConditionObserver(_)) {
+        if input.is_none() || output.is_some() {
+            return Err(failure(
+                "condition observer requires genuine input and no guest output lane",
+            ));
+        }
     } else if matches!(model, HostModel::Semantics(model) if model.definition().inputs.is_empty()) {
         if input.is_some() || output.is_none() {
             return Err(failure(
@@ -132,17 +149,24 @@ pub(super) fn validate_inventory(
             .ok_or_else(|| failure("host actual output lane absent"))?;
         let pending = match model {
             HostModel::Io(io) => io.pending_completion_keys().count(),
-            HostModel::Link(link) | HostModel::SeededLink { link, .. } => link.inflight_len(),
+            HostModel::Link(link)
+            | HostModel::SeededLink { link, .. }
+            | HostModel::FaultedLink { link, .. } => link.inflight_len(),
+            HostModel::ControlledFaultLink(controller) => controller.native().inflight_len(),
+            HostModel::PacketReceiver(receiver) => receiver.pending_count(),
             HostModel::Clock(_) => 0,
             HostModel::ScriptedSource(source) => source.requests().len() - source.cursor(),
             HostModel::Semantics(model) => model.pending_count(),
+            HostModel::ConditionObserver(_) => 0,
         };
         if pending as u64 > lane.maximum_pending_events.get() {
             return Err(failure(
                 "host initial native pending queue exceeds its admitted lane ceiling",
             ));
         }
-        if let HostModel::Link(link) | HostModel::SeededLink { link, .. } = model
+        if let HostModel::Link(link)
+        | HostModel::SeededLink { link, .. }
+        | HostModel::FaultedLink { link, .. } = model
             && link
                 .snapshot()
                 .inflight
@@ -167,6 +191,7 @@ pub(super) fn validate_inventory(
         let expected = match source.kind() {
             super::super::ScriptedRequestKind::Block => "crucible/block-request-v1",
             super::super::ScriptedRequestKind::Ninep => "crucible/filesystem-request-v1",
+            super::super::ScriptedRequestKind::Packet => "crucible/opaque-packet-v1",
         };
         if lane.payload_schema.id.as_str() != expected
             || lane.payload_schema.version != 1
@@ -240,7 +265,11 @@ impl HostModelNode {
             }
             let bytes = payload(batch, &delivery.payload)?;
             let input_lane = self.lane(self.input_endpoint.as_ref())?;
-            let output_lane = self.lane(self.output_endpoint.as_ref())?;
+            let output_lane = if matches!(self.model, Some(HostModel::ConditionObserver(_))) {
+                self.lane(self.input_endpoint.as_ref())?
+            } else {
+                self.lane(self.output_endpoint.as_ref())?
+            };
             if bytes.len() as u64 > input_lane.maximum_payload_bytes.get()
                 || batch.deliveries().len() as u64 > input_lane.maximum_pending_events.get()
                 || canonical::content_ref(bytes, &delivery.payload.media_type)
@@ -289,7 +318,11 @@ impl HostModelNode {
                         ));
                     }
                 }
-                Some(HostModel::Link(_) | HostModel::SeededLink { .. }) => {
+                Some(
+                    HostModel::Link(_)
+                    | HostModel::SeededLink { .. }
+                    | HostModel::FaultedLink { .. },
+                ) => {
                     u32::try_from(delivery.source_sequence.get())
                         .map_err(|_| failure("native link frame correlation exhausted"))?;
                     if bytes.len() as u64 > output_lane.maximum_payload_bytes.get() {
@@ -297,6 +330,28 @@ impl HostModelNode {
                             "native link frame exceeds its realized output lane geometry",
                         ));
                     }
+                }
+                Some(HostModel::ControlledFaultLink(_)) => {
+                    if bytes.len()
+                        > self
+                            .lane(self.input_endpoint.as_ref())?
+                            .maximum_payload_bytes
+                            .get() as usize
+                    {
+                        return Err(failure("controlled input exceeds its selected lane bytes"));
+                    }
+                }
+                Some(HostModel::PacketReceiver(_)) => {
+                    if bytes.is_empty()
+                        || bytes.len() as u64 > output_lane.maximum_payload_bytes.get()
+                    {
+                        return Err(failure(
+                            "opaque packet exceeds its admitted native geometry",
+                        ));
+                    }
+                }
+                Some(HostModel::ConditionObserver(model)) => {
+                    model.validate_input(delivery, bytes)?;
                 }
                 Some(HostModel::Semantics(model)) => {
                     model.validate_input(delivery, bytes)?;
@@ -395,7 +450,13 @@ impl HostModelNode {
             });
         }
         self.activation_authority = Some(Rc::clone(&admission.activation.authority));
-        match self.execute_exact(admission) {
+        let execution = self
+            .execute_exact(admission)
+            .and_then(|(outcome, evidence)| {
+                let evidence = self.retain_condition_objects(&outcome.operation, evidence)?;
+                Ok((outcome, evidence))
+            });
+        match execution {
             Ok((outcome, evidence)) => {
                 self.completed.insert(
                     outcome.operation.clone(),
@@ -447,6 +508,23 @@ impl HostModelNode {
         let (start, limit) = interval(admission.request())?;
         if start != self.boundary || limit <= start {
             return Err(failure("host exact grant changed authentic boundary"));
+        }
+        if let Some(HostModel::ConditionObserver(model)) = self.model.as_ref()
+            && model.awaiting_control()
+            && limit.time_ps != model.position().time_ps
+        {
+            return Err(failure(
+                "original condition cannot cross its stopped physical instant",
+            ));
+        }
+        if let Some(HostModel::ControlledFaultLink(controller)) = self.model.as_ref()
+            && controller
+                .next_request()
+                .is_some_and(|request| limit > request.at)
+        {
+            return Err(failure(
+                "exact run cannot cross an unapplied authored controller boundary",
+            ));
         }
         if let Some(inputs) = admission.inputs() {
             let staged = self
@@ -550,14 +628,30 @@ impl HostModelNode {
                 .advance_to(limit.time_ps.get())
                 .map_err(|error| failure(&error.to_string()))?;
         }
+        if let Some(HostModel::PacketReceiver(receiver)) = self.model.as_mut() {
+            receiver.park(limit.time_ps.get())?;
+        }
+        if let Some(HostModel::ControlledFaultLink(controller)) = self.model.as_mut() {
+            controller
+                .native_mut()
+                .park_exact(limit.time_ps.get())
+                .map_err(|error| failure(&error.to_string()))?;
+        }
         if let Some(HostModel::ScriptedSource(source)) = self.model.as_mut() {
             source.park(limit.time_ps.get())?;
         }
         if let Some(HostModel::Semantics(model)) = self.model.as_mut() {
             model.park(limit)?;
         }
+        if let Some(HostModel::ConditionObserver(model)) = self.model.as_mut() {
+            model.park(limit)?;
+        }
         self.boundary = limit;
-        let original_objects = state::state_receipt_objects(self)?;
+        let original_objects = if condition_state::selected(self) {
+            condition_state::receipt_objects(self)?
+        } else {
+            state::state_receipt_objects(self)?.into_iter().collect()
+        };
         let proof_ref = original_objects[0].reference.clone();
         let mut evidence = Vec::new();
         let mut references = BTreeSet::new();
@@ -581,16 +675,20 @@ impl HostModelNode {
                 });
             }
         }
-        let retained_bytes = self
-            .completed
-            .values()
-            .flat_map(|completed| &completed.evidence)
-            .chain(&evidence)
-            .try_fold(0usize, |size, object| size.checked_add(object.bytes.len()));
-        if retained_bytes.is_none_or(|bytes| bytes > self.limits.maximum_capture_bytes) {
-            return Err(failure(
-                "host original receipt registry exceeds native custody ceiling",
-            ));
+        if self.pooled_condition_objects() {
+            self.check_condition_object_credit(&evidence)?;
+        } else {
+            let retained_bytes = self
+                .completed
+                .values()
+                .flat_map(|completed| &completed.evidence)
+                .chain(&evidence)
+                .try_fold(0usize, |size, object| size.checked_add(object.bytes.len()));
+            if retained_bytes.is_none_or(|bytes| bytes > self.limits.maximum_capture_bytes) {
+                return Err(failure(
+                    "host original receipt registry exceeds native custody ceiling",
+                ));
+            }
         }
         let input_progress = admission.inputs().map(|inputs| {
             let consumed = self.staged.as_ref().map_or(0, |staged| staged.consumed);
@@ -646,8 +744,14 @@ impl HostModelNode {
     pub(super) fn next_local_event(&self) -> Option<u64> {
         match self.model.as_ref() {
             Some(HostModel::Io(io)) => io.next_exact_local_event(),
-            Some(HostModel::Link(link) | HostModel::SeededLink { link, .. }) => {
-                link.next_exact_local_event()
+            Some(HostModel::PacketReceiver(receiver)) => receiver.next_time(),
+            Some(
+                HostModel::Link(link)
+                | HostModel::SeededLink { link, .. }
+                | HostModel::FaultedLink { link, .. },
+            ) => link.next_exact_local_event(),
+            Some(HostModel::ControlledFaultLink(controller)) => {
+                controller.native().next_exact_local_event()
             }
             Some(HostModel::ScriptedSource(source)) => source.next_time(),
             Some(HostModel::Semantics(model)) => model.next_position().map(|at| at.time_ps.get()),
@@ -656,7 +760,11 @@ impl HostModelNode {
     }
 
     fn input_reaction(&self, delivery: Position) -> Result<Position, OperationFailure> {
-        if matches!(self.model.as_ref(), Some(HostModel::Semantics(_))) {
+        if matches!(
+            self.model.as_ref(),
+            Some(HostModel::Semantics(_) | HostModel::ConditionObserver(_))
+        ) {
+            // Both selected model codecs record a strict successor reaction.
             // The unchanged semantic codec records a strict successor reaction.
             // Select it before the exclusive grant comparison and consumption.
             let microstep = delivery
@@ -675,14 +783,24 @@ impl HostModelNode {
     }
 
     fn consume_input(&mut self) -> Result<(), OperationFailure> {
-        let pending_limit = self
-            .lane(self.output_endpoint.as_ref())?
-            .maximum_pending_events
-            .get();
+        let pending_limit = if matches!(self.model, Some(HostModel::ConditionObserver(_))) {
+            1
+        } else {
+            self.lane(self.output_endpoint.as_ref())?
+                .maximum_pending_events
+                .get()
+        };
         let pending = match self.model.as_ref() {
             Some(HostModel::Io(io)) => io.pending_completion_keys().count(),
-            Some(HostModel::Link(link) | HostModel::SeededLink { link, .. }) => link.inflight_len(),
+            Some(HostModel::PacketReceiver(receiver)) => receiver.pending_count(),
+            Some(
+                HostModel::Link(link)
+                | HostModel::SeededLink { link, .. }
+                | HostModel::FaultedLink { link, .. },
+            ) => link.inflight_len(),
+            Some(HostModel::ControlledFaultLink(controller)) => controller.native().inflight_len(),
             Some(HostModel::Semantics(model)) => model.pending_count(),
+            Some(HostModel::ConditionObserver(model)) => usize::from(model.awaiting_control()),
             _ => 0,
         };
         if pending as u64 >= pending_limit {
@@ -770,6 +888,53 @@ impl HostModelNode {
                     );
                 }
             }
+            Some(HostModel::FaultedLink {
+                link,
+                definition,
+                decisions,
+            }) => {
+                let output = definition.consume(
+                    link,
+                    decisions,
+                    super::super::FaultedInput {
+                        position: delivery.delivery,
+                        sequence: delivery.source_sequence,
+                        payload: bytes,
+                    },
+                    usize::try_from(pending_limit)
+                        .map_err(|_| failure("adverse queue ceiling overflow"))?,
+                )?;
+                for frame in output.deliveries {
+                    self.pending_causes.insert(
+                        (frame.key.delivery_icount, frame.key.src_node, frame.key.seq),
+                        cause.clone(),
+                    );
+                }
+            }
+            Some(HostModel::PacketReceiver(receiver)) => {
+                let key = receiver.consume(delivery.delivery.time_ps.get(), bytes)?;
+                self.pending_causes.insert(key, cause);
+            }
+            Some(HostModel::ControlledFaultLink(controller)) => {
+                let output = controller.consume(
+                    super::super::FaultedInput {
+                        position: delivery.delivery,
+                        sequence: delivery.source_sequence,
+                        payload: bytes,
+                    },
+                    usize::try_from(pending_limit)
+                        .map_err(|_| failure("controlled queue ceiling overflow"))?,
+                )?;
+                for frame in output.deliveries {
+                    self.pending_causes.insert(
+                        (frame.key.delivery_icount, frame.key.src_node, frame.key.seq),
+                        cause.clone(),
+                    );
+                }
+            }
+            Some(HostModel::ConditionObserver(model)) => {
+                model.consume(delivery, bytes, input_reaction)?;
+            }
             Some(HostModel::Semantics(model)) => {
                 model.consume(delivery, bytes, input_reaction)?;
             }
@@ -817,8 +982,26 @@ impl HostModelNode {
                     }
                 }
             }
-            Some(HostModel::Link(link) | HostModel::SeededLink { link, .. }) => {
+            Some(
+                HostModel::Link(link)
+                | HostModel::SeededLink { link, .. }
+                | HostModel::FaultedLink { link, .. },
+            ) => {
                 while let Some(due) = link.next_delivery(evaluation.time_ps.get()) {
+                    outputs.push((
+                        (due.key.delivery_icount, due.key.src_node, due.key.seq),
+                        due.payload,
+                    ));
+                }
+            }
+            Some(HostModel::PacketReceiver(receiver)) => {
+                outputs.extend(receiver.deliver(evaluation.time_ps.get()));
+            }
+            Some(HostModel::ControlledFaultLink(controller)) => {
+                while let Some(due) = controller
+                    .native_mut()
+                    .next_delivery(evaluation.time_ps.get())
+                {
                     outputs.push((
                         (due.key.delivery_icount, due.key.src_node, due.key.seq),
                         due.payload,
@@ -943,11 +1126,40 @@ impl HostModelNode {
         Ok(publications)
     }
 
-    fn output_bound(&self) -> NativeOutputBound {
+    pub(super) fn output_bound(&self) -> NativeOutputBound {
         if self.output_endpoint.is_none() {
             // The qualified integer clock has no public outputs, armed guest
             // timers or autonomous worker, so this covers its entire inventory.
             NativeOutputBound::AfterInstant(U64::new(u64::MAX))
+        } else if self.terminal_inventory.0.as_str() == HOST_CONDITION_INVENTORY_PROFILE
+            && let Some(HostModel::Io(io)) = self.model.as_ref()
+            && let Some(block) = io.block_device()
+        {
+            // This selected profile binds the actual positive native Block
+            // cost table. Unseen admitted input cannot birth a reply before its
+            // minimum cost; original queued replies independently cap the bound.
+            let latency = block.latency_model();
+            let floor = latency
+                .read_base_ns
+                .min(latency.write_base_ns)
+                .min(latency.flush_ns)
+                .min(latency.get_length_ns);
+            let unseen = crucible_device::ns_to_tick(floor)
+                .ok()
+                .and_then(|floor| self.boundary.time_ps.get().checked_add(floor));
+            match unseen {
+                Some(unseen) => {
+                    let earliest = self
+                        .next_local_event()
+                        .map_or(unseen, |pending| pending.min(unseen));
+                    NativeOutputBound::At(Position::new(
+                        earliest.into(),
+                        1.into(),
+                        Phase::Publication,
+                    ))
+                }
+                None => NativeOutputBound::Unknown,
+            }
         } else if let Some(HostModel::Semantics(model)) = self.model.as_ref() {
             // Input closure is independently established by the terminal gate.
             // An empty evaluator queue does not imply an unconditional EOF.
@@ -973,8 +1185,11 @@ impl HostModelNode {
                     NativeOutputBound::At(Position::new(time.into(), 1.into(), Phase::Publication))
                 },
             )
-        } else if let Some(HostModel::Link(link) | HostModel::SeededLink { link, .. }) =
-            self.model.as_ref()
+        } else if let Some(
+            HostModel::Link(link)
+            | HostModel::SeededLink { link, .. }
+            | HostModel::FaultedLink { link, .. },
+        ) = self.model.as_ref()
         {
             // The installed fault-free model has no autonomous publications.
             // Every unseen request is at or beyond the authenticated half-open
@@ -993,6 +1208,16 @@ impl HostModelNode {
                 0.into(),
                 Phase::Publication,
             ))
+        } else if let Some(HostModel::ControlledFaultLink(controller)) = self.model.as_ref() {
+            let unseen = self
+                .boundary
+                .time_ps
+                .get()
+                .saturating_add(controller.native().floor_ticks());
+            let earliest = self
+                .next_local_event()
+                .map_or(unseen, |pending| pending.min(unseen));
+            NativeOutputBound::At(Position::new(earliest.into(), 0.into(), Phase::Publication))
         } else {
             // Any unseen admitted request can cause a response at the current
             // physical instant. Pending queue absence proves no stronger bound.

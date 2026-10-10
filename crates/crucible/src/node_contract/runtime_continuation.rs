@@ -167,11 +167,9 @@ pub struct SavedRuntimeInput {
 /// ```json
 /// {"schema_version":1,"capture_ordinal":"7","operations":[],"inputs":[]}
 /// ```
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeSnapshot {
     /// Selects the complete runtime-ledger snapshot schema.
-    #[serde(deserialize_with = "crucible_node_contract::deserialize_version")]
     pub schema_version: u16,
     /// Retains the original complete durable activation record as data only.
     pub source_activation: SavedRuntimeActivation,
@@ -186,8 +184,12 @@ pub struct RuntimeSnapshot {
     /// Enumerates all native input staging entries and preserved immutable buffers.
     pub inputs: Vec<SavedRuntimeInput>,
     /// Retains complete original terminal custody only in selected edition three.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal: Option<crate::node_contract::SavedWorldTerminal>,
+    /// Retains original condition-control facts only in selected edition six.
+    ///
+    /// Native body references remain data until the installed continuation
+    /// reader reopens their complete authenticated original dependency DAG.
+    pub condition_stop: Option<crate::node_contract::SavedConditionStop>,
 }
 
 /// Authenticates complete native runtime-ledger continuation at an unchanged cut.
@@ -210,6 +212,47 @@ pub trait NativeRuntimeContinuationVerifier {
             return Err(RuntimeError::InvalidReceipt);
         }
         Ok(None)
+    }
+
+    /// Reopens original condition-control bodies under authentic fresh native custody.
+    ///
+    /// The selected installed reader must authenticate the signed source DAG,
+    /// immutable condition program, every original control/input/output ledger,
+    /// complete source roster and genuinely restored fresh owner state. Returned
+    /// source facts retain their original context; serialized references and
+    /// historical publication markers cannot establish current durable roots.
+    /// The default refuses this distinct condition-bearing edition.
+    ///
+    /// # Errors
+    /// Refuses unsupported codecs, incomplete or changed original bodies,
+    /// counterfactual programs, unavailable native custody or finite limits.
+    fn reopen_condition_continuation(
+        &mut self,
+        _snapshot: &RuntimeSnapshot,
+        _scheduling: &SchedulingSnapshot,
+        _target: &ActivationRecord,
+        _maximum_record_bytes: usize,
+    ) -> Result<crate::node_contract::SavedConditionStop, RuntimeError> {
+        Err(RuntimeError::UnsupportedFacet)
+    }
+
+    /// Authenticates complete original fault-operation/controller custody.
+    ///
+    /// The selected installed codec must bind the immutable authored program,
+    /// exact original requests, applied native receipts, uncertain operations,
+    /// RNG/input/output histories and unchanged scheduler policy. Historical
+    /// source contexts remain original; fresh usable tokens require genuine
+    /// restored native custody. The default refuses this distinct edition.
+    ///
+    /// # Errors
+    /// Refuses unsupported fault codecs or incomplete original native history.
+    fn verify_fault_continuation(
+        &mut self,
+        _snapshot: &RuntimeSnapshot,
+        _scheduling: &SchedulingSnapshot,
+        _target: &ActivationRecord,
+    ) -> Result<(), RuntimeError> {
+        Err(RuntimeError::UnsupportedFacet)
     }
 
     /// Authenticates original terminal state and native result custody under fresh owners.
@@ -433,6 +476,7 @@ pub struct WholeRuntimeCustody {
     input_batches: BTreeMap<Id, inputs::RetainedInput>,
     scheduler: Option<crate::node_scheduling::CausalScheduler>,
     terminal: Option<crate::node_contract::terminal::TerminalState>,
+    condition_stop: Option<crate::node_contract::condition_debug::ConditionStopState>,
     prepared: Option<Box<dyn PreparedNativeResources>>,
     activation: ActivationRecord,
     publication: Option<PublicationStatus>,
@@ -461,6 +505,7 @@ impl WholeRuntimeCustody {
             input_batches: BTreeMap::new(),
             scheduler: None,
             terminal: None,
+            condition_stop: None,
             prepared: Some(prepared),
             activation,
             publication,
@@ -484,6 +529,16 @@ impl WholeRuntimeCustody {
     /// Borrows retained original terminal facts without restoring live authority.
     pub fn terminal_checkpoint(&self) -> Option<&crate::node_contract::SavedWorldTerminal> {
         self.terminal.as_ref().map(|terminal| &terminal.saved)
+    }
+
+    /// Borrows the original condition fence, report and ACK history in quarantine.
+    ///
+    /// These saved facts remain owned until whole-world reclamation. They grant
+    /// no current stop, durable publication or resume permission.
+    pub fn condition_stop_checkpoint(&self) -> Option<&crate::node_contract::SavedConditionStop> {
+        self.condition_stop
+            .as_ref()
+            .map(|condition| &condition.saved)
     }
 
     /// Reports actual durable publication knowledge, or no attempted publication.
@@ -755,6 +810,7 @@ impl WholeRuntimeCustody {
             input_batches: BTreeMap::new(),
             scheduler: None,
             terminal: None,
+            condition_stop: None,
             prepared: None,
             activation,
             publication: None,
@@ -801,6 +857,7 @@ impl NodeRuntime {
             input_batches: std::mem::take(&mut self.input_batches),
             scheduler: self.scheduler.take(),
             terminal: self.terminal.take(),
+            condition_stop: self.condition_stop.take(),
             prepared: None,
             activation: self.barrier.record().clone(),
             publication: self.barrier.publication_status_or_not_attempted(),
@@ -850,6 +907,12 @@ mod snapshot;
 
 #[path = "runtime_continuation/terminal.rs"]
 mod terminal;
+
+#[path = "runtime_continuation/condition.rs"]
+mod condition;
+
+#[path = "runtime_continuation/condition_wire.rs"]
+mod condition_wire;
 
 #[path = "runtime_continuation/host_capture.rs"]
 mod host_capture;

@@ -18,6 +18,7 @@ struct Enrollment {
     binding: NodeBinding,
     child_pid: Option<u32>,
     model_bytes: Option<Vec<u8>>,
+    condition_native: bool,
 }
 
 pub(super) struct InstalledEvidence {
@@ -72,11 +73,13 @@ impl InstalledEvidence {
                         binding: binding.clone(),
                         child_pid: Some(child.child_pid()),
                         model_bytes: None,
+                        condition_native: false,
                     }
                 }
                 (None, Some(model)) => Enrollment {
                     binding: binding.clone(),
                     child_pid: None,
+                    condition_native: matches!(model, HostModel::ConditionObserver(_)),
                     model_bytes: Some(
                         model
                             .initialization_bytes(4 * 1024 * 1024)
@@ -256,6 +259,33 @@ impl AdmissionEvidence for InstalledEvidence {
                 schema.id.as_str(),
                 "host/native-semantic-continuation-v2" | "crucible/host-semantic-continuation-v2"
             );
+        if schema.id.as_str() == "crucible/host-condition-control-v1"
+            && (!self.enrollments.values().any(|enrollment| {
+                enrollment.condition_native
+                    && enrollment
+                        .binding
+                        .compatibility
+                        .implementation
+                        .implementation_id
+                        .as_str()
+                        == "crucible-host-condition-debug"
+                    && enrollment
+                        .binding
+                        .compatibility
+                        .implementation
+                        .formats
+                        .contains(schema)
+            }) || self.content.get(&schema.definition.hash.digest).is_none_or(
+                |(reference, bytes)| {
+                    reference != &schema.definition
+                        || bytes.as_slice() != super::condition_debug::CONTROL_SCHEMA
+                },
+            ))
+        {
+            return Err(evidence(
+                "condition grammar has no exact actually enrolled native validator",
+            ));
+        }
         if !(schema.version == 1 || semantic_v2)
             || !matches!(
                 schema.id.as_str(),
@@ -265,6 +295,10 @@ impl AdmissionEvidence for InstalledEvidence {
                     | "crucible/octet-stream-v1"
                     | "host/native-continuation-v1"
                     | "host/native-seeded-link-v1"
+                    | "host/native-faulted-link-v1"
+                    | "host/native-controlled-fault-link-v1"
+                    | "host/native-packet-receiver-v1"
+                    | "crucible/opaque-packet-v1"
                     | "crucible/block-request-v1"
                     | "crucible/block-response-v1"
                     | "crucible/filesystem-request-v1"
@@ -273,6 +307,7 @@ impl AdmissionEvidence for InstalledEvidence {
                     | "crucible/host-semantic-continuation-v1"
                     | "crucible/host-semantic-continuation-v2"
                     | "crucible/host-assertion-outcome-v1"
+                    | "crucible/host-condition-control-v1"
             )
             || !self.enrollments.values().any(|enrollment| {
                 enrollment

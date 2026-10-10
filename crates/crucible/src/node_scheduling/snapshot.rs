@@ -99,6 +99,11 @@ pub struct SavedPosition {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SavedPermission {
+    /// Retains a distinct original BoundaryControl mutation without a run.
+    FaultInjectionV1 {
+        /// Retains exact selected program, facet and original decision scope.
+        request: Box<crate::node_contract::FaultMutationRequest>,
+    },
     /// Retains the original half-open physical execution window.
     ExactRun {
         /// Gives its authentic start coordinate.
@@ -188,7 +193,7 @@ pub struct SavedInputBatch {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SchedulingSnapshot {
-    /// Selects legacy continuation or explicit inherited scheduling epochs.
+    /// Selects legacy continuation, inherited epochs, or pending fault custody.
     #[serde(deserialize_with = "crucible_node_contract::deserialize_version")]
     pub schema_version: u16,
     /// Retains original pending-permission ancestry only in edition two.

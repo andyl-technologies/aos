@@ -146,6 +146,15 @@ impl WorldRestoreDriver for HostWorldRestoreDriver {
                 Some(capture.content()),
             )?;
         }
+        let fault_authenticated = capture.runtime.schema_version == 4;
+        if fault_authenticated {
+            self.factory.authenticate_fault_custody(
+                graph,
+                &capture.runtime,
+                &capture.scheduler,
+                Some(capture.content()),
+            )?;
+        }
         let capsule = HostStaging {
             graph: self.graph.clone(),
             archive: self.archive.clone(),
@@ -159,6 +168,7 @@ impl WorldRestoreDriver for HostWorldRestoreDriver {
             coordinator: None,
             quarantined: false,
             terminal_authenticated,
+            fault_authenticated,
         };
         // Install the owning empty native capsule before actual model allocation.
         // All later prepare callbacks mutate that capsule under reserved custody.
@@ -179,9 +189,27 @@ struct HostStaging {
     coordinator: Option<ContentRef>,
     quarantined: bool,
     terminal_authenticated: bool,
+    fault_authenticated: bool,
 }
 
 impl NativeRuntimeContinuationVerifier for HostStaging {
+    fn verify_fault_continuation(
+        &mut self,
+        snapshot: &RuntimeSnapshot,
+        scheduling: &SchedulingSnapshot,
+        target: &ActivationRecord,
+    ) -> Result<(), RuntimeError> {
+        if self.quarantined
+            || target != &self.target
+            || snapshot.schema_version != 4
+            || !self.fault_authenticated
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.verify_runtime_continuation(snapshot, scheduling, target)
+            .map(|_| ())
+    }
+
     fn verify_terminal_continuation(
         &mut self,
         snapshot: &RuntimeSnapshot,
@@ -210,8 +238,9 @@ impl NativeRuntimeContinuationVerifier for HostStaging {
             .object(&self.archive.manifest.coordinator_state_ref)
             .map_err(|error| RuntimeError::SchedulerRefused(error.to_string()))?
             .bytes;
-        let saved: super::capture::Coordinator = serde_json::from_slice(bytes)
-            .map_err(|error| RuntimeError::SchedulerRefused(error.to_string()))?;
+        let saved: super::capture::Coordinator =
+            super::runtime_header::decode_supported_coordinator(bytes)
+                .map_err(|error| RuntimeError::SchedulerRefused(error.to_string()))?;
         if self.quarantined
             || target != &self.target
             || &saved.runtime != snapshot

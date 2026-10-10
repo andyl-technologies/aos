@@ -902,9 +902,45 @@ The earlier complete boundary attempt runs 6,506 cases: 6,504 pass and two stale
 artifact-inventory checks fail. The subsequent ABI build reaches 6,513 cases,
 with the same two stale checks failing and 6,511 passing. A later boundary build
 stops at a missing test-only unwrap annotation. These failures remain retained;
-the corrected current source is undergoing fresh hermetic ABI, license-boundary
-and application test-target builds. No successful complete gate is inferred
-from those partial results.
+the corrected 49-path source checkpoint passes the hermetic application
+test-target build (`5dgld99qrvibh0pff1srgv08kng3g3l3-aos-test-targets-0.1.0`).
+Its complete ABI and license-boundary qualification remains in progress. No
+successful complete gate is inferred from the earlier partial results.
+
+## Controlled faults and live condition stops
+
+The next source stage adds admitted deterministic packet/storage faults and live
+condition observation to the installed host-model executor. Fault decisions
+remain attached to the original operation and preparation. Genuine source-gone
+fault continuations restore in two fresh owners, preserving future bytes and
+once-only decisions. The live condition observer stops at the authentic first
+hit, retains the original stopped operation, requires its durable report before
+acknowledgment, then resumes the future operation once. A horizon alone does not
+become an end-of-stream condition.
+
+Condition snapshots use an explicit runtime edition. Current host archive
+readers reject unsupported runtime edition 6 through a streaming version probe
+before allocating its typed payload. Supported legacy editions 1 through 4
+continue through their original decoder, including integral JSON version forms
+and large numeric arrays. The condition DAG checks both unique and expanded
+body/association credits before cloning: 64 MiB and 65,536 entries. These checks
+cover repeated shared bodies, native history, provenance and stop records.
+
+Central verification passes 19 condition model cases, five actual native
+condition cases, 18 legacy host cases, six epoch regressions, two genuine
+source-gone fault continuations and three early-version-probe cases. All 37
+current-source hygiene checks and all 106 owned Rust formatting checks pass.
+Four native adverse/controlled storage cases separately qualify the cooperative
+polling successor, retaining each original dispatch, 20-second deadline and byte
+oracle. All-target strict checks cover ten affected crates, including the device
+crate. Independent review covers the source, expansion limits, unchanged legacy
+serialization and streaming version refusal. Earlier source-hygiene failures
+remain retained; allowances, thresholds and deadlines are unchanged.
+
+This stage qualifies live condition stop/report/resume only. Cold restoration
+of a condition-stopped world and the public debugger command workflow still
+require their own native and operator evidence. New complete hermetic gates must
+qualify this source stage separately from the preceding 49-path checkpoint.
 
 ## Performance evidence
 

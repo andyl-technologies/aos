@@ -10,7 +10,8 @@ impl HostModelNode {
         activation: &WorldActivation,
         maximum_bytes: usize,
     ) -> Result<NativeTerminalInventory, OperationFailure> {
-        if !self.facets.contains(&FacetKind::Introspection)
+        if self.terminal_inventory.0.as_str() != HOST_TERMINAL_INVENTORY_PROFILE
+            || !self.facets.contains(&FacetKind::Introspection)
             || !self.same_world(activation)
             || self.quarantined
             || self

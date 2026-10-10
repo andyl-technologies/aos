@@ -13,6 +13,9 @@ mod ninep;
 #[path = "host_state_seeded_tests.rs"]
 mod seeded;
 
+#[path = "condition_debug_tests.rs"]
+mod condition_debug;
+
 use std::{
     rc::Rc,
     sync::Arc,
@@ -556,3 +559,15 @@ fn installed_pending_request_transfer_survives_source_retirement_and_isolated_co
     drop(right);
     reclaim(&catalog);
 }
+
+#[path = "host_state_adverse_tests.rs"]
+mod adverse;
+
+#[path = "host_state_adverse_packet_tests.rs"]
+mod adverse_packet;
+
+#[path = "host_state_loss_tests.rs"]
+mod loss;
+
+#[path = "host_state_controlled_tests.rs"]
+mod controlled;

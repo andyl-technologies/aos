@@ -25,6 +25,7 @@ impl NodeRuntime {
         inputs: Option<Rc<crate::node_scheduling::RuntimeInputBatch>>,
     ) -> Result<BeginResult, RuntimeError> {
         self.validate_activation(activation)?;
+        self.validate_condition_dispatch(node, &operation, &request)?;
         if let Some(terminal) = &self.terminal {
             if !matches!(&request, OperationRequest::FinalizeAssertions { barrier, receipt }
                 if barrier.as_ref() == &terminal.saved.record

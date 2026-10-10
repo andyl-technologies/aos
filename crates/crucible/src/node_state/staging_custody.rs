@@ -157,6 +157,17 @@ impl NativeRuntimeContinuationVerifier for PreparedNativeCustody {
             .preserve_scheduling_epochs(snapshot, scheduling, target)
     }
 
+    fn verify_fault_continuation(
+        &mut self,
+        snapshot: &RuntimeSnapshot,
+        scheduling: &SchedulingSnapshot,
+        target: &ActivationRecord,
+    ) -> Result<(), RuntimeError> {
+        self.native_mut()
+            .map_err(|_| RuntimeError::ForeignAuthority)?
+            .verify_fault_continuation(snapshot, scheduling, target)
+    }
+
     fn verify_terminal_continuation(
         &mut self,
         snapshot: &RuntimeSnapshot,

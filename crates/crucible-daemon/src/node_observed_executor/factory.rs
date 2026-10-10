@@ -11,12 +11,16 @@ mod io;
 mod kvm;
 pub(super) mod recorded_ingress;
 
+mod condition_debug;
+mod controlled;
+mod faulted;
 mod native_state;
 mod profile;
 mod reference_public;
 mod scripted;
 mod seeded;
 mod semantics;
+pub use condition_debug::InstalledConditionDebugProfile;
 mod transcript;
 mod trust;
 
@@ -40,6 +44,8 @@ pub use capabilities::{
     InstalledCapabilityCandidate, InstalledCapabilityClockFactory, ResolvedCapabilityWorld,
 };
 pub use clock_label::{InstalledClockLabelFactory, InstalledClockLabelProfile};
+pub use controlled::InstalledControlledFaultProfile;
+pub use faulted::InstalledFaultedLinkProfile;
 pub use gem5_profile::InstalledGem5ClosedProfile;
 pub use host_state::InstalledHostStateFactory;
 pub use io::{InstalledHostIoProfile, InstalledIoArtifact, InstalledIoArtifactSource};
@@ -111,6 +117,11 @@ pub enum InstalledNodeKind {
     },
     /// Selects the fixed parent-zero ARM Linux Root/Clock model and its distinct codec.
     Gem5ArmRoot,
+    /// Runs a separately selected genuine native event-condition control observer.
+    HostConditionDebug {
+        /// Binds the independently enrolled compact condition and native route.
+        profile: InstalledConditionDebugProfile,
+    },
     /// Runs the installed closed gem5 model with original live public readiness.
     /// Preservation remains unsupported in this distinct initial edition.
     Gem5Closed {
@@ -142,10 +153,27 @@ pub enum InstalledNodeKind {
         /// Binds the complete source script and its ordinary public consumer.
         profile: InstalledScriptedSourceProfile,
     },
-    /// Runs an independently enrolled seeded byte-transport fault program.
+    /// Owns a separately selected opaque delayed packet echo receiver.
+    HostPacketReceiver {
+        /// Binds native response delivery identity.
+        source_node: u32,
+        /// Selects the positive fixed response delay in picoseconds.
+        latency_ps: U64,
+    },
+    /// Runs the unchanged independently selected jitter/reorder program.
     HostSeededLink {
         /// Binds original endpoints and the complete immutable RNG/fault program.
         profile: InstalledSeededLinkProfile,
+    },
+    /// Runs a separately selected recorded native coefficient controller.
+    HostControlledFaultLink {
+        /// Binds the complete original program and unchanged endpoint/timing scope.
+        profile: InstalledControlledFaultProfile,
+    },
+    /// Runs a distinct independently selected adverse byte fault program.
+    HostFaultedLink {
+        /// Binds original endpoints and the complete immutable RNG/fault program.
+        profile: InstalledFaultedLinkProfile,
     },
     /// Runs a fault-free byte-preserving exact host link between named nodes.
     HostNetLink {
@@ -185,6 +213,9 @@ impl<'de> Deserialize<'de> for InstalledNodeKind {
             InstalledNodeKindWire::HostClock {} => Self::HostClock,
             InstalledNodeKindWire::HostSemantics { profile } => Self::HostSemantics { profile },
             InstalledNodeKindWire::Gem5ArmRoot {} => Self::Gem5ArmRoot,
+            InstalledNodeKindWire::HostConditionDebug { profile } => {
+                Self::HostConditionDebug { profile }
+            }
             InstalledNodeKindWire::Gem5Closed { isa } => Self::Gem5Closed { isa },
             InstalledNodeKindWire::Gem5ClosedPreserving { isa } => {
                 Self::Gem5ClosedPreserving { isa }
@@ -197,7 +228,18 @@ impl<'de> Deserialize<'de> for InstalledNodeKind {
                 Self::HostRecordedBlock { profile }
             }
             InstalledNodeKindWire::HostScripted { profile } => Self::HostScripted { profile },
+            InstalledNodeKindWire::HostPacketReceiver {
+                source_node,
+                latency_ps,
+            } => Self::HostPacketReceiver {
+                source_node,
+                latency_ps,
+            },
             InstalledNodeKindWire::HostSeededLink { profile } => Self::HostSeededLink { profile },
+            InstalledNodeKindWire::HostFaultedLink { profile } => Self::HostFaultedLink { profile },
+            InstalledNodeKindWire::HostControlledFaultLink { profile } => {
+                Self::HostControlledFaultLink { profile }
+            }
             InstalledNodeKindWire::ReferenceDevice {
                 quantum_ps,
                 host_budget_ns,
@@ -240,6 +282,9 @@ enum InstalledNodeKindWire {
         profile: InstalledHostSemanticProfile,
     },
     Gem5ArmRoot {},
+    HostConditionDebug {
+        profile: InstalledConditionDebugProfile,
+    },
     Gem5Closed {
         isa: InstalledGem5Isa,
     },
@@ -260,10 +305,27 @@ enum InstalledNodeKindWire {
     HostScripted {
         profile: InstalledScriptedSourceProfile,
     },
-    /// Runs an independently enrolled seeded byte-transport fault program.
+    /// Owns a separately selected opaque delayed packet echo receiver.
+    HostPacketReceiver {
+        /// Binds native response delivery identity.
+        source_node: u32,
+        /// Selects the positive fixed response delay in picoseconds.
+        latency_ps: U64,
+    },
+    /// Runs the unchanged independently selected jitter/reorder program.
     HostSeededLink {
         /// Binds original endpoints and the complete immutable RNG/fault program.
         profile: InstalledSeededLinkProfile,
+    },
+    /// Runs a separately selected recorded native coefficient controller.
+    HostControlledFaultLink {
+        /// Binds the complete original program and unchanged endpoint/timing scope.
+        profile: InstalledControlledFaultProfile,
+    },
+    /// Runs a distinct independently selected adverse byte fault program.
+    HostFaultedLink {
+        /// Binds original endpoints and the complete immutable RNG/fault program.
+        profile: InstalledFaultedLinkProfile,
     },
     /// Runs a fault-free byte-preserving exact host link between named nodes.
     HostNetLink {
@@ -703,6 +765,9 @@ impl InstalledNodeCatalog {
                     | InstalledNodeKind::HostIo { .. }
                     | InstalledNodeKind::HostScripted { .. }
                     | InstalledNodeKind::HostSeededLink { .. }
+                    | InstalledNodeKind::HostFaultedLink { .. }
+                    | InstalledNodeKind::HostControlledFaultLink { .. }
+                    | InstalledNodeKind::HostPacketReceiver { .. }
                     | InstalledNodeKind::HostSemantics { .. }
             )
         }) || record.manifest().world_binding_hash != scenario.world.identity()?
@@ -931,6 +996,33 @@ impl InstalledNodeCatalog {
                         io::build_model(selection, &profile.storage, artifacts)?,
                     );
                 }
+                InstalledNodeKind::HostPacketReceiver {
+                    source_node,
+                    latency_ps,
+                } => {
+                    models.insert(
+                        selection.node.clone(),
+                        HostModel::PacketReceiver(Box::new(
+                            crucible::node_adapters::PacketReceiver::new(
+                                *source_node,
+                                latency_ps.get(),
+                            )
+                            .map_err(|error| refused(&error.reason))?,
+                        )),
+                    );
+                }
+                InstalledNodeKind::HostControlledFaultLink { profile } => {
+                    models.insert(
+                        selection.node.clone(),
+                        controlled::build_model(selection, profile, artifacts)?,
+                    );
+                }
+                InstalledNodeKind::HostFaultedLink { profile } => {
+                    models.insert(
+                        selection.node.clone(),
+                        faulted::build_model(selection, profile, artifacts)?,
+                    );
+                }
                 InstalledNodeKind::HostIo { profile } => {
                     models.insert(
                         selection.node.clone(),
@@ -955,6 +1047,14 @@ impl InstalledNodeCatalog {
                     models.insert(
                         selection.node.clone(),
                         HostModel::Clock(VirtualClock::new()),
+                    );
+                }
+                InstalledNodeKind::HostConditionDebug { profile } => {
+                    models.insert(
+                        selection.node.clone(),
+                        HostModel::ConditionObserver(Box::new(condition_debug::build_model(
+                            selection, selections, profile, artifacts,
+                        )?)),
                     );
                 }
                 InstalledNodeKind::HostSemantics { profile } => {
@@ -1069,10 +1169,14 @@ impl InstalledNodeCatalog {
                 }
                 InstalledNodeKind::HostClock
                 | InstalledNodeKind::HostSemantics { .. }
+                | InstalledNodeKind::HostConditionDebug { .. }
                 | InstalledNodeKind::HostNetLink { .. }
                 | InstalledNodeKind::HostIo { .. }
                 | InstalledNodeKind::HostScripted { .. }
-                | InstalledNodeKind::HostSeededLink { .. } => {
+                | InstalledNodeKind::HostSeededLink { .. }
+                | InstalledNodeKind::HostFaultedLink { .. }
+                | InstalledNodeKind::HostControlledFaultLink { .. }
+                | InstalledNodeKind::HostPacketReceiver { .. } => {
                     let model = models
                         .remove(&selection.node)
                         .ok_or_else(|| refused("enrolled host model custody disappeared"))?;

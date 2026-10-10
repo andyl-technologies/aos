@@ -126,6 +126,12 @@ pub(super) fn validate_request(
             }
         }
         OperationRequest::QuantumClose { .. } => return Err(RuntimeError::InvalidTiming),
+        OperationRequest::FaultInjectionV1(request)
+            if node.binding().compatibility.operating_contract.mode != OperatingMode::Exact
+                || request.validate().is_err() =>
+        {
+            return Err(RuntimeError::InvalidTiming);
+        }
         _ => {}
     }
     Ok(())
@@ -227,6 +233,68 @@ pub(super) fn valid_outcome(admission: &OperationAdmission, outcome: &OperationO
             },
         ) => window == actual_window && publication == end && input_batch == &closure.input_batch,
         (OperationRequest::Pause, ProgressEvidence::Paused { .. }) => true,
+        (
+            OperationRequest::FaultInjectionV1(request),
+            ProgressEvidence::FaultMutationApplied {
+                reached,
+                receipt,
+                program,
+                decision,
+            },
+        ) => {
+            *reached == request.at
+                && program == &request.program
+                && decision == &request.decision
+                && receipt.validate().is_ok()
+                && receipt.length.get() != 0
+                && outcome.retained_outputs.is_empty()
+                && outcome.scheduling.as_ref().is_some_and(|observation| {
+                    observation.reached == *reached && observation.publications.is_empty()
+                })
+        }
+        (
+            OperationRequest::DebugConditionV1(request),
+            ProgressEvidence::DebugConditionAppliedV1 {
+                reached,
+                stop_operation,
+                barrier,
+                report,
+                control,
+                resumed,
+            },
+        ) => {
+            if !outcome.retained_outputs.is_empty()
+                || outcome.scheduling.is_some()
+                || report.validate().is_err()
+                || report.length.get() == 0
+                || control.validate().is_err()
+                || control.length.get() == 0
+            {
+                return false;
+            }
+            match request.as_ref() {
+                super::ConditionControlRequest::Stop {
+                    barrier: record,
+                    receipt,
+                } => {
+                    !resumed
+                        && *reached == record.cut
+                        && stop_operation == &record.operation
+                        && barrier == receipt
+                        && report == control
+                }
+                super::ConditionControlRequest::Resume {
+                    stop_operation: original,
+                    barrier: root,
+                    report: original_report,
+                } => {
+                    *resumed
+                        && stop_operation == original
+                        && barrier == root
+                        && report == original_report
+                }
+            }
+        }
         (
             OperationRequest::FinalizeAssertions { barrier, receipt },
             ProgressEvidence::AssertionsFinalized {

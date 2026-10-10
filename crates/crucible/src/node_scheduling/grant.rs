@@ -34,6 +34,7 @@ pub(crate) enum ExactPermission {
         start: Position,
         limit: Position,
     },
+    Mutation(Box<crate::node_contract::FaultMutationRequest>),
 }
 
 /// Carries one immutable quantized input cut and its original output window.
@@ -82,6 +83,7 @@ impl ExecutionAdmission {
                 ExactPermission::Run { start, .. } | ExactPermission::Settlement { start, .. } => {
                     start
                 }
+                ExactPermission::Mutation(ref request) => request.at,
             },
             Self::Quantized(grant) => grant.start,
         }
@@ -94,6 +96,7 @@ impl ExecutionAdmission {
                 ExactPermission::Run { limit, .. } | ExactPermission::Settlement { limit, .. } => {
                     limit
                 }
+                ExactPermission::Mutation(ref request) => request.at,
             },
             Self::Quantized(grant) => grant.end,
         }
@@ -127,6 +130,9 @@ impl ExecutionAdmission {
                 },
                 ExactPermission::Settlement { start, limit } => {
                     OperationRequest::BoundarySettle { start, limit }
+                }
+                ExactPermission::Mutation(ref request) => {
+                    OperationRequest::FaultInjectionV1(request.clone())
                 }
             },
             Self::Quantized(grant) => OperationRequest::QuantumBegin {

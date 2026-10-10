@@ -307,6 +307,9 @@ pub(super) fn encode_with_limit(
     maximum: usize,
 ) -> Result<Vec<u8>, OperationFailure> {
     let maximum = maximum.min(node.limits.maximum_capture_bytes);
+    if condition_state::selected(node) {
+        return condition_state::encode(node, maximum);
+    }
     let native = node
         .model
         .as_ref()
@@ -314,7 +317,9 @@ pub(super) fn encode_with_limit(
         .capture(maximum)?;
     let staged = node.staged.as_ref().map(input_wire);
     let wire = Wire {
-        schema_version: if matches!(&node.model, Some(HostModel::Semantics(model)) if model.definition().version == 2)
+        schema_version: if matches!(&node.model, Some(HostModel::ControlledFaultLink(_))) {
+            3
+        } else if matches!(&node.model, Some(HostModel::Semantics(model)) if model.definition().version == 2)
         {
             2
         } else {
@@ -453,6 +458,14 @@ fn bounded_bytes(value: &impl Serialize, maximum: usize) -> Result<Vec<u8>, Oper
 /// Commits the actual current mechanical state without recursively embedding
 /// earlier operation captures. The immutable body is retained at completion.
 pub(super) fn state_receipt(node: &HostModelNode) -> Result<Vec<u8>, OperationFailure> {
+    if condition_state::selected(node) {
+        let objects = condition_state::receipt_objects(node)?;
+        return objects
+            .into_iter()
+            .next()
+            .map(|receipt| receipt.bytes)
+            .ok_or_else(|| failure("condition native original receipt omitted"));
+    }
     let [receipt, _, _] = state_receipt_objects(node)?;
     Ok(receipt.bytes)
 }
@@ -608,7 +621,9 @@ impl HostModelNode {
         let captured: Captured =
             serde_json::from_slice(bytes).map_err(|error| failure(&error.to_string()))?;
         if captured.schema_version
-            != if matches!(&self.model, Some(HostModel::Semantics(model)) if model.definition().version == 2)
+            != if matches!(&self.model, Some(HostModel::ControlledFaultLink(_))) {
+                3
+            } else if matches!(&self.model, Some(HostModel::Semantics(model)) if model.definition().version == 2)
             {
                 2
             } else {
@@ -907,7 +922,19 @@ impl HostModelNode {
             }
             let queued: std::collections::BTreeSet<_> = match self.model.as_ref() {
                 Some(HostModel::Io(io)) => io.pending_completion_keys().collect(),
-                Some(HostModel::Link(link) | HostModel::SeededLink { link, .. }) => link
+                Some(HostModel::PacketReceiver(receiver)) => receiver.pending_keys().collect(),
+                Some(
+                    HostModel::Link(link)
+                    | HostModel::SeededLink { link, .. }
+                    | HostModel::FaultedLink { link, .. },
+                ) => link
+                    .snapshot()
+                    .inflight
+                    .iter()
+                    .map(|frame| (frame.key.delivery_icount, frame.key.src_node, frame.key.seq))
+                    .collect(),
+                Some(HostModel::ControlledFaultLink(controller)) => controller
+                    .native()
                     .snapshot()
                     .inflight
                     .iter()
@@ -1112,8 +1139,26 @@ fn restore_model(
             **link = definition.restore(bytes, maximum)?;
             Ok(())
         }
+        HostModel::FaultedLink {
+            link,
+            definition,
+            decisions,
+        } => {
+            let (restored, original) = definition.restore(bytes, maximum)?;
+            **link = restored;
+            *decisions = original;
+            Ok(())
+        }
+        HostModel::PacketReceiver(receiver) => receiver.restore(bytes),
+        HostModel::ControlledFaultLink(controller) => {
+            let restored =
+                super::super::ControlledFaultLink::restore(controller.program(), bytes, maximum)?;
+            **controller = restored;
+            Ok(())
+        }
         HostModel::ScriptedSource(source) => source.restore(bytes),
         HostModel::Semantics(model) => model.restore_continuation(bytes),
+        HostModel::ConditionObserver(model) => model.restore_continuation(bytes),
         HostModel::Clock(clock) => {
             let prefix = b"crucible.host-clock.v1\0";
             let ticks = bytes

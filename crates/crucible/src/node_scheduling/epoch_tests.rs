@@ -149,6 +149,58 @@ fn inherited_row_cannot_change_the_original_grant_input_or_cursor() {
 }
 
 #[test]
+fn fault_three_keeps_legacy_one_and_original_epoch_two_as_distinct_grammars() {
+    use crate::node_contract::FaultMutationRequest;
+
+    let legacy = snapshot();
+    let inherited = fresh_snapshot(&legacy, row(&legacy));
+    for original in [&legacy, &inherited] {
+        crate::node_scheduling::scheduler::validate_snapshot_structure(original).unwrap();
+        let bytes = canonical::canonical_json(&serde_json::to_value(original).unwrap()).unwrap();
+        let decoded: SchedulingSnapshot = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(&decoded, original);
+        assert_eq!(
+            decoded.continuation_hash().unwrap(),
+            original.continuation_hash().unwrap()
+        );
+    }
+
+    let mut fault = legacy.clone();
+    fault.schema_version = 3;
+    fault.reservations[0].permission = SavedPermission::FaultInjectionV1 {
+        request: Box::new(FaultMutationRequest {
+            version: 1,
+            facet_profile: id("host/fault-injection-v1"),
+            program: payload(b"installed-controller", "application/json").reference,
+            decision: 0.into(),
+            at: position(0),
+        }),
+    };
+    crate::node_scheduling::scheduler::validate_snapshot_structure(&fault).unwrap();
+    assert_eq!(
+        fault.continuation_hash().unwrap().domain,
+        "cnp.scheduler-continuation.v3"
+    );
+
+    for edition in [1, 2] {
+        let mut incorrectly_labeled = fault.clone();
+        incorrectly_labeled.schema_version = edition;
+        assert!(
+            crate::node_scheduling::scheduler::validate_snapshot_structure(&incorrectly_labeled)
+                .is_err()
+        );
+    }
+    let mut combined = fault.clone();
+    combined.original_epochs = inherited.original_epochs.clone();
+    assert!(crate::node_scheduling::scheduler::validate_snapshot_structure(&combined).is_err());
+    let mut mislabeled_epoch = inherited;
+    mislabeled_epoch.schema_version = 3;
+    assert!(
+        crate::node_scheduling::scheduler::validate_snapshot_structure(&mislabeled_epoch).is_err()
+    );
+}
+
+#[test]
 fn discharged_or_forward_epoch_is_not_a_lower_cursor_exception() {
     let source = snapshot();
     let original = row(&source);
@@ -238,6 +290,7 @@ fn legacy_native_verifier_refuses_epoch_two_without_invoking_native_continuation
         operations: vec![],
         inputs: vec![],
         terminal: None,
+        condition_stop: None,
     };
     let mut legacy = LegacyVerifier { native_calls: 0 };
     assert!(

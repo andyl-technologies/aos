@@ -121,6 +121,7 @@ pub struct NodeRuntime {
     scheduler: Option<crate::node_scheduling::CausalScheduler>,
     custody_slot: Option<Box<dyn RuntimeCustodySlot>>,
     terminal: Option<super::terminal::TerminalState>,
+    condition_stop: Option<super::condition_debug::ConditionStopState>,
 }
 
 impl NodeRuntime {
@@ -234,6 +235,7 @@ impl NodeRuntime {
             scheduler: None,
             custody_slot: Some(custody_slot),
             terminal: None,
+            condition_stop: None,
         })
     }
 
@@ -392,7 +394,7 @@ impl NodeRuntime {
         activation: &WorldActivation,
     ) -> Result<&mut crate::node_scheduling::CausalScheduler, RuntimeError> {
         self.validate_activation(activation)?;
-        if self.terminal.is_some() {
+        if self.terminal.is_some() || self.condition_fenced() {
             return Err(RuntimeError::OutstandingObligations);
         }
         if graph.world_binding_hash() != &activation.record.world_binding_hash {
@@ -659,6 +661,9 @@ impl NodeRuntime {
     /// # Errors
     /// Refuses unknown nodes, unsupported or incorrectly returned facet kinds.
     pub fn facet(&mut self, node: &NodeId, kind: FacetKind) -> Result<NodeFacet<'_>, RuntimeError> {
+        if self.condition_fenced() && kind != FacetKind::Debugging {
+            return Err(RuntimeError::OutstandingObligations);
+        }
         if self.terminal.is_some() && kind != FacetKind::TerminalAssertions {
             return Err(RuntimeError::OutstandingObligations);
         }
@@ -1126,6 +1131,9 @@ mod terminal_runtime;
 #[path = "runtime_dispatch.rs"]
 mod dispatch;
 
+#[path = "runtime_fault.rs"]
+mod fault_runtime;
+
 #[path = "runtime_inputs.rs"]
 mod inputs;
 
@@ -1146,3 +1154,6 @@ mod boundary_evidence;
 mod continuation;
 
 pub use continuation::*;
+
+#[path = "runtime_condition_debug.rs"]
+mod condition_debug_runtime;

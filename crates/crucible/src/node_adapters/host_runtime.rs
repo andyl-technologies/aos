@@ -125,6 +125,12 @@ impl SimulationNode for HostModelNode {
     }
 
     fn begin_operation(&mut self, admission: &OperationAdmission) -> Submission {
+        if matches!(admission.request(), OperationRequest::DebugConditionV1(_)) {
+            return self.begin_condition_control(admission);
+        }
+        if matches!(admission.request(), OperationRequest::FaultInjectionV1(_)) {
+            return self.begin_fault_mutation(admission);
+        }
         if matches!(
             admission.request(),
             OperationRequest::FinalizeAssertions { .. }
@@ -267,7 +273,8 @@ impl SimulationNode for HostModelNode {
     ) -> Result<Vec<crate::node_scheduling::InputPayload>, OperationFailure> {
         let completed = self.original(original.token())?;
         self.validate_outcome(original, &completed.outcome)?;
-        if references.len() > completed.evidence.len() {
+        let evidence = self.original_condition_objects(original.token().operation(), completed)?;
+        if references.len() > evidence.len() {
             return Err(failure(
                 "host evidence request exceeds original retained inventory",
             ));
@@ -275,11 +282,10 @@ impl SimulationNode for HostModelNode {
         references
             .iter()
             .map(|reference| {
-                completed
-                    .evidence
+                evidence
                     .iter()
                     .find(|object| &object.reference == reference)
-                    .cloned()
+                    .map(|object| (**object).clone())
                     .ok_or_else(|| {
                         failure("host evidence is absent from original native receipt registry")
                     })
@@ -343,6 +349,8 @@ impl SimulationNode for HostModelNode {
             FacetKind::ExactExecution => Ok(NodeFacet::ExactExecution(&self.execution)),
             FacetKind::TerminalAssertions => Ok(NodeFacet::TerminalAssertions(&self.terminal)),
             FacetKind::Introspection => Ok(NodeFacet::Introspection(&self.terminal_inventory)),
+            FacetKind::FaultInjection => Ok(NodeFacet::FaultInjection(&self.fault_injection)),
+            FacetKind::Debugging => Ok(NodeFacet::Debugging(&self.condition_debug)),
             _ => Err(Refusal {
                 reason: "host facet unsupported".into(),
             }),
@@ -353,7 +361,68 @@ impl SimulationNode for HostModelNode {
         &mut self,
         batch: &crate::node_scheduling::RuntimeInputBatch,
     ) -> Result<crate::node_scheduling::NativeInputAcknowledgement, OperationFailure> {
+        if matches!(self.model, Some(HostModel::ConditionObserver(_))) {
+            return Err(failure(
+                "condition native staging requires authentic original producer proofs",
+            ));
+        }
         self.stage_exact_inputs(batch)
+    }
+
+    fn observe_condition_hit(
+        &self,
+        activation: &WorldActivation,
+    ) -> Result<Option<crate::node_adapters::ConditionHitCandidate>, OperationFailure> {
+        self.condition_hit(activation)
+    }
+
+    fn validate_condition_hit(
+        &self,
+        activation: &WorldActivation,
+        hit: &crate::node_adapters::ConditionHitCandidate,
+    ) -> Result<(), OperationFailure> {
+        if self.condition_hit(activation)?.as_ref() != Some(hit) {
+            return Err(failure("condition original native hit changed"));
+        }
+        Ok(())
+    }
+
+    fn observe_condition_stop(
+        &self,
+        activation: &WorldActivation,
+        maximum_bytes: usize,
+    ) -> Result<NativeConditionStopInventory, OperationFailure> {
+        self.condition_inventory(activation, maximum_bytes)
+    }
+
+    fn validate_condition_stop(
+        &self,
+        activation: &WorldActivation,
+        inventory: &NativeConditionStopInventory,
+    ) -> Result<(), OperationFailure> {
+        if self.condition_inventory(activation, self.limits.maximum_capture_bytes)? != *inventory {
+            return Err(failure("condition complete stopped native custody changed"));
+        }
+        Ok(())
+    }
+
+    fn observe_condition_frontier(
+        &self,
+        activation: &WorldActivation,
+        maximum_bytes: usize,
+    ) -> Result<NativeConditionEventFrontier, OperationFailure> {
+        self.condition_frontier(activation, maximum_bytes)
+    }
+
+    fn validate_condition_frontier(
+        &self,
+        activation: &WorldActivation,
+        frontier: &NativeConditionEventFrontier,
+    ) -> Result<(), OperationFailure> {
+        if self.condition_frontier(activation, frontier.receipt.bytes.len())? != *frontier {
+            return Err(failure("condition original native event frontier changed"));
+        }
+        Ok(())
     }
 
     fn observe_terminal(
@@ -432,6 +501,7 @@ impl SimulationNode for HostModelNode {
         _batch: &crate::node_scheduling::RuntimeInputBatch,
     ) -> bool {
         self.recorded_ingress.is_some()
+            || matches!(self.model.as_ref(), Some(HostModel::ConditionObserver(_)))
     }
 
     fn stage_inputs_with_provenance(
@@ -439,6 +509,9 @@ impl SimulationNode for HostModelNode {
         batch: &crate::node_scheduling::RuntimeInputBatch,
         provenance: &InputProvenanceClosure,
     ) -> Result<crate::node_scheduling::NativeInputAcknowledgement, OperationFailure> {
+        if matches!(self.model.as_ref(), Some(HostModel::ConditionObserver(_))) {
+            return self.condition_stage_provenance(batch, provenance);
+        }
         self.validate_recorded_provenance(batch, provenance)?;
         self.stage_exact_inputs(batch)
     }
@@ -449,6 +522,9 @@ impl SimulationNode for HostModelNode {
         references: &[ContentRef],
         maximum_bytes: usize,
     ) -> Result<Vec<crate::node_scheduling::InputPayload>, OperationFailure> {
+        if self.terminal_inventory.0.as_str() == HOST_CONDITION_INVENTORY_PROFILE {
+            return self.condition_producer_objects(activation, references, maximum_bytes);
+        }
         self.read_recorded_evidence(activation, references, maximum_bytes)
     }
 
@@ -458,7 +534,7 @@ impl SimulationNode for HostModelNode {
         references: &[ContentRef],
         objects: &[crate::node_scheduling::InputPayload],
     ) -> Result<(), OperationFailure> {
-        if self.read_recorded_evidence(activation, references, self.limits.maximum_capture_bytes)?
+        if self.read_boundary_evidence(activation, references, self.limits.maximum_capture_bytes)?
             != objects
         {
             return Err(failure("recorded input original boundary objects changed"));
@@ -472,6 +548,9 @@ impl SimulationNode for HostModelNode {
         root: &ContentRef,
         limits: InputProvenanceLimits,
     ) -> Result<Vec<ContentRef>, OperationFailure> {
+        if self.terminal_inventory.0.as_str() == HOST_CONDITION_INVENTORY_PROFILE {
+            return self.condition_producer_dependencies(activation, root, limits);
+        }
         self.recorded_dependencies(activation, root, limits)
     }
 
@@ -481,7 +560,7 @@ impl SimulationNode for HostModelNode {
         root: &ContentRef,
         dependencies: &[ContentRef],
     ) -> Result<(), OperationFailure> {
-        if self.recorded_dependencies(activation, root, InputProvenanceLimits::default())?
+        if self.input_provenance_dependencies(activation, root, InputProvenanceLimits::default())?
             != dependencies
         {
             return Err(failure(
@@ -496,6 +575,26 @@ impl SimulationNode for HostModelNode {
         activation: &WorldActivation,
     ) -> Result<crate::node_scheduling::NativeSchedulingObservation, OperationFailure> {
         self.observe_exact(activation)
+    }
+
+    fn next_fault_mutation(
+        &self,
+        activation: &WorldActivation,
+    ) -> Result<Option<crate::node_contract::FaultMutationRequest>, OperationFailure> {
+        if self.quarantined
+            || !self.same_world(activation)
+            || !self.facets.contains(&FacetKind::FaultInjection)
+        {
+            return Err(failure(
+                "native controller lacks its selected original activation",
+            ));
+        }
+        match self.model.as_ref() {
+            Some(HostModel::ControlledFaultLink(controller)) => Ok(controller.next_request()),
+            _ => Err(failure(
+                "selected native model has no admitted authored fault controller",
+            )),
+        }
     }
 
     fn validate_scheduling_observation(

@@ -41,8 +41,10 @@ pub(super) fn materialize(
     let mut expected = BTreeMap::new();
     for selected in selections {
         let reference = match &selected.kind {
-            InstalledNodeKind::HostClock => continue,
+            InstalledNodeKind::HostClock | InstalledNodeKind::HostPacketReceiver { .. } => continue,
             InstalledNodeKind::HostSeededLink { profile } => &profile.program,
+            InstalledNodeKind::HostFaultedLink { profile } => &profile.program,
+            InstalledNodeKind::HostControlledFaultLink { profile } => &profile.program,
             InstalledNodeKind::HostIo { profile } => profile.artifact(),
             InstalledNodeKind::HostScripted { profile } => profile.artifact(),
             InstalledNodeKind::HostSemantics { profile } => &profile.program,

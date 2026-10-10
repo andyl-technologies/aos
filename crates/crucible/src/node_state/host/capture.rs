@@ -25,6 +25,23 @@ use super::{
     HostArchive, HostArchiveRecord, HostWorldFactory, native_failure, require_supported_extensions,
 };
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CoordinatorEdition {
+    Legacy,
+    Terminal,
+    Fault,
+}
+
+impl CoordinatorEdition {
+    fn version(self) -> u32 {
+        match self {
+            Self::Legacy => 1,
+            Self::Terminal => 2,
+            Self::Fault => 3,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Coordinator {
@@ -32,6 +49,20 @@ pub(super) struct Coordinator {
     pub scheduler: SchedulingSnapshot,
     pub runtime: RuntimeSnapshot,
     pub world_repeatability: Repeatability,
+}
+
+// This is the selected closed native receipt grammar, not arbitrary JSON
+// reference discovery or a claim that parsed content proves native effects.
+fn fault_receipt_dependencies(bytes: &[u8]) -> Option<Vec<ContentRef>> {
+    let record: crate::node_contract::FaultMutationRecord = serde_json::from_slice(bytes).ok()?;
+    let mut references = vec![
+        record.request.program,
+        record.previous_table,
+        record.applied_table,
+    ];
+    references.sort();
+    references.dedup();
+    Some(references)
 }
 
 #[derive(Serialize, Deserialize, PartialEq)]
@@ -83,7 +114,7 @@ impl HostArchive {
             requirements,
             immutable,
             factory,
-            false,
+            CoordinatorEdition::Legacy,
         )
     }
 
@@ -120,7 +151,44 @@ impl HostArchive {
             requirements,
             immutable,
             factory,
-            true,
+            CoordinatorEdition::Terminal,
+        )
+    }
+
+    /// Captures the selected native fault-controller journal and original operations.
+    ///
+    /// Reading this archive never applies a table mutation. The selected installed
+    /// factory must authenticate the complete native decision journal and original
+    /// runtime scope, including held receipts and pending coordinator permissions.
+    ///
+    /// # Errors
+    /// Refuses absent selected fault scope, unsupported installed codecs, moving
+    /// state, missing original evidence or any complete-world capture bound.
+    // crucible-lint: allow rust-allow -- Complete-world capture keeps graph, actual activation, original evidence and installed factory explicit at this API boundary.
+    #[allow(clippy::too_many_arguments)]
+    pub fn capture_fault_world(
+        &self,
+        graph: &AdmittedGraph,
+        runtime: &mut NodeRuntime,
+        activation: &WorldActivation,
+        cut: Position,
+        ordinal: U64,
+        capture_id: Id,
+        requirements: StateRequirements,
+        immutable: &dyn CaptureEvidence,
+        factory: &dyn HostWorldFactory,
+    ) -> Result<HostArchiveRecord, StateError> {
+        self.capture_world_selected(
+            graph,
+            runtime,
+            activation,
+            cut,
+            ordinal,
+            capture_id,
+            requirements,
+            immutable,
+            factory,
+            CoordinatorEdition::Fault,
         )
     }
 
@@ -137,7 +205,7 @@ impl HostArchive {
         requirements: StateRequirements,
         immutable: &dyn CaptureEvidence,
         factory: &dyn HostWorldFactory,
-        terminal: bool,
+        edition: CoordinatorEdition,
     ) -> Result<HostArchiveRecord, StateError> {
         require_supported_extensions(graph)?;
         if requirements.restore_mode != StateRestoreMode::DurableRestart {
@@ -145,7 +213,7 @@ impl HostArchive {
                 "host signed archive selects durable reconstruction explicitly",
             ));
         }
-        let scheduler = if terminal {
+        let scheduler = if edition == CoordinatorEdition::Terminal {
             runtime
                 .terminal_scheduler_snapshot(activation, cut, ordinal)
                 .map_err(schema)?
@@ -156,22 +224,30 @@ impl HostArchive {
                 .snapshot(cut, ordinal)
                 .map_err(schema)?
         };
-        if scheduler.schema_version != 1 {
+        if scheduler.schema_version != 1
+            && !(edition == CoordinatorEdition::Fault && scheduler.schema_version == 3)
+        {
             return Err(refusal(
-                "legacy Host archive does not preserve scheduling epoch lineage",
+                "selected Host archive does not preserve scheduling epoch lineage",
             ));
         }
-        let source = if terminal {
+        let source = if edition == CoordinatorEdition::Terminal {
             runtime
                 .terminal_runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
+                .map_err(schema)?
+        } else if edition == CoordinatorEdition::Fault {
+            runtime
+                .fault_runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
                 .map_err(schema)?
         } else {
             runtime
                 .runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
                 .map_err(schema)?
         };
-        if terminal {
+        if edition == CoordinatorEdition::Terminal {
             factory.authenticate_terminal_custody(graph, &source, &scheduler, None)?;
+        } else if edition == CoordinatorEdition::Fault {
+            factory.authenticate_fault_custody(graph, &source, &scheduler, None)?;
         }
         let immutable_refs = required_immutable_refs(graph, self.limits)?;
         let mut immutable_content = verify_closure(immutable_refs.clone(), immutable, self.limits)?;
@@ -185,14 +261,37 @@ impl HostArchive {
                 self.limits.maximum_content_objects,
             )
             .map_err(schema)?;
+        if edition == CoordinatorEdition::Fault {
+            // The owning runtime authenticated these original native receipt
+            // objects. Expose their exact bytes to installed source validation;
+            // this does not make a raw content object native authority.
+            for capture in &captures {
+                for object in capture.evidence() {
+                    immutable_content.include_payload(
+                        &object.reference,
+                        &object.bytes,
+                        self.limits,
+                    )?;
+                }
+            }
+        }
         let mut objects = Objects::new(self.limits);
         for (reference, bytes) in immutable_content.entries() {
-            let dependencies =
-                immutable.dependencies(reference, bytes, self.limits.maximum_content_objects)?;
+            let dependencies = if edition == CoordinatorEdition::Fault {
+                if let Some(dependencies) = fault_receipt_dependencies(bytes) {
+                    dependencies
+                } else if immutable_refs.contains(reference) {
+                    immutable.dependencies(reference, bytes, self.limits.maximum_content_objects)?
+                } else {
+                    Vec::new()
+                }
+            } else {
+                immutable.dependencies(reference, bytes, self.limits.maximum_content_objects)?
+            };
             objects.insert(reference.clone(), bytes.to_vec(), dependencies)?;
         }
         let coordinator = Coordinator {
-            schema_version: if terminal { 2 } else { 1 },
+            schema_version: edition.version(),
             scheduler,
             runtime: source,
             world_repeatability: graph.world_repeatability(),
@@ -277,7 +376,15 @@ impl HostArchive {
             let mut dependencies = Vec::new();
             for object in captured.evidence() {
                 dependencies.push(object.reference.clone());
-                objects.insert(object.reference.clone(), object.bytes.clone(), vec![])?;
+                objects.insert(
+                    object.reference.clone(),
+                    object.bytes.clone(),
+                    if edition == CoordinatorEdition::Fault {
+                        fault_receipt_dependencies(&object.bytes).unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    },
+                )?;
             }
             if inventory
                 .evidence
@@ -365,16 +472,20 @@ impl HostArchive {
             provenance_ref,
             extensions: Default::default(),
         };
-        let runtime_after = if terminal {
+        let runtime_after = if edition == CoordinatorEdition::Terminal {
             runtime
                 .terminal_runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
+                .map_err(schema)?
+        } else if edition == CoordinatorEdition::Fault {
+            runtime
+                .fault_runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
                 .map_err(schema)?
         } else {
             runtime
                 .runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
                 .map_err(schema)?
         };
-        let scheduler_after = if terminal {
+        let scheduler_after = if edition == CoordinatorEdition::Terminal {
             runtime
                 .terminal_scheduler_snapshot(activation, cut, ordinal)
                 .map_err(schema)?
@@ -424,9 +535,11 @@ impl HostArchiveRecord {
         if object.bytes.len() > maximum_record_bytes {
             return Err(limit("authenticated source activation record"));
         }
-        let coordinator: Coordinator = serde_json::from_slice(&object.bytes).map_err(schema)?;
-        if !matches!(coordinator.schema_version, 1 | 2)
+        let coordinator: Coordinator =
+            super::runtime_header::decode_supported_coordinator(&object.bytes)?;
+        if !matches!(coordinator.schema_version, 1..=3)
             || (coordinator.schema_version == 2) != (coordinator.runtime.schema_version == 3)
+            || (coordinator.schema_version == 3) != (coordinator.runtime.schema_version == 4)
             || coordinator.runtime.source_activation.world_binding_hash
                 != self.manifest.world_binding_hash
             || coordinator.runtime.capture_cut != self.manifest.cut
@@ -582,14 +695,23 @@ impl CaptureEvidence for ArchiveEvidence<'_> {
             return Err(refusal("signed coordinator manifest differs"));
         }
         let coordinator = self.coordinator(content)?;
-        if !matches!(coordinator.schema_version, 1 | 2)
+        if !matches!(coordinator.schema_version, 1..=3)
             || (coordinator.schema_version == 2) != (coordinator.runtime.schema_version == 3)
+            || (coordinator.schema_version == 3) != (coordinator.runtime.schema_version == 4)
             || coordinator.world_repeatability != graph.world_repeatability()
         {
             return Err(refusal("signed coordinator edition or guarantee differs"));
         }
         if coordinator.schema_version == 2 {
             self.factory.authenticate_terminal_custody(
+                graph,
+                &coordinator.runtime,
+                &coordinator.scheduler,
+                Some(content),
+            )?;
+        }
+        if coordinator.schema_version == 3 {
+            self.factory.authenticate_fault_custody(
                 graph,
                 &coordinator.runtime,
                 &coordinator.scheduler,
@@ -615,12 +737,11 @@ impl CaptureEvidence for ArchiveEvidence<'_> {
 impl ArchiveEvidence<'_> {
     fn coordinator(&self, content: &VerifiedStateContent) -> Result<Coordinator, StateError> {
         let reference = &self.record.manifest.coordinator_state_ref;
-        serde_json::from_slice(
+        super::runtime_header::decode_supported_coordinator(
             content
                 .get(reference)
                 .ok_or_else(|| refusal("signed coordinator bytes absent"))?,
         )
-        .map_err(schema)
     }
 }
 

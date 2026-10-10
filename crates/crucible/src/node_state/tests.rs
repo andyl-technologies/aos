@@ -200,6 +200,7 @@ fn setup(
     };
     let runtime = crate::node_contract::RuntimeSnapshot {
         terminal: None,
+        condition_stop: None,
         schema_version: 1,
         source_activation: crate::node_contract::SavedRuntimeActivation {
             generation: snapshot.source_generation,

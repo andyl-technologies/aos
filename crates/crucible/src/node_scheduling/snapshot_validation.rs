@@ -578,6 +578,25 @@ fn validate_saved_profile(
             positions[&reservation.owner],
             &owner_contracts[&reservation.owner],
         )?;
+        if let SavedPermission::FaultInjectionV1 { request } = &reservation.permission {
+            let binding = graph
+                .binding(&reservation.node)
+                .ok_or(SchedulingError::InvalidSnapshot)?;
+            if !binding
+                .compatibility
+                .operating_contract
+                .facets
+                .iter()
+                .any(|facet| {
+                    facet.id == request.facet_profile
+                        && facet.version == request.version
+                        && facet.configuration_ref == binding.compatibility.configuration_ref
+                        && facet.guarantees_ref == binding.compatibility.guarantees_ref
+                })
+            {
+                return Err(SchedulingError::InvalidSnapshot);
+            }
+        }
         if reservation.input_batch.as_ref().is_some_and(|id| {
             !snapshot.input_batches.iter().any(|batch| {
                 &batch.batch == id
@@ -598,6 +617,13 @@ fn validate_reserved_contract(
 ) -> Result<(), SchedulingError> {
     let (grid, policy) = contract;
     match (&reservation.permission, policy) {
+        (SavedPermission::FaultInjectionV1 { request }, ExecutionPolicy::Exact { .. })
+            if request.at == cursor
+                && reservation.input_batch.is_none()
+                && grid.contains(request.at.time_ps) =>
+        {
+            Ok(())
+        }
         (
             SavedPermission::ExactRun {
                 start,
@@ -696,8 +722,15 @@ fn validate_delivery_lineage(delivery: &Delivery, cap: U64) -> Result<(), Schedu
 
 pub(crate) fn validate_structure(snapshot: &SchedulingSnapshot) -> Result<(), SchedulingError> {
     snapshot.world_binding_hash.validate()?;
-    if !matches!(snapshot.schema_version, 1 | 2)
+    let fault_permission = snapshot.reservations.iter().any(|reservation| {
+        matches!(
+            reservation.permission,
+            SavedPermission::FaultInjectionV1 { .. }
+        )
+    });
+    if !matches!(snapshot.schema_version, 1..=3)
         || (snapshot.schema_version == 2) != snapshot.original_epochs.is_some()
+        || (snapshot.schema_version == 3) != fault_permission
         || snapshot.ordering_profile != "superdense-v1"
         || snapshot.source_generation.get() == 0
     {
@@ -840,6 +873,12 @@ fn validate_permission(
     maximum_microsteps: U64,
 ) -> Result<(), SchedulingError> {
     let (start, limit) = match permission {
+        SavedPermission::FaultInjectionV1 { request } => {
+            request
+                .validate()
+                .map_err(|_| SchedulingError::InvalidSnapshot)?;
+            return validate_position(request.at, maximum_microsteps);
+        }
         SavedPermission::ExactRun { start, limit, .. } => {
             if limit.phase != Phase::BoundaryControl
                 || limit.microstep.get() != 0

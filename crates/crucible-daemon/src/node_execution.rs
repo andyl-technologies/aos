@@ -7,7 +7,7 @@
 
 use crucible::{
     node_admission::AdmittedGraph,
-    node_contract::{NodeRuntime, RuntimeError, RuntimePollFailure, WorldActivation},
+    node_contract::{FacetKind, NodeRuntime, RuntimeError, RuntimePollFailure, WorldActivation},
     node_scheduling::{ExecutionAdmission, SchedulingError},
 };
 use crucible_node_contract::{Direction, Id, U64};
@@ -57,6 +57,28 @@ where
     let graph = request.graph;
     let activation = request.activation;
     let node = request.node;
+    // Only an actual acquired native FaultInjection facet can supply a next
+    // immutable decision. The model deadline caps ordinary progress; its table
+    // changes through a separate original common-round operation at that cut.
+    let fault = match runtime.facet(node, FacetKind::FaultInjection) {
+        Ok(_) => runtime.next_fault_mutation(activation, node)?,
+        Err(RuntimeError::UnsupportedFacet) => None,
+        Err(error) => return Err(error.into()),
+    };
+    let mut horizon = request.horizon;
+    if let Some(fault) = fault {
+        let current = runtime.scheduler(graph, activation)?.position(node)?;
+        if fault.at < current {
+            return Err(RuntimeError::InvalidTiming.into());
+        }
+        if fault.at == current && fault.at.time_ps < horizon {
+            return runtime
+                .admit_fault_injection(graph, activation, node, request.names.operation)
+                .map(Some)
+                .map_err(E::from);
+        }
+        horizon = horizon.min(fault.at.time_ps);
+    }
     let has_inputs = graph.descriptor(node).is_some_and(|descriptor| {
         descriptor.ports.iter().any(|port| {
             port.lanes
@@ -67,7 +89,7 @@ where
     if has_inputs {
         let cutoff = match runtime
             .scheduler(graph, activation)?
-            .preview_exact_input_cut(node, request.horizon)
+            .preview_exact_input_cut(node, horizon)
         {
             Ok(cutoff) => cutoff,
             Err(SchedulingError::InputBlocked(_) | SchedulingError::NoSafeProgress) => {
@@ -84,7 +106,7 @@ where
             // An empty input acknowledgement cannot remove a producer limit.
             // Preserve the previous native custody and let another safe owner
             // advance before allocating or staging a redundant empty batch.
-            match scheduler.preview_exact_limit(node, request.horizon) {
+            match scheduler.preview_exact_limit(node, horizon) {
                 Ok(_) => {}
                 Err(SchedulingError::InputBlocked(_) | SchedulingError::NoSafeProgress) => {
                     return Ok(None);
@@ -119,11 +141,10 @@ where
         record(observed)?;
     }
 
-    match runtime.scheduler(graph, activation)?.admit_exact(
-        node,
-        request.names.operation,
-        request.horizon,
-    ) {
+    match runtime
+        .scheduler(graph, activation)?
+        .admit_exact(node, request.names.operation, horizon)
+    {
         Ok(grant) => Ok(Some(grant)),
         Err(SchedulingError::InputBlocked(_) | SchedulingError::NoSafeProgress) if !has_inputs => {
             Ok(None)

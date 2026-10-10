@@ -913,6 +913,7 @@ fn actual_host_restore_preserves_original_input_and_pending_reply_without_reexec
     let capture = original.continuation_bytes().unwrap();
     let source = RuntimeSnapshot {
         terminal: None,
+        condition_stop: None,
         schema_version: 1,
         source_activation: (&record).into(),
         capture_cut: original.boundary,

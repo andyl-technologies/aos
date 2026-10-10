@@ -211,6 +211,22 @@ impl HostSemanticModel {
         self.position
     }
 
+    /// Returns the first retained original delivery without evaluating its prefix.
+    ///
+    /// The borrowed record contains historical data only. Native capture and
+    /// continuation verifiers independently authenticate its source association.
+    pub fn first_original_input(&self) -> Option<&Delivery> {
+        self.segments
+            .iter()
+            .find_map(|segment| segment.input.as_ref())
+    }
+
+    // Retained evaluator facts validate a debugger candidate without replaying
+    // its input prefix or trusting a separately serialized outcome marker.
+    pub(crate) fn retained_condition_outcomes(&self) -> Vec<crate::HostAssertionOutcome> {
+        self.evaluator.retained_terminal_outcomes()
+    }
+
     /// Returns the number of retained original publications.
     pub fn pending_count(&self) -> usize {
         self.pending.len()

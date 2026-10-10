@@ -880,11 +880,29 @@ pub(super) fn input_context_bytes(
             "physical_sampling":false,"capture_restore":"unqualified"
         }))?);
     }
+    let authored = scenario
+        .content
+        .iter()
+        .find(|object| object.reference == scenario.world.scenario_ref)
+        .ok_or_else(|| {
+            NodeObservedError::Native("original authored scenario content absent".into())
+        })?;
+    authored.reference.verify(&authored.bytes)?;
+    let definition: serde_json::Value = serde_json::from_slice(&authored.bytes)?;
+    let faults = definition
+        .get("faults")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    if !faults.is_array() {
+        return Err(NodeObservedError::Native(
+            "original authored fault context is not closed".into(),
+        ));
+    }
     Ok(canonical::canonical_json(&serde_json::json!({
         "format":"crucible.node-input-context","version":1,
         "world":scenario.world.identity()?,
         "configuration":configuration.artifact(scenario)?.id()?.to_text(),
-        "external_inputs":[],"faults":[],"ordering_profile":"superdense-v1",
+        "external_inputs":[],"faults":faults,"ordering_profile":"superdense-v1",
         "clock_policy":"selected-complete-operating-contracts"
     }))?)
 }
@@ -911,6 +929,17 @@ fn evidence_references(
         } => {
             references.insert(barrier.clone());
             references.insert(report.clone());
+        }
+        ProgressEvidence::DebugConditionAppliedV1 {
+            barrier,
+            report,
+            control,
+            ..
+        } => {
+            references.extend([barrier.clone(), report.clone(), control.clone()]);
+        }
+        ProgressEvidence::FaultMutationApplied { receipt, .. } => {
+            references.insert(receipt.clone());
         }
         ProgressEvidence::Exact { .. } | ProgressEvidence::Administrative => {}
     }

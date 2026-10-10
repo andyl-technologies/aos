@@ -24,6 +24,8 @@ pub(super) fn connections(
         let consumer = match &selected.kind {
             InstalledNodeKind::HostScripted { profile } => &profile.consumer,
             InstalledNodeKind::HostSeededLink { profile } => &profile.consumer,
+            InstalledNodeKind::HostFaultedLink { profile } => &profile.consumer,
+            InstalledNodeKind::HostControlledFaultLink { profile } => &profile.consumer,
             _ => continue,
         };
         if !consumers.insert(consumer.clone()) {
@@ -37,8 +39,12 @@ pub(super) fn connections(
             .ok_or_else(|| {
                 refused("scripted request consumer is absent from complete selection")
             })?;
-        if !matches!(&sink.kind, InstalledNodeKind::HostIo { .. })
-            && !matches!(&sink.kind, InstalledNodeKind::HostSeededLink {profile} if profile.producer == selected.node)
+        if !matches!(
+            &sink.kind,
+            InstalledNodeKind::HostIo { .. } | InstalledNodeKind::HostPacketReceiver { .. }
+        ) && !matches!(&sink.kind, InstalledNodeKind::HostSeededLink {profile} if profile.producer == selected.node)
+            && !matches!(&sink.kind, InstalledNodeKind::HostFaultedLink {profile} if profile.producer == selected.node)
+            && !matches!(&sink.kind, InstalledNodeKind::HostControlledFaultLink {profile} if profile.producer == selected.node)
         {
             return Err(refused(
                 "installed request source requires an actual storage consumer",

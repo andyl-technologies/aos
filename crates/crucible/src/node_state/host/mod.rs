@@ -7,6 +7,7 @@
 mod archive;
 mod capture;
 mod driver;
+mod runtime_header;
 
 #[cfg(test)]
 mod tests;
@@ -47,6 +48,27 @@ pub trait HostWorldFactory {
     ) -> Result<(), StateError> {
         Err(archive::refusal(
             "installed terminal archive codec is unsupported",
+        ))
+    }
+
+    /// Authenticates the selected complete fault-controller continuation grammar.
+    ///
+    /// Implementations check the independently installed immutable controller,
+    /// every original applied native decision, pending operation permissions and
+    /// complete runtime/native receipt lineage before reconstruction allocation.
+    /// Legacy factories refuse this scope without substituting initial tables.
+    ///
+    /// # Errors
+    /// Refuses unsupported scope or missing original future-affecting custody.
+    fn authenticate_fault_custody(
+        &self,
+        _graph: &AdmittedGraph,
+        _runtime: &RuntimeSnapshot,
+        _scheduler: &crate::node_scheduling::SchedulingSnapshot,
+        _content: Option<&VerifiedStateContent>,
+    ) -> Result<(), StateError> {
+        Err(archive::refusal(
+            "installed fault-controller archive codec is unsupported",
         ))
     }
 

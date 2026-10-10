@@ -230,7 +230,8 @@ pub(crate) fn admit_capture_with_selected_graph(
             .map_err(schema)?;
     }
     if proof.world_repeatability != graph.world_repeatability()
-        || !matches!(proof.scheduler.schema_version, 1 | 2)
+        || !matches!(proof.scheduler.schema_version, 1..=3)
+        || (proof.scheduler.schema_version == 3 && proof.runtime.schema_version != 4)
         || proof.scheduler.ordering_profile != manifest.ordering_profile
         || proof.scheduler.source_generation.get() == 0
         || proof.scheduler.world_binding_hash != manifest.world_binding_hash

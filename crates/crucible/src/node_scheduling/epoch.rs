@@ -29,6 +29,7 @@ impl SchedulingSnapshot {
         let domain = match self.schema_version {
             1 => "cnp.scheduler-continuation.v1",
             2 => "cnp.scheduler-continuation.v2",
+            3 => "cnp.scheduler-continuation.v3",
             _ => return Err(SchedulingError::InvalidSnapshot),
         };
         Ok(canonical::json_hash(domain, self)?)

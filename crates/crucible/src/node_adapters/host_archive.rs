@@ -83,7 +83,23 @@ pub fn validate_host_continuation(
         .any(|schema| {
             schema.id.as_str() == "host/native-semantic-continuation-v2" && schema.version == 2
         });
-    if captured.schema_version != if terminal_semantic { 2 } else { 1 }
+    let controlled_fault = binding
+        .compatibility
+        .implementation
+        .formats
+        .iter()
+        .any(|schema| {
+            schema.id.as_str() == "host/native-controlled-fault-link-v1" && schema.version == 1
+        });
+    if captured.schema_version
+        != if controlled_fault {
+            3
+        } else if terminal_semantic {
+            2
+        } else {
+            1
+        }
+        || (controlled_fault && source.schema_version != 4)
         || captured.profile != HOST_EXACT_PROFILE
         || captured.boundary != source.capture_cut
         || captured.operations.len() > limits.maximum_operations

@@ -32,6 +32,7 @@ impl NodeRuntime {
     ) -> Result<AuthenticatedWorldTerminal, RuntimeError> {
         self.validate_activation(activation)?;
         if self.terminal.is_some()
+            || self.condition_stop.is_some()
             || self.operations.contains_key(&operation)
             || self.input_batches.contains_key(&operation)
         {

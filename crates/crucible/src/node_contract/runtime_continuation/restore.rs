@@ -68,7 +68,7 @@ impl PreparedRuntimeRestore {
         graph: &AdmittedGraph,
         target: &ActivationRecord,
         scheduling: &SchedulingSnapshot,
-        snapshot: RuntimeSnapshot,
+        mut snapshot: RuntimeSnapshot,
         verifier: &mut dyn NativeRuntimeContinuationVerifier,
         limits: RuntimeLimits,
         maximum_record_bytes: usize,
@@ -81,6 +81,33 @@ impl PreparedRuntimeRestore {
             limits,
             maximum_record_bytes,
         )?;
+        if snapshot.schema_version == 6 {
+            // Static source indexes never create a fresh control fence. The
+            // selected native gate first reopens the authenticated whole DAG
+            // beneath actual restored custody, then core rechecks its exact
+            // historical marker and complete byte-bearing dependency closure.
+            if scheduling.schema_version != 4 {
+                return Err(RuntimeError::UnsupportedFacet);
+            }
+            let saved = verifier.reopen_condition_continuation(
+                &snapshot,
+                scheduling,
+                target,
+                maximum_record_bytes,
+            )?;
+            condition::validate_reopened(&snapshot, &saved, limits, maximum_record_bytes)?;
+            for operation in &mut snapshot.operations {
+                if let OperationRequest::DebugConditionV1(request) = &mut operation.request
+                    && let crate::node_contract::ConditionControlRequest::Stop { barrier, .. } =
+                        request.as_mut()
+                {
+                    // Attach original bodies without changing canonical source
+                    // request bytes, context, IDs or any historical ACK fact.
+                    **barrier = saved.record.clone();
+                }
+            }
+            snapshot.condition_stop = Some(saved);
+        }
         if snapshot.schema_version >= 2
             && snapshot
                 .inputs
@@ -92,13 +119,33 @@ impl PreparedRuntimeRestore {
         if snapshot.schema_version == 3 {
             verifier.verify_terminal_continuation(&snapshot, scheduling, target)?;
         }
-        let epochs = verifier.preserve_scheduling_epochs(&snapshot, scheduling, target)?;
+        if snapshot.schema_version == 4 {
+            if scheduling.schema_version == 2 {
+                return Err(RuntimeError::UnsupportedFacet);
+            }
+            verifier.verify_fault_continuation(&snapshot, scheduling, target)?;
+        }
+        let epochs = if scheduling.schema_version == 4 {
+            if snapshot.schema_version != 6 {
+                return Err(RuntimeError::UnsupportedFacet);
+            }
+            None
+        } else if scheduling.schema_version == 3 {
+            // Fault edition three has no inherited epoch rows. Its separate
+            // installed verifier authenticates the original controller scope.
+            if snapshot.schema_version != 4 {
+                return Err(RuntimeError::UnsupportedFacet);
+            }
+            None
+        } else {
+            verifier.preserve_scheduling_epochs(&snapshot, scheduling, target)?
+        };
         if let Some(epochs) = &epochs {
             crate::node_scheduling::validate_restored_scheduling_epochs(
                 graph, scheduling, target, epochs,
             )
             .map_err(|_| RuntimeError::InvalidReceipt)?;
-        } else if scheduling.schema_version != 1 {
+        } else if !matches!(scheduling.schema_version, 1 | 3 | 4) {
             return Err(RuntimeError::InvalidReceipt);
         }
         let evidence = verifier.verify_runtime_continuation(&snapshot, scheduling, target)?;
@@ -319,6 +366,15 @@ impl PreparedRuntimeRestore {
             .terminal
             .clone()
             .map(|saved| crate::node_contract::terminal::TerminalState { saved });
+        runtime.condition_stop = self.snapshot.condition_stop.clone().map(|saved| {
+            crate::node_contract::condition_debug::ConditionStopState {
+                saved,
+                // Historical durability and ACK survive unchanged. A fresh
+                // opaque permit still requires the current trusted publisher
+                // to reopen every original result root before ACK or resume.
+                publication_verified_for: None,
+            }
+        });
 
         for (node_id, native) in &mut runtime.nodes {
             let node_operations: Vec<_> = runtime
@@ -383,9 +439,17 @@ fn validate_snapshot(
 ) -> Result<(), RuntimeError> {
     bounded_record(snapshot, maximum_record_bytes)?;
     terminal::validate(snapshot)?;
-    if !matches!(snapshot.schema_version, 1..=3)
+    condition::validate(snapshot)?;
+    let faults = snapshot
+        .operations
+        .iter()
+        .any(|operation| matches!(operation.request, OperationRequest::FaultInjectionV1(_)));
+    if !matches!(snapshot.schema_version, 1..=4 | 6)
+        || (faults && snapshot.schema_version != 4)
+        || (snapshot.schema_version == 6) != snapshot.condition_stop.is_some()
+        || (snapshot.schema_version == 6 && faults)
         || (snapshot.schema_version == 3) != snapshot.terminal.is_some()
-        || (snapshot.schema_version != 3
+        || (snapshot.schema_version < 3
             && (snapshot.schema_version == 2)
                 != snapshot
                     .inputs
@@ -555,6 +619,13 @@ fn validate_operation(
                 OperationRequest::FinalizeAssertions { .. }
             )
     });
+    let condition_operation = snapshot.condition_stop.as_ref().is_some_and(|saved| {
+        saved.submitted
+            && operation.route.node == saved.record.node
+            && (operation.operation == saved.record.operation
+                || saved.resume_operation.as_ref() == Some(&operation.operation))
+            && matches!(operation.request, OperationRequest::DebugConditionV1(_))
+    });
     if operation.route.owners != source_route(graph, source_owners, &operation.route.node)?
         || !scheduling.used_operations.contains(&operation.operation)
     {
@@ -595,7 +666,9 @@ fn validate_operation(
         {
             return Err(RuntimeError::InvalidReceipt);
         }
-    } else if matches!(operation.result, SavedRuntimeResult::Acknowledged(_)) && !terminal_operation
+    } else if matches!(operation.result, SavedRuntimeResult::Acknowledged(_))
+        && !terminal_operation
+        && !condition_operation
     {
         return Err(RuntimeError::InvalidReceipt);
     }
@@ -604,6 +677,7 @@ fn validate_operation(
         SavedRuntimeResult::Pending | SavedRuntimeResult::Complete(_)
     ) && operation.scheduling_commit.is_none()
         && !terminal_operation
+        && !condition_operation
         && !scheduling
             .reservations
             .iter()
@@ -832,6 +906,9 @@ fn source_route(
 
 fn saved_permission(request: &OperationRequest) -> Result<SavedPermission, RuntimeError> {
     match request {
+        OperationRequest::FaultInjectionV1(request) => Ok(SavedPermission::FaultInjectionV1 {
+            request: request.clone(),
+        }),
         OperationRequest::ExactRun {
             start,
             limit,

@@ -19,6 +19,7 @@ fn fixture() -> (Wire, RuntimeSnapshot, Vec<InputPayload>) {
     let cut = Position::new(100.into(), 0.into(), Phase::BoundaryControl);
     let source = RuntimeSnapshot {
         terminal: None,
+        condition_stop: None,
         schema_version: 1,
         source_activation: SavedRuntimeActivation {
             generation: 1.into(),

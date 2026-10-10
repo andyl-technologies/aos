@@ -7,6 +7,8 @@
 
 mod activation;
 mod activation_preparation;
+mod condition_debug;
+mod fault;
 mod provider;
 mod quarantine;
 mod runtime;
@@ -17,6 +19,8 @@ mod validation;
 
 pub use activation::*;
 pub use activation_preparation::*;
+pub use condition_debug::*;
+pub use fault::*;
 pub use provider::*;
 pub use quarantine::*;
 pub use runtime::*;

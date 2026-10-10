@@ -106,12 +106,62 @@ pub struct CausalScheduler {
     restored_epochs: Option<super::SchedulingEpochEvidence>,
 }
 
+#[path = "condition_stop.rs"]
+mod condition_stop;
 #[path = "terminal.rs"]
 mod terminal;
 
 impl CausalScheduler {
     pub(crate) fn activation(&self) -> &WorldActivation {
         &self.activation
+    }
+
+    pub(crate) fn admit_fault_injection(
+        &mut self,
+        graph: &AdmittedGraph,
+        node: &Id,
+        operation: Id,
+        request: crate::node_contract::FaultMutationRequest,
+    ) -> Result<ExecutionAdmission, SchedulingError> {
+        if graph.world_binding_hash() != &self.activation.record().world_binding_hash
+            || request.validate().is_err()
+        {
+            return Err(SchedulingError::ForeignActivation);
+        }
+        let binding = graph.binding(node).ok_or(SchedulingError::UnknownNode)?;
+        let contract = &binding.compatibility.operating_contract;
+        if contract.mode != OperatingMode::Exact
+            || !contract.facets.iter().any(|facet| {
+                facet.id == request.facet_profile
+                    && facet.version == request.version
+                    && facet.configuration_ref == binding.compatibility.configuration_ref
+                    && facet.guarantees_ref == binding.compatibility.guarantees_ref
+            })
+        {
+            return Err(SchedulingError::UnsupportedMode);
+        }
+        let owner = self.owner_id(node)?.clone();
+        if self.schedule(node)?.cursor != request.at
+            || self.input_batches.contains_key(&owner)
+            || self.pending.values().any(|delivery| {
+                self.node_owners.get(&delivery.consumer) == Some(&owner)
+                    && delivery.delivery < request.at
+            })
+        {
+            return Err(SchedulingError::MissingObservation);
+        }
+        self.reserve(
+            node,
+            operation.clone(),
+            OperationRequest::FaultInjectionV1(Box::new(request.clone())),
+        )?;
+        Ok(ExecutionAdmission::Exact(ExactGrant {
+            activation: self.activation.clone(),
+            node: node.clone(),
+            operation,
+            permission: ExactPermission::Mutation(Box::new(request)),
+            input_batch: None,
+        }))
     }
 
     /// Constructs a conservative scheduler for one durably activated graph.
@@ -754,6 +804,23 @@ impl CausalScheduler {
         );
         let reached = match (&reservation.request, &receipt.progress) {
             (
+                OperationRequest::FaultInjectionV1(request),
+                ProgressEvidence::FaultMutationApplied {
+                    reached,
+                    program,
+                    decision,
+                    receipt: proof,
+                },
+            ) if *reached == request.at
+                && program == &request.program
+                && decision == &request.decision
+                && proof.length.get() != 0
+                && receipt.retained_outputs.is_empty()
+                && receipt.observation.is_some() =>
+            {
+                *reached
+            }
+            (
                 OperationRequest::ExactRun { start, limit, .. }
                 | OperationRequest::BoundarySettle { start, limit },
                 ProgressEvidence::Exact { reached, stop },
@@ -1046,6 +1113,13 @@ mod snapshot_impl;
 
 pub use snapshot_impl::PreparedSchedulingRestore;
 pub use snapshot_impl::validate_saved_source;
+
+#[cfg(test)]
+pub(super) fn validate_snapshot_structure(
+    snapshot: &super::SchedulingSnapshot,
+) -> Result<(), SchedulingError> {
+    snapshot_impl::validate_structure(snapshot)
+}
 
 #[path = "observed_impl.rs"]
 mod observed_impl;

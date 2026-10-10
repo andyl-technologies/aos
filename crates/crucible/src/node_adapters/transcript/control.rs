@@ -267,7 +267,9 @@ pub(super) fn observation_proof_references(
 pub(super) fn outcome_positions(outcome: &OperationOutcome) -> Vec<Position> {
     let mut positions = match &outcome.progress {
         ProgressEvidence::Exact { reached, .. }
-        | ProgressEvidence::AssertionsFinalized { reached, .. } => vec![*reached],
+        | ProgressEvidence::AssertionsFinalized { reached, .. }
+        | ProgressEvidence::FaultMutationApplied { reached, .. }
+        | ProgressEvidence::DebugConditionAppliedV1 { reached, .. } => vec![*reached],
         ProgressEvidence::Paused { reached, .. } => reached.iter().copied().collect(),
         ProgressEvidence::Quantized { publication, .. } => vec![*publication],
         ProgressEvidence::Administrative => Vec::new(),

@@ -35,6 +35,7 @@ fn saved_world() -> RuntimeSnapshot {
     );
     RuntimeSnapshot {
         terminal: None,
+        condition_stop: None,
         schema_version: 1,
         source_activation: SavedRuntimeActivation {
             generation: 1.into(),

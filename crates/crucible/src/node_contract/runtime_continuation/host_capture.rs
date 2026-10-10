@@ -20,6 +20,18 @@ impl NodeRuntime {
                 source.capture_ordinal,
                 maximum_record_bytes,
             )
+        } else if source.schema_version == 4 {
+            self.fault_runtime_snapshot(
+                source.capture_cut,
+                source.capture_ordinal,
+                maximum_record_bytes,
+            )
+        } else if source.schema_version == 6 {
+            self.condition_runtime_snapshot(
+                source.capture_cut,
+                source.capture_ordinal,
+                maximum_record_bytes,
+            )
         } else {
             self.runtime_snapshot(
                 source.capture_cut,

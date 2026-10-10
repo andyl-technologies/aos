@@ -30,6 +30,8 @@ pub(super) fn materialize(
             InstalledNodeKind::HostIo { profile } => profile.artifact(),
             InstalledNodeKind::HostScripted { profile } => profile.artifact(),
             InstalledNodeKind::HostSeededLink { profile } => &profile.program,
+            InstalledNodeKind::HostFaultedLink { profile } => &profile.program,
+            InstalledNodeKind::HostControlledFaultLink { profile } => &profile.program,
             _ => continue,
         };
         let artifact = installed

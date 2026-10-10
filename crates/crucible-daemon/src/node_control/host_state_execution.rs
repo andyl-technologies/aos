@@ -14,7 +14,7 @@ use std::{
 };
 
 use crucible::{
-    node_contract::RuntimeCustodyQueue,
+    node_contract::{NodeRuntime, RuntimeCustodyQueue},
     node_state::{
         HostArchive, HostArchiveRecord, HostWorldRestoreDriver, RestorePublication, StateLimits,
         StateRequirements, StateRestoreMode, stage_restore,
@@ -25,7 +25,9 @@ use crucible_cas::content_store::{ImmutableBlobBackend, MutableRefBackend};
 use crucible_node_contract::{Id, U64};
 
 use crate::{
-    node_observed_executor::{InstalledNodeCatalog, StoredWorldActivationPublisher},
+    node_observed_executor::{
+        InstalledNodeCatalog, InstalledNodeKind, StoredWorldActivationPublisher,
+    },
     node_scenario::NodeScenario,
 };
 
@@ -69,6 +71,17 @@ pub(super) fn execute(
         NodeHostStateRequest::Terminal { .. } => {
             return Err(refused("terminal request uses its selected executor"));
         }
+    };
+    let fault_scope = selections.iter().any(|selected| {
+        matches!(
+            selected.kind,
+            InstalledNodeKind::HostControlledFaultLink { .. }
+        )
+    });
+    let capture_world = if fault_scope {
+        HostArchive::capture_fault_world
+    } else {
+        HostArchive::capture_world
     };
     let scenario = NodeScenario::from_json(scenario.as_slice()).map_err(refused)?;
     let mut publisher = StoredWorldActivationPublisher::new(
@@ -114,6 +127,19 @@ pub(super) fn execute(
         };
         let activation = restored.activation().clone();
         let original_cut = activation.record().boundary;
+        // The selected fault archive may retain a Complete original operation
+        // before coordinator commit or native ACK. Resolve only that saved
+        // custody before permitting later original grants; never BEGIN again.
+        let source_ordinal = if fault_scope {
+            resume_original_fault_custody(
+                restored.runtime_mut(),
+                original_cut,
+                source_ordinal,
+                limits.maximum_record_bytes,
+            )?
+        } else {
+            source_ordinal
+        };
         let (cut, ordinal) = advance(
             restored.runtime_mut(),
             &graph,
@@ -123,19 +149,19 @@ pub(super) fn execute(
             original_cut,
             source_ordinal,
         )?;
-        let captured = archive
-            .capture_world(
-                &graph,
-                restored.runtime_mut(),
-                &activation,
-                cut,
-                ordinal,
-                capture_id(request.execution())?,
-                requirements()?,
-                factory.as_ref(),
-                factory.as_ref(),
-            )
-            .map_err(refused)?;
+        let captured = capture_world(
+            archive,
+            &graph,
+            restored.runtime_mut(),
+            &activation,
+            cut,
+            ordinal,
+            capture_id(request.execution())?,
+            requirements()?,
+            factory.as_ref(),
+            factory.as_ref(),
+        )
+        .map_err(refused)?;
         drop(restored);
         reclaim(catalog.custody());
         Ok(captured)
@@ -162,23 +188,67 @@ pub(super) fn execute(
             activation.record().boundary,
             U64::new(0),
         )?;
-        let captured = archive
-            .capture_world(
-                &graph,
-                &mut runtime,
-                &activation,
-                cut,
-                ordinal,
-                capture_id(request.execution())?,
-                requirements()?,
-                factory.as_ref(),
-                factory.as_ref(),
-            )
-            .map_err(refused)?;
+        let captured = capture_world(
+            archive,
+            &graph,
+            &mut runtime,
+            &activation,
+            cut,
+            ordinal,
+            capture_id(request.execution())?,
+            requirements()?,
+            factory.as_ref(),
+            factory.as_ref(),
+        )
+        .map_err(refused)?;
         drop(runtime);
         reclaim(catalog.custody());
         Ok(captured)
     }
+}
+
+fn resume_original_fault_custody(
+    runtime: &mut NodeRuntime,
+    cut: crucible_node_contract::Position,
+    ordinal: U64,
+    maximum_record_bytes: usize,
+) -> Result<U64, NodeControlError> {
+    let source = runtime
+        .fault_runtime_snapshot(cut, ordinal, maximum_record_bytes)
+        .map_err(refused)?;
+    let mut ordinal = ordinal;
+    for original in &source.operations {
+        if !matches!(
+            original.result,
+            crucible::node_contract::SavedRuntimeResult::Complete(_)
+        ) {
+            continue;
+        }
+        let token = runtime.recover(&original.operation).map_err(refused)?;
+        let mut context = Context::from_waker(Waker::noop());
+        match runtime.poll(&token, &mut context) {
+            std::task::Poll::Ready(Ok(_)) => {}
+            _ => {
+                return Err(refused(
+                    "saved original fault-world custody is not complete",
+                ));
+            }
+        }
+        let commit = if original.scheduling_commit.is_some() {
+            runtime.recover_scheduling_commit(&token).map_err(refused)?
+        } else {
+            let receipt = runtime.scheduling_receipt(&token).map_err(refused)?;
+            let committed = runtime
+                .commit_scheduling_receipt(receipt)
+                .map_err(refused)?;
+            ordinal = ordinal.checked_add(U64::new(1)).map_err(refused)?;
+            committed
+        };
+        runtime
+            .acknowledge_scheduled(&token, &commit)
+            .map_err(refused)?;
+    }
+    Ok(ordinal)
 }
 
 fn reclaim(queue: &RuntimeCustodyQueue) {
@@ -220,3 +290,7 @@ fn capture_id(execution: &str) -> Result<Id, NodeControlError> {
 #[cfg(test)]
 #[path = "host_state_execution_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "controlled_state_execution_tests.rs"]
+mod controlled_tests;

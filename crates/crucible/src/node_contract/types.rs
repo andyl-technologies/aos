@@ -155,6 +155,14 @@ pub enum OperationRequest {
     Observe,
     /// Captures the reached state without modeled draining or execution.
     Capture,
+    /// Applies one selected recorded coefficient transition at BoundaryControl.
+    ///
+    /// This explicit grammar does not authorize latency or topology changes.
+    FaultInjectionV1(Box<super::FaultMutationRequest>),
+    /// Executes selected original condition stop or resume under a live fence.
+    ///
+    /// This independent grammar never authorizes architectural guest mutation.
+    DebugConditionV1(Box<super::ConditionControlRequest>),
     /// Finalizes assertions under original opaque whole-world admission.
     FinalizeAssertions {
         /// Retains original live-scope facts without issuing public authority.
@@ -185,6 +193,8 @@ impl OperationRequest {
             Self::Pause => Some(FacetKind::PhysicalPause),
             Self::FinalizeAssertions { .. } => Some(FacetKind::TerminalAssertions),
             Self::Capture => Some(FacetKind::Preservation),
+            Self::DebugConditionV1(_) => Some(FacetKind::Debugging),
+            Self::FaultInjectionV1(_) => Some(FacetKind::FaultInjection),
             Self::Observe | Self::Shutdown => None,
         }
     }
@@ -226,6 +236,32 @@ pub enum ProgressEvidence {
         barrier: ContentRef,
         /// Binds original canonical report bytes under native custody.
         report: ContentRef,
+    },
+    /// Retains the original native coefficient mutation without modeled progress.
+    FaultMutationApplied {
+        /// Preserves the actual unchanged BoundaryControl cut.
+        reached: Position,
+        /// Binds exact original native operation/context/table record bytes.
+        receipt: ContentRef,
+        /// Retains the selected immutable controller identity.
+        program: ContentRef,
+        /// Retains the original decision ordinal.
+        decision: U64,
+    },
+    /// Retains original native condition-control evidence at its unchanged cut.
+    DebugConditionAppliedV1 {
+        /// Retains the actual stopped native cut, with no fabricated execution.
+        reached: Position,
+        /// Names the original stop whose report and resume remain associated.
+        stop_operation: Id,
+        /// Binds the original authentic whole-world barrier.
+        barrier: ContentRef,
+        /// Binds the original native diagnostic report.
+        report: ContentRef,
+        /// Binds this original native control receipt (report for initial stop).
+        control: ContentRef,
+        /// Distinguishes native resume from initial condition-stop reporting.
+        resumed: bool,
     },
     /// Reports an observational or lifecycle result with no fabricated progress.
     Administrative,

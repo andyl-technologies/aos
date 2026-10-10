@@ -9,6 +9,9 @@
 #[path = "host_state_transfer_tests.rs"]
 mod transfer_tests;
 
+#[path = "host_state_fault.rs"]
+mod fault;
+
 use std::{collections::BTreeMap, fs::File, io::Read, rc::Rc};
 
 use crucible::{
@@ -107,6 +110,9 @@ impl InstalledNodeCatalog {
                     | InstalledNodeKind::HostIo { .. }
                     | InstalledNodeKind::HostScripted { .. }
                     | InstalledNodeKind::HostSeededLink { .. }
+                    | InstalledNodeKind::HostFaultedLink { .. }
+                    | InstalledNodeKind::HostControlledFaultLink { .. }
+                    | InstalledNodeKind::HostPacketReceiver { .. }
                     | InstalledNodeKind::HostSemantics { .. }
             )
         }) {
@@ -135,7 +141,10 @@ impl InstalledNodeCatalog {
                 .iter()
                 .filter(|schema| {
                     ((schema.id.as_str() == "host/native-continuation-v1"
-                        || schema.id.as_str() == "host/native-seeded-link-v1")
+                        || schema.id.as_str() == "host/native-seeded-link-v1"
+                        || schema.id.as_str() == "host/native-faulted-link-v1"
+                        || schema.id.as_str() == "host/native-controlled-fault-link-v1"
+                        || schema.id.as_str() == "host/native-packet-receiver-v1")
                         && schema.version == 1)
                         || (schema.id.as_str() == "host/native-semantic-continuation-v2"
                             && schema.version == 2)
@@ -241,12 +250,33 @@ impl InstalledHostStateFactory {
         }
         match (&selection.kind, model) {
             (InstalledNodeKind::HostClock, HostModel::Clock(_)) => {}
+            (InstalledNodeKind::HostPacketReceiver { .. }, HostModel::PacketReceiver(_)) => {}
             (
                 InstalledNodeKind::HostSeededLink { profile },
                 HostModel::SeededLink { definition, .. },
             ) => {
                 let bytes = canonical::canonical_json(
                     &serde_json::to_value(definition).map_err(no_effect)?,
+                )
+                .map_err(no_effect)?;
+                profile.program.verify(&bytes).map_err(no_effect)?;
+            }
+            (
+                InstalledNodeKind::HostFaultedLink { profile },
+                HostModel::FaultedLink { definition, .. },
+            ) => {
+                let bytes = canonical::canonical_json(
+                    &serde_json::to_value(definition).map_err(no_effect)?,
+                )
+                .map_err(no_effect)?;
+                profile.program.verify(&bytes).map_err(no_effect)?;
+            }
+            (
+                InstalledNodeKind::HostControlledFaultLink { profile },
+                HostModel::ControlledFaultLink(actual),
+            ) => {
+                let bytes = canonical::canonical_json(
+                    &serde_json::to_value(actual.program()).map_err(no_effect)?,
                 )
                 .map_err(no_effect)?;
                 profile.program.verify(&bytes).map_err(no_effect)?;
@@ -296,8 +326,12 @@ impl InstalledHostStateFactory {
         content: &'a VerifiedStateContent,
     ) -> Result<Option<&'a [u8]>, StateError> {
         let reference = match &self.selection(node)?.kind {
-            InstalledNodeKind::HostClock => return Ok(None),
+            InstalledNodeKind::HostClock | InstalledNodeKind::HostPacketReceiver { .. } => {
+                return Ok(None);
+            }
             InstalledNodeKind::HostSeededLink { profile } => &profile.program,
+            InstalledNodeKind::HostFaultedLink { profile } => &profile.program,
+            InstalledNodeKind::HostControlledFaultLink { profile } => &profile.program,
             InstalledNodeKind::HostIo { profile } => profile.artifact(),
             InstalledNodeKind::HostScripted { profile } => &profile.script,
             InstalledNodeKind::HostSemantics { profile } => &profile.program,
@@ -314,6 +348,13 @@ impl InstalledHostStateFactory {
         let selected = self.selection(node)?;
         match &selected.kind {
             InstalledNodeKind::HostClock => Ok(HostModel::Clock(VirtualClock::new())),
+            InstalledNodeKind::HostPacketReceiver {
+                source_node,
+                latency_ps,
+            } => Ok(HostModel::PacketReceiver(Box::new(
+                crucible::node_adapters::PacketReceiver::new(*source_node, latency_ps.get())
+                    .map_err(|error| refusal(error.reason))?,
+            ))),
             InstalledNodeKind::HostSeededLink { .. } => {
                 let definition: crucible::node_adapters::SeededLinkDefinition =
                     serde_json::from_slice(
@@ -329,6 +370,34 @@ impl InstalledHostStateFactory {
                     ),
                     definition,
                 })
+            }
+            InstalledNodeKind::HostFaultedLink { .. } => {
+                let definition: crucible::node_adapters::FaultedLinkDefinition =
+                    serde_json::from_slice(
+                        self.immutable_input(node, content)?
+                            .ok_or_else(|| refusal("seeded original program absent"))?,
+                    )
+                    .map_err(state_error)?;
+                Ok(HostModel::FaultedLink {
+                    link: Box::new(
+                        definition
+                            .instantiate()
+                            .map_err(|error| refusal(error.reason))?,
+                    ),
+                    definition,
+                    decisions: Vec::new(),
+                })
+            }
+            InstalledNodeKind::HostControlledFaultLink { .. } => {
+                let program = serde_json::from_slice(
+                    self.immutable_input(node, content)?
+                        .ok_or_else(|| refusal("complete controller program absent"))?,
+                )
+                .map_err(state_error)?;
+                Ok(HostModel::ControlledFaultLink(Box::new(
+                    crucible::node_adapters::ControlledFaultLink::new(program)
+                        .map_err(|error| refusal(error.reason))?,
+                )))
             }
             InstalledNodeKind::HostIo { profile } => io::build_model_from_bytes(
                 selected,
@@ -396,6 +465,16 @@ impl InstalledHostStateFactory {
 }
 
 impl HostWorldFactory for InstalledHostStateFactory {
+    fn authenticate_fault_custody(
+        &self,
+        graph: &AdmittedGraph,
+        runtime: &RuntimeSnapshot,
+        scheduler: &SchedulingSnapshot,
+        content: Option<&VerifiedStateContent>,
+    ) -> Result<(), StateError> {
+        self.authenticate_fault_scope(graph, runtime, scheduler, content)
+    }
+
     fn authenticate_terminal_custody(
         &self,
         graph: &AdmittedGraph,
@@ -495,7 +574,9 @@ impl HostWorldFactory for InstalledHostStateFactory {
             InstalledNodeKind::HostIo { profile } => profile.artifact().length.get(),
             InstalledNodeKind::HostScripted { profile } => profile.script.length.get(),
             InstalledNodeKind::HostSeededLink { profile } => profile.program.length.get(),
-            InstalledNodeKind::HostClock => 0,
+            InstalledNodeKind::HostFaultedLink { profile } => profile.program.length.get(),
+            InstalledNodeKind::HostControlledFaultLink { profile } => profile.program.length.get(),
+            InstalledNodeKind::HostClock | InstalledNodeKind::HostPacketReceiver { .. } => 0,
             InstalledNodeKind::HostSemantics { profile } => profile.program.length.get(),
             _ => return Err(refusal("unsupported installed native reservation family")),
         };
@@ -522,7 +603,10 @@ impl HostWorldFactory for InstalledHostStateFactory {
             .iter()
             .find(|schema| {
                 ((schema.id.as_str() == "host/native-continuation-v1"
-                    || schema.id.as_str() == "host/native-seeded-link-v1")
+                    || schema.id.as_str() == "host/native-seeded-link-v1"
+                    || schema.id.as_str() == "host/native-faulted-link-v1"
+                    || schema.id.as_str() == "host/native-controlled-fault-link-v1"
+                    || schema.id.as_str() == "host/native-packet-receiver-v1")
                     && schema.version == 1)
                     || (schema.id.as_str() == "host/native-semantic-continuation-v2"
                         && schema.version == 2)
@@ -540,8 +624,9 @@ impl HostWorldFactory for InstalledHostStateFactory {
     ) -> Result<(), StateError> {
         self.check_graph(graph)?;
         let policy = graph.ownership_policy();
-        if !matches!(runtime.schema_version, 1 | 3)
-            || scheduler.schema_version != 1
+        if !matches!(runtime.schema_version, 1 | 3 | 4)
+            || !matches!(scheduler.schema_version, 1 | 3)
+            || (scheduler.schema_version == 3 && runtime.schema_version != 4)
             || runtime.source_activation.world_binding_hash != *graph.world_binding_hash()
             || scheduler.world_binding_hash != *graph.world_binding_hash()
             || runtime.capture_cut != scheduler.capture_cut
@@ -568,9 +653,14 @@ impl HostWorldFactory for InstalledHostStateFactory {
         // immutable graph; native validators below check both endpoint ledgers.
         crucible::node_scheduling::validate_saved_source(graph, scheduler).map_err(state_error)?;
         for delivery in &scheduler.pending_deliveries {
-            if let InstalledNodeKind::HostSeededLink { profile } =
-                &self.selection(&delivery.producer)?.kind
-            {
+            let producer_kind = &self.selection(&delivery.producer)?.kind;
+            let link_consumer = match producer_kind {
+                InstalledNodeKind::HostSeededLink { profile } => Some(&profile.consumer),
+                InstalledNodeKind::HostFaultedLink { profile } => Some(&profile.consumer),
+                InstalledNodeKind::HostControlledFaultLink { profile } => Some(&profile.consumer),
+                _ => None,
+            };
+            if let Some(consumer) = link_consumer {
                 let bytes = content
                     .get(&delivery.payload)
                     .ok_or_else(|| refusal("original seeded payload absent"))?;
@@ -588,7 +678,7 @@ impl HostWorldFactory for InstalledHostStateFactory {
                     })
                     .flat_map(|observation| &observation.publications)
                     .find(|publication| publication.publication_id == delivery.publication_id);
-                if delivery.consumer != profile.consumer
+                if &delivery.consumer != consumer
                     || original.is_none_or(|publication| {
                         publication.payload != delivery.payload
                             || publication.payload_bytes != bytes
@@ -691,6 +781,10 @@ impl HostWorldFactory for InstalledHostStateFactory {
             return Err(refusal("complete installed native initialization differs"));
         }
         match &self.selection(node)?.kind {
+            InstalledNodeKind::HostPacketReceiver { .. } => {
+                // Full native restore and original envelope validator above already
+                // authenticate the selected byte receiver and source runtime.
+            }
             InstalledNodeKind::HostClock => {
                 if inventory.native_model.bytes
                     != host_clock_initial_bytes(source.capture_cut.time_ps.get())
@@ -711,6 +805,31 @@ impl HostWorldFactory for InstalledHostStateFactory {
                 definition
                     .restore(&inventory.native_model.bytes, 64 * 1024 * 1024)
                     .map_err(|error| refusal(error.reason))?;
+            }
+            InstalledNodeKind::HostFaultedLink { .. } => {
+                let definition: crucible::node_adapters::FaultedLinkDefinition =
+                    serde_json::from_slice(
+                        self.immutable_input(node, content)?
+                            .ok_or_else(|| refusal("complete seeded program absent"))?,
+                    )
+                    .map_err(state_error)?;
+                definition
+                    .restore(&inventory.native_model.bytes, 64 * 1024 * 1024)
+                    .map_err(|error| refusal(error.reason))?;
+            }
+            InstalledNodeKind::HostControlledFaultLink { .. } => {
+                let program = serde_json::from_slice(
+                    self.immutable_input(node, content)?
+                        .ok_or_else(|| refusal("complete controller program absent"))?,
+                )
+                .map_err(state_error)?;
+                let controller = crucible::node_adapters::ControlledFaultLink::restore(
+                    &program,
+                    &inventory.native_model.bytes,
+                    64 * 1024 * 1024,
+                )
+                .map_err(|error| refusal(error.reason))?;
+                self.authenticate_fault_journal(node, &controller, source, content)?;
             }
             InstalledNodeKind::HostIo { profile } => io::validate_native_storage(
                 self.selection(node)?,

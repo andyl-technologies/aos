@@ -17,8 +17,8 @@ impl NodeRuntime {
         capture_ordinal: U64,
         maximum_record_bytes: usize,
     ) -> Result<RuntimeSnapshot, RuntimeError> {
-        if self.terminal.is_some() {
-            // Existing coordinator editions cannot omit original terminal custody.
+        if self.terminal.is_some() || self.has_fault_scope() || self.condition_stop.is_some() {
+            // Legacy extraction cannot omit original terminal or fault custody.
             return Err(RuntimeError::UnsupportedFacet);
         }
         self.checked_runtime_snapshot(capture_cut, capture_ordinal, maximum_record_bytes)
@@ -44,6 +44,52 @@ impl NodeRuntime {
         self.checked_runtime_snapshot(capture_cut, capture_ordinal, maximum_record_bytes)
     }
 
+    /// Captures explicit edition-four original admitted fault operation custody.
+    ///
+    /// This data read never applies a transition or reissues its authority.
+    /// Installed fault-bearing archive codecs must independently authenticate
+    /// the whole original native controller, journal and coordinator closure.
+    ///
+    /// # Errors
+    /// Refuses absent selected native fault scope, terminal mixing and finite byte limits.
+    pub fn fault_runtime_snapshot(
+        &self,
+        capture_cut: Position,
+        capture_ordinal: U64,
+        maximum_record_bytes: usize,
+    ) -> Result<RuntimeSnapshot, RuntimeError> {
+        if self.terminal.is_some() || !self.has_fault_scope() {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        self.checked_runtime_snapshot(capture_cut, capture_ordinal, maximum_record_bytes)
+    }
+
+    /// Captures explicit edition-six original condition stop/report/resume custody.
+    ///
+    /// This read preserves the independent live effect fence and original
+    /// control history as data. It never evaluates a condition, issues native
+    /// control, verifies a fresh store or substitutes a horizon for EOF.
+    /// Selected archive codecs must authenticate the complete original native
+    /// bodies and coordinator state before any fresh permission is restored.
+    ///
+    /// # Errors
+    /// Refuses absent condition custody, mixed terminal/fault state, incomplete
+    /// original control, unpublished worlds or exhausted finite byte limits.
+    pub fn condition_runtime_snapshot(
+        &self,
+        capture_cut: Position,
+        capture_ordinal: U64,
+        maximum_record_bytes: usize,
+    ) -> Result<RuntimeSnapshot, RuntimeError> {
+        if self.condition_stop.is_none() || self.terminal.is_some() || self.has_fault_scope() {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        let snapshot =
+            self.checked_runtime_snapshot(capture_cut, capture_ordinal, maximum_record_bytes)?;
+        condition::validate(&snapshot)?;
+        Ok(snapshot)
+    }
+
     fn checked_runtime_snapshot(
         &self,
         capture_cut: Position,
@@ -55,14 +101,19 @@ impl NodeRuntime {
         }
         // Source ledgers are already bounded by runtime admission. Count native
         // payload representations before cloning their potentially large buffers.
-        let per_entry = maximum_record_bytes
-            .checked_div(
-                self.operations
-                    .len()
-                    .saturating_add(self.input_batches.len())
-                    .max(1),
-            )
-            .ok_or(RuntimeError::ResourceLimit)?;
+        let per_entry = if self.condition_stop.is_some() {
+            condition_wire::preflight(self, maximum_record_bytes)?;
+            maximum_record_bytes
+        } else {
+            maximum_record_bytes
+                .checked_div(
+                    self.operations
+                        .len()
+                        .saturating_add(self.input_batches.len())
+                        .max(1),
+                )
+                .ok_or(RuntimeError::ResourceLimit)?
+        };
         for operation in self.operations.values() {
             if let RetainedResult::Complete(outcome) | RetainedResult::Acknowledged(outcome) =
                 &operation.result
@@ -79,6 +130,9 @@ impl NodeRuntime {
         if let Some(terminal) = &self.terminal {
             restore::bounded_record(&terminal.saved, maximum_record_bytes)?;
         }
+        if let Some(condition) = &self.condition_stop {
+            restore::bounded_record(&condition.saved, maximum_record_bytes)?;
+        }
         let snapshot = extract_snapshot(self, capture_cut, capture_ordinal);
         restore::bounded_record(&snapshot, maximum_record_bytes)?;
         Ok(snapshot)
@@ -91,7 +145,11 @@ fn extract_snapshot(
     capture_ordinal: U64,
 ) -> RuntimeSnapshot {
     RuntimeSnapshot {
-        schema_version: if runtime.terminal.is_some() {
+        schema_version: if runtime.condition_stop.is_some() {
+            6
+        } else if runtime.has_fault_scope() {
+            4
+        } else if runtime.terminal.is_some() {
             3
         } else if runtime
             .input_batches
@@ -107,6 +165,10 @@ fn extract_snapshot(
             .terminal
             .as_ref()
             .map(|terminal| terminal.saved.clone()),
+        condition_stop: runtime
+            .condition_stop
+            .as_ref()
+            .map(|state| state.saved.clone()),
         capture_cut,
         capture_ordinal,
         owners: runtime

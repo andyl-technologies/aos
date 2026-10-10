@@ -118,6 +118,17 @@ fn outcome_references(outcome: &OperationOutcome) -> BTreeSet<&ContentRef> {
         } => {
             references.extend([barrier, report]);
         }
+        ProgressEvidence::FaultMutationApplied { receipt, .. } => {
+            references.insert(receipt);
+        }
+        ProgressEvidence::DebugConditionAppliedV1 {
+            barrier,
+            report,
+            control,
+            ..
+        } => {
+            references.extend([barrier, report, control]);
+        }
         ProgressEvidence::Exact { .. } | ProgressEvidence::Administrative => {}
     }
     if let Some(observation) = &outcome.scheduling {

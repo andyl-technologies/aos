@@ -25,21 +25,33 @@ pub(super) fn connections(
     let (domains, objects, captures) = inventory;
     let mut connections = Vec::new();
     for selected in selections {
-        let InstalledNodeKind::HostSemantics { profile } = &selected.kind else {
-            continue;
+        let (program_ref, condition) = match &selected.kind {
+            InstalledNodeKind::HostSemantics { profile } => (&profile.program, false),
+            InstalledNodeKind::HostConditionDebug { profile } => (&profile.program, true),
+            _ => continue,
         };
         // Profile construction already measured the independently enrolled
         // program. Route construction reads that exact owned immutable object.
         let program = contents
-            .get(&profile.program.hash.digest)
-            .filter(|content| content.reference == profile.program)
+            .get(&program_ref.hash.digest)
+            .filter(|content| content.reference == *program_ref)
             .ok_or_else(|| refused("semantic original program content absent"))?;
-        profile.program.verify(&program.bytes)?;
-        let definition: crucible::node_adapters::HostSemanticDefinition =
-            serde_json::from_value(canonical::parse_json(
-                &program.bytes,
-                super::super::semantics::MAXIMUM_SEMANTIC_PROGRAM_BYTES,
-            )?)?;
+        program_ref.verify(&program.bytes)?;
+        let definition = if condition {
+            let definition: crucible::node_adapters::ConditionDebugDefinition =
+                serde_json::from_value(canonical::parse_json(
+                    &program.bytes,
+                    super::super::condition_debug::MAXIMUM_PROGRAM_BYTES,
+                )?)?;
+            definition.evaluation
+        } else {
+            serde_json::from_value::<crucible::node_adapters::HostSemanticDefinition>(
+                canonical::parse_json(
+                    &program.bytes,
+                    super::super::semantics::MAXIMUM_SEMANTIC_PROGRAM_BYTES,
+                )?,
+            )?
+        };
         for input in &definition.inputs {
             let source = selections
                 .iter()

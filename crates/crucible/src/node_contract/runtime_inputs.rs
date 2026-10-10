@@ -32,7 +32,7 @@ impl NodeRuntime {
         &mut self,
         batch: RuntimeInputBatch,
     ) -> Result<ValidatedInputAcknowledgement, RuntimePollFailure> {
-        if self.terminal.is_some() {
+        if self.terminal.is_some() || self.condition_fenced() {
             return Err(RuntimePollFailure::Admission(
                 RuntimeError::OutstandingObligations,
             ));

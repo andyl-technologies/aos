@@ -14,6 +14,7 @@ use crucible_node_contract::{
 
 use crate::{device_subnode::ScheduledIoNode, node_admission::AdmittedGraph, node_contract::*};
 
+pub use condition_state::reopen::reopen_condition_model;
 pub use preparation::{
     HOST_PUBLIC_CLOCK_PREPARATION_SPECIFICATION, host_public_clock_preparation_schema,
 };
@@ -35,6 +36,12 @@ pub const HOST_EXACT_PROFILE: &str = "host/exact-v1";
 pub const HOST_TERMINAL_ASSERTIONS_PROFILE: &str = "host/terminal-assertions-v1";
 /// Identifies complete stopped host-model future-work inventory.
 pub const HOST_TERMINAL_INVENTORY_PROFILE: &str = "host/terminal-inventory-v1";
+/// Identifies admitted immutable coefficient transitions with original custody.
+pub const HOST_FAULT_INJECTION_PROFILE: &str = "host/fault-injection-v1";
+/// Identifies selected original canonical condition stop and resume control.
+pub const HOST_CONDITION_DEBUG_PROFILE: &str = "host/condition-debug-v1";
+/// Identifies complete local stopped custody with permitted future native work.
+pub const HOST_CONDITION_INVENTORY_PROFILE: &str = "host/condition-inventory-v1";
 
 /// Encodes the complete integer clock continuation without guest timer state.
 pub fn host_clock_initial_bytes(time_ps: u64) -> Vec<u8> {
@@ -56,12 +63,27 @@ pub enum HostModel {
         /// Binds original seed, stream and bounded static fault policy.
         definition: super::SeededLinkDefinition,
     },
+    /// Owns a separately selected adverse transport and original input decisions.
+    FaultedLink {
+        /// Owns complete actual native timing, queue, fault table and random cursor.
+        link: Box<NetLink>,
+        /// Binds the independently selected static adverse program.
+        definition: super::FaultedLinkDefinition,
+        /// Retains original inputs, raw draws and zero/one/two output decisions.
+        decisions: Vec<super::FaultDecision>,
+    },
+    /// Owns an opaque packet receiver with original history and delayed echo custody.
+    PacketReceiver(Box<super::PacketReceiver>),
+    /// Owns a separately selected recorded coefficient controller and native link.
+    ControlledFaultLink(Box<super::ControlledFaultLink>),
     /// Owns an exact integer coordinator-clock model, without guest timers.
     Clock(VirtualClock),
     /// Owns a finite immutable public request script and its exact native cursor.
     ScriptedSource(Box<super::ScriptedSource>),
     /// Owns the complete original assertion evaluator and checked input prefix.
     Semantics(Box<super::semantic_model::HostSemanticModel>),
+    /// Owns a separately selected event-condition evaluator and original control journal.
+    ConditionObserver(Box<super::ConditionDebugModel>),
 }
 
 impl HostModel {
@@ -78,9 +100,13 @@ impl HostModel {
             Self::Io(_) => "filesystem",
             Self::Link(_) => "network_link",
             Self::SeededLink { .. } => "seeded_byte_transport",
+            Self::FaultedLink { .. } => "adverse_byte_transport",
+            Self::ControlledFaultLink(_) => "controlled_fault_transport",
+            Self::PacketReceiver(_) => "packet_receiver",
             Self::Clock(_) => "clock",
             Self::ScriptedSource(_) => "scripted_source",
             Self::Semantics(_) => "host_assertions",
+            Self::ConditionObserver(_) => "condition_observer",
         }
     }
 
@@ -91,10 +117,15 @@ impl HostModel {
                 .map(|d| d.core().current_icount())
                 .or_else(|| node.ninep_device().map(|d| d.core().current_icount()))
                 .ok_or_else(|| failure("unknown concrete host I/O device")),
-            Self::Link(link) | Self::SeededLink { link, .. } => Ok(link.current_icount()),
+            Self::Link(link) | Self::SeededLink { link, .. } | Self::FaultedLink { link, .. } => {
+                Ok(link.current_icount())
+            }
+            Self::PacketReceiver(receiver) => Ok(receiver.time_ps()),
+            Self::ControlledFaultLink(controller) => Ok(controller.native().current_icount()),
             Self::Clock(clock) => Ok(clock.current_icount()),
             Self::ScriptedSource(source) => Ok(source.time_ps()),
             Self::Semantics(model) => Ok(model.position().time_ps.get()),
+            Self::ConditionObserver(model) => Ok(model.position().time_ps.get()),
         }
     }
 
@@ -109,9 +140,17 @@ impl HostModel {
                 .canonical_bytes_with_limit(maximum as u64)
                 .map_err(|e| failure(&e.to_string()))?,
             Self::SeededLink { link, definition } => definition.capture(link, maximum)?,
+            Self::FaultedLink {
+                link,
+                definition,
+                decisions,
+            } => definition.capture(link, decisions, maximum)?,
+            Self::PacketReceiver(receiver) => receiver.capture()?,
+            Self::ControlledFaultLink(controller) => controller.capture(maximum)?,
             Self::Clock(clock) => host_clock_initial_bytes(clock.current_icount()),
             Self::ScriptedSource(source) => source.capture()?,
             Self::Semantics(model) => model.capture()?,
+            Self::ConditionObserver(model) => model.capture()?,
         };
         if bytes.len() > maximum {
             return Err(failure(
@@ -220,11 +259,15 @@ pub struct HostModelNode {
     thread: std::thread::ThreadId,
     facets: Vec<FacetKind>,
     preservation: HostFacet,
+    fault_injection: HostFacet,
+    condition_debug: HostFacet,
     pause: HostFacet,
     world_hash: HashRef,
     limits: HostModelResources,
     readiness: Option<(ActivationRecord, ReadyAttestation)>,
     completed: BTreeMap<Id, Completed>,
+    condition_objects: BTreeMap<ContentRef, crate::node_scheduling::InputPayload>,
+    condition_operation_objects: BTreeMap<Id, Vec<ContentRef>>,
     failed: BTreeMap<Id, (OperationAdmission, OperationFailure)>,
     reclamations: BTreeMap<OwnerIdentity, NativeReclamationReceipt>,
     quarantined: bool,
@@ -318,8 +361,24 @@ impl HostModelNode {
         let execution = Id::new(HOST_EXACT_PROFILE).map_err(|e| failure(&e.to_string()))?;
         let terminal =
             Id::new(HOST_TERMINAL_ASSERTIONS_PROFILE).map_err(|e| failure(&e.to_string()))?;
-        let terminal_inventory =
-            Id::new(HOST_TERMINAL_INVENTORY_PROFILE).map_err(|e| failure(&e.to_string()))?;
+        let condition_inventory_selected = binding
+            .compatibility
+            .operating_contract
+            .facets
+            .iter()
+            .any(|facet| {
+                facet.id.as_str() == HOST_CONDITION_INVENTORY_PROFILE && facet.version == 1
+            });
+        let terminal_inventory = Id::new(if condition_inventory_selected {
+            HOST_CONDITION_INVENTORY_PROFILE
+        } else {
+            HOST_TERMINAL_INVENTORY_PROFILE
+        })
+        .map_err(|e| failure(&e.to_string()))?;
+        let condition_debug =
+            Id::new(HOST_CONDITION_DEBUG_PROFILE).map_err(|e| failure(&e.to_string()))?;
+        let fault_injection =
+            Id::new(HOST_FAULT_INJECTION_PROFILE).map_err(|e| failure(&e.to_string()))?;
         for selected in &binding.compatibility.operating_contract.facets {
             if selected.id == preservation {
                 facets.push(FacetKind::Preservation);
@@ -334,6 +393,16 @@ impl HostModelNode {
                 facets.push(FacetKind::TerminalAssertions);
             } else if selected.id == terminal_inventory && selected.version == 1 {
                 facets.push(FacetKind::Introspection);
+            } else if selected.id == condition_debug
+                && selected.version == 1
+                && matches!(&model, HostModel::ConditionObserver(_))
+            {
+                facets.push(FacetKind::Debugging);
+            } else if selected.id == fault_injection
+                && selected.version == 1
+                && matches!(&model, HostModel::ControlledFaultLink(_))
+            {
+                facets.push(FacetKind::FaultInjection);
             } else {
                 return Err(failure(
                     "host selected facet lacks an installed execution adapter",
@@ -370,11 +439,15 @@ impl HostModelNode {
             thread: std::thread::current().id(),
             facets,
             preservation: HostFacet(preservation),
+            fault_injection: HostFacet(fault_injection),
+            condition_debug: HostFacet(condition_debug),
             pause: HostFacet(pause),
             world_hash: graph.world_binding_hash().clone(),
             limits,
             readiness: None,
             completed: BTreeMap::new(),
+            condition_objects: BTreeMap::new(),
+            condition_operation_objects: BTreeMap::new(),
             failed: BTreeMap::new(),
             reclamations: BTreeMap::new(),
             quarantined: false,
@@ -461,6 +534,7 @@ impl HostModelNode {
         {
             return Err(failure("foreign host operation authority"));
         }
+        self.validate_original_fault_result(completed)?;
         Ok(completed)
     }
 
@@ -508,6 +582,9 @@ mod runtime;
 #[path = "host_execution.rs"]
 mod execution;
 
+#[path = "host_fault.rs"]
+mod fault;
+
 #[path = "host_state.rs"]
 mod state;
 
@@ -530,5 +607,16 @@ pub(super) fn failure(reason: &str) -> OperationFailure {
 #[path = "host_tests.rs"]
 mod tests;
 
+#[path = "host_condition_debug.rs"]
+mod condition_debug;
 #[path = "host_ingress_execution.rs"]
 mod ingress_execution;
+
+#[path = "host_condition_provenance.rs"]
+pub(super) mod condition_provenance;
+
+#[path = "host_condition_state.rs"]
+pub(super) mod condition_state;
+
+#[path = "host_condition_objects.rs"]
+mod condition_objects;

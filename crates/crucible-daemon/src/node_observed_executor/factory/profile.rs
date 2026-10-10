@@ -3,8 +3,12 @@
 #[cfg(test)]
 mod direct_recording_pair;
 
+mod condition_debug;
+mod controlled;
+mod faulted;
 mod io;
 mod linked;
+mod packet;
 mod recorded_ingress;
 mod scripted;
 mod seeded;
@@ -90,7 +94,19 @@ fn build_world_once(
     let terminal = terminal::selected(selections, artifacts)?;
     let qualification = put(
         &mut contents,
-        if selections
+        if selections.iter().any(|selection| {
+            matches!(
+                selection.kind,
+                InstalledNodeKind::HostControlledFaultLink { .. }
+            )
+        }) {
+            b"crucible installed authored coefficient controller v1: actual BoundaryControl FaultInjectionV1 admission and immutable program/table/native decision journal; fixed positive timing/topology; runtime4/native3/coordinator3 preserve original mutation/input/RNG/queue/receipt custody; no debug or terminal mixing".to_vec()
+        } else if selections
+            .iter()
+            .any(|selection| matches!(selection.kind, InstalledNodeKind::HostFaultedLink { .. }))
+        {
+            b"crucible installed adverse storage transport v1: distinct static loss/duplicate program, actual per-input raw draws and original zero/one/two outputs, complete native RNG/fault/queue and original runtime/transfer custody; no corruption or dynamic fault/debug operation".to_vec()
+        } else if selections
             .iter()
             .any(|selection| matches!(selection.kind, InstalledNodeKind::HostRecordedBlock { .. }))
         {
@@ -116,8 +132,9 @@ fn build_world_once(
     let mut accepted_quantized = Vec::new();
     let mut accepted_nondeterministic = Vec::new();
     let mut accepted_limited = Vec::new();
+    let condition_scope = condition_debug::selected(selections)?;
     for selection in selections {
-        let (descriptor, mut binding, mut owner, complete) = match &selection.kind {
+        let (descriptor, mut binding, mut owner, mut complete) = match &selection.kind {
             InstalledNodeKind::ReferenceDevice {
                 quantum_ps,
                 host_budget_ns,
@@ -203,6 +220,44 @@ fn build_world_once(
                     &mut contents,
                 )?
             }
+            InstalledNodeKind::HostPacketReceiver {
+                source_node,
+                latency_ps,
+            } => {
+                accepted_limited.push(selection.node.clone());
+                packet::profile(
+                    selection,
+                    *source_node,
+                    *latency_ps,
+                    host,
+                    &qualification,
+                    &mut contents,
+                )?
+            }
+            InstalledNodeKind::HostControlledFaultLink { profile } => {
+                accepted_limited.push(selection.node.clone());
+                controlled::profile(
+                    selection,
+                    selections,
+                    profile,
+                    artifacts,
+                    host,
+                    &qualification,
+                    &mut contents,
+                )?
+            }
+            InstalledNodeKind::HostFaultedLink { profile } => {
+                accepted_limited.push(selection.node.clone());
+                faulted::profile(
+                    selection,
+                    selections,
+                    profile,
+                    artifacts,
+                    host,
+                    &qualification,
+                    &mut contents,
+                )?
+            }
             InstalledNodeKind::HostIo { profile } => {
                 accepted_limited.push(selection.node.clone());
                 io::io_profile(
@@ -236,6 +291,15 @@ fn build_world_once(
             InstalledNodeKind::HostClock => {
                 clock_profile(selection, host, &qualification, &mut contents)?
             }
+            InstalledNodeKind::HostConditionDebug { profile } => condition_debug::profile(
+                selection,
+                selections,
+                profile,
+                artifacts,
+                host,
+                &qualification,
+                &mut contents,
+            )?,
             InstalledNodeKind::HostSemantics { profile } => semantics::semantic_profile(
                 selection,
                 selections,
@@ -246,6 +310,16 @@ fn build_world_once(
                 &mut contents,
             )?,
         };
+        if condition_scope {
+            condition_debug::install_scope(
+                &descriptor,
+                &mut binding,
+                &mut contents,
+                matches!(selection.kind, InstalledNodeKind::HostConditionDebug { .. }),
+            )?;
+            complete = false;
+            accepted_limited.push(selection.node.clone());
+        }
         if terminal {
             terminal::install_inventory(&descriptor, &mut binding, &mut contents)?;
         }
@@ -280,14 +354,18 @@ fn build_world_once(
             complete_model: complete,
             unchanged_cut: complete,
             exact_continuation: complete,
-            durable_restart: matches!(
-                selection.kind,
-                InstalledNodeKind::HostClock
-                    | InstalledNodeKind::HostIo { .. }
-                    | InstalledNodeKind::HostScripted { .. }
-                    | InstalledNodeKind::HostSeededLink { .. }
-                    | InstalledNodeKind::HostSemantics { .. }
-            ),
+            durable_restart: !condition_scope
+                && matches!(
+                    selection.kind,
+                    InstalledNodeKind::HostClock
+                        | InstalledNodeKind::HostIo { .. }
+                        | InstalledNodeKind::HostScripted { .. }
+                        | InstalledNodeKind::HostSeededLink { .. }
+                        | InstalledNodeKind::HostFaultedLink { .. }
+                        | InstalledNodeKind::HostControlledFaultLink { .. }
+                        | InstalledNodeKind::HostPacketReceiver { .. }
+                        | InstalledNodeKind::HostSemantics { .. }
+                ),
             isolated_fork: false,
             dependencies: Vec::new(),
             cut_procedure_ref: qualification.clone(),
@@ -322,6 +400,20 @@ fn build_world_once(
         &mut contents,
         &qualification,
     )?);
+    if condition_scope {
+        for capture in &mut captures {
+            capture.complete_model = false;
+            capture.unchanged_cut = false;
+            capture.exact_continuation = false;
+            capture.durable_restart = false;
+        }
+        accepted_limited.sort();
+        accepted_limited.dedup();
+        // Two independently constructed transfer families share this actual
+        // ownership roster. Canonicalize the selected new union, leaving every
+        // preexisting profile's original artifact ordering unchanged.
+        objects.sort_by(|left, right| left.id.cmp(&right.id));
+    }
     #[cfg(test)]
     connections.extend(direct_recording_pair::connections(
         selections,
@@ -363,10 +455,25 @@ fn build_world_once(
         external_inputs: external_inputs.clone(),
     };
     let coordinator_ref = put_json(&mut contents, &coordinator)?;
+    let authored_faults: Vec<_> = selections
+        .iter()
+        .filter_map(|selected| {
+            if let InstalledNodeKind::HostControlledFaultLink { profile } = &selected.kind {
+                Some(serde_json::json!({
+                    "node": selected.node,
+                    "program": profile.program,
+                    "operation": "FaultInjectionV1",
+                    "fixed_latency_and_topology": true,
+                }))
+            } else {
+                None
+            }
+        })
+        .collect();
     let scenario_ref = put_json(
         &mut contents,
         &serde_json::json!({"format":"crucible.installed-node-selection",
-        "version":1,"nodes":selections,"connections":connections,"external_inputs":external_inputs,"faults":[]}),
+        "version":1,"nodes":selections,"connections":connections,"external_inputs":external_inputs,"faults":authored_faults}),
     )?;
     let initialization_ref = put_json(
         &mut contents,

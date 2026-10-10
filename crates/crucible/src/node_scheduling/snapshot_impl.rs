@@ -141,6 +141,9 @@ impl CausalScheduler {
         let mut reservations = Vec::with_capacity(self.operations.len());
         for (operation, reservation) in &self.operations {
             let permission = match &reservation.request {
+                OperationRequest::FaultInjectionV1(request) => SavedPermission::FaultInjectionV1 {
+                    request: request.clone(),
+                },
                 OperationRequest::ExactRun {
                     start,
                     limit,
@@ -183,8 +186,23 @@ impl CausalScheduler {
             });
         }
         let original_epochs = self.retained_epoch_rows(&reservations)?;
+        let fault_permission = reservations.iter().any(|reservation| {
+            matches!(
+                reservation.permission,
+                SavedPermission::FaultInjectionV1 { .. }
+            )
+        });
+        if fault_permission && original_epochs.is_some() {
+            return Err(SchedulingError::UnsupportedMode);
+        }
         Ok(SchedulingSnapshot {
-            schema_version: if original_epochs.is_some() { 2 } else { 1 },
+            schema_version: if fault_permission {
+                3
+            } else if original_epochs.is_some() {
+                2
+            } else {
+                1
+            },
             original_epochs,
             ordering_profile: "superdense-v1".into(),
             world_binding_hash: record.world_binding_hash.clone(),
@@ -371,6 +389,9 @@ impl CausalScheduler {
 
 fn saved_request(permission: &SavedPermission) -> OperationRequest {
     match permission {
+        SavedPermission::FaultInjectionV1 { request } => {
+            OperationRequest::FaultInjectionV1(request.clone())
+        }
         SavedPermission::ExactRun {
             start,
             limit,

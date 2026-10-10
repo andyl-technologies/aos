@@ -166,6 +166,9 @@ impl NodeHostStateRequest {
                     | InstalledNodeKind::HostIo { .. }
                     | InstalledNodeKind::HostScripted { .. }
                     | InstalledNodeKind::HostSeededLink { .. }
+                    | InstalledNodeKind::HostFaultedLink { .. }
+                    | InstalledNodeKind::HostControlledFaultLink { .. }
+                    | InstalledNodeKind::HostPacketReceiver { .. }
             )
         }) {
             return Err(refused(

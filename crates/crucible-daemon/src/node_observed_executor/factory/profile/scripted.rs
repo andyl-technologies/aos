@@ -32,6 +32,7 @@ pub(super) fn scripted_profile(
     let role = match source.kind() {
         ScriptedRequestKind::Block => "block",
         ScriptedRequestKind::Ninep => "filesystem",
+        ScriptedRequestKind::Packet => "packet",
     };
     // Payloads are retained independently in the archive closure as well as in
     // the original script. Content identity does not fabricate input authority.
@@ -61,8 +62,16 @@ pub(super) fn scripted_profile(
             .map_err(|error| refused(&error.reason))?,
         "application/octet-stream",
     )?;
-    let request = super::io::wire_schema(role, "request", contents)?;
-    let ordering = super::io::ordering(contents)?;
+    let request = if source.kind() == ScriptedRequestKind::Packet {
+        super::packet::schema(contents)?
+    } else {
+        super::io::wire_schema(role, "request", contents)?
+    };
+    let ordering = if source.kind() == ScriptedRequestKind::Packet {
+        super::packet::ordering(contents)?
+    } else {
+        super::io::ordering(contents)?
+    };
     let maximum = crucible_shmem::MAX_FRAME_DATA as u64;
     let port_policy = PortPolicy {
         schema_version: 1,
@@ -102,6 +111,12 @@ pub(super) fn scripted_profile(
     binding.configuration_ref = descriptor.configuration_ref.clone();
     binding.implementation.implementation_id = Id::new("crucible-host-scripted-source")?;
     binding.implementation.model_definitions = vec![descriptor.model_ref.clone()];
+    if source.kind() == ScriptedRequestKind::Packet {
+        descriptor.model_ref = put(contents,b"crucible finite opaque packet source v1: at most 16 independently installed original bounded byte vectors at exact ordered Reaction births; no protocol decoder/validity claim; native kind3 script and cursor, original publication/input/ACK custody preserved".to_vec(),"text/plain")?;
+        binding.implementation.model_definitions = vec![descriptor.model_ref.clone()];
+        binding.implementation.implementation_id = Id::new("crucible-host-scripted-packet-source")?;
+        binding.descriptor_hash = descriptor.identity()?;
+    }
     binding.implementation.formats.push(request);
     binding
         .implementation

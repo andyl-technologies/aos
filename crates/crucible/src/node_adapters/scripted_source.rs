@@ -34,6 +34,8 @@ pub const MAXIMUM_SCRIPTED_REQUESTS: usize = 16;
 pub enum ScriptedRequestKind {
     /// Publishes complete original `BlockRequest` frames.
     Block,
+    /// Publishes nonempty opaque packets without protocol validity claims.
+    Packet,
     /// Publishes complete original 9P2000.L request frames.
     Ninep,
 }
@@ -111,6 +113,7 @@ impl ScriptedSource {
         let kind = match take::<1>(&mut input)?[0] {
             1 => ScriptedRequestKind::Block,
             2 => ScriptedRequestKind::Ninep,
+            3 => ScriptedRequestKind::Packet,
             _ => return Err(failure("unsupported scripted request decoder")),
         };
         let count = usize::from(take::<1>(&mut input)?[0]);
@@ -169,6 +172,7 @@ impl ScriptedSource {
         bytes.push(match self.kind {
             ScriptedRequestKind::Block => 1,
             ScriptedRequestKind::Ninep => 2,
+            ScriptedRequestKind::Packet => 3,
         });
         bytes.push(u8::try_from(self.requests.len()).map_err(|error| failure(&error.to_string()))?);
         for request in &self.requests {
@@ -360,6 +364,11 @@ fn validate_request(kind: ScriptedRequestKind, bytes: &[u8]) -> Result<(), Opera
                 .is_none_or(|length| length > maximum)
             {
                 return Err(failure("scripted read response exceeds public geometry"));
+            }
+        }
+        ScriptedRequestKind::Packet => {
+            if bytes.is_empty() || bytes.len() > 64 * 1024 {
+                return Err(failure("opaque packet source payload is unsupported"));
             }
         }
         ScriptedRequestKind::Ninep => {
