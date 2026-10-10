@@ -4721,6 +4721,11 @@ mod tests {
                             .expect("released test record")
                             .to_vec(),
                         ),
+                        JournalRecord::put(
+                            RecordNamespace::DesiredState,
+                            RETIRED_EFFECT_ACK_KEY.to_vec(),
+                            RETIRED_ROOT_ACK_BYTES.to_vec(),
+                        ),
                     ],
                 )
                 .expect("offline mutation transaction"),
