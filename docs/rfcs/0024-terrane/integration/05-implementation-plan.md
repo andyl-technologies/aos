@@ -172,6 +172,15 @@ receipt helper. A reviewed crate-private visibility correction preserves that
 helper's complete body, original descriptor capture and refusal of protected
 effect conversion. Clippy, fresh target compilation and runtime remain pending
 after this source change.
+Candidate `6c9fb0a508` passes native build, strict all-target Clippy and the
+complete required formatter pair with the reviewed receipt visibility fix.
+Fresh test-target compilation, current-history runtime and recovery checks
+remain pending. Three additional isolated worklines now qualify the current
+chunking, property and graft/diff gate sets against the same immutable crate
+tree. Their older results remain source-specific; these worklines own separate
+implementation files and report any new requirement failure before changing
+shared interfaces. Parallel qualification does not accept another task or
+advance the milestone.
 The two additional current-token/current-policy cases and four captured-input
 cases pass independent source review. Their owning gate registration extends
 the new current-history population to twenty-six cases while preserving every
