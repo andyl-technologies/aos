@@ -808,15 +808,27 @@ in {
               stdout,
               stderr,
           )
+      package_queries = (
+          ("search package", f"{APM} search hub-tool --registry production", b"hub-tool"),
+          ("search package names", f"{APM} search hub --names-only --registry production", b"hub-tool"),
+          ("show package", f"{APM} show hub-tool --registry production", b"1.0.0"),
+          ("inspect package", f"{APM} info hub-tool --registry production", b"hub-tool"),
+          ("inspect package policy", f"{APM} policy hub-tool", b"1.0.0"),
+      )
+      for query_label, query_command, expected_text in package_queries:
+          status, stdout, stderr = consumer.execute(textwrap.dedent(f"""
+              set -eu
+              export HOME=/tmp/consumer USER=consumer
+              export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
+              {query_command}
+          """), timeout=300)
+          assert status == 0 and expected_text in stdout + stderr, (
+              query_label, status, stdout, stderr,
+          )
       install_status, install_stdout, install_stderr = consumer.execute(textwrap.dedent(f"""
           set -eu
           export HOME=/tmp/consumer USER=consumer
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
-          {APM} search hub-tool --registry production 2>&1 | grep hub-tool >/dev/null
-          {APM} search hub --names-only --registry production 2>&1 | grep hub-tool >/dev/null
-          {APM} show hub-tool --registry production 2>&1 | grep 1.0.0 >/dev/null
-          {APM} info hub-tool --registry production 2>&1 | grep hub-tool >/dev/null
-          {APM} policy hub-tool 2>&1 | grep 1.0.0 >/dev/null
           {APM} install hub-tool --registry production --dry-run
           {APM} install hub-tool --registry production --download-only --yes
           {APM} install hub-tool --registry production --yes 2>&1
