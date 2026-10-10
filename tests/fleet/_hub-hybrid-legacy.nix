@@ -1434,13 +1434,20 @@
       {APR} --json stage show hybrid-container --registry containers \\
         > /var/lib/hybrid-container-registry-stage.json
   """), timeout=900)
-  registry_stage = json.loads(client.succeed("cat /var/lib/hybrid-container-registry-stage.json"))
+  # The agent mirrors stdout to the serial console. Query the asserted fields
+  # instead of sending the full retained stage through that slow transport.
+  registry_stage = json.loads(client.succeed(
+      f"{JQ} -c '{{state, registry: .revision.registry, revision: .revision.revision, "
+      "release_id: .revision.release_id, source_branch: .revision.source_branch, "
+      "index_digest: .revision.container.release.oci.index.digest}' "
+      "/var/lib/hybrid-container-registry-stage.json"
+  ))
   assert registry_stage["state"] == "ready", registry_stage
-  assert registry_stage["revision"]["registry"] == "fleet/containers", registry_stage
-  assert registry_stage["revision"]["revision"] == 1, registry_stage
-  assert registry_stage["revision"]["release_id"] == "1.0.0", registry_stage
-  assert registry_stage["revision"]["source_branch"] == "qualification/hybrid-container", registry_stage
-  assert registry_stage["revision"]["container"]["release"]["oci"]["index"]["digest"] == finalized_container["index_digest"]
+  assert registry_stage["registry"] == "fleet/containers", registry_stage
+  assert registry_stage["revision"] == 1, registry_stage
+  assert registry_stage["release_id"] == "1.0.0", registry_stage
+  assert registry_stage["source_branch"] == "qualification/hybrid-container", registry_stage
+  assert registry_stage["index_digest"] == finalized_container["index_digest"]
   session_token = refresh_session_token()
   client.succeed("install -d -m 0700 /var/lib/hybrid-container-upload-state")
   container_stage = json.loads(client.succeed(
