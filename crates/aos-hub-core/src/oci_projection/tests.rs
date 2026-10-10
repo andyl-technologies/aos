@@ -112,6 +112,33 @@ fn independent_readback_authenticates_a_near_four_mib_projection() {
     assert!(signed.body.len() > crate::storage_work::MAX_PLAN_BYTES);
     assert!(signed.body.len() < MAX_OCI_PROJECTION_BYTES);
     verify_oci_projection_reply(&guard, &signed.signature, &signed.body, &request, 104).unwrap();
+    // Independently bounded clocks can have different UTC upper endpoints.
+    // At the overlap boundary the producer interval is [104, 108], while the
+    // receiver's latest possible time is 104. A later interval must refuse.
+    let mut ahead = reply.clone();
+    ahead.observed_at = 108;
+    let ahead_signed = sign_oci_projection_reply(&guard, &ahead).unwrap();
+    let verified = verify_oci_projection_reply(
+        &guard,
+        &ahead_signed.signature,
+        &ahead_signed.body,
+        &request,
+        104,
+    )
+    .unwrap();
+    assert!(verified.check(&request.descriptor, 102).is_ok());
+    assert!(verified.check(&request.descriptor, 101).is_err());
+    assert!(verified.check(&request.descriptor, 128).is_err());
+    ahead.observed_at = 109;
+    let ahead_signed = sign_oci_projection_reply(&guard, &ahead).unwrap();
+    assert!(verify_oci_projection_reply(
+        &guard,
+        &ahead_signed.signature,
+        &ahead_signed.body,
+        &request,
+        104,
+    )
+    .is_err());
     assert!(
         verify_oci_projection_reply(&producer, &signed.signature, &signed.body, &request, 104)
             .is_err()
