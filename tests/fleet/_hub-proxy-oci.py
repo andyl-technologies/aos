@@ -129,6 +129,12 @@ def activate_proxy_oci_native(native, tools, prepared, processes):
 
 def qualify_proxy_oci(native, worker, tools, prepared, worker_process):
     """Review the actual namespace and binaries, then install the selected bytes."""
+    # Native's startup queries the Worker. The boot-time attempt may have
+    # stopped before the test started its Worker; observe a ready lifetime.
+    private_guest_command(native, shlex.join([tools["systemctl"], "restart", "aos-hub.service"]), timeout=60)
+    wait_fixture_tls_response(native, tools["curl"], tools["python"],
+        prepared["coordinates"]["nativeOrigin"] + "/-/health", "GET", {"401"},
+        "proxy-oci-native-startup", 90)
     native_process = json.loads(direct_guest_python(native, tools["python"], """
         import subprocess
         from pathlib import Path
@@ -136,6 +142,8 @@ def qualify_proxy_oci(native, worker, tools, prepared, worker_process):
         result = subprocess.run([selected['systemctl'], 'show', '-p', 'MainPID', '--value',
             'aos-hub.service'], capture_output=True, check=True, timeout=20)
         pid = int(result.stdout.decode().strip())
+        if pid <= 0:
+            raise ValueError('Proxy Native service has no running process')
         proc = Path('/proc')/str(pid)
         print(json.dumps({'pid': pid, 'startTicks': (proc/'stat').read_text().rpartition(') ')[2].split()[19],
             'ownerUid': proc.stat().st_uid}))

@@ -6,6 +6,7 @@ import importlib.util
 from pathlib import Path
 import textwrap
 import unittest
+from unittest.mock import patch
 
 
 HERE = Path(__file__).parent
@@ -75,6 +76,43 @@ class ProxyConfigurationTests(unittest.TestCase):
         self.assertEqual(len(programs), 3)
         for program in programs:
             compile(textwrap.dedent(program), "proxy OCI guest action", "exec")
+
+    def test_native_startup_precedes_process_and_provider_observations(self):
+        native, worker = object(), object()
+        tools = {"python": "python", "systemctl": "systemctl", "curl": "curl",
+            "workerSourcePath": "/nix/store/source", "workerDistribution": "/nix/store/dist", "nixBin": "/nix/store/nix/bin"}
+        prepared = {"coordinates": {"nativeOrigin": "https://native.fleet.test:8443", "workerRoot": "/private"}}
+        events = []
+
+        def command(*args, **kwargs):
+            events.append("restart")
+
+        def ready(*args, **kwargs):
+            self.assertEqual(events, ["restart"])
+            events.append("TLS")
+
+        def guest(machine, *args, **kwargs):
+            if machine is native:
+                self.assertEqual(events, ["restart", "TLS"])
+                events.append("Native")
+                return '{"pid":123,"startTicks":"456","ownerUid":802}'
+            return '{"files":{}}'
+
+        def observe(*args, **kwargs):
+            self.assertEqual(events, ["restart", "TLS", "Native"])
+            events.append("provider")
+            return {}
+
+        with patch.object(proxy, "private_guest_command", command, create=True), \
+                patch.object(proxy, "wait_fixture_tls_response", ready, create=True), \
+                patch.object(proxy, "direct_guest_python", guest, create=True), \
+                patch.object(proxy, "observe_managed_pair", observe, create=True), \
+                patch.object(proxy, "prepare_managed_oci_candidate", return_value={}, create=True), \
+                patch.object(proxy, "install_managed_oci_candidate", return_value={"installed": True}, create=True):
+            result = proxy.qualify_proxy_oci(native, worker, tools, prepared, {"pid":789})
+
+        self.assertEqual(result, {"installed": True})
+        self.assertEqual(events, ["restart", "TLS", "Native", "provider"])
 
 
 if __name__ == "__main__":
