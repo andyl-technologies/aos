@@ -16,6 +16,7 @@ mod condition_debug;
 mod controlled;
 mod faulted;
 mod native_state;
+mod prepared_models;
 mod profile;
 #[cfg(test)]
 mod reference_lineage_reader;
@@ -86,20 +87,16 @@ use std::{
 };
 
 use crucible::{
-    node_adapters::{HostModel, HostModelNode, HostModelResources, ReferenceDeviceNode},
+    node_adapters::{HostModelNode, HostModelResources, ReferenceDeviceNode},
     node_admission::{AdmissionLimits, AdmittedGraph},
     node_contract::{
         ActivationRecord, OwnerIdentity, PreparedRealization, RuntimeCustodyQueue,
-        RuntimeCustodySupervisor, RuntimeLimits, SimulationNode,
+        RuntimeCustodySupervisor, RuntimeLimits,
     },
 };
 use crucible_campaign::ExecutionId;
 use crucible_cas::content_store::{
     BlobHandle, ContentId, ImmutableBlobBackend, MutableRefBackend, ObjectKind, RefName,
-};
-use crucible_device::{
-    clock::VirtualClock,
-    netlink::{LinkFaults, NetLink},
 };
 use crucible_node_contract::{
     ContentRef, HashRef, Id, LiveAuthority, NodeBinding, Phase, Position, U64, Validate, canonical,
@@ -1030,135 +1027,26 @@ impl InstalledNodeCatalog {
             .custody
             .reserve_world(&target, limits)
             .map_err(native)?;
+        let (mut models, mut nodes) =
+            prepared_models::PreparedModelRoster::new(selections, &scenario, artifacts)?
+                .into_parts();
         let mut devices = BTreeMap::new();
-        let mut models = BTreeMap::new();
         for (selection, binding) in selections.iter().zip(&bindings) {
-            match &selection.kind {
-                InstalledNodeKind::HostNetLink {
-                    source_node,
-                    latency_ps,
-                    floor_ps,
-                    ..
-                } => {
-                    models.insert(
-                        selection.node.clone(),
-                        HostModel::Link(Box::new(
-                            NetLink::new(
-                                *source_node,
-                                latency_ps.get(),
-                                floor_ps.get(),
-                                LinkFaults::none(),
-                            )
-                            .map_err(native)?,
-                        )),
-                    );
-                }
-                InstalledNodeKind::HostSeededLink { profile } => {
-                    models.insert(
-                        selection.node.clone(),
-                        seeded::build_model(selection, profile, artifacts)?,
-                    );
-                }
-                InstalledNodeKind::HostRecordedBlock { profile }
-                | InstalledNodeKind::HostRecordedBlockPreserving { profile } => {
-                    models.insert(
-                        selection.node.clone(),
-                        io::build_model(selection, &profile.storage, artifacts)?,
-                    );
-                }
-                InstalledNodeKind::HostPacketReceiver {
-                    source_node,
-                    latency_ps,
-                } => {
-                    models.insert(
-                        selection.node.clone(),
-                        HostModel::PacketReceiver(Box::new(
-                            crucible::node_adapters::PacketReceiver::new(
-                                *source_node,
-                                latency_ps.get(),
-                            )
-                            .map_err(|error| refused(&error.reason))?,
-                        )),
-                    );
-                }
-                InstalledNodeKind::HostControlledFaultLink { profile } => {
-                    models.insert(
-                        selection.node.clone(),
-                        controlled::build_model(selection, profile, artifacts)?,
-                    );
-                }
-                InstalledNodeKind::HostFaultedLink { profile } => {
-                    models.insert(
-                        selection.node.clone(),
-                        faulted::build_model(selection, profile, artifacts)?,
-                    );
-                }
-                InstalledNodeKind::HostIo { profile } => {
-                    models.insert(
-                        selection.node.clone(),
-                        io::build_model(selection, profile, artifacts)?,
-                    );
-                }
-                InstalledNodeKind::HostScripted { profile } => {
-                    models.insert(
-                        selection.node.clone(),
-                        scripted::build_model(selection, profile, artifacts)?,
-                    );
-                }
-                InstalledNodeKind::Gem5ArmRoot
-                | InstalledNodeKind::Gem5Closed { .. }
-                | InstalledNodeKind::Gem5ClosedPreserving { .. }
-                | InstalledNodeKind::Gem5ClosedEpochPreserving { .. } => {
-                    return Err(refused(
-                        "closed gem5 requires its original public preparation bridge",
-                    ));
-                }
-                InstalledNodeKind::HostRateAlarmClock { definition }
-                | InstalledNodeKind::HostRateAlarmClockProducer { definition } => {
-                    models.insert(
-                        selection.node.clone(),
-                        HostModel::RateAlarmClock(Box::new(
-                            crucible::node_adapters::RateAlarmClock::new(definition.clone())
-                                .map_err(native)?,
-                        )),
-                    );
-                }
-                InstalledNodeKind::HostClock => {
-                    models.insert(
-                        selection.node.clone(),
-                        HostModel::Clock(VirtualClock::new()),
-                    );
-                }
-                InstalledNodeKind::HostConditionDebug { profile }
-                | InstalledNodeKind::HostConditionDebugPreserving { profile } => {
-                    models.insert(
-                        selection.node.clone(),
-                        HostModel::ConditionObserver(Box::new(condition_debug::build_model(
-                            selection, selections, profile, artifacts,
-                        )?)),
-                    );
-                }
-                InstalledNodeKind::HostSemantics { profile } => {
-                    models.insert(
-                        selection.node.clone(),
-                        HostModel::Semantics(Box::new(semantics::build_model(
-                            selection, selections, profile, artifacts,
-                        )?)),
-                    );
-                }
+            if matches!(
+                selection.kind,
                 InstalledNodeKind::ReferenceDevice { .. }
-                | InstalledNodeKind::ReferenceNativeLinked { .. } => {
-                    let child = ReferenceDevice::spawn(
-                        &self.device_executable,
-                        &self.socket_parent,
-                        selection.owner.clone(),
-                        binding.authority.incarnation_id.clone(),
-                        binding.authority.owner_generation,
-                        self.control_timeout,
-                    )
-                    .map_err(native)?;
-                    devices.insert(selection.node.clone(), child);
-                }
+                    | InstalledNodeKind::ReferenceNativeLinked { .. }
+            ) {
+                let child = ReferenceDevice::spawn(
+                    &self.device_executable,
+                    &self.socket_parent,
+                    selection.owner.clone(),
+                    binding.authority.incarnation_id.clone(),
+                    binding.authority.owner_generation,
+                    self.control_timeout,
+                )
+                .map_err(native)?;
+                devices.insert(selection.node.clone(), child);
             }
         }
         let mut content = scenario
@@ -1236,7 +1124,6 @@ impl InstalledNodeCatalog {
         } else {
             scenario.admit(&bindings, graph_evidence, admission_limits)?
         };
-        let mut nodes: Vec<Box<dyn SimulationNode>> = Vec::new();
         for selection in selections {
             match &selection.kind {
                 InstalledNodeKind::Gem5ArmRoot

@@ -1490,6 +1490,18 @@ the Nix source filter passes AOS formatting. This result supplies compilation
 credit only for that selected application dependency image, without test
 execution or later daemon, CLI, QEMU adapter or native qualification credit.
 
+Fresh local release compilation also passes for the selected application
+dependency image frozen at the authored-capabilities join, before its ledger edit
+and the subsequent clock-list and roster changes. The immutable 5,676-file source
+contains no Python bytecode caches. Output
+`akjkbhjrl39qys0sqbq7ggr2fs7kad5n-aos-test-targets-0.1.0` records 943 compiler
+artifacts, all 167 test targets, 69 integration targets and successful build
+completion. The selected derivation, source inventory, command and output are
+independently checked; all builds run locally with remote builders disabled.
+This historical result supplies application compilation evidence only, without
+test execution or later daemon, CLI, QEMU adapter or native qualification credit.
+
+
 ## Original-lineage transcript recording
 
 The recording adapter retains original input and publication lineage beneath the
@@ -1678,6 +1690,41 @@ The separately reviewed presentation change is excluded from this functional
 checkpoint. Arbitrary backend rosters, ARM execution, transformed clocks,
 preservation, complete CPU/device closure and vendor classes require their own
 implementation and qualification.
+
+## Complete host-model preparation before child creation
+
+The ordinary factory constructs its complete selected host-model roster before
+launching any provider child. The reusable planner validates sorted independent
+owners, authenticates initialization bodies and reserves finite node slots under
+the existing 64-node and 4 MiB per-model limits. Each Block model receives its own
+mutable overlay even when multiple models share immutable base bytes. Installed
+source selection, whole-graph admission and the original all-owner activation
+barrier remain mandatory.
+
+The current five-path functional join passes an actual five-owner CLI/daemon
+world in 3.64 seconds: one Clock and two independent Script/Block groups, distinct
+write/read patterns, complete authored requirements, original FIFO ownership,
+cached retries, unsupported demands and graceful native retirement. The same
+integration executable passes the existing Clock source-deletion/two-restoration
+case in 13.79 seconds. All three legacy process cases, four clock-list and five
+capability data cases, all 37 source-quality checks, daemon/CLI all-target strict
+checks and formatting of four Rust files also pass.
+
+All 8,676 source files match before and after qualification. The final receipt
+has SHA256
+`4e42ab868d58d8565ded64dce99f3255e8fd24b6811ac7dadfc2fa8affee42d8`.
+Local retention preserves 178 public original-body/source/log/command files and
+eight actual executables. The five-owner original namespace remains available;
+the legacy Clock temporary namespace was not retained, and its test result is
+supported by the unchanged fixture, actual executable and original log. Raw
+evidence stays outside Git and release artifacts.
+
+The earlier private-stage failed unsupported-demand control and its original
+output remain recorded separately; the corrected fixture distinguishes the
+synchronous unsupported physical mode from queued unavailable demands. No
+current native case was repeated. The separate import-layout change is excluded.
+This planner adds no backend, profile, CPU, transformed-clock, preservation or
+native qualification authority. These durations supply correctness evidence.
 
 ## Performance evidence
 
