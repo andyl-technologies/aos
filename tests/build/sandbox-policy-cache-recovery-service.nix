@@ -108,14 +108,19 @@
       !check.assertion
       && lib.hasInfix "V2 project" check.message)
     result.config.assertions;
+  # Check the actual credential schema without forcing unrelated service builders.
   strictOptionAccepted = extraModule:
     (builtins.tryEval (builtins.deepSeq
-      (evaluation.extendModules {
+      (lib.evalModules {
         modules = [
-          {_module.strict = true;}
+          {
+            options.aos.sandbox.policyAuthority.credentials =
+              evaluation.options.aos.sandbox.policyAuthority.credentials;
+            config._module.strict = true;
+          }
           extraModule
         ];
-      }).config.systemd.services
+      }).config.aos.sandbox.policyAuthority.credentials
       true)).success;
 in
   assert lib.all (check: check.assertion) evaluation.config.assertions;
@@ -137,6 +142,12 @@ in
   assert builtins.length normal.LoadCredential == 9;
   assert hasRefusal withoutPacket && hasRefusal withoutInput && hasRefusal withoutPair;
   assert strictOptionAccepted {};
+  assert strictOptionAccepted {
+    aos.sandbox.policyAuthority.credentials = {
+      projectHeadPacketV2 = "project-packet-v2";
+      projectLayerV2 = "project-layer-v2";
+    };
+  };
   assert !(strictOptionAccepted {aos.sandbox.policyAuthority.credentials.projectHeadPacket = "retired-input";});
   assert !(strictOptionAccepted {aos.sandbox.policyAuthority.credentials.projectLayer = "retired-input";});
     pkgs.mkDerivation {
