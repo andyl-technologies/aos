@@ -9,6 +9,7 @@
 name = "aos-hub"
 main = "build/worker/shim.mjs"
 compatibility_date = "2024-09-23"
+compatibility_flags = ["enable_request_signal"]
 
 [vars]
 HUB_TOPOLOGY = "worker_only"
@@ -45,6 +46,11 @@ mode = "off"
 [[r2_buckets]]
 binding = "REGISTRY_BUCKET"
 bucket_name = "aos-registry-surfaces"
+
+# Raw assessment evidence stays on executors. Native receives compact receipts.
+[[r2_buckets]]
+binding = "ASSESSMENT_EVIDENCE"
+bucket_name = "aos-assessment-evidence"
 
 # KV for human sessions (RFC-0004 "KV holds sessions"). The read path does not
 # require it for public registries; it is bound here for the deferred
@@ -94,6 +100,11 @@ class_name = "HubRegistryShard"
 name = "HUB_CACHE_SHARDS"
 class_name = "HubCacheShard"
 
+# Per-reservation fences prevent fan-out retries from multiplying source quota.
+[[durable_objects.bindings]]
+name = "ASSESSMENT_PROVIDER_TASKS"
+class_name = "AssessmentProviderObject"
+
 # Declare the DO classes on first deploy. `CoordinatorObject` uses the
 # transactional key-value storage (`new_classes`); `HubDb` uses SQLite storage.
 [[migrations]]
@@ -104,6 +115,10 @@ new_sqlite_classes = ["HubDb"]
 [[migrations]]
 tag = "v2"
 new_classes = ["HubControlShard", "HubTenantShard", "HubRegistryShard", "HubCacheShard"]
+
+[[migrations]]
+tag = "v3-assessment-provider-attempts"
+new_classes = ["AssessmentProviderObject"]
 
 # Edge Rate Limiting bindings (RFC-0004 ch.14, corrected): edge-local counters,
 # no network hop. One binding per budget tier (period 60); the worker routes a

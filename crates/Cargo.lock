@@ -697,6 +697,10 @@ name = "aos-hub-worker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-assessment",
+ "aos-assessment-providers",
+ "aos-assessment-runtime",
+ "aos-contract",
  "aos-doc-model",
  "aos-hub",
  "aos-hub-core",

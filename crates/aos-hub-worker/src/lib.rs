@@ -141,6 +141,9 @@ mod delivery_ingress;
 mod bridge_dispatch;
 
 #[cfg(target_arch = "wasm32")]
+pub mod assessment_provider;
+
+#[cfg(target_arch = "wasm32")]
 mod authority_issuer_storage;
 #[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) mod binding_custody;
@@ -1439,6 +1442,12 @@ mod entry {
         if req.url()?.path() == aos_hub_core::storage_authority::lease::control::ISSUER_CONTROL_PATH
         {
             return crate::hybrid_authority_issuer::forward(req, &env).await;
+        }
+        if [
+            aos_assessment_runtime::provider::PROVIDER_CAPABILITIES_PATH,
+            aos_assessment_runtime::provider::PROVIDER_WORK_PATH,
+        ].contains(&req.url()?.path()) {
+            return crate::assessment_provider::fetch(req, &env).await;
         }
         let hybrid = hybrid_mode(&env)?;
         if hybrid && req.url()?.path() == DEPLOYMENT_ID_PATH {
