@@ -23,6 +23,9 @@ pub(crate) enum Phase {
     InstalledMaterial,
     CurrentMaterial,
     ImmutableIntegrityRead,
+    ImmutableParts,
+    ImmutableStagePreparation,
+    ImmutableStageDispatch,
     SemanticCapacity,
     SemanticMaterial,
     SemanticLease,
@@ -277,6 +280,9 @@ mod tests {
         take();
         let attempt = Attempt::with_sink(commitments(), 123, capture).unwrap();
         for phase in [
+            Phase::ImmutableParts,
+            Phase::ImmutableStagePreparation,
+            Phase::ImmutableStageDispatch,
             Phase::SemanticMaterial,
             Phase::SemanticRequestValidation,
             Phase::SemanticDispatch,
