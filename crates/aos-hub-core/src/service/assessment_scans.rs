@@ -15,6 +15,21 @@ use super::{pb, Claims, RpcError, RpcService};
 use crate::db::AssessmentScanRecord;
 
 impl RpcService {
+    async fn wake_assessment_registry(&self, registry_id: i64, resource_scope: &str) {
+        if let Some(queue) = &self.maintenance_jobs {
+            let job = crate::jobs::Job::AssessmentRegistry {
+                registry_id,
+                resource_scope: resource_scope.to_owned(),
+                after_scan: String::new(),
+            };
+            if queue.enqueue(&job).await.is_err() {
+                // Admission is already durable; periodic journal recovery is
+                // the backstop when the optional wakeup transport is unavailable.
+                tracing::warn!("assessment wakeup unavailable; durable admission retained");
+            }
+        }
+    }
+
     /// Admits one pinned request without performing provider work in the handler.
     ///
     /// # Errors
@@ -46,6 +61,14 @@ impl RpcService {
             .request_assessment_scan_fenced(registry.id, &request, &fences)
             .await
             .map_err(|error| RpcError::FailedPrecondition(error.to_string()))?;
+        self.db
+            .admit_assessment_scan_authority(&scan, &claims, &fences)
+            .await
+            .map_err(|_| {
+                RpcError::PermissionDenied("assessment job authority admission failed".into())
+            })?;
+        self.wake_assessment_registry(registry.id, &registry.scope_key)
+            .await;
         self.recheck_assessment(&claims, &registry, "assessment.scan")
             .await?;
         receipt(scan)
@@ -224,34 +247,28 @@ impl RpcService {
             .request_assessment_scan_fenced(registry.id, &request, &fences)
             .await
             .map_err(|error| RpcError::FailedPrecondition(error.to_string()))?;
+        self.db
+            .admit_assessment_scan_authority(&scan, &claims, &fences)
+            .await
+            .map_err(|_| {
+                RpcError::PermissionDenied("assessment retry authority admission failed".into())
+            })?;
+        self.wake_assessment_registry(registry.id, &registry.scope_key)
+            .await;
         self.recheck_assessment(&claims, &registry, "assessment.scan")
             .await?;
         receipt(scan)
     }
 }
 
-fn actor_ref(claims: &Claims) -> Result<String, RpcError> {
-    let incarnation = claims.owner_incarnation.as_ref().ok_or_else(|| {
-        RpcError::PermissionDenied("assessment scans require stable principal identity".into())
-    })?;
-    let identity = uuid::Uuid::parse_str(incarnation).map_err(|_| {
-        RpcError::PermissionDenied("assessment principal identity is invalid".into())
-    })?;
-    if !matches!(claims.owner_kind.as_str(), "user" | "service_account") {
-        return Err(RpcError::PermissionDenied(
-            "assessment principal kind is invalid".into(),
-        ));
-    }
-    Sha256Digest::of_canonical(
-        "aos.assessment-actor/v1",
-        &(claims.owner_kind.as_str(), identity.to_string()),
-    )
-    .map(|digest| digest.to_string())
-    .map_err(RpcError::internal)
+pub(super) fn actor_ref(claims: &Claims) -> Result<String, RpcError> {
+    crate::db::assessment_actor_ref(claims)
+        .map_err(|_| RpcError::PermissionDenied("assessment principal identity is invalid".into()))
 }
 
 fn receipt(scan: AssessmentScanRecord) -> Result<pb::AssessmentDocumentResponse, RpcError> {
     let receipt = ScanReceiptV1 {
+        failure_code: scan.failure_code,
         schema: "aos.assessment-scan-receipt/v1".into(),
         scan_id: scan.scan_id,
         request: scan.request,

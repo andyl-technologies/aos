@@ -27,7 +27,19 @@ fn assessment_generation_preserves_sixteen_and_classifies_all_new_state() -> any
     );
     assert!(!historical.tables.contains_key("assessment_scans"));
     assert_eq!(current.tables.len(), historical.tables.len() + 24);
-    assert_eq!(current.manifest().migration_digests, digests());
+    assert_eq!(current.manifest().migration_digests, digests()[..17]);
+    let jobs = SnapshotClassifier::for_supported_generation(18)?;
+    assert_eq!(jobs.tables.len(), current.tables.len() + 1);
+    assert_eq!(jobs.manifest().migration_digests, digests());
+    assert_eq!(
+        jobs.tables["assessment_scan_authorities"]
+            .columns
+            .iter()
+            .find(|column| column.name == "authority_json")
+            .ok_or_else(|| anyhow::anyhow!("job provenance classification absent"))?
+            .rule,
+        "private_cell"
+    );
     assert_eq!(
         current.tables["assessment_scans"]
             .columns
@@ -247,13 +259,13 @@ async fn contract_covers_the_actual_production_initializer() {
     let tables = sqlx::query("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .fetch_all(&pool).await.unwrap();
     let contracts = contract().unwrap();
-    assert_eq!(contracts.len(), 315);
+    assert_eq!(contracts.len(), 316);
     assert_eq!(
         contracts
             .values()
             .map(|table| table.columns.len())
             .sum::<usize>(),
-        3059
+        3068
     );
     assert_eq!(tables.len(), contracts.len());
 

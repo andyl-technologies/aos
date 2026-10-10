@@ -62,10 +62,17 @@ static GENERATION16_CONTRACT: LazyLock<String> = LazyLock::new(|| {
     ]
     .concat()
 });
-static CONTRACT: LazyLock<String> = LazyLock::new(|| {
+static GENERATION17_CONTRACT: LazyLock<String> = LazyLock::new(|| {
     [
         GENERATION16_CONTRACT.as_str(),
         include_str!("schema-v17-delta.tsv"),
+    ]
+    .concat()
+});
+static CONTRACT: LazyLock<String> = LazyLock::new(|| {
+    [
+        GENERATION17_CONTRACT.as_str(),
+        include_str!("schema-v18-delta.tsv"),
     ]
     .concat()
 });
@@ -143,9 +150,14 @@ static GENERATION16_MIGRATION_DIGESTS: LazyLock<Vec<&'static str>> = LazyLock::n
     digests.push("adbdf1c0eae8e3749ff314f1ebb7e5103e90e12a8e7e8814d6bc38ceb3eed66a");
     digests
 });
-static CONTRACT_MIGRATION_DIGESTS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+static GENERATION17_MIGRATION_DIGESTS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     let mut digests = GENERATION16_MIGRATION_DIGESTS.clone();
     digests.push(include_str!("schema-v17-migration.sha256").trim());
+    digests
+});
+static CONTRACT_MIGRATION_DIGESTS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    let mut digests = GENERATION17_MIGRATION_DIGESTS.clone();
+    digests.push(include_str!("schema-v18-migration.sha256").trim());
     digests
 });
 
@@ -522,7 +534,11 @@ fn generation_contract(version: usize) -> Result<(&'static str, &'static [&'stat
             GENERATION16_CONTRACT.as_str(),
             GENERATION16_MIGRATION_DIGESTS.as_slice(),
         )),
-        17 => Ok((CONTRACT.as_str(), CONTRACT_MIGRATION_DIGESTS.as_slice())),
+        17 => Ok((
+            GENERATION17_CONTRACT.as_str(),
+            GENERATION17_MIGRATION_DIGESTS.as_slice(),
+        )),
+        18 => Ok((CONTRACT.as_str(), CONTRACT_MIGRATION_DIGESTS.as_slice())),
         _ => anyhow::bail!("snapshot generation is unsupported"),
     }
 }

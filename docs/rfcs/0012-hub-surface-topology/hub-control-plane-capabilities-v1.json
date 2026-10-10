@@ -1318,7 +1318,12 @@
       ],
       "methods": [
         "GetStatus",
-        "GetAssessment"
+        "GetAssessment",
+        "ListAlerts",
+        "AcknowledgeAlert",
+        "ListEvents",
+        "ListSchedules",
+        "WriteSchedule"
       ]
     },
     {

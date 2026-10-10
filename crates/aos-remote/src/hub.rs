@@ -88,6 +88,11 @@ enum HubTopologyMethod {
     ListPackageScans,
     CancelPackageScan,
     RetryPackageScan,
+    ListAssessmentAlerts,
+    AcknowledgePackageAlert,
+    ListAssessmentEvents,
+    ListAssessmentSchedules,
+    WriteAssessmentSchedule,
     /// Selects authenticated direct-upload capability discovery.
     DirectUploadGetCapabilities,
     /// Selects bounded immutable direct-session admission.
@@ -1219,6 +1224,11 @@ impl HubTopologyMethod {
             ListPackageScans => "aos.hub.v1.ScanService/ListScans",
             CancelPackageScan => "aos.hub.v1.ScanService/CancelScan",
             RetryPackageScan => "aos.hub.v1.ScanService/RetryScan",
+            ListAssessmentAlerts => "aos.hub.v1.AssessmentService/ListAlerts",
+            AcknowledgePackageAlert => "aos.hub.v1.AssessmentService/AcknowledgeAlert",
+            ListAssessmentEvents => "aos.hub.v1.AssessmentService/ListEvents",
+            ListAssessmentSchedules => "aos.hub.v1.AssessmentService/ListSchedules",
+            WriteAssessmentSchedule => "aos.hub.v1.AssessmentService/WriteSchedule",
             PlanUpdateRegistryMetadata => "aos.hub.v1.RegistryService/PlanUpdateRegistryMetadata",
             UpdateRegistryMetadata => "aos.hub.v1.RegistryService/UpdateRegistryMetadata",
             PlanUpdateRegistry => "aos.hub.v1.RegistryService/PlanUpdateRegistry",
@@ -1782,6 +1792,11 @@ pub mod hub_rpc {
         ListPackageScans: AssessmentControlRequest => AssessmentDocumentResponse;
         CancelPackageScan: AssessmentControlRequest => AssessmentDocumentResponse;
         RetryPackageScan: AssessmentControlRequest => AssessmentDocumentResponse;
+        ListAssessmentAlerts: AssessmentControlRequest => AssessmentDocumentResponse;
+        AcknowledgePackageAlert: AssessmentControlRequest => AssessmentDocumentResponse;
+        ListAssessmentEvents: AssessmentControlRequest => AssessmentDocumentResponse;
+        ListAssessmentSchedules: AssessmentControlRequest => AssessmentDocumentResponse;
+        WriteAssessmentSchedule: AssessmentControlRequest => AssessmentDocumentResponse;
         PlanUpdateRegistryMetadata: PlanUpdateRegistryMetadataRequest => TopologyPlanResponse;
         UpdateRegistryMetadata: ApplyRegistryMutationRequest => RegistryMetadataChangeResponse;
         PlanUpdateRegistry: PlanUpdateRegistryRequest => TopologyPlanResponse;

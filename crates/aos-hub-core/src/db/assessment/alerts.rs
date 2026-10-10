@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{bail, Context as _, Result};
 use aos_assessment::input::{EvaluationData, ScanInputV1};
 use aos_assessment::result::PackageAssessmentV1;
 use aos_assessment::time::Timestamp;
@@ -14,8 +14,8 @@ use aos_assessment_runtime::alerts::{
     Acknowledgement, AssessmentAlertV1, AttentionState, IssueFamily,
 };
 use aos_assessment_runtime::events::{AssessmentEventPayload, AssessmentEventV1};
-use aos_contract::Sha256Digest;
 use aos_contract::limits::{BoundedWriter, JsonLimits};
+use aos_contract::Sha256Digest;
 
 use crate::backend::{CheckedStatement, Statement};
 use crate::db::Database;
@@ -94,21 +94,74 @@ impl Database {
         registry_id: i64,
         authorization_revision: u64,
         expected_sequence: u64,
-        mut acknowledgement: Acknowledgement,
+        acknowledgement: Acknowledgement,
     ) -> Result<AssessmentAlertV1> {
+        self.acknowledge_assessment_alert_fenced(
+            registry_id,
+            authorization_revision,
+            expected_sequence,
+            acknowledgement,
+            &[],
+        )
+        .await
+    }
+
+    /// Acknowledges an episode while holding independently prepared current IAM.
+    ///
+    /// Matching actor retry keys return the retained receipt without another
+    /// transition. A key replayed with another episode or note is refused.
+    ///
+    /// # Errors
+    /// Returns an error for stale authority, conflicting retries or the same
+    /// episode/revision and persistence failures as ordinary acknowledgement.
+    pub async fn acknowledge_assessment_alert_fenced(
+        &self,
+        registry_id: i64,
+        authorization_revision: u64,
+        expected_sequence: u64,
+        mut acknowledgement: Acknowledgement,
+        authority: &[CheckedStatement],
+    ) -> Result<AssessmentAlertV1> {
+        if authority.len() > 32 {
+            bail!("assessment acknowledgement exceeds its authority fence limit");
+        }
         let previous = self
             .assessment_alert(registry_id, acknowledgement.issue_key)
             .await?
             .context("assessment issue is absent")?;
+        let resource_guard = Statement::new(
+            "UPDATE assessment_resources SET authorization_revision = authorization_revision
+             WHERE registry_id = ?1 AND authorization_revision = ?2",
+            vals![registry_id, authorization_revision],
+        )
+        .expecting(1);
+        if let Some(key) = &acknowledgement.idempotency_key {
+            if let Some(retained) = previous.acknowledgements.iter().find(|retained| {
+                retained.actor_ref == acknowledgement.actor_ref
+                    && retained.idempotency_key.as_ref() == Some(key)
+            }) {
+                if retained.episode != acknowledgement.episode
+                    || retained.reason != acknowledgement.reason
+                {
+                    bail!("assessment acknowledgement retry conflicts with retained content");
+                }
+                let mut fences = authority.to_vec();
+                fences.push(resource_guard);
+                self.backend.checked_batch(&fences).await?;
+                return Ok(previous);
+            }
+        }
         acknowledgement.acknowledged_at = self.assessment_database_time().await?;
         let updated = previous.acknowledge(expected_sequence, acknowledgement)?;
-        let mut statements = vec![Statement::new(
+        let mut statements = authority.to_vec();
+        statements.push(resource_guard);
+        statements.push(Statement::new(
             "UPDATE assessment_alerts SET alert_json = ?4, transition_sequence = ?5, updated_at = ?6
              WHERE registry_id = ?1 AND issue_key = ?2 AND transition_sequence = ?3
                AND EXISTS(SELECT 1 FROM assessment_resources WHERE registry_id = ?1 AND authorization_revision = ?7)",
             vals![registry_id, updated.issue_key.to_string(), expected_sequence, encode_alert(&updated)?,
                 updated.sequence, updated.updated_at.unix_seconds(), authorization_revision],
-        ).expecting(1)];
+        ).expecting(1));
         statements.extend(
             self.assessment_event_statements(
                 registry_id,
@@ -245,7 +298,7 @@ impl Database {
         Ok(statements)
     }
 
-    async fn assessment_event_statements(
+    pub(super) async fn assessment_event_statements(
         &self,
         registry_id: i64,
         payloads: Vec<AssessmentEventPayload>,
@@ -273,31 +326,32 @@ impl Database {
             .checked_add(payloads.len() as u64)
             .filter(|value| *value <= 9_007_199_254_740_991)
             .context("assessment event sequence exhausted")?;
-        let mut statements = vec![
-            Statement::new(
-                "UPDATE assessment_event_sequences SET current_sequence = ?3
+        let mut statements = vec![Statement::new(
+            "UPDATE assessment_event_sequences SET current_sequence = ?3
              WHERE registry_id = ?1 AND current_sequence = ?2",
-                vals![registry_id, sequence, last],
-            )
-            .expecting(1),
-        ];
+            vals![registry_id, sequence, last],
+        )
+        .expecting(1)];
         for (offset, payload) in payloads.into_iter().enumerate() {
             let (kind, issue, episode, digest) = match &payload {
                 AssessmentEventPayload::Alert { alert, .. } => (
                     "alert.transition",
                     Some(alert.issue_key.to_string()),
                     Some(alert.episode),
-                    alert.assessment_digest,
+                    Some(alert.assessment_digest),
                 ),
                 AssessmentEventPayload::Acknowledged { alert } => (
                     "alert.acknowledged",
                     Some(alert.issue_key.to_string()),
                     Some(alert.episode),
-                    alert.assessment_digest,
+                    Some(alert.assessment_digest),
                 ),
                 AssessmentEventPayload::ScanCompleted {
                     assessment_digest, ..
-                } => ("scan.completed", None, None, *assessment_digest),
+                } => ("scan.completed", None, None, Some(*assessment_digest)),
+                AssessmentEventPayload::ScheduleChanged { .. } => {
+                    ("schedule.changed", None, None, None)
+                }
             };
             let event = AssessmentEventV1 {
                 schema: "aos.assessment-event/v1".into(),
@@ -310,7 +364,7 @@ impl Database {
                 "INSERT INTO assessment_events(registry_id, event_sequence, event_id, event_kind,
                      issue_key, episode, assessment_digest, payload_json, occurred_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                vals![registry_id, event.sequence, event.event_id, kind, issue, episode, digest.to_string(),
+                vals![registry_id, event.sequence, event.event_id, kind, issue, episode, digest.map(|digest| digest.to_string()),
                     event.to_bytes()?, now.unix_seconds()],
             ).expecting(1));
         }

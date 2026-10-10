@@ -379,6 +379,11 @@ service PackageService {
 service AssessmentService {
   rpc GetStatus(AssessmentStatusRequest) returns (AssessmentDocumentResponse);
   rpc GetAssessment(AssessmentObjectRequest) returns (AssessmentDocumentResponse);
+  rpc ListAlerts(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+  rpc AcknowledgeAlert(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+  rpc ListEvents(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+  rpc ListSchedules(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+  rpc WriteSchedule(AssessmentControlRequest) returns (AssessmentDocumentResponse);
 }
 
 // Durable scan admission and lifecycle. Provider acquisition belongs to the

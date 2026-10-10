@@ -541,7 +541,11 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "aos-assessment",
+ "aos-assessment-http",
+ "aos-assessment-runtime",
  "aos-cache",
+ "aos-contract",
  "aos-core",
  "aos-doc-model",
  "aos-hub-core",

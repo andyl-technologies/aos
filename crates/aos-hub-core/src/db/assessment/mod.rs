@@ -11,14 +11,20 @@ mod cache;
 mod clock;
 mod evaluation;
 mod inventory;
+mod job_authority;
 mod objects;
 mod provider_index;
 mod provider_state;
+mod publication;
+mod reconcile;
 mod scans;
+mod schedules;
 mod status;
 
 pub use budgets::{AssessmentProviderReservation, AssessmentProviderWork, AssessmentSourceBudget};
 pub use inventory::{AssessmentInventoryAdmission, AssessmentResource};
+pub use job_authority::assessment_actor_ref;
+pub use publication::AssessmentPublicationRefresh;
 pub use objects::AssessmentObjectKind;
 pub use scans::AssessmentScanRecord;
 pub use status::{
@@ -30,6 +36,9 @@ mod objects_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod scans_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod reconcile_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod budgets_tests;

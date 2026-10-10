@@ -4,6 +4,8 @@ mod access_policy;
 mod access_tokens;
 mod assessments;
 mod assessment_scans;
+mod assessment_schedules;
+mod assessment_attention;
 mod cache_gc;
 mod cache_gc_jobs;
 mod cache_gc_safety;

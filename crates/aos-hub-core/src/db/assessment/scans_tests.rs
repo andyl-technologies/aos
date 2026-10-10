@@ -9,7 +9,7 @@ use serde_json::json;
 use super::AssessmentInventoryAdmission;
 use crate::db::Database;
 
-fn fixture() -> Result<EvaluationData> {
+pub(super) fn fixture() -> Result<EvaluationData> {
     let source = Sha256Digest::of_bytes("exact admitted source");
     let security = json!({"identities":[{"kind":"ecosystem", "ecosystem":"crates.io", "name":"fixture"}],
         "advisorySources":[{"provider":"osv", "project":"fixture"}], "versionScheme":"semver",
@@ -345,6 +345,67 @@ async fn policy_replacement_fences_old_work_without_rewriting_inventory_or_histo
             .request
             .policy_digest,
         previous.policy_digest
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn renewal_preserves_attempt_and_refuses_old_claim_cancel_and_expiry() -> Result<()> {
+    let (db, registry_id, request) = setup().await?;
+    let scan = db.request_assessment_scan(registry_id, &request).await?;
+    let claim = db
+        .claim_assessment_scan(registry_id, &scan.scan_id, 60)
+        .await?;
+    let deadline = aos_assessment::time::Timestamp::from_unix_seconds(
+        db.assessment_database_time().await?.unix_seconds() + 300,
+    )?;
+    let renewed = db
+        .renew_assessment_scan_fenced(registry_id, &claim, 900, &deadline, &[])
+        .await?;
+    assert_eq!(renewed.claim_token, claim.claim_token);
+    assert_eq!(renewed.attempt, claim.attempt);
+    assert_eq!(renewed.generation, claim.generation);
+    assert_eq!(renewed.expires_at, deadline);
+    assert!(
+        db.check_assessment_scan_claim(registry_id, &claim)
+            .await
+            .is_err()
+    );
+    db.check_assessment_scan_claim(registry_id, &renewed)
+        .await?;
+    assert!(
+        db.renew_assessment_scan_fenced(registry_id, &renewed, 900, &deadline, &[])
+            .await
+            .is_err()
+    );
+
+    let current = db
+        .assessment_scan(registry_id, &scan.scan_id)
+        .await?
+        .context("running scan")?;
+    db.cancel_assessment_scan(registry_id, &scan.scan_id, current.resource_version)
+        .await?;
+    assert!(
+        db.renew_assessment_scan_fenced(registry_id, &renewed, 900, &deadline, &[])
+            .await
+            .is_err()
+    );
+
+    let (db, registry_id, request) = setup().await?;
+    let scan = db.request_assessment_scan(registry_id, &request).await?;
+    let claim = db
+        .claim_assessment_scan(registry_id, &scan.scan_id, 60)
+        .await?;
+    db.backend
+        .execute(
+            "UPDATE assessment_scans SET lease_expires_at = 1 WHERE scan_id = ?1",
+            &vals![@slice scan.scan_id],
+        )
+        .await?;
+    assert!(
+        db.renew_assessment_scan_fenced(registry_id, &claim, 900, &deadline, &[])
+            .await
+            .is_err()
     );
     Ok(())
 }

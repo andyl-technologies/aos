@@ -63,6 +63,22 @@ struct Authority<'a> {
 
 #[async_trait::async_trait]
 impl AssessmentAuthority for Authority<'_> {
+    async fn source_deadline(
+        &self,
+        scan: &AssessmentScanRecord,
+    ) -> Result<aos_assessment::time::Timestamp> {
+        aos_assessment::time::Timestamp::from_unix_seconds(
+            scan.created_at.unix_seconds() + u64::from(scan.request.limits.wall_seconds),
+        )
+    }
+
+    async fn current_fences(
+        &self,
+        _: &AssessmentScanRecord,
+    ) -> Result<Vec<crate::backend::CheckedStatement>> {
+        Ok(Vec::new())
+    }
+
     async fn commit_current(
         &self,
         db: &Database,
@@ -278,6 +294,26 @@ struct RevocationAtCommit<'a> {
 
 #[async_trait::async_trait]
 impl AssessmentAuthority for RevocationAtCommit<'_> {
+    async fn source_deadline(
+        &self,
+        _: &AssessmentScanRecord,
+    ) -> Result<aos_assessment::time::Timestamp> {
+        aos_assessment::time::Timestamp::from_unix_seconds(self.claims.exp as u64)
+    }
+
+    async fn current_fences(
+        &self,
+        scan: &AssessmentScanRecord,
+    ) -> Result<Vec<crate::backend::CheckedStatement>> {
+        self.db
+            .assessment_iam_statements(
+                &self.claims,
+                &scan.request.resource_scope,
+                crate::domain::Permission::Read,
+            )
+            .await
+    }
+
     async fn require_current(&self, _: &AssessmentScanRecord) -> Result<()> {
         anyhow::ensure!(
             self.db
@@ -547,6 +583,7 @@ impl AssessmentSourceRoutes for InvalidResultTransport {
         _: &ProviderOperation,
     ) -> Result<AssessmentSourceRoute> {
         Ok(AssessmentSourceRoute {
+            expires_at: aos_assessment::time::Timestamp::parse("2099-01-01T00:00:00Z")?,
             deployment_id: "fixture-deployment".into(),
             issuer: "fixture-coordinator".into(),
             audience: "fixture-executor".into(),

@@ -4,7 +4,7 @@
 //! parent commitment commit together. SQL never stores raw provider bodies as
 //! semantic objects; those require independently admitted evidence custody.
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{bail, Context as _, Result};
 use aos_assessment::advisory::{AdvisoryRecordV1, AdvisorySnapshotV1};
 use aos_assessment::definition::PackageScanDefinitionV1;
 use aos_assessment::discovery::UpstreamObservationV1;
@@ -14,9 +14,9 @@ use aos_assessment::observation::ProviderObservationV1;
 use aos_assessment::result::PackageAssessmentV1;
 use aos_assessment::scan_inventory::ScanInventoryV1;
 use aos_assessment::time::Timestamp;
-use aos_contract::Sha256Digest;
 use aos_contract::limits::{BoundedWriter, JsonLimits};
-use serde::{Serialize, de::DeserializeOwned};
+use aos_contract::Sha256Digest;
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 
 use crate::backend::Statement;
@@ -59,10 +59,15 @@ pub enum AssessmentObjectKind {
     KnownExploit,
     /// Source-bound exact page question and permitted continuation.
     ProviderPage,
+    /// Closed compact upstream custody with ordinary exact-byte evidence identity.
+    SourceChain,
 }
 
 impl AssessmentObjectKind {
-    /// Returns the exact semantic digest domain, distinct from its storage shards.
+    /// Returns the closed contract discriminator, distinct from its storage shards.
+    ///
+    /// Semantic records hash within this domain. Source-chain custody instead
+    /// retains the ordinary byte hash required by its evidence references.
     #[must_use]
     pub fn domain(self) -> &'static str {
         match self {
@@ -79,11 +84,15 @@ impl AssessmentObjectKind {
             Self::Upstream => aos_assessment::UPSTREAM_OBSERVATION_V1,
             Self::KnownExploit => "aos.known-exploit/v1",
             Self::ProviderPage => "aos.provider-page/v1",
+            Self::SourceChain => "aos.source-chain-custody/v1",
         }
     }
 
     fn normalize(self, bytes: &[u8]) -> Result<Vec<u8>> {
         match self {
+            Self::SourceChain => encode(
+                &aos_assessment_runtime::source_chain::SourceChainCustodyV1::from_slice(bytes)?,
+            ),
             Self::ProviderPage => {
                 encode(&aos_assessment_runtime::provider::ProviderPageV1::from_slice(bytes)?)
             }
@@ -133,6 +142,19 @@ impl AssessmentObjectKind {
             }
         }
     }
+
+    fn content_digest(self, bytes: &[u8]) -> Result<Sha256Digest> {
+        if self == Self::SourceChain {
+            // SourceEvidenceRef binds exact custody bytes. The closed kind
+            // parser still refuses raw source bodies and arbitrary JSON.
+            Ok(Sha256Digest::of_bytes(bytes))
+        } else {
+            Sha256Digest::of_canonical(
+                self.domain(),
+                &OBJECT_LIMITS.decode::<Value>(bytes, "canonical assessment object")?,
+            )
+        }
+    }
 }
 
 impl Database {
@@ -157,8 +179,7 @@ impl Database {
             bail!("assessment object admission time is invalid");
         }
         let canonical = kind.normalize(bytes)?;
-        let value: Value = OBJECT_LIMITS.decode(&canonical, "canonical assessment object")?;
-        if Sha256Digest::of_canonical(kind.domain(), &value)? != expected_digest {
+        if kind.content_digest(&canonical)? != expected_digest {
             bail!("assessment object differs from its exact expected semantic identity");
         }
         if let Some(stored) = self
@@ -171,22 +192,20 @@ impl Database {
             return Ok(());
         }
         let digest = expected_digest.to_string();
-        let mut statements = vec![
-            Statement::new(
-                "INSERT INTO assessment_objects
+        let mut statements = vec![Statement::new(
+            "INSERT INTO assessment_objects
                 (partition_key, object_digest, object_kind, byte_length, shard_count, admitted_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                vals![
-                    partition,
-                    digest,
-                    kind.domain(),
-                    canonical.len() as u64,
-                    canonical.len().div_ceil(SHARD_BYTES) as u64,
-                    now
-                ],
-            )
-            .expecting(1),
-        ];
+            vals![
+                partition,
+                digest,
+                kind.domain(),
+                canonical.len() as u64,
+                canonical.len().div_ceil(SHARD_BYTES) as u64,
+                now
+            ],
+        )
+        .expecting(1)];
         for (ordinal, chunk) in canonical.chunks(SHARD_BYTES).enumerate() {
             statements.push(
                 Statement::new(
@@ -285,10 +304,7 @@ impl Database {
         }
         if bytes.len() != byte_length as usize
             || kind.normalize(&bytes)? != bytes
-            || Sha256Digest::of_canonical(
-                kind.domain(),
-                &OBJECT_LIMITS.decode::<Value>(&bytes, "stored assessment object")?,
-            )? != digest
+            || kind.content_digest(&bytes)? != digest
         {
             bail!("assessment object reconstruction differs from its semantic identity");
         }

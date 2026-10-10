@@ -559,6 +559,7 @@ pub(crate) fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// Versions 1 through 13 retain the Hybrid production history. Versions 14
 /// through 16 append Native ability references, documentation, and deployment reports.
 /// Version 17 adds bounded package assessment coordination and evidence references.
+/// Version 18 binds private authenticated job provenance to admitted scans.
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("002-r2-gc-incarnation.sql"),
@@ -577,6 +578,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("migration-0007-native-documentation.sql"),
     include_str!("migration-0008-native-deployment-report.sql"),
     include_str!("017-package-assessment.sql"),
+    include_str!("018-assessment-job-authority.sql"),
 ];
 
 // Shared by production initialization and trusted disposable schema compilation.
@@ -587,7 +589,10 @@ pub(crate) const SCHEMA_VERSION_DDL: &str =
 ///
 /// Historical development ledgers are incompatible even when their integer
 /// version happens to match a production migration.
-pub const SCHEMA_IDENTITY: &str = "aos-hub/canonical-serving/17";
+pub const SCHEMA_IDENTITY: &str = "aos-hub/canonical-serving/18";
+
+/// Identifies immutable generation-seventeen assessment archives.
+pub const SNAPSHOT_SCHEMA_IDENTITY_17: &str = "aos-hub/canonical-serving/17";
 
 /// Identifies immutable generation-sixteen archives independently of assessment DDL.
 pub const SNAPSHOT_SCHEMA_IDENTITY_16: &str = "aos-hub/canonical-serving/16";
@@ -618,7 +623,8 @@ pub fn snapshot_schema_identity(generation: usize) -> Result<&'static str> {
         12 => Ok(SNAPSHOT_SCHEMA_IDENTITY_12),
         13 => Ok(SNAPSHOT_SCHEMA_IDENTITY_13),
         16 => Ok(SNAPSHOT_SCHEMA_IDENTITY_16),
-        17 => Ok(SCHEMA_IDENTITY),
+        17 => Ok(SNAPSHOT_SCHEMA_IDENTITY_17),
+        18 => Ok(SCHEMA_IDENTITY),
         _ => anyhow::bail!("unsupported snapshot schema generation"),
     }
 }
@@ -26837,8 +26843,8 @@ requires-features = ["image-artifact-contract-v1"]
     fn fresh_schema_is_final_and_foreign_key_clean() {
         assert_eq!(
             MIGRATIONS.len(),
-            17,
-            "immutable Hybrid history, Native projections and package assessment coordination"
+            18,
+            "immutable Hybrid history, Native projections and private assessment job authority"
         );
         let connection = Connection::open_in_memory().unwrap();
         connection

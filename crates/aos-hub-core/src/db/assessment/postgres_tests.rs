@@ -63,6 +63,7 @@ async fn serving_inventory_scan_heads_alerts_acknowledgements_and_events_are_ato
             resource.authorization_revision,
             alerts[0].sequence,
             Acknowledgement {
+                idempotency_key: None,
                 issue_key: alerts[0].issue_key,
                 episode: alerts[0].episode,
                 actor_ref: request.actor_ref.clone(),

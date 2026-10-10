@@ -4,19 +4,19 @@
 //! ports before result admission. A plan cannot change its durable quota or
 //! request scope, and a late result cannot publish an observation head.
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{bail, Context as _, Result};
 use aos_assessment_runtime::provider::{
     NormalizedObject, ProviderWorkPlanV1, ProviderWorkResultV1, WorkOutcome,
 };
 use aos_assessment_runtime::scan::ScanUsage;
 use aos_contract::Sha256Digest;
 
-use crate::backend::Statement;
+use crate::backend::{CheckedStatement, Statement};
 use crate::db::Database;
 
-use super::AssessmentObjectKind;
 use super::objects::encode;
 use super::scans::claim_values;
+use super::AssessmentObjectKind;
 
 impl Database {
     /// Settles a failed physical attempt without refunding its reserved allowance.
@@ -79,6 +79,23 @@ impl Database {
         registry_id: i64,
         plan: &ProviderWorkPlanV1,
     ) -> Result<()> {
+        self.admit_assessment_provider_plan_fenced(registry_id, plan, &[])
+            .await
+    }
+
+    /// Admits an issued plan while holding current principal and job authority.
+    ///
+    /// # Errors
+    /// Returns plan admission failures or invalid/revoked current authority guards.
+    pub async fn admit_assessment_provider_plan_fenced(
+        &self,
+        registry_id: i64,
+        plan: &ProviderWorkPlanV1,
+        authority_fences: &[CheckedStatement],
+    ) -> Result<()> {
+        if authority_fences.len() > 32 {
+            bail!("assessment plan authority exceeds its ceiling");
+        }
         plan.validate_at(&self.assessment_database_time().await?)?;
         self.check_assessment_provider_claim(registry_id, &plan.claim)
             .await?;
@@ -120,6 +137,7 @@ impl Database {
             }
             self.check_assessment_provider_claim(registry_id, &plan.claim)
                 .await?;
+            self.backend.checked_batch(authority_fences).await?;
             return Ok(());
         }
         let mut values = claim_values(registry_id, &plan.claim);
@@ -130,14 +148,16 @@ impl Database {
             plan.budget_reservation.reservation_id
         ]);
         let clock = self.backend.dialect().unix_time_expression();
-        self.backend.checked_batch(&[Statement::new(format!(
+        let mut statements = authority_fences.to_vec();
+        statements.push(Statement::new(format!(
             "UPDATE assessment_tasks SET plan_digest = ?10, plan_json = ?11, resource_version = resource_version + 1
              WHERE scan_id = ?2 AND task_id = ?9 AND claim_token = ?3 AND attempt = ?7
                AND generation = ?4 AND state = 'leased' AND lease_expires_at > {clock}
                AND plan_digest IS NULL AND reservation_id = ?12
                AND EXISTS(SELECT 1 FROM assessment_scans WHERE {})
                AND EXISTS(SELECT 1 FROM assessment_budget_reservations WHERE reservation_id = ?12 AND deadline > {clock})",
-            self.assessment_claim_guard()), values).expecting(1)]).await?;
+            self.assessment_claim_guard()), values).expecting(1));
+        self.backend.checked_batch(&statements).await?;
         Ok(())
     }
 
@@ -156,6 +176,27 @@ impl Database {
         plan: &ProviderWorkPlanV1,
         result: &ProviderWorkResultV1,
     ) -> Result<()> {
+        self.admit_assessment_provider_result_fenced(registry_id, plan, result, &[])
+            .await
+    }
+
+    /// Publishes compact provider evidence while holding current IAM and job guards.
+    ///
+    /// Immutable retained objects confer no authority until this transaction
+    /// accepts the exact result and its index rows under the current actor.
+    ///
+    /// # Errors
+    /// Returns result admission failures or invalid/revoked current authority guards.
+    pub async fn admit_assessment_provider_result_fenced(
+        &self,
+        registry_id: i64,
+        plan: &ProviderWorkPlanV1,
+        result: &ProviderWorkResultV1,
+        authority_fences: &[CheckedStatement],
+    ) -> Result<()> {
+        if authority_fences.len() > 32 {
+            bail!("assessment source result authority exceeds its ceiling");
+        }
         let result_bytes = encode(result)?;
         if result_bytes.len() > 256 * 1024 {
             bail!("provider result exceeds its compact journal bound");
@@ -179,6 +220,7 @@ impl Database {
             if prior == result_digest.to_string()
                 && row.get::<Option<Vec<u8>>>(3)?.as_deref() == Some(result_bytes.as_slice())
             {
+                self.backend.checked_batch(authority_fences).await?;
                 return Ok(());
             }
             bail!("provider attempt already admitted a different immutable result");
@@ -235,15 +277,14 @@ impl Database {
         }
         let mut values = claim_values(registry_id, &plan.claim);
         values.extend(vals![encode(&usage)?, scan.resource_version]);
-        let mut statements = vec![
-            Statement::new(
-                format!(
+        let mut statements = authority_fences.to_vec();
+        statements.extend([Statement::new(
+            format!(
             "UPDATE assessment_scans SET usage_json = ?9, resource_version = resource_version + 1
              WHERE {} AND resource_version = ?10", self.assessment_claim_guard()),
-                values,
-            )
-            .expecting(1),
-        ];
+            values,
+        )
+        .expecting(1)]);
         let state = match result.outcome {
             WorkOutcome::Observed | WorkOutcome::NotModified => "succeeded",
             WorkOutcome::Partial => "partial",

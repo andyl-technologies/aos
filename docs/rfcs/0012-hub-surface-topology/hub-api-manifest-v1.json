@@ -3224,6 +3224,41 @@
          "service" : "AssessmentService"
       },
       {
+         "method" : "ListAlerts",
+         "path" : "aos.hub.v1.AssessmentService/ListAlerts",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
+         "method" : "AcknowledgeAlert",
+         "path" : "aos.hub.v1.AssessmentService/AcknowledgeAlert",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
+         "method" : "ListEvents",
+         "path" : "aos.hub.v1.AssessmentService/ListEvents",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
+         "method" : "ListSchedules",
+         "path" : "aos.hub.v1.AssessmentService/ListSchedules",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
+         "method" : "WriteSchedule",
+         "path" : "aos.hub.v1.AssessmentService/WriteSchedule",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
          "method" : "RequestScan",
          "path" : "aos.hub.v1.ScanService/RequestScan",
          "request" : "AssessmentControlRequest",

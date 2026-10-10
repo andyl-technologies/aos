@@ -228,7 +228,7 @@ fn paired_encrypted_requirements_bind_exact_source_and_reject_changed_original()
         Default::default(),
     )
     .unwrap();
-    let schema = SnapshotClassifier::for_supported_generation(17).unwrap();
+    let schema = SnapshotClassifier::for_supported_generation(18).unwrap();
     writer.require_schema(schema.manifest()).unwrap();
     let original = row("surface_objects");
     writer.row("surface_objects", 0, &original).unwrap();

@@ -290,6 +290,85 @@ impl From<AssessmentProfileArg> for aos_assessment::input::Profile {
 
 #[derive(Subcommand)]
 pub enum HubAssessmentCmd {
+    /// Read reviewed recurring scans without triggering execution
+    Schedules {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry whose schedule reviews are selected
+        #[arg(long)]
+        registry: String,
+        /// Select one exact schedule
+        #[arg(long, conflicts_with = "after_schedule")]
+        schedule_id: Option<String>,
+        /// Continue after a schedule from the preceding page
+        #[arg(long, requires = "resource_scope")]
+        after_schedule: Option<String>,
+        /// Pin the non-reusable registry scope from the preceding page
+        #[arg(long)]
+        resource_scope: Option<String>,
+        /// Bound the number of public schedule projections
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=10))]
+        limit: u32,
+    },
+    /// Create, replace or disable an explicit recurring scan review
+    Schedule {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry whose schedule review is changed
+        #[arg(long)]
+        registry: String,
+        /// Read a closed aos.assessment-schedule-write/v1 document
+        #[arg(long)]
+        request: PathBuf,
+    },
+    /// Read alert episodes including acknowledgement and resolution history
+    Alerts {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry whose attention state is selected
+        #[arg(long)]
+        registry: String,
+        /// Bound the number of complete alerts in this page
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=10))]
+        limit: u32,
+        /// Continue after an exact issue in the preceding resource scope
+        #[arg(long, requires = "resource_scope")]
+        after_issue: Option<String>,
+        /// Pin the non-reusable resource scope returned by the preceding page
+        #[arg(long)]
+        resource_scope: Option<String>,
+    },
+    /// Acknowledge an exact alert episode without resolving the finding
+    Acknowledge {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry containing the exact alert
+        #[arg(long)]
+        registry: String,
+        /// Read a closed aos.assessment-alert-acknowledgement/v1 document
+        #[arg(long)]
+        request: PathBuf,
+    },
+    /// Replay committed events from a resource-bound reconnect position
+    Events {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry whose committed events are selected
+        #[arg(long)]
+        registry: String,
+        /// Bound the number of complete events in each replay page
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=10))]
+        limit: u32,
+        /// Resume after this exclusive committed event sequence
+        #[arg(long, requires = "resource_scope")]
+        after_sequence: Option<u64>,
+        /// Pin the non-reusable resource scope returned by the preceding page
+        #[arg(long)]
+        resource_scope: Option<String>,
+        /// Poll for committed events until interrupted
+        #[arg(long)]
+        watch: bool,
+    },
     /// Request a scan of an exact pinned inventory selection
     Scan {
         #[command(flatten)]

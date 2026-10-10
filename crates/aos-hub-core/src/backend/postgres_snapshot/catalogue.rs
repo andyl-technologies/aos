@@ -58,7 +58,7 @@ pub(super) async fn read(transaction: &mut Transaction<'static, Postgres>) -> Re
 }
 
 pub(super) fn expected_sha256() -> &'static str {
-    include_str!("current17.sha256").trim()
+    include_str!("current18.sha256").trim()
 }
 
 pub(super) fn digest(facts: &[Fact]) -> Result<String> {

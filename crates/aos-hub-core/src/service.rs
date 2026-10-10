@@ -31,6 +31,8 @@
 mod authentication;
 mod assessment;
 mod assessment_scans;
+mod assessment_schedules;
+mod assessment_attention;
 mod container;
 mod container_admin;
 mod delivery_workflow;

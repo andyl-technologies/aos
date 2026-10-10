@@ -11,6 +11,112 @@ use aos_contract::Sha256Digest;
 use super::scans_tests::setup;
 use crate::db::Database;
 
+#[tokio::test]
+async fn acknowledgement_replay_is_atomic_and_conflicting_or_revoked_retries_have_no_effect(
+) -> Result<()> {
+    let (db, registry_id, request) = setup().await?;
+    commit_fixture(&db, registry_id, &request, None).await?;
+    let opened = db
+        .assessment_alert_page(registry_id, "", 1)
+        .await?
+        .remove(0);
+    let resource = db
+        .assessment_resource(registry_id)
+        .await?
+        .context("resource")?;
+    let acknowledgement = Acknowledgement {
+        idempotency_key: Some("review-episode-1".into()),
+        issue_key: opened.issue_key,
+        episode: opened.episode,
+        actor_ref: request.actor_ref.clone(),
+        acknowledged_at: db.assessment_database_time().await?,
+        reason: Some("Investigating this exact episode".into()),
+    };
+    let acknowledged = db
+        .acknowledge_assessment_alert_fenced(
+            registry_id,
+            resource.authorization_revision,
+            opened.sequence,
+            acknowledgement.clone(),
+            &[],
+        )
+        .await?;
+    let replay = db
+        .acknowledge_assessment_alert_fenced(
+            registry_id,
+            resource.authorization_revision,
+            opened.sequence,
+            acknowledgement.clone(),
+            &[],
+        )
+        .await?;
+    assert_eq!(acknowledged, replay);
+    assert_eq!(acknowledged.state, AttentionState::Open);
+    assert_eq!(acknowledged.sequence, opened.sequence + 1);
+    assert_eq!(
+        db.assessment_event_page(registry_id, 0, 100).await?.len(),
+        3
+    );
+
+    for conflict in ["reason", "episode"] {
+        let mut changed = acknowledgement.clone();
+        if conflict == "reason" {
+            changed.reason = Some("Different acknowledgement".into());
+        } else {
+            changed.episode += 1;
+        }
+        assert!(db
+            .acknowledge_assessment_alert_fenced(
+                registry_id,
+                resource.authorization_revision,
+                acknowledged.sequence,
+                changed,
+                &[],
+            )
+            .await
+            .is_err());
+    }
+    let refused = crate::backend::Statement::new(
+        "UPDATE assessment_resources SET resource_version = resource_version WHERE registry_id = ?1",
+        vals![registry_id + 1],
+    ).expecting(1);
+    // Both the first mutation and an otherwise valid idempotent receipt require
+    // current authority in the checked transaction.
+    assert!(db
+        .acknowledge_assessment_alert_fenced(
+            registry_id,
+            resource.authorization_revision,
+            opened.sequence,
+            acknowledgement.clone(),
+            std::slice::from_ref(&refused),
+        )
+        .await
+        .is_err());
+    let mut new_request = acknowledgement;
+    new_request.idempotency_key = Some("second-review".into());
+    assert!(db
+        .acknowledge_assessment_alert_fenced(
+            registry_id,
+            resource.authorization_revision,
+            acknowledged.sequence,
+            new_request,
+            &[refused],
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        db.assessment_alert(registry_id, opened.issue_key)
+            .await?
+            .context("alert")?,
+        acknowledged
+    );
+    assert_eq!(
+        db.assessment_event_page(registry_id, 0, 100).await?.len(),
+        3
+    );
+    Ok(())
+}
+
 async fn commit_fixture(
     db: &Database,
     registry_id: i64,
@@ -64,6 +170,7 @@ async fn assessment_events_and_episodes_preserve_acknowledgements_through_uncert
         .await?
         .context("resource")?;
     let acknowledgement = Acknowledgement {
+        idempotency_key: None,
         issue_key: opened.issue_key,
         episode: opened.episode,
         actor_ref: request.actor_ref.clone(),
@@ -262,6 +369,7 @@ async fn a_concurrent_acknowledgement_rolls_back_refresh_alerts_and_events() -> 
             resource.authorization_revision,
             original.sequence,
             Acknowledgement {
+                idempotency_key: None,
                 issue_key: original.issue_key,
                 episode: original.episode,
                 actor_ref: request.actor_ref,

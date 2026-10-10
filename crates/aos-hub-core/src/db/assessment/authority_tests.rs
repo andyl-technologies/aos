@@ -7,7 +7,110 @@ use crate::auth::jwt::{Claims, AUTHORIZATION_CLAIMS_VERSION};
 use crate::db::Database;
 use crate::domain::{Permission, Principal};
 
-async fn claims(db: &Database) -> Result<Claims> {
+#[tokio::test]
+async fn private_job_provenance_is_immutable_scoped_and_does_not_extend_expiry() -> Result<()> {
+    let (db, registry_id, mut request) = setup().await?;
+    let original = claims(&db).await?;
+    request.actor_ref = super::assessment_actor_ref(&original)?;
+    let scan = db.request_assessment_scan(registry_id, &request).await?;
+    let fences = db
+        .assessment_iam_statements(&original, &request.resource_scope, Permission::Read)
+        .await?;
+
+    assert!(db
+        .admit_assessment_scan_authority(&scan, &original, &[])
+        .await
+        .is_err());
+    db.admit_assessment_scan_authority(&scan, &original, &fences)
+        .await?;
+    let mut replacement = original.clone();
+    replacement.exp += 3600;
+    let new_fences = db
+        .assessment_iam_statements(&replacement, &request.resource_scope, Permission::Read)
+        .await?;
+    db.admit_assessment_scan_authority(&scan, &replacement, &new_fences)
+        .await?;
+    assert_eq!(db.assessment_scan_authority(&scan).await?.exp, original.exp);
+    let row = db
+        .backend
+        .query_opt(
+            "SELECT expires_at, authority_json FROM assessment_scan_authorities WHERE scan_id = ?1",
+            &vals![@slice scan.scan_id],
+        )
+        .await?
+        .context("private job")?;
+    assert_eq!(
+        row.get::<u64>(0)?,
+        (original.exp as u64)
+            .min(scan.created_at.unix_seconds() + u64::from(request.limits.wall_seconds))
+    );
+    assert!(!String::from_utf8(row.get::<Vec<u8>>(1)?)?.contains("Bearer"));
+
+    let mut wrong = scan.clone();
+    wrong.registry_id += 1;
+    assert!(db.assessment_scan_authority(&wrong).await.is_err());
+    wrong = scan.clone();
+    wrong.request.actor_ref = "different-actor".into();
+    assert!(db.assessment_scan_authority(&wrong).await.is_err());
+    let guard = db.assessment_job_authority_guard(&scan).await?;
+    let expired = db.assessment_database_time().await?.unix_seconds() - 1;
+    db.backend.execute("UPDATE assessment_scan_authorities SET expires_at = ?2, admitted_at = ?2 - 1 WHERE scan_id = ?1", &vals![@slice scan.scan_id, expired]).await?;
+    assert!(db.backend.checked_batch(&[guard]).await.is_err());
+    assert!(db.assessment_scan_authority(&scan).await.is_err());
+    assert!(db
+        .assessment_controller_scan_page(registry_id, "", 1)
+        .await?
+        .is_empty());
+    db.reconcile_assessment_scans(registry_id, "", 1).await?;
+    let settled = db
+        .assessment_scan(registry_id, &scan.scan_id)
+        .await?
+        .context("expired authority scan")?;
+    assert_eq!(
+        settled.state,
+        aos_assessment_runtime::scan::ScanState::Failed
+    );
+    assert_eq!(
+        settled.failure_code.as_deref(),
+        Some("job-authority-expired")
+    );
+    assert!(settled.assessment_digest.is_none());
+    assert!(db
+        .admit_assessment_scan_authority(&scan, &replacement, &new_fences)
+        .await
+        .is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn revoked_job_admission_cannot_create_private_authority() -> Result<()> {
+    for mutation in ["membership", "credential", "incarnation", "expiry"] {
+        let (db, registry_id, mut request) = setup().await?;
+        let identity = claims(&db).await?;
+        request.actor_ref = super::assessment_actor_ref(&identity)?;
+        let scan = db.request_assessment_scan(registry_id, &request).await?;
+        let fences = db
+            .assessment_iam_statements(&identity, &request.resource_scope, Permission::Read)
+            .await?;
+        revoke(&db, &identity, mutation).await?;
+
+        assert!(db
+            .admit_assessment_scan_authority(&scan, &identity, &fences)
+            .await
+            .is_err());
+        assert!(db
+            .backend
+            .query_opt(
+                "SELECT 1 FROM assessment_scan_authorities WHERE scan_id = ?1",
+                &vals![@slice scan.scan_id]
+            )
+            .await?
+            .is_none());
+    }
+    Ok(())
+}
+
+pub(super) async fn claims(db: &Database) -> Result<Claims> {
     let user = db
         .create_user("assessment-admission@fixture.invalid", None)
         .await?;
@@ -39,7 +142,7 @@ async fn claims(db: &Database) -> Result<Claims> {
     })
 }
 
-async fn revoke(db: &Database, claims: &Claims, mutation: &str) -> Result<()> {
+pub(super) async fn revoke(db: &Database, claims: &Claims, mutation: &str) -> Result<()> {
     let now = i64::try_from(db.assessment_database_time().await?.unix_seconds())?;
     match mutation {
         "membership" => {

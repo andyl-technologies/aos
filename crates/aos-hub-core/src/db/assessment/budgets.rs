@@ -3,13 +3,13 @@
 //! Failed or uncertain dispatch never refunds allowance. Horizontal executors
 //! use the same row, so adding Workers cannot multiply an installed source budget.
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{bail, Context as _, Result};
 use aos_assessment::time::Timestamp;
 use aos_assessment_runtime::provider::BudgetReservation;
 use aos_assessment_runtime::scan::{ScanUsage, TaskClaim};
 use aos_contract::Sha256Digest;
 
-use crate::backend::Statement;
+use crate::backend::{CheckedStatement, Statement};
 use crate::db::Database;
 
 /// Defines an installed shared quota, independently of package metadata.
@@ -23,6 +23,17 @@ pub struct AssessmentSourceBudget {
     pub allowance: u32,
     /// Minimum spacing between reservations; spaced profiles reserve one request.
     pub min_interval_seconds: u32,
+}
+
+impl From<&aos_assessment_runtime::routes::InstalledSourceBudget> for AssessmentSourceBudget {
+    fn from(budget: &aos_assessment_runtime::routes::InstalledSourceBudget) -> Self {
+        Self {
+            key: budget.key.clone(),
+            window_seconds: budget.window_seconds,
+            allowance: budget.allowance,
+            min_interval_seconds: budget.min_interval_seconds,
+        }
+    }
 }
 
 /// Binds one conservative quota reservation to its exact durable child claim.
@@ -107,6 +118,24 @@ impl Database {
         coordinator: &TaskClaim,
         work: &AssessmentProviderWork,
     ) -> Result<AssessmentProviderReservation> {
+        self.reserve_assessment_provider_work_fenced(registry_id, coordinator, work, &[])
+            .await
+    }
+
+    /// Reserves provider allowance while holding current principal and job guards.
+    ///
+    /// # Errors
+    /// Returns reservation failures or an invalid/revoked current authority fence.
+    pub async fn reserve_assessment_provider_work_fenced(
+        &self,
+        registry_id: i64,
+        coordinator: &TaskClaim,
+        work: &AssessmentProviderWork,
+        authority_fences: &[CheckedStatement],
+    ) -> Result<AssessmentProviderReservation> {
+        if authority_fences.len() > 32 {
+            bail!("assessment provider reservation authority exceeds its ceiling");
+        }
         let task_id = work.task_id.as_str();
         let operation_digest = work.operation_digest;
         let budget_key = work.budget_key.as_str();
@@ -158,7 +187,8 @@ impl Database {
         let clock = self.backend.dialect().unix_time_expression();
         let mut scan_values = super::scans::claim_values(registry_id, coordinator);
         scan_values.extend(vals![serde_json::to_vec(&usage)?, scan.resource_version]);
-        let commit = vec![
+        let mut commit = authority_fences.to_vec();
+        commit.extend([
             Statement::new(format!(
                 "UPDATE assessment_scans SET usage_json = ?9, resource_version = resource_version + 1, updated_at = {clock}
                  WHERE {} AND resource_version = ?10", self.assessment_claim_guard()), scan_values).expecting(1),
@@ -196,7 +226,7 @@ impl Database {
                 vals![reservation_id, budget_key, coordinator.scan_id, task_id, coordinator.attempt,
                     requests, deadline.unix_seconds(), now.unix_seconds()],
             ).expecting(1),
-        ];
+        ]);
         self.backend.checked_batch(&commit).await?;
         let mut claim = coordinator.clone();
         claim.task_id = task_id.into();

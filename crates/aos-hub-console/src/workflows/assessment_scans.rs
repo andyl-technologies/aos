@@ -311,6 +311,7 @@ pub(super) fn AssessmentScanControls(
                 view! { <article><h4>{format!("Scan {}", receipt.scan_id)}</h4>
                     <p>{format!("{:?}; generation {}; revision {}; {} provider requests consumed", receipt.state, receipt.generation, receipt.resource_version, receipt.usage.provider_requests)}</p>
                     <p>{format!("{} subjects; profiles {:?}; source intent {:?}", receipt.request.subjects.len(), receipt.request.profiles, receipt.request.freshness)}</p>
+                    {receipt.failure_code.map(|code| view! { <p>{format!("Reason: {code}")}</p> })}
                     {can_scan.then(|| if terminal {
                         view! { <button disabled=move || busy.get() on:click=move |_| transition(true)>"Retry exact selection"</button> }.into_any()
                     } else {

@@ -8,6 +8,7 @@ use aos_contract::Sha256Digest;
 
 use crate::backend::{CheckedStatement, Statement};
 use crate::db::Database;
+use crate::value::ToValue as _;
 
 /// Describes one immutable request and its durable execution state.
 #[derive(Clone, Debug)]
@@ -34,6 +35,8 @@ pub struct AssessmentScanRecord {
     pub usage: ScanUsage,
     /// Canonical result, when the operation committed one.
     pub assessment_digest: Option<Sha256Digest>,
+    /// Bounded stable terminal diagnostic, never an exception or source response.
+    pub failure_code: Option<String>,
     /// Optimistic state version.
     pub resource_version: u64,
     /// Database admission time.
@@ -110,7 +113,7 @@ impl Database {
             .query_opt(
                 "SELECT request_json, request_digest, generation, authorization_revision,
                     state, admission_complete, attempt, usage_json, assessment_digest,
-                    resource_version, created_at
+                    resource_version, created_at, last_error_code
              FROM assessment_scans WHERE registry_id = ?1 AND scan_id = ?2
                AND length(request_json) <= 262144 AND length(usage_json) <= 8192",
                 &vals![@slice registry_id, scan_id],
@@ -142,6 +145,7 @@ impl Database {
                 .transpose()?,
             resource_version: row.get(9)?,
             created_at: Timestamp::from_unix_seconds(row.get(10)?)?,
+            failure_code: row.get(11)?,
         }))
     }
 
@@ -460,6 +464,71 @@ impl Database {
             expires_at,
             attempt: record.attempt + 1,
         })
+    }
+
+    /// Renews one live coordinator attempt while holding current authority.
+    ///
+    /// Renewal preserves its token, generation and attempt. It cannot revive an
+    /// expired lease, extend the original job deadline, or outlive cancellation.
+    /// The returned claim replaces the old exact expiry fence.
+    ///
+    /// # Errors
+    /// Returns an error for invalid bounds, lost claims, revoked authority,
+    /// exhausted wall time, or unavailable persistence.
+    pub async fn renew_assessment_scan_fenced(
+        &self,
+        registry_id: i64,
+        claim: &TaskClaim,
+        lease_seconds: u32,
+        authority_deadline: &Timestamp,
+        authority_fences: &[crate::backend::CheckedStatement],
+    ) -> Result<TaskClaim> {
+        if !(1..=900).contains(&lease_seconds) || authority_fences.len() > 32 {
+            bail!("assessment lease renewal exceeds its bounds");
+        }
+        self.check_assessment_scan_claim(registry_id, claim).await?;
+        let scan = self
+            .assessment_scan(registry_id, &claim.scan_id)
+            .await?
+            .context("assessment renewal scan is absent")?;
+        let now = self.assessment_database_time().await?;
+        let wall = scan
+            .created_at
+            .unix_seconds()
+            .checked_add(u64::from(scan.request.limits.wall_seconds))
+            .context("assessment renewal deadline overflowed")?;
+        let deadline = now
+            .unix_seconds()
+            .checked_add(u64::from(lease_seconds))
+            .context("assessment renewal expiry overflowed")?
+            .min(authority_deadline.unix_seconds())
+            .min(wall);
+        if deadline <= claim.expires_at.unix_seconds() {
+            bail!("assessment renewal cannot advance within original authority");
+        }
+        let mut values = claim_values(registry_id, claim);
+        values.push(deadline.to_value());
+        let clock = self.backend.dialect().unix_time_expression();
+        let mut statements = authority_fences.to_vec();
+        statements.push(
+            Statement::new(
+                format!(
+                    "UPDATE assessment_scans SET lease_expires_at = ?9, updated_at = {clock},
+                 resource_version = resource_version + 1
+             WHERE {} AND ?9 > {clock} AND ?9 <= created_at + ?10",
+                    self.assessment_claim_guard()
+                ),
+                {
+                    values.push(scan.request.limits.wall_seconds.to_value());
+                    values
+                },
+            )
+            .expecting(1),
+        );
+        self.backend.checked_batch(&statements).await?;
+        let mut renewed = claim.clone();
+        renewed.expires_at = Timestamp::from_unix_seconds(deadline)?;
+        Ok(renewed)
     }
 
     /// Fences cancellation immediately without mutating prior assessment heads.

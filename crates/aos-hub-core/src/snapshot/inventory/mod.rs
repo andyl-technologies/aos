@@ -59,17 +59,31 @@ static GENERATION16_SOURCE: LazyLock<String> = LazyLock::new(|| {
     ]
     .concat()
 });
-static COVERAGE: LazyLock<String> = LazyLock::new(|| {
+static GENERATION17_COVERAGE: LazyLock<String> = LazyLock::new(|| {
     [
         GENERATION16_COVERAGE.as_str(),
         include_str!("coverage-v17-delta.tsv"),
     ]
     .concat()
 });
-static SOURCE: LazyLock<String> = LazyLock::new(|| {
+static GENERATION17_SOURCE: LazyLock<String> = LazyLock::new(|| {
     [
         GENERATION16_SOURCE.as_str(),
         include_str!("../schema-v17-delta.tsv"),
+    ]
+    .concat()
+});
+static COVERAGE: LazyLock<String> = LazyLock::new(|| {
+    [
+        GENERATION17_COVERAGE.as_str(),
+        include_str!("coverage-v18-delta.tsv"),
+    ]
+    .concat()
+});
+static SOURCE: LazyLock<String> = LazyLock::new(|| {
+    [
+        GENERATION17_SOURCE.as_str(),
+        include_str!("../schema-v18-delta.tsv"),
     ]
     .concat()
 });
@@ -204,11 +218,23 @@ impl ObjectRequirementsCoverage {
     /// # Errors
     /// Refuses changed columns, missing custody dependencies or inconsistent privacy.
     pub fn current17() -> Result<Self> {
+        Self::from_generation_contract(
+            GENERATION17_COVERAGE.as_str(),
+            GENERATION17_SOURCE.as_str(),
+            17,
+        )
+    }
+
+    /// Admits current private scan job authority and retained assessment custody.
+    ///
+    /// # Errors
+    /// Refuses changed columns or inconsistent exact-cell confidentiality policies.
+    pub fn current18() -> Result<Self> {
         Self::from_contract(COVERAGE.as_str())
     }
 
     fn from_contract(coverage: &str) -> Result<Self> {
-        Self::from_generation_contract(coverage, SOURCE.as_str(), 17)
+        Self::from_generation_contract(coverage, SOURCE.as_str(), 18)
     }
 
     fn from_generation_contract(coverage: &str, source: &str, generation: usize) -> Result<Self> {

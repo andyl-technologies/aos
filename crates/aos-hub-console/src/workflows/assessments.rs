@@ -6,6 +6,8 @@ use aos_assessment_runtime::application::{AssessmentStatusV1, StatusQueryV1};
 use leptos::prelude::*;
 
 use super::assessment_scans::AssessmentScanControls;
+use super::assessment_schedules::RegistryAssessmentSchedules;
+use super::assessment_attention::RegistryAssessmentAttention;
 use crate::components::InlineError;
 use crate::transport::ApiClient;
 
@@ -139,6 +141,8 @@ pub(super) fn RegistryAssessments(client: ApiClient, slug: String) -> impl IntoV
                     <AssessmentScanControls client=controls.get_value().0 slug=controls.get_value().1 status=status/>
                 }}
             />
+            <RegistryAssessmentAttention client=controls.get_value().0 slug=controls.get_value().1/>
+            <RegistryAssessmentSchedules client=controls.get_value().0 slug=controls.get_value().1/>
             <Suspense fallback=move || view! { <p>"Loading retained assessment…"</p> }>
                 {move || Suspend::new(async move {
                     match detail.await.as_ref() {

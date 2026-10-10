@@ -7,8 +7,14 @@ use anyhow::Result;
 use aos_assessment::result::PackageAssessmentV1;
 use aos_assessment_runtime::application::ScanReceiptV1;
 use aos_assessment_runtime::application::{AssessmentStatusV1, StatusQueryV1};
+use aos_assessment_runtime::attention_control::{
+    AlertAcknowledgementV1, AlertPageV1, AlertQueryV1, EventPageV1, EventQueryV1,
+};
 use aos_assessment_runtime::control::{
     ScanCancellationV1, ScanListQueryV1, ScanListV1, ScanLookupV1, ScanRetryV1, ScanSubmissionV1,
+};
+use aos_assessment_runtime::schedules::{
+    SchedulePageV1, ScheduleQueryV1, ScheduleV1, ScheduleWriteV1,
 };
 use aos_contract::Sha256Digest;
 use aos_core::output::{OutputMode, Printer};
@@ -30,6 +36,223 @@ fn escape_terminal(text: &str) -> String {
 /// calls or incompatible canonical inner documents.
 pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result<()> {
     match command {
+        HubAssessmentCmd::Schedules {
+            access,
+            registry,
+            schedule_id,
+            after_schedule,
+            resource_scope,
+            limit,
+        } => {
+            let query = ScheduleQueryV1 {
+                schema: "aos.assessment-schedule-query/v1".into(),
+                limit: *limit,
+                schedule_id: schedule_id.clone(),
+                after_schedule: after_schedule.clone(),
+                resource_scope: resource_scope.clone(),
+            };
+            let document_json = serde_json::to_vec(&query)?;
+            ScheduleQueryV1::from_slice(&document_json)?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
+            let response = client
+                .call_topology(
+                    hub_rpc::ListAssessmentSchedules,
+                    &hub_types::AssessmentControlRequest {
+                        registry_slug: registry.clone(),
+                        document_json,
+                    },
+                )
+                .await?;
+            let page = SchedulePageV1::from_slice(&response.document_json)?;
+            if resource_scope
+                .as_ref()
+                .is_some_and(|scope| scope != &page.resource_scope)
+                || page.schedules.len() > *limit as usize
+                || schedule_id.as_ref().is_some_and(|identity| {
+                    page.schedules.len() != 1 || page.schedules[0].schedule_id != *identity
+                })
+            {
+                anyhow::bail!("assessment schedule page differs from the selected query");
+            }
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({"schema_version":"aos.hub.cli/v1", "kind":"assessment-schedules", "data":page}));
+            } else {
+                for schedule in page.schedules {
+                    render_schedule(printer, &schedule);
+                }
+            }
+            Ok(())
+        }
+        HubAssessmentCmd::Schedule {
+            access,
+            registry,
+            request,
+        } => {
+            let bytes = read_bounded_file(request, 262_144, "assessment schedule review")?;
+            let request = ScheduleWriteV1::from_slice(&bytes)?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
+            let response = client
+                .call_topology(
+                    hub_rpc::WriteAssessmentSchedule,
+                    &hub_types::AssessmentControlRequest {
+                        registry_slug: registry.clone(),
+                        document_json: bytes,
+                    },
+                )
+                .await?;
+            let schedule = ScheduleV1::from_slice(&response.document_json)?;
+            if schedule.resource_scope != request.resource_scope
+                || schedule.schedule_id != request.schedule_id
+                || schedule.enabled != request.enabled
+                || schedule.configuration != request.configuration
+            {
+                anyhow::bail!("assessment schedule receipt differs from the reviewed request");
+            }
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({"schema_version":"aos.hub.cli/v1", "kind":"assessment-schedule", "data":schedule}));
+            } else {
+                render_schedule(printer, &schedule);
+            }
+            Ok(())
+        }
+        HubAssessmentCmd::Alerts {
+            access,
+            registry,
+            limit,
+            after_issue,
+            resource_scope,
+        } => {
+            let query = AlertQueryV1 {
+                schema: "aos.assessment-alert-query/v1".into(),
+                limit: *limit,
+                after_issue: after_issue
+                    .as_deref()
+                    .map(Sha256Digest::parse)
+                    .transpose()?,
+                resource_scope: resource_scope.clone(),
+            };
+            AlertQueryV1::from_slice(&serde_json::to_vec(&query)?)?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
+            let response = client
+                .call_topology(
+                    hub_rpc::ListAssessmentAlerts,
+                    &hub_types::AssessmentControlRequest {
+                        registry_slug: registry.clone(),
+                        document_json: serde_json::to_vec(&query)?,
+                    },
+                )
+                .await?;
+            let page = AlertPageV1::from_slice(&response.document_json)?;
+            if query
+                .resource_scope
+                .as_ref()
+                .is_some_and(|scope| scope != &page.resource_scope)
+            {
+                anyhow::bail!("assessment alert page changed resource scope");
+            }
+            render_alerts(printer, &page);
+            Ok(())
+        }
+        HubAssessmentCmd::Acknowledge {
+            access,
+            registry,
+            request,
+        } => {
+            let bytes = read_bounded_file(request, 262_144, "assessment acknowledgement")?;
+            let request = AlertAcknowledgementV1::from_slice(&bytes)?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
+            let response = client
+                .call_topology(
+                    hub_rpc::AcknowledgePackageAlert,
+                    &hub_types::AssessmentControlRequest {
+                        registry_slug: registry.clone(),
+                        document_json: serde_json::to_vec(&request)?,
+                    },
+                )
+                .await?;
+            let page = AlertPageV1::from_slice(&response.document_json)?;
+            if page.resource_scope != request.resource_scope
+                || page.alerts.len() != 1
+                || page.alerts[0].issue_key != request.issue_key
+                || !page.alerts[0]
+                    .acknowledgements
+                    .iter()
+                    .any(|acknowledgement| {
+                        acknowledgement.episode == request.episode
+                            && acknowledgement.idempotency_key.as_ref()
+                                == Some(&request.idempotency_key)
+                    })
+            {
+                anyhow::bail!("assessment acknowledgement receipt changed the requested episode");
+            }
+            render_alerts(printer, &page);
+            Ok(())
+        }
+        HubAssessmentCmd::Events {
+            access,
+            registry,
+            limit,
+            after_sequence,
+            resource_scope,
+            watch,
+        } => {
+            let mut query = EventQueryV1 {
+                schema: "aos.assessment-event-query/v1".into(),
+                limit: *limit,
+                after_sequence: after_sequence.unwrap_or(0),
+                resource_scope: resource_scope.clone(),
+            };
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
+            loop {
+                EventQueryV1::from_slice(&serde_json::to_vec(&query)?)?;
+                let response = client
+                    .call_topology(
+                        hub_rpc::ListAssessmentEvents,
+                        &hub_types::AssessmentControlRequest {
+                            registry_slug: registry.clone(),
+                            document_json: serde_json::to_vec(&query)?,
+                        },
+                    )
+                    .await?;
+                let page = EventPageV1::from_slice(&response.document_json)?;
+                if query
+                    .resource_scope
+                    .as_ref()
+                    .is_some_and(|scope| scope != &page.resource_scope)
+                    || page.next_sequence < query.after_sequence
+                    || page
+                        .events
+                        .first()
+                        .is_some_and(|event| event.sequence <= query.after_sequence)
+                {
+                    anyhow::bail!(
+                        "assessment event replay changed resource or regressed its cursor"
+                    );
+                }
+                if printer.mode() == OutputMode::Json {
+                    printer.json(&serde_json::json!({"schema_version":"aos.hub.cli/v1", "kind":"assessment-events", "data":page}));
+                } else {
+                    for event in &page.events {
+                        printer.info(&format!(
+                            "{} {} {}",
+                            event.sequence,
+                            event.occurred_at,
+                            escape_terminal(&serde_json::to_string(&event.payload)?)
+                        ));
+                    }
+                }
+                if !watch {
+                    break Ok(());
+                }
+                query.after_sequence = page.next_sequence;
+                query.resource_scope = Some(page.resource_scope);
+                // Drain full pages immediately; idle polls remain bounded and
+                // reauthorize on the server, including empty heartbeats.
+                if page.events.len() < *limit as usize {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            }
+        }
         HubAssessmentCmd::Scan {
             access,
             registry,
@@ -172,6 +395,49 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
             }
             Ok(())
         }
+    }
+}
+
+fn render_schedule(printer: &Printer, schedule: &ScheduleV1) {
+    printer.info(&format!(
+        "{} revision {}: {}; cadence {}s; next {}; authority expires {}",
+        escape_terminal(&schedule.schedule_id),
+        schedule.revision,
+        if schedule.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        schedule.configuration.cadence_seconds,
+        schedule.next_due_at,
+        schedule.authority_expires_at
+    ));
+}
+
+fn render_alerts(printer: &Printer, page: &AlertPageV1) {
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({"schema_version":"aos.hub.cli/v1", "kind":"assessment-alerts", "data":page}));
+        return;
+    }
+    for alert in &page.alerts {
+        let acknowledged = alert
+            .acknowledgements
+            .iter()
+            .any(|ack| ack.episode == alert.episode);
+        printer.info(&format!(
+            "{} episode {} revision {}: {:?} {:?}{}{}",
+            alert.issue_key,
+            alert.episode,
+            alert.sequence,
+            alert.state,
+            alert.issue.family,
+            if acknowledged { "; acknowledged" } else { "" },
+            if alert.issue.uncertain {
+                "; evidence uncertain"
+            } else {
+                ""
+            }
+        ));
     }
 }
 
@@ -346,6 +612,9 @@ fn print_receipt(printer: &Printer, receipt: ScanReceiptV1) -> Result<()> {
         ));
         if let Some(digest) = receipt.assessment_digest {
             printer.info(&format!("Assessment {digest}"));
+        }
+        if let Some(code) = receipt.failure_code {
+            printer.info(&format!("Reason: {}", escape_terminal(&code)));
         }
     }
     Ok(())

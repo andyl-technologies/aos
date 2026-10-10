@@ -86,6 +86,9 @@ enum Command {
     },
     /// Run the hub server.
     Serve {
+        /// Owner-private assessment controller installation file.
+        #[arg(long, env = "HUB_ASSESSMENT_CONFIG_FILE")]
+        assessment_config_file: Option<PathBuf>,
         /// Listen address.
         #[arg(long, env = "HUB_LISTEN", default_value = "127.0.0.1:8420")]
         listen: String,
@@ -975,6 +978,7 @@ async fn main() -> Result<()> {
             println!("{}", serde_json::to_string(&result)?);
         }
         Command::Serve {
+            assessment_config_file,
             listen,
             dev,
             seed,
@@ -1102,8 +1106,9 @@ async fn main() -> Result<()> {
                     .context("hybrid serving requires HUB_HYBRID_INGRESS_KEY_FILE")?;
                 let storage_key_file = storage_work_key_file
                     .context("hybrid serving requires HUB_STORAGE_WORK_KEY_FILE")?;
-                let worker_url =
-                    hybrid_worker_url.context("hybrid serving requires HUB_HYBRID_WORKER_URL")?;
+                let worker_url = hybrid_worker_url
+                    .clone()
+                    .context("hybrid serving requires HUB_HYBRID_WORKER_URL")?;
                 let ingress_key = aos_hub_core::hybrid_ingress::HybridIngressKey::new(
                     aos_hub::auth::seal::read_secret_file(&ingress_key_file)?,
                 )?;
@@ -1484,6 +1489,19 @@ async fn main() -> Result<()> {
                 app_state.secret_versions =
                     aos_hub::coreports::load_secret_version_manifest(&path)?;
             }
+            let _assessment_controller = if let Some(path) = assessment_config_file {
+                Some(
+                    aos_hub::assessment::install_controller(
+                        &app_state,
+                        &path,
+                        &topology,
+                        hybrid_worker_url.as_deref(),
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
             let index_surfaces: Arc<dyn aos_hub_core::fetch::SurfaceProvider> =
                 if let Some((_, _, work)) = &hybrid_runtime {
                     Arc::new(aos_hub::storage_work::HybridSurfaceProvider::new(

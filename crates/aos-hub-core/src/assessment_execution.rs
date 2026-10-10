@@ -18,14 +18,58 @@ use aos_assessment_runtime::scan::TaskClaim;
 
 use crate::db::{AssessmentProviderWork, AssessmentScanRecord, Database};
 
+mod authority;
+mod controller;
+mod custody;
 mod routes;
 
+pub use authority::DatabaseAssessmentAuthority;
+pub use controller::{
+    run_assessment_controller_pass, AssessmentControllerPass, AssessmentControllerPorts,
+};
+pub use custody::CoordinatorEvidenceStore;
 pub use routes::InstalledAssessmentRoutes;
 
 /// Rechecks a durable operation's current actor and authorization generation.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait AssessmentAuthority: RuntimeBounds {
+    /// Returns the exclusive independently admitted execution-authority deadline.
+    ///
+    /// # Errors
+    /// Returns an error for absent, expired or conflicting job provenance.
+    async fn source_deadline(
+        &self,
+        scan: &AssessmentScanRecord,
+    ) -> Result<aos_assessment::time::Timestamp>;
+
+    /// Prepares current authority guards for atomic quota and evidence effects.
+    ///
+    /// Production hosts include current IAM and exact private job provenance.
+    /// The returned guards are rechecked by SQL in the effect transaction.
+    ///
+    /// # Errors
+    /// Returns an error for revoked authority or an excessive lock scope.
+    async fn current_fences(
+        &self,
+        scan: &AssessmentScanRecord,
+    ) -> Result<Vec<crate::backend::CheckedStatement>>;
+
+    /// Holds current authority through a full physical invocation deadline.
+    ///
+    /// Production adapters atomically require enough remaining source authority
+    /// for the reservation. Pure trusted test adapters may reuse their fences.
+    ///
+    /// # Errors
+    /// Returns an error for current authority failure or insufficient deadline.
+    async fn source_fences(
+        &self,
+        scan: &AssessmentScanRecord,
+        _deadline: &aos_assessment::time::Timestamp,
+    ) -> Result<Vec<crate::backend::CheckedStatement>> {
+        self.current_fences(scan).await
+    }
+
     /// Requires the current principal, delegated scan scope and resource revision.
     ///
     /// Hosts recheck current membership, token/job delegation and the exact
@@ -86,6 +130,8 @@ pub struct AssessmentSourceRoute {
     pub budget_key: String,
     /// Optional immutable scoped secret version reference, never secret bytes.
     pub credential_ref: Option<String>,
+    /// Exclusive installed source authority deadline, including credential grants.
+    pub expires_at: aos_assessment::time::Timestamp,
     /// Effective provider effect ceilings, tightened by deployment policy.
     pub limits: ProviderLimits,
 }
@@ -134,7 +180,7 @@ where
     let port = DatabaseAcquisition {
         db,
         scan: &scan,
-        claim: &claim,
+        claim: std::sync::Mutex::new(claim.clone()),
         authority,
         transport,
         routes,
@@ -171,6 +217,7 @@ where
         }
     }
     restore_candidate_history(db, &scan, &mut data).await?;
+    let claim = port.current_claim()?;
     authority.require_current(&scan).await?;
     let input = db
         .freeze_assessment_evaluation(registry_id, &claim, &data)
@@ -248,10 +295,19 @@ async fn restore_candidate_history(
 struct DatabaseAcquisition<'a, A, T, R> {
     db: &'a Database,
     scan: &'a AssessmentScanRecord,
-    claim: &'a TaskClaim,
+    claim: std::sync::Mutex<TaskClaim>,
     authority: &'a A,
     transport: &'a T,
     routes: &'a R,
+}
+
+impl<A, T, R> DatabaseAcquisition<'_, A, T, R> {
+    fn current_claim(&self) -> Result<TaskClaim> {
+        self.claim
+            .lock()
+            .map(|claim| claim.clone())
+            .map_err(|_| anyhow::anyhow!("assessment claim lock is poisoned"))
+    }
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
@@ -265,16 +321,47 @@ impl<A: AssessmentAuthority, T: ProviderTransport, R: AssessmentSourceRoutes> Ac
         previous: Option<&ProviderPageV1>,
     ) -> Result<ProviderWorkResultV1> {
         self.authority.require_current(self.scan).await?;
+        let mut claim = self.current_claim()?;
         self.db
-            .check_assessment_scan_claim(self.scan.registry_id, self.claim)
+            .check_assessment_scan_claim(self.scan.registry_id, &claim)
             .await?;
         let now = self.db.assessment_database_time().await?;
+        let source_deadline = self.authority.source_deadline(self.scan).await?;
+        if claim
+            .expires_at
+            .unix_seconds()
+            .saturating_sub(now.unix_seconds())
+            < 120
+        {
+            claim = self
+                .db
+                .renew_assessment_scan_fenced(
+                    self.scan.registry_id,
+                    &claim,
+                    900,
+                    &source_deadline,
+                    &self.authority.current_fences(self.scan).await?,
+                )
+                .await?;
+            *self
+                .claim
+                .lock()
+                .map_err(|_| anyhow::anyhow!("assessment claim lock is poisoned"))? = claim.clone();
+        }
+        if now
+            .unix_seconds()
+            .checked_add(60)
+            .is_none_or(|deadline| deadline > source_deadline.unix_seconds())
+        {
+            bail!("assessment source authority cannot cover another physical invocation");
+        }
         if now.elapsed_since(&self.scan.created_at)?
             >= u64::from(self.scan.request.limits.wall_seconds)
         {
             bail!("assessment operation wall time is exhausted");
         }
         let route = self.routes.route(self.scan, operation).await?;
+        let source_deadline = source_deadline.min(route.expires_at.clone());
         let requests = operation.source_requests()?.len() as u32;
         if requests > route.limits.requests {
             bail!("provider operation exceeds the installed route request allowance");
@@ -293,6 +380,12 @@ impl<A: AssessmentAuthority, T: ProviderTransport, R: AssessmentSourceRoutes> Ac
         let capabilities = self.transport.capabilities(&challenge).await?;
         capabilities.validate_for(&challenge, &self.db.assessment_database_time().await?)?;
         capabilities.require(operation)?;
+        let now = self.db.assessment_database_time().await?;
+        if now.unix_seconds().checked_add(60).is_none_or(|deadline| {
+            deadline > source_deadline.unix_seconds() || deadline > route.expires_at.unix_seconds()
+        }) {
+            bail!("source authority cannot cover the physical work deadline");
+        }
         let limits = ProviderLimits {
             requests,
             concurrency: route.limits.concurrency.min(requests),
@@ -302,9 +395,9 @@ impl<A: AssessmentAuthority, T: ProviderTransport, R: AssessmentSourceRoutes> Ac
         self.authority.require_current(self.scan).await?;
         let reservation = self
             .db
-            .reserve_assessment_provider_work(
+            .reserve_assessment_provider_work_fenced(
                 self.scan.registry_id,
-                self.claim,
+                &claim,
                 &AssessmentProviderWork {
                     task_id: operation.digest()?.hex(),
                     operation_digest: operation.digest()?,
@@ -312,6 +405,10 @@ impl<A: AssessmentAuthority, T: ProviderTransport, R: AssessmentSourceRoutes> Ac
                     requests,
                     deadline_seconds: 60,
                 },
+                &self
+                    .authority
+                    .source_fences(self.scan, &source_deadline)
+                    .await?,
             )
             .await?;
         let plan = ProviderWorkPlanV1 {
@@ -337,7 +434,14 @@ impl<A: AssessmentAuthority, T: ProviderTransport, R: AssessmentSourceRoutes> Ac
             limits,
         };
         self.db
-            .admit_assessment_provider_plan(self.scan.registry_id, &plan)
+            .admit_assessment_provider_plan_fenced(
+                self.scan.registry_id,
+                &plan,
+                &self
+                    .authority
+                    .source_fences(self.scan, &source_deadline)
+                    .await?,
+            )
             .await?;
         let physical = self.transport.execute(&plan).await;
         self.authority.require_current(self.scan).await?;
@@ -365,7 +469,12 @@ impl<A: AssessmentAuthority, T: ProviderTransport, R: AssessmentSourceRoutes> Ac
             return Err(error);
         }
         self.db
-            .admit_assessment_provider_result(self.scan.registry_id, &plan, &result)
+            .admit_assessment_provider_result_fenced(
+                self.scan.registry_id,
+                &plan,
+                &result,
+                &self.authority.current_fences(self.scan).await?,
+            )
             .await?;
         Ok(result)
     }

@@ -4,7 +4,7 @@
 //! retained normalized object; activation verifies expected row counts and
 //! changes the resource revision in the same checked transaction.
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{bail, Context as _, Result};
 use aos_assessment::input::EvaluationData;
 use aos_assessment::scan_inventory::SubjectKind;
 use aos_contract::Sha256Digest;
@@ -69,6 +69,26 @@ impl Database {
         expected_version: u64,
         policy: &aos_assessment::input::AssessmentPolicyV1,
     ) -> Result<AssessmentResource> {
+        self.set_assessment_policy_fenced(registry_id, partition, expected_version, policy, &[])
+            .await
+    }
+
+    /// Updates policy while holding independent publication or current IAM guards.
+    ///
+    /// # Errors
+    /// Returns an error for invalid policy, lost resource/version authority,
+    /// excessive guards or unavailable persistence.
+    pub async fn set_assessment_policy_fenced(
+        &self,
+        registry_id: i64,
+        partition: &str,
+        expected_version: u64,
+        policy: &aos_assessment::input::AssessmentPolicyV1,
+        fences: &[crate::backend::CheckedStatement],
+    ) -> Result<AssessmentResource> {
+        if fences.len() > 32 {
+            bail!("assessment policy guard bound exceeded");
+        }
         policy.validate()?;
         let resource = self
             .assessment_resource(registry_id)
@@ -87,8 +107,9 @@ impl Database {
             now as i64,
         )
         .await?;
-        self.backend
-            .checked_batch(&[Statement::new(
+        let mut checked = fences.to_vec();
+        checked.push(
+            Statement::new(
                 "UPDATE assessment_resources SET policy_digest = ?4,
                  resource_version = resource_version + 1, updated_at = ?5
              WHERE registry_id = ?1 AND partition_key = ?2 AND resource_version = ?3",
@@ -100,8 +121,9 @@ impl Database {
                     now
                 ],
             )
-            .expecting(1)])
-            .await?;
+            .expecting(1),
+        );
+        self.backend.checked_batch(&checked).await?;
         self.assessment_resource(registry_id)
             .await?
             .context("updated assessment resource is absent")
@@ -153,6 +175,28 @@ impl Database {
         admission: &AssessmentInventoryAdmission,
         data: &EvaluationData,
     ) -> Result<AssessmentResource> {
+        self.admit_assessment_inventory_fenced(admission, data, &[])
+            .await
+    }
+
+    /// Activates an inventory while atomically holding independent publication guards.
+    ///
+    /// Preparing immutable objects and paged indexes grants no current authority.
+    /// Callers supply their exact signed publication or authenticated source
+    /// guards; those guards are rechecked in the activation transaction and on replay.
+    ///
+    /// # Errors
+    /// Returns an error for invalid closure, lost publication authority, excessive
+    /// guard scope, conflicting immutable admission or failed resource activation.
+    pub async fn admit_assessment_inventory_fenced(
+        &self,
+        admission: &AssessmentInventoryAdmission,
+        data: &EvaluationData,
+        authority_fences: &[CheckedStatement],
+    ) -> Result<AssessmentResource> {
+        if authority_fences.len() > 32 {
+            bail!("inventory publication authority exceeds its bounded guard scope");
+        }
         if admission.registry_id <= 0
             || admission.partition.is_empty()
             || admission.partition.len() > 128
@@ -234,6 +278,7 @@ impl Database {
                 {
                     bail!("active inventory replay has different immutable admission content");
                 }
+                self.backend.checked_batch(authority_fences).await?;
                 return Ok(previous.clone());
             }
         }
@@ -328,13 +373,14 @@ impl Database {
             self.backend.batch(&page).await?;
         }
 
-        let mut commit: Vec<CheckedStatement> = vec![Statement::new(
+        let mut commit = authority_fences.to_vec();
+        commit.push(Statement::new(
             "UPDATE assessment_inventory_sets SET state = 'ready'
              WHERE registry_id = ?1 AND inventory_digest = ?2 AND state IN('building', 'ready')
                AND expected_subject_count = (SELECT count(*) FROM assessment_subjects WHERE registry_id = ?1 AND inventory_digest = ?2)
                AND expected_identity_count = (SELECT count(*) FROM assessment_component_index WHERE registry_id = ?1 AND inventory_digest = ?2)",
             vals![admission.registry_id, inventory_digest.to_string()],
-        ).expecting(1)];
+        ).expecting(1));
         let values = vals![
             admission.registry_id,
             admission.partition,

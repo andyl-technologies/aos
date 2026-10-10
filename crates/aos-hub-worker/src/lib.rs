@@ -142,6 +142,8 @@ mod bridge_dispatch;
 
 #[cfg(target_arch = "wasm32")]
 pub mod assessment_provider;
+#[cfg(target_arch = "wasm32")]
+mod assessment_controller;
 
 #[cfg(target_arch = "wasm32")]
 mod authority_issuer_storage;
@@ -1810,6 +1812,25 @@ mod entry {
             .map_err(|error| worker::Error::RustError(format!("list caches: {error:#}")))?;
 
         let mut jobs = scheduled_maintenance_jobs(container_rollout(env)?);
+        for resource_scope in
+            crate::assessment_controller::installed_partitions(env).map_err(|_| {
+                worker::Error::RustError("assessment installation is unavailable".into())
+            })?
+        {
+            if let Some(registry_id) = db
+                .assessment_registry_for_partition(&resource_scope)
+                .await
+                .map_err(|_| {
+                    worker::Error::RustError("assessment partition lookup is unavailable".into())
+                })?
+            {
+                jobs.push(aos_hub_core::jobs::Job::AssessmentRegistry {
+                    registry_id,
+                    resource_scope,
+                    after_scan: String::new(),
+                });
+            }
+        }
         jobs.extend(
             registries
                 .into_iter()
@@ -1837,6 +1858,9 @@ mod entry {
             .into_iter()
             .map(|job| {
                 let cursor = match &job {
+                    aos_hub_core::jobs::Job::AssessmentRegistry { resource_scope, .. } => {
+                        format!("assessment:{resource_scope}")
+                    }
                     aos_hub_core::jobs::Job::RunTopologyProbes => "topology".to_string(),
                     aos_hub_core::jobs::Job::RecoverCacheWrites => "cache-recovery".to_string(),
                     aos_hub_core::jobs::Job::RecoverOciUploads => "oci-recovery".to_string(),
@@ -2107,6 +2131,29 @@ mod entry {
         }
         let make = || job_backend(state, env);
         match &envelope.job {
+            Job::AssessmentRegistry {
+                registry_id,
+                resource_scope,
+                after_scan,
+            } => {
+                if state.is_some() {
+                    return Err(worker::Error::RustError(
+                        "assessment provider work requires the queue isolate".into(),
+                    ));
+                }
+                crate::assessment_controller::run(
+                    Arc::new(Database::attach(make())),
+                    env,
+                    envelope,
+                    *registry_id,
+                    resource_scope,
+                    after_scan,
+                )
+                .await
+                .map_err(|_| {
+                    worker::Error::RustError("assessment journal pass unavailable".into())
+                })?;
+            }
             Job::DispatchMaintenance => run_cron(state, env, envelope).await?,
             Job::RunTopologyProbes => {
                 // Registry deletion does not depend on domain-probe
