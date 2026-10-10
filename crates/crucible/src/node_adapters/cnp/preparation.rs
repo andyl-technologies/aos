@@ -31,6 +31,29 @@ pub trait CnpReferenceQualification {
         profile: &ReferenceProfile,
     ) -> Result<(), OperationFailure>;
 
+    /// Qualifies the exact typed peer selection against this installed source.
+    ///
+    /// Runs before discovery/realization and again before graph construction.
+    /// Implementations authenticate a distinct source profile and durable policy;
+    /// negotiation cannot replace per-original dynamic input validation. The
+    /// optional admitted graph is present only at actual node construction; the
+    /// installed hook must conjunct its exact durable selection and node scope.
+    ///
+    /// # Errors
+    /// Refuses by default, foreign source, changed selection or unsupported policy.
+    fn authenticate_peer_extensions(
+        &self,
+        _: &CnpLaunchGuard,
+        _: &ReferenceProfile,
+        _: &[ExtensionSelection],
+        _: Option<(&crate::node_admission::AdmittedGraph, &Id)>,
+    ) -> Result<(), OperationFailure> {
+        Err(failure(
+            "source-qualified typed peer selection is not installed",
+            false,
+        ))
+    }
+
     /// Authenticates an exact adverse population beneath original preparation.
     ///
     /// Source policy checks unchanged complete binding and independently measured
@@ -219,11 +242,50 @@ impl CnpReferencePreparation {
                         false,
                     ));
                 }
+                authenticate_extensions(&child.guard, qualification, Some((graph, node)))?;
                 qualification.authenticate_provider(&child.guard, &controller.profile)?;
                 child.verify_native_custody().map_err(native)
             },
             maximum_operations,
         )
+    }
+}
+
+fn authenticate_extensions(
+    guard: &CnpLaunchGuard,
+    qualification: &dyn CnpReferenceQualification,
+    admitted: Option<(&crate::node_admission::AdmittedGraph, &Id)>,
+) -> Result<(), OperationFailure> {
+    let custody = guard
+        .custody
+        .as_ref()
+        .ok_or_else(|| failure("original CNP custody unavailable", false))?;
+    let controller = custody
+        .controller
+        .as_ref()
+        .ok_or_else(|| failure("original CNP controller unavailable", false))?;
+    match (&custody.handshake, controller.selected_extensions()) {
+        (Some(super::process::CnpRegistrar::Legacy(_)), None) => Ok(()),
+        (Some(super::process::CnpRegistrar::Extensions(registrar)), Some(selected)) => {
+            controller
+                .verify_extension_registrar(registrar)
+                .map_err(native)?;
+            qualification.authenticate_peer_extensions(
+                guard,
+                &controller.profile,
+                selected,
+                admitted,
+            )?;
+            // Recheck the same surviving gate after a trusted callback, before
+            // discovery or graph construction can admit further native work.
+            controller
+                .verify_extension_registrar(registrar)
+                .map_err(native)
+        }
+        _ => Err(failure(
+            "CNP controller and original registrar editions differ",
+            false,
+        )),
     }
 }
 
@@ -248,6 +310,7 @@ fn prepare(
         .controller
         .as_ref()
         .ok_or_else(|| failure("original authenticated controller unavailable", false))?;
+    authenticate_extensions(guard, qualification, None)?;
     qualification.authenticate_provider(guard, &controller.profile)?;
     let profile = controller.profile.clone();
     let bootstrap = controller.bootstrap.clone();

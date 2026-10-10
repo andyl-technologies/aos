@@ -32,7 +32,10 @@ pub use lineage::{
     OriginalRuntimeLineage, with_completed_runtime_lineage, with_original_runtime_lineage,
 };
 pub use preparation::{CnpPreparationFailure, CnpReferencePreparation, CnpReferenceQualification};
-pub use process::{CnpLaunchFailure, CnpLaunchGuard, CnpPeerCustody, CnpProcessCustodySlot};
+pub use process::{
+    CnpExtensionAttachmentFailure, CnpLaunchFailure, CnpLaunchGuard, CnpPeerCustody,
+    CnpProcessCustodySlot,
+};
 
 /// Runs an actual installed public checksum node under the common quantized runtime.
 pub type CnpReferenceNode =

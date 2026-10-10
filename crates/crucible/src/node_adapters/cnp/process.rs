@@ -5,8 +5,32 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Child, ExitStatus};
 
-use crucible_node_provider::{ProviderError, client::ReferenceController, handshake::Handshake};
 use rustix::process::{Pid, Signal, getpgid, kill_process_group};
+
+use crucible_node_provider::{
+    ProviderError,
+    client::ReferenceController,
+    handshake::{ExtensionHandshake, Handshake},
+};
+
+#[path = "process_extensions.rs"]
+mod extensions;
+
+pub use extensions::CnpExtensionAttachmentFailure;
+
+pub(super) enum CnpRegistrar {
+    Legacy(Handshake),
+    Extensions(ExtensionHandshake),
+}
+
+impl CnpRegistrar {
+    fn contain(&mut self) {
+        match self {
+            Self::Legacy(registrar) => registrar.contain(),
+            Self::Extensions(registrar) => registrar.contain(),
+        }
+    }
+}
 
 /// Reserves finite native custody before the provider process is launched.
 ///
@@ -29,7 +53,7 @@ pub struct CnpPeerCustody {
     pub(super) child: Child,
     pub(super) directory: PathBuf,
     pub(super) controller: Option<ReferenceController>,
-    pub(super) handshake: Option<Handshake>,
+    pub(super) handshake: Option<CnpRegistrar>,
     pub(super) companion: Option<u32>,
     pub(super) runtime: Option<super::control::CnpRuntimeCustody>,
     pub(super) preparation_started: bool,
@@ -183,14 +207,17 @@ impl CnpLaunchGuard {
             .custody
             .as_mut()
             .ok_or(ProviderError::Correlation("CNP launch custody transferred"))?;
-        if custody.controller.is_some() || controller.peer_pid() != custody.child.id() {
+        if custody.controller.is_some()
+            || controller.peer_pid() != custody.child.id()
+            || controller.selected_extensions().is_some()
+        {
             return Err(ProviderError::Correlation(
                 "CNP control is not original retained Child",
             ));
         }
         // The actual registrar owns the connection epoch. Dropping it fences
         // every derived authority, including a still-retained controller.
-        custody.handshake = Some(handshake);
+        custody.handshake = Some(CnpRegistrar::Legacy(handshake));
         custody.controller = Some(controller);
         Ok(())
     }

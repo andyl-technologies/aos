@@ -475,3 +475,74 @@ fn raw_roster_credit_precedes_typed_reconstruction_and_installed_callbacks() {
     );
     assert_eq!(source.calls.get(), 0);
 }
+
+#[test]
+fn registrar_refuses_equal_wire_identity_from_another_original_gate() {
+    let source = installed(false);
+    let mut original = ExtensionHandshake::new(configured(), source.clone()).unwrap();
+    let mut foreign = ExtensionHandshake::new(configured(), source).unwrap();
+    let (request, response) = pair(false, "hello/same");
+    let own = original
+        .admit_envelopes(
+            &request,
+            &response,
+            id("connection/same"),
+            &mut Verifier::default(),
+        )
+        .unwrap();
+    let other = foreign
+        .admit_envelopes(
+            &request,
+            &response,
+            id("connection/same"),
+            &mut Verifier::default(),
+        )
+        .unwrap();
+
+    assert_eq!(own.selected_extensions(), other.selected_extensions());
+    assert_eq!(own.session_id(), other.session_id());
+    assert_eq!(own.incarnation_id(), other.incarnation_id());
+    assert!(original.verify_authority(&own).is_ok());
+    assert!(original.verify_authority(&other).is_err());
+    assert!(foreign.verify_authority(&own).is_err());
+    assert!(other.ensure_live().is_ok());
+}
+
+#[test]
+fn registrar_containment_refuses_its_retained_controller_lease() {
+    let mut original = ExtensionHandshake::new(configured(), installed(false)).unwrap();
+    let (request, response) = pair(false, "hello/1");
+    let own = original
+        .admit_envelopes(
+            &request,
+            &response,
+            id("connection/1"),
+            &mut Verifier::default(),
+        )
+        .unwrap();
+    assert!(original.verify_authority(&own).is_ok());
+
+    original.contain();
+
+    assert!(original.verify_authority(&own).is_err());
+    assert_eq!(own.selected_extensions(), Some([selection()].as_slice()));
+}
+
+#[test]
+fn registrar_refuses_superseded_epoch_while_preserving_exact_resumed_selection() {
+    let mut original = ExtensionHandshake::new(configured(), installed(false)).unwrap();
+    let mut verifier = Verifier::default();
+    let (request, response) = pair(false, "hello/1");
+    let old = original
+        .admit_envelopes(&request, &response, id("connection/1"), &mut verifier)
+        .unwrap();
+    let (request, response) = pair(true, "hello/2");
+
+    let current = original
+        .admit_envelopes(&request, &response, id("connection/2"), &mut verifier)
+        .unwrap();
+
+    assert!(original.verify_authority(&old).is_err());
+    assert!(original.verify_authority(&current).is_ok());
+    assert_eq!(old.selected_extensions(), current.selected_extensions());
+}

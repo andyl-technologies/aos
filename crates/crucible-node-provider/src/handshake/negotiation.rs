@@ -677,6 +677,26 @@ impl Handshake {
         })
     }
 
+    pub(super) fn verify_current_authority(
+        &self,
+        authority: &ConnectionAuthority,
+    ) -> Result<(), ProviderError> {
+        authority.ensure_live()?;
+        if self.contained
+            || !Arc::ptr_eq(&self.shared_epoch, &authority.shared_epoch)
+            || !Arc::ptr_eq(&self.registration_gate, &authority.registration_gate)
+            || self.epoch != authority.epoch
+            || self.current_connection.as_ref() != Some(&authority.connection)
+            || self.installation.session_id != authority.session
+            || self.installation.incarnation_id != authority.incarnation
+        {
+            return Err(ProviderError::Correlation(
+                "controller is not the original current Hello registration",
+            ));
+        }
+        Ok(())
+    }
+
     /// Revokes every registration lease without asserting native operation stop.
     pub fn contain(&mut self) {
         let _registration = self.registration_gate.lock();

@@ -1726,6 +1726,32 @@ current native case was repeated. The separate import-layout change is excluded.
 This planner adds no backend, profile, CPU, transformed-clock, preservation or
 native qualification authority. These durations supply correctness evidence.
 
+## Generic typed peer attachment with original process custody
+
+The generic node-protocol consumer accepts negotiated extension attachments only
+through the original private registrar for the current preparation and epoch.
+Foreign, duplicate and revoked attachments return their complete offered
+resources while retaining the same actual provider child and owning capsule.
+Installed sources must explicitly provide the attachment hooks; the default
+refuses before discovery. This mechanism grants no installed source, accepted
+native class, common readiness or capture authority.
+
+The current eleven-path functional join passes four focused controls (three
+actual framed child-process cases and one inert helper), all 31 installed
+registry cases and 247 primary provider cases plus one nested subprocess case.
+Thirteen historical provider cases and seven historical native core cases remain
+ignored. All 37 source-quality checks, core/provider all-target strict checks and
+formatting of eleven Rust files pass. All 8,679 source files match before and
+after qualification. The final receipt has SHA256
+`d97fdc1abbc043434c733d719a2424f58ff57301d985fb88b9ac2c125fc19d8a`.
+
+Local retention preserves 44 source, log and command files and six actual test
+and source-quality executables. The transient peer namespaces were not retained;
+their results are supported by the exact fixtures, executables and original
+logs. Independent review checks 8,842 source and artifact bindings with no errors.
+Earlier private compiler, strict-check and cached-scanner failures remain
+recorded separately. Raw evidence stays outside Git and release artifacts.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

@@ -4,6 +4,9 @@
 // crucible-lint: allow panic-shortcut -- These cnp tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "extension_attachment_tests.rs"]
+mod extension_attachment;
+
 #[path = "world_tests.rs"]
 mod world;
 

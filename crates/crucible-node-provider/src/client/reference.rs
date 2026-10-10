@@ -71,6 +71,24 @@ impl ReferenceController {
         self.session.peer_pid()
     }
 
+    /// Borrows the original authenticated typed Hello selection, when opted in.
+    ///
+    /// The roster supplies metadata, not source qualification or lease liveness.
+    pub fn selected_extensions(&self) -> Option<&[crucible_node_contract::ExtensionSelection]> {
+        self.session.authority().selected_extensions()
+    }
+
+    /// Checks this actual session against its original retained typed registrar.
+    ///
+    /// # Errors
+    /// Refuses a foreign, superseded or contained registrar, or changed selection.
+    pub fn verify_extension_registrar(
+        &self,
+        registrar: &crate::handshake::ExtensionHandshake,
+    ) -> Result<(), ProviderError> {
+        registrar.verify_authority(self.session.authority())
+    }
+
     /// Returns the measured public endpoint executable without conferring authority.
     pub fn peer_executable(&self) -> &ContentRef {
         self.session.peer_executable()

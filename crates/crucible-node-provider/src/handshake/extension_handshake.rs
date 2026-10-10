@@ -119,6 +119,24 @@ impl ExtensionHandshake {
         Ok(authority)
     }
 
+    /// Verifies the controller's exact surviving typed Hello registration.
+    ///
+    /// Equal wire IDs or tuples cannot substitute another original private
+    /// registrar. This check grants neither native nor graph qualification.
+    ///
+    /// # Errors
+    /// Refuses a foreign, stale or contained lease, absent typed negotiation,
+    /// or a selection different from the original authenticated roster.
+    pub fn verify_authority(&self, authority: &ConnectionAuthority) -> Result<(), ProviderError> {
+        self.handshake.verify_current_authority(authority)?;
+        if self.selected.is_none() || authority.selected_extensions() != self.selected.as_deref() {
+            return Err(ProviderError::Correlation(
+                "controller changed original typed Hello selection",
+            ));
+        }
+        Ok(())
+    }
+
     /// Revokes every original registration lease while retaining native custody.
     pub fn contain(&mut self) {
         self.handshake.contain();
