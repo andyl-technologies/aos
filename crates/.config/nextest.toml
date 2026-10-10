@@ -42,6 +42,14 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 filter = 'package(terrane) & test(=gc::runner::permanent_local_tests::recovery::permanent_local_empty_pass_keeps_owner_and_reclaims_late_same_key_residue)'
 slow-timeout = { period = "60s", terminate-after = 3 }
 
+# This case retains its full ownership barrier, refuses the changed 130-cycle
+# traversal, then reclaims two actual duties through a fresh takeover. Its
+# archived trace completes all assertions and reopen in 144 seconds. Bound this
+# exact runner to three minutes while preserving staging and whole-lease clocks.
+[[profile.default.overrides]]
+filter = 'package(terrane) & test(=gc::runner::permanent_local_tests::recovery::staging::permanent_local_staging_added_cycle_keeps_late_residue_unselected)'
+slow-timeout = { period = "60s", terminate-after = 3 }
+
 # The ten native local-deletion cases include real grace waits and repeated
 # durable fault/recovery prefixes. Their owning Nix run measured 100-210 seconds
 # per case. Reserve all test slots and bound each runner process to five minutes;

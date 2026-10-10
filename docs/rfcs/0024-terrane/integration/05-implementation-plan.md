@@ -183,7 +183,13 @@ call-site change wires those six witnesses in the private candidate. A focused
 hermetic prerequisite executes exactly those populations with the immutable
 native image, fresh protected storage and the same finite process bound; its
 pure target evaluation and Nix formatting pass. Actual population qualification
-remains pending, and the owning index gate's explicit blocker remains intact.
+on combined tree `7cba666072` times out its first ordinary 1,024-entry case at
+the finite 1,800-second limit; the other five remain unrun. A source-unchanged
+300-second diagnostic reaches baseline publication at 33.902 seconds and
+output verification at 78.607 seconds, with no later phase observed. It does
+not identify the inner operation. Reviewed test-only subphase markers retain
+all operations, assertions and accounting; their fresh execution remains
+pending. The owning index gate's explicit blocker remains intact.
 The prepared fixture is dormant on trunk until its pending module is integrated.
 This policy change establishes no speedup.
 The permanent GC suite passes its after-unlink case in 103.860 seconds, then
@@ -202,9 +208,18 @@ both symlink controls, then times out late same-key residue recovery at 120.005
 seconds, leaving sixteen cases unrun. A separate archived trace completes that
 case in 118.707 seconds with five actual durable progress events, seven
 observations, two successful reclaims and all final reopen checks. Its scoped
-180-second runner preparation awaits untraced qualification; operation and
-whole-lease clocks remain unchanged. The earlier fourteen passes retain their
-original source binding and do not establish complete qualification of this candidate.
+180-second runner preparation passes fresh untraced qualification in 127.781
+seconds using the genuine `17225d7f3b` archives and committed external profile.
+The same continuation passes the full 4,100-family stress case in 871.439
+seconds under its existing 900-second limit and lease takeover in 96.479
+seconds, then times out added-cycle staging recovery at 120.007 seconds;
+thirteen cases remain unrun. A separate archived diagnostic completes that
+exact case and all final assertions in 144.04 seconds, including four durable
+progress events, seven observations, both actual reclaims and native reopen.
+Its exact-case 180-second runner preparation awaits untraced qualification.
+Operation, staging and whole-lease clocks remain unchanged. The earlier
+fourteen passes retain their original source binding and do not establish
+complete qualification of this candidate.
 The reviewed closed-absence diagnosis in `3f598fed48`
 preserves present corruption refusal; its first verify case passes, but the
 second rebuild case refuses an ordinary absent observation without a retained
@@ -221,14 +236,21 @@ earlier malformed request's cause. The combined `ea96f79a10` candidate includes
 the separately qualified immutable-leaf lookup. Its new focused request passes
 verification in 50.56 seconds but still returns a source-less `MalformedRequest`
 during recovery in 171.98 seconds. The final-ack case remains unrun; narrow
-test-only stage diagnostics are under review rather than changing this refusal.
+test-only stage diagnostics preserve every predicate and error. Fresh native
+build, strict Clippy and compilation pass. Their first archived diagnostic
+returns `Denied(commit)` in 82.05 seconds without a malformed-stage marker;
+a separate denial-callsite diagnostic returns `Advance(Expired)` in 103.47
+seconds without a retained-deadline sample. Neither reproduces or identifies
+the original malformed request's cause.
 A broader earlier feature-matrix run is cancelled after seven actual
 missing-placement failures; it is not a passing matrix result. A separate archive diagnostic
 reproduces `Unsupported` in signed fixture setup before the intended loss
 operation. The reviewed `fba4f01132` forwarding correction preserves scalar
 unavailable reads and every Raw durability observer. Its focused seven-case Nix
 check passes all seven actual cases, with independent source and execution
-review; it does not establish the broader feature matrix.
+review; it does not establish the broader feature matrix. Six of fourteen
+owning bucket checks pass on combined tree `5962ddef64`; the remaining checks
+are in progress, without claiming task or aggregate qualification.
 On combined tree `7cba666072`, required application compilation passes all 114
 test targets across 29 packages. Six current foundation checks pass; role
 selection stops before execution at its existing `cargo-nextest` vendor hash.
