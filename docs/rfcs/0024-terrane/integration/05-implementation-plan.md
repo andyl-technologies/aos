@@ -283,6 +283,20 @@ the existing production metadata factory. Both frozen source packets remain
 unchanged. The reviewed corrections are composed as `9eb308e352`; fresh native
 qualification and the hermetic `core-fuzz` gate run independently, using separate
 Cargo targets. Full current core execution remains pending.
+Frozen `9eb308e352` now passes strict all-target core Clippy, actual all-target
+test compilation and genuine executable-bound inventory. Both corrected exact
+cases pass; its complete 752-case core population passes with no failures or
+skips in 20.249 seconds at the unchanged default limits. All tracked source and
+eleven executable seals remain unchanged. The actual hermetic `core-fuzz` gate
+also passes its exact 59-case integration inventory and execution plus all five
+required unit properties, with the filtered Nix source independently bound to
+the frozen checkout. Native all-target checking on that candidate exposes one
+remaining teardown type mismatch. Reviewed correction `0e5dfaa618` consumes
+the genuine production source before deleting its protected controls, storage
+and credentials; exact physical absence and destination-only reopen assertions
+remain required. Corrected composition `7d7f050095` proceeds to fresh native
+qualification and the independent hermetic `golden-vectors` gate. These earlier
+core results do not replace qualification of the final aggregate source.
 No owning gate or task is accepted by these results.
 The same frozen retained-read candidate passes all twenty-nine mandatory
 native read cases in 46.960 seconds and the public SDK case in 0.009 seconds,
