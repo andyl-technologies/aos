@@ -639,3 +639,117 @@ index 8c78247aa6..444588f707 100644
      if (!rule || !before_hash || !after_hash || !evidence || !outcome ||
          !event_reservation || !*event_reservation ||
          !crucible_clock_hash(rule, CRUCIBLE_NODE_FAULT_FIELD_T1, &target)) {
+--- a/util/qemu-thread-posix.c
++++ b/util/qemu-thread-posix.c
+@@ -151,6 +151,8 @@
+ 
+ static __thread char namebuf[PTHREAD_MAX_NAMELEN_NP];
+ 
++static void crucible_hot_fork_registry_register_atfork(void);
++
+ static void __attribute__((__constructor__(QEMU_CONSTRUCTOR_EARLY)))
+ qemu_thread_init(void)
+ {
+@@ -169,6 +171,9 @@
+      * thread
+      */
+     g_strlcpy(namebuf, "main", sizeof(namebuf));
++
++    /* Register before RCU: release metadata locks before its child restart. */
++    crucible_hot_fork_registry_register_atfork();
+ }
+ 
+ static void error_exit(int err, const char *msg)
+@@ -184,6 +189,8 @@
+  * would deadlock silently; fail fast and name the cause instead.
+  */
+ static __thread bool crucible_hot_fork_mutex_registry_held;
++static __thread bool crucible_hot_fork_registry_transaction_held;
++static __thread bool crucible_hot_fork_atfork_registry_owned;
+ 
+ static void crucible_hot_fork_mutex_registry_lock(void)
+ {
+@@ -1093,6 +1100,59 @@
+ static uint64_t qemu_hot_fork_thread_generation;
+ static int64_t qemu_hot_fork_coordinator_thread_id;
+ static __thread QemuHotForkThreadRecord *qemu_hot_fork_current_thread;
++
++/*
++ * Generic fork must not copy metadata locks held by a vanished thread. RCU's
++ * prepare handler runs first (reverse registration order), then these guards
++ * remain held until our parent/child handler runs before RCU's handler.
++ * A retained Crucible transaction already owns both guards; its exact native
++ * parent/child disposition, rather than generic atfork, must release them.
++ */
++static void crucible_hot_fork_registry_prepare_fork(void)
++{
++    int err;
++
++    if (crucible_hot_fork_registry_transaction_held) {
++        assert(crucible_hot_fork_mutex_registry_held);
++        return;
++    }
++    if (crucible_hot_fork_mutex_registry_held) {
++        error_exit(EDEADLK, "fork during a mutex metadata operation");
++    }
++
++    crucible_hot_fork_mutex_registry_lock();
++    err = pthread_mutex_lock(&qemu_hot_fork_thread_lock);
++    if (err) {
++        error_exit(err, __func__);
++    }
++    crucible_hot_fork_atfork_registry_owned = true;
++}
++
++static void crucible_hot_fork_registry_finish_fork(void)
++{
++    int err;
++
++    if (!crucible_hot_fork_atfork_registry_owned) {
++        return;
++    }
++    crucible_hot_fork_atfork_registry_owned = false;
++    err = pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++    if (err) {
++        error_exit(err, __func__);
++    }
++    crucible_hot_fork_mutex_registry_unlock();
++}
++
++static void crucible_hot_fork_registry_register_atfork(void)
++{
++    int err = pthread_atfork(crucible_hot_fork_registry_prepare_fork,
++                             crucible_hot_fork_registry_finish_fork,
++                             crucible_hot_fork_registry_finish_fork);
++
++    if (err) {
++        error_exit(err, __func__);
++    }
++}
+ 
+ static QemuHotForkThreadRecord *qemu_hot_fork_thread_register(
+     const char *name, int mode, QemuThreadHotForkDisposition disposition)
+@@ -1749,6 +1809,7 @@
+            sizeof(transaction->restart_thread_ids));
+     memcpy(transaction->carried_mutexes, carried,
+            carried_count * sizeof(carried[0]));
++    crucible_hot_fork_registry_transaction_held = true;
+     return 0;
+ }
+ 
+@@ -1767,6 +1828,7 @@
+     }
+ 
+     transaction->active = false;
++    crucible_hot_fork_registry_transaction_held = false;
+     err = pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
+     if (err) {
+         error_exit(err, __func__);
+@@ -1890,6 +1952,7 @@
+     qemu_hot_fork_thread_generation++;
+     transaction->active = false;
+     transaction->child_reconstructed = true;
++    crucible_hot_fork_registry_transaction_held = false;
+ 
+     err = pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
+     if (err) {

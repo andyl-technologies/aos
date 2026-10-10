@@ -40,6 +40,7 @@ struct State {
 /// This correlation mechanism does not qualify complete native queue closure.
 pub(crate) struct NativeNodeControl {
     pub(crate) effect: Option<Arc<crate::runtime::semantic_effect::SemanticEffectOwner>>,
+    pub(crate) prefix: Option<Arc<crate::runtime::semantic_prefix::SemanticPrefixOwner>>,
     installed_endpoint:
         OnceLock<Arc<crate::runtime::installed_endpoint_owner::InstalledEndpointCustody>>,
     pub(super) root_run_control:
@@ -80,6 +81,26 @@ impl NativeNodeControl {
                 Ok(Some(_))
             )
         })
+    }
+
+    /// Copies the same actually acknowledged Applied receipt without waiting.
+    ///
+    /// # Errors
+    /// Refuses missing initializer or poisoned/faulted original custody. None
+    /// denotes the still-pending same original ACK or temporary ownership.
+    pub(crate) fn try_semantic_initialization_receipt(
+        &self,
+    ) -> Result<
+        Option<crucible_protocol::node_control::NativeInitializationReceipt>,
+        NativeCommandError,
+    > {
+        let initializer = self
+            .initialization
+            .as_ref()
+            .ok_or(NativeCommandError::Conflict)?;
+        Ok(initializer
+            .try_pending_acknowledged_original()?
+            .map(|original| original.receipt().clone()))
     }
 
     pub(crate) fn semantic_administration_failed(&self) -> bool {
@@ -156,6 +177,7 @@ impl NativeNodeControl {
         let prepared_scope_hash = scope.identity_digest()?;
         Ok(Self {
             effect: None,
+            prefix: None,
             root_run_control: OnceLock::new(),
             installed_endpoint: OnceLock::new(),
             root_policy: None,
@@ -276,7 +298,16 @@ impl NativeNodeControl {
                 self.send_cpu_park()
             }
             Some(
-                NativeFrame::PrepareEffect(_)
+                NativeFrame::PreparePrefix(_)
+                | NativeFrame::AcknowledgePrefix(_)
+                | NativeFrame::PrefixAcknowledged(_)
+                | NativeFrame::ContinuePrefix(_)
+                | NativeFrame::PrefixProgress(_)
+                | NativeFrame::QueryPrefixPreparation { .. }
+                | NativeFrame::PrefixPreparationFacts(_)
+                | NativeFrame::AcknowledgePrefixPreparation(_)
+                | NativeFrame::PrefixPreparationAcknowledged(_)
+                | NativeFrame::PrepareEffect(_)
                 | NativeFrame::EffectCompute(_)
                 | NativeFrame::EffectProgress(_)
                 | NativeFrame::Stopped(_)
@@ -528,6 +559,10 @@ impl NativeNodeControl {
                     .effect
                     .as_ref()
                     .is_some_and(|effect| effect.register_policy().is_err())
+                || self
+                    .prefix
+                    .as_ref()
+                    .is_some_and(|prefix| prefix.register_policy().is_err())
             {
                 // Native control already retains callbacks into this library.
                 // An ordinary error return could unload still-referenced code.

@@ -70,8 +70,13 @@ for path, signature, name, effect in [
     ("hw/core/cpu-common.c", "void cpu_reset(", "CPU reset", "qemu_cpu_node_observe("),
     ("hw/core/cpu-common.c", "static void cpu_common_reset_hold(", "CPU reset hold", "cpu->interrupt_request ="),
 ]:
-    CASES.append((path, signature,
-                  f'qemu_irq_node_root_cpu_mutation_guard("{name}");', effect))
+    if name == "CPU IRQ set":
+        guard = "qemu_irq_node_root_cpu_interrupt_guard(cpu, false);"
+    elif name == "CPU IRQ clear":
+        guard = "qemu_irq_node_root_cpu_interrupt_guard(cpu, true);"
+    else:
+        guard = f'qemu_irq_node_root_cpu_mutation_guard("{name}");'
+    CASES.append((path, signature, guard, effect))
 
 for signature, effect in [
     ("void qemu_init_irq(", "object_initialize("),
@@ -117,6 +122,29 @@ def check_cases(source):
             except ValueError:
                 continue
             raise ValueError("altered native writer ordering was accepted")
+
+    irq = (source / "hw/core/irq.c").read_text()
+    interrupt = function(irq, "void qemu_irq_node_root_cpu_interrupt_guard(")
+    delegate = 'qemu_irq_node_root_cpu_mutation_guard(\n            clearing ? "CPU IRQ clear" : "CPU IRQ set");'
+    start = interrupt.index("    if (!qatomic_load_acquire(&node_irq_roots.sealed)) {")
+    end = interrupt.index("    if (node_irq_roots.original_process", start)
+    before_effect(interrupt[start:end], delegate, "return;")
+    # Controller9 delegates constructor writes to the unchanged original guard;
+    # a sealed writer instead requires the exact source-installed provider.
+    for predicate in [
+        "node_irq_roots.original_process != getpid()",
+        "!bql_locked()",
+        "node_prefix_irq_source_process != getpid()",
+        "!node_prefix_irq_source.cpu_writer_allowed ||",
+        "!node_prefix_irq_source.cpu_writer_allowed(cpu)",
+    ]:
+        before_effect(interrupt, predicate, "_exit(125);")
+        try:
+            before_effect(interrupt.replace(predicate, "false", 1),
+                          predicate, "_exit(125);")
+        except ValueError:
+            continue
+        raise ValueError("removed source-owned interrupt predicate accepted")
 
     network = function((source / "net/net.c").read_text(),
                        "static int net_client_init1(")

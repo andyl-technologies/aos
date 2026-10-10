@@ -13,6 +13,10 @@ use crucible_protocol::node_control::{
 
 use super::{NativeLaunchEndpoint, NativeQemuControlError};
 
+#[path = "administration/prefix.rs"]
+mod prefix;
+pub use prefix::NativePrefixParameters;
+
 /// Retains one prepared endpoint and the original source-observed reader record.
 pub struct NativeAdministrationTransport {
     channel: NativeChannel,
@@ -21,11 +25,22 @@ pub struct NativeAdministrationTransport {
     expected_process: Option<u32>,
     fixed_microvm: Option<crucible_protocol::node_control::NativeFixedMicrovmPreparation>,
     effect: Option<crucible_protocol::node_control::NativeEffectPreparation>,
+    prefix: Option<crucible_protocol::node_control::NativePrefixPreparation>,
     requested: bool,
     failed: bool,
 }
 
 impl NativeAdministrationTransport {
+    /// Checks retained process correlation without asserting present native liveness.
+    pub(crate) fn original_process_matches(&self, process_id: u32) -> bool {
+        !self.failed
+            && self.expected_process == Some(process_id)
+            && self
+                .original
+                .as_ref()
+                .is_some_and(|facts| facts.process_id.get() == u64::from(process_id))
+    }
+
     /// Measures the actual inherited endpoint and queues complete original launch material.
     ///
     /// The installed launcher must pass the returned endpoint into the named
@@ -143,6 +158,7 @@ impl NativeAdministrationTransport {
                 expected_process: None,
                 fixed_microvm: Some(original_root),
                 effect: Some(effect),
+                prefix: None,
                 requested: false,
                 failed: false,
             },
@@ -215,6 +231,7 @@ impl NativeAdministrationTransport {
                 expected_process: None,
                 fixed_microvm,
                 effect: None,
+                prefix: None,
                 requested: false,
                 failed: false,
             },
@@ -240,6 +257,7 @@ impl NativeAdministrationTransport {
                 NativeControlEdition::Construction
                     | NativeControlEdition::FixedMicrovm
                     | NativeControlEdition::FiniteEffect
+                    | NativeControlEdition::PrefixEffect
             )
         {
             return Err(NativeCommandError::Conflict.into());
@@ -259,6 +277,7 @@ impl NativeAdministrationTransport {
                 NativeControlEdition::Construction
                     | NativeControlEdition::FixedMicrovm
                     | NativeControlEdition::FiniteEffect
+                    | NativeControlEdition::PrefixEffect
             )
         {
             return Err(NativeCommandError::Conflict.into());

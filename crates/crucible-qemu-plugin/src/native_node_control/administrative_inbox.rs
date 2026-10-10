@@ -185,6 +185,17 @@ impl NativeAdministrativeInbox {
         Ok(self.try_mailbox()?.reserve_construction_reply(cursor)?)
     }
 
+    /// Revalidates the same unpublished original credit under a nonblocking lock.
+    ///
+    /// # Errors
+    /// Refuses busy custody, foreign credit or missing pre-dequeue reply storage.
+    pub(crate) fn validate_unpublished_credit(
+        &self,
+        credit: &NativeAdministrativeReplyCredit,
+    ) -> Result<(), NativeAdministrativeInboxError> {
+        Ok(self.try_mailbox()?.validate_unpublished_credit(credit)?)
+    }
+
     /// Consumes credit only while holding the actual original mailbox ledger.
     ///
     /// # Errors

@@ -86,7 +86,14 @@ def irq_body(source):
     text = (source / "hw/core/irq.c").read_text()
     start = text.index("#define QEMU_IRQ_NODE_ROOT_MAX")
     end = text.index("static QemuIrqNodeRoot *node_irq_root_find")
-    return text[start:end] + exact_function(text, "void qemu_set_irq(")
+    # The real source now includes its separately declared controller9
+    # provider. Keep the default provider absent in the legacy template and
+    # extract both actual helpers without modeling away the sealed branch.
+    header = '#include "qemu/crucible-prefix-writer.h"\n'
+    return (header + text[start:end] +
+            exact_function(text, "static QemuIrqNodeRoot *node_irq_root_find(") +
+            exact_function(text, "static bool node_irq_prefix_delivery(") +
+            exact_function(text, "void qemu_set_irq("))
 
 
 def irq_mutants(body):

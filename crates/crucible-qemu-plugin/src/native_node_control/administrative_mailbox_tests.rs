@@ -475,3 +475,44 @@ fn foreign_scope_is_retained_as_invalid_and_never_processed_as_query() {
     );
     assert!(mailbox.reserve_reply(1).is_err());
 }
+
+#[test]
+fn unpublished_reply_credit_revalidates_actual_backing_without_consuming_original() {
+    let (host, mut mailbox, original, result) = original_effect_pair();
+    let request = NativeFrame::EffectCompute(Box::new(original));
+    assert!(host.send(&request).unwrap());
+    assert!(matches!(
+        mailbox.receive().unwrap(),
+        NativeAdministrativeReceive::Retained(1, _)
+    ));
+    let bytes = mailbox.original(1).unwrap().to_vec();
+    let credit = mailbox.reserve_construction_reply(1).unwrap();
+
+    assert!(mailbox.validate_unpublished_credit(&credit).is_ok());
+    assert!(mailbox.validate_unpublished_credit(&credit).is_ok());
+    assert_eq!(mailbox.original(1).unwrap(), bytes);
+    let foreign = NativeAdministrativeReplyCredit {
+        owner: Arc::new(()),
+        cursor: 1,
+    };
+    assert!(mailbox.validate_unpublished_credit(&foreign).is_err());
+    let missing = NativeAdministrativeReplyCredit {
+        owner: Arc::clone(&mailbox.owner),
+        cursor: 2,
+    };
+    assert!(mailbox.validate_unpublished_credit(&missing).is_err());
+
+    let backing = std::mem::take(&mut mailbox.records.get_mut(&1).unwrap().reply_storage);
+    assert!(mailbox.validate_unpublished_credit(&credit).is_err());
+    mailbox.records.get_mut(&1).unwrap().reply_storage = backing;
+    assert!(mailbox.validate_unpublished_credit(&credit).is_ok());
+    mailbox
+        .retain_reply(credit, &NativeFrame::EffectProgress(Box::new(result)))
+        .unwrap();
+    let historical = NativeAdministrativeReplyCredit {
+        owner: Arc::clone(&mailbox.owner),
+        cursor: 1,
+    };
+    assert!(mailbox.validate_unpublished_credit(&historical).is_err());
+    assert_eq!(mailbox.original(1).unwrap(), bytes);
+}

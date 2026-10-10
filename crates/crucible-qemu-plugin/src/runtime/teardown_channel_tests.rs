@@ -194,6 +194,7 @@ fn inherited_finite_route_is_refused_before_the_original_mutex() {
 fn finite_overflow_aborts_actual_producer_child_without_running_teardown() {
     const CHILD_SELECTOR: &str = "CRUCIBLE_TEST_FINITE_TEARDOWN_CHILD";
     if std::env::var_os(CHILD_SELECTOR).is_some() {
+        confine_deliberate_abort_child();
         overflow_original_child();
     }
 
@@ -230,6 +231,7 @@ fn finite_overflow_aborts_actual_producer_child_without_running_teardown() {
 fn finite_overflow_ignores_held_stderr_before_actual_child_abort() {
     const CHILD_SELECTOR: &str = "CRUCIBLE_TEST_FINITE_TEARDOWN_STDERR_CHILD";
     if std::env::var_os(CHILD_SELECTOR).is_some() {
+        confine_deliberate_abort_child();
         let (held_sender, held_receiver) = mpsc::sync_channel(1);
         let _lock_owner = std::thread::spawn(move || {
             let _held_stderr = std::io::stderr().lock();
@@ -264,6 +266,19 @@ fn finite_overflow_ignores_held_stderr_before_actual_child_abort() {
         }
         std::thread::sleep(Duration::from_millis(1));
     }
+}
+
+/// Confines deliberate test aborts to the supervised child's lifetime.
+fn confine_deliberate_abort_child() {
+    // A piped host core handler can retain a dying process beyond this test's
+    // finite reap deadline. Only the selected exec child disables dumping;
+    // the production abort and its SIGABRT outcome remain unchanged.
+    // SAFETY: PR_SET_DUMPABLE takes a scalar mode, touches only this process,
+    // and receives no pointer. This runs before the selected child adds threads.
+    let result = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
+    assert_eq!(result, 0, "failed to confine the deliberate abort child");
+    // SAFETY: PR_GET_DUMPABLE reads this process's scalar mode without pointers.
+    assert_eq!(unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) }, 0);
 }
 
 fn overflow_original_child() -> ! {

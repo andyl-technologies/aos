@@ -105,6 +105,29 @@ impl NativePreparation {
 /// Selects a closed frame of the independently negotiated native channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeFrame {
+    /// Queries historical initial facts under an explicitly installed contract.
+    QueryPrefixPreparation {
+        /// Names the complete original scope.
+        scope: [u8; 32],
+        /// Names the complete independently retained prefix preparation.
+        prefix_preparation: [u8; 32],
+    },
+    /// Carries canonical initial facts requiring independent original correlation.
+    PrefixPreparationFacts(Box<super::NativePrefixPreparationFacts>),
+    /// Offers the original preparation ACK without claiming source consumption.
+    AcknowledgePrefixPreparation(super::NativePrefixPreparationAcknowledgement),
+    /// Carries the original preparation ACK recovered from native consumed history.
+    PrefixPreparationAcknowledged(super::NativePrefixPreparationAcknowledgement),
+    /// Pins complete unchanged ancestors and a distinct finite prefix preparation.
+    PreparePrefix(Box<super::NativePrefixPreparation>),
+    /// Offers correlation to an immutable source result, without an applied ACK claim.
+    AcknowledgePrefix(super::NativePrefixAcknowledgement),
+    /// Copies the exact acknowledgement consumed by the genuine native prefix journal.
+    PrefixAcknowledged(super::NativePrefixAcknowledgement),
+    /// Names the exact acknowledged cursor while preserving all original allowances.
+    ContinuePrefix(Box<super::NativePrefixContinuation>),
+    /// Preserves typed CPU and timer progress from the same original command.
+    PrefixProgress(Box<super::NativePrefixProgress>),
     /// Pins the complete original effect preparation on an independently selected controller.
     PrepareEffect(Box<super::NativeEffectPreparation>),
     /// Retains an original compute command pending genuine native epoch and cut admission.

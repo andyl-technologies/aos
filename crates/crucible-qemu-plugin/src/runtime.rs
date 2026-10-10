@@ -22,6 +22,7 @@ mod root_epoch_callbacks;
 #[cfg(not(test))]
 mod run_workers;
 pub(crate) mod semantic_effect;
+pub(crate) mod semantic_prefix;
 mod teardown_channel;
 pub(crate) mod worker_quiescence;
 
@@ -331,6 +332,7 @@ impl OwnedCallbackRegistrationMask {
 /// proof is live, so moving the proof never moves callback-addressable state.
 pub(crate) struct OwnedCallbackRuntimeState {
     root_epoch: root_epoch_callbacks::NativeRuntimeRootEpoch,
+    callback_roster: live_callbacks::callback_roster::RetainedCallbackRoster,
     #[cfg(not(test))]
     installed_endpoint:
         std::sync::OnceLock<Arc<installed_endpoint_owner::InstalledEndpointCustody>>,
@@ -367,6 +369,7 @@ impl OwnedCallbackRuntimeState {
     ) -> Pin<Box<Self>> {
         Box::pin(Self {
             root_epoch: root_epoch_callbacks::NativeRuntimeRootEpoch::new(),
+            callback_roster: live_callbacks::callback_roster::RetainedCallbackRoster::default(),
             #[cfg(not(test))]
             installed_endpoint: std::sync::OnceLock::new(),
             quiescence: Arc::new(LiveCallbackQuiescence::new()),
@@ -1574,6 +1577,7 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
     status: *mut crate::QemuPluginHotForkBarrierStatus,
     userdata: *mut std::ffi::c_void,
 ) -> std::os::raw::c_int {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     if status.is_null() || userdata.is_null() {
         return -libc::EINVAL;
     }
@@ -1688,6 +1692,7 @@ extern "C" fn crucible_qemu_plugin_hot_fork_child_runtime(
     status: *mut crate::QemuPluginHotForkChildStatus,
     userdata: *mut std::ffi::c_void,
 ) -> std::os::raw::c_int {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     if status.is_null() || userdata.is_null() {
         return -libc::EINVAL;
     }
@@ -2529,6 +2534,19 @@ where
                 PluginRuntimeInstallError::HotForkChildRuntimeRejected {
                     status: child_runtime_status,
                 },
+                &mut acknowledgement_state,
+            ));
+        }
+
+        let callback_runtime = retained.registered_mut()?.userdata();
+        if let Err(error) = semantic_prefix::retain_installed_callbacks(
+            plugin_id,
+            callback_runtime,
+            retained.registered()?.state.as_ref().get_ref(),
+        ) {
+            return Err(fail_post_registration_before_ready_ack_lifecycle(
+                &mut control_stream,
+                error,
                 &mut acknowledgement_state,
             ));
         }

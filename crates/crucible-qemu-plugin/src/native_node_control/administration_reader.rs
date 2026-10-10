@@ -197,7 +197,7 @@ impl NativeNodeControl {
                     Ok(enrolled) => {
                         endpoint_enrolled = enrolled;
                         if enrolled
-                            && self.effect.is_some()
+                            && (self.effect.is_some() || self.prefix.is_some())
                             && let Some(notify) = self.protocol_notify
                             && notify() != 0
                         {
@@ -216,6 +216,14 @@ impl NativeNodeControl {
                 .as_ref()
                 .is_some_and(|effect| effect.recover_original_result().is_err())
             {
+                self.fail_administration();
+                return;
+            }
+            if self.prefix.as_ref().is_some_and(|prefix| {
+                prefix.recover_initial_preparation().is_err()
+                    || prefix.recover_original_result().is_err()
+                    || prefix.recover_original_requests().is_err()
+            }) {
                 self.fail_administration();
                 return;
             }
@@ -248,10 +256,15 @@ impl NativeNodeControl {
             // Contention retains the same original ACK/command and credits.
             // This coalesced event permits the parked native owner to recheck
             // them; it never calls a guest dispatcher or takes a later packet.
-            if self
+            let original_progress_pending = self
                 .effect
                 .as_ref()
                 .is_some_and(|effect| effect.original_progress_pending())
+                || self
+                    .prefix
+                    .as_ref()
+                    .is_some_and(|prefix| prefix.original_progress_pending());
+            if original_progress_pending
                 && let Some(notify) = self.protocol_notify
                 && notify() != 0
             {
@@ -358,6 +371,22 @@ impl NativeNodeControl {
             return Ok(false);
         };
         match frame {
+            NativeFrame::QueryPrefixPreparation { .. }
+            | NativeFrame::AcknowledgePrefixPreparation(_) => self
+                .prefix
+                .as_ref()
+                .ok_or(NativeCommandError::Conflict)?
+                .try_admit_initial_preparation(actor, cursor),
+            NativeFrame::AcknowledgePrefix(_) | NativeFrame::ContinuePrefix(_) => self
+                .prefix
+                .as_ref()
+                .ok_or(NativeCommandError::Conflict)?
+                .try_admit_request(actor, cursor),
+            NativeFrame::EffectCompute(_) if self.prefix.is_some() => self
+                .prefix
+                .as_ref()
+                .ok_or(NativeCommandError::Conflict)?
+                .try_admit(actor, cursor),
             NativeFrame::EffectCompute(_) => self
                 .effect
                 .as_ref()

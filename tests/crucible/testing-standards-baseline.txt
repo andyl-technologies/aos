@@ -489,3 +489,9 @@ crucible-daemon	src/node_observed_executor/factory/reference_lineage_reader/test
 # Source: crates/crucible-daemon/src/attempt_execution_router/tests.rs
 # SHA-256: dfdbac5419bd07ff26e28bd7d6c5e15c0bb1eca3c02b9ba23a35fbdb1b7ec5d0
 crucible-daemon	src/attempt_execution_router/tests	retry	1
+# Original initial common-custody containment polls the same retained Child
+# through the real RuntimeCustodyQueue under an absolute five-second deadline.
+# Its one millisecond pause avoids spinning; timeout or failed reap fails the
+# single test. It never repeats setup, an assertion, or a native command.
+crucible-qemu	src/native_node_control/owned_preparation/tests	thread::sleep	1
+crucible-qemu	src/native_node_control/owned_preparation/tests	std::thread::sleep	1

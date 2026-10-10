@@ -37,6 +37,16 @@ impl OriginalDeadline {
         Ok(())
     }
 
+    /// Waits briefly for the same pending original without renewing its deadline.
+    ///
+    /// # Errors
+    /// Refuses a deadline expired before or after the finite operational wait.
+    pub(super) fn wait_pending(&self) -> Result<(), Box<dyn Error>> {
+        self.check()?;
+        std::thread::sleep(Duration::from_millis(1));
+        self.check()
+    }
+
     /// Filters original validated frames under the same absolute watchdog.
     ///
     /// # Errors
@@ -58,7 +68,7 @@ impl OriginalDeadline {
                 }
             } else {
                 check_child()?;
-                std::thread::sleep(Duration::from_millis(1));
+                self.wait_pending()?;
             }
         }
     }

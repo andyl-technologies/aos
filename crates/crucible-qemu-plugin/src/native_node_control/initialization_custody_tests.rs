@@ -260,3 +260,82 @@ fn changed_original_receipt_quarantines_while_preserving_prior_receipt_and_cut()
     assert_eq!(custody.original_receipt(), Some(retained));
     assert_eq!(custody.original_cut(), Some(cut));
 }
+
+#[test]
+fn preparation_transport_stays_pending_while_original_initializer_is_borrowed() {
+    use crate::native_node_control::administrative_inbox::NativeAdministrativeInbox;
+    use crate::native_node_control::preparation_fifo::tests::{initializer, mapped};
+    use crate::native_node_control::preparation_transport::{
+        NativePreparationTransportCredit, NativePreparationTransportState,
+    };
+    use crate::runtime::callback_quiescence::LiveCallbackQuiescence;
+    use crate::runtime::native_run_control::{NativeRunControlCustody, test_running_pair};
+    use crate::runtime::worker_quiescence::{WORKER_RUN_CONTROL, WORKER_TEARDOWN};
+    use crucible_protocol::node_control::{NativeChannel, NativeControlEdition};
+
+    let region = mapped(1);
+    let initialization = initializer(true);
+    let original_ack = initialization.try_acknowledged_original().unwrap().unwrap();
+    let (_peer, native) =
+        NativeChannel::supervised_pair_for_edition(NativeControlEdition::Administration).unwrap();
+    let mut native = Some(native);
+    let inbox = Arc::new(
+        NativeAdministrativeInbox::from_pinned_endpoint(
+            &mut native,
+            initialization.scope,
+            false,
+            8,
+            65536,
+        )
+        .unwrap(),
+    );
+    let (_run_peer, native_run) = test_running_pair();
+    let run = NativeRunControlCustody::prepare(native_run);
+    run.status.unwrap();
+    let workers = Arc::clone(inbox.modeled_workers());
+    let _run_idle = workers.idle(WORKER_RUN_CONTROL);
+    let _teardown_idle = workers.idle(WORKER_TEARDOWN);
+    let callbacks = Arc::new(LiveCallbackQuiescence::new());
+
+    // Borrow the real initializer mutex on this same thread. A blocking accessor
+    // anywhere in transport construction or acquisition cannot complete here.
+    let borrowed = initialization.state.lock().unwrap();
+    let mut transport = NativePreparationTransportState::new(
+        Arc::clone(&initialization),
+        Arc::clone(&callbacks),
+        Arc::clone(&workers),
+        &region,
+        inbox,
+        run.owner,
+        NativePreparationTransportCredit {
+            fifo_bytes: 64 * 1024 * 1024,
+            inbox_bytes: 65536,
+        },
+    )
+    .unwrap();
+    assert!(!transport.try_retain(&region).unwrap());
+    assert!(!callbacks.snapshot().hot_fork_held);
+    assert!(!workers.snapshot().held);
+    assert_eq!(region.hot_fork_ring_io_snapshot().unwrap().held_rings(), 0);
+    drop(borrowed);
+
+    assert!(transport.try_retain(&region).unwrap());
+    let held_callbacks = callbacks.snapshot();
+    let held_workers = workers.snapshot();
+    let held_rings = region.hot_fork_ring_io_snapshot().unwrap();
+    let borrowed = initialization.state.lock().unwrap();
+
+    // A previously retained image still needs the same authentic ACK. Busy
+    // preserves the image and all holds rather than returning authority or fault.
+    assert!(!transport.try_retain(&region).unwrap());
+    assert_eq!(callbacks.snapshot(), held_callbacks);
+    assert_eq!(workers.snapshot(), held_workers);
+    assert_eq!(region.hot_fork_ring_io_snapshot().unwrap(), held_rings);
+    drop(borrowed);
+
+    assert!(transport.try_retain(&region).unwrap());
+    assert!(original_ack.try_validate_original(&initialization).unwrap());
+    assert_eq!(callbacks.snapshot(), held_callbacks);
+    assert_eq!(workers.snapshot(), held_workers);
+    assert_eq!(region.hot_fork_ring_io_snapshot().unwrap(), held_rings);
+}

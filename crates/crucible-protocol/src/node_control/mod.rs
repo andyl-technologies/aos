@@ -33,6 +33,8 @@ mod journal;
 mod phase;
 mod phase_timer_frames;
 mod phase_timers;
+mod prefix_frames;
+mod prefix_preparation;
 mod preparation_successor;
 mod preparation_successor_frames;
 mod preparation_successor_object;
@@ -71,6 +73,7 @@ pub use journal::{
     CommandJournal, CommandJournalDisposition, CommandJournalSnapshot,
     NATIVE_COMMAND_JOURNAL_MAX_BYTES, NATIVE_COMMAND_JOURNAL_MAX_ENTRIES,
 };
+pub use prefix_preparation::NativePrefixPreparation;
 pub use preparation_successor::{
     NATIVE_PREPARATION_SUCCESSOR_MAX_BYTES, NativePreparationSuccessorFacts,
 };
@@ -115,3 +118,19 @@ pub use effect_frames::NativeEffectCompute;
 
 mod effect_progress;
 pub use effect_progress::{NativeEffectProgress, NativeEffectProgressStatus};
+
+mod prefix_progress;
+pub use prefix_progress::{NativePrefixEvaluationKind, NativePrefixProgress};
+mod prefix_acknowledgement;
+pub use prefix_acknowledgement::{NativePrefixAcknowledgement, NativePrefixContinuation};
+
+mod prefix_preparation_observation;
+pub use prefix_preparation_observation::{
+    NativePrefixPreparationObservation, NativePrefixPreparationTimer,
+};
+
+mod prefix_preparation_acknowledgement;
+pub use prefix_preparation_acknowledgement::NativePrefixPreparationAcknowledgement;
+
+mod prefix_preparation_facts;
+pub use prefix_preparation_facts::NativePrefixPreparationFacts;

@@ -127,6 +127,21 @@ pub(super) fn start<F: PostRegistrationFatalPolicy>(
             status: -libc::ESTALE,
         });
     }
+    if let (Some(endpoint), Some(prefix)) = (
+        &installed_endpoint,
+        crate::native_node_control::registered_owner().and_then(|owner| owner.prefix.as_ref()),
+    ) && prefix
+        .install(
+            callbacks_registered.state.as_ref().get_ref(),
+            Arc::clone(endpoint),
+        )
+        .is_err()
+    {
+        fatal_policy.terminate(PluginRuntimeInstallError::InstalledEndpointOwner {
+            status: -libc::ESTALE,
+        });
+    }
+
     let teardown_endpoint = installed_endpoint.as_ref().map(Arc::clone);
     let teardown_worker = match std::thread::Builder::new()
         .name(String::from("crucible-teardown"))

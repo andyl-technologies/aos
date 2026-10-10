@@ -28,8 +28,7 @@ impl NativeQemuControlTransport {
         &mut self,
         sequence: U64,
     ) -> Result<bool, NativeQemuControlError> {
-        if self.channel.edition()
-            == crucible_protocol::node_control::NativeControlEdition::Original
+        if self.channel.edition() == crucible_protocol::node_control::NativeControlEdition::Original
         {
             return Err(NativeCommandError::UnsupportedVersion(2).into());
         }

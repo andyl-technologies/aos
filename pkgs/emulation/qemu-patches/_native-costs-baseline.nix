@@ -1,10 +1,12 @@
 # Pins the original native bodies used by the round-two differential proofs.
 # The reconstruction patch retains the licenses of its target QEMU files.
+# Its exact generic-atfork addition is reversed only for the original baseline;
+# the configured production source retains the reviewed lifecycle repair.
 {
   revision = "33343f63cb5e8749caadcb251c6b8a90ed0482cf";
   tree = "4f24df196ef8364bf75a61fd22b7f6e054f9fa4c";
   patch = ./_fixtures/native-costs-baseline-reconstruction.patch;
-  patchSha256 = "a1ff848637dd84366419a73f49bd78a3412287fe19ae4eb07ddf3a6fe6aac305";
+  patchSha256 = "24a6877b4dc4c36c8e5891407a18c083aa30b56a42f32249d4b205f0fb61a9e2";
   # Reconstruct the same frozen baseline after the signed root-census additions.
   # Only this prototype may differ between the two compiled header sets.
   reviewedAdaptation = {

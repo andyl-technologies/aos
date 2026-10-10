@@ -272,3 +272,6 @@ fn cpu_only_frames_are_closed_bounded_and_never_generic_coverage() {
 
 #[path = "effect_tests.rs"]
 mod effect;
+
+#[path = "prefix_record_tests.rs"]
+mod prefix_records;

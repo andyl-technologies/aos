@@ -1303,6 +1303,7 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_accelerator_submit_cb(
     output_capacity: usize,
     userdata: *mut c_void,
 ) -> c_int {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return -1;
@@ -1348,6 +1349,7 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_accelerator_restore_cb(
     output_capacity: usize,
     userdata: *mut c_void,
 ) -> c_int {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return -1;
@@ -1381,6 +1383,7 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_accelerator_restore_begin_cb(
     count: u32,
     userdata: *mut c_void,
 ) -> c_int {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return -1;
@@ -1398,6 +1401,7 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_accelerator_restore_begin_cb(
 pub(super) extern "C" fn crucible_qemu_plugin_live_accelerator_restore_commit_cb(
     userdata: *mut c_void,
 ) -> c_int {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return -1;
@@ -1419,6 +1423,7 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_accelerator_restore_commit_cb
 pub(super) extern "C" fn crucible_qemu_plugin_live_accelerator_restore_abort_cb(
     userdata: *mut c_void,
 ) {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return;
@@ -1435,6 +1440,7 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_accelerator_poll_cb(
     capacity: usize,
     userdata: *mut c_void,
 ) -> i64 {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return -1;
@@ -1461,6 +1467,7 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_accelerator_wait_cb(
     _sequence: u64,
     userdata: *mut c_void,
 ) {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return;
@@ -1472,6 +1479,7 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_accelerator_cancel_cb(
     sequence: u64,
     userdata: *mut c_void,
 ) -> c_int {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return -1;
@@ -1495,6 +1503,7 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_block_submit_cb(
     len: usize,
     userdata: *mut c_void,
 ) -> c_int {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return -1;
@@ -1515,6 +1524,7 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_block_poll_cb(
     capacity: usize,
     userdata: *mut c_void,
 ) -> i64 {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return -1;
@@ -1535,6 +1545,7 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_block_event_poll_cb(
     capacity: usize,
     userdata: *mut c_void,
 ) -> i64 {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return -1;
@@ -1554,6 +1565,7 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_block_event_poll_cb(
 pub(super) extern "C" fn crucible_qemu_plugin_live_block_event_commit_cb(
     userdata: *mut c_void,
 ) -> c_int {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return -1;
@@ -1569,6 +1581,7 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_block_transport_save_cb(
     capacity: usize,
     userdata: *mut c_void,
 ) -> i64 {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return -1;
@@ -1612,6 +1625,7 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_block_transport_restore_cb(
     qemu_next_request_id: u32,
     userdata: *mut c_void,
 ) -> c_int {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     let Some(state) = std::ptr::NonNull::new(userdata.cast::<LiveVcpuTimeCallbackState>()) else {
         return -1;
     };
@@ -1637,6 +1651,7 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_block_transport_restore_cb(
 }
 
 pub(super) extern "C" fn crucible_qemu_plugin_live_ninep_burst_start_cb(userdata: *mut c_void) {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return;
@@ -1653,6 +1668,7 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_ninep_submit_cb(
     response_capacity: usize,
     userdata: *mut c_void,
 ) -> c_int {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return -1;
@@ -1676,6 +1692,7 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_ninep_poll_cb(
     capacity: usize,
     userdata: *mut c_void,
 ) -> i64 {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return -1;
@@ -1692,6 +1709,7 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_ninep_poll_cb(
 }
 
 pub(super) extern "C" fn crucible_qemu_plugin_live_ninep_burst_done_cb(userdata: *mut c_void) {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return;

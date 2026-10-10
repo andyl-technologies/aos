@@ -119,3 +119,32 @@ fn poisoned_reader_custody_refuses_the_retained_manifest_descriptor() {
         Err(NativeAdministrativeInboxError::Poisoned)
     ));
 }
+
+#[test]
+fn busy_validation_preserves_the_original_reply_credit_and_packet() {
+    let (host, native) =
+        NativeChannel::supervised_pair_for_edition(NativeControlEdition::Administration).unwrap();
+    let mut endpoint = Some(native);
+    let inbox =
+        NativeAdministrativeInbox::from_pinned_endpoint(&mut endpoint, [1; 32], false, 8, 65536)
+            .unwrap();
+    assert!(host.send(&query()).unwrap());
+    assert_eq!(
+        inbox.receive_one().unwrap(),
+        NativeAdministrativeReceive::Retained(1, NativeAdministrativeClass::ReadOriginal)
+    );
+    let original = inbox.original(1).unwrap();
+    let credit = inbox.reserve_construction_reply(1).unwrap();
+    let held = inbox.test_hold_mailbox();
+
+    assert!(matches!(
+        inbox.validate_unpublished_credit(&credit),
+        Err(NativeAdministrativeInboxError::Busy)
+    ));
+
+    drop(held);
+    assert!(inbox.validate_unpublished_credit(&credit).is_ok());
+    assert!(inbox.validate_unpublished_credit(&credit).is_ok());
+    assert_eq!(inbox.original(1).unwrap(), original);
+    assert_eq!(inbox.original_frame(1).unwrap(), query());
+}

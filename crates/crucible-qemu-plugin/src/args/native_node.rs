@@ -24,9 +24,21 @@ pub struct NativeNodeControlConfig {
     endpoint_owner_version: Option<u32>,
     bounded_teardown_version: Option<u32>,
     effect_commitment: Option<[u8; 32]>,
+    prefix_commitment: Option<[u8; 32]>,
+    prefix_preparation_contract: Option<u32>,
 }
 
 impl NativeNodeControlConfig {
+    /// Returns the separately installed initial observation and consumed-ACK contract.
+    pub const fn prefix_preparation_contract(self) -> Option<u32> {
+        self.prefix_preparation_contract
+    }
+
+    /// Returns the distinct complete controller-nine preparation commitment.
+    pub const fn prefix_commitment(self) -> Option<[u8; 32]> {
+        self.prefix_commitment
+    }
+
     /// Returns the separately pinned complete original effect preparation.
     pub const fn effect_commitment(self) -> Option<[u8; 32]> {
         self.effect_commitment
@@ -114,11 +126,20 @@ pub(super) fn parse(
     } else {
         None
     };
+    let prefix_commitment = if parsed.value("node_prefix_commitment").is_some() {
+        Some(parse_required_hash(parsed, "node_prefix_commitment")?)
+    } else {
+        None
+    };
     if keys.iter().all(|key| parsed.value(key).is_none())
         && initialization.is_none()
         && phase.is_none()
         && administration.is_none()
         && fixed_microvm.is_none()
+        && prefix_commitment.is_none()
+        && parsed
+            .value("node_prefix_preparation_contract_version")
+            .is_none()
     {
         return Ok(None);
     }
@@ -135,6 +156,16 @@ pub(super) fn parse(
         }
         Some("4") if phase.is_some() => {
             crucible_protocol::node_control::NativeControlEdition::PreparationSuccessor
+        }
+        Some("9")
+            if phase.is_some()
+                && administration.is_some()
+                && fixed_microvm.is_some()
+                && bounded_teardown_version == Some(1)
+                && effect_commitment.is_some_and(|value| value != [0; 32])
+                && prefix_commitment.is_some_and(|value| value != [0; 32]) =>
+        {
+            crucible_protocol::node_control::NativeControlEdition::PrefixEffect
         }
         Some("8")
             if phase.is_some()
@@ -165,19 +196,41 @@ pub(super) fn parse(
                     | crucible_protocol::node_control::NativeControlEdition::Administration
                     | crucible_protocol::node_control::NativeControlEdition::Construction
                     | crucible_protocol::node_control::NativeControlEdition::FiniteEffect
+                    | crucible_protocol::node_control::NativeControlEdition::PrefixEffect
                     | crucible_protocol::node_control::NativeControlEdition::FixedMicrovm)))
         || (administration.is_some()
             && !matches!(edition, crucible_protocol::node_control::NativeControlEdition::Administration
                 | crucible_protocol::node_control::NativeControlEdition::Construction
                 | crucible_protocol::node_control::NativeControlEdition::FiniteEffect
+                    | crucible_protocol::node_control::NativeControlEdition::PrefixEffect
                     | crucible_protocol::node_control::NativeControlEdition::FixedMicrovm))
         || (fixed_microvm.is_some()
-            && !matches!(edition, crucible_protocol::node_control::NativeControlEdition::FixedMicrovm | crucible_protocol::node_control::NativeControlEdition::FiniteEffect))
+            && !matches!(edition, crucible_protocol::node_control::NativeControlEdition::FixedMicrovm | crucible_protocol::node_control::NativeControlEdition::FiniteEffect
+                    | crucible_protocol::node_control::NativeControlEdition::PrefixEffect))
     {
         return Err(PluginArgsParseError::InvalidNativeNodeControl);
     }
     if effect_commitment.is_some()
-        && edition != crucible_protocol::node_control::NativeControlEdition::FiniteEffect
+        && !matches!(
+            edition,
+            crucible_protocol::node_control::NativeControlEdition::FiniteEffect
+                | crucible_protocol::node_control::NativeControlEdition::PrefixEffect
+        )
+    {
+        return Err(PluginArgsParseError::InvalidNativeNodeControl);
+    }
+    let prefix_preparation_contract = match parsed.value("node_prefix_preparation_contract_version")
+    {
+        None => None,
+        Some("1")
+            if edition == crucible_protocol::node_control::NativeControlEdition::PrefixEffect =>
+        {
+            Some(1)
+        }
+        _ => return Err(PluginArgsParseError::InvalidNativeNodeControl),
+    };
+    if prefix_commitment.is_some()
+        && edition != crucible_protocol::node_control::NativeControlEdition::PrefixEffect
     {
         return Err(PluginArgsParseError::InvalidNativeNodeControl);
     }
@@ -193,6 +246,8 @@ pub(super) fn parse(
         endpoint_owner_version,
         bounded_teardown_version,
         effect_commitment,
+        prefix_commitment,
+        prefix_preparation_contract,
         fingerprint_worker: parsed.value(super::PLUGIN_ARG_FINGERPRINT) == Some("on"),
     }))
 }
@@ -204,7 +259,9 @@ pub(super) fn is_key(key: &str) -> bool {
         || super::native_initialization::is_key(key)
         || matches!(
             key,
-            "node_effect_commitment"
+            "node_prefix_preparation_contract_version"
+                | "node_prefix_commitment"
+                | "node_effect_commitment"
                 | "node_root_epoch_version"
                 | "node_endpoint_owner_version"
                 | "node_bounded_teardown_version"

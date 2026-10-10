@@ -57,7 +57,8 @@ pub(crate) fn install(
         crucible_protocol::node_control::NativeControlEdition::Administration
         | crucible_protocol::node_control::NativeControlEdition::Construction
         | crucible_protocol::node_control::NativeControlEdition::FixedMicrovm
-        | crucible_protocol::node_control::NativeControlEdition::FiniteEffect => Some(
+        | crucible_protocol::node_control::NativeControlEdition::FiniteEffect
+        | crucible_protocol::node_control::NativeControlEdition::PrefixEffect => Some(
             super::writer_abi::resolve_query_writers()
                 .ok_or(NativeControlInstallError::MissingCapability)?,
         ),
@@ -108,15 +109,28 @@ pub(crate) fn install(
             .receive()?
     };
     let mut effect_preparation = None;
+    let mut prefix_preparation = None;
     let first = match first {
+        Some(NativeFrame::PreparePrefix(preparation))
+            if config.prefix_commitment() == Some(preparation.identity_digest()?)
+                && config.effect_commitment()
+                    == Some(preparation.original_effect.identity_digest()?) =>
+        {
+            let original = preparation.original_effect.original_root.clone();
+            prefix_preparation = Some(*preparation);
+            Some(NativeFrame::PrepareFixedMicrovm(Box::new(original)))
+        }
         Some(NativeFrame::PrepareEffect(preparation))
-            if config.effect_commitment() == Some(preparation.identity_digest()?) =>
+            if config.prefix_commitment().is_none()
+                && config.effect_commitment() == Some(preparation.identity_digest()?) =>
         {
             let original = preparation.original_root.clone();
             effect_preparation = Some(*preparation);
             Some(NativeFrame::PrepareFixedMicrovm(Box::new(original)))
         }
-        first if config.effect_commitment().is_none() => first,
+        first if config.effect_commitment().is_none() && config.prefix_commitment().is_none() => {
+            first
+        }
         _ => return Err(NativeControlInstallError::MissingPreparation),
     };
     let (plan, initialization, phase) = match (first, config.initialization()) {
@@ -227,6 +241,7 @@ pub(crate) fn install(
             | crucible_protocol::node_control::NativeControlEdition::Construction
             | crucible_protocol::node_control::NativeControlEdition::FixedMicrovm
             | crucible_protocol::node_control::NativeControlEdition::FiniteEffect
+            | crucible_protocol::node_control::NativeControlEdition::PrefixEffect
     ) {
         control.with_preparation_successor()?
     } else {
@@ -237,6 +252,7 @@ pub(crate) fn install(
         crucible_protocol::node_control::NativeControlEdition::Construction
             | crucible_protocol::node_control::NativeControlEdition::FixedMicrovm
             | crucible_protocol::node_control::NativeControlEdition::FiniteEffect
+            | crucible_protocol::node_control::NativeControlEdition::PrefixEffect
     ) {
         control.with_construction_reducer()?
     } else {
@@ -248,6 +264,13 @@ pub(crate) fn install(
     };
     let control = match effect_preparation {
         Some(preparation) => control.with_effect_preparation(preparation)?,
+        None => control,
+    };
+    let control = match prefix_preparation {
+        Some(preparation) => control.with_prefix_preparation(
+            preparation,
+            config.prefix_preparation_contract() == Some(1),
+        )?,
         None => control,
     };
     // Callback ownership lasts until process termination. A leaked transport

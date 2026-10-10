@@ -13,6 +13,8 @@ use crucible_node_contract::U64;
 /// Selects one explicitly prepared native process-protocol edition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeControlEdition {
+    /// Selects separately pinned original prefix acknowledgements and continuation.
+    PrefixEffect,
     /// Selects independently pinned source-native finite effect command custody.
     FiniteEffect,
     /// Preserves original command, stop, acknowledgement and timer packet bytes.
@@ -38,6 +40,7 @@ impl NativeControlEdition {
     /// Returns the exact portable header version selected before native launch.
     pub const fn version(self) -> u16 {
         match self {
+            Self::PrefixEffect => 9,
             Self::FiniteEffect => 8,
             Self::Original => 1,
             Self::OwnedCustody => 2,
@@ -62,6 +65,19 @@ pub fn encode_frame_for_edition(
     edition: NativeControlEdition,
     frame: &NativeFrame,
 ) -> Result<Vec<u8>, NativeCommandError> {
+    if edition == NativeControlEdition::PrefixEffect {
+        return super::prefix_frames::encode(frame);
+    }
+    if matches!(
+        frame,
+        NativeFrame::PreparePrefix(_)
+            | NativeFrame::AcknowledgePrefix(_)
+            | NativeFrame::PrefixAcknowledged(_)
+            | NativeFrame::ContinuePrefix(_)
+            | NativeFrame::PrefixProgress(_)
+    ) {
+        return Err(NativeCommandError::UnsupportedVersion(9));
+    }
     if edition == NativeControlEdition::FiniteEffect {
         return super::effect_frames::encode(frame);
     }
@@ -243,6 +259,9 @@ pub fn decode_frame_for_edition(
     }
     if edition == NativeControlEdition::Original {
         return super::decode_frame(bytes);
+    }
+    if edition == NativeControlEdition::PrefixEffect {
+        return super::prefix_frames::decode(bytes);
     }
     if edition == NativeControlEdition::FiniteEffect {
         return super::effect_frames::decode(bytes);

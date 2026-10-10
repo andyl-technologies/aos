@@ -7,7 +7,7 @@
 //! using a command or releasing any native resources.
 
 mod transport;
-pub use transport::administration::NativeAdministrationTransport;
+pub use transport::administration::{NativeAdministrationTransport, NativePrefixParameters};
 
 pub use transport::{NativeLaunchEndpoint, NativeQemuControlError, NativeQemuControlTransport};
 
@@ -22,3 +22,7 @@ mod preparation_successor;
 
 mod root;
 pub use root::NativeFixedMicrovmParameters;
+
+/// Retains finite original command, endpoint and durable prefix-history custody.
+pub mod owned_operation;
+pub mod owned_preparation;

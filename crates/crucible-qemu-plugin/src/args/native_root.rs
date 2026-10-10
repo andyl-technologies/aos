@@ -162,4 +162,77 @@ mod tests {
             .replace("node_control_version=7", "node_control_version=6");
         assert!(PluginArgs::parse(&format!("{without_root},node_root_epoch_version=1")).is_err());
     }
+    #[test]
+    fn prefix_selector_requires_its_own_commitment_and_every_original_companion() {
+        let mut complete = fields();
+        complete[9] = "node_control_version=9".into();
+        complete.extend([
+            "node_root_epoch_version=1".into(),
+            "node_endpoint_owner_version=1".into(),
+            "node_bounded_teardown_version=1".into(),
+            format!("node_effect_commitment={}", "0c".repeat(32)),
+            format!("node_prefix_commitment={}", "0d".repeat(32)),
+        ]);
+
+        let selected = PluginArgs::parse(&complete.join(",")).unwrap();
+        let configuration = selected.native_node_control().unwrap();
+        assert_eq!(configuration.edition().version(), 9);
+        assert_eq!(configuration.effect_commitment(), Some([12; 32]));
+        assert_eq!(configuration.prefix_commitment(), Some([13; 32]));
+        assert_eq!(configuration.prefix_preparation_contract(), None);
+        let explicit = format!(
+            "{},node_prefix_preparation_contract_version=1",
+            complete.join(",")
+        );
+        assert_eq!(
+            PluginArgs::parse(&explicit)
+                .unwrap()
+                .native_node_control()
+                .unwrap()
+                .prefix_preparation_contract(),
+            Some(1)
+        );
+        for version in ["0", "2", "01", "", "future"] {
+            assert!(
+                PluginArgs::parse(&format!(
+                    "{},node_prefix_preparation_contract_version={version}",
+                    complete.join(",")
+                ))
+                .is_err()
+            );
+        }
+        assert!(
+            PluginArgs::parse(&format!(
+                "{explicit},node_prefix_preparation_contract_version=1"
+            ))
+            .is_err()
+        );
+        assert!(PluginArgs::parse("node_prefix_preparation_contract_version=1").is_err());
+        assert_eq!(configuration.bounded_teardown_version(), Some(1));
+        for index in 7..complete.len() {
+            let mut missing = complete.clone();
+            missing.remove(index);
+            assert!(PluginArgs::parse(&missing.join(",")).is_err());
+        }
+        for edition in 1..=8 {
+            let arguments = complete.join(",").replace(
+                "node_control_version=9",
+                &format!("node_control_version={edition}"),
+            );
+            assert!(PluginArgs::parse(&arguments).is_err());
+        }
+        for digest in ["00".repeat(32), "0d".repeat(31)] {
+            let arguments = complete.join(",").replace(
+                &format!("node_prefix_commitment={}", "0d".repeat(32)),
+                &format!("node_prefix_commitment={digest}"),
+            );
+            assert!(PluginArgs::parse(&arguments).is_err());
+        }
+        let stray = format!(
+            "{},node_prefix_commitment={}",
+            fields().join(","),
+            "0d".repeat(32)
+        );
+        assert!(PluginArgs::parse(&stray).is_err());
+    }
 }

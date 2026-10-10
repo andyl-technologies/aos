@@ -372,7 +372,9 @@ impl NativeAdministrativeMailbox {
         let frame = self.decode_original(cursor)?;
         if matches!(
             frame,
-            NativeFrame::Initialize(_) | NativeFrame::EffectCompute(_)
+            NativeFrame::Initialize(_)
+                | NativeFrame::EffectCompute(_)
+                | NativeFrame::ContinuePrefix(_)
         ) {
             let record = self
                 .records
@@ -479,6 +481,27 @@ impl NativeAdministrativeMailbox {
                 .records
                 .get(&credit.cursor)
                 .is_some_and(|record| record.reply_reserved)
+    }
+
+    /// Revalidates actual pre-dequeue reply storage without moving its credit.
+    ///
+    /// # Errors
+    /// Refuses foreign credit, missing backing or an already retained reply.
+    pub(crate) fn validate_unpublished_credit(
+        &self,
+        credit: &NativeAdministrativeReplyCredit,
+    ) -> Result<(), NativeAdministrativeError> {
+        if self.failed || !self.owns_credit(credit) {
+            return Err(NativeAdministrativeError::Conflict);
+        }
+        let record = self
+            .records
+            .get(&credit.cursor)
+            .ok_or(NativeAdministrativeError::Conflict)?;
+        if record.reply.is_some() || record.reply_storage.capacity() < MAXIMUM_PACKET_BYTES {
+            return Err(NativeAdministrativeError::Conflict);
+        }
+        Ok(())
     }
 
     /// Decodes the immutable original record under its pinned transport edition.
@@ -620,6 +643,35 @@ fn reply_matches(original: &NativeFrame, reply: &NativeFrame, scope: [u8; 32]) -
             // original command/grant and retains byte-identical reply history.
             progress.scope == scope && progress.validate_against(original).is_ok()
         }
+        (
+            NativeFrame::QueryPrefixPreparation {
+                scope: original_scope,
+                prefix_preparation,
+            },
+            NativeFrame::PrefixPreparationFacts(reply),
+        ) => {
+            let bytes = reply.canonical_bytes();
+            *original_scope == scope
+                && bytes[16..48] == scope
+                && bytes[520..552] == *prefix_preparation
+        }
+        (
+            NativeFrame::AcknowledgePrefixPreparation(original),
+            NativeFrame::PrefixPreparationAcknowledged(reply),
+        ) => original.scope == scope && original == reply,
+        (NativeFrame::AcknowledgePrefix(original), NativeFrame::PrefixAcknowledged(reply)) => {
+            original.scope == scope && original == reply
+        }
+        (NativeFrame::ContinuePrefix(original), NativeFrame::PrefixProgress(reply)) => {
+            reply.scope == scope
+                && reply.prefix_preparation == original.acknowledgement.prefix_preparation
+                && reply.grant_digest == original.acknowledgement.grant_digest
+                && reply.command_digest == original.acknowledgement.command_digest
+                && reply.sequence == original.acknowledgement.sequence
+                && reply.previous_cut_id == original.acknowledgement.cut_id
+                && reply.acknowledgement_sequence
+                    == original.acknowledgement.acknowledgement_sequence
+        }
         (NativeFrame::Acknowledge(original), NativeFrame::Acknowledged(reply)) => original == reply,
         (
             NativeFrame::AcknowledgeInitialization(original),
@@ -639,6 +691,20 @@ fn classify(
         return NativeAdministrativeClass::Invalid;
     };
     match frame {
+        NativeFrame::PreparePrefix(plan)
+            if plan
+                .original_effect
+                .original_root
+                .administration
+                .phase
+                .initialization
+                .preparation
+                .scope
+                .identity_digest()
+                == Ok(scope) =>
+        {
+            NativeAdministrativeClass::Preparation
+        }
         NativeFrame::PrepareEffect(plan)
             if plan
                 .original_root
@@ -714,6 +780,21 @@ fn classify(
         }
         NativeFrame::QueryInitialization(query) if query.prepared_scope_hash == scope => {
             NativeAdministrativeClass::ReadOriginal
+        }
+        NativeFrame::QueryPrefixPreparation {
+            scope: original_scope,
+            ..
+        } if original_scope == scope => NativeAdministrativeClass::ReadOriginal,
+        NativeFrame::AcknowledgePrefixPreparation(ack) if ack.scope == scope => {
+            NativeAdministrativeClass::AcknowledgeOriginal
+        }
+        NativeFrame::AcknowledgePrefix(acknowledgement) if acknowledgement.scope == scope => {
+            NativeAdministrativeClass::AcknowledgeOriginal
+        }
+        NativeFrame::ContinuePrefix(continuation)
+            if continuation.acknowledgement.scope == scope =>
+        {
+            NativeAdministrativeClass::Modeled
         }
         NativeFrame::Acknowledge(_) | NativeFrame::AcknowledgeInitialization(_) => {
             NativeAdministrativeClass::AcknowledgeOriginal

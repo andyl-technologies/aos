@@ -15,6 +15,17 @@ use super::{
 /// Rejects invalid local records, zero sequences or exhausted byte allowances.
 pub fn encode_frame(frame: &NativeFrame) -> Result<Vec<u8>, NativeCommandError> {
     let (kind, body) = match frame {
+        NativeFrame::QueryPrefixPreparation { .. }
+        | NativeFrame::PrefixPreparationFacts(_)
+        | NativeFrame::AcknowledgePrefixPreparation(_)
+        | NativeFrame::PrefixPreparationAcknowledged(_)
+        | NativeFrame::PreparePrefix(_)
+        | NativeFrame::AcknowledgePrefix(_)
+        | NativeFrame::PrefixAcknowledged(_)
+        | NativeFrame::ContinuePrefix(_)
+        | NativeFrame::PrefixProgress(_) => {
+            return Err(NativeCommandError::UnsupportedVersion(9));
+        }
         NativeFrame::PrepareEffect(_)
         | NativeFrame::EffectCompute(_)
         | NativeFrame::EffectProgress(_) => {
