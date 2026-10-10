@@ -282,6 +282,24 @@ unproven.
 All original faults remain preserved. No task, exit or freeze advances from
 these partial results.
 
+Combined tree `db99b7d937` passes all three property gates: 48 resolution,
+seven required-attribute and fifteen domain-reference cases, with no failures
+or ignored tests. Resolution executes the new canonical signing-key regression
+exactly once. Independent review verifies the actual terminal results and
+immutable source bindings. The same tree passes required application
+compilation: 114 rebuilt test targets across 29 applications, including 77
+integration targets. This is compilation evidence, not application runtime
+qualification. Native build, strict package all-target Clippy and fresh native
+all-target compilation also pass, with a genuine 1,041-case inventory. The first
+new fold witness refuses incoming publication because its fixture advances an
+absent source ref with an arbitrary parent; the other two witnesses remain
+unrun. A genuine source-fork fixture correction is under review. On tree
+`f6618ce65b`, the six-population owning check times out its first ordinary
+1,024-entry case at the existing 1,800-second bound; the remaining five are
+unrun. This result establishes no phase-level cause or capacity qualification.
+Index recovery and the complete current trunk floor remain pending. These
+results do not advance a task checkbox, milestone exit or freeze.
+
 The earlier combined read candidate `be832963c4` failed strict native all-target
 Clippy on two large enum variants. The reviewed enum, PACK-16 attribution,
 native fixture, producer-history and GC handoff corrections are composed on
