@@ -21,10 +21,6 @@ use aos_sandbox_protocol::authenticated_session::{
 };
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
 
-mod broker_owner;
-mod channel;
-mod client_owner;
-
 const FIRST_RESPONSE_BOUND: u32 = 4_096;
 const FIRST_REQUEST_LIFETIME_NANOSECONDS: u64 = 5_000_000_000;
 
