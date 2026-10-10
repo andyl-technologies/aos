@@ -15,6 +15,12 @@ struct ProductQemuResources {
     overlay_backings: BTreeSet<(u64, u64)>,
 }
 
+/// One `/proc` sample: a complete audit, or why the World is not yet auditable.
+enum HotForkResourceSample {
+    Ready(ProductHotForkResourceAudit),
+    Pending(String),
+}
+
 #[derive(Debug)]
 pub(super) struct ProductHotForkResourceAudit {
     sources: Vec<ProductQemuResources>,
@@ -74,18 +80,23 @@ pub(super) fn wait_for_envoy_hot_fork_resources(
     canceled: &std::sync::atomic::AtomicBool,
 ) -> Result<ProductHotForkResourceAudit, String> {
     let deadline = Instant::now() + Duration::from_secs(900);
+    // The last rejection names the predicate that kept the live World from
+    // auditing, so a failed flight explains itself without another run.
+    let mut last_pending = String::from("no sample was taken");
     while Instant::now() < deadline && !canceled.load(std::sync::atomic::Ordering::Acquire) {
-        if let Some(audit) = sample_envoy_hot_fork_resources(service_pid)? {
-            return Ok(audit);
+        match sample_envoy_hot_fork_resources(service_pid)? {
+            HotForkResourceSample::Ready(audit) => return Ok(audit),
+            HotForkResourceSample::Pending(reason) => last_pending = reason,
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    Err("five-node Envoy HotFork never exposed five live source/child QEMU pairs with private ring and overlay resources".into())
+    Err(format!(
+        "five-node Envoy HotFork never exposed five live source/child QEMU pairs with private ring and overlay resources; last sample: {last_pending}"
+    ))
 }
 
-fn sample_envoy_hot_fork_resources(
-    service_pid: u32,
-) -> Result<Option<ProductHotForkResourceAudit>, String> {
+fn sample_envoy_hot_fork_resources(service_pid: u32) -> Result<HotForkResourceSample, String> {
+    let pending = |reason: String| Ok(HotForkResourceSample::Pending(reason));
     let expected_qemu = required_path("CRUCIBLE_FLIGHT_QEMU")
         .map_err(|error| error.to_string())?
         .to_string_lossy()
@@ -98,13 +109,15 @@ fn sample_envoy_hot_fork_resources(
         .map(|(pid, _)| pid)
         .collect::<Vec<_>>();
     if qemu_pids.len() != 10 {
-        return Ok(None);
+        return pending(format!("{} product QEMU processes", qemu_pids.len()));
     }
 
     let mut processes = BTreeMap::new();
     for pid in qemu_pids {
         let Some(resources) = product_qemu_resources(pid)? else {
-            return Ok(None);
+            return pending(format!(
+                "QEMU {pid} exited or its /proc state was unreadable"
+            ));
         };
         processes.insert(pid, resources);
     }
@@ -114,7 +127,10 @@ fn sample_envoy_hot_fork_resources(
         .map(|process| process.pid)
         .collect::<Vec<_>>();
     if child_pids.len() != 5 {
-        return Ok(None);
+        return pending(format!(
+            "{} of 10 QEMU processes are children of another product QEMU",
+            child_pids.len()
+        ));
     }
 
     let mut sources = Vec::new();
@@ -123,21 +139,35 @@ fn sample_envoy_hot_fork_resources(
     let mut overlay_backings = BTreeSet::new();
     for child_pid in child_pids {
         let Some(child) = processes.remove(&child_pid) else {
-            return Ok(None);
+            return pending(format!("child QEMU {child_pid} shares a source"));
         };
         let Some(source) = processes.remove(&child.parent_pid) else {
-            return Ok(None);
+            return pending(format!(
+                "source QEMU {} parents more than one child",
+                child.parent_pid
+            ));
         };
         if source.ring_backings.is_empty()
             || child.ring_backings.is_empty()
             || source.overlay_backings.is_empty()
             || child.overlay_backings.is_empty()
         {
-            return Ok(None);
+            return pending(format!(
+                "source {} rings={} overlays={}, child {} rings={} overlays={}",
+                source.pid,
+                source.ring_backings.len(),
+                source.overlay_backings.len(),
+                child.pid,
+                child.ring_backings.len(),
+                child.overlay_backings.len()
+            ));
         }
         if !source.ring_backings.is_disjoint(&child.ring_backings) {
             // A just-forked child has not yet replaced the inherited mapping.
-            return Ok(None);
+            return pending(format!(
+                "child QEMU {} still maps its source ring",
+                child.pid
+            ));
         }
         for process in [&source, &child] {
             if process
@@ -149,7 +179,10 @@ fn sample_envoy_hot_fork_resources(
                     .iter()
                     .any(|backing| !ring_backings.insert(backing.clone()))
             {
-                return Ok(None);
+                return pending(format!(
+                    "QEMU {} shares a ring or writable overlay with another process",
+                    process.pid
+                ));
             }
         }
         sources.push(source);
@@ -185,7 +218,10 @@ fn sample_envoy_hot_fork_resources(
             "Envoy HotFork exceeded product resource limits: descriptors={total_descriptors}, threads={total_threads}, child_private_dirty_kib={child_private_dirty_kib}"
         ));
     }
-    Ok(Some(ProductHotForkResourceAudit { sources, children }))
+    Ok(HotForkResourceSample::Ready(ProductHotForkResourceAudit {
+        sources,
+        children,
+    }))
 }
 
 fn product_qemu_resources(pid: u32) -> Result<Option<ProductQemuResources>, String> {
