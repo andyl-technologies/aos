@@ -15,6 +15,7 @@ use crucible_node_contract::{
 use crate::{device_subnode::ScheduledIoNode, node_admission::AdmittedGraph, node_contract::*};
 
 pub use condition_state::reopen::reopen_condition_model;
+pub use owned_preparation::HOST_PUBLIC_OWNED_MODEL_PREPARATION_SPECIFICATION;
 pub use preparation::{
     HOST_PUBLIC_CLOCK_PREPARATION_SPECIFICATION, host_public_clock_preparation_schema,
 };
@@ -186,6 +187,22 @@ pub trait HostModelQualification {
         binding: &NodeBinding,
     ) -> Result<(), OperationFailure>;
 
+    /// Qualifies original public preparation of an independently owned finite model.
+    ///
+    /// # Errors
+    /// Refuses by default. An installed policy must regenerate the complete
+    /// graph, immutable model inputs and original single-owner scope. This
+    /// permission supplies no continuation or capture qualification.
+    fn authenticate_initial_owned_model(
+        &self,
+        _model: &HostModel,
+        _graph: &AdmittedGraph,
+        _descriptor: &NodeDescriptor,
+        _binding: &NodeBinding,
+    ) -> Result<(), OperationFailure> {
+        Err(failure("original owned-model preparation is not qualified"))
+    }
+
     /// Authenticates the independently installed complete recorded-input source.
     ///
     /// # Errors
@@ -327,6 +344,7 @@ pub struct HostModelNode {
     original_model_session: Rc<()>,
     preparation_origin: HostPreparationOrigin,
     public_preparation: Option<HostPublicPreparation>,
+    public_model_preparation: Option<owned_preparation::OriginalOwnedModelPreparation>,
     public_continuation: bool,
     recorded_ingress: Option<super::host_ingress::RecordedIngressCustody>,
     condition_preservation: bool,
@@ -524,6 +542,7 @@ impl HostModelNode {
             original_model_session: Rc::new(()),
             preparation_origin: HostPreparationOrigin::Original,
             public_preparation: None,
+            public_model_preparation: None,
             public_continuation: false,
             recorded_ingress: None,
             condition_preservation: false,
@@ -726,6 +745,9 @@ mod terminal;
 
 #[path = "host_preparation.rs"]
 mod preparation;
+
+#[path = "host_owned_preparation.rs"]
+mod owned_preparation;
 #[path = "host_public_continuation.rs"]
 mod public_continuation;
 

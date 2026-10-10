@@ -1351,6 +1351,11 @@ impl HostModelNode {
     }
 
     pub(super) fn capture_continuation(&self) -> Result<Vec<u8>, OperationFailure> {
+        if self.public_model_preparation.is_some() {
+            return Err(failure(
+                "public owned-model preparation requires a distinct preparation-bearing capture codec",
+            ));
+        }
         if !self.facets.contains(&FacetKind::ExactExecution) {
             return self.capture();
         }

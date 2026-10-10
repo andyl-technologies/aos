@@ -551,3 +551,6 @@ mod gem5_extra_clock;
 #[cfg(test)]
 #[path = "node_capability_process/host_roster.rs"]
 mod host_roster;
+
+#[path = "node_capability_process/gem5_host_group.rs"]
+mod gem5_host_group;

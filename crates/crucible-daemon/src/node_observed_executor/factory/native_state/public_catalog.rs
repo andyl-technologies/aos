@@ -134,6 +134,18 @@ pub(in super::super) fn scenario(
     catalog: &InstalledNodeCatalog,
     selections: &[InstalledNodeSelection],
 ) -> Result<NodeScenario, NodeObservedError> {
+    if super::host_group::selection::selected(selections) {
+        if measure_executable(&catalog.host_executable)? != catalog.host_identity {
+            return Err(refused(
+                "actual catalog host changed before independent group selection",
+            ));
+        }
+        let installed = super::super::InstalledGem5ClosedProfile::built_in()?;
+        return Ok(super::host_group::profile::IndependentGroupProfile::build(
+            installed, catalog, selections,
+        )?
+        .scenario);
+    }
     let isa = selected_isa(selections)?;
     if measure_executable(&catalog.host_executable)? != catalog.host_identity {
         return Err(refused(
@@ -172,6 +184,28 @@ pub(in super::super) fn prepare(
     authored: NodeScenario,
     execution: ExecutionId,
 ) -> Result<InstalledPreparedWorld, NodeObservedError> {
+    if super::host_group::selection::selected(selections) {
+        let expected = scenario(catalog, selections)?;
+        if authored.canonical_bytes()? != expected.canonical_bytes()? {
+            return Err(refused(
+                "authored independent group differs from complete source selection",
+            ));
+        }
+        let engine = InstalledMixedEngine::with_runtime(
+            catalog.socket_parent.clone(),
+            catalog.custody.clone(),
+        )?;
+        let activation = Id::new(format!("activation/{}", execution_text(execution)))?;
+        let live =
+            engine.prepare_independent_group(catalog, selections, &expected, activation, None)?;
+        let graph = Rc::try_unwrap(live.graph)
+            .map_err(|_| refused("independent group retained unexpected graph aliases"))?;
+        return Ok(InstalledPreparedWorld {
+            scenario: live.profile.scenario.clone(),
+            graph,
+            realization: live.realization,
+        });
+    }
     let live = prepare_source(catalog, selections, authored, execution)?;
     let graph = Rc::try_unwrap(live.graph)
         .map_err(|_| refused("closed gem5 graph retained unexpected preparation aliases"))?;
@@ -195,6 +229,32 @@ pub(in super::super) fn prepare_capability(
     ),
     NodeObservedError,
 > {
+    if super::host_group::selection::selected(selections) {
+        let expected = resolved.gem5_scenario(&scenario(catalog, selections)?)?;
+        let engine = InstalledMixedEngine::with_runtime(
+            catalog.socket_parent.clone(),
+            catalog.custody.clone(),
+        )?;
+        let activation = Id::new(format!("activation/{}", execution_text(execution)))?;
+        let live = engine.prepare_independent_group(
+            catalog,
+            selections,
+            &expected,
+            activation,
+            Some(resolved),
+        )?;
+        let graph = Rc::try_unwrap(live.graph).map_err(|_| {
+            refused("independent capability group retained unexpected graph aliases")
+        })?;
+        return Ok((
+            InstalledPreparedWorld {
+                scenario: live.profile.scenario.clone(),
+                graph,
+                realization: live.realization,
+            },
+            live.target,
+        ));
+    }
     let isa = selected_isa(selections)?;
     let expected = resolved.gem5_scenario(&scenario(catalog, selections)?)?;
     if !matches!(selections[1].kind, InstalledNodeKind::Gem5Closed { .. })

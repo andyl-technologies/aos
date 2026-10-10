@@ -206,7 +206,9 @@ impl InstalledNodeCatalog {
         if source.is_some_and(|value| value.manifest().world_binding_hash != identity) {
             return Err(refused("original capability source world differs"));
         }
-        if policy::gem5_ordinary(&resolved.candidate.selections) {
+        if policy::gem5_ordinary(&resolved.candidate.selections)
+            || policy::gem5_storage_group(&resolved.candidate.selections)
+        {
             if source.is_some() {
                 return Err(refused(
                     "authored gem5 capability continuation is not qualified",

@@ -88,7 +88,8 @@ impl AdmissionEvidence for CapabilityAdmission<'_> {
             requirement,
             policy::standalone_clock(&self.resolved.candidate.selections),
             policy::condition_preservation(&self.resolved.candidate.selections),
-            policy::gem5_ordinary(&self.resolved.candidate.selections),
+            policy::gem5_ordinary(&self.resolved.candidate.selections)
+                || policy::gem5_storage_group(&self.resolved.candidate.selections),
         )
         .map_err(|error| refused(&error.to_string()))
     }

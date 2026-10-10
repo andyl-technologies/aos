@@ -144,6 +144,10 @@ fn pending_status_and_exact_retry_do_not_wait_for_actor_and_full_queue_keeps_ori
         ledger::CapabilityPreparationLedger::new(blobs.clone(), refs.clone()).unwrap();
     let (commands, receiver) = mpsc::sync_channel(1);
     let service = super::super::NodeObservationService {
+        repository: Arc::new(crucible_campaign::CampaignRepository::new(
+            blobs.clone(),
+            refs.clone(),
+        )),
         commands,
         stopping: Arc::new(AtomicBool::new(false)),
         roots: Arc::new(Mutex::new(Default::default())),
@@ -198,6 +202,22 @@ fn pending_status_and_exact_retry_do_not_wait_for_actor_and_full_queue_keeps_ori
         encode(&unavailable).unwrap(),
         encode(&service.submit_capability_preparation(excess).unwrap()).unwrap()
     );
+
+    // The original preparation still occupies the only actor queue slot. An
+    // ordinary durable lookup must report the absent ledger, not queue capacity
+    // or wait for this deliberately unconsumed command.
+    assert!(matches!(
+        service.state(crucible_campaign::ExecutionId::from_bytes([0x81; 16]).unwrap()),
+        Err(NodeObservationServiceError::Refused(reason))
+            if reason == "execution has no authoritative observation record"
+    ));
+    service
+        .stopping
+        .store(true, std::sync::atomic::Ordering::Release);
+    assert!(matches!(
+        service.state(crucible_campaign::ExecutionId::from_bytes([0x81; 16]).unwrap()),
+        Err(NodeObservationServiceError::Unavailable)
+    ));
 
     let command = receiver.try_recv().unwrap();
     assert!(matches!(

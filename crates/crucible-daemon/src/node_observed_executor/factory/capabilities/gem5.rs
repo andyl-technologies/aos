@@ -12,7 +12,9 @@ impl ResolvedCapabilityWorld {
         &self,
         baseline: &NodeScenario,
     ) -> Result<NodeScenario, NodeObservedError> {
-        if !policy::gem5_ordinary(&self.candidate.selections) {
+        if !policy::gem5_ordinary(&self.candidate.selections)
+            && !policy::gem5_storage_group(&self.candidate.selections)
+        {
             return Err(refused(
                 "capability selection is outside the installed live Clock/gem5 roster",
             ));

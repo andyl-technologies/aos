@@ -58,6 +58,7 @@ impl SimulationNode for HostModelNode {
             ready_receipt: self.receipt("host-model-owned-inactive-v1")?,
         };
         self.retain_public_clock_ready(world, &mut ready)?;
+        self.retain_owned_model_ready(world, &mut ready)?;
         if let Some((original, retained)) = &self.readiness
             && (original != world || retained != &ready)
         {
@@ -72,6 +73,9 @@ impl SimulationNode for HostModelNode {
         world: &ActivationRecord,
         ready: &ReadyAttestation,
     ) -> Result<Option<Vec<crucible_node_contract::PreparedOwner>>, OperationFailure> {
+        if self.public_model_preparation.is_some() {
+            return self.original_model_owners(world, ready);
+        }
         self.public_clock_owners(world, ready)
     }
 
@@ -81,9 +85,12 @@ impl SimulationNode for HostModelNode {
         ready: &ReadyAttestation,
         owners: &[crucible_node_contract::PreparedOwner],
     ) -> Result<(), OperationFailure> {
-        let original = self
-            .public_clock_owners(world, ready)?
-            .ok_or_else(|| failure("public clock preparation was not selected"))?;
+        let original = if self.public_model_preparation.is_some() {
+            self.original_model_owners(world, ready)?
+        } else {
+            self.public_clock_owners(world, ready)?
+        }
+        .ok_or_else(|| failure("public clock preparation was not selected"))?;
         if original != owners {
             return Err(failure(
                 "public clock owners differ from original inactive model custody",
@@ -101,6 +108,11 @@ impl SimulationNode for HostModelNode {
             return Err(failure(
                 "restored public Clock cannot authenticate initial preparation",
             ));
+        }
+        if self.public_model_preparation.is_some() {
+            self.original_model_owners(world, ready)?
+                .ok_or_else(|| failure("original model preparation was not selected"))?;
+            return Ok(());
         }
         self.public_clock_owners(world, ready)?
             .ok_or_else(|| failure("clock did not select genuine public initial preparation"))?;
@@ -459,6 +471,11 @@ impl SimulationNode for HostModelNode {
             .is_some_and(|ingress| !ingress.preserved)
         {
             return Err(failure("recorded input cursor capture is not qualified"));
+        }
+        if self.public_model_preparation.is_some() {
+            return Err(failure(
+                "public owned-model preparation requires a distinct preparation-bearing capture codec",
+            ));
         }
         if self.public_preparation.is_some() {
             return Err(failure(

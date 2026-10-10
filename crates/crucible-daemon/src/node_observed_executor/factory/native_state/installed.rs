@@ -5,6 +5,8 @@
 //! cold preparation reserves authenticated image custody before graph admission
 //! and leaves child allocation to the already installed restoration capsule.
 
+mod host_group;
+
 use std::{
     fs::File,
     io::Read,

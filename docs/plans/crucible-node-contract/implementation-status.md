@@ -86,10 +86,78 @@ schemas and test adapters establish component behavior, not native support.
 | `ddc791bf66` | Production native actor, host-state/control/CLI integration, installed public qualification and matching package pins | Actual original Pending capture and two-fresh cold continuation pass in 159.79 seconds; actual actor-panic custody passes in 49.49 seconds; eight ledger and three control cases pass; ordinary daemon and CLI suites pass 882 and 360 cases respectively |
 | `a530518937` | CLI native preservation through fresh daemon processes | Actual source daemon retirement, signed-state restart, exact original retry and two fresh completions pass in 158.93 seconds; help and strict target checks pass |
 | `9dbb8a28de` | Campaign and daemon test-local lint cleanup | Scoped test allowances and equivalent reverse lookup pass strict checks; all 446 campaign library cases pass |
+| `ac09b631d6` | Controller admission fixtures and complete installed provider tool roster | Seven admission and three artifact tests pass; repaired registered license gate passes |
+| `799190ef5b` | Bounded semantic-prefix control, original native construction/callback custody and matching source | Plugin, host, protocol, archive and source-quality cases pass; registered four-vCPU ABI comparison fails at a timer deadline divergence, as recorded below |
 
 Legacy codec bytes, hash domains, fault identifiers, and existing exact QEMU
 restore semantics remain unchanged by these source extractions. New node
 records use separate public schemas and cannot relabel legacy authority.
+
+## Bounded QEMU control checkpoint and registered gate failure
+
+Commit `799190ef5b` adds versioned semantic-prefix preparation, progress and
+acknowledgment records, original native callback/construction custody, and
+bounded host preparation, evidence and teardown. Unsupported native execution
+and capture remain refused. Commit `ac09b631d6` fixes admission-test runtime
+fixtures and checks the complete fourteen-tool provider roster.
+
+The source checkpoint passes 736 plugin, 854 host, 248 protocol and 17 archive
+cases, 37 source-quality checks, the unsafe-boundary and source-size checks,
+strict compilation and formatting. Local hermetic application compilation
+includes 167 test targets, including 69 integration targets. The repaired
+registered license-boundary gate passes 6,963 cases across 309 binaries, with
+274 registered skips.
+
+The same checkpoint fails the registered four-vCPU ABI boot comparison. The
+first retained timer-5 deadline differs by 200 ps, alongside four retired
+instructions. Its primary host, QEMU, plugin and guest inputs match the preceding
+tested inputs; the changed later host-parallel executable is not reached. These
+comparisons narrow the investigation without establishing a causal origin. The original assertion, workload and deadline are unchanged. There is
+no current overall ABI pass or native-readiness claim.
+
+A separate source-built diagnostic tuple retains integer timer identities,
+original APIC programming origins and CPU turn records in bounded rings. Its
+composition preserves the original boot/cgroup/quota setup and assertions;
+bounded rings are collected after the original execution and cleanup. The
+original failed flight and all diagnostic source/build artifacts remain local.
+The corrected reference diagnostic overflowed its 65,536-record ring before
+the hostile lane ran. Its retained prefix identifies timer 5 as CPU 1's APIC
+timer, but cannot supply a complete pair or explain the divergence. Diagnostic
+observations do not supply a registered gate pass.
+
+Local KVM is available inside the builder namespace. A patched nested guest
+passes real API/capability discovery, empty-VM creation, and a pre-vCPU clock
+configure/query probe including refusal and immutability checks. These probes
+create no inner vCPU and run no guest instructions. A separate empty-VM
+window probe also verifies arming, ceiling closure, frozen forward stepping,
+and refusal through real controller ioctls. A separate one-vCPU probe passes
+real RDTSC/RDTSCP guest execution, original private exit/clock acknowledgment
+and child cleanup. These are scoped component probes; complete device
+mediation, paced full-machine execution and native node qualification remain
+required.
+
+## Live four-owner execution and direct status
+
+The installed live gem5 CPU, Clock, Script and Block group uses the original
+prepared owner custody and complete-world activation. Requirements and source
+bindings select the full group before construction. Its live profile advertises
+no capture and refuses continuation; the preserving profile is a separate
+implementation and cannot inherit readiness from this result.
+
+Authenticated status requests read retained state directly, so a pending native
+operation does not hold status requests behind the actor queue. Unknown
+placements, nonce mismatches, and unsealed outcomes keep their existing refusal
+or reconciliation behavior. The operation, pending input and retry retain the
+same original custody.
+
+Verification on the coherent source passes the actual four-owner workload, the
+legacy Clock source-removal/two-fresh-restore scenario, five owned-preparation
+cases, three native-selection cases, two direct-status cases, and the original
+pending-operation/input/retry case. All three changed crates pass strict
+all-target compilation, all 37 source-quality cases pass, and formatting passes.
+Hermetic application compilation passes 167 test targets, including 69
+integration targets. The preceding storage-exhaustion attempt remains a failed
+build attempt; its unchanged-source retry supplies the completed gate result.
 
 ## Component verification in progress
 

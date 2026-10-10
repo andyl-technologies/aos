@@ -44,7 +44,7 @@ pub(in crate::node_observed_executor::factory) fn matches(
             demand,
             standalone_clock(selections),
             condition_preservation(selections),
-            gem5_ordinary(selections),
+            gem5_ordinary(selections) || gem5_storage_group(selections),
         )?;
     }
     Ok(())
@@ -231,4 +231,12 @@ pub(super) fn gem5_ordinary(selections: &[InstalledNodeSelection]) -> bool {
             && cpu.node.as_str() == "cpu"
             && cpu.owner.as_str() == "owner/cpu"
             && matches!(cpu.kind, InstalledNodeKind::Gem5Closed { .. }))
+}
+
+// This separately installed disconnected conjunction preserves the old
+// clock-only policy. Full source regeneration and actual enrollment remain
+// mandatory before it can dispatch ordinary exact operations.
+pub(super) fn gem5_storage_group(selections: &[InstalledNodeSelection]) -> bool {
+    super::super::native_state::host_group::selection::IndependentGroupSelection::new(selections)
+        .is_ok()
 }

@@ -12,6 +12,7 @@ mod execution;
 mod factory;
 pub(super) mod host;
 pub(in crate::node_observed_executor::factory) mod host_clocks;
+pub(in crate::node_observed_executor::factory) mod host_group;
 mod installed;
 mod ledger;
 pub(super) mod profile;

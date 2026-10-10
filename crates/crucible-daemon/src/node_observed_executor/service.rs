@@ -27,6 +27,11 @@ pub use root_preparation::{
     RootPreparationRecord, RootPreparationRequest, RootPreparationState,
 };
 mod replay;
+
+#[cfg(test)]
+#[path = "service/status_tests.rs"]
+mod status_tests;
+
 use capability_preparation::ledger::CapabilityPreparationLedger;
 pub use capability_preparation::{
     CapabilityCandidateRecipe, CapabilityPreparationAction, CapabilityPreparationRecord,
@@ -145,10 +150,6 @@ enum Command {
         request: replay::ReplayRequest,
         reply: Reply,
     },
-    State {
-        execution: ExecutionId,
-        reply: Reply,
-    },
 }
 
 struct ActorWorker {
@@ -238,6 +239,7 @@ impl NodeObservationRetention {
 /// borrower destruction cannot discard cleanup, inputs, or original operation
 /// commitments. GC inventories [`Self::retention_roots`] under its ref fence.
 pub struct NodeObservationService {
+    repository: Arc<CampaignRepository>,
     commands: SyncSender<Command>,
     stopping: Arc<AtomicBool>,
     roots: Arc<Mutex<BTreeSet<ContentId>>>,
@@ -309,6 +311,7 @@ impl NodeObservationService {
         let retired = Arc::new(AtomicBool::new(false));
         let actor_retired = Arc::clone(&retired);
         let actor_preparations = preparations.clone();
+        let actor_repository = Arc::clone(&repository);
         thread::Builder::new()
             .name("crucible-node-observer".into())
             .spawn(move || {
@@ -339,7 +342,7 @@ impl NodeObservationService {
                                 capability_archive,
                                 condition_archive,
                                 transcripts,
-                                repository,
+                                repository: actor_repository,
                                 blobs,
                                 refs,
                             },
@@ -361,6 +364,7 @@ impl NodeObservationService {
             .recv()
             .map_err(|_| NodeObservationServiceError::Unavailable)??;
         Ok(Self {
+            repository,
             commands,
             stopping,
             roots,
@@ -459,11 +463,16 @@ impl NodeObservationService {
         &self,
         execution: ExecutionId,
     ) -> Result<ObservedAttemptState, NodeObservationServiceError> {
-        let (reply, response) = mpsc::sync_channel(1);
-        self.send(Command::State { execution, reply })?;
-        response
-            .recv()
-            .map_err(|_| NodeObservationServiceError::Unavailable)?
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(NodeObservationServiceError::Unavailable);
+        }
+        // Native polling can hold the owning actor across a complete transport
+        // exchange. The repository authenticates the original reservation and
+        // ledger under its own GC fence; reading it grants no dispatch permit.
+        self.repository
+            .observed_execution_state(execution)
+            .map_err(refused)?
+            .ok_or_else(|| refused("execution has no authoritative observation record"))
     }
 
     /// Inventories active immutable evidence under the caller's GC ref fence.
@@ -983,16 +992,6 @@ fn handle_other_command(
                 .map_err(refused);
             let _ = reply.send(result);
         }
-        Command::State { execution, reply } => {
-            let result = repository
-                .observed_execution_state(execution)
-                .map_err(refused)
-                .and_then(|state| {
-                    state
-                        .ok_or_else(|| refused("execution has no authoritative observation record"))
-                });
-            let _ = reply.send(result);
-        }
         Command::Submit {
             ledger,
             execution,
@@ -1187,9 +1186,7 @@ fn reply_refusal(command: Command, error: NodeObservationServiceError) {
         Command::Compile { reply, .. } => {
             let _ = reply.send(Err(error));
         }
-        Command::State { reply, .. }
-        | Command::Submit { reply, .. }
-        | Command::ConditionalReplay { reply, .. } => {
+        Command::Submit { reply, .. } | Command::ConditionalReplay { reply, .. } => {
             let _ = reply.send(Err(error));
         }
     }

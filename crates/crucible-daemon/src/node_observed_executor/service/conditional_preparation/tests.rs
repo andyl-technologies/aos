@@ -175,6 +175,10 @@ fn pending_status_and_exact_retry_do_not_wait_for_the_owning_actor() {
     // The actor deliberately has not consumed its only queue slot. These calls
     // must return durable metadata without source verification or actor replies.
     let service = NodeObservationService {
+        repository: Arc::new(crucible_campaign::CampaignRepository::new(
+            blobs.clone(),
+            refs.clone(),
+        )),
         commands,
         stopping: Arc::new(AtomicBool::new(false)),
         roots: Arc::new(Mutex::new(Default::default())),
