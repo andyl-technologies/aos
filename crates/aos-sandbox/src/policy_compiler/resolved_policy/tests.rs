@@ -70,7 +70,6 @@ fn held_policy_claim_all_four_domains_retain_exact_outputs_and_writer() {
                 assert_eq!(claim.diagnostics(), publication.diagnostics);
                 assert_eq!(claim.prerequisites(), &publication.prerequisites);
                 assert_eq!(claim.outputs().len(), 4);
-                assert!(!claim.has_complete_preimage());
                 assert!(
                     Journal::open_protected_at_uid(
                         root.path(),
@@ -109,7 +108,6 @@ fn held_policy_claim_v3_reuses_exact_compiler_outputs_and_cold_evidence() {
         }
         owner
             .with_current_policy_claim(publication.project, publication.sandbox, |claim| {
-                assert!(claim.has_complete_preimage());
                 assert_eq!(claim.candidate_bytes(), publication.body);
                 assert_eq!(claim.policy_bytes(), publication.policy);
                 let fields = candidate_output_bytes(claim.candidate_bytes()).unwrap();
@@ -148,6 +146,212 @@ fn shared_v3_checks_refuse_substitution_without_mutating_held_claims() {
             assert_eq!(claim.candidate_bytes(), publication.body);
         })
         .unwrap();
+}
+
+// Repairs only outer DATA framing after removing the retired plan-less body.
+// Structural decoding below proves that refusal is semantic, not a bad checksum.
+fn legacy_candidate_records(
+    journal: &Journal,
+    publication: &fixture::FixturePublicationV1,
+) -> Vec<crate::JournalRecord> {
+    use crate::lifecycle::protected_journal_adapter::ProtectedDomainSchemaV1;
+    use sha2::{Digest as _, Sha256};
+
+    let key = policy_key(
+        PolicyCompilerJournalRecordKindV1::Candidate,
+        publication.project,
+        publication.sandbox,
+        publication.candidate,
+    )
+    .unwrap();
+    let member = journal
+        .get(crate::RecordNamespace::PublisherPolicy, key.as_bytes())
+        .unwrap();
+    let envelope = &member[68..member.len() - 32];
+    let payload = &envelope[56..envelope.len() - 32];
+    let domain = PolicyCompilerJournalSchemaV1::HASH_DOMAIN;
+    let body_digest = |body: &[u8]| -> [u8; 32] {
+        Sha256::new()
+            .chain_update(domain)
+            .chain_update(b"canonical-reducer-body\0")
+            .chain_update([1])
+            .chain_update(body)
+            .finalize()
+            .into()
+    };
+    let mut legacy = publication.body[..478].to_vec();
+    legacy[8..10].copy_from_slice(&2_u16.to_be_bytes());
+    legacy.extend_from_slice(&publication.body[638..]);
+
+    let count = usize::from(u16::from_be_bytes(payload[14..16].try_into().unwrap()));
+    let mut companions = payload[20..20 + count * 32]
+        .chunks_exact(32)
+        .map(|bytes| <[u8; 32]>::try_from(bytes).unwrap())
+        .collect::<Vec<_>>();
+    let original = body_digest(&publication.body);
+    let replacement = body_digest(&legacy);
+    assert_eq!(
+        companions
+            .iter()
+            .filter(|digest| **digest == original)
+            .count(),
+        1
+    );
+    for digest in &mut companions {
+        if *digest == original {
+            *digest = replacement;
+        }
+    }
+    companions.sort_unstable();
+    let mut repaired_payload = payload[..20].to_vec();
+    repaired_payload[16..20].copy_from_slice(&(legacy.len() as u32).to_be_bytes());
+    for digest in companions {
+        repaired_payload.extend_from_slice(&digest);
+    }
+    repaired_payload.extend_from_slice(&legacy);
+    let checksum = Sha256::new()
+        .chain_update(domain)
+        .chain_update(b"reducer-payload\0")
+        .chain_update(&repaired_payload)
+        .finalize();
+    repaired_payload.extend_from_slice(&checksum);
+
+    let checksum = Sha256::new()
+        .chain_update(domain)
+        .chain_update(b"envelope\0")
+        .chain_update((key.as_bytes().len() as u32).to_be_bytes())
+        .chain_update(key.as_bytes())
+        .chain_update(&envelope[12..52])
+        .chain_update((repaired_payload.len() as u64).to_be_bytes())
+        .chain_update(&repaired_payload)
+        .finalize();
+    let mut repaired_envelope = envelope[..56].to_vec();
+    repaired_envelope[52..56].copy_from_slice(&(repaired_payload.len() as u32).to_be_bytes());
+    repaired_envelope.extend_from_slice(&repaired_payload);
+    repaired_envelope.extend_from_slice(&checksum);
+    let mut repaired_member = member[..68].to_vec();
+    repaired_member[64..68].copy_from_slice(&(repaired_envelope.len() as u32).to_be_bytes());
+    repaired_member.extend_from_slice(&repaired_envelope);
+    let current_key = policy_current_key(publication.project, publication.sandbox).unwrap();
+    let current = journal
+        .get(
+            crate::RecordNamespace::AuthorityPublication,
+            current_key.as_bytes(),
+        )
+        .unwrap();
+    assert_eq!(&member[28..32], &[0, 0, 0, 2]);
+    assert_eq!(&current[28..32], &[0, 1, 0, 2]);
+    assert_eq!(&member[12..28], &current[12..28]);
+    let set_digest = Sha256::new()
+        .chain_update(domain)
+        .chain_update(b"transaction-set\0")
+        .chain_update(&member[12..28])
+        .chain_update(2_u64.to_be_bytes())
+        .chain_update([crate::RecordNamespace::PublisherPolicy as u8])
+        .chain_update((key.as_bytes().len() as u32).to_be_bytes())
+        .chain_update(key.as_bytes())
+        .chain_update(checksum)
+        .chain_update([crate::RecordNamespace::AuthorityPublication as u8])
+        .chain_update((current_key.as_bytes().len() as u32).to_be_bytes())
+        .chain_update(current_key.as_bytes())
+        .chain_update(&current[current.len() - 64..current.len() - 32])
+        .finalize();
+    let mut repaired_current = current[..current.len() - 32].to_vec();
+    for bytes in [&mut repaired_member, &mut repaired_current] {
+        bytes[32..64].copy_from_slice(&set_digest);
+        let checksum = Sha256::new()
+            .chain_update(domain)
+            .chain_update(b"durable-member\0")
+            .chain_update(&*bytes)
+            .finalize();
+        bytes.extend_from_slice(&checksum);
+    }
+    vec![
+        crate::JournalRecord::put(
+            crate::RecordNamespace::PublisherPolicy,
+            key.as_bytes().to_vec(),
+            repaired_member,
+        ),
+        crate::JournalRecord::put(
+            crate::RecordNamespace::AuthorityPublication,
+            current_key.as_bytes().to_vec(),
+            repaired_current,
+        ),
+    ]
+}
+
+#[test]
+fn retired_candidate_v2_refuses_live_and_cold_claims_without_rewriting_bytes() {
+    use crate::lifecycle::protected_journal_adapter::{
+        ProtectedDomainJournalErrorV1, ProtectedDomainJournalV1,
+        protected_current_record_candidates_v1,
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let mut owner = open(root.path());
+    let publication = fixture::publication(CacheDomainKind::Public);
+    fixture::commit(&mut owner.journal, &publication);
+    owner
+        .with_current_policy_claim(publication.project, publication.sandbox, |_| ())
+        .unwrap();
+    let control = ProtectedDomainJournalV1::<PolicyCompilerJournalSchemaV1>::claim_with_validator(
+        &mut owner.journal,
+        fixture::replay_validator(&publication),
+    )
+    .unwrap();
+    control
+        .replay()
+        .expect("the V3 control has an authenticated complete transaction group");
+    drop(control);
+    let legacy = legacy_candidate_records(&owner.journal, &publication);
+    owner
+        .journal
+        .commit(&JournalTransaction::new([14; 16], legacy).unwrap())
+        .unwrap();
+    let retained = fs::read(root.path().join(POLICY_STATE_JOURNAL)).unwrap();
+    let sequence = owner.journal.snapshot_sequence();
+    let mut expected = publication.body[..478].to_vec();
+    expected[8..10].copy_from_slice(&2_u16.to_be_bytes());
+    expected.extend_from_slice(&publication.body[638..]);
+
+    for cold in [false, true] {
+        if cold {
+            drop(owner);
+            owner = open(root.path());
+        }
+        let candidates =
+            protected_current_record_candidates_v1::<PolicyCompilerJournalSchemaV1>(&owner.journal)
+                .expect("retired body retains valid outer framing");
+        assert!(
+            candidates
+                .iter()
+                .any(|record| record.body() == expected)
+        );
+        assert!(matches!(
+            owner.with_current_policy_claim(publication.project, publication.sandbox, |_| {
+                panic!("retired Candidate must not dispatch")
+            }),
+            Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication)
+        ));
+        let replay = crate::policy_compiler::PolicyCompilerProtectedJournalV1::claim(
+            &mut owner.journal,
+            fixture::replay_validator(&publication),
+        )
+        .unwrap();
+        assert!(matches!(
+            replay.replay(),
+            Err(PolicyCompilerJournalErrorV1::Journal(
+                ProtectedDomainJournalErrorV1::NonCanonicalRecord,
+            ))
+        ));
+        drop(replay);
+        assert_eq!(owner.journal.snapshot_sequence(), sequence);
+        assert_eq!(
+            fs::read(root.path().join(POLICY_STATE_JOURNAL)).unwrap(),
+            retained
+        );
+    }
 }
 
 #[test]

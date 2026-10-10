@@ -1,14 +1,9 @@
-//! Produces synthetic canonical claims through genuine durable framing.
+//! Produces real compiler claims through genuine durable framing.
 //!
-//! The synthetic prerequisite map and arbitrary candidate commitment are
-//! deliberately not Root/compiler authority. Consumers test claim extraction
-//! only; a live worker producer must independently authenticate compilation.
+//! Synthetic inputs and prerequisite evidence remain test-only. Pure compilation
+//! and claim extraction do not establish installed Root or publication authority.
 
-use aos_sandbox_core::CacheDomainId;
-use aos_sandbox_core::model::{
-    CacheDomain, CacheDomainKind, OptimizationProfile, Policy, ResourceProfile, RevocationMode,
-    RevocationPolicy,
-};
+use aos_sandbox_core::model::CacheDomainKind;
 
 use super::*;
 
@@ -24,89 +19,7 @@ pub(in crate::policy_compiler) struct FixturePublicationV1 {
 }
 
 pub(in crate::policy_compiler) fn publication(domain: CacheDomainKind) -> FixturePublicationV1 {
-    let project = ProjectId::from_bytes([1; 16]);
-    let sandbox = SandboxId::from_bytes([2; 16]);
-    let candidate = ObjectDigest::from_bytes([3; 32]);
-    let input = ObjectDigest::from_bytes([4; 32]);
-    let diagnostics = ObjectDigest::from_bytes([5; 32]);
-    let prerequisites = PolicyPublicationPrerequisitesV1::new(
-        ObjectDigest::from_bytes([6; 32]),
-        ObjectDigest::from_bytes([7; 32]),
-        ObjectDigest::from_bytes([8; 32]),
-        ObjectDigest::from_bytes([9; 32]),
-        1,
-    )
-    .unwrap();
-    let policy = encode_policy(
-        &Policy::new(
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            ResourceProfile::new(Vec::new()).unwrap(),
-            Vec::new(),
-            CacheDomain::new(domain, CacheDomainId::from_bytes([10; 16])),
-            RevocationPolicy::new(RevocationMode::Freeze, 1),
-            None,
-            Vec::new(),
-        )
-        .unwrap(),
-    );
-    let outputs = [
-        policy.clone(),
-        encode_optimization(&OptimizationProfile::new(Vec::new()).unwrap()),
-        aos_sandbox_policy::canonical_bytes(
-            b"aos.sandbox.portable-namespace-graph.v1",
-            &(
-                aos_sandbox_policy::NamespaceGraphSchemaV1::V1,
-                Vec::<aos_sandbox_policy::NamespaceRuleV1>::new(),
-            ),
-        )
-        .unwrap(),
-        aos_sandbox_policy::canonical_bytes(
-            b"aos.sandbox.portable-advisory-program.v1",
-            &Vec::<aos_sandbox_policy::AdvisoryDecisionV1>::new(),
-        )
-        .unwrap(),
-    ];
-
-    let mut body = Vec::new();
-    body.extend_from_slice(CANDIDATE_MAGIC);
-    body.extend_from_slice(&2_u16.to_be_bytes());
-    body.extend_from_slice(project.as_bytes());
-    body.extend_from_slice(sandbox.as_bytes());
-    for digest in [candidate, input, diagnostics, prerequisites.digest()] {
-        body.extend_from_slice(digest.as_bytes());
-    }
-    append_prerequisite_tuple(&mut body, &prerequisites);
-    body.extend_from_slice(&1_u64.to_be_bytes());
-    for (index, bytes) in outputs.iter().enumerate() {
-        let media = match index {
-            0 => PortableMediaType::Policy,
-            1 => PortableMediaType::Optimization,
-            _ => PortableMediaType::Content,
-        };
-        let descriptor = descriptor_for_bytes(MediaType::new(media.as_str()).unwrap(), bytes);
-        body.push(index as u8 + 1);
-        body.extend_from_slice(descriptor.digest().as_bytes());
-        body.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
-    }
-    assert_eq!(body.len(), 478);
-    for bytes in &outputs {
-        body.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
-        body.extend_from_slice(bytes);
-    }
-    validate_candidate_payload(&body).unwrap();
-    FixturePublicationV1 {
-        project,
-        sandbox,
-        candidate,
-        input,
-        diagnostics,
-        prerequisites,
-        body,
-        policy,
-    }
+    compiled_publication_from_input(compiler_input(4096, domain, Vec::new()))
 }
 
 /// Reuses the real pure compiler fixture, not an installed input authority.
@@ -147,13 +60,19 @@ fn compiled_publication_from_verified(
     }
 }
 
-pub(in crate::policy_compiler) fn commit(journal: &mut Journal, fixture: &FixturePublicationV1) {
-    let validator = PolicyCompilerReplayValidatorV1 {
+pub(in crate::policy_compiler) fn replay_validator(
+    fixture: &FixturePublicationV1,
+) -> PolicyCompilerReplayValidatorV1 {
+    PolicyCompilerReplayValidatorV1 {
         authenticated_prerequisites: BTreeMap::from([(
             fixture.prerequisites.digest(),
             fixture.prerequisites.clone(),
         )]),
-    };
+    }
+}
+
+pub(in crate::policy_compiler) fn commit(journal: &mut Journal, fixture: &FixturePublicationV1) {
+    let validator = replay_validator(fixture);
     let candidate = policy_reducer_envelope(
         policy_key(
             PolicyCompilerJournalRecordKindV1::Candidate,

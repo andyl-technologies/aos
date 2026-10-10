@@ -286,16 +286,15 @@ fn resource_read_derivation_all_four_domains_retain_exact_cold_state() {
 }
 
 #[test]
-fn resource_read_derivation_refuses_legacy_without_full_preimage() {
+fn resource_read_derivation_refuses_different_compiler_input() {
     let root = root();
     let publication = fixture::publication(CacheDomainKind::Public);
-    let input = fixture::compiler_input(4096, CacheDomainKind::Public, Vec::new());
+    let input = fixture::compiler_input(8192, CacheDomainKind::Public, Vec::new());
     let mut owner = open(root.path());
     commit_fixture(&mut owner, &publication);
 
     owner
         .with_current_policy_claim(publication.project, publication.sandbox, |state| {
-            assert!(!state.has_complete_preimage());
             let assignment = assignment(&input, state.policy_descriptor().clone());
             assert!(
                 compare_held_resource_read_policy_v1(
@@ -327,7 +326,6 @@ fn resource_read_derivation_refuses_false_input_claim_despite_valid_v3_outputs()
 
     owner
         .with_current_policy_claim(publication.project, publication.sandbox, |state| {
-            assert!(state.has_complete_preimage());
             assert_eq!(state.normalized_input(), publication.input);
             let assignment = assignment(&input, state.policy_descriptor().clone());
             assert!(

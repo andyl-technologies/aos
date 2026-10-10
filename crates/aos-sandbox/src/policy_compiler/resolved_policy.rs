@@ -263,7 +263,6 @@ pub struct HeldResolvedRuntimePolicyV1<'policy> {
     sandbox: SandboxId,
     generation: u64,
     candidate: ObjectDigest,
-    complete_preimage: bool,
     normalized_input: ObjectDigest,
     diagnostics: ObjectDigest,
     current_envelope: ObjectDigest,
@@ -315,8 +314,8 @@ impl<'policy> HeldResolvedRuntimePolicyV1<'policy> {
             return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
         }
 
-        // The shared codec owns V2/V3 offsets, canonical output checks and the
-        // V3 preimage join. Neither version independently authenticates Root.
+        // The shared V3 codec checks complete preimage consistency; Root
+        // authority still requires independent authentication.
         let policy = decode_policy(bytes, DecodeLimits::default())
             .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
         let descriptor = |index: usize, media: PortableMediaType| {
@@ -341,7 +340,6 @@ impl<'policy> HeldResolvedRuntimePolicyV1<'policy> {
             sandbox,
             generation: header.generation,
             candidate: header.candidate,
-            complete_preimage: header.has_complete_preimage(),
             normalized_input: header.normalized_input,
             diagnostics: header.diagnostics,
             current_envelope: current.envelope_digest(),
@@ -368,8 +366,7 @@ impl<'policy> HeldResolvedRuntimePolicyV1<'policy> {
 
     /// Borrows exact canonical Candidate evidence for independent verification.
     ///
-    /// V3 includes complete preimage consistency; neither these bytes nor a
-    /// V2 structural observation authenticate current Policy/Root authority.
+    /// Complete preimage consistency does not authenticate current Policy/Root authority.
     #[must_use]
     pub const fn candidate_bytes(&self) -> &[u8] {
         self.candidate_bytes
@@ -403,15 +400,6 @@ impl<'policy> HeldResolvedRuntimePolicyV1<'policy> {
     #[must_use]
     pub const fn candidate(&self) -> (ObjectDigest, u64) {
         (self.candidate, self.generation)
-    }
-
-    /// Reports complete candidate-preimage consistency, not Root authority.
-    ///
-    /// Legacy V2 claims remain observable but cannot supply complete worker
-    /// policy evidence. V3 still requires independent current Root verification.
-    #[must_use]
-    pub const fn has_complete_preimage(&self) -> bool {
-        self.complete_preimage
     }
 
     /// Returns exact Current and Candidate envelope commitments for comparison.

@@ -7,7 +7,7 @@
 //!
 //! Candidate V3 retains the complete existing compiler-commitment preimage.
 //! Its byte consistency is not an authenticated input or runtime-read proof;
-//! V2 remains structurally replayable without supplying that preimage.
+//! Earlier Candidate versions are refused without rewriting retained state.
 
 use aos_sandbox_protocol::domain_ledger::DomainLedgerDataError;
 
@@ -48,8 +48,8 @@ use aos_sandbox_policy::normalized_policy_input_digest_v1;
 
 const CURRENT_MAGIC: &[u8; 8] = b"AOSPCU01";
 const CANDIDATE_MAGIC: &[u8; 8] = b"AOSPCC01";
-const CANDIDATE_V2_FIXED_BYTES: usize = 478;
-const CANDIDATE_V3_FIXED_BYTES: usize = CANDIDATE_V2_FIXED_BYTES + 5 * 32;
+const CANDIDATE_PLAN_OFFSET: usize = 478;
+const CANDIDATE_V3_FIXED_BYTES: usize = CANDIDATE_PLAN_OFFSET + 5 * 32;
 const MAXIMUM_AUTHENTICATED_REPLAY_PREREQUISITES: usize = 4_096;
 const DIAGNOSTICS_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.diagnostics.v1";
 const PREREQUISITE_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.prerequisites.v1\0";
@@ -2168,8 +2168,7 @@ pub(super) struct DecodedCandidateHeaderV1 {
     pub(super) prerequisites: ObjectDigest,
     pub(super) prerequisite_tuple: PolicyPublicationPrerequisitesV1,
     pub(super) outputs: [(ObjectDigest, u64); 4],
-    preimage: Option<[ObjectDigest; 5]>,
-    output_offset: usize,
+    preimage: [ObjectDigest; 5],
 }
 
 impl DecodedCandidateHeaderV1 {
@@ -2182,11 +2181,6 @@ impl DecodedCandidateHeaderV1 {
             && self.diagnostics == current.diagnostics
             && self.prerequisites == current.prerequisites
             && self.prerequisite_tuple == current.prerequisite_tuple
-    }
-
-    /// Reports complete preimage retention, not authenticated publication.
-    pub(super) fn has_complete_preimage(&self) -> bool {
-        self.preimage.is_some()
     }
 }
 
@@ -2589,14 +2583,12 @@ pub(super) fn decode_current_payload(
 fn decode_candidate_header(
     bytes: &[u8],
 ) -> Result<DecodedCandidateHeaderV1, PolicyCompilerJournalErrorV1> {
-    if bytes.len() < CANDIDATE_V2_FIXED_BYTES || &bytes[..8] != CANDIDATE_MAGIC {
+    if bytes.len() < CANDIDATE_V3_FIXED_BYTES
+        || &bytes[..8] != CANDIDATE_MAGIC
+        || bytes[8..10] != 3_u16.to_be_bytes()
+    {
         return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
     }
-    let output_offset = match &bytes[8..10] {
-        [0, 2] => CANDIDATE_V2_FIXED_BYTES,
-        [0, 3] if bytes.len() >= CANDIDATE_V3_FIXED_BYTES => CANDIDATE_V3_FIXED_BYTES,
-        _ => return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication),
-    };
     let digest_at = |offset: usize| -> Result<ObjectDigest, PolicyCompilerJournalErrorV1> {
         let digest = ObjectDigest::from_bytes(
             bytes[offset..offset + 32]
@@ -2635,17 +2627,13 @@ fn decode_candidate_header(
     if generation == 0 {
         return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
     }
-    let preimage = if output_offset == CANDIDATE_V3_FIXED_BYTES {
-        Some([
-            digest_at(CANDIDATE_V2_FIXED_BYTES)?,
-            digest_at(CANDIDATE_V2_FIXED_BYTES + 32)?,
-            digest_at(CANDIDATE_V2_FIXED_BYTES + 64)?,
-            digest_at(CANDIDATE_V2_FIXED_BYTES + 96)?,
-            digest_at(CANDIDATE_V2_FIXED_BYTES + 128)?,
-        ])
-    } else {
-        None
-    };
+    let preimage = [
+        digest_at(CANDIDATE_PLAN_OFFSET)?,
+        digest_at(CANDIDATE_PLAN_OFFSET + 32)?,
+        digest_at(CANDIDATE_PLAN_OFFSET + 64)?,
+        digest_at(CANDIDATE_PLAN_OFFSET + 96)?,
+        digest_at(CANDIDATE_PLAN_OFFSET + 128)?,
+    ];
     let prerequisites = digest_at(138)?;
     let prerequisite_tuple = decode_prerequisite_tuple(bytes, 170, prerequisites)?;
     Ok(DecodedCandidateHeaderV1 {
@@ -2667,7 +2655,6 @@ fn decode_candidate_header(
         prerequisite_tuple,
         outputs,
         preimage,
-        output_offset,
     })
 }
 
@@ -2713,10 +2700,9 @@ pub(super) fn validate_candidate_payload(
     validated_candidate_body(bytes).map(|(header, _)| header)
 }
 
-/// Borrows every canonical output with the version's exact field boundaries.
+/// Borrows every canonical V3 output with its exact field boundaries.
 ///
-/// This validates byte consistency only. In particular, V2 output bytes do not
-/// supply a complete candidate preimage or authenticate current publication.
+/// This validates complete preimage consistency, not current publication authority.
 ///
 /// # Errors
 ///
@@ -2737,7 +2723,7 @@ pub(super) fn validated_candidate_body(
     bytes: &[u8],
 ) -> Result<(DecodedCandidateHeaderV1, [&[u8]; 4]), PolicyCompilerJournalErrorV1> {
     let header = decode_candidate_header(bytes)?;
-    let mut cursor = header.output_offset;
+    let mut cursor = CANDIDATE_V3_FIXED_BYTES;
     let mut outputs = [&[][..]; 4];
     for (index, (digest, expected_size)) in header.outputs.iter().enumerate() {
         let length_end = cursor
@@ -2799,7 +2785,7 @@ pub(super) fn validated_candidate_body(
         return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
     }
 
-    if let Some(preimage) = header.preimage {
+    {
         let media = |kind: PortableMediaType| {
             MediaType::new(kind.as_str())
                 .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)
@@ -2826,7 +2812,9 @@ pub(super) fn validated_candidate_body(
                 header.outputs[3].1,
             ),
         ];
-        if compiled_policy_candidate_digest_v1(preimage, descriptors.each_ref())? != header.candidate {
+        if compiled_policy_candidate_digest_v1(header.preimage, descriptors.each_ref())?
+            != header.candidate
+        {
             return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
         }
     }
@@ -2863,7 +2851,7 @@ pub(super) fn compare_recompiled_candidate_derivation_v1(
             != normalized_policy_input_digest_v1(input)
                 .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?
         || header.candidate != candidate.commitment().digest()
-        || header.preimage != Some(candidate.commitment_plan_digests())
+        || header.preimage != candidate.commitment_plan_digests()
         || header.diagnostics != digest_bytes(DIAGNOSTICS_DOMAIN, &diagnostics)
     {
         return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);

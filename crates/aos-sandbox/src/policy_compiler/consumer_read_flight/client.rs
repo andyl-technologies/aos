@@ -208,6 +208,20 @@ mod tests {
                     assert_eq!(decoded.candidate_bytes(), claim.candidate_bytes());
                     assert_eq!(decoded.envelopes(), claim.envelopes());
                     assert_eq!(decoded.generation(), claim.candidate().1);
+                    let mut legacy = state.clone();
+                    legacy.drain(76 + 478..76 + 638);
+                    legacy[84..86].copy_from_slice(&2_u16.to_be_bytes());
+                    let length = (legacy.len() - 76) as u32;
+                    legacy[72..76].copy_from_slice(&length.to_be_bytes());
+                    assert!(
+                        decode_state(
+                            &legacy,
+                            publication.project,
+                            publication.sandbox,
+                            claim.policy_descriptor(),
+                        )
+                        .is_err()
+                    );
                     for offset in [64, 72, state.len() - 1] {
                         let mut altered = state.clone();
                         altered[offset] ^= 1;

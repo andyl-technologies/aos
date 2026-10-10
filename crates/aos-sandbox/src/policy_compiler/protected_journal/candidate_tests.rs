@@ -337,16 +337,15 @@ fn encoded_fixture(verified: &VerifiedPolicyPublicationV1) -> (Vec<u8>, Vec<u8>)
 }
 
 fn legacy_v2(bytes: &[u8]) -> Vec<u8> {
-    let mut legacy = bytes[..CANDIDATE_V2_FIXED_BYTES].to_vec();
+    let mut legacy = bytes[..CANDIDATE_PLAN_OFFSET].to_vec();
     legacy[8..10].copy_from_slice(&2_u16.to_be_bytes());
     legacy.extend_from_slice(&bytes[CANDIDATE_V3_FIXED_BYTES..]);
     legacy
 }
 
 fn replace_output(bytes: &[u8], index: usize, replacement: &[u8]) -> Vec<u8> {
-    let header = decode_candidate_header(bytes).expect("fixture header");
     let fields = candidate_output_bytes(bytes).expect("original canonical outputs");
-    let mut changed = bytes[..header.output_offset].to_vec();
+    let mut changed = bytes[..CANDIDATE_V3_FIXED_BYTES].to_vec();
     let descriptor_offset = 314 + 41 * index;
     let media_kind = match index {
         0 => PortableMediaType::Policy,
@@ -377,11 +376,10 @@ fn candidate_v3_roundtrip_retains_exact_existing_compiler_preimage_and_outputs()
     let verified = fixture(4096);
     let (bytes, current) = encoded_fixture(&verified);
     let header = validate_candidate_payload(&bytes).expect("complete candidate consistency");
-    assert!(header.has_complete_preimage());
     assert!(header.matches_current(&decode_current_payload(&current).expect("Current")));
     assert_eq!(
         header.preimage,
-        Some(verified.candidate.commitment_plan_digests())
+        verified.candidate.commitment_plan_digests()
     );
 
     let portable = verified.candidate.portable();
@@ -413,37 +411,36 @@ fn candidate_v3_roundtrip_retains_exact_existing_compiler_preimage_and_outputs()
 }
 
 #[test]
-fn candidate_outputs_reject_plain_payload_hashes_in_both_versions() {
+fn candidate_outputs_reject_plain_payload_hashes() {
     let (bytes, _) = encoded_fixture(&fixture(4096));
     let outputs = candidate_output_bytes(&bytes).unwrap();
 
-    for version in [bytes.clone(), legacy_v2(&bytes)] {
-        validate_candidate_payload(&version).expect("genuine descriptor profile");
-        for (index, output) in outputs.iter().enumerate() {
-            let mut changed = version.clone();
-            let digest_offset = 315 + 41 * index;
-            changed[digest_offset..digest_offset + 32].copy_from_slice(&Sha256::digest(output));
+    for (index, output) in outputs.iter().enumerate() {
+        let mut changed = bytes.clone();
+        let digest_offset = 315 + 41 * index;
+        changed[digest_offset..digest_offset + 32].copy_from_slice(&Sha256::digest(output));
 
-            assert!(
-                validate_candidate_payload(&changed).is_err(),
-                "output {index} must bind media and length, including legacy observation"
-            );
-        }
+        assert!(
+            validate_candidate_payload(&changed).is_err(),
+            "output {index} must bind media and length"
+        );
     }
 }
 
 #[test]
-fn candidate_v2_is_observation_only_even_with_exact_current_claims() {
+fn candidate_v2_is_refused_even_with_exact_current_claims() {
     let verified = fixture(4096);
     let (bytes, current) = encoded_fixture(&verified);
     let legacy = legacy_v2(&bytes);
-    let header = validate_candidate_payload(&legacy).expect("legacy structural replay");
-    assert!(!header.has_complete_preimage());
-    assert!(header.matches_current(&decode_current_payload(&current).expect("Current")));
-    assert_eq!(
-        candidate_output_bytes(&legacy).unwrap(),
-        candidate_output_bytes(&bytes).unwrap()
-    );
+    decode_current_payload(&current).expect("unchanged Current V1");
+    assert!(matches!(
+        validate_candidate_payload(&legacy),
+        Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication)
+    ));
+    assert!(matches!(
+        candidate_output_bytes(&legacy),
+        Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication)
+    ));
 
     let mut relabeled = legacy;
     relabeled[8..10].copy_from_slice(&3_u16.to_be_bytes());
@@ -456,6 +453,10 @@ fn candidate_v3_rejects_all_four_repaired_output_substitutions() {
     let other = fixture(4097);
     let other_namespace = compile_fixture(4096, Some(32), false);
     let portable = other_namespace.candidate.portable();
+    for candidate in [&other, &other_namespace] {
+        validate_candidate_payload(&encoded_fixture(candidate).0)
+            .expect("replacement outputs belong to a valid independently compiled candidate");
+    }
     let replacements = [
         other.candidate.portable().policy_bytes(),
         portable.optimization_bytes(),
@@ -465,10 +466,6 @@ fn candidate_v3_rejects_all_four_repaired_output_substitutions() {
 
     for (index, replacement) in replacements.into_iter().enumerate() {
         let changed = replace_output(&bytes, index, replacement);
-        assert!(
-            validate_candidate_payload(&legacy_v2(&changed)).is_ok(),
-            "substitution {index} has repaired canonical output descriptors"
-        );
         assert!(
             validate_candidate_payload(&changed).is_err(),
             "V3 must reject substitution {index} against the original full preimage"
@@ -480,7 +477,7 @@ fn candidate_v3_rejects_all_four_repaired_output_substitutions() {
 fn candidate_v3_rejects_every_changed_or_zero_plan_commitment() {
     let (bytes, _) = encoded_fixture(&fixture(4096));
     for index in 0..5 {
-        let offset = CANDIDATE_V2_FIXED_BYTES + index * 32;
+        let offset = CANDIDATE_PLAN_OFFSET + index * 32;
         for replacement in [[9; 32], [0; 32]] {
             let mut changed = bytes.clone();
             changed[offset..offset + 32].copy_from_slice(&replacement);
@@ -524,24 +521,22 @@ fn candidate_current_join_rejects_target_generation_and_tuple_substitution() {
 }
 
 #[test]
-fn candidate_versions_require_exact_framing_and_nonzero_descriptors() {
+fn candidate_v3_requires_exact_framing_and_nonzero_descriptors() {
     let (bytes, _) = encoded_fixture(&fixture(4096));
-    let legacy = legacy_v2(&bytes);
-    for valid in [&bytes, &legacy] {
-        for length in [0, 8, 10, CANDIDATE_V2_FIXED_BYTES - 1, valid.len() - 1] {
-            assert!(validate_candidate_payload(&valid[..length]).is_err());
-        }
-        let mut trailing = valid.as_slice().to_vec();
-        trailing.push(0);
-        assert!(validate_candidate_payload(&trailing).is_err());
-        let mut unknown = valid.as_slice().to_vec();
-        unknown[8..10].copy_from_slice(&4_u16.to_be_bytes());
-        assert!(validate_candidate_payload(&unknown).is_err());
-        let mut wrong_media = valid.as_slice().to_vec();
-        wrong_media[314] = 4;
-        assert!(validate_candidate_payload(&wrong_media).is_err());
-        let mut zero_size = valid.as_slice().to_vec();
-        zero_size[347..355].fill(0);
-        assert!(validate_candidate_payload(&zero_size).is_err());
+    for length in [0, 8, 10, CANDIDATE_V3_FIXED_BYTES - 1, bytes.len() - 1] {
+        assert!(validate_candidate_payload(&bytes[..length]).is_err());
     }
+
+    let mut trailing = bytes.clone();
+    trailing.push(0);
+    assert!(validate_candidate_payload(&trailing).is_err());
+    let mut unknown = bytes.clone();
+    unknown[8..10].copy_from_slice(&4_u16.to_be_bytes());
+    assert!(validate_candidate_payload(&unknown).is_err());
+    let mut wrong_media = bytes.clone();
+    wrong_media[314] = 4;
+    assert!(validate_candidate_payload(&wrong_media).is_err());
+    let mut zero_size = bytes;
+    zero_size[347..355].fill(0);
+    assert!(validate_candidate_payload(&zero_size).is_err());
 }
