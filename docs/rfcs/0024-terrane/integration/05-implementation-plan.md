@@ -7847,7 +7847,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   The complete tracked source remains unchanged, and the actual builder source
   matches the frozen commit. These checks qualify the local prerequisites;
   feature-matrix, package, ext4 and full trunk qualification remain pending.
-  — satisfies CRATE-22 to CRATE-27;
+  — satisfies the T1 local SDK portions of CRATE-22 to CRATE-27;
+  remote verbs and parity are joint with T-PROTO-1 and T-STORE-2, extended
+  algebra with T-ALG-3, and tree-job primitives with T-JOB-1 in their assigned
+  later milestones and worklines. Those full specification obligations remain
+  required; this task's completion does not claim their implementation.
   `checks.terrane.gates.feature-matrix`.
 
 ### T2 — Host tier
