@@ -1,10 +1,15 @@
 //! Checks D-110 ordinary data against fixed literals and independent inputs.
 //!
 //! Literal bytes come from the sealed normative proposal, not record codecs.
-//! Registered execution includes exact property3/attribute2/tree1; context
+//! Registered data support includes exact property3/attribute2/tree1; context
 //! records reject unknown property revisions while preserving unsupported
 //! non-property semantic uints as ordinary data. No native
 //! producer, original/current authority or index relationship is certified.
+
+#![allow(
+    clippy::unwrap_used,
+    reason = "Fixture failures intentionally panic in tests."
+)]
 
 use super::*;
 
@@ -16,6 +21,21 @@ fn current_registries() -> ConfiguredRegistryInputs {
     inputs.behavioral_properties.push("index-roots".into());
     inputs.behavioral_properties.sort();
     inputs
+}
+
+// PROP-30 and D-104 register the exact 35-name fence independently of codecs.
+fn current_registry_fixture() -> Vec<u8> {
+    let mut bytes = vec![0xa9, 0, 1, 1, 3, 2, 0x98, 35];
+    for name in BEHAVIOR_NAMES {
+        fixture_string(&mut bytes, 0x60, name.as_bytes());
+        if *name == "index" {
+            bytes.extend_from_slice(b"\x6aindex-gaps\x6bindex-roots");
+        }
+    }
+    bytes.extend_from_slice(&[3, 2, 4, 1, 5, 1, 6, 1, 7, 0x6a]);
+    bytes.extend_from_slice(b"terrane-v1");
+    bytes.extend_from_slice(&[8, 0x80]);
+    bytes
 }
 
 fn context(mode: ViewInterpretationMode) -> ConsumedViewInterpretation {
@@ -182,8 +202,8 @@ fn explicit_modes_and_recorded_old_fences_match_independent_literals() {
     assert_eq!(ConsumedViewInterpretation::decode(&bytes).unwrap(), old);
     old.check_supported_interpretation().unwrap();
 
-    // SPEC-known revision3 requires its exact 35 names as ordinary data,
-    // independently of this implementation's interpretation-support refusal.
+    // Registered revision3 requires its exact 35-name vocabulary fence.
+    // Missing or extra names contradict the independently selected revision.
     let correct = hex_bytes(LEGACY_CURRENT_CONTEXT);
     assert_eq!(&correct[70..78], &[0xa9, 0, 1, 1, 3, 2, 0x98, 35]);
     let mut missing_one = correct.clone();
@@ -236,14 +256,39 @@ fn optional_context_matches_independent_complete_supported_wire() {
 
 #[test]
 fn global_registry_and_current_whole_support_boundaries_remain_unchanged() {
+    let bytes = hex_bytes(CURRENT_WHOLE_INPUTS);
+    let mut current = complete_inputs();
+    current.registries = current_registries();
+    current.view_interpretations.as_mut().unwrap()[0].registries = current_registries();
+    assert_eq!(LineageUsedInputs::decode(&bytes).unwrap(), current);
+    assert_eq!(current.encode().unwrap(), bytes);
+    assert_eq!(current.check_supported_view_contexts(), Ok(true));
+
+    let registry = current_registries();
+    let registry_bytes = current_registry_fixture();
+    assert_eq!(registry_bytes, hex_bytes(LEGACY_CURRENT_CONTEXT)[70..]);
+    assert_eq!(registry.encode().unwrap(), registry_bytes);
     assert_eq!(
-        LineageUsedInputs::decode(&hex_bytes(CURRENT_WHOLE_INPUTS)),
-        Err(EvidenceError::UnsupportedRevision)
+        ConfiguredRegistryInputs::decode(&registry_bytes).unwrap(),
+        registry
     );
-    let mut bytes = registry_fixture();
-    bytes[4] = 3;
+
+    // Revision 3 is registered; its legacy 33-name fence is a contradiction.
+    let mut mismatched_bytes = registry_fixture();
+    mismatched_bytes[4] = 3;
     assert_eq!(
-        ConfiguredRegistryInputs::decode(&bytes),
+        ConfiguredRegistryInputs::decode(&mismatched_bytes),
+        Err(EvidenceError::Contradiction)
+    );
+    let mut mismatched = current_registries();
+    mismatched.behavioral_properties = registries().behavioral_properties;
+    assert_eq!(mismatched.encode(), Err(EvidenceError::Contradiction));
+
+    // Keep the complete fence while selecting an actually unregistered revision.
+    let mut unknown_bytes = registry_bytes;
+    unknown_bytes[4] = 4;
+    assert_eq!(
+        ConfiguredRegistryInputs::decode(&unknown_bytes),
         Err(EvidenceError::UnsupportedRevision)
     );
     assert_eq!(
@@ -372,6 +417,45 @@ fn each_occurrence_and_override_uses_its_own_view_fence() {
         .registries
         .later_properties = vec!["index-roots".into()];
     assert_eq!(inputs.check_supported_view_contexts(), Ok(true));
+
+    // Independent property-value bytes use text hex inside the required
+    // noninherited wrapper. Canonical text keys order value before inherit.
+    let gap_binding = b"\xa2\x65value\x78\x400707070707070707070707070707070707070707070707070707070707070707\x67inherit\xf4";
+    assert_eq!(
+        crate::indexing::carrier::GapBinding::decode_binding(gap_binding)
+            .unwrap()
+            .node(),
+        [7; 32]
+    );
+    let mut gap_map = b"\xa1\x6aindex-gaps".to_vec();
+    gap_map.extend_from_slice(gap_binding);
+    let mut active = complete_inputs();
+    active.view_interpretations.as_mut().unwrap()[0].registries = current_registries();
+    active.views[0].roots[0].layers[0].properties = gap_map.clone();
+    let bytes = active.encode().unwrap();
+    assert_eq!(LineageUsedInputs::decode(&bytes).unwrap(), active);
+    assert_eq!(
+        active.check_supported_view_contexts(),
+        Err(EvidenceError::Schema)
+    );
+
+    let mut old = complete_inputs();
+    old.view_interpretations.as_mut().unwrap()[0]
+        .registries
+        .later_properties = vec!["index-gaps".into()];
+    old.views[0].roots[0].layers[0].properties = gap_map;
+    assert_eq!(old.check_supported_view_contexts(), Ok(true));
+
+    // A raw digest byte string is excluded by the generic property schema,
+    // independently of either active or preserve-only interpretation.
+    let mut invalid = old;
+    let mut raw_digest = b"\xa1\x6aindex-gaps\x58\x20".to_vec();
+    raw_digest.extend_from_slice(&[7; 32]);
+    invalid.views[0].roots[0].layers[0].properties = raw_digest;
+    assert_eq!(
+        invalid.encode(),
+        Err(EvidenceError::Tree(crate::tree_format::Error::Entry))
+    );
 }
 
 #[test]
@@ -607,7 +691,7 @@ fn unknown_per_view_profiles_are_data_and_refuse_interpretation() {
     );
 
     // Known property fences remain mandatory even when another semantic uint
-    // is unsupported. Tree2 still parses as ordinary data and refuses execution.
+    // is unsupported. Tree2 remains ordinary data until explicit support checking.
 
     let baseline = context(ViewInterpretationMode::Recorded);
     let mut profiles = Vec::new();
@@ -616,6 +700,8 @@ fn unknown_per_view_profiles_are_data_and_refuse_interpretation() {
     assert_eq!(properties.check_supported_interpretation(), Ok(()));
     let mut attributes = baseline.clone();
     attributes.registries.attribute_revision = 2;
+    assert_eq!(attributes.check_supported_interpretation(), Ok(()));
+    attributes.registries.attribute_revision = 3;
     profiles.push(attributes);
     let mut selector = baseline.clone();
     selector.registries.selector_revision = 2;
