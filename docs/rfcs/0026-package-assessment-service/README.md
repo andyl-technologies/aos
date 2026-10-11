@@ -73,6 +73,8 @@ A separate [advisory-trigger schema transition review](12-advisory-trigger-schem
 
 The [assessment permission policy review](13-assessment-permission-review.md) records the exact proposed permission definitions and default role matrix. It installs no permission or role grant.
 
+The [implementation qualification record](14-implementation-qualification-record.md) distinguishes completed checkpoint tests/builds from remaining RFC requirements and public-service admission.
+
 ## Core requirements
 
 1. Packages describe their components and how to observe them in versioned,
