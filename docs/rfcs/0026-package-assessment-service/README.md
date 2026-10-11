@@ -69,6 +69,8 @@ also satisfy the stated limits, ordering, coverage, and authorization rules.
 | [10. Implementation and qualification](10-implementation-and-qualification.md) | Crate boundaries, migrations, delivery stages, conformance gates |
 | [11. Decisions and references](11-decisions-and-references.md) | Alternatives, registries, normative and informative references |
 
+A separate [advisory-trigger schema transition review](12-advisory-trigger-schema-review.md) describes the proposed durable input projection and its reset-only serving compatibility requirements. It installs no migration or database transition.
+
 ## Core requirements
 
 1. Packages describe their components and how to observe them in versioned,
