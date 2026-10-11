@@ -55,6 +55,7 @@ use crate::keymap;
 use crate::r2_adapter::{R2BucketAdapter, R2Contract, R2HeadObject, R2ListObject, R2ListPage};
 
 pub(crate) mod metadata_batch;
+pub(crate) mod prepared_control;
 
 #[derive(Clone)]
 struct WorkerR2BucketAdapter {
@@ -239,6 +240,10 @@ pub(crate) async fn execute_external_storage_work(
         egress: Arc::clone(&egress),
     };
     let (outcome, source_bytes) = match &plan.operation {
+        StorageWorkOperation::VerifyPreparedGitIndex { .. }
+        | StorageWorkOperation::PutPreparedControl { .. } => {
+            anyhow::bail!("prepared controls require their framed signed request");
+        }
         StorageWorkOperation::Head { path } => {
             let url = fetcher.surface.object_url(S3Method::Head, path, now)?;
             let response = egress
@@ -532,6 +537,10 @@ pub(crate) async fn execute_r2_storage_work(
         prefix: plan.placement_prefix.clone(),
     };
     let (outcome, source_bytes) = match &plan.operation {
+        StorageWorkOperation::VerifyPreparedGitIndex { .. }
+        | StorageWorkOperation::PutPreparedControl { .. } => {
+            anyhow::bail!("prepared controls require their framed signed request");
+        }
         StorageWorkOperation::Head { path } => {
             let key = plan.object_key(path)?;
             // Frozen R2 GC uses this same metadata plan. Observe through the

@@ -122,6 +122,18 @@ rejects path traversal, encoded separators, another tenant's prefix, and a
 selector outside the operation's admitted namespace. A plan cannot select the
 current writer implicitly or substitute a healthier placement.
 
+Prepared registry controls use a separate framed request: a four-byte
+big-endian JSON-plan length, the signed plan, then its exact control bytes.
+The plan binds the control path, SHA-256 and size. The Worker rejects a missing,
+changed or oversized body before storage access. Ordinary plans and compact
+responses retain their existing limits; the control body has the existing
+staged-revision ceiling and smaller format-specific ceilings. This route admits
+held registry pointers, loose Git encodings and pack indexes. It cannot carry
+pack, NAR, image or OCI artifact bodies. Native retains publication ordering and
+SQL commits; Workers validate companion packs and perform the storage writes.
+Only a digest and compact verification result return to Native. Mutations are
+not automatically retried after a transport failure.
+
 The placement and binding fields carry the [RFC-0012](../0012-hub-surface-topology/01-domain-model.md)
 resource fences. A binding snapshot is a signed, revisioned, nonsecret
 description of provider kind, endpoint, bucket, prefix, capabilities, and the

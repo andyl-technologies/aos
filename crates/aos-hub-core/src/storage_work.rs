@@ -82,6 +82,7 @@ mod binding_snapshot;
 mod frozen_cleanup;
 pub mod live_metadata_batch;
 mod metadata_batch;
+pub mod prepared_control;
 pub mod protected_inspection;
 
 pub use frozen_cleanup::{
@@ -347,6 +348,26 @@ pub enum StorageWorkOperation {
         /// Lowercase SHA-256 of the decoded document bytes.
         sha256: String,
     },
+    /// Verifies a prepared Git index against its stored companion without returning the pack.
+    VerifyPreparedGitIndex {
+        /// Canonical pack-index path under the selected placement.
+        path: String,
+        /// Exact SHA-256 of the separately framed prepared index bytes.
+        sha256: String,
+        /// Exact prepared index length.
+        size: u64,
+        /// Frozen companion SHA-256, when selected from a staged inventory.
+        companion_sha256: Option<String>,
+    },
+    /// Writes a prepared registry control object after storage-side semantic verification.
+    PutPreparedControl {
+        /// Canonical mutable control path; packs, NARs and images are excluded.
+        path: String,
+        /// Exact SHA-256 of the separately framed control bytes.
+        sha256: String,
+        /// Exact prepared control length.
+        size: u64,
+    },
     /// Writes a bounded service-owned conditional-delete probe object.
     PutProbe {
         /// Reserved surface-relative probe key.
@@ -404,6 +425,7 @@ impl StorageWorkOperation {
             | Self::InspectMirrorTreeInventory { .. }
             | Self::FilterStoredGitPackTree { .. }
             | Self::InspectStoredGitPack { .. }
+            | Self::VerifyPreparedGitIndex { .. }
             | Self::Head { .. }
             | Self::InspectSha256 { .. }
             | Self::InspectGitObject { .. }
@@ -417,6 +439,7 @@ impl StorageWorkOperation {
             | Self::HashOciRange { .. } => &["read"],
             Self::ListPage { .. } => &["list"],
             Self::CopyObject { .. }
+            | Self::PutPreparedControl { .. }
             | Self::ComposeOciBlob { .. }
             | Self::CompleteMultipart { .. } => &["read", "write"],
             Self::PutMetadata { .. }
@@ -462,6 +485,8 @@ impl StorageWorkOperation {
             Self::DeleteOciStaging { .. } => "delete_oci_staging",
             Self::DeleteIfMatches { .. } => "delete_if_matches",
             Self::PutMetadata { .. } => "put_metadata",
+            Self::VerifyPreparedGitIndex { .. } => "verify_prepared_git_index_v1",
+            Self::PutPreparedControl { .. } => "put_prepared_control_v1",
             Self::PutProbe { .. } => "put_probe",
             Self::DeleteProbe { .. } => "delete_probe",
             Self::CreateMultipart { .. } => "create_multipart",
@@ -666,6 +691,13 @@ pub enum StorageWorkOutcome {
         object: StorageObjectIdentity,
         /// SHA-256 of the bytes read by the executor.
         sha256: String,
+    },
+    /// Confirms that the prepared index describes the exact stored companion.
+    PreparedGitIndexVerified {
+        /// SHA-256 independently computed from the companion bytes that were parsed.
+        companion_sha256: String,
+        /// Actual companion bytes consumed by storage-side verification.
+        companion_size: u64,
     },
     /// One decoded and hash-checked Git object extracted beside storage.
     GitObject {
@@ -1338,6 +1370,32 @@ impl StorageWorkPlan {
                     return Err(StorageWorkError::InvalidPlan);
                 }
             }
+            StorageWorkOperation::VerifyPreparedGitIndex {
+                path,
+                sha256,
+                size,
+                companion_sha256,
+            } => {
+                if !valid_relative_path(path, false)
+                    || aos_registry_surface::pack_index::companion_pack_path(path).is_none()
+                    || *size > aos_registry_surface::pack_index::MAX_PUBLISHED_PACK_INDEX_BYTES
+                    || !valid_sha256_hex(sha256)
+                    || companion_sha256
+                        .as_deref()
+                        .is_some_and(|hash| !valid_sha256_hex(hash))
+                {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
+            StorageWorkOperation::PutPreparedControl { path, sha256, size } => {
+                if !valid_relative_path(path, false)
+                    || !prepared_control::admitted_path(path)
+                    || *size > prepared_control::maximum_body_bytes(path) as u64
+                    || !valid_sha256_hex(sha256)
+                {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
             StorageWorkOperation::PutProbe {
                 path,
                 content_base64,
@@ -1413,6 +1471,29 @@ pub fn admitted_metadata_path(path: &str) -> bool {
         || path.starts_with("releases/")
         || admitted_narinfo_path(path)
         || admitted_oci_blob_path(path)
+        || admitted_tuf_metadata_path(path)
+}
+
+fn admitted_tuf_metadata_path(path: &str) -> bool {
+    if path == "tuf/timestamp.json" {
+        return true;
+    }
+    let Some(name) = path
+        .strip_prefix("tuf/")
+        .and_then(|name| name.strip_suffix(".json"))
+    else {
+        return false;
+    };
+    let Some((version, role)) = name.split_once('.') else {
+        return false;
+    };
+    !version.starts_with('0')
+        && version.bytes().all(|byte| byte.is_ascii_digit())
+        && version.parse::<u64>().is_ok()
+        && !role.is_empty()
+        && role.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
 }
 
 /// Reports whether a cache narinfo key has a Nix base32 store hash.
@@ -2204,6 +2285,9 @@ mod tests {
             "nix-cache-info",
             "objects/info/packs",
             "objects/info/alternates",
+            "tuf/timestamp.json",
+            "tuf/1.root.json",
+            "tuf/43.stable.json",
             "channels/stable/00",
             "abcdf.narinfo",
             "oci/blobs/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -2219,6 +2303,10 @@ mod tests {
             "objects/pack/pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pack",
             "objects/aos-index-v1/all",
             "nix-cache-info/extra",
+            "tuf/timestamp.json.bak",
+            "tuf/01.root.json",
+            "tuf/1.root.json/extra",
+            "tuf/../root.json",
             "bad-store-hash.narinfo",
             "oci/blobs/sha256/not-a-digest",
         ] {

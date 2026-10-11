@@ -29,6 +29,20 @@ use sha2::{Digest as _, Sha256};
 use crate::backend::BackendBounds;
 use crate::db::SurfacePlacementRecord;
 
+/// Identifies semantic failures when checking an index against its stored pack.
+#[derive(Debug, thiserror::Error)]
+pub enum GitPackIndexVerificationError {
+    /// The required companion is absent from the selected placement.
+    #[error("prepared index companion pack is absent")]
+    MissingCompanion,
+    /// The prepared index does not describe the canonical stored pack.
+    #[error("pack index does not describe its companion pack")]
+    InvalidIndex,
+    /// The companion differs from the exact frozen staged inventory.
+    #[error("prepared index companion differs from its frozen inventory")]
+    CompanionChanged,
+}
+
 /// Maximum object keys accepted from one physical placement or one cache-wide scan.
 pub const MAX_SURFACE_LIST_OBJECTS: usize = 1_000_000;
 
@@ -558,6 +572,36 @@ pub trait SurfaceFetch: BackendBounds {
             objects.push(self.inspect_git_object(*oid).await?);
         }
         Ok(objects)
+    }
+
+    /// Verifies a prepared Git index against its exact stored companion pack.
+    ///
+    /// Hybrid implementations read and parse the companion in Workers.
+    /// The optional SHA-256 pins the complete encoded companion body.
+    ///
+    /// # Errors
+    /// Returns an error for a missing, oversized, changed or malformed companion,
+    /// an invalid index, or failed storage-side verification.
+    async fn verify_git_pack_index(
+        &self,
+        path: &str,
+        index: &[u8],
+        companion_sha256: Option<&str>,
+    ) -> Result<()> {
+        let companion = aos_registry_surface::pack_index::companion_pack_path(path)
+            .ok_or(GitPackIndexVerificationError::InvalidIndex)?;
+        let pack = self
+            .fetch_bounded(
+                &companion,
+                aos_registry_surface::pack_index::MAX_PUBLISHED_PACK_BYTES as usize,
+            )
+            .await?
+            .ok_or(GitPackIndexVerificationError::MissingCompanion)?;
+        if companion_sha256.is_some_and(|expected| hex::encode(Sha256::digest(&pack)) != expected) {
+            return Err(GitPackIndexVerificationError::CompanionChanged.into());
+        }
+        aos_registry_surface::pack_index::validate_against_pack(path, index, &pack)
+            .map_err(|_| GitPackIndexVerificationError::InvalidIndex.into())
     }
 
     /// Reads a bounded OCI range needed to inspect legacy layer metadata.
@@ -1247,6 +1291,50 @@ mod tests {
         fn describe(&self) -> String {
             "exact-range-test".into()
         }
+    }
+
+    #[tokio::test]
+    async fn prepared_index_verification_pins_the_stored_companion() {
+        let mut pack = b"PACK".to_vec();
+        pack.extend_from_slice(&2_u32.to_be_bytes());
+        pack.extend_from_slice(&0_u32.to_be_bytes());
+        let trailer = Sha256::digest(&pack);
+        pack.extend_from_slice(&trailer);
+        let path = format!("objects/pack/pack-{}.idx", hex::encode(trailer));
+        let mut index = vec![255, b't', b'O', b'c'];
+        index.extend_from_slice(&2_u32.to_be_bytes());
+        index.extend_from_slice(&[0; 256 * 4]);
+        index.extend_from_slice(&trailer);
+        index.extend_from_slice(&Sha256::digest(&index));
+        let fetch = DeclaredFetch {
+            declared: pack.len() as u64,
+            body: pack.clone(),
+            body_reads: AtomicUsize::new(0),
+        };
+        let digest = hex::encode(Sha256::digest(&pack));
+
+        fetch
+            .verify_git_pack_index(&path, &index, Some(&digest))
+            .await
+            .unwrap();
+        let error = fetch
+            .verify_git_pack_index(&path, &index, Some(&"0".repeat(64)))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<GitPackIndexVerificationError>(),
+            Some(GitPackIndexVerificationError::CompanionChanged)
+        ));
+
+        index[0] = 0;
+        let error = fetch
+            .verify_git_pack_index(&path, &index, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<GitPackIndexVerificationError>(),
+            Some(GitPackIndexVerificationError::InvalidIndex)
+        ));
     }
 
     #[test]

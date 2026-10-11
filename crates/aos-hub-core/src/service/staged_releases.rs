@@ -32,6 +32,86 @@ struct CandidateFetch<'a> {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl SurfaceFetch for CandidateFetch<'_> {
+    fn storage_local_git_inspection(&self) -> bool {
+        self.provider.storage_local_git_inspection()
+    }
+
+    async fn inspect_git_object(
+        &self,
+        oid: aos_registry_surface::object::Oid,
+    ) -> anyhow::Result<Option<(aos_registry_surface::object::ObjectKind, Vec<u8>)>> {
+        let path = oid.loose_path();
+        if let Some(bytes) = self.prepared_objects.get(path.as_str()) {
+            return aos_registry_surface::object::decode_loose(bytes, Some(oid)).map(Some);
+        }
+        self.provider
+            .placement_fetcher(&self.placement)
+            .await?
+            .inspect_git_object(oid)
+            .await
+    }
+
+    async fn inspect_git_objects(
+        &self,
+        oids: &[aos_registry_surface::object::Oid],
+    ) -> anyhow::Result<Vec<Option<(aos_registry_surface::object::ObjectKind, Vec<u8>)>>> {
+        let mut results = vec![None; oids.len()];
+        let mut pending = Vec::new();
+        for (position, oid) in oids.iter().copied().enumerate() {
+            let path = oid.loose_path();
+            if let Some(bytes) = self.prepared_objects.get(path.as_str()) {
+                results[position] = Some(aos_registry_surface::object::decode_loose(
+                    bytes,
+                    Some(oid),
+                )?);
+            } else {
+                pending.push((position, oid));
+            }
+        }
+        if !pending.is_empty() {
+            let requested = pending.iter().map(|(_, oid)| *oid).collect::<Vec<_>>();
+            let inspected = self
+                .provider
+                .placement_fetcher(&self.placement)
+                .await?
+                .inspect_git_objects(&requested)
+                .await?;
+            anyhow::ensure!(
+                inspected.len() == pending.len(),
+                "staged Git inspection batch is incomplete"
+            );
+            for ((position, _), object) in pending.into_iter().zip(inspected) {
+                results[position] = object;
+            }
+        }
+        Ok(results)
+    }
+
+    async fn verify_git_pack_index(
+        &self,
+        path: &str,
+        index: &[u8],
+        companion_sha256: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.provider
+            .placement_fetcher(&self.placement)
+            .await?
+            .verify_git_pack_index(path, index, companion_sha256)
+            .await
+    }
+
+    async fn inventory_evidence_bounded(
+        &self,
+        path: &str,
+        maximum_bytes: u64,
+    ) -> anyhow::Result<Option<crate::fetch::SurfaceObjectEvidence>> {
+        self.provider
+            .placement_fetcher(&self.placement)
+            .await?
+            .inventory_evidence_bounded(path, maximum_bytes)
+            .await
+    }
+
     fn describe(&self) -> String {
         format!("staged release on placement {}", self.placement.id)
     }

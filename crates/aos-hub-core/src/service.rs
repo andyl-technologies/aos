@@ -27288,45 +27288,43 @@ impl RpcService {
         };
         verify_publication_bytes(&object, &bytes)?;
         if keymap::is_git_pack_index_path(&object.object_key) {
-            let companion =
-                aos_registry_surface::pack_index::companion_pack_path(&object.object_key)
-                    .ok_or_else(|| RpcError::invalid("Git pack index path is invalid"))?;
             for upload in &mut uploads {
                 let fetch = self
                     .surface
                     .placement_fetcher(&upload.placement)
                     .await
                     .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
-                let read = fetch.fetch_bounded(
-                    &companion,
-                    aos_registry_surface::pack_index::MAX_PUBLISHED_PACK_BYTES as usize,
-                );
+                let read = fetch.verify_git_pack_index(&object.object_key, &bytes, None);
                 let timeout = clock::sleep(std::time::Duration::from_secs(
                     REGISTRY_PUBLICATION_GIT_PACK_OPERATION_TIMEOUT_SECS,
                 ));
                 futures_util::pin_mut!(read, timeout);
-                let pack = match futures_util::future::select(read, timeout).await {
-                    futures_util::future::Either::Left((result, _)) => result
-                        .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?
-                        .ok_or_else(|| {
-                            RpcError::FailedPrecondition(
-                                "pack index companion is absent from a required placement".into(),
-                            )
-                        })?,
+                match futures_util::future::select(read, timeout).await {
+                    futures_util::future::Either::Left((result, _)) => {
+                        result.map_err(|error| match error
+                            .downcast_ref::<crate::fetch::GitPackIndexVerificationError>(
+                        ) {
+                            Some(crate::fetch::GitPackIndexVerificationError::MissingCompanion) => {
+                                RpcError::FailedPrecondition(
+                                    "pack index companion is absent from a required placement"
+                                        .into(),
+                                )
+                            }
+                            Some(
+                                crate::fetch::GitPackIndexVerificationError::InvalidIndex
+                                | crate::fetch::GitPackIndexVerificationError::CompanionChanged,
+                            ) => {
+                                RpcError::invalid("pack index does not describe its companion pack")
+                            }
+                            None => RpcError::Unavailable(format!("{error:#}")),
+                        })?;
+                    }
                     futures_util::future::Either::Right(((), _)) => {
                         return Err(RpcError::Unavailable(
-                            "Git pack companion read timed out".into(),
+                            "Git pack companion verification timed out".into(),
                         ));
                     }
-                };
-                aos_registry_surface::pack_index::validate_against_pack(
-                    &object.object_key,
-                    &bytes,
-                    &pack,
-                )
-                .map_err(|_| {
-                    RpcError::invalid("pack index does not describe its companion pack")
-                })?;
+                }
             }
         }
         for upload in &mut uploads {

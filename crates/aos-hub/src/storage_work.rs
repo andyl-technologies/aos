@@ -110,6 +110,7 @@ fn retryable_read_operation(operation: &StorageWorkOperation) -> bool {
     matches!(
         operation,
         StorageWorkOperation::Head { .. }
+            | StorageWorkOperation::VerifyPreparedGitIndex { .. }
             | StorageWorkOperation::InspectMirrorPack { .. }
             | StorageWorkOperation::InspectMirrorMembership { .. }
             | StorageWorkOperation::InspectStoredGitPack { .. }
@@ -827,6 +828,31 @@ impl RemoteStorageWorkClient {
         StorageWorkResult,
         Option<execute_observation::CheckedObservation>,
     )> {
+        self.execute_observed_with_control(plan, None).await
+    }
+
+    /// Executes exact prepared registry control bytes bound by a signed plan.
+    ///
+    /// # Errors
+    /// Returns an error for changed control bytes, invalid plans or a failed Worker effect.
+    async fn execute_prepared_control(
+        &self,
+        plan: &StorageWorkPlan,
+        control: &[u8],
+    ) -> Result<StorageWorkResult> {
+        self.execute_observed_with_control(plan, Some(control))
+            .await
+            .map(|(result, _)| result)
+    }
+
+    async fn execute_observed_with_control(
+        &self,
+        plan: &StorageWorkPlan,
+        control: Option<&[u8]>,
+    ) -> Result<(
+        StorageWorkResult,
+        Option<execute_observation::CheckedObservation>,
+    )> {
         let _permit = self
             .in_flight
             .acquire()
@@ -836,6 +862,29 @@ impl RemoteStorageWorkClient {
         plan.validate(&self.deployment_id, now)?;
         let body = serde_json::to_vec(plan).context("encoding storage work plan")?;
         let signature = self.key.sign_body(&body)?;
+        let (body, content_type) = match control {
+            Some(control) => {
+                aos_hub_core::storage_work::prepared_control::validate_body(
+                    &plan.operation,
+                    control,
+                )?;
+                (
+                    aos_hub_core::storage_work::prepared_control::encode_frame(&body, control)?,
+                    aos_hub_core::storage_work::prepared_control::CONTENT_TYPE,
+                )
+            }
+            None => {
+                anyhow::ensure!(
+                    !matches!(
+                        plan.operation,
+                        StorageWorkOperation::VerifyPreparedGitIndex { .. }
+                            | StorageWorkOperation::PutPreparedControl { .. }
+                    ),
+                    "prepared control operation requires its exact framed bytes"
+                );
+                (body, "application/json")
+            }
+        };
         let endpoint = self.endpoint.clone();
         #[cfg(test)]
         let (signature, endpoint) = match &self.controlled_mirror {
@@ -899,7 +948,7 @@ impl RemoteStorageWorkClient {
             let mut request = self
                 .http
                 .post(&endpoint)
-                .header("content-type", "application/json")
+                .header("content-type", content_type)
                 .header(STORAGE_WORK_SIGNATURE_HEADER, signature.clone())
                 .header(
                     telemetry::STORAGE_CALL_ID_HEADER,
@@ -1271,6 +1320,8 @@ fn validate_capabilities(deployment_id: &str, capabilities: &StorageCapabilities
                 "delete_oci_staging",
                 "delete_if_matches",
                 "put_metadata",
+                "verify_prepared_git_index_v1",
+                "put_prepared_control_v1",
                 "put_probe",
                 "delete_probe",
                 "create_multipart",
@@ -1601,6 +1652,44 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
                     && result.source_bytes == *expected_size
                     && sha256 == expected_sha256,
                 "storage Worker OCI composition did not match its signed plan"
+            );
+        }
+        (
+            StorageWorkOperation::VerifyPreparedGitIndex {
+                companion_sha256: expected,
+                ..
+            },
+            StorageWorkOutcome::PreparedGitIndexVerified {
+                companion_sha256,
+                companion_size,
+            },
+        ) => {
+            anyhow::ensure!(
+                result.source_bytes == *companion_size
+                    && *companion_size
+                        <= aos_registry_surface::pack_index::MAX_PUBLISHED_PACK_BYTES
+                    && companion_sha256.len() == 64
+                    && companion_sha256
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                    && expected
+                        .as_ref()
+                        .is_none_or(|expected| expected == companion_sha256),
+                "storage Worker verified a different companion pack"
+            );
+        }
+        (
+            StorageWorkOperation::PutPreparedControl { path, .. },
+            StorageWorkOutcome::MetadataWritten,
+        ) => {
+            let maximum = if aos_registry_surface::keymap::is_git_pack_index_path(path) {
+                aos_registry_surface::pack_index::MAX_PUBLISHED_PACK_BYTES
+            } else {
+                0
+            };
+            anyhow::ensure!(
+                result.source_bytes <= maximum,
+                "storage Worker read unrelated source bytes for prepared control"
             );
         }
         (StorageWorkOperation::DeleteOciStaging { .. }, StorageWorkOutcome::OciStagingDeleted) => {
@@ -2426,6 +2515,27 @@ impl SurfaceFetch for HybridSurfaceFetch {
 
     fn storage_local_git_inspection(&self) -> bool {
         true
+    }
+
+    async fn verify_git_pack_index(
+        &self,
+        path: &str,
+        index: &[u8],
+        companion_sha256: Option<&str>,
+    ) -> Result<()> {
+        let plan = self.work.plan_for_placement(
+            &self.placement,
+            &self.binding,
+            StorageWorkOperation::VerifyPreparedGitIndex {
+                path: path.into(),
+                sha256: hex::encode(sha2::Sha256::digest(index)),
+                size: index.len() as u64,
+                companion_sha256: companion_sha256.map(str::to_owned),
+            },
+            aos_hub_core::clock::now_unix_secs(),
+        )?;
+        self.work.execute_prepared_control(&plan, index).await?;
+        Ok(())
     }
 
     fn storage_local_sha256(&self) -> bool {
@@ -3367,6 +3477,20 @@ impl SurfaceWrite for HybridR2MultipartWriter {
             return write_hybrid_metadata(&self.work, &self.placement, &self.binding, path, bytes)
                 .await;
         }
+        if aos_hub_core::storage_work::prepared_control::admitted_path(path) {
+            let plan = self.work.plan_for_placement(
+                &self.placement,
+                &self.binding,
+                StorageWorkOperation::PutPreparedControl {
+                    path: path.into(),
+                    sha256: hex::encode(sha2::Sha256::digest(bytes)),
+                    size: bytes.len() as u64,
+                },
+                aos_hub_core::clock::now_unix_secs(),
+            )?;
+            self.work.execute_prepared_control(&plan, bytes).await?;
+            return Ok(());
+        }
         write_hybrid_probe(&self.work, &self.placement, &self.binding, path, bytes).await
     }
 
@@ -3595,6 +3719,115 @@ mod tests {
     use super::*;
     use aos_hub_core::storage_work::{StorageCredentialReference, StorageObjectIdentity};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn prepared_control_transport_authenticates_bytes_and_never_retries_writes() {
+        let control = b"StoreDir: /nix/store\n";
+        let issued_at = aos_hub_core::clock::now_unix_secs();
+        let plan = StorageWorkPlan {
+            version: 1,
+            plan_id: "a".repeat(32),
+            deployment_id: "deployment-1".into(),
+            issued_at,
+            expires_at: issued_at + 30,
+            placement_id: 4,
+            placement_resource_version: 2,
+            binding_id: 3,
+            binding_resource_version: 1,
+            binding_kind: "deployment_r2".into(),
+            binding_snapshot_revision: None,
+            credential_references: Vec::new(),
+            placement_prefix: "registry".into(),
+            operation: StorageWorkOperation::PutPreparedControl {
+                path: "nix-cache-info".into(),
+                sha256: hex::encode(sha2::Sha256::digest(control)),
+                size: control.len() as u64,
+            },
+        };
+        let result = StorageWorkResult {
+            versioned_sources: Vec::new(),
+            plan_id: plan.plan_id.clone(),
+            placement_id: plan.placement_id,
+            placement_resource_version: plan.placement_resource_version,
+            binding_id: plan.binding_id,
+            binding_resource_version: plan.binding_resource_version,
+            source_bytes: 0,
+            outcome: StorageWorkOutcome::MetadataWritten,
+        };
+        let response_body = serde_json::to_vec(&result).unwrap();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let server_attempts = Arc::clone(&attempts);
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::post(
+                move |headers: axum::http::HeaderMap, body: axum::body::Bytes| {
+                    let attempts = Arc::clone(&server_attempts);
+                    let response_body = response_body.clone();
+                    async move {
+                        assert_eq!(
+                            headers["content-type"],
+                            aos_hub_core::storage_work::prepared_control::CONTENT_TYPE
+                        );
+                        let (signed_plan, received) =
+                            aos_hub_core::storage_work::prepared_control::split_frame(&body)
+                                .unwrap();
+                        let key =
+                            StorageWorkKey::new(b"hybrid-storage-test-key-with-thirty-two-bytes")
+                                .unwrap();
+                        let plan = key
+                            .verify_plan(
+                                headers[STORAGE_WORK_SIGNATURE_HEADER].to_str().unwrap(),
+                                signed_plan,
+                                "deployment-1",
+                                aos_hub_core::clock::now_unix_secs(),
+                            )
+                            .unwrap();
+                        aos_hub_core::storage_work::prepared_control::validate_body(
+                            &plan.operation,
+                            received,
+                        )
+                        .unwrap();
+                        assert_eq!(received, control);
+                        if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                            (axum::http::StatusCode::OK, response_body)
+                        } else {
+                            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Vec::new())
+                        }
+                    }
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let mut client = RemoteStorageWorkClient::new(
+            "https://worker.example",
+            plan.deployment_id.clone(),
+            b"hybrid-storage-test-key-with-thirty-two-bytes",
+        )
+        .unwrap();
+        client.endpoint = format!("http://{address}/");
+
+        assert!(client
+            .execute_prepared_control(&plan, control)
+            .await
+            .is_ok());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(client
+            .execute_prepared_control(&plan, b"changed")
+            .await
+            .is_err());
+        assert!(client.execute(&plan).await.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+
+        // A server failure may follow a committed write: no automatic replay.
+        assert!(client
+            .execute_prepared_control(&plan, control)
+            .await
+            .is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        server.abort();
+    }
 
     #[tokio::test]
     async fn retries_transient_read_work_without_replaying_mutations() {
@@ -3943,6 +4176,8 @@ mod tests {
                 "delete_oci_staging".into(),
                 "delete_if_matches".into(),
                 "put_metadata".into(),
+                "verify_prepared_git_index_v1".into(),
+                "put_prepared_control_v1".into(),
                 "put_probe".into(),
                 "delete_probe".into(),
                 "create_multipart".into(),

@@ -11,30 +11,29 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aos_hub_core::hybrid_ingress::{
-    HYBRID_DELIVERY_HEADER, HYBRID_INGRESS_HEADER, HYBRID_NATIVE_DURATION_HEADER,
-    HYBRID_OCI_MANIFEST_UPLOAD_QUERY, HYBRID_UPLOAD_PHASE_HEADER, HybridCachePartAdmission,
-    HybridCachePartAdmissionRequest, HybridCachePartCompletionRequest, HybridCachePartPreflight,
-    HybridCacheUploadAdmission, HybridCacheUploadAdmissionRequest,
-    HybridCacheUploadCompletionRequest, HybridCacheUploadPreflight, HybridDeliveryTarget,
-    HybridIngressAssertion, HybridIngressKey, HybridOciChunkAdmission,
-    HybridOciChunkCompletionRequest, HybridOciManifestAdmission, HybridOciManifestPreflight,
-    HybridPublicationPartAdmission, HybridPublicationPartAdmissionRequest,
-    HybridPublicationPartCompletionRequest, HybridPublicationPartPreflight,
-    HybridPublicationPartTag, HybridPublicationUploadAdmission,
-    HybridPublicationUploadCompletionRequest, MAX_HYBRID_OCI_CHUNK_BYTES,
-    MAX_HYBRID_OCI_MANIFEST_BYTES, MAX_HYBRID_PUBLICATION_PLACEMENTS, oci_chunk_range_matches,
+    oci_chunk_range_matches, HybridCachePartAdmission, HybridCachePartAdmissionRequest,
+    HybridCachePartCompletionRequest, HybridCachePartPreflight, HybridCacheUploadAdmission,
+    HybridCacheUploadAdmissionRequest, HybridCacheUploadCompletionRequest,
+    HybridCacheUploadPreflight, HybridDeliveryTarget, HybridIngressAssertion, HybridIngressKey,
+    HybridOciChunkAdmission, HybridOciChunkCompletionRequest, HybridOciManifestAdmission,
+    HybridOciManifestPreflight, HybridPublicationPartAdmission,
+    HybridPublicationPartAdmissionRequest, HybridPublicationPartCompletionRequest,
+    HybridPublicationPartPreflight, HybridPublicationPartTag, HybridPublicationUploadAdmission,
+    HybridPublicationUploadCompletionRequest, HYBRID_DELIVERY_HEADER, HYBRID_INGRESS_HEADER,
+    HYBRID_NATIVE_DURATION_HEADER, HYBRID_OCI_MANIFEST_UPLOAD_QUERY, HYBRID_UPLOAD_PHASE_HEADER,
+    MAX_HYBRID_OCI_CHUNK_BYTES, MAX_HYBRID_OCI_MANIFEST_BYTES, MAX_HYBRID_PUBLICATION_PLACEMENTS,
 };
 use aos_hub_core::storage_work::{
+    StorageBindingControl, StorageCapabilities, StorageCredentialProbeRequest, StorageWorkKey,
     MAX_BINDING_CONTROL_BYTES, MAX_CREDENTIAL_PROBE_BYTES, MAX_FROZEN_CLEANUP_BYTES,
     MAX_PLAN_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES, STORAGE_BINDING_CONTROL_PATH,
     STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH,
     STORAGE_CREDENTIAL_PROBE_FAILURE_STAGES, STORAGE_CREDENTIAL_PROBE_PATH,
     STORAGE_FROZEN_CLEANUP_PATH, STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
-    StorageBindingControl, StorageCapabilities, StorageCredentialProbeRequest, StorageWorkKey,
 };
 use base64::Engine as _;
-use futures_util::StreamExt as _;
 use futures_util::lock::{Mutex, OwnedMutexGuard};
+use futures_util::StreamExt as _;
 use sha2::{Digest as _, Sha256};
 use wasm_bindgen::JsValue;
 use worker::{
@@ -1410,6 +1409,8 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
             "delete_oci_staging".into(),
             "delete_if_matches".into(),
             "put_metadata".into(),
+            "verify_prepared_git_index_v1".into(),
+            "put_prepared_control_v1".into(),
             "put_probe".into(),
             "delete_probe".into(),
             "create_multipart".into(),
@@ -1616,8 +1617,23 @@ async fn execute_storage_work(
     let Some(signature) = request.headers().get(STORAGE_WORK_SIGNATURE_HEADER)? else {
         return Response::error("storage work signature is required", 401);
     };
-    let Some(body) = read_bounded_body(&mut request, MAX_PLAN_BYTES).await? else {
-        return Response::error("storage work plan is too large", 413);
+    let framed = request.headers().get("content-type")?.as_deref()
+        == Some(aos_hub_core::storage_work::prepared_control::CONTENT_TYPE);
+    let maximum = if framed {
+        aos_hub_core::storage_work::prepared_control::MAX_FRAME_BYTES
+    } else {
+        MAX_PLAN_BYTES
+    };
+    let Some(wire_body) = read_bounded_body(&mut request, maximum).await? else {
+        return Response::error("storage work request is too large", 413);
+    };
+    let (body, control) = if framed {
+        match aos_hub_core::storage_work::prepared_control::split_frame(&wire_body) {
+            Ok((plan, control)) => (plan, Some(control)),
+            Err(_) => return Response::error("storage work control frame is invalid", 400),
+        }
+    } else {
+        (wire_body.as_slice(), None)
     };
     let key = StorageWorkKey::new(env.secret("HUB_STORAGE_WORK_KEY")?.to_string())
         .map_err(|error| worker::Error::RustError(error.to_string()))?;
@@ -1631,6 +1647,19 @@ async fn execute_storage_work(
         Ok(plan) => plan,
         Err(_) => return Response::error("storage work plan is not authorized", 401),
     };
+    let prepared_operation = matches!(
+        plan.operation,
+        aos_hub_core::storage_work::StorageWorkOperation::VerifyPreparedGitIndex { .. }
+            | aos_hub_core::storage_work::StorageWorkOperation::PutPreparedControl { .. }
+    );
+    if prepared_operation != control.is_some()
+        || control.is_some_and(|control| {
+            aos_hub_core::storage_work::prepared_control::validate_body(&plan.operation, control)
+                .is_err()
+        })
+    {
+        return Response::error("storage work control does not match its signed plan", 400);
+    }
     let operation_kind = plan.operation.kind();
 
     let guarded_pack = if plan.binding_kind != "deployment_r2"
@@ -1657,7 +1686,9 @@ async fn execute_storage_work(
     } else {
         None
     };
-    let execution = if let Some(result) = guarded_pack {
+    let execution = if let Some(control) = control {
+        crate::surface::prepared_control::execute(env, &plan, control).await
+    } else if let Some(result) = guarded_pack {
         Ok(result)
     } else if matches!(
         plan.operation,
