@@ -2,6 +2,61 @@
 
 use super::*;
 
+#[tokio::test]
+async fn publication_accounting_uses_exact_worker_bindings_and_preserves_i64_overflow_checks() {
+    let db = Database::open_in_memory().await.unwrap();
+    let (original, org) = owned_original(&db).await;
+    let plans = ordinary_plans(&db, &original, "integer-boundary", &["nar/boundary.nar"]).await;
+    let plan = &plans[0];
+
+    // The DO transport rejects integers beyond JavaScript's exact range before
+    // SQLite sees them, even when the object and the counters are small.
+    for statement in plan {
+        for parameter in &statement.statement.params {
+            if let Value::Int(value) = parameter {
+                assert!((-9_007_199_254_740_991..=9_007_199_254_740_991).contains(value));
+            }
+        }
+    }
+
+    let object = db
+        .surface_object_named(
+            SurfaceTarget::Registry(original.registry_id),
+            "nar/boundary.nar",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    for (used_bytes, object_count) in [(i64::MAX - 10, 0), (0, i64::MAX)] {
+        db.backend
+            .execute(
+                "UPDATE org_usage SET used_bytes = ?2, object_count = ?3 WHERE org_id = ?1",
+                &vals![org, used_bytes, object_count],
+            )
+            .await
+            .unwrap();
+
+        assert!(db.backend.checked_batch(plan).await.is_err());
+        let usage = db.org_usage(org).await.unwrap();
+        assert_eq!(
+            (usage.used_bytes, usage.object_count),
+            (used_bytes, object_count)
+        );
+        assert!(db.surface_object_usage(object.id).await.unwrap().is_none());
+    }
+
+    db.backend
+        .execute(
+            "UPDATE org_usage SET used_bytes = 0, object_count = 0 WHERE org_id = ?1",
+            &vals![org],
+        )
+        .await
+        .unwrap();
+    db.backend.checked_batch(plan).await.unwrap();
+    let usage = db.org_usage(org).await.unwrap();
+    assert_eq!((usage.used_bytes, usage.object_count), (11, 1));
+}
+
 async fn ordinary_plans(
     db: &Database,
     original: &MirrorOriginal,
@@ -224,12 +279,11 @@ async fn concurrent_accounting_contract(db: &Database) {
         .await
         .unwrap()
         .unwrap();
-    assert!(
-        db.surface_object_usage(overflow.id)
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(db
+        .surface_object_usage(overflow.id)
+        .await
+        .unwrap()
+        .is_none());
     let plans = ordinary_plans(db, &original, "parallel-underflow", &["nar/shared.nar"]).await;
     db.backend
         .execute(
@@ -310,8 +364,8 @@ async fn ordinary_then_mirror_contract(db: &Database) {
     )
     .await
     .unwrap();
-    assert!(
-        db.record_registry_publication_object_presence_fenced(
+    assert!(db
+        .record_registry_publication_object_presence_fenced(
             "mirror-atomic-publication",
             object.id,
             original.placement_id,
@@ -323,8 +377,7 @@ async fn ordinary_then_mirror_contract(db: &Database) {
             original.binding_resource_version,
         )
         .await
-        .is_err()
-    );
+        .is_err());
     assert!(db.surface_object_usage(object.id).await.unwrap().is_none());
     assert_eq!(db.org_usage(org).await.unwrap().used_bytes, 0);
     let copies: i64 = db
@@ -441,13 +494,12 @@ async fn manifest_conflict_preserves_unknown_legacy_origin_and_refuses_new_charg
         .get(0)
         .unwrap();
     assert_eq!(origin, None);
-    assert!(
-        db.verified_registry_object_accounting_eligibility(object_id)
-            .await
-            .is_err()
-    );
-    assert!(
-        db.record_registry_publication_object_presence(
+    assert!(db
+        .verified_registry_object_accounting_eligibility(object_id)
+        .await
+        .is_err());
+    assert!(db
+        .record_registry_publication_object_presence(
             "mirror-atomic-publication",
             object_id,
             original.placement_id,
@@ -457,22 +509,20 @@ async fn manifest_conflict_preserves_unknown_legacy_origin_and_refuses_new_charg
             103,
         )
         .await
-        .is_err()
-    );
+        .is_err());
     let progress = build_progress(&original);
     retain(&db, &original, &progress, 104).await;
-    assert!(
-        db.validate_mirror_publication_dispatch(
+    assert!(db
+        .validate_mirror_publication_dispatch(
             &original,
             &progress,
             Some("mirror-atomic-publication"),
             105
         )
         .await
-        .is_err()
-    );
-    assert!(
-        db.commit_mirror_import(
+        .is_err());
+    assert!(db
+        .commit_mirror_import(
             &original,
             &progress,
             &proof(&original, &progress, 105),
@@ -480,8 +530,7 @@ async fn manifest_conflict_preserves_unknown_legacy_origin_and_refuses_new_charg
             105
         )
         .await
-        .is_err()
-    );
+        .is_err());
     assert!(db.surface_object_usage(object_id).await.unwrap().is_none());
     let usage = db.org_usage(org).await.unwrap();
     assert_eq!((usage.used_bytes, usage.object_count), (0, 0));

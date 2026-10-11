@@ -537,17 +537,18 @@ impl Database {
             let minimum_bytes = prior
                 .map_or(0, |charge| charge.accounted_bytes)
                 .max(if delta_bytes < 0 { -delta_bytes } else { 0 });
-            let maximum_bytes = i64::MAX - delta_bytes.max(0);
             let minimum_objects = i64::from(prior.is_some());
-            let maximum_objects = i64::MAX - delta_objects;
             // Independent objects serialize on the usage row and add their own
             // exact deltas. A pre-read global counter would make valid parallel
             // publications conflict even though their ledgers do not overlap.
+            // Keep the i64 ceiling inside SQL: binding it would exceed the
+            // Durable Object adapter's exact JavaScript integer range.
             statements.push(CheckedStatement::exact(
                 "UPDATE org_usage SET used_bytes = used_bytes + ?2,
                         object_count = object_count + ?3, updated_at = ?4
-                  WHERE org_id = ?1 AND used_bytes BETWEEN ?5 AND ?6
-                    AND object_count BETWEEN ?8 AND ?7
+                  WHERE org_id = ?1 AND used_bytes >= ?5
+                    AND used_bytes <= 9223372036854775807 - CASE WHEN ?2 > 0 THEN ?2 ELSE 0 END
+                    AND object_count BETWEEN ?6 AND 9223372036854775807 - ?3
                     AND used_bytes = CAST(used_bytes AS BIGINT)
                     AND object_count = CAST(object_count AS BIGINT)
                     AND ((SELECT max_bytes FROM org_quotas WHERE org_id = ?1) IS NULL
@@ -560,8 +561,6 @@ impl Database {
                     delta_objects,
                     now,
                     minimum_bytes,
-                    maximum_bytes,
-                    maximum_objects,
                     minimum_objects
                 ],
                 1,
