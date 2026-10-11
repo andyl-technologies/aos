@@ -17,8 +17,6 @@ use std::time::Duration;
 use aos_sandbox::policy_compiler::RootFirstSourceSuccessorIntentV2;
 use rustix::net::sockopt::socket_peercred;
 
-use crate::source_signer_credential::SourceSignerCredentialV1;
-
 use super::{
     REQUEST_BYTES, REQUEST_CURRENT_NIX_MAGIC_V1, SOURCE_SIGNER_SOCKET_PATH_V1,
     require_socket_path_custody,
@@ -399,109 +397,4 @@ impl CurrentNixSourceExchangeAttemptV1 {
             .and_then(|bytes| bytes.checked_add(3136 + 3492))
             .ok_or(DataError::Changed)
     }
-}
-
-fn serve_current_nix_source_request_v1(
-    stream: &mut UnixStream,
-    prefix: &[u8; REQUEST_BYTES],
-    initial_read: io::Result<()>,
-    original_peer: &rustix::net::UCred,
-    controller_uid: u32,
-    credentials: &SourceSignerCredentialV1,
-) -> Result<(), Box<dyn Error>> {
-    use aos_sandbox::policy_compiler::{
-        CURRENT_NIX_SOURCE_REQUEST_BYTES_V1, CurrentNixPreflightContextV1,
-        CurrentNixSourceObservationAttemptV1, observe_fixed_current_nix_source_into_v1,
-        observe_root_first_source_successor_clock_v2,
-    };
-
-    let mut observation = CurrentNixSourceObservationAttemptV1::empty();
-    let mut remainder_io = CurrentNixSourceIoV1::empty();
-    let mut eof_io = CurrentNixSourceIoV1::empty();
-    let mut send_io = CurrentNixSourceIoV1::empty();
-    let mut shutdown_io = CurrentNixSourceIoV1::empty();
-    let mut expanded = [0; CURRENT_NIX_SOURCE_REQUEST_BYTES_V1];
-    expanded[..REQUEST_BYTES].copy_from_slice(prefix);
-    // The inherited ingress timeout applies only until the bounded context is
-    // known. Every remaining syscall then borrows its same original boot and D.
-    let context_read = initial_read.as_ref().ok()
-        .map(|()| stream.read_exact(&mut expanded[REQUEST_BYTES..288]));
-    let context = context_read.as_ref().and_then(|r| r.as_ref().ok())
-        .map(|()| CurrentNixPreflightContextV1::decode(&expanded[8..288]));
-    let remainder = context.as_ref().and_then(|r| r.as_ref().ok()).map(|context| {
-        remainder_io.run_once(stream, context,
-            CurrentNixSourceIoBodyV1::Receive(&mut expanded[288..]))
-    });
-    let request_eof = if matches!(remainder, Some(Ok(()))) {
-        context.as_ref().and_then(|r| r.as_ref().ok()).map(|context| {
-            eof_io.run_once(stream, context, CurrentNixSourceIoBodyV1::Eof)
-        })
-    } else { None };
-    let original = if matches!(request_eof, Some(Ok(()))) {
-        let Some(Ok(context)) = context.as_ref() else { std::process::exit(1); };
-        let resource = matches!(context.bytes()[10], 3 | 4);
-        let width = if resource { 1424 } else { 1248 };
-        Some(if !resource && expanded[288 + width..].iter().any(|byte| *byte != 0) {
-            Err(crate::source_signer_exchange::invalid_data("nonzero legacy Nix intent padding"))
-        } else {
-            RootFirstSourceSuccessorIntentV2::decode(&expanded[288..288 + width])
-                .map_err(io::Error::other)
-        })
-    } else { None };
-    let signing_key_result = credentials.signing_key();
-    let observed = match (&context, &original, &signing_key_result) {
-        (Some(Ok(context)), Some(Ok(original)), Ok(key)) => Some(
-            observe_fixed_current_nix_source_into_v1(
-                &mut observation, controller_uid, context, original,
-                credentials.generation(), key,
-            ),
-        ),
-        _ => None,
-    };
-
-    // These are independent posts even when receive, parsing, credentials or
-    // the actual native observation failed. The raw clock is observed LAST.
-    let credential_post = credentials.signing_key();
-    let peer_post = socket_peercred(&*stream);
-    let clock_post = observe_root_first_source_successor_clock_v2(None);
-    let pair_post = match (&context, &clock_post) {
-        (Some(Ok(context)), Ok(native)) => Some(
-            context.require_original_kernel_sample_data_v1(*native),
-        ),
-        _ => None,
-    };
-    let Some(Ok(())) = observed.as_ref() else { std::process::exit(1); };
-    let Ok(key) = &signing_key_result else { std::process::exit(1); };
-    let Ok(later_key) = &credential_post else { std::process::exit(1); };
-    let Ok(peer) = &peer_post else { std::process::exit(1); };
-    if clock_post.is_err() || !matches!(pair_post, Some(Ok(())))
-        || key.verifying_key() != later_key.verifying_key()
-        || peer.uid != original_peer.uid || peer.gid != original_peer.gid
-        || peer.pid != original_peer.pid
-    { std::process::exit(1); }
-
-    let Some(reply) = observation.reply_data() else { std::process::exit(1); };
-    let Some(Ok(context)) = context.as_ref() else { std::process::exit(1); };
-    let sent = send_io.run_once(stream, context, CurrentNixSourceIoBodyV1::Send(reply));
-    let shutdown = sent.as_ref().ok()
-        .map(|()| shutdown_io.run_once(stream, context, CurrentNixSourceIoBodyV1::ShutdownWrite));
-    let source_final = observation.recheck_after_response_v1(context);
-    let credential_final = credentials.signing_key();
-    let peer_final = socket_peercred(&*stream);
-    let clock_final = observe_root_first_source_successor_clock_v2(None);
-    let pair_final = match &clock_final {
-        Ok(native) => Some(
-            context.require_original_kernel_sample_data_v1(*native),
-        ),
-        _ => None,
-    };
-    if sent.is_err() || !matches!(shutdown, Some(Ok(()))) || source_final.is_err() || clock_final.is_err()
-        || !matches!(pair_final, Some(Ok(())))
-    { std::process::exit(1); }
-    let Ok(final_key) = &credential_final else { std::process::exit(1); };
-    let Ok(final_peer) = &peer_final else { std::process::exit(1); };
-    if final_key.verifying_key() != key.verifying_key()
-        || final_peer.uid != peer.uid || final_peer.gid != peer.gid || final_peer.pid != peer.pid
-    { std::process::exit(1); }
-    Ok(())
 }
