@@ -80,12 +80,14 @@ impl Gem5NativeProcess {
     /// Requests genuine original controller Shutdown without signaling processes.
     ///
     /// Its fixed retention holder exists in the driver's prebirth quarantine
-    /// slot. The latch is installed before writing; repeated calls only inspect
-    /// that original exchange. No outcome, prefix or ACK is erased.
+    /// slot. The latch is installed before writing. Repeated calls return the
+    /// original ACK or continue only its eligible same-stream receive phase.
+    /// No outcome, prefix or ACK is erased, and the request is never resent.
     ///
     /// # Errors
     /// Refuses unresolved native output/capture, changed original kernel scope,
-    /// absent session, incomplete or late replies and a previously lost reply.
+    /// absent session, incomplete or late replies and permanent receive refusal.
+    /// A transient eligible incomplete reply retains the same original budget.
     /// Every refusal retains original resources and offers no forceful fallback.
     pub fn begin_graceful_shutdown(&mut self) -> Result<(), ProviderError> {
         if let Some(state) = &self.quarantine {
