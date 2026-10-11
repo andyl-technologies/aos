@@ -34,7 +34,10 @@ fn fixed_width_reads_refuse_short_input_without_losing_the_retry_tail() {
         let before = &original[..length];
         let mut remaining = before;
 
-        assert_eq!(take::<4>(&mut remaining), Err(LifecycleModelError::CorruptEncoding));
+        assert_eq!(
+            take::<4>(&mut remaining),
+            Err(LifecycleModelError::CorruptEncoding)
+        );
         assert_eq!(remaining, before);
         assert_eq!(take::<0>(&mut remaining), Ok([]));
         assert!(std::ptr::eq(remaining.as_ptr(), before.as_ptr()));
@@ -42,15 +45,27 @@ fn fixed_width_reads_refuse_short_input_without_losing_the_retry_tail() {
     let mut remaining = original.as_slice();
 
     assert_eq!(take::<4>(&mut remaining), Ok([1, 2, 3, 4]));
-    assert_eq!(take::<4>(&mut remaining), Err(LifecycleModelError::CorruptEncoding));
+    assert_eq!(
+        take::<4>(&mut remaining),
+        Err(LifecycleModelError::CorruptEncoding)
+    );
     assert_eq!(take::<2>(&mut remaining), Ok([5, 6]));
     assert!(remaining.is_empty());
 }
 
 #[test]
 fn count_conversion_requires_exact_width_without_imposing_a_semantic_cap() {
-    assert_eq!(usize_from_u32(&[0; 3]), Err(LifecycleModelError::CorruptEncoding));
-    assert_eq!(usize_from_u32(&[0; 5]), Err(LifecycleModelError::CorruptEncoding));
+    assert_eq!(
+        usize_from_u32(&[0; 3]),
+        Err(LifecycleModelError::CorruptEncoding)
+    );
+    assert_eq!(
+        usize_from_u32(&[0; 5]),
+        Err(LifecycleModelError::CorruptEncoding)
+    );
     assert_eq!(usize_from_u32(&0_u32.to_be_bytes()), Ok(0));
-    assert_eq!(usize_from_u32(&u32::MAX.to_be_bytes()), usize::try_from(u32::MAX).map_err(|_| LifecycleModelError::CorruptEncoding));
+    assert_eq!(
+        usize_from_u32(&u32::MAX.to_be_bytes()),
+        usize::try_from(u32::MAX).map_err(|_| LifecycleModelError::CorruptEncoding)
+    );
 }

@@ -205,4 +205,3 @@ fn checkpoint_digest(bytes: &[u8]) -> ObjectDigest {
             .into(),
     )
 }
-

@@ -1819,4 +1819,3 @@ fn decode_kind(value: u8) -> Result<LifecycleAuxiliaryKindV1, LifecycleModelErro
 fn optional_digest(bytes: [u8; 32]) -> Option<ObjectDigest> {
     (bytes != [0; 32]).then_some(ObjectDigest::from_bytes(bytes))
 }
-

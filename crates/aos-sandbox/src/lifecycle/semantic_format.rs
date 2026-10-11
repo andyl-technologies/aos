@@ -1071,5 +1071,3 @@ fn push_count(bytes: &mut Vec<u8>, count: usize) {
     let encoded = count.to_be_bytes();
     bytes.extend_from_slice(&encoded[encoded.len() - 4..]);
 }
-
-
