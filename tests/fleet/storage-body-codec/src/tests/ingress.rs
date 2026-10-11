@@ -265,6 +265,8 @@ fn legacy_capability_observation_preserves_shared_bundle_and_operation_checks() 
             "delete_oci_staging",
             "delete_if_matches",
             "put_metadata",
+            "verify_prepared_git_index_v1",
+            "put_prepared_control_v1",
             "put_probe",
             "delete_probe",
             "create_multipart",
@@ -296,9 +298,11 @@ fn legacy_capability_observation_preserves_shared_bundle_and_operation_checks() 
     let mut substituted = capabilities.clone();
     substituted.console_asset_version = Some("foreign-bundle".into());
     assert!(inspect(build(&serde_json::to_vec(&substituted).unwrap())).is_err());
-    substituted = capabilities;
-    substituted.operations.retain(|kind| kind != "head");
-    assert!(inspect(build(&serde_json::to_vec(&substituted).unwrap())).is_err());
+    for missing in ["head", "verify_prepared_git_index_v1", "put_prepared_control_v1"] {
+        substituted = capabilities.clone();
+        substituted.operations.retain(|kind| kind != missing);
+        assert!(inspect(build(&serde_json::to_vec(&substituted).unwrap())).is_err());
+    }
 }
 
 #[test]

@@ -1412,7 +1412,7 @@
       raise
   assert bootstrap["state"] == "ready", bootstrap
 
-  client.succeed(textwrap.dedent(f"""
+  private_guest_command(client, textwrap.dedent(f"""
       set -euo pipefail
       export HOME=/var/lib/hybrid-apr-home USER=fleet-publisher
       export TMPDIR="$HOME/.cache/tmp"
@@ -1471,7 +1471,7 @@
   assert container_stage["index_digest"] == finalized_container["index_digest"], container_stage
   assert container_stage["registry_stage"]["state"] == "ready", container_stage
   assert container_stage["missing_paths"] == [], container_stage
-  client.succeed(textwrap.dedent(f"""
+  private_guest_command(client, textwrap.dedent(f"""
       set -eu
       export HOME=/var/lib/hybrid-apr-home USER=fleet-publisher
       export TMPDIR="$HOME/.cache/tmp"
