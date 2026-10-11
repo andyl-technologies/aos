@@ -11,6 +11,11 @@ use access::Access;
 mod catalog;
 mod containers;
 mod content;
+mod copy;
+/// Checks opaque owner references under an independently retained exclusion.
+#[cfg(unix)]
+pub(crate) mod existing_references;
+
 #[cfg(all(feature = "std", unix))]
 pub(crate) use crate::store::native_domain_deletion as domain_deletion;
 #[cfg(all(test, feature = "tokio", unix))]
@@ -30,6 +35,8 @@ pub(crate) mod publication;
 mod quarantine;
 mod retirement;
 
+#[cfg(all(test, feature = "tokio", unix))]
+mod native_retirement_fixture;
 mod refs;
 #[cfg(all(test, feature = "tokio"))]
 mod retirement_tests;
@@ -51,6 +58,9 @@ mod fault_tests;
 
 #[cfg(all(test, feature = "tokio"))]
 mod content_tests;
+
+#[cfg(all(test, feature = "tokio", unix))]
+mod copy_tests;
 
 #[cfg(all(test, feature = "tokio"))]
 mod manifest_tests;
