@@ -187,20 +187,50 @@
     filename = "aos-e2e.img.zst";
     pname = "aos-hub-e2e-image-raw-disk";
   };
-  rawImageInfo = projectImageFile {
-    image = rawImage;
-    filename = "image-info.json";
-    pname = "aos-hub-e2e-image-raw-info";
-  };
   qcow2ImageDisk = projectImageFile {
     image = qcow2Image;
     filename = "aos-e2e.qcow2";
     pname = "aos-hub-e2e-image-qcow2-disk";
   };
-  qcow2ImageInfo = projectImageFile {
-    image = qcow2Image;
+  # Both encodings share one authenticated provider artifact set. Delivery
+  # envelopes describe each disk; the opaque contract retains the EFI facts.
+  imageArtifacts = buildPackages.mkDerivation {
+    pname = "aos-hub-e2e-image-artifacts";
+    version = "2026.3.0";
+    src = null;
+    buildDeps = [buildPackages.coreutils jq rawImage qcow2Image ukiImage];
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp '${rawImage}/aos-e2e.img.zst' "$out/"
+          cp '${qcow2Image}/aos-e2e.qcow2' "$out/"
+          cp '${ukiImage}/systemd-bootx64.efi' "$out/"
+          ${jq}/bin/jq -S -n \
+            --slurpfile raw '${rawImage}/image-info.json' \
+            --slurpfile qcow2 '${qcow2Image}/image-info.json' \
+            '{schemaVersion: 2, encodings: {raw: $raw[0], qcow2: $qcow2[0]},
+              uki: $raw[0].uki}' > "$out/image-info.json"
+          for format in raw qcow2; do
+            case "$format" in
+              raw) source='${rawImage}/image-info.json' ;;
+              qcow2) source='${qcow2Image}/image-info.json' ;;
+            esac
+            ${jq}/bin/jq -S \
+              '{schemaVersion, name, version, architecture, platform, format,
+                filename, mediaType, compression, byteSize, sha256,
+                logicalDiskSha256, compatibleTargets}' \
+              "$source" > "$out/image-delivery-$format.json"
+          done
+        '';
+      }
+    ];
+  };
+  imageInfo = projectImageFile {
+    image = imageArtifacts;
     filename = "image-info.json";
-    pname = "aos-hub-e2e-image-qcow2-info";
+    pname = "aos-hub-e2e-image-info";
   };
   sysroot = buildPackages.mkDerivation {
     pname = "aos-hub-e2e-sysroot";
@@ -285,10 +315,10 @@ in
       git
       rawImage
       rawImageDisk
-      rawImageInfo
       qcow2Image
       qcow2ImageDisk
-      qcow2ImageInfo
+      imageArtifacts
+      imageInfo
       sysroot
       ukiImage
     ];
@@ -344,16 +374,16 @@ in
             --license MIT \
             --maintainer image-e2e@aos.invalid \
             --sysroot \
-            --image-payload '${rawImage}' \
+            --image-payload '${imageArtifacts}' \
             --image-disk '${rawImageDisk}' \
-            --image-info '${rawImageInfo}' \
+            --image-info '${imageInfo}' \
             --image-format raw \
-            --image-uki '${ukiImage}/systemd-bootx64.efi' \
-            --image-payload '${qcow2Image}' \
+            --image-contract-schema aos.hub-test.image-artifacts/v2 \
+            --image-payload '${imageArtifacts}' \
             --image-disk '${qcow2ImageDisk}' \
-            --image-info '${qcow2ImageInfo}' \
+            --image-info '${imageInfo}' \
             --image-format qcow2 \
-            --image-uki '${ukiImage}/systemd-bootx64.efi' \
+            --image-contract-schema aos.hub-test.image-artifacts/v2 \
             --channel stable \
             --init-channel \
             --key-id initial \

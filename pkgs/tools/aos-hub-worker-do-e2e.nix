@@ -744,7 +744,8 @@
         || !imagesHtml.includes(humanSize(rawBytes.length))
         || !imagesHtml.includes(rawSha256)
         || !imagesHtml.includes("release verified")
-        || !imagesHtml.includes("UKI signed, policy unverified")
+        || !imagesHtml.includes("provider contract")
+        || !imagesHtml.includes("aos.hub-test.image-artifacts/v2")
         || !imagesHtml.includes('href="/failure/images-public/-/images?release=2026.3.0"')
         || !imagesHtml.includes('aria-current="page">Images')) {
       throw new Error(`Worker Images page: ''${imagesPage.status} ''${imagesHtml}`);
