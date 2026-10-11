@@ -292,6 +292,63 @@ impl AdvisoryRecordV1 {
         Ok(())
     }
 
+    /// Computes a scheduling fingerprint for this normalized source revision.
+    ///
+    /// The fingerprint retains every normalized assertion, including the exact
+    /// provider modification identity, withdrawal, applicability and severity.
+    /// It excludes only raw response custody. Reformatting a source response or
+    /// changing an NVD page envelope therefore does not constitute new advisory
+    /// meaning. The original [`Self::digest`] still binds all retained evidence.
+    ///
+    /// This fingerprint grants no source authority, freshness, query completeness
+    /// or equivalence between advisories. Callers must retain the full original
+    /// record and its digest; this value is suitable only for coalescing triggers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid structure or canonical resource bounds.
+    pub fn change_digest(&self) -> Result<Sha256Digest> {
+        self.digest()?;
+
+        // Exhaustive destructuring makes adding a normalized assertion require
+        // an explicit decision about the scheduling commitment.
+        let Self {
+            schema,
+            provider,
+            id,
+            modified,
+            withdrawn,
+            aliases,
+            related,
+            upstream,
+            summary,
+            affected,
+            configuration,
+            severity,
+            references,
+            source_digest: _,
+        } = self;
+
+        digest(
+            "aos.advisory-semantic-revision/v1",
+            &(
+                schema,
+                provider,
+                id,
+                modified,
+                withdrawn,
+                aliases,
+                related,
+                upstream,
+                summary,
+                affected,
+                configuration,
+                severity,
+                references,
+            ),
+        )
+    }
+
     /// Computes a domain-separated identity for this exact revision.
     ///
     /// # Errors

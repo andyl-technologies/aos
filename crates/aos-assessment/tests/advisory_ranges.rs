@@ -198,3 +198,79 @@ fn nvd_negation_and_unsupported_qualifiers_preserve_uncertainty() -> Result<()> 
     assert_eq!(qualifier.evaluate(&target, &[])?.affected, Truth::Unknown);
     Ok(())
 }
+
+#[test]
+fn advisory_change_commitment_preserves_all_normalized_assertions_and_raw_custody() -> Result<()> {
+    use aos_assessment::advisory::{ADVISORY_RECORD_V1, AdvisoryRecordV1};
+
+    let original: AdvisoryRecordV1 = serde_json::from_value(json!({
+        "schema": ADVISORY_RECORD_V1,
+        "provider": "osv",
+        "id": "GHSA-fixture-one",
+        "modified": "2026-10-09T01:02:03.456Z",
+        "aliases": ["CVE-2026-10001"],
+        "related": ["GHSA-fixture-related"],
+        "upstream": ["CVE-2026-10002"],
+        "summary": "Fixture issue",
+        "affected": [{
+            "identity": {"kind": "ecosystem", "ecosystem": "crates.io", "name": "fixture"},
+            "versions": ["1.2.0"],
+            "ranges": [],
+            "unsupported": []
+        }],
+        "severity": [{"source": "osv", "scheme": "CVSS_V3", "value": "reported", "baseScore": "9.8"}],
+        "references": ["https://example.invalid/advisory"],
+        "sourceDigest": Sha256Digest::of_bytes("original raw record")
+    }))?;
+    let original_bytes = serde_json::to_vec(&original)?;
+    let identity = original.digest()?;
+    let change = original.change_digest()?;
+    assert_ne!(identity, change);
+
+    let mut reencoded = original.clone();
+    reencoded.source_digest = Sha256Digest::of_bytes("same meaning, different raw response");
+    assert_ne!(reencoded.digest()?, identity);
+    assert_eq!(reencoded.change_digest()?, change);
+    assert_eq!(serde_json::to_vec(&original)?, original_bytes);
+
+    let mut mutations = Vec::new();
+    for field in ["provider", "id", "modified", "summary"] {
+        let mut value = serde_json::to_value(&original)?;
+        value[field] = json!(format!("{}-changed", value[field].as_str().unwrap()));
+        mutations.push(serde_json::from_value::<AdvisoryRecordV1>(value)?);
+    }
+    for field in ["aliases", "related", "upstream", "references"] {
+        let mut value = serde_json::to_value(&original)?;
+        value[field] = json!([]);
+        mutations.push(serde_json::from_value::<AdvisoryRecordV1>(value)?);
+    }
+    let mut withdrawn = original.clone();
+    withdrawn.withdrawn = Some("2026-10-09T02:00:00Z".into());
+    mutations.push(withdrawn);
+    let mut affected = original.clone();
+    affected.affected[0].versions = vec!["1.3.0".into()];
+    mutations.push(affected);
+    let mut severity = original.clone();
+    severity.severity[0].base_score = Some("9.9".into());
+    mutations.push(severity);
+    let mut configured = original.clone();
+    configured.configuration = Some(Configuration::Unsupported {
+        reason: "new source constraint".into(),
+    });
+    mutations.push(configured);
+    for mutation in mutations {
+        assert_ne!(
+            mutation.change_digest()?,
+            change,
+            "normalized assertion was omitted"
+        );
+    }
+
+    let mut incompatible = original.clone();
+    incompatible.schema = "aos.advisory-record/unsupported".into();
+    assert!(incompatible.change_digest().is_err());
+    let mut invalid = original;
+    invalid.references = vec!["https://user:secret@example.invalid/".into()];
+    assert!(invalid.change_digest().is_err());
+    Ok(())
+}

@@ -147,6 +147,27 @@ The service supports these trigger classes:
 | Authorized manual request | Admit bounded requested scope and freshness mode |
 | Scheduled refresh | Refresh due provider evidence and assess affected subjects |
 
+Advisory trigger coalescing MUST compare normalized source revisions rather
+than raw HTTP response digests. The shared `AdvisoryRecordV1::change_digest`
+commitment uses the `aos.advisory-semantic-revision/v1` domain and includes
+all normalized fields except `sourceDigest`: schema, provider, native ID,
+exact modification identity, withdrawal, equivalent aliases, related and
+upstream relationships, summary, affected products/ranges, complete
+configuration, severity and references. A transport re-encoding or changed NVD
+page envelope therefore changes retained raw custody and the original record
+identity without requesting equivalent advisory work. Changed assertions or a
+new native modification identity remain distinct scheduling inputs.
+
+This scheduling commitment MUST NOT replace the original record digest,
+source evidence reference, observation, snapshot, evaluation input or result
+identity. It grants no freshness, completeness, applicability, equivalence
+between native advisories or authorization. A matching commitment is only a
+reason to coalesce triggers. Ingestion still retains the exact response bytes
+and normalized revision under their original identities. Deployments MUST
+retain durable trigger watermarks and admit them with source custody before
+claiming continuous advisory-feed coverage; the pure commitment by itself
+provides no scheduled ingestion or database trigger.
+
 Provider ingestion commits its cursor only after every required page and
 retained record in that checkpoint is durable. Partial ingestion does not
 replace a complete advisory snapshot. A provider's absence/deletion semantics

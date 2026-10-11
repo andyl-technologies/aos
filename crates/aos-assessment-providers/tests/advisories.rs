@@ -132,3 +132,47 @@ fn kev_uses_exact_identifiers_and_checks_full_catalog_counts() -> Result<()> {
     assert!(!kev::is_cve_id("CVE-2026-10001-extra"));
     Ok(())
 }
+
+#[test]
+fn nvd_envelope_refresh_does_not_change_advisory_meaning_or_lose_raw_evidence() -> Result<()> {
+    let mut value = nvd_page();
+    value["timestamp"] = json!("2026-10-09T02:00:00.000");
+    let first_raw = serde_json::to_vec(&value)?;
+    let first = nvd::page(&first_raw, 0)?.records.remove(0);
+
+    value["timestamp"] = json!("2026-10-09T03:00:00.000");
+    let later_raw = serde_json::to_vec_pretty(&value)?;
+    let later = nvd::page(&later_raw, 0)?.records.remove(0);
+    assert_eq!(first.source_digest, Sha256Digest::of_bytes(&first_raw));
+    assert_eq!(later.source_digest, Sha256Digest::of_bytes(&later_raw));
+    assert_ne!(first.digest()?, later.digest()?);
+    assert_eq!(first.change_digest()?, later.change_digest()?);
+
+    value["vulnerabilities"][0]["cve"]["metrics"]["cvssMetricV31"][0]["cvssData"]["baseScore"] =
+        json!(10.0);
+    let changed = nvd::page(&serde_json::to_vec(&value)?, 0)?
+        .records
+        .remove(0);
+    assert_ne!(changed.change_digest()?, first.change_digest()?);
+    value["vulnerabilities"][0]["cve"]["vulnStatus"] = json!("Rejected");
+    let rejected = nvd::page(&serde_json::to_vec(&value)?, 0)?
+        .records
+        .remove(0);
+    assert_ne!(rejected.change_digest()?, changed.change_digest()?);
+    Ok(())
+}
+
+#[test]
+fn osv_reencoding_coalesces_only_when_exact_native_revision_and_assertions_match() -> Result<()> {
+    let value = osv_record();
+    let first = osv::record(&serde_json::to_vec(&value)?)?;
+    let pretty = osv::record(&serde_json::to_vec_pretty(&value)?)?;
+    assert_ne!(first.digest()?, pretty.digest()?);
+    assert_eq!(first.change_digest()?, pretty.change_digest()?);
+
+    let mut revised = value;
+    revised["modified"] = json!("2026-10-09T01:02:03.457Z");
+    let revised = osv::record(&serde_json::to_vec(&revised)?)?;
+    assert_ne!(first.change_digest()?, revised.change_digest()?);
+    Ok(())
+}
