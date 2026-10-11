@@ -33,7 +33,6 @@ use aos_sandbox_ownership_protocol::protocol::OwnershipTransactionReferenceV1;
 use aos_sandbox_ownership_protocol::protocol::{
     NegotiatedOwnershipSessionV1, OwnershipRequestEnvelopeV1, OwnershipResponseEnvelopeV1,
 };
-use sha2::{Digest as _, Sha256};
 
 use crate::ownership_authority::{
     DurableOwnershipAuthority, DurableOwnershipAuthorityError, DurableOwnershipBeginOutcome,
@@ -43,6 +42,10 @@ use crate::ownership_authority::{
 use crate::ownership_service::{
     DurableOwnershipProtocolService, OwnershipProtocolRequestHandler, OwnershipProtocolServiceError,
 };
+
+mod format;
+
+use format::{decode_bootstrap, decode_fixed_issuer_response};
 
 const PROTECTED_MULTI_NODE_DIRECTORY: &str = "/var/lib/aos/sandbox/multi-node";
 const PROTECTED_LEASE_JOURNAL: &str = "coordinator-ownership-v1.journal";
@@ -384,31 +387,7 @@ fn load_fixed_ownership_bootstrap() -> Result<
         MAXIMUM_BOOTSTRAP_BYTES,
     )
     .map_err(|_| fixed_bootstrap_error())?;
-    if bytes.len() < 8 + 4 + 32 + 32 || &bytes[..8] != b"AOSMOL01" {
-        return Err(fixed_bootstrap_error());
-    }
-    let (payload, retained_checksum) = bytes.split_at(bytes.len() - 32);
-    let expected_checksum: [u8; 32] = Sha256::new()
-        .chain_update(b"aos.sandbox.multi-node.ownership-bootstrap.v1\0")
-        .chain_update(payload)
-        .finalize()
-        .into();
-    if retained_checksum != expected_checksum {
-        return Err(fixed_bootstrap_error());
-    }
-    let mut cursor = 8;
-    let policy_length =
-        usize::try_from(read_u32(payload, &mut cursor)?).map_err(|_| fixed_bootstrap_error())?;
-    if policy_length == 0 || policy_length > 64 * 1024 {
-        return Err(fixed_bootstrap_error());
-    }
-    let policy_bytes = take_slice(payload, &mut cursor, policy_length)?.to_vec();
-    let public_key: [u8; 32] = take_slice(payload, &mut cursor, 32)?
-        .try_into()
-        .map_err(|_| fixed_bootstrap_error())?;
-    if cursor != payload.len() {
-        return Err(fixed_bootstrap_error());
-    }
+    let (policy_bytes, public_key) = decode_bootstrap(&bytes)?;
     let policy = decode_trust_policy(&policy_bytes, DecodeLimits::default())
         .map_err(|_| fixed_bootstrap_error())?;
     aos_sandbox_core::validate_required_features(policy.required_features())
@@ -477,83 +456,6 @@ fn read_protected_regular_at(
     Ok(bytes)
 }
 
-fn decode_fixed_issuer_response(
-    bytes: &[u8],
-    claim: &OwnershipClaimV1,
-) -> Result<UnverifiedOwnershipLeaseResponse, OwnershipAuthorityError> {
-    if bytes.len() < 8 + 16 + 32 + 16 + 32 || &bytes[..8] != b"AOSMOI01" {
-        return Err(OwnershipAuthorityError::Unavailable);
-    }
-    let (payload, retained_checksum) = bytes.split_at(bytes.len() - 32);
-    let expected_checksum: [u8; 32] = Sha256::new()
-        .chain_update(b"aos.sandbox.multi-node.ownership-response.v1\0")
-        .chain_update(payload)
-        .finalize()
-        .into();
-    if retained_checksum != expected_checksum {
-        return Err(OwnershipAuthorityError::Unavailable);
-    }
-    let mut cursor = 8;
-    let request_id: [u8; 16] = take_slice(payload, &mut cursor, 16)
-        .map_err(|_| OwnershipAuthorityError::Unavailable)?
-        .try_into()
-        .map_err(|_| OwnershipAuthorityError::Unavailable)?;
-    let claim_digest: [u8; 32] = take_slice(payload, &mut cursor, 32)
-        .map_err(|_| OwnershipAuthorityError::Unavailable)?
-        .try_into()
-        .map_err(|_| OwnershipAuthorityError::Unavailable)?;
-    if &request_id != claim.request_id() || claim_digest != *claim.digest().as_bytes() {
-        return Err(OwnershipAuthorityError::IdempotencyConflict);
-    }
-    let lease = take_length_prefixed(payload, &mut cursor, 64 * 1024)?;
-    let signature = take_length_prefixed(payload, &mut cursor, 64 * 1024)?;
-    let receipt = take_length_prefixed(payload, &mut cursor, 1024)?;
-    let receipt_signature = take_length_prefixed(payload, &mut cursor, 64 * 1024)?;
-    if cursor != payload.len() {
-        return Err(OwnershipAuthorityError::Unavailable);
-    }
-    UnverifiedOwnershipLeaseResponse::from_transport(
-        lease.to_vec(),
-        signature.to_vec(),
-        receipt.to_vec(),
-        receipt_signature.to_vec(),
-    )
-    .map_err(|_| OwnershipAuthorityError::Internal)
-}
-
-fn take_length_prefixed<'a>(
-    bytes: &'a [u8],
-    cursor: &mut usize,
-    maximum: usize,
-) -> Result<&'a [u8], OwnershipAuthorityError> {
-    let length =
-        usize::try_from(read_u32(bytes, cursor).map_err(|_| OwnershipAuthorityError::Unavailable)?)
-            .map_err(|_| OwnershipAuthorityError::Unavailable)?;
-    if length == 0 || length > maximum {
-        return Err(OwnershipAuthorityError::Unavailable);
-    }
-    take_slice(bytes, cursor, length).map_err(|_| OwnershipAuthorityError::Unavailable)
-}
-
-fn read_u32(bytes: &[u8], cursor: &mut usize) -> Result<u32, ProtectedLeaseAuthorityErrorV1> {
-    let raw: [u8; 4] = take_slice(bytes, cursor, 4)?
-        .try_into()
-        .map_err(|_| fixed_bootstrap_error())?;
-    Ok(u32::from_be_bytes(raw))
-}
-
-fn take_slice<'a>(
-    bytes: &'a [u8],
-    cursor: &mut usize,
-    length: usize,
-) -> Result<&'a [u8], ProtectedLeaseAuthorityErrorV1> {
-    let end = cursor
-        .checked_add(length)
-        .ok_or_else(fixed_bootstrap_error)?;
-    let value = bytes.get(*cursor..end).ok_or_else(fixed_bootstrap_error)?;
-    *cursor = end;
-    Ok(value)
-}
 
 fn fixed_bootstrap_error() -> ProtectedLeaseAuthorityErrorV1 {
     ProtectedLeaseAuthorityErrorV1::Authority(DurableOwnershipAuthorityError::CorruptState)
