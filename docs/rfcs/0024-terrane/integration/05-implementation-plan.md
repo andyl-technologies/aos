@@ -261,10 +261,15 @@ Five isolated worklines have privately committed bounded frontier planning,
 unchanged-gap validation, canonical root reuse, publication control-pin lookup
 and finer overlay publication markers. Their complete persisted diffs pass
 parent and independent source review, scoped AOS formatting and whitespace
-checks. Twelve exact selectors are registered before adoption. The combined
-candidate still requires compilation, runtime and owning Nix qualification;
-no formal task merge follows from these source results. The DRV-29 blocker and
-all six growing-population witnesses remain required.
+checks. Twelve exact selectors are registered before adoption. Combined tree
+`cc9eeb200b4e` compiles 1,095 nonignored SDK tests and 764 no-default Core tests;
+Core Clippy passes, but SDK Clippy refuses four test-only `unwrap_err()` calls.
+The reviewed correction preserves every refusal and work assertion. Corrected
+tree `4d4edb4e30b3` passes the exact formatter pair, native build and strict
+all-target SDK Clippy with the original file-descriptor limit restored after
+dev-shell entry. Fresh SDK/Core compilation, runtime and owning Nix qualification
+remain pending on that tree. No formal task merge follows from these results.
+The DRV-29 blocker and all six growing-population witnesses remain required.
 
 These results accept no additional task, milestone exit or freeze. Every owning
 task gate and the complete current T1 floor remain required before a formal
