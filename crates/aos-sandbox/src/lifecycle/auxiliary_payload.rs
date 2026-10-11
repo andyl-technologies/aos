@@ -874,6 +874,7 @@ fn decode_optional_digest(bytes: &mut &[u8]) -> Result<Option<ObjectDigest>, Lif
         _ => Err(LifecycleModelError::CorruptEncoding),
     }
 }
+
 fn push_count(bytes: &mut Vec<u8>, count: usize) -> Result<(), LifecycleModelError> {
     bytes.extend_from_slice(
         &u32::try_from(count)
