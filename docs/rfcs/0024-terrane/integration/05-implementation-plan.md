@@ -246,14 +246,25 @@ cohort selectors are also corrected against the actual compiled lexical module
 names. The six new retirement-barrier witnesses raise the capability gate's
 required count from forty-eight to fifty-four and await a subsequent candidate.
 
-Storage recovery allows qualification of frozen tree `4eb4688d42f7` to resume.
-Its native library build and fresh all-target SDK compilation pass; archive,
-strict Clippy and current owning gates remain pending. Five additional isolated
-worklines prepare bounded frontier planning, unchanged-gap validation, canonical
-root reuse, publication control-pin lookup and finer overlay publication markers.
-Their full proposed diffs pass independent source review. Twelve exact selectors
-are registered before adoption; runtime and Nix qualification remain pending.
-The DRV-29 blocker and all six growing-population witnesses remain required.
+Storage recovery allows qualification to resume. Earlier packets held under
+`/run` are no longer available, so their results remain historical progress rather
+than reusable acceptance receipts. Fresh durable receipts for frozen tree
+`4eb4688d42f7` verify the exact formatter pair, native library build and all-target
+SDK compilation, with unchanged 6,246 tracked entries and 3,237 compiler inputs.
+The dev shell raises the inherited file-descriptor soft limit; these compilation
+results do not establish comparability with earlier descriptor-lifetime runtime
+cases. The fresh archive contains three executables and 1,092 nonignored
+tests; strict all-target SDK Clippy passes. These receipts bind this frozen
+source and do not qualify the newer combined candidate.
+
+Five isolated worklines have privately committed bounded frontier planning,
+unchanged-gap validation, canonical root reuse, publication control-pin lookup
+and finer overlay publication markers. Their complete persisted diffs pass
+parent and independent source review, scoped AOS formatting and whitespace
+checks. Twelve exact selectors are registered before adoption. The combined
+candidate still requires compilation, runtime and owning Nix qualification;
+no formal task merge follows from these source results. The DRV-29 blocker and
+all six growing-population witnesses remain required.
 
 These results accept no additional task, milestone exit or freeze. Every owning
 task gate and the complete current T1 floor remain required before a formal
