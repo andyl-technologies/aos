@@ -1,4 +1,4 @@
-//! Validates borrowed trust-context tuples and selected side-evidence schemas.
+//! Validates legacy and recorded trust-context tuples and selected evidence.
 //!
 //! The decoder checks syntax and exact tuple relationships. It creates no
 //! verified attribute, history, selector evaluator or repository authority.
@@ -9,6 +9,9 @@
 //!     [[view-location, name, domain, full-path, side-tuple], ...] as bytes]
 //! side-tuple = [record, object, name, function, version, value as bytes,
 //!               producer, witness-location, [producer-domain, full-path]]
+//! [3, view, domain, selector-bytes, baseline-or-null, min-chunk-size,
+//!     selected-evidence-bytes-or-null,
+//!     [original-view-root, property-revision, behavioral-names, later-names]]
 //! ```
 
 use super::{Rejected, Selector};
@@ -16,6 +19,13 @@ use crate::{cbor::Decoder, tree_format};
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "context/tests_private.rs"]
+mod private_tests;
+
+#[cfg(test)]
+mod recorded_tests;
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 struct Location<'a> {
@@ -31,11 +41,58 @@ struct Selection<'a> {
     domain: &'a str,
 }
 
+/// Retains decoded ordinary fields without establishing a trusted association.
+#[derive(Debug, Eq, PartialEq)]
+pub(super) struct DecodedContext<'a> {
+    /// Registered tuple version.
+    pub(super) version: u64,
+    /// Immutable selected view identity.
+    pub(super) view: &'a [u8],
+    /// Selected disclosure domain.
+    pub(super) domain: &'a str,
+    /// Canonical selector bytes.
+    pub(super) selector: &'a [u8],
+    /// Optional configured baseline.
+    pub(super) baseline: Option<&'a str>,
+    /// Physical chunk minimum.
+    pub(super) minimum: u64,
+    /// Nonempty selected evidence, or absence.
+    pub(super) selected: Option<&'a [u8]>,
+    /// Explicit recorded interpretation claims, when version three is selected.
+    pub(super) recorded: Option<RecordedFields<'a>>,
+}
+
+/// Retains syntax-checked recorded claims; registration remains external.
+#[derive(Debug, Eq, PartialEq)]
+pub(super) struct RecordedFields<'a> {
+    /// Original namespace root before preprocessing.
+    pub(super) root: &'a [u8],
+    /// Fixed property semantic revision.
+    pub(super) revision: u64,
+    /// Exact sorted behavioral vocabulary.
+    pub(super) behavioral: alloc::vec::Vec<&'a str>,
+    /// Sorted disjoint preservation vocabulary.
+    pub(super) later: alloc::vec::Vec<&'a str>,
+}
+
+/// Checks ordinary context syntax without constructing verified state.
+///
+/// # Errors
+/// Rejects malformed, unsupported or contradictory canonical tuples.
 pub(super) fn validate(bytes: &[u8]) -> Result<(), Rejected> {
+    decode(bytes).map(|_| ())
+}
+
+/// Decodes complete ordinary fields while preserving their interpretation claims.
+///
+/// # Errors
+/// Rejects unsupported versions, noncanonical values, invalid names, mismatched
+/// revision vocabularies, oversized fences and inconsistent selected evidence.
+pub(super) fn decode(bytes: &[u8]) -> Result<DecodedContext<'_>, Rejected> {
     let mut decoder = Decoder::new(bytes);
-    let count = decoder.array(7).map_err(|_| Rejected)?;
+    let count = decoder.array(8).map_err(|_| Rejected)?;
     let version = decoder.uint().map_err(|_| Rejected)?;
-    if !matches!((version, count), (1, 6) | (2, 7)) {
+    if !matches!((version, count), (1, 6) | (2, 7) | (3, 8)) {
         return Err(Rejected);
     }
     let view = digest(&mut decoder)?;
@@ -44,15 +101,94 @@ pub(super) fn validate(bytes: &[u8]) -> Result<(), Rejected> {
         .bytes(decoder.remaining().len())
         .map_err(|_| Rejected)?;
     Selector::decode(selector).map_err(|_| Rejected)?;
-    nullable_text(&mut decoder)?;
-    decoder.uint().map_err(|_| Rejected)?;
-    if version == 2 {
+    let baseline = nullable_text(&mut decoder)?;
+    let minimum = decoder.uint().map_err(|_| Rejected)?;
+    let evidence = if version == 1 {
+        None
+    } else if version == 3 && decoder.peek_major().map_err(|_| Rejected)? == 7 {
+        if decoder.simple().map_err(|_| Rejected)? != 0xf6 {
+            return Err(Rejected);
+        }
+        None
+    } else {
         let evidence = decoder
             .bytes(decoder.remaining().len())
             .map_err(|_| Rejected)?;
         selected(evidence, view, domain)?;
+        Some(evidence)
+    };
+    let recorded = if version == 3 {
+        Some(recorded(&mut decoder)?)
+    } else {
+        None
+    };
+    decoder.finish().map_err(|_| Rejected)?;
+    Ok(DecodedContext {
+        version,
+        view,
+        domain,
+        selector,
+        baseline,
+        minimum,
+        selected: evidence,
+        recorded,
+    })
+}
+
+fn recorded<'a>(decoder: &mut Decoder<'a>) -> Result<RecordedFields<'a>, Rejected> {
+    use crate::properties::semantics::RecordedContext;
+    array(decoder, 4)?;
+    let root = digest(decoder)?;
+    let revision = decoder.uint().map_err(|_| Rejected)?;
+    let context = RecordedContext::new(revision, revision, &[]).map_err(|_| Rejected)?;
+    // This context validates historical syntax only. Its bytes cannot select
+    // the independently supplied runtime current revision or justify names.
+    let expected: alloc::vec::Vec<_> = context.behavioral_names().collect();
+    let behavioral = names(decoder, 35, 35 * 255)?;
+    if behavioral != expected {
+        return Err(Rejected);
     }
-    decoder.finish().map_err(|_| Rejected)
+    let later = names(decoder, 65536, 65536)?;
+    if later
+        .iter()
+        .any(|name| behavioral.binary_search(name).is_ok())
+    {
+        return Err(Rejected);
+    }
+    Ok(RecordedFields {
+        root,
+        revision,
+        behavioral,
+        later,
+    })
+}
+
+fn names<'a>(
+    decoder: &mut Decoder<'a>,
+    limit: usize,
+    byte_limit: usize,
+) -> Result<alloc::vec::Vec<&'a str>, Rejected> {
+    let count = decoder.array(limit).map_err(|_| Rejected)?;
+    // Every nonempty text requires a header and a payload byte. Reject claimed
+    // counts before allocating, then grow only after each bounded name validates.
+    if count > decoder.remaining().len() / 2 {
+        return Err(Rejected);
+    }
+    let mut result = alloc::vec::Vec::new();
+    let mut total = 0usize;
+    for _ in 0..count {
+        let value = name(decoder)?;
+        total = total.checked_add(value.len()).ok_or(Rejected)?;
+        if total > byte_limit
+            || result
+                .last()
+                .is_some_and(|previous: &&str| previous.as_bytes() >= value.as_bytes())
+        {
+            return Err(Rejected);
+        }
+        result.push(value);
+    }
+    Ok(result)
 }
 
 fn selected(bytes: &[u8], view: &[u8], domain: &str) -> Result<(), Rejected> {

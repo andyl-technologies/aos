@@ -8,15 +8,14 @@
 //! legacy context = [1, view, domain, selector, baseline-or-null, min-chunk-size]
 //! side context = [2, view, domain, selector, baseline-or-null, min-chunk-size,
 //!                 canonical selected-evidence byte string]
+//! recorded context = [3, view, domain, selector, baseline-or-null, min-chunk-size,
+//!                     selected-evidence-or-null, [original-root, revision,
+//!                                                behavioral-names, later-names]]
 //! ```
 
 use super::selector::Node;
 use super::{EntryLocation, Preset, Rejected, Selector, VerifiedHistory};
-use crate::{
-    cbor,
-    identity::Digest,
-    tree_format::{Entry, Property},
-};
+use crate::{cbor, identity::Digest, tree_format::Entry};
 use alloc::{
     collections::BTreeMap,
     rc::Rc,
@@ -27,6 +26,61 @@ use alloc::{
 use core::cell::RefCell;
 
 mod context;
+mod encoding;
+mod recorded;
+
+use recorded::{OwnedRecorded, PolicyInputs};
+
+#[cfg(test)]
+mod recorded_evaluation_tests;
+
+/// Names a private content fingerprint, never a registered store identity.
+type MemoKey = Digest;
+
+// Private framing binds complete immutable configuration and evidence; these
+// bytes are neither a serialized trust context nor a store object preimage.
+fn memo_fingerprint(
+    evidence: &[u8],
+    configured: &crate::properties::selected::Selection,
+    occurrence: &crate::properties::selected::Selection,
+) -> MemoKey {
+    let mut content = Vec::new();
+    cbor::write_array(&mut content, 3);
+    cbor::write_bytes(&mut content, evidence);
+    encode_memo_selection(&mut content, configured);
+    encode_memo_selection(&mut content, occurrence);
+    *blake3::hash(&content).as_bytes()
+}
+
+fn encode_memo_selection(output: &mut Vec<u8>, selection: &crate::properties::selected::Selection) {
+    use crate::properties::selected::Selection;
+
+    match selection {
+        Selection::Legacy => {
+            cbor::write_array(output, 1);
+            cbor::write_uint(output, 0);
+        }
+        Selection::Active => {
+            cbor::write_array(output, 1);
+            cbor::write_uint(output, 1);
+        }
+        Selection::Recorded(context) => {
+            cbor::write_array(output, 5);
+            cbor::write_uint(output, 2);
+            cbor::write_uint(output, context.revision());
+            cbor::write_uint(output, context.current_revision());
+            let behavioral: Vec<_> = context.behavioral_names().collect();
+            cbor::write_array(output, behavioral.len());
+            for name in behavioral {
+                cbor::write_text(output, name);
+            }
+            cbor::write_array(output, context.later_registered().len());
+            for name in context.later_registered() {
+                cbor::write_text(output, name);
+            }
+        }
+    }
+}
 
 /// Evaluates a view's trust using authenticated commits and canonical witnesses.
 ///
@@ -41,19 +95,25 @@ pub struct TrustContext {
     baseline: Option<String>,
     domain: String,
     canonical: Vec<u8>,
-    memo: RefCell<BTreeMap<Vec<u8>, bool>>,
+    selection: crate::properties::selected::Selection,
+    recorded: Option<OwnedRecorded>,
+    memo: RefCell<BTreeMap<MemoKey, bool>>,
 }
 
 /// Validates serialized trust configuration without granting runtime authority.
 ///
 /// The canonical tuple is `[1, view, domain, selector, baseline-or-null,
 /// min-chunk-size]`. A version-2 tuple appends canonical selected side evidence
-/// as a byte string. Only [`TrustContext::new`] creates an evaluator, after
-/// checking that its view is present in a verified history.
+/// as a byte string. Version 3 also binds the exact historical property
+/// vocabulary and original view root, with optional selected side evidence.
+/// It does not authenticate registrations or choose a current revision.
+/// Evaluator constructors independently check the selected view and its
+/// interpretation against verified history before constructing an evaluator.
 ///
 /// # Errors
 /// Returns [`Rejected`] for malformed/noncanonical context bytes, unknown
-/// versions, invalid digest widths or selectors, malformed selected evidence,
+/// versions, mismatched historical revision/name fences, invalid digest widths
+/// or selectors, malformed selected evidence,
 /// inconsistent view/domain/name bindings, duplicate or unordered selections,
 /// invalid complete entry paths, noncanonical selected values or trailing bytes.
 pub fn validate_canonical_context(bytes: &[u8]) -> Result<(), Rejected> {
@@ -99,23 +159,27 @@ impl TrustContext {
     ) -> Result<Self, Rejected> {
         history.require_verified_context(view)?;
         let root = history.commit(&view).ok_or(Rejected)?.commit().tree;
-        let mut canonical = Vec::new();
         let side_context = history.side_context(view, domain);
-        let has_side_evidence = !side_context.is_empty();
-        cbor::write_array(&mut canonical, if has_side_evidence { 7 } else { 6 });
-        cbor::write_uint(&mut canonical, if has_side_evidence { 2 } else { 1 });
-        cbor::write_bytes(&mut canonical, &view);
-        cbor::write_text(&mut canonical, domain);
-        cbor::write_bytes(&mut canonical, selector.encode());
-        if let Some(baseline) = baseline {
-            cbor::write_text(&mut canonical, baseline);
+        let selection = history.view_selection(view)?;
+        let recorded = match &selection {
+            crate::properties::selected::Selection::Recorded(context) => {
+                Some(OwnedRecorded::new(context))
+            }
+            _ => None,
+        };
+        let fields = encoding::ContextFields {
+            view: &view,
+            domain,
+            selector: selector.encode(),
+            baseline,
+            minimum: history.min_chunk_size(),
+            selected: &side_context,
+        };
+        let canonical = if let Some(context) = &recorded {
+            context.encode(fields, &root)?
         } else {
-            canonical.push(0xf6);
-        }
-        cbor::write_uint(&mut canonical, history.min_chunk_size());
-        if has_side_evidence {
-            cbor::write_bytes(&mut canonical, &side_context);
-        }
+            encoding::encode(fields)
+        };
 
         Ok(Self {
             history,
@@ -125,8 +189,92 @@ impl TrustContext {
             baseline: baseline.map(ToString::to_string),
             domain: domain.to_string(),
             canonical,
+            selection,
+            recorded,
             memo: RefCell::new(BTreeMap::new()),
         })
+    }
+
+    /// Constructs an evaluator only when the supplied exact association is installed.
+    ///
+    /// # Errors
+    /// Rejects absent or mismatched view, original root or complete selection,
+    /// and preserves genuine history/evaluator construction failures.
+    pub fn new_with_recorded(
+        history: &VerifiedHistory,
+        view: Digest,
+        selector: Selector,
+        domain: &str,
+        baseline: Option<&str>,
+        association: Option<(
+            Digest,
+            Digest,
+            crate::properties::semantics::RecordedContext,
+        )>,
+    ) -> Result<Self, Rejected> {
+        Self::from_shared_with_recorded(
+            Rc::new(history.clone()),
+            view,
+            selector,
+            domain,
+            baseline,
+            association,
+        )
+    }
+
+    /// Constructs a shared evaluator without replacing independently installed trust.
+    ///
+    /// # Errors
+    /// Rejects any association mismatch or incomplete authenticated history.
+    pub fn from_shared_with_recorded(
+        history: Rc<VerifiedHistory>,
+        view: Digest,
+        selector: Selector,
+        domain: &str,
+        baseline: Option<&str>,
+        association: Option<(
+            Digest,
+            Digest,
+            crate::properties::semantics::RecordedContext,
+        )>,
+    ) -> Result<Self, Rejected> {
+        let (selected, root, context) = association.ok_or(Rejected)?;
+        if selected != view
+            || history.commit(&view).ok_or(Rejected)?.commit().tree != root
+            || history.view_selection(view)?
+                != crate::properties::selected::Selection::Recorded(context)
+        {
+            return Err(Rejected);
+        }
+        Self::from_shared(history, view, selector, domain, baseline)
+    }
+
+    fn policy_inputs(&self, path: &[u8]) -> Result<(EntryLocation, PolicyInputs<'_>), Rejected> {
+        match &self.selection {
+            crate::properties::selected::Selection::Legacy => {
+                let (location, layers) = self.history.locate_policies(self.view, path)?;
+                Ok((location, PolicyInputs::Legacy(layers)))
+            }
+            _ => {
+                let (location, layers) = self.history.locate_policy_layers(self.view, path)?;
+                for layer in &layers {
+                    self.selection
+                        .validate_layer(
+                            &layer.properties,
+                            layer.overrides.as_deref().unwrap_or(&[]),
+                        )
+                        .map_err(|_| Rejected)?;
+                }
+                Ok((location, PolicyInputs::Recorded(layers)))
+            }
+        }
+    }
+
+    fn checked_prefixes(&self, properties: &PolicyInputs<'_>) -> Result<(), Rejected> {
+        for prefix in 1..=properties.len() {
+            properties.resolve_prefix(prefix, self.recorded.as_ref(), &self.selection)?;
+        }
+        Ok(())
     }
 
     /// Returns the top root of the authenticated immutable input view.
@@ -134,14 +282,18 @@ impl TrustContext {
         self.root
     }
 
-    /// Returns the immutable configuration encoding used by audited merge recipes.
+    /// Returns the registered immutable configuration used by audited merge recipes.
+    ///
+    /// Recorded version 3 retains the original view root and exact historical
+    /// revision/name fences. The current revision remains an independently
+    /// selected runtime input, not an added field in this registered tuple.
     pub fn canonical_context(&self) -> &[u8] {
         &self.canonical
     }
 
     /// Evaluates a full view-relative path including every traversed root policy.
     pub fn accepts_path(&self, path: &[u8]) -> bool {
-        let Ok((location, properties)) = self.history.locate_policies(self.view, path) else {
+        let Ok((location, properties)) = self.policy_inputs(path) else {
             return false;
         };
         self.evaluate(&location, &properties).unwrap_or(false)
@@ -180,7 +332,8 @@ impl TrustContext {
         path: &[u8],
         candidate: &Entry<'_>,
     ) -> Option<u64> {
-        let (location, _) = self.candidate_location(root, path, candidate).ok()?;
+        let (location, properties) = self.candidate_location(root, path, candidate).ok()?;
+        self.checked_prefixes(&properties).ok()?;
         let introducing = self.history.introducing_commit(&location).ok()?;
         Some(self.history.commit(&introducing)?.commit().timestamp)
     }
@@ -190,11 +343,11 @@ impl TrustContext {
         root: Digest,
         path: &[u8],
         candidate: &Entry<'_>,
-    ) -> Result<(EntryLocation, Vec<Vec<Property<'_>>>), Rejected> {
+    ) -> Result<(EntryLocation, PolicyInputs<'_>), Rejected> {
         if root != self.root {
             return Err(Rejected);
         }
-        let (location, properties) = self.history.locate_policies(self.view, path)?;
+        let (location, properties) = self.policy_inputs(path)?;
         if self.history.entry(&location)? != *candidate {
             return Err(Rejected);
         }
@@ -207,7 +360,8 @@ impl TrustContext {
         if root != view.commit().tree {
             return None;
         }
-        let (location, _) = self.history.locate(self.view, path).ok()?;
+        let (location, properties) = self.policy_inputs(path).ok()?;
+        self.checked_prefixes(&properties).ok()?;
         let introducing = self.history.introducing_commit(&location).ok()?;
         Some(self.history.commit(&introducing)?.commit().timestamp)
     }
@@ -215,34 +369,18 @@ impl TrustContext {
     fn evaluate(
         &self,
         location: &EntryLocation,
-        properties: &[Vec<Property<'_>>],
+        properties: &PolicyInputs<'_>,
     ) -> Result<bool, Rejected> {
         let introducing = self.history.introducing_commit(location)?;
         let mut baseline = self.baseline.clone();
         let mut selectors = Vec::new();
-        let mut layers = Vec::new();
         let mut key = self.canonical.clone();
         cbor::write_bytes(&mut key, &introducing);
         cbor::write_array(&mut key, properties.len());
-        for root_properties in properties {
-            layers.push(crate::properties::RootLayer {
-                properties: root_properties,
-                overrides: &[],
-            });
-            // Resolve each prefix independently: non-inheriting bindings apply
-            // locally, while ancestor trust constraints remain conjoined.
-            let effective = self
-                .history
-                .view_selection(location.commit)?
-                .resolve(
-                    &layers,
-                    crate::properties::Defaults {
-                        store: "provenance",
-                        private_domain: "private:provenance",
-                        home: "provenance",
-                    },
-                )
-                .map_err(|_| Rejected)?;
+        for prefix in 1..=properties.len() {
+            let occurrence = self.history.view_selection(location.commit)?;
+            let effective =
+                properties.resolve_prefix(prefix, self.recorded.as_ref(), &occurrence)?;
             baseline = match effective.get(crate::properties::PropertyName::Baseline) {
                 Some(crate::properties::Value::Text(value)) => Some((*value).to_string()),
                 Some(crate::properties::Value::Unset) => self.baseline.clone(),
@@ -259,12 +397,7 @@ impl TrustContext {
                 }
                 _ => return Err(Rejected),
             };
-            cbor::write_array(&mut key, root_properties.len());
-            for property in root_properties {
-                cbor::write_array(&mut key, 2);
-                cbor::write_text(&mut key, property.name);
-                cbor::write_bytes(&mut key, property.value);
-            }
+            properties.write_layer(prefix - 1, &mut key)?;
             selectors.push((root_selector.clone(), baseline.clone()));
         }
         selectors.push((self.selector.clone(), baseline));
@@ -319,6 +452,11 @@ impl TrustContext {
                 key.push(0xf6);
             }
         }
+        // Registered context bytes retain historical execution. The private
+        // fingerprint additionally binds exact captured current selection and
+        // occurrence interpretation without changing any registered bytes.
+        let occurrence = self.history.view_selection(location.commit)?;
+        let key = memo_fingerprint(&key, &self.selection, &occurrence);
         if let Some(result) = self.memo.borrow().get(&key) {
             return Ok(*result);
         }
