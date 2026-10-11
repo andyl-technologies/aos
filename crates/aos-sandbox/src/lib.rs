@@ -15,7 +15,8 @@
 //! [`git`], [`hierarchy`],
 //! [`lifecycle`], [`local_inventory`], [`policy_compiler`], and
 //! [`publisher_admission`] own inert RFC-0021 domain models and
-//! protected-journal seams. [`publisher_roots`] owns
+//! protected-journal seams. [`source_domain`] owns the live fixed Source journal
+//! custody and dormant cross-domain joins. [`publisher_roots`] owns
 //! the portable root registry and retains live root custody only on Linux,
 //! without activating it.
 //! [`execution_output_reservation`] owns accepted-Create-derived, protected

@@ -1,9 +1,10 @@
-//! Atomic protected-journal joins across RFC-0021 source domains.
+//! Owns protected Native Source journal custody and cross-domain transactions.
 //!
-//! Environment advances, hierarchy realization, Git publication, and lifecycle
-//! orchestration sometimes form one logical controller mutation. This dormant
-//! adapter preserves that atomic boundary and fixes their canonical ordering;
-//! it performs no external effect and is not connected to controller routing.
+//! The private fixed-writer child retains the live Source writer, paid opening
+//! originals and Q04 loans used by Controller and Runtime callers. The private
+//! cross-domain child retains the dormant four-domain join and recovery engine.
+//! Shared fixed names, limits and the replay-member bound belong to this owner;
+//! lifecycle schemas and accepted lifecycle identities remain Lifecycle-owned.
 
 use crate::journal::JournalLimits;
 

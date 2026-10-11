@@ -1,3 +1,10 @@
+//! Retains the live fixed Source writer, paid construction and original Q04 loan.
+//!
+//! Protected opens and append/readback methods use the original Native Journal.
+//! The paid constructor parks primary and independent postcheck causes, while
+//! Q04 retains actual returned commits and terminates on unfinished custody.
+//! No field or construction scope grants new policy or effect authority.
+
 use std::path::Path;
 
 #[cfg(target_os = "linux")]
@@ -13,7 +20,7 @@ use super::{
     PROTECTED_SOURCE_DOMAIN_JOURNAL, PROTECTED_SOURCE_DOMAIN_ROOT, source_domain_journal_limits,
 };
 
-/// Owns the fixed protected journal shared by all dormant source domains.
+/// Owns the fixed protected journal shared by the Source domain families.
 ///
 /// Its journal is private and can enter Environment, Git, lifecycle, hierarchy,
 /// or cross-domain claim only through crate-controlled adapters.

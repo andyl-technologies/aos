@@ -1,3 +1,10 @@
+//! Retains the dormant four-domain protected transaction join and recovery engine.
+//!
+//! Canonical Environment, Git, Hierarchy and Lifecycle members share one
+//! transaction-set commitment. The adapter retains the actual Journal and
+//! evidence-owner loans; postcommit capabilities preserve their private instance
+//! brand. This owner does not activate Controller routing or dispatch effects.
+
 use std::sync::Arc;
 
 use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceId};
@@ -653,7 +660,7 @@ impl<'journal, 'evidence> ProtectedCrossDomainJournalV1<'journal, 'evidence> {
     ///
     /// # Errors
     ///
-    /// Returns [`JournalError`] when protected storage provenance is absent or
+    /// Returns [`crate::journal::JournalError`] when protected storage provenance is absent or
     /// an earlier ambiguous write poisoned the handle.
     pub(crate) fn claim(
         journal: &'journal mut Journal,
@@ -683,7 +690,7 @@ impl<'journal, 'evidence> ProtectedCrossDomainJournalV1<'journal, 'evidence> {
     ///
     /// # Errors
     ///
-    /// Returns [`JournalError`] when the journal is poisoned.
+    /// Returns [`crate::journal::JournalError`] when the journal is poisoned.
     pub fn snapshot(
         &mut self,
     ) -> Result<CrossDomainJournalSnapshotV1, ProtectedDomainJournalErrorV1> {
@@ -949,7 +956,7 @@ impl<'journal, 'evidence> ProtectedCrossDomainJournalV1<'journal, 'evidence> {
     ///
     /// # Errors
     ///
-    /// Returns [`JournalError`] when the reopened handle is not healthy.
+    /// Returns [`crate::journal::JournalError`] when the reopened handle is not healthy.
     pub fn recover(
         &mut self,
         pending: CrossDomainJournalOutcomeUnknownV1,
