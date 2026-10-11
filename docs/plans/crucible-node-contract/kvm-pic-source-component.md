@@ -32,10 +32,12 @@ a guest received or handled the interrupt.
 
 The privately tested predecessor composition compiled all eight objects and
 passed the positive plus eleven intended assertion-abort controls. Its exact
-source and actual artifacts received independent review. The repository check
-is a new hermetic realization and must pass separately before it receives that
-build credit. It uses repository-owned patches and fixtures, with no retained
-private build paths or historical test executables.
+source and actual artifacts received independent review. The separate hermetic
+repository check also passed all eight configured source-object checks, one
+positive model and eleven intended assertion-abort controls. The checked source,
+reports and resource limits received independent review. This realization uses
+repository-owned patches and fixtures, with no retained private build paths or
+historical test executables.
 
 This package emits check reports. It installs no kernel or module and runs no
 virtual machine. The PIC producer dispatcher, original PIC EOI, ordinary dual
