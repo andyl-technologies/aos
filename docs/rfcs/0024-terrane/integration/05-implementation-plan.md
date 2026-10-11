@@ -274,10 +274,21 @@ executables. The first 1,024-entry ordinary growth case fails during maintained
 publication with actual descriptor exhaustion after 272.866 seconds under the
 unchanged 1,024 soft limit. Baseline output completes, but reopen and final
 accounting do not; the remaining five growth cases are unrun. Descriptor-lifetime
-diagnosis, heavy collector/recovery cases, owning Nix gates, the complete current
+correction, heavy collector/recovery cases, owning Nix gates, the complete current
 T1 floor and application-target check remain pending. No formal task merge
 follows from these results. The DRV-29 blocker and all six growing-population
 witnesses remain required.
+
+A separate diagnostic rerun reproduces descriptor exhaustion during maintained
+publication after 310.145 seconds at the same descriptor limits. Its strongest
+sample resolves 804 descriptors, including three handles for each of 233 catalog
+index shards; this sample is not the exact failing peak. All 34 diagnostic
+payload hashes, sizes and modes verify, and source, compiler inputs and
+executables remain unchanged. Source review identifies independent native read
+requests retaining duplicate handles for the same physical payloads. A private
+correction may share only file handles while preserving fresh opens, independent
+observations and every original-descriptor check; six counterproofs are
+registered before adoption. The diagnostic provides no acceptance or speed claim.
 
 These results accept no additional task, milestone exit or freeze. Every owning
 task gate and the complete current T1 floor remain required before a formal
