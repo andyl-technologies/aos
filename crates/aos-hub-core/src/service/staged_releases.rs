@@ -655,13 +655,16 @@ impl RpcService {
                     let fetch = &fetch;
                     let placement_id = placement.id;
                     checks.push(async move {
-                        let current = fetch
-                            .fetch_bounded(&pointer.path, read_limit)
-                            .await
-                            .map_err(precondition)?;
-                        let current_hash = current
-                            .as_ref()
-                            .map(|bytes| format!("sha256:{}", hex::encode(Sha256::digest(bytes))));
+                        // Only the exact predecessor digest crosses the runtime
+                        // boundary. Hybrid providers hash encoded Git sources in
+                        // Workers; Native providers retain their bounded stream.
+                        let current_hash = pointer_predecessor_hash(
+                            fetch.as_ref(),
+                            &pointer.path,
+                            read_limit as u64,
+                        )
+                        .await
+                        .map_err(precondition)?;
                         let intended =
                             format!("sha256:{}", hex::encode(Sha256::digest(&pointer.bytes)));
                         if current_hash != pointer.expected_sha256
@@ -886,10 +889,90 @@ impl RpcService {
     }
 }
 
+/// Observes a pointer's physical digest without transferring its body to the caller.
+async fn pointer_predecessor_hash(
+    fetch: &dyn SurfaceFetch,
+    path: &str,
+    maximum_bytes: u64,
+) -> anyhow::Result<Option<String>> {
+    let Some(evidence) = fetch
+        .inventory_evidence_bounded(path, maximum_bytes)
+        .await?
+    else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        u64::try_from(evidence.size).is_ok_and(|size| size <= maximum_bytes),
+        "prepared pointer predecessor exceeds its byte limit"
+    );
+    Ok(Some(format!("sha256:{}", hex::encode(evidence.sha256))))
+}
+
 fn invalid(error: impl std::fmt::Display) -> RpcError {
     RpcError::invalid(error.to_string())
 }
 
 fn precondition(error: impl std::fmt::Display) -> RpcError {
     RpcError::FailedPrecondition(format!("{error:#}"))
+}
+
+#[cfg(test)]
+mod pointer_hash_tests {
+    use super::*;
+    use crate::fetch::SurfaceObjectEvidence;
+
+    struct HashOnlyFetch {
+        evidence: Option<SurfaceObjectEvidence>,
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for HashOnlyFetch {
+        fn describe(&self) -> String {
+            "remote pointer hash fixture".into()
+        }
+
+        async fn fetch(&self, _: &str) -> anyhow::Result<Option<Vec<u8>>> {
+            anyhow::bail!("encoded pointer bodies cannot cross this port")
+        }
+
+        async fn inventory_evidence_bounded(
+            &self,
+            path: &str,
+            maximum_bytes: u64,
+        ) -> anyhow::Result<Option<SurfaceObjectEvidence>> {
+            assert_eq!(path, "objects/aos-index-v1/all");
+            assert_eq!(maximum_bytes, 4096);
+            Ok(self.evidence.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn pointer_preconditions_use_physical_hashes_without_fetching_bodies() {
+        let digest: [u8; 32] = Sha256::digest(b"encoded predecessor").into();
+        let mut fetch = HashOnlyFetch {
+            evidence: Some(SurfaceObjectEvidence {
+                sha256: digest,
+                size: 4096,
+                strong_etag: None,
+                provider_version: None,
+            }),
+        };
+        let path = "objects/aos-index-v1/all";
+
+        assert_eq!(
+            pointer_predecessor_hash(&fetch, path, 4096).await.unwrap(),
+            Some(format!("sha256:{}", hex::encode(digest)))
+        );
+
+        for size in [-1, 4097] {
+            fetch.evidence.as_mut().unwrap().size = size;
+            assert!(pointer_predecessor_hash(&fetch, path, 4096).await.is_err());
+        }
+
+        fetch.evidence = None;
+        assert_eq!(
+            pointer_predecessor_hash(&fetch, path, 4096).await.unwrap(),
+            None
+        );
+    }
 }

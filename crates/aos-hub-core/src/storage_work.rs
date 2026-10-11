@@ -1406,8 +1406,10 @@ impl StorageWorkPlan {
 /// Reports whether a path can cross the hybrid boundary as bounded metadata.
 #[must_use]
 pub fn admitted_metadata_path(path: &str) -> bool {
-    matches!(path, "HEAD" | "info/refs" | "objects/info/packs")
-        || path.starts_with("channels/")
+    matches!(
+        path,
+        "HEAD" | "info/refs" | "nix-cache-info" | "objects/info/packs" | "objects/info/alternates"
+    ) || path.starts_with("channels/")
         || path.starts_with("releases/")
         || admitted_narinfo_path(path)
         || admitted_oci_blob_path(path)
@@ -2199,6 +2201,9 @@ mod tests {
         for path in [
             "HEAD",
             "info/refs",
+            "nix-cache-info",
+            "objects/info/packs",
+            "objects/info/alternates",
             "channels/stable/00",
             "abcdf.narinfo",
             "oci/blobs/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -2210,6 +2215,10 @@ mod tests {
             "nar/large.nar",
             "images/disk.qcow2",
             "objects/ab/1234",
+            "objects/info/alternates/extra",
+            "objects/pack/pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pack",
+            "objects/aos-index-v1/all",
+            "nix-cache-info/extra",
             "bad-store-hash.narinfo",
             "oci/blobs/sha256/not-a-digest",
         ] {
