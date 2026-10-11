@@ -106,7 +106,7 @@ pub(in super::super) struct BarrierInputs<'a> {
 ///
 /// # Errors
 /// Refuses another pair/root/control/exclusion, inconsistent canonical slot,
-/// transaction or snapshot, nonempty carry, changed refs/Guard, or a manifest
+/// transaction or snapshot, mismatched carry, changed refs/Guard, or a manifest
 /// without the exact first unburned active exclusion.
 pub(in super::super) fn barrier_plan(
     inputs: BarrierInputs<'_>,
