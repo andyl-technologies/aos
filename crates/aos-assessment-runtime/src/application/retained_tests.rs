@@ -189,7 +189,7 @@ fn valid_wide_status_page_reports_typed_response_exhaustion() -> Result<()> {
     inner.subjects = (0..100)
         .map(|index| {
             let mut subject = subject.clone();
-            subject.subject_ref = format!("subject-{index:03}");
+            subject.subject_ref = format!("subject-{index:03}-{}", "s".repeat(116));
             subject.package_coordinate = "x".repeat(1024);
             subject.version = "1".repeat(256);
             subject.platform = "p".repeat(128);
@@ -216,7 +216,10 @@ fn valid_wide_status_page_reports_typed_response_exhaustion() -> Result<()> {
         next_cursor: None,
     };
 
-    let error = page.to_bytes().unwrap_err();
+    let error = page
+        .to_bytes()
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("oversized status page was accepted"))?;
 
     assert_eq!(
         error.downcast_ref::<ScanPageError>(),
