@@ -2037,7 +2037,14 @@ Checkpoint `7f48787c88` retains original typed provider, reader and whole-world
 custody across borrowed retirement and callback unwinds. Its frozen 8,939-file
 image passes seven focused lifecycle controls, strict compilation, core library
 and daemon lifecycle-target compilation, 37 source-quality checks and formatting
-of 17 Rust files. Fresh application-wide test-target compilation is pending.
+of 17 Rust files. The fresh hermetic `rust.aos-test-targets` gate also passes:
+167 test targets, including 69 integration targets, across 48 test packages.
+Its selected 5,769-file application image matches the frozen source; all 244
+workspace compiler artifacts are freshly compiled, with no application test
+execution. The output is
+`85c2lkb8rb1wpvxvwvz730kkh2m03qsb-aos-test-targets-0.1.0`, and its retained
+compiler messages have SHA256
+`5692517fc0ebd870431f8fc634753119a9df8a9fcac69feb45c92be2ac29edc9`.
 The focused controls use inert nodes and do not establish native shutdown,
 reclamation, ordinary profile qualification or performance improvements.
 

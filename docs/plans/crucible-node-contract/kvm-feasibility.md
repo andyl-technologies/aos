@@ -33,6 +33,11 @@ allows host-side smoke tests; it does not establish support for the private
 Crucible controller capability, clock containment, exact capture or a qualified
 node profile. No modified host kernel was installed.
 
+A subsequent read-only host probe returned API version 12 and zero system
+capability values for private selectors `0xa025` through `0xa02b`. It created
+no VM or vCPU and performed no guest execution or VM-specific capability query.
+These results provide no installed private-controller support.
+
 The audit uses the public Linux v6.18 sources and QEMU source revision
 `f9587d4045c67cd0d8d8bdcd5d0bb5b6b395b63c`. These are reference implementations,
 not a claim that the installed kernel or packaged patched QEMU has identical
