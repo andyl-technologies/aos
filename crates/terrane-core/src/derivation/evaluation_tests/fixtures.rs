@@ -17,6 +17,7 @@ use alloc::vec::Vec;
 
 /// Defines the immutable chunk geometry used by the pure namespace fixtures.
 pub(super) const MINIMUM: u64 = 1024;
+
 /// Encodes the explicit private domain carried by the pure namespace fixtures.
 pub(super) const DOMAIN: &[u8] = b"\x70private:verified";
 
@@ -143,6 +144,7 @@ impl AdvisoryCache for Unavailable {
     fn lookup(&mut self, _: Digest) -> Result<Option<CacheRecord>, CacheUnavailable> {
         Err(CacheUnavailable)
     }
+
     /// Refuses advisory replacement without retaining the supplied record.
     ///
     /// # Errors
