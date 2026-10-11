@@ -124,6 +124,18 @@ are not client authority. Default page size is 50 and the initial maximum is
 snapshot. A cursor whose retained snapshot expired produces a typed restart
 response, not an apparently complete truncated list.
 
+The status reader transition uses `aos.assessment-status-query/v2` and
+`aos.assessment-status-page/v2`, retaining the original v1 semantic payload in
+`page`. Version-one subject-position readers remain supported. Retained pages
+MUST preserve the original input, source availability, pending/committed heads
+and observation time. Historical freshness MUST NOT be reinterpreted against
+continuation time or grant current coverage. First-page capture requires current
+publication availability; continuation rechecks current resource/read authority
+without replacing the captured inventory. All readers MUST support this version
+before clients begin producing it. The initial compatibility implementation
+retains the v1 limit ceiling of one hundred subjects; the general page-size
+transition above requires separate reader/client qualification.
+
 Watch events carry tenant-scoped monotonic sequence strings, event IDs,
 resource revisions, event type, time, and bounded evidence references. Tenant
 sequences need not be gap-free for a filtered reader. Ordering is guaranteed

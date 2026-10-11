@@ -557,8 +557,17 @@ pub enum HubAssessmentCmd {
         /// Bound the number of packages in this page
         #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..=100))]
         limit: u32,
+        /// Capture immutable status pages with opaque continuation handles
+        #[arg(long, conflicts_with = "after_subject")]
+        retained: bool,
+        /// Continue an original retained status capture
+        #[arg(long, requires = "resource_scope", conflicts_with = "after_subject")]
+        cursor: Option<String>,
+        /// Bind retained reads to the original registry incarnation
+        #[arg(long, conflicts_with = "after_subject")]
+        resource_scope: Option<String>,
         /// Continue after this exact subject in a pinned inventory and policy
-        #[arg(long, requires_all = ["inventory_digest", "policy_digest"])]
+        #[arg(long, requires_all = ["inventory_digest", "policy_digest"], conflicts_with_all = ["retained", "cursor", "resource_scope"])]
         after_subject: Option<String>,
         /// Pin the inventory returned by the preceding page
         #[arg(long)]

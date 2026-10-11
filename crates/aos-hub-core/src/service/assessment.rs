@@ -5,9 +5,11 @@
 //! database work. A missing assessment permission policy denies access.
 
 use aos_assessment::result::PackageAssessmentV1;
+use aos_assessment_runtime::application::retained::StatusQueryV2;
 use aos_assessment_runtime::application::{
     AssessmentStatusV1, ProfileStatus, StatusQueryV1, SubjectStatus,
 };
+use aos_assessment_runtime::read_snapshot::ScanPageError;
 use aos_contract::Sha256Digest;
 
 use super::{pb, Claims, Permission, RegistryRecord, RpcError, RpcService};
@@ -24,6 +26,9 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::AssessmentStatusRequest,
     ) -> Result<pb::AssessmentDocumentResponse, RpcError> {
+        if let Ok(query) = StatusQueryV2::from_slice(&req.query_json) {
+            return self.get_retained_assessment_status(auth, req, query).await;
+        }
         let query = StatusQueryV1::from_slice(&req.query_json)
             .map_err(|error| RpcError::invalid(error.to_string()))?;
         let registry = self.registry_or_not_found(&req.registry_slug).await?;
@@ -133,6 +138,60 @@ impl RpcService {
                 .collect(),
         };
         let document_json = status.to_bytes().map_err(RpcError::internal)?;
+        self.recheck_assessment(&claims, &registry, "assessment.read")
+            .await?;
+        Ok(pb::AssessmentDocumentResponse { document_json })
+    }
+
+    // Retained continuations are historical observations. Current registry and
+    // principal authority remain mandatory; first-page capture additionally
+    // requires an unchanged current publication before returning its receipt.
+    async fn get_retained_assessment_status(
+        &self,
+        auth: Option<&str>,
+        req: pb::AssessmentStatusRequest,
+        query: StatusQueryV2,
+    ) -> Result<pb::AssessmentDocumentResponse, RpcError> {
+        let registry = self.registry_or_not_found(&req.registry_slug).await?;
+        let claims = self
+            .authorize_assessment(auth, &registry, "assessment.read")
+            .await?;
+        let page = self
+            .db
+            .assessment_retained_status_page(registry.id, &query)
+            .await
+            .map_err(status_projection_error)?
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition(
+                    "No declared assessment inventory is active for this publication".into(),
+                )
+            })?;
+        if query.cursor.is_none() {
+            let publication_fences = self
+                .db
+                .assessment_publication_fences(
+                    registry.id,
+                    &registry.scope_key,
+                    page.page.inventory_digest,
+                    page.page.policy_digest,
+                )
+                .await
+                .map_err(|_| {
+                    RpcError::FailedPrecondition(
+                        "current assessment publication is unavailable or changed".into(),
+                    )
+                })?;
+            self.db
+                .backend
+                .checked_batch(&publication_fences)
+                .await
+                .map_err(|_| {
+                    RpcError::FailedPrecondition(
+                        "assessment publication changed during status capture".into(),
+                    )
+                })?;
+        }
+        let document_json = page.to_bytes().map_err(status_projection_error)?;
         self.recheck_assessment(&claims, &registry, "assessment.read")
             .await?;
         Ok(pb::AssessmentDocumentResponse { document_json })
@@ -250,5 +309,20 @@ impl RpcService {
                     "assessment granting authority is no longer current".into(),
                 )
             })
+    }
+}
+
+// Keep finite capture failures distinct from unavailable storage diagnostics.
+fn status_projection_error(error: anyhow::Error) -> RpcError {
+    if let Some(page) = error.downcast_ref::<ScanPageError>() {
+        match page {
+            ScanPageError::InvalidCursor => RpcError::invalid(page.to_string()),
+            ScanPageError::CursorExpired | ScanPageError::SelectorChanged => {
+                RpcError::FailedPrecondition(page.to_string())
+            }
+            ScanPageError::CapacityExceeded => RpcError::ResourceExhausted(page.to_string()),
+        }
+    } else {
+        RpcError::internal(error)
     }
 }

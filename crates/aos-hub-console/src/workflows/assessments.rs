@@ -5,7 +5,8 @@ mod publication;
 use publication::RegistryAssessmentPublication;
 use aos_assessment::input::Profile;
 use aos_assessment::result::PackageAssessmentV1;
-use aos_assessment_runtime::application::{AssessmentStatusV1, StatusQueryV1};
+use aos_assessment_runtime::application::AssessmentStatusV1;
+use aos_assessment_runtime::application::retained::{StatusPageV2, StatusQueryV2};
 use leptos::prelude::*;
 
 use super::assessment_scans::AssessmentScanControls;
@@ -26,12 +27,14 @@ pub(super) fn RegistryAssessments(client: ApiClient, slug: String) -> impl IntoV
     let polling = RwSignal::new(true);
     let active_reads = RwSignal::new(0_u32);
     let displayed = RwSignal::new(None::<AssessmentStatusV1>);
+    let retained_page = RwSignal::new(None::<(Option<String>, StatusPageV2)>);
     let controls = StoredValue::new((client.clone(), slug.clone()));
-    let query = RwSignal::new(StatusQueryV1 {
-        schema: "aos.assessment-status-query/v1".into(),
+    let query = RwSignal::new(StatusQueryV2 {
+        schema: "aos.assessment-status-query/v2".into(),
         profiles: vec![Profile::Updates, Profile::Vulnerabilities],
         limit: 100,
-        after_subject: None,
+        cursor: None,
+        resource_scope: None,
         inventory_digest: None,
         policy_digest: None,
     });
@@ -41,11 +44,18 @@ pub(super) fn RegistryAssessments(client: ApiClient, slug: String) -> impl IntoV
     let resource = LocalResource::new(move || {
         let _ = epoch.get();
         let query = query.get();
+        let retained = retained_page.get_untracked().filter(|(cursor, _)| cursor == &query.cursor);
         let client = status_client.clone();
         let registry_slug = status_slug.clone();
         let read = AssessmentReadGuard::new(active_reads);
         async move {
             let _read = read;
+            // Preserve original pages while publication and operation views
+            // continue polling. Refresh explicitly starts a new observation.
+            if let Some((_, page)) = retained {
+                displayed.set(Some(page.page.clone()));
+                return Ok(page);
+            }
             let query_json = serde_json::to_vec(&query).map_err(|error| error.to_string())?;
             let response = client
                 .call::<_, aos_proto_types::AssessmentDocumentResponse>(
@@ -56,17 +66,24 @@ pub(super) fn RegistryAssessments(client: ApiClient, slug: String) -> impl IntoV
                     },
                 )
                 .await;
-            let awaiting_publication = query.after_subject.is_none()
+            let awaiting_publication = query.cursor.is_none()
                 && query.inventory_digest.is_none() && query.policy_digest.is_none()
                 && matches!(&response, Err(TransportError::Http { status: 400, .. }));
             let status = response
                 .map_err(|error| error.to_string())
                 .and_then(|response| {
-                    AssessmentStatusV1::from_slice(&response.document_json)
-                        .map_err(|error| error.to_string())
+                    let page = StatusPageV2::from_slice(&response.document_json)
+                        .map_err(|error| error.to_string())?;
+                    page.validate_for(&query).map_err(|error| error.to_string())?;
+                    Ok(page)
                 });
             match &status {
-                Ok(status) => displayed.set(Some(status.clone())),
+                Ok(page) => {
+                    displayed.set(Some(page.page.clone()));
+                    if page.next_cursor.is_some() || query.cursor.is_some() {
+                        retained_page.set(Some((query.cursor.clone(), page.clone())));
+                    }
+                },
                 Err(_) => {
                     if !awaiting_publication {
                         polling.set(false);
@@ -110,7 +127,8 @@ pub(super) fn RegistryAssessments(client: ApiClient, slug: String) -> impl IntoV
                 <p>"Current package checks, evidence freshness and pending scans."</p>
             </div><button class="secondary-button" on:click=move |_| {
                 polling.set(true);
-                query.update(|query| { query.after_subject = None; query.inventory_digest = None; query.policy_digest = None; });
+                retained_page.set(None);
+                query.update(|query| { query.cursor = None; query.resource_scope = None; query.inventory_digest = None; query.policy_digest = None; });
                 epoch.update(|value| *value = value.wrapping_add(1));
             }>"Refresh"</button></div>
             <RegistryAssessmentPublication client=controls.get_value().0 slug=controls.get_value().1
@@ -119,7 +137,8 @@ pub(super) fn RegistryAssessments(client: ApiClient, slug: String) -> impl IntoV
                 {move || Suspend::new(async move {
                     match resource.await.as_ref() {
                         Err(error) => view! { <InlineError detail=error.clone()/> }.into_any(),
-                        Ok(status) => {
+                        Ok(page) => {
+                            let status = &page.page;
                             let rows = status.subjects.iter().flat_map(|subject| subject.profiles.iter().map(|profile| {
                                 let digest = profile.assessment_digest.map(|digest| digest.to_string());
                                 let package = subject.package_coordinate.clone();
@@ -130,16 +149,15 @@ pub(super) fn RegistryAssessments(client: ApiClient, slug: String) -> impl IntoV
                                 let pending = profile.pending;
                                 view! { <tr><td>{package}</td><td>{version}</td><td>{platform}</td><td>{profile_name}</td><td>{evidence}{pending.then(|| view! { <span>" · Scan pending"</span> })}</td><td>{digest.map(|digest| view! { <button class="secondary-button" on:click=move |_| selected.set(Some(digest.clone()))>"View result"</button> })}</td></tr> }
                             })).collect_view();
-                            let next = status.next_subject.clone();
-                            let inventory_digest = status.inventory_digest;
-                            let policy_digest = status.policy_digest;
+                            let next = page.next_cursor.clone();
+                            let resource_scope = status.resource_scope.clone();
                             let sources = status.source_status.iter().map(|source| {
                                 let description = format!("{}: {}", source.provider, source.availability.description());
                                 view! { <li>{description}</li> }
                             }).collect_view();
                             let sources_reported = !status.source_status.is_empty();
                             view! {
-                                <p class="field-note">{format!("Observed at {}", status.as_of)}</p>
+                                <p class="field-note">{format!("Observed at {}; retained until {}", status.as_of, page.expires_at)}</p>
                                 <h3>"Source reservation availability"</h3>
                                 {if sources_reported {
                                     view! { <ul>{sources}</ul> }.into_any()
@@ -148,7 +166,7 @@ pub(super) fn RegistryAssessments(client: ApiClient, slug: String) -> impl IntoV
                                 }}
                                 <table><thead><tr><th>"Package"</th><th>"Version"</th><th>"Platform"</th><th>"Check"</th><th>"Evidence"</th><th>"Result"</th></tr></thead><tbody>{rows}</tbody></table>
                                 {next.map(|position| view! { <button class="secondary-button" on:click=move |_| query.update(|query| {
-                                    query.after_subject = Some(position.clone()); query.inventory_digest = Some(inventory_digest); query.policy_digest = Some(policy_digest);
+                                    query.cursor = Some(position.clone()); query.resource_scope = Some(resource_scope.clone());
                                 })>"Next packages"</button> })}
                             }.into_any()
                         }

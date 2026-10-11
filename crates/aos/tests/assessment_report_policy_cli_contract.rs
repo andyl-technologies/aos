@@ -213,3 +213,55 @@ fn retained_advisory_cursors_preserve_legacy_and_scope_requirements() {
         assert!(parse_cli(arguments).is_err());
     }
 }
+
+#[test]
+fn retained_status_cursors_keep_legacy_positions_and_scope_requirements_distinct() {
+    let base = ["aos", "hub", "maintain", "status", "--registry", "fixture"];
+    for extra in [
+        vec![],
+        vec!["--retained"],
+        vec![
+            "--cursor",
+            "opaque-capture",
+            "--resource-scope",
+            "registry-incarnation",
+        ],
+        vec![
+            "--after-subject",
+            "subject",
+            "--inventory-digest",
+            "sha256:inventory",
+            "--policy-digest",
+            "sha256:policy",
+        ],
+    ] {
+        assert!(parse_cli(base.into_iter().chain(extra)).is_ok());
+    }
+    for extra in [
+        vec!["--cursor", "opaque-capture"],
+        vec!["--after-subject", "subject"],
+        vec![
+            "--retained",
+            "--after-subject",
+            "subject",
+            "--inventory-digest",
+            "sha256:inventory",
+            "--policy-digest",
+            "sha256:policy",
+        ],
+        vec![
+            "--cursor",
+            "opaque-capture",
+            "--resource-scope",
+            "registry-incarnation",
+            "--after-subject",
+            "subject",
+            "--inventory-digest",
+            "sha256:inventory",
+            "--policy-digest",
+            "sha256:policy",
+        ],
+    ] {
+        assert!(parse_cli(base.into_iter().chain(extra)).is_err());
+    }
+}

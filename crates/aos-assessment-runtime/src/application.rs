@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 use crate::scan::{ScanRequestV1, ScanState, ScanUsage};
 use crate::validation::{decode, encoded, sorted, text};
 
+/// Retains original status observations across opaque continuation pages.
+pub mod retained;
+
 /// Selects a bounded read of the current inventory without provider effects.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]

@@ -279,8 +279,31 @@ subjects even when a profile is unassessed, retains prior committed evidence
 while newer work is pending, and computes freshness independently. Reads make
 no provider calls and do not recover operations. Continuations require the exact
 `--inventory-digest` and `--policy-digest` returned with `--after-subject`.
-Immutable inventory, policy, input, closure and result custody is verified;
-missing or inconsistent evidence fails the read instead of appearing clean.
+Local status verifies immutable inventory, policy, input, closure and result
+custody; missing or inconsistent evidence fails that read instead of appearing clean.
+
+Hub callers can use `aos hub maintain status --registry REGISTRY --retained` to
+capture immutable status pages. Continue with the returned `--cursor` and
+`--resource-scope`, preserving the original profiles, limit and any input pins.
+`--after-subject` selects the legacy interface and conflicts with opaque cursors.
+The default Hub command preserves its existing status document and behavior.
+
+The API accepts `aos.assessment-status-query/v2` and returns
+`aos.assessment-status-page/v2`. Its `page` contains the original v1 semantic
+payload without a mutable subject position; `expiresAt` and `nextCursor` describe
+the capture. All pages preserve inventory/policy identities, pending and committed
+heads, source reservation availability and the original observation time.
+Historical freshness describes that time and grants no current or release
+coverage. First-page capture requires current publication availability;
+continuations require current read access within the same registry incarnation.
+
+Admission bounds indexed subject metadata to ten thousand subjects and four MiB
+of text bytes before projection. A capture has an eight MiB encoding allowance,
+fifteen-minute retention and at most sixteen retained captures per registry.
+Exhaustion and unavailable/expired custody fail explicitly. The web view retains
+paginated observations during polling; Refresh starts a new capture. Single-page
+views continue taking current observations. Deploy Native/Worker v2 readers before
+upgrading the web client or using retained CLI status.
 
 Cached local scans merge evidence from the independently committed profile heads
 for the same inventory and policy. An update scan finishing after a vulnerability

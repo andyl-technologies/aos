@@ -81,6 +81,8 @@ pub enum AssessmentObjectKind {
     DeliveryReadSnapshot,
     /// Immutable advisory revisions, historical finding links and opaque handles.
     AdvisoryReadSnapshot,
+    /// Immutable status heads, pending state and source availability at one time.
+    StatusReadSnapshot,
 }
 
 impl AssessmentObjectKind {
@@ -91,6 +93,9 @@ impl AssessmentObjectKind {
     #[must_use]
     pub fn domain(self) -> &'static str {
         match self {
+            Self::StatusReadSnapshot => {
+                aos_assessment_runtime::application::retained::STATUS_READ_SNAPSHOT_V1
+            }
             Self::AdvisoryReadSnapshot => {
                 aos_assessment_runtime::advisories::retained::ADVISORY_READ_SNAPSHOT_V1
             }
@@ -130,6 +135,10 @@ impl AssessmentObjectKind {
 
     fn normalize(self, bytes: &[u8]) -> Result<Vec<u8>> {
         match self {
+            Self::StatusReadSnapshot => {
+                aos_assessment_runtime::application::retained::StatusReadSnapshotV1::from_slice(bytes)?
+                    .to_bytes()
+            }
             Self::AdvisoryReadSnapshot => {
                 aos_assessment_runtime::advisories::retained::AdvisoryReadSnapshotV1::from_slice(
                     bytes,
@@ -243,6 +252,7 @@ impl AssessmentObjectKind {
                 | Self::ScheduleReadSnapshot
                 | Self::DeliveryReadSnapshot
                 | Self::AdvisoryReadSnapshot
+                | Self::StatusReadSnapshot
         )
     }
 }

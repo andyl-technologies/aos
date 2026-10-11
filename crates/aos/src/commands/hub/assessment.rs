@@ -6,6 +6,7 @@
 use anyhow::{Context as _, Result};
 use aos_assessment::result::PackageAssessmentV1;
 use aos_assessment_runtime::application::ScanReceiptV1;
+use aos_assessment_runtime::application::retained::{StatusPageV2, StatusQueryV2};
 use aos_assessment_runtime::application::{AssessmentStatusV1, StatusQueryV1};
 use aos_assessment_runtime::attention_control::{
     AlertAcknowledgementV1, AlertPageV1, AlertQueryV1, EventPageV1, EventQueryV1,
@@ -301,8 +302,55 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
             after_subject,
             inventory_digest,
             policy_digest,
+            retained,
+            cursor,
+            resource_scope,
         } => {
             let profiles = crate::cli::assessment_profiles(profiles);
+            if *retained || cursor.is_some() || resource_scope.is_some() {
+                let query = StatusQueryV2 {
+                    schema: "aos.assessment-status-query/v2".into(),
+                    profiles,
+                    limit: *limit,
+                    cursor: cursor.clone(),
+                    resource_scope: resource_scope.clone(),
+                    inventory_digest: inventory_digest
+                        .as_deref()
+                        .map(Sha256Digest::parse)
+                        .transpose()?,
+                    policy_digest: policy_digest
+                        .as_deref()
+                        .map(Sha256Digest::parse)
+                        .transpose()?,
+                };
+                query.validate()?;
+                let client = hub_client(&access.hub, access.token.as_deref()).await?;
+                let response = client
+                    .call_topology(
+                        hub_rpc::GetAssessmentStatus,
+                        &hub_types::AssessmentStatusRequest {
+                            registry_slug: registry.clone(),
+                            query_json: serde_json::to_vec(&query)?,
+                        },
+                    )
+                    .await?;
+                let page = StatusPageV2::from_slice(&response.document_json)?;
+                page.validate_for(&query)?;
+                if printer.mode() == OutputMode::Json {
+                    printer.json(&serde_json::json!({"schema_version":"aos.hub.cli/v1", "kind":"assessment-status", "data":page}));
+                } else {
+                    crate::commands::assessment_presentation::render_status(printer, &page.page);
+                    printer.info(&format!("Retained until {}", page.expires_at));
+                    if let Some(cursor) = &page.next_cursor {
+                        printer.info(&format!(
+                            "Next page: --resource-scope {} --cursor {}",
+                            escape_terminal(&page.page.resource_scope),
+                            escape_terminal(cursor)
+                        ));
+                    }
+                }
+                return Ok(());
+            }
             let query = StatusQueryV1 {
                 schema: "aos.assessment-status-query/v1".into(),
                 profiles,

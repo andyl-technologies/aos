@@ -18,6 +18,10 @@
   deadlineSelector = "db::assessment::schedules::deadline_tests::selected_expiry_coalesces_without_refresh_feedback_and_survives_reopen";
   advisorySelector = "db::assessment::advisory_snapshot::tests::retained_advisory_pages_survive_new_revisions_and_database_reopen";
   advisoryCliSelector = "db::assessment::advisory_snapshot::tests::actual_cli_retains_advisory_revisions_across_database_reopen";
+  statusSelector = "db::assessment::status_snapshot_tests::status_capture_retains_real_heads_across_cancellation_and_reopen";
+  statusBoundsSelector = "db::assessment::status_snapshot_tests::status_captures_bound_concurrent_storage_and_multibyte_metadata";
+  statusUnassessedSelector = "db::assessment::status_snapshot_tests::pending_unassessed_heads_keep_null_evidence_and_independent_profiles";
+  statusCliSelector = "db::assessment::status_snapshot_cli_tests::actual_cli_retains_status_heads_across_cancellation_and_database_reopen";
 in
   assert builtins.pathExists (source + "/crates/aos-hub-worker/src/oci_manifest_ingress.rs");
     pkgs.mkCargoPackage {
@@ -78,6 +82,14 @@ in
         grep -Fx '${advisorySelector}: test' "$out/nix-support/advisory-test-registration.txt"
         "$out/bin/aos-assessment-retained-pages-fixture" --list --ignored --exact '${advisoryCliSelector}' > "$out/nix-support/advisory-cli-test-registration.txt"
         grep -Fx '${advisoryCliSelector}: test' "$out/nix-support/advisory-cli-test-registration.txt"
+        "$out/bin/aos-assessment-retained-pages-fixture" --list --exact '${statusSelector}' > "$out/nix-support/status-test-registration.txt"
+        grep -Fx '${statusSelector}: test' "$out/nix-support/status-test-registration.txt"
+        "$out/bin/aos-assessment-retained-pages-fixture" --list --exact '${statusBoundsSelector}' > "$out/nix-support/statusBounds-test-registration.txt"
+        grep -Fx '${statusBoundsSelector}: test' "$out/nix-support/statusBounds-test-registration.txt"
+        "$out/bin/aos-assessment-retained-pages-fixture" --list --exact '${statusUnassessedSelector}' > "$out/nix-support/statusUnassessed-test-registration.txt"
+        grep -Fx '${statusUnassessedSelector}: test' "$out/nix-support/statusUnassessed-test-registration.txt"
+        "$out/bin/aos-assessment-retained-pages-fixture" --list --ignored --exact '${statusCliSelector}' > "$out/nix-support/statusCli-test-registration.txt"
+        grep -Fx '${statusCliSelector}: test' "$out/nix-support/statusCli-test-registration.txt"
       '';
       passthru.testSelector = selector;
       passthru.subscriptionTestSelector = subscriptionSelector;
@@ -92,5 +104,9 @@ in
       passthru.deadlineTestSelector = deadlineSelector;
       passthru.advisoryTestSelector = advisorySelector;
       passthru.advisoryCliTestSelector = advisoryCliSelector;
+      passthru.statusTestSelector = statusSelector;
+      passthru.statusBoundsTestSelector = statusBoundsSelector;
+      passthru.statusUnassessedTestSelector = statusUnassessedSelector;
+      passthru.statusCliTestSelector = statusCliSelector;
       meta.description = "Retained assessment list database and CLI acceptance fixture";
     }

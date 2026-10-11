@@ -36,6 +36,7 @@ mod schedule_snapshot;
 mod source_health;
 pub(super) mod source_status;
 mod status;
+mod status_snapshot;
 
 pub(crate) use reviews::AssessmentReviewCompletion;
 
@@ -98,3 +99,9 @@ mod notification_work_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32"), feature = "postgres"))]
 mod postgres_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod status_snapshot_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod status_snapshot_cli_tests;
