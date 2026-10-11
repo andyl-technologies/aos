@@ -18,6 +18,7 @@ use aos_sandbox_core::{
 };
 
 use super::LifecycleTimeV1;
+use super::codec::{take, take_slice, usize_from_u32};
 use super::coordination::{
     LifecycleCoordinationPhaseV1, LifecycleDatasetTransactionDigestV1, LifecycleQuiesceDigestV1,
     LifecycleRetentionLedgerReceiptV1, LifecycleSuspendObservationDigestV1,
@@ -1071,25 +1072,4 @@ fn push_count(bytes: &mut Vec<u8>, count: usize) {
     bytes.extend_from_slice(&encoded[encoded.len() - 4..]);
 }
 
-fn usize_from_u32(bytes: &[u8]) -> Result<usize, LifecycleModelError> {
-    usize::try_from(u32::from_be_bytes(
-        <[u8; 4]>::try_from(bytes).map_err(|_| LifecycleModelError::CorruptEncoding)?,
-    ))
-    .map_err(|_| LifecycleModelError::CorruptEncoding)
-}
 
-fn take_slice<'a>(bytes: &mut &'a [u8], length: usize) -> Result<&'a [u8], LifecycleModelError> {
-    let value = bytes
-        .get(..length)
-        .ok_or(LifecycleModelError::CorruptEncoding)?;
-    *bytes = bytes
-        .get(length..)
-        .ok_or(LifecycleModelError::CorruptEncoding)?;
-    Ok(value)
-}
-
-fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], LifecycleModelError> {
-    let value = <[u8; N]>::try_from(take_slice(bytes, N)?)
-        .map_err(|_| LifecycleModelError::CorruptEncoding)?;
-    Ok(value)
-}

@@ -33,6 +33,7 @@ use super::attempt::{
     LifecycleAttemptStateV1, LifecycleEffectAttemptV1, LifecycleEffectDirectionV1,
     MAXIMUM_LIFECYCLE_ATTEMPTS_PER_STEP,
 };
+use super::codec::{take, take_slice, usize_from_u32};
 use super::intent::{
     DesiredStateCasV1, DesiredStateFenceV1, LifecycleFailureClassV1, LifecycleFailureV1,
     LifecycleIntentV1, LifecycleResourceV1, LifecycleResumeSourceV1, LifecycleRetryV1,
@@ -1596,22 +1597,4 @@ fn decode_failure_class(v: u8) -> Result<LifecycleFailureClassV1, LifecycleModel
         6 => Ok(LifecycleFailureClassV1::CorruptState),
         _ => Err(LifecycleModelError::CorruptEncoding),
     }
-}
-fn usize_from_u32(bytes: &[u8]) -> Result<usize, LifecycleModelError> {
-    let raw: [u8; 4] = bytes
-        .try_into()
-        .map_err(|_| LifecycleModelError::CorruptEncoding)?;
-    usize::try_from(u32::from_be_bytes(raw)).map_err(|_| LifecycleModelError::CorruptEncoding)
-}
-fn take_slice<'a>(bytes: &mut &'a [u8], length: usize) -> Result<&'a [u8], LifecycleModelError> {
-    let (value, remaining) = bytes
-        .split_at_checked(length)
-        .ok_or(LifecycleModelError::CorruptEncoding)?;
-    *bytes = remaining;
-    Ok(value)
-}
-fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], LifecycleModelError> {
-    take_slice(bytes, N)?
-        .try_into()
-        .map_err(|_| LifecycleModelError::CorruptEncoding)
 }

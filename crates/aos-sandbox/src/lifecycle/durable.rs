@@ -26,6 +26,7 @@ use super::auxiliary_payload::{
     encode_lifecycle_auxiliary_payload_v1,
     encode_lifecycle_auxiliary_payload_with_layout_v1,
 };
+use super::codec::{take, take_slice};
 use super::{
     LifecycleCancelIdempotencyIndexV1, LifecycleCancelOutcomeV1, LifecycleCancelRequestV1,
     LifecycleCancellationRecordV1, LifecycleHistoryV1, LifecycleModelError, LifecycleOperationV1,
@@ -1819,16 +1820,3 @@ fn optional_digest(bytes: [u8; 32]) -> Option<ObjectDigest> {
     (bytes != [0; 32]).then_some(ObjectDigest::from_bytes(bytes))
 }
 
-fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], LifecycleModelError> {
-    take_slice(bytes, N)?
-        .try_into()
-        .map_err(|_| LifecycleModelError::CorruptEncoding)
-}
-
-fn take_slice<'a>(bytes: &mut &'a [u8], length: usize) -> Result<&'a [u8], LifecycleModelError> {
-    let (head, tail) = bytes
-        .split_at_checked(length)
-        .ok_or(LifecycleModelError::CorruptEncoding)?;
-    *bytes = tail;
-    Ok(head)
-}

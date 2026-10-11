@@ -11,6 +11,7 @@ mod auxiliary_checkpoint;
 mod auxiliary_payload;
 mod boot_reconcile;
 mod cancel;
+mod codec;
 mod coordination;
 mod create_placement_join;
 mod deletion;
