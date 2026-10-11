@@ -218,7 +218,8 @@ impl<S: Store, C: Clock> Guard<S, C> {
     /// independently of the immutable target's original signed first parent.
     ///
     /// # Errors
-    /// Rejects absent prior commits, mismatched roots or incomplete canonical evidence.
+    /// Rejects a missing prior commit for existing publication, mismatched roots
+    /// or incomplete canonical evidence.
     pub(super) fn candidate_root_changes(
         &self,
         commit: &terrane_core::refs::Commit,
@@ -235,8 +236,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
         let mut history = provenance::VerifiedHistory::new_selected(
             self.config().min_chunk_size,
             selection.clone(),
-        )
-        .map_err(|_| invalid())?;
+        );
         let mut insert = |evidence: &super::TreeEvidence| -> Result<(), StoreFailure> {
             let nodes = evidence
                 .nodes
