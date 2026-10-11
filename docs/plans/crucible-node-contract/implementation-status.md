@@ -2067,6 +2067,24 @@ or ordinary class acceptance. Current combined application-target compilation,
 native qualification and boundary gates remain required; raw evidence stays
 local.
 
+## Selected DMTCP writer package
+
+The source-built `dmtcp-selected-writer-park` package passes its normal
+application, checkpoint and two restore checks. Independent review verifies
+the installed binary/source tuple, all 77 declared installed artifacts and
+27 native source roles. The package retains the matching complete source and
+original license notices. These checks establish ordinary package behavior;
+the retained client receipts do not establish complete guest reclamation.
+
+Selected native terminal parking, authenticated final-account issuance and
+operational restore adoption remain unqualified. Configured native compilation
+and eight inert descriptor controls have separate evidence; they do not execute
+the real worker, kernel wait or source-issued takeover. The selected early
+restore gate still refuses. This package result grants no common Ready,
+full-system Linux, x86/AArch64 device parity or source-gone full-state
+qualification. Those require the complete owning runtime, original transport,
+conservation account and independently qualified fresh continuations.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
