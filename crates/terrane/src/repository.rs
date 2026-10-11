@@ -293,9 +293,12 @@ where
                     },
                 )
                 .collect::<Vec<_>>();
-            let effective =
-                terrane_core::properties::resolve(&layers, guard.defaults_for(&snapshot.evidence))
-                    .map_err(|_| Error::Denied)?;
+            // The inherited domain belongs to the checked parent view. Its
+            // recorded vocabulary must remain inert across later revisions.
+            let effective = snapshot
+                .interpretation
+                .resolve(&layers, guard.defaults_for(&snapshot.evidence))
+                .map_err(|_| Error::Denied)?;
             let domain = crate::guard::domain_label(&effective).map_err(|_| Error::Denied)?;
             tree.inherit_domain(domain)?;
             request.commit.tree = tree.root;
