@@ -1,103 +1,80 @@
-##! Focused typed configuration and real-parser contract for containerd.
+##! Native containerd effects preserve allocation and produce parser-valid TOML.
 {
   pkgs,
   lib,
   self,
+  mkSystem,
 }: let
-  evaluate = host:
-    lib.evalModules {
-      inherit lib;
-      modules = [
-        {
-          options = {
-            assertions = lib.mkOption {
-              type = lib.types.listOf lib.types.attrs;
-              default = [];
-            };
-            containerd.config = lib.mkOption {
-              type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
-              default = {};
-            };
-          };
-        }
-      ];
-      operatorModules = [host];
-      packageModules = [
-        {
-          name = "containerd";
-          authorization = {
-            owns = ["containerd"];
-            contributes = {};
-          };
-          configRoot = ../_containerd-config;
-          module = ../_containerd-config/module.nix;
-          outputs = {
-            self = builtins.toString self;
-            dependencies = {};
-          };
-        }
-      ];
+  evaluate = settings:
+    lib.evalPackageModules {
+      scope = ["test" "containerd"];
+      packages = [self pkgs.systemd];
+      operatorModules = [{containerd = settings;}];
     };
-  configured = evaluate {
-    containerd = {
-      enable = true;
-      grpcAddress = "/run/containerd/contract.sock";
-      metricsAddress = "127.0.0.1:11338";
-      snapshotter = "native";
-      requiredPlugins = ["io.containerd.cri.v1.runtime"];
-    };
+  evaluated = evaluate {
+    enable = true;
+    metricsAddress = "127.0.0.1:11338";
+    snapshotter = "native";
+    requiredPlugins = ["io.containerd.cri.v1.runtime"];
+    grpcSocketName = "contract.sock";
   };
-  invalid = evaluate {
-    containerd.disabledPlugins = ["io.containerd.cri.v1.runtime"];
+  registry = evaluate {
+    enable = true;
+    registryConfigResource = "/etc/containerd/certs.d";
   };
-  rendered = configured.config.containerd.config;
+  operations = evaluated.config.aos.abilities;
+  directory = operations.filesystem.operations.directory.effects;
+  socket = operations.filesystem.operations.view.effects.containerd-socket;
+  configuration = operations.configuration.operations.file.effects.containerd;
+  service = evaluated.config.aos.services.containerd;
+  # The parser fixture supplies the exact realized producer paths. The native
+  # graph assertions below separately check that fragments retain those edges.
+  resolve = fragment:
+    if builtins.isString fragment
+    then fragment
+    else if fragment == directory.containerd-root.outputs.path
+    then "/var/lib/containerd"
+    else if fragment == directory.containerd-state.outputs.path
+    then "/run/containerd"
+    else if fragment == socket.outputs.path
+    then "/run/containerd/contract.sock"
+    else throw "Unexpected deferred containerd parser fixture value";
   configFile = pkgs.writeTextFile {
-    name = "containerd-contract.toml";
+    name = "containerd-contract";
     destination = "/config.toml";
-    text = ''
-      version = 3
-      root = "/var/lib/containerd"
-      state = "/run/containerd"
-      required_plugins = ["io.containerd.cri.v1.runtime"]
-
-      [grpc]
-      address = "/run/containerd/contract.sock"
-
-      [metrics]
-      address = "127.0.0.1:11338"
-
-      [plugins."io.containerd.cri.v1.images"]
-      snapshotter = "native"
-
-      [plugins."io.containerd.cri.v1.images".registry]
-      config_path = "/etc/containerd/certs.d"
-
-      [plugins."io.containerd.cri.v1.images".pinned_images]
-      sandbox = "registry.k8s.io/pause:3.10"
-
-      [plugins."io.containerd.cri.v1.runtime".containerd]
-      default_runtime_name = "runc"
-
-      [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runc]
-      runtime_type = "io.containerd.runc.v2"
-
-      [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runc.options]
-      SystemdCgroup = true
-    '';
+    text = lib.concatMapStrings resolve configuration.input.fragments;
   };
-  contract = assert rendered.runtime.CONTAINERD_ENABLED == "true";
-  assert rendered.config.grpc.address == "/run/containerd/contract.sock";
-  assert rendered.config.metrics.address == "127.0.0.1:11338";
-  assert rendered.config.plugins."io.containerd.cri.v1.images".snapshotter == "native";
-  assert !(builtins.all (entry: entry.assertion) invalid.config.assertions); true;
+  rejects = settings: let result = evaluate settings; in !(builtins.tryEval (builtins.deepSeq result.config.containerd (builtins.deepSeq result.deployment true))).success;
 in
-  pkgs.runCommand "containers-containerd-config-module-contract" {} ''
-    : ${lib.escapeShellArg (toString contract)}
-    ${self}/bin/containerd --config ${configFile}/config.toml config dump > dump.toml
-    ${pkgs.grep}/bin/grep -q 'address =.*contract.sock' dump.toml
-    ${pkgs.grep}/bin/grep -q 'snapshotter =.*native' dump.toml
-    ${pkgs.grep}/bin/grep -q 'ExecStart=.*containerd.*config.toml' \
-      ${self.expose}/units/containerd.service
-    mkdir -p "$out"
-    printf '%s\n' ok > "$out/result"
-  ''
+  assert builtins.deepSeq [evaluated.deployment registry.deployment] true;
+  assert directory.containerd-root.lifetime == "persistent";
+  assert directory.containerd-root.input.mode == "0750";
+  assert directory.containerd-state.input.mode == "0750";
+  assert socket.input.sourcePath == directory.containerd-state.outputs.path;
+  assert socket.input.relativePath == "contract.sock";
+  assert builtins.elem directory.containerd-root.outputs.path configuration.input.fragments;
+  assert builtins.elem socket.outputs.path configuration.input.fragments;
+  assert operations.kernelModules.operations.ensure.effects.containerd.input
+  == {
+    modules = ["overlay"];
+    required = true;
+  };
+  assert builtins.map (mount: mount.source) service.storage.mounts == [directory.containerd-root.outputs.path directory.containerd-state.outputs.path];
+  assert service.supervision.startup_protocol == "notification";
+  assert service.policy.hardening.resource_control_delegation;
+  assert service.isolation.privilege == "privileged";
+  assert registry.config.aos.services.containerd.isolation.host_paths != [];
+  assert !(operations.filesystem.operations.view.effects ? containerd-registry);
+  assert rejects {disabledPlugins = ["io.containerd.cri.v1.runtime"];};
+  assert rejects {requiredPlugins = ["duplicate" "duplicate"];};
+  assert rejects {grpcSocketName = "../containerd.sock";};
+  assert rejects {root = "/srv/containerd";};
+  assert rejects {state = "/tmp/containerd";};
+    pkgs.runCommand "containers-containerd-native-contract" {} ''
+      ${self}/bin/containerd --config ${configFile}/config.toml config dump > dump.toml
+      ${pkgs.grep}/bin/grep -q 'address =.*contract.sock' dump.toml
+      ${pkgs.grep}/bin/grep -q 'snapshotter =.*native' dump.toml
+      ${pkgs.grep}/bin/grep -q 'SystemdCgroup = true' dump.toml
+      mkdir -p "$out"
+      printf '%s\n' PASS > "$out/result"
+    ''

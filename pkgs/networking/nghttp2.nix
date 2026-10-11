@@ -1,5 +1,6 @@
 ##! nghttp2 — HTTP/2 C library
 {
+  lib,
   mkDerivation,
   mkGithubUpstream,
   gnumake,
@@ -54,7 +55,95 @@
   inherit (upstream) version;
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "nghttp2";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "nghttp2 accepts the RFC-compatible header name.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"nghttp2 primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"nghttp2 rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <string.h>\n#include <nghttp2/nghttp2.h>\nint main(void) {\n    const uint8_t name[] = \"content-type\";\n    return nghttp2_check_header_name(name, strlen((char *)name)) ? pass() : 2;\n}\n\n";
+        };
+        "input" = "A lowercase HTTP/2 header name.";
+        "operation" = "Validate the bytes through nghttp2_check_header_name.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lnghttp2"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "nghttp2 primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "nghttp2 rejects the header name.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"nghttp2 primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"nghttp2 rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <string.h>\n#include <nghttp2/nghttp2.h>\nint main(void) {\n    const uint8_t name[] = \"Content-Type\";\n    if (nghttp2_check_header_name(name, strlen((char *)name))) return 2;\n    return reject();\n}\n\n";
+        };
+        "input" = "An HTTP/2 header name containing an uppercase letter.";
+        "operation" = "Validate the forbidden name through nghttp2_check_header_name.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lnghttp2"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "nghttp2 rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = upstream.components.main.sources.source;

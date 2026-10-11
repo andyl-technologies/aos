@@ -13,6 +13,25 @@
   version = "1.6.1";
 in
   mkDerivation {
+    # The package checks the ELF libopus SONAME.
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
+
     pname = "opus";
     inherit version;
 

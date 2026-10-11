@@ -31,7 +31,11 @@
     pname = "aos-apm-apr-vm-test-suite";
     version = pkgs.aos.version;
     src = null;
-    runtimeDeps = [pkgs.aos pkgs.aos.apm pkgs.aos.apr];
+    runtimeDeps = {
+      aos = pkgs.aos;
+      apm = pkgs.aos.apm;
+      apr = pkgs.aos.apr;
+    };
     phases = [
       {
         name = "install";

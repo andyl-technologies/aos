@@ -8,7 +8,7 @@ in {
     exclusions = types.strings "Explicit boundaries of the contract.";
   };
   config.qualification = {
-    id = "aos-system";
+    id = "aos-system-v2";
     promises = [
       "Install authenticated public artifacts and provision a persistent headless server."
       "Configure users, SSH, DNS, time, DHCP, and single-address static networking."

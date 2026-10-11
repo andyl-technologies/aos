@@ -6,11 +6,10 @@ realizations, and optional signed narinfo. Upload authentication controls who
 can write the serving surface; it does not replace those checks.
 
 These controls authenticate the publisher and exact content; they do not prove
-that a package is benign. Runtime confinement is a separate defense-in-depth
-control for services activated through a package's `expose` contract, and a
-package can declare permissions that weaken or remove that boundary. Review the
-confinement model in [Understand the package sandbox](../aos/package-sandbox.md)
-in addition to establishing registry trust. Consumer-side registry selection
+that a package is benign. Review the selected typed resources and native
+providers in [Understand native package runtime
+policy](../aos/package-sandbox.md) in addition to establishing registry trust.
+Consumer-side registry selection
 and bootstrap are documented in [Configure package registries](../aos/registries.md);
 this guide owns the producer's key and incident procedures.
 

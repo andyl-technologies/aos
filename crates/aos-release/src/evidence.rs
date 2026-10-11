@@ -473,6 +473,7 @@ mod tests {
                 minimum_observed_seconds: None,
                 id: "package-function-example".to_owned(),
                 requirement_id: "package-function".to_owned(),
+                native_operation_spec: None,
                 policy_digest: digest("policy"),
                 plan_digest: digest("plan"),
                 subjects_digest: digest("subjects"),

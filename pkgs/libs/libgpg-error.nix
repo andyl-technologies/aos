@@ -1,5 +1,6 @@
 ##! libgpg-error — error codes and runtime support for the GnuPG stack
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -10,7 +11,95 @@
   version = "1.61";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "libgpg-error";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The decoder returns the exact two decoded bytes.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libgpg-error primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libgpg-error rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <string.h>\n#include <gpgrt.h>\nint main(void) {\n    char buffer[] = \"NDI=\"; size_t size = 0;\n    gpgrt_b64state_t state = gpgrt_b64dec_start(NULL);\n    if (state == NULL || gpgrt_b64dec_proc(state, buffer, 4, &size) != 0) return 2;\n    if (gpgrt_b64dec_finish(state) != 0) return 3;\n    return size == 2 && memcmp(buffer, \"42\", 2) == 0 ? pass() : 4;\n}\n\n";
+        };
+        "input" = "The base64 text NDI= representing the bytes 42.";
+        "operation" = "Decode the text incrementally through gpgrt's base64 decoder.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lgpg-error"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "libgpg-error primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The decoder reports invalid encoded data.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libgpg-error primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libgpg-error rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <gpgrt.h>\nint main(void) {\n    char buffer[] = \"!!!!\"; size_t size = 0;\n    gpgrt_b64state_t state = gpgrt_b64dec_start(NULL);\n    if (state == NULL) return 2;\n    gpg_err_code_t status = gpgrt_b64dec_proc(state, buffer, 4, &size);\n    if (status == 0) status = gpgrt_b64dec_finish(state);\n    if (status == 0) return 3;\n    return reject();\n}\n\n";
+        };
+        "input" = "Base64 text containing characters outside the encoding alphabet.";
+        "operation" = "Decode the malformed text through gpgrt's base64 decoder.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lgpg-error"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "libgpg-error rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

@@ -6,16 +6,13 @@
 #include <json-c/json.h>
 #include <json-c/json_util.h>
 #include <linux/bpf.h>
-#include <signal.h>
 #include <stdbool.h>
-#include <stddef.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
-#include <sys/socket.h>
-#include <sys/un.h>
 #include <unistd.h>
 
 #include <bpf/bpf.h>
@@ -42,19 +39,11 @@ struct link_set {
   struct bpf_link *connect6;
 };
 
-static volatile sig_atomic_t stop_requested;
-
 static void usage(FILE *out)
 {
   fprintf(out,
           "usage: aos-ebpf-net-policy validate --policy PATH --object PATH\n"
-          "       aos-ebpf-net-policy run --policy PATH --cgroup PATH --object PATH\n");
-}
-
-static void request_stop(int signo)
-{
-  (void)signo;
-  stop_requested = 1;
+          "       aos-ebpf-net-policy apply --policy PATH --cgroup PATH --object PATH --pin-dir PATH\n");
 }
 
 static int json_get_object(struct json_object *parent, const char *key,
@@ -403,59 +392,25 @@ static void destroy_links(struct link_set *links)
   memset(links, 0, sizeof(*links));
 }
 
-static int notify_ready(void)
+static int pin_link(struct bpf_link *link, const char *pin_dir,
+                    const char *name)
 {
-  const char *socket_path = getenv("NOTIFY_SOCKET");
-  struct sockaddr_un addr;
-  size_t path_len = 0;
-  socklen_t addr_len = 0;
-  int fd = -1;
-  int ret = 0;
-  const char ready[] = "READY=1";
-
-  if (socket_path == NULL || socket_path[0] == '\0') {
-    return 0;
-  }
-
-  memset(&addr, 0, sizeof(addr));
-  addr.sun_family = AF_UNIX;
-  if (socket_path[0] == '@') {
-    path_len = strlen(socket_path + 1);
-    if (path_len + 1 >= sizeof(addr.sun_path)) {
-      fprintf(stderr, "aos-ebpf-net-policy: NOTIFY_SOCKET is too long\n");
-      return -1;
-    }
-    addr.sun_path[0] = '\0';
-    memcpy(addr.sun_path + 1, socket_path + 1, path_len);
-    addr_len = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + path_len);
-  } else {
-    path_len = strlen(socket_path);
-    if (path_len >= sizeof(addr.sun_path)) {
-      fprintf(stderr, "aos-ebpf-net-policy: NOTIFY_SOCKET is too long\n");
-      return -1;
-    }
-    memcpy(addr.sun_path, socket_path, path_len + 1);
-    addr_len = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + path_len + 1);
-  }
-
-  fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
-  if (fd < 0) {
-    perror("aos-ebpf-net-policy: socket(AF_UNIX)");
+  char path[PATH_MAX];
+  int length = snprintf(path, sizeof(path), "%s/%s", pin_dir, name);
+  if (length < 0 || (size_t)length >= sizeof(path)) {
+    fprintf(stderr, "aos-ebpf-net-policy: pin path is too long\n");
     return -1;
   }
-
-  if (sendto(fd, ready, sizeof(ready) - 1, MSG_NOSIGNAL,
-             (const struct sockaddr *)&addr, addr_len) < 0) {
-    perror("aos-ebpf-net-policy: sendto(NOTIFY_SOCKET)");
-    ret = -1;
+  if (bpf_link__pin(link, path) != 0) {
+    fprintf(stderr, "aos-ebpf-net-policy: failed to pin %s: %s\n", name,
+            strerror(errno));
+    return -1;
   }
-
-  close(fd);
-  return ret;
+  return 0;
 }
 
-static int run_policy(const char *policy_path, const char *cgroup_path,
-                      const char *object_path)
+static int apply_policy(const char *policy_path, const char *cgroup_path,
+                        const char *object_path, const char *pin_dir)
 {
   struct policy policy;
   struct bpf_object *obj = NULL;
@@ -515,17 +470,17 @@ static int run_policy(const char *policy_path, const char *cgroup_path,
     goto out_policy;
   }
 
-  printf("aos-ebpf-net-policy: attached policy for %s (%s)\n", policy.package,
-         policy.security_label);
-  fflush(stdout);
-  if (notify_ready() != 0) {
+  if (pin_link(links.bind4, pin_dir, "bind4") != 0 ||
+      pin_link(links.bind6, pin_dir, "bind6") != 0 ||
+      pin_link(links.connect4, pin_dir, "connect4") != 0 ||
+      pin_link(links.connect6, pin_dir, "connect6") != 0) {
     goto out_policy;
   }
 
+  printf("aos-ebpf-net-policy: attached policy for %s (%s)\n", policy.package,
+         policy.security_label);
+  fflush(stdout);
   ret = 0;
-  while (!stop_requested) {
-    pause();
-  }
 
 out_policy:
   destroy_links(&links);
@@ -558,7 +513,7 @@ int main(int argc, char **argv)
   const char *policy_path = NULL;
   const char *cgroup_path = NULL;
   const char *object_path = NULL;
-  struct sigaction action;
+  const char *pin_dir = NULL;
 
   if (argc < 2) {
     usage(stderr);
@@ -573,6 +528,8 @@ int main(int argc, char **argv)
       cgroup_path = argv[++i];
     } else if (strcmp(argv[i], "--object") == 0 && i + 1 < argc) {
       object_path = argv[++i];
+    } else if (strcmp(argv[i], "--pin-dir") == 0 && i + 1 < argc) {
+      pin_dir = argv[++i];
     } else if (strcmp(argv[i], "--help") == 0) {
       usage(stdout);
       return 0;
@@ -592,24 +549,15 @@ int main(int argc, char **argv)
     return validate_policy(policy_path, object_path) == 0 ? 0 : 1;
   }
 
-  if (strcmp(mode, "run") != 0) {
+  if (strcmp(mode, "apply") != 0) {
     fprintf(stderr, "aos-ebpf-net-policy: unknown mode '%s'\n", mode);
     usage(stderr);
     return 2;
   }
-  if (cgroup_path == NULL) {
+  if (cgroup_path == NULL || pin_dir == NULL) {
     usage(stderr);
     return 2;
   }
 
-  memset(&action, 0, sizeof(action));
-  action.sa_handler = request_stop;
-  sigemptyset(&action.sa_mask);
-  if (sigaction(SIGTERM, &action, NULL) != 0 ||
-      sigaction(SIGINT, &action, NULL) != 0) {
-    perror("aos-ebpf-net-policy: sigaction");
-    return 1;
-  }
-
-  return run_policy(policy_path, cgroup_path, object_path) == 0 ? 0 : 1;
+  return apply_policy(policy_path, cgroup_path, object_path, pin_dir) == 0 ? 0 : 1;
 }

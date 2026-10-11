@@ -28,6 +28,10 @@
 //! where `M` is the highest non-root version `S` describes (at least `S`
 //! itself), and the new timestamp takes version `N + 1` in the new-snapshot
 //! continuity mode. A surface without TUF metadata starts at version 1.
+//! Versions past `M` that a surface already serves as immutable targets or
+//! snapshot metadata belong to a release whose publication committed but
+//! whose timestamp never moved; the new set skips past them, because an
+//! immutable path can never take different bytes.
 //! Using one version for every role keeps each role strictly increasing
 //! across releases whatever their release classes.
 //!
@@ -75,6 +79,9 @@ const TIMESTAMP_PATH: &str = "tuf/timestamp.json";
 /// Largest TUF pointer or snapshot read back from a surface.
 const MAX_METADATA_BYTES: usize = 1024 * 1024;
 
+/// Most consecutive abandoned metadata versions skipped before failing.
+const MAX_ABANDONED_VERSIONS: u64 = 64;
+
 /// Validity of the top-level and delegated targets metadata.
 const TARGETS_VALIDITY: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 
@@ -99,7 +106,8 @@ pub(super) struct SurfaceTufState {
     pub(super) timestamp_version: u64,
     /// Version of the snapshot the served timestamp names, or zero.
     pub(super) snapshot_version: u64,
-    /// Highest non-root metadata version the served snapshot describes, or zero.
+    /// Highest non-root metadata version the served snapshot describes, or
+    /// zero, raised past any abandoned versions the surface already serves.
     pub(super) metadata_version: u64,
 }
 
@@ -310,13 +318,16 @@ impl Driver<'_> {
 
         let served = self.served_tuf(destination, true).await?;
         let planned = session.plan.surface(destination.surface)?;
-        let state = SurfaceTufState::from_served(
+        let mut state = SurfaceTufState::from_served(
             &session.plan.registry,
             name,
             &planned.identity,
             served.timestamp.as_deref(),
             served.snapshot.as_deref(),
         )?;
+        state.metadata_version = self
+            .last_occupied_version(destination, state.metadata_version)
+            .await?;
         let version = state.next_metadata_version()?;
         let now = SystemTime::now();
         let delegated_role = TufRole::for_release(session.plan.release_class).signer_role();
@@ -547,6 +558,56 @@ impl Driver<'_> {
             snapshot,
         })
     }
+
+    /// Returns the highest metadata version at or after `served` that the
+    /// surface already occupies.
+    ///
+    /// The timestamp names only the snapshot readers trust. A release whose
+    /// publication committed before its timestamp moved leaves later targets
+    /// and snapshot files behind, and those immutable paths cannot be reused.
+    async fn last_occupied_version(
+        &self,
+        destination: &PlannedDestination,
+        served: u64,
+    ) -> Result<u64> {
+        let session = self.session;
+        let planned = session.plan.surface(destination.surface)?;
+        let public = readback::public_client()?;
+        let base = public_base(planned, &session.plan.registry)?;
+
+        let mut occupied = served;
+        for _ in 0..MAX_ABANDONED_VERSIONS {
+            let next = occupied
+                .checked_add(1)
+                .context("surface TUF metadata version overflowed")?;
+            if !version_is_occupied(&public, &base, next).await? {
+                return Ok(occupied);
+            }
+            self.printer.info(&format!(
+                "Skipping TUF metadata version {next}, which an unfinished release already occupies"
+            ));
+            occupied = next;
+        }
+        bail!("surface holds more than {MAX_ABANDONED_VERSIONS} abandoned TUF metadata versions")
+    }
+}
+
+/// Reports whether the surface serves targets or snapshot metadata at `version`.
+async fn version_is_occupied(
+    public: &reqwest::Client,
+    base: &url::Url,
+    version: u64,
+) -> Result<bool> {
+    for role in ["targets", "snapshot"] {
+        let path = format!("tuf/{version}.{role}.json");
+        if readback::fetch_small(public, base, &path, MAX_METADATA_BYTES)
+            .await?
+            .is_some()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// TUF bytes a surface serves anonymously.
@@ -833,6 +894,23 @@ mod tests {
             timestamp,
             snapshot,
         )
+    }
+
+    #[tokio::test]
+    async fn abandoned_targets_or_snapshot_metadata_occupies_its_version() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        std::fs::create_dir_all(root.path().join("tuf"))?;
+        std::fs::write(root.path().join("tuf/1.root.json"), b"root")?;
+        std::fs::write(root.path().join("tuf/1.targets.json"), b"targets")?;
+        std::fs::write(root.path().join("tuf/2.snapshot.json"), b"snapshot")?;
+        let base = readback::base_url(&format!("file://{}", root.path().display()))?;
+        let public = readback::public_client()?;
+
+        assert!(version_is_occupied(&public, &base, 1).await?);
+        assert!(version_is_occupied(&public, &base, 2).await?);
+        // A root file alone never claims a release version.
+        assert!(!version_is_occupied(&public, &base, 3).await?);
+        Ok(())
     }
 
     #[test]

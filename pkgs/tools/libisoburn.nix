@@ -10,6 +10,7 @@
 ##! engine (DVD mirroring), libcdio SCSI CD-ROM reading, and the setuid
 ##! privilege-drop paths in xorriso's CLI (we're not running it setuid).
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -27,7 +28,95 @@
   sourceVersion = "1.5.8";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "libisoburn";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [
+          {
+            "path" = "extracted.txt";
+            "text" = "answer=42\n";
+          }
+        ];
+        "expected" = "Xorriso round-trips the file through its ISO filesystem implementation.";
+        "files" = {
+          "answer.txt" = "answer=42\n";
+        };
+        "input" = "A file containing answer=42 for the root of an ISO image.";
+        "operation" = "Create the ISO with xorriso, extract the file, and compare its exact contents.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/xorriso"
+              "-report_about"
+              "SORRY"
+              "-outdev"
+              "image.iso"
+              "-map"
+              "answer.txt"
+              "/answer.txt"
+              "-commit"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "xorriso 1.5.8.pl02 : RockRidge filesystem manipulator, libburnia project.\n\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/xorriso"
+              "-report_about"
+              "SORRY"
+              "-osirrox"
+              "on"
+              "-indev"
+              "image.iso"
+              "-extract"
+              "/answer.txt"
+              "extracted.txt"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "xorriso 1.5.8.pl02 : RockRidge filesystem manipulator, libburnia project.\n\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Xorriso rejects the command with status 5.";
+        "files" = {};
+        "input" = "An xorriso command name that does not exist.";
+        "operation" = "Parse the unsupported command through xorriso's dispatcher.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/xorriso"
+              "-report_about"
+              "SORRY"
+              "-qualification-invalid"
+            ];
+            "exit_code" = 5;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

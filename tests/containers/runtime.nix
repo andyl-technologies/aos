@@ -1,7 +1,7 @@
 ##! tests/containers/runtime.nix -- focused Phase-2 container runtime checks.
 ##!
 ##! Exercises the production init transaction against an isolated rooted local
-##! store and validates the build-time golden-package facade without requiring
+##! store and validates the build-time selected-package facade without requiring
 ##! chroot, mounts, a container daemon, or host tools.
 {
   pkgs,
@@ -9,13 +9,10 @@
   containerImage,
   aosSystem,
   systemIdentity,
-  goldenRoots,
+  bakedRoots,
   forbiddenRuntimeRoots,
 }: let
-  oci = import ../../lib/build/oci {
-    inherit lib;
-    inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
-  };
+  oci = pkgs.ociTools;
   firstPackage = pkgs.runCommand "container-runtime-first-package" {} ''
     mkdir -p "$out/bin" "$out/sbin"
     printf '#!${pkgs.bash}/bin/bash\nprintf first-only\\n\n' > "$out/bin/first-only"
@@ -44,7 +41,7 @@
     text = builtins.concatStringsSep "\n" (map builtins.toString roots) + "\n";
     destination = "/baked-roots";
   };
-  facadeLayer = import ../../lib/containers/facade-layer.nix {
+  facadeLayer = import ../../pkgs/containers/_aos-oci-backend/container/facade-layer.nix {
     inherit lib pkgs oci referenceGraph;
     packageRoots = roots;
     expectedCollisions = ["shared"];
@@ -70,7 +67,7 @@
     done
   '';
   testRoot = "/build/aos-container-runtime-root";
-  initText = import ../../lib/containers/init-script.nix {
+  initText = import ../../pkgs/containers/_aos-oci-backend/container/init-script.nix {
     inherit lib pkgs;
     rootPrefix = testRoot;
     registrationPath = "${referenceGraph}/registration";
@@ -81,6 +78,24 @@
   initProgram = pkgs.writeTextFile {
     name = "aos-container-runtime-test-init";
     text = initText;
+    destination = "/init";
+    executable = true;
+  };
+  unexpectedStartup = pkgs.writeShellScriptBin "aos-package-runtime" ''
+    printf 'read-only startup attempted package mutation\n' >&2
+    exit 99
+  '';
+  readOnlyInitProgram = pkgs.writeTextFile {
+    name = "aos-container-read-only-runtime-test-init";
+    text = import ../../pkgs/containers/_aos-oci-backend/container/init-script.nix {
+      inherit lib;
+      pkgs = pkgs // {aos = pkgs.aos // {packageRuntime = unexpectedStartup;};};
+      rootPrefix = testRoot;
+      registrationPath = "${referenceGraph}/registration";
+      storePathsPath = "${referenceGraph}/store-paths";
+      bakedRootsPath = "${bakedRootInventory}/baked-roots";
+      deploymentPath = "${testRoot}/usr/lib/aos-container/native-deployment";
+    };
     destination = "/init";
     executable = true;
   };
@@ -113,6 +128,7 @@ in
         bakedRootInventory
         facadeLayer
         initProgram
+        readOnlyInitProgram
         productionFacade
         productionDockerArchive
         productionImage
@@ -205,11 +221,18 @@ in
               || fail "baked root is not valid after initialization: $baked_root"
           done
 
+          # Repeated setup must keep an exact root directory in place. Docker
+          # RUN layers cannot atomically exchange an inherited lower directory.
+          roots_identity=$(stat -c '%d:%i' "$gcroots/aos-container-baked")
+          PATH="$runtime_path" ${initProgram}/init --setup-only
+          test "$(stat -c '%d:%i' "$gcroots/aos-container-baked")" = "$roots_identity" \
+            || fail "repeated setup replaced an unchanged baked GC-root set"
+
           # Simulate an interrupted initializer and a corrupted live root set.
           stale="$gcroots/.aos-container-baked.fresh.interrupted"
           mkdir "$stale"
-          ln -s ${firstPackage} "$stale/leaked-root"
           first_name=${builtins.baseNameOf (builtins.toString firstPackage)}
+          ln -s ${firstPackage} "$stale/$first_name"
           rm "$gcroots/aos-container-baked/$first_name"
           ln -s ${secondPackage} "$gcroots/aos-container-baked/tampered"
 
@@ -219,9 +242,26 @@ in
             || fail "init did not clean an interrupted temporary GC-root set"
           test ! -e "$gcroots/aos-container-baked/tampered" \
             || fail "init did not replace a corrupted baked GC-root set"
+          test "$(stat -c '%d:%i' "$gcroots/aos-container-baked")" = "$roots_identity" \
+            || fail "repair replaced the baked GC-root directory"
           test "$(find "$gcroots/aos-container-baked" -mindepth 1 -maxdepth 1 | wc -l)" \
             -eq ${toString (builtins.length roots)} \
             || fail "reconciled baked GC-root set has unexpected entries"
+
+          # A substituted directory symlink must be replaced without writing
+          # roots into its target, even when that target is otherwise writable.
+          foreign="$TMPDIR/foreign-baked-roots"
+          mkdir "$foreign"
+          printf preserved > "$foreign/unrelated"
+          foreign_before=$(find "$foreign" -printf '%P:%y:%l\n' | sort | sha256sum)
+          rm -rf "$gcroots/aos-container-baked"
+          ln -s "$foreign" "$gcroots/aos-container-baked"
+          PATH="$runtime_path" ${initProgram}/init --setup-only
+          test -d "$gcroots/aos-container-baked" && test ! -L "$gcroots/aos-container-baked" \
+            || fail "init did not repair a substituted baked-root directory symlink"
+          foreign_after=$(find "$foreign" -printf '%P:%y:%l\n' | sort | sha256sum)
+          test "$foreign_before" = "$foreign_after" \
+            || fail "baked-root repair changed a foreign symlink target"
 
           nix-store --store "$store_uri" --gc
           while IFS= read -r baked_root; do
@@ -237,7 +277,7 @@ in
           mkdir -p "$state_dir"
           chmod 0555 "$store_dir"
           PATH="$runtime_path" AOS_CONTAINER_TEST_RECORD="$record" \
-            ${initProgram}/init ${recorder}/bin/aos-container-runtime-recorder store-read-only
+            ${readOnlyInitProgram}/init ${recorder}/bin/aos-container-runtime-recorder store-read-only
           grep -Fx 'read-only=1' "$record" >/dev/null \
             || fail "read-only store did not export the runtime marker"
           cmp "$state_dir/.aos-container-read-only" - <<'EOF' \
@@ -267,11 +307,11 @@ in
           gzip -dc ${facadeLayer}/blob \
             | tar --same-permissions --no-same-owner -xf - -C facade-root
           test "$(readlink facade-root/usr/bin/shared)" = ${lib.escapeShellArg "${firstPackage}/bin/shared"} \
-            || fail "golden facade did not preserve first-wins package order"
+            || fail "baked facade did not preserve first-wins package order"
           test "$(readlink facade-root/usr/bin/second-only)" = ${lib.escapeShellArg "${secondPackage}/sbin/second-only"} \
-            || fail "golden facade omitted an sbin executable"
+            || fail "baked facade omitted an sbin executable"
           test ! -e facade-root/usr/bin/.hidden-internal \
-            || fail "golden facade exposed a hidden wrapper implementation"
+            || fail "baked facade exposed a hidden wrapper implementation"
           jq -e '
             .schema == "aos.container.facade-policy/v1"
             and .directoryOrder == ["bin", "sbin"]
@@ -287,7 +327,7 @@ in
                 shadowedSource: $shadowed
               }]
             ' ${facadeLayer}/facade.json >/dev/null \
-            || fail "golden facade collision manifest is incorrect"
+            || fail "baked facade collision manifest is incorrect"
 
           mkdir production-metadata production-facade
           gzip -dc ${productionMetadata}/blob \
@@ -295,6 +335,8 @@ in
           gzip -dc ${productionFacade}/blob \
             | tar --same-permissions --no-same-owner -xf - -C production-facade
 
+          test "$(stat -c %a production-metadata/run)" = 755 \
+            || fail "production /run is not traversable by service accounts"
           test "$(stat -c %a production-metadata/root)" = 700 \
             || fail "production HOME is not private"
           test "$(stat -c %a production-metadata/tmp)" = 1777 \
@@ -315,16 +357,26 @@ in
           grep -Fx 'sandbox = false' production-metadata/etc/nix/nix.conf >/dev/null
           grep -Fx 'substituters =' production-metadata/etc/nix/nix.conf >/dev/null
           test -s production-metadata/usr/lib/aos/nix-registration
+          cmp production-metadata/etc/os-release production-metadata/usr/lib/aos/toplevel/os-release \
+            || fail "immutable container identity differs from the installed identity"
+          grep -Fx 'ID=aos' production-metadata/usr/lib/aos/toplevel/os-release >/dev/null
+          grep -Fx 'AOS_PACKAGE_MODULE_LIBRARY=${lib.packageModuleLibrary}' \
+            production-metadata/usr/lib/aos/toplevel/os-release >/dev/null
+          test "$(stat -c %a production-metadata/usr/lib/aos/toplevel/os-release)" = 444 \
+            || fail "immutable container identity mode is incorrect"
           cmp production-metadata/usr/lib/aos/nix-registration ${productionReferenceGraph}/registration \
             || fail "embedded production registration differs from the authoritative graph"
           cmp production-metadata/usr/lib/aos-container/store-paths \
             ${productionReferenceGraph}/store-paths \
             || fail "embedded production store inventory differs from the authoritative graph"
-          printf '%s\n' ${lib.concatMapStringsSep " " lib.escapeShellArg (map builtins.toString (lib.unique (goldenRoots ++ [pkgs.aos pkgs.aos.apm pkgs.aos.apr])))} \
-            > expected-production-baked-roots
+          printf '%s\n' ${lib.concatMapStringsSep " " lib.escapeShellArg (map builtins.toString bakedRoots)} \
+            > expected-production-package-roots
+          cp expected-production-package-roots expected-production-baked-roots
+          printf '%s\n' ${lib.escapeShellArg (builtins.toString containerImage.deploymentArtifact.artifact)} \
+            >> expected-production-baked-roots
           cmp expected-production-baked-roots \
             production-metadata/usr/lib/aos-container/baked-roots \
-            || fail "embedded baked roots differ from the production golden package list"
+            || fail "embedded baked roots differ from the selected packages and native deployment artifact"
           test "$(readlink production-metadata/var/lib/profiles)" \
             = /nix/var/nix/gcroots/aos-profiles \
             || fail "APM profiles are not rooted inside Nix gcroots"
@@ -340,38 +392,36 @@ in
           test ! -e production-metadata/etc/resolv.conf
           grep -Fx ${lib.escapeShellArg "AOS_STATE_VERSION=${systemIdentity.stateVersion}"} \
             production-metadata/etc/os-release >/dev/null
-          grep -Fx ${lib.escapeShellArg "AOS_MODULE_ABI=${toString systemIdentity.moduleAbi}"} \
-            production-metadata/etc/os-release >/dev/null
+          if grep -q '^AOS_MODULE_ABI=' production-metadata/etc/os-release; then
+            fail "production metadata retains the retired module ABI"
+          fi
 
-          for command in aos apm apr; do
-            test -L "production-facade/usr/bin/$command" \
-              || fail "production facade omits $command"
+          test -L production-facade/usr/bin/apm \
+            || fail "production facade omits apm"
+          test ! -e production-facade/usr/bin/aos
+          test ! -e production-facade/usr/bin/apr
+          for shell_file in etc/bashrc etc/profile etc/inputrc root/.bashrc root/.bash_profile; do
+            test -f "production-metadata/$shell_file" \
+              || fail "production metadata omits $shell_file"
           done
           test ! -e production-facade/usr/bin/.aos-unwrapped
           test ! -e production-facade/usr/bin/.apm-unwrapped
           test ! -e production-facade/usr/bin/.apr-unwrapped
-          test "$(readlink production-facade/usr/bin/kill)" = ${pkgs.coreutils}/bin/coreutils \
-            || fail "production facade changed the reviewed kill winner"
-          jq -e \
-            --arg winner ${lib.escapeShellArg "${pkgs.coreutils}/bin/coreutils"} \
-            --arg shadowed ${lib.escapeShellArg "${pkgs.util-linux}/bin/kill"} '
-              .expectedCollisions == ["kill"]
-              and .collisions == [{
-                name: "kill",
-                winner: $winner,
-                shadowed: $shadowed,
-                shadowedSource: $shadowed
-              }]
+          jq -r '.packageRoots[]' ${productionFacade}/facade.json > facade-baked-roots
+          cmp expected-production-package-roots facade-baked-roots \
+            || fail "production facade uses different package roots"
+          jq -e '
+              .expectedCollisions == []
+              and .collisions == []
             ' ${productionFacade}/facade.json >/dev/null \
             || fail "production facade collisions differ from reviewed policy"
 
           jq -e \
             --arg version ${lib.escapeShellArg systemIdentity.version} \
-            --arg stateVersion ${lib.escapeShellArg systemIdentity.stateVersion} \
-            --arg moduleAbi ${lib.escapeShellArg (toString systemIdentity.moduleAbi)} '
+            --arg stateVersion ${lib.escapeShellArg systemIdentity.stateVersion} '
               .config.Labels["org.opencontainers.image.version"] == $version
               and .config.Labels["dev.andyl.aos.state-version"] == $stateVersion
-              and .config.Labels["dev.andyl.aos.module-abi"] == $moduleAbi
+              and (.config.Labels | has("dev.andyl.aos.module-abi") | not)
               and (.config.Env | index("NIX_REMOTE=local") != null)
               and (.config.Env | index("PATH=/var/lib/profiles/per-user/root/current/bin:/var/lib/profiles/per-user/root/current/sbin:/usr/bin:/usr/sbin:/bin") != null)
               and (.config | has("Volumes") | not)

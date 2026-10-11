@@ -42,7 +42,6 @@
 //! early with [`SeedOutcome::AlreadySeeded`] rather than duplicating rows, so
 //! `serve --dev --seed` is safe to leave on across restarts.
 
-mod documentation;
 mod publication;
 
 use std::net::SocketAddr;
@@ -59,7 +58,7 @@ use crate::db::{
 };
 use crate::domain::{Permission, Principal, Role, Scope};
 use crate::fetch::LocalFsFetch;
-use crate::surface::object::{encode_loose, encode_tree, hash_object, ObjectKind, Oid, TreeEntry};
+use crate::surface::object::{ObjectKind, Oid, TreeEntry, encode_loose, encode_tree, hash_object};
 use crate::surface::sshsig;
 use aos_hub_core::service::RouteReservationKey;
 
@@ -884,13 +883,6 @@ fn write_signed_surface(root: &Path, key: &SigningKey, trust_key: &str) -> Resul
         .push(("aos-system.toml".to_string(), system_oid));
     closure_entries.push(("aossystemhash".to_string(), put_blob("aossystemhash\n")?));
 
-    let documentation_package = documentation::write(root)?;
-    package_buckets
-        .entry('c')
-        .or_default()
-        .push(("config-demo.toml".into(), put_blob(&documentation_package)?));
-    closure_entries.push(("c".repeat(32), put_blob(&format!("{}\n", "c".repeat(32)))?));
-
     // Build the `packages/` tree of per-letter bucket subtrees.
     let mut packages_entries: Vec<(String, Oid)> = Vec::new();
     for (letter, mut files) in package_buckets {
@@ -982,9 +974,9 @@ fn write_signed_surface(root: &Path, key: &SigningKey, trust_key: &str) -> Resul
 
 fn seed_system_images() -> Result<Vec<aos_registry_surface::manifest::ImageEntry>> {
     use aos_registry_surface::manifest::{
-        immutable_image_info_object_key, immutable_image_object_key, ImageCompression,
-        ImageDelivery, ImageEntry, ImageInfoReference, ImageTarget, ImageUkiIdentity,
-        ImageVerificationState,
+        ImageArtifactContractDocumentReference, ImageArtifactContractReference, ImageCompression,
+        ImageDelivery, ImageEntry, ImageTarget, immutable_image_contract_object_key,
+        immutable_image_object_key,
     };
     use sha2::{Digest as _, Sha256};
 
@@ -993,17 +985,6 @@ fn seed_system_images() -> Result<Vec<aos_registry_surface::manifest::ImageEntry
     let raw_info = br#"{"schemaVersion":1,"format":"raw","target":"bare-metal"}"#;
     let qcow2_info = br#"{"schemaVersion":1,"format":"qcow2","targets":["qemu-kvm","openstack"]}"#;
     let raw_sha = hex::encode(Sha256::digest(DEMO_LOGICAL_RAW));
-    let uki = ImageUkiIdentity {
-        filename: "aos.efi".to_string(),
-        esp_path: "EFI/Linux/aos.efi".to_string(),
-        byte_size: 8,
-        sha256: "e".repeat(64),
-        verification: ImageVerificationState::Unsigned,
-        signer_cert_sha256: None,
-        sbat: Vec::new(),
-        measured: false,
-        expected_pcr11: None,
-    };
     let make = |format: &str,
                 filename: &str,
                 bytes: &[u8],
@@ -1029,7 +1010,6 @@ fn seed_system_images() -> Result<Vec<aos_registry_surface::manifest::ImageEntry
                 architecture: "x86_64".to_string(),
                 logical_image_id: "d".repeat(64),
                 logical_disk_sha256: raw_sha.clone(),
-                rootfs_sha256: "f".repeat(64),
                 filename: filename.to_string(),
                 object_key: immutable_image_object_key(&sha256, filename),
                 media_type: media_type.to_string(),
@@ -1041,10 +1021,15 @@ fn seed_system_images() -> Result<Vec<aos_registry_surface::manifest::ImageEntry
                 byte_size: bytes.len() as u64,
                 sha256: sha256.clone(),
                 compatible_targets,
-                uki: uki.clone(),
-                image_info: ImageInfoReference {
+                artifact_contract: ImageArtifactContractReference {
+                    schema: "aos.demo-boot-artifacts/v1".to_string(),
+                    document: ImageArtifactContractDocumentReference {
                     filename: "image-info.json".to_string(),
-                    object_key: immutable_image_info_object_key(&sha256, &info_sha256),
+                        object_key: immutable_image_contract_object_key(
+                            &sha256,
+                            &info_sha256,
+                            "image-info.json",
+                        ),
                     store_path: String::new(),
                     nar_hash: String::new(),
                     nar_size: 0,
@@ -1052,18 +1037,9 @@ fn seed_system_images() -> Result<Vec<aos_registry_surface::manifest::ImageEntry
                     byte_size: info.len() as u64,
                     sha256: info_sha256,
                 },
-                update_payload: None,
+                    artifacts: None,
+                },
             },
-            sb_signer_cert_sha256: None,
-            sbat: Vec::new(),
-            expected_pcr11: None,
-            ukis: Vec::new(),
-            recovery_ukis: Vec::new(),
-            recovery_bundle: None,
-            root_image: None,
-            root_verity: None,
-            root_hash: None,
-            root_hash_sig: None,
         }
     };
     let images = vec![
@@ -1107,10 +1083,10 @@ fn write_seed_image_objects(
                     "sha256": image.delivery.sha256,
                 }),
                 serde_json::json!({
-                    "key": image.delivery.image_info.object_key,
+                    "key": image.delivery.artifact_contract.document.object_key,
                     "role": "image-info",
-                    "byteSize": image.delivery.image_info.byte_size,
-                    "sha256": image.delivery.image_info.sha256,
+                    "byteSize": image.delivery.artifact_contract.document.byte_size,
+                    "sha256": image.delivery.artifact_contract.document.sha256,
                 }),
             ]
         })
@@ -1129,7 +1105,15 @@ fn write_seed_image_objects(
         };
         for (key, bytes) in [
             (image.delivery.object_key.as_str(), disk),
-            (image.delivery.image_info.object_key.as_str(), info),
+            (
+                image
+                    .delivery
+                    .artifact_contract
+                    .document
+                    .object_key
+                    .as_str(),
+                info,
+            ),
         ] {
             let path = root.join(key);
             std::fs::create_dir_all(path.parent().context("image object path has a parent")?)?;
@@ -1163,10 +1147,15 @@ fn write_seed_image_objects(
                     image.delivery.sha256.as_str(),
                 ),
                 (
-                    image.delivery.image_info.object_key.as_str(),
+                    image
+                        .delivery
+                        .artifact_contract
+                        .document
+                        .object_key
+                        .as_str(),
                     "image-info",
-                    image.delivery.image_info.byte_size,
-                    image.delivery.image_info.sha256.as_str(),
+                    image.delivery.artifact_contract.document.byte_size,
+                    image.delivery.artifact_contract.document.sha256.as_str(),
                 ),
             ]
         }),

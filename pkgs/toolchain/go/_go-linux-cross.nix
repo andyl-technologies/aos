@@ -7,6 +7,7 @@
 {
   mkDerivation,
   pname,
+  platformSupport,
   version,
   src,
   nativeGo,
@@ -23,7 +24,7 @@
     else "bin/${toolDirectory}";
 in
   mkDerivation {
-    inherit pname version src;
+    inherit pname version src platformSupport;
 
     buildDeps = [nativeGo];
     runtimeDeps = [];

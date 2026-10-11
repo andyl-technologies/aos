@@ -22,10 +22,13 @@ case " $* " in
   *' category checks '*' scope build.aos-dev-cli '*) printf 'build.aos-dev-cli' ;;
   *' category checks '*' scope build.aos-dev '*) : ;;
   *' category checks '*' scope build '*) printf 'build.aos-dev-cli\nbuild.aos-dev-cache-identity' ;;
-  *' category checks '*) printf 'eval\nbuild.all' ;;
+  *' category checks '*) printf 'eval\nbuild' ;;
   *' category images '*) printf 'server:qcow2' ;;
   *' category containers '*) printf 'aos:oci' ;;
-  *' category builds '*) printf 'server:toplevel' ;;
+  *' category builds '*)
+    [[ ${AOS_DEV_TEST_BLOCK_BUILD_LIST:-0} != 1 ]] || exit 19
+    printf 'server:toplevel'
+    ;;
   *) exit 1 ;;
 esac
 MOCK
@@ -100,10 +103,27 @@ bash -n "$root/tools/dev/aos-dev" "$root"/tools/dev/lib/*.bash
 bash "$root/tools/dev/aos-dev" help | grep -Fq 'Usage: aos-dev'
 bash "$root/tools/dev/aos-dev" completion bash | grep -Fq '_aos_dev_complete()'
 test "$(bash "$root/tools/dev/aos-dev" list packages)" = $'alpha\nbeta'
+test "$(bash "$root/tools/dev/aos-dev" list check)" = $'eval\nbuild'
+test "$(bash "$root/tools/dev/aos-dev" list check build)" = 'build'
+test "$(bash "$root/tools/dev/aos-dev" list check build.)" = $'build.aos-dev-cli\nbuild.aos-dev-cache-identity'
 test "$(bash "$root/tools/dev/aos-dev" list check build.aos-dev)" = $'build.aos-dev-cli\nbuild.aos-dev-cache-identity'
 test "$(bash "$root/tools/dev/aos-dev" list check build.aos-dev-cli)" = 'build.aos-dev-cli'
+test "$(bash "$root/tools/dev/aos-dev" --release build check build.aos-dev-cli --no-out-link)" = /tmp/aos-dev-test-output
+grep -Fq -- '-A checks.build.aos-dev-cli --no-out-link' "$AOS_DEV_TEST_LOG"
+test "$(bash "$root/tools/dev/aos-dev" --release build check package-documentation --no-out-link)" = /tmp/aos-dev-test-output
+grep -Fq -- '-A checks.package-documentation --no-out-link' "$AOS_DEV_TEST_LOG"
+if bash "$root/tools/dev/aos-dev" --release build check 'build..invalid' --no-out-link >/dev/null 2>&1; then
+  echo 'malformed check target was accepted' >&2
+  exit 1
+fi
 test "$(bash "$root/tools/dev/aos-dev" --release build package alpha --no-out-link)" = /tmp/aos-dev-test-output
 grep -Fq -- '-A pkgs.alpha --no-out-link' "$AOS_DEV_TEST_LOG"
+test "$(AOS_DEV_TEST_BLOCK_BUILD_LIST=1 bash "$root/tools/dev/aos-dev" --release build build server:toplevel --no-out-link)" = /tmp/aos-dev-test-output
+grep -Fq -- '-A systems.server.build.toplevel --no-out-link' "$AOS_DEV_TEST_LOG"
+if bash "$root/tools/dev/aos-dev" --release build build 'server:..invalid' --no-out-link >/dev/null 2>&1; then
+  echo 'malformed system build target was accepted' >&2
+  exit 1
+fi
 test "$(bash "$root/tools/dev/aos-dev" --release all checks --no-out-link)" = /tmp/aos-dev-test-output
 grep -Fq -- '-A allChecks --no-out-link' "$AOS_DEV_TEST_LOG"
 if bash "$root/tools/dev/aos-dev" --release build package darwin-runtimes --no-out-link >/dev/null 2>&1; then

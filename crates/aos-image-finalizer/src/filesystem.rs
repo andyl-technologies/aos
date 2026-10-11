@@ -15,6 +15,8 @@ use crate::tools::PinnedTool;
 
 const MAX_TOOL_STDOUT_BYTES: u64 = 1024 * 1024;
 const INITRD_EXPANSION_FACTOR: u64 = 32;
+// Keep the normalized rebuild byte-compatible with the image-side root builder.
+const EROFS_PHYSICAL_CLUSTER_ARGUMENT: &str = "-C262144";
 
 /// Extracts one EROFS image into a newly created tree.
 ///
@@ -59,6 +61,7 @@ pub async fn extract_erofs(
 pub async fn rebuild_erofs(
     mkfs_erofs: &PinnedTool,
     fsck_erofs: &PinnedTool,
+    hardlink_tree: &PinnedTool,
     tree: &Path,
     output: &Path,
     layout: &ImageLayoutV1,
@@ -68,6 +71,10 @@ pub async fn rebuild_erofs(
     if output.symlink_metadata().is_ok() {
         bail!("rebuilt EROFS output already exists");
     }
+    // Match image-side inode sharing after signing changes module contents.
+    let _ = hardlink_tree
+        .run([path_text(tree)?], MAX_TOOL_STDOUT_BYTES)
+        .await?;
     let compression = format!("zstd,level={}", layout.erofs_compression_level);
     let output_text = path_text(output)?;
     // Large root trees otherwise overflow the bounded stdout capture.
@@ -81,7 +88,7 @@ pub async fn rebuild_erofs(
                 &layout.root_filesystem_uuid,
                 "-z",
                 &compression,
-                "-C262144",
+                EROFS_PHYSICAL_CLUSTER_ARGUMENT,
                 "-Eztailpacking",
                 "-L",
                 &layout.root_filesystem_label,

@@ -298,8 +298,15 @@
     "${pkgs.kmod}/bin"
     "${pkgs.kmod}/sbin"
   ];
+  certificateAdmission = {
+    aos.packages.hub-oci-qualification-ca = {
+      package = tlsCa;
+      bundle = true;
+    };
+  };
   consumerSystem = mkSystem [
     ../../systems/server-test.nix
+    certificateAdmission
     {
       environment.systemPackages = [
         pkgs.aos
@@ -341,6 +348,7 @@
   ];
 
   hubOciModule = {
+    imports = [certificateAdmission];
     aos.firewall.allowedTCP = [8443];
     # The provider-inventory assertion reads the Hub's durable generation
     # checkpoints directly; the packaged sqlite shell is an AOS-built tool.
@@ -425,6 +433,7 @@
     };
   };
   publisherPkiModule = {
+    imports = [certificateAdmission];
     aos.security.pki.certificateFiles = ["${tlsCa}/ca.crt"];
   };
 

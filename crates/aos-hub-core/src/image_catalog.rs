@@ -6,10 +6,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{bail, Context, Result};
-use aos_registry_surface::manifest::{
-    ImageCompression, ImageDelivery, ImageTarget, ImageVerificationState, PackageToml,
-};
+use anyhow::{Context, Result, bail};
+use aos_registry_surface::manifest::{ImageCompression, ImageDelivery, ImageTarget, PackageToml};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -60,8 +58,8 @@ pub struct ImageRecord {
     pub sha256: String,
     /// Compatible end-user targets.
     pub compatible_targets: Vec<ImageTarget>,
-    /// Boot-payload verification state, distinct from release verification.
-    pub verification: ImageVerificationState,
+    /// Provider-owned schema for the authenticated boot-artifact contract.
+    pub artifact_contract_schema: String,
     /// Immutable object key for the disk bytes.
     pub object_key: String,
     /// Immutable object key for canonical `image-info.json`.
@@ -126,7 +124,7 @@ impl SignedImageCatalog {
                                 )
                             })?;
                         roots.insert(delivery.object_key.clone());
-                        roots.insert(delivery.image_info.object_key.clone());
+                        roots.insert(delivery.artifact_contract.document.object_key.clone());
                         records.push(record(
                             &package.package.name,
                             &version.version,
@@ -209,7 +207,10 @@ fn record(
     download_base: &Url,
 ) -> Result<ImageRecord> {
     let download_url = object_url(download_base, &delivery.object_key)?;
-    let image_info_url = object_url(download_base, &delivery.image_info.object_key)?;
+    let image_info_url = object_url(
+        download_base,
+        &delivery.artifact_contract.document.object_key,
+    )?;
     Ok(ImageRecord {
         package: package.to_owned(),
         release: release.to_owned(),
@@ -225,13 +226,13 @@ fn record(
         byte_size: delivery.byte_size,
         sha256: delivery.sha256.clone(),
         compatible_targets: delivery.compatible_targets.clone(),
-        verification: delivery.uki.verification,
+        artifact_contract_schema: delivery.artifact_contract.schema.clone(),
         object_key: delivery.object_key.clone(),
-        image_info_object_key: delivery.image_info.object_key.clone(),
+        image_info_object_key: delivery.artifact_contract.document.object_key.clone(),
         image_info_url: image_info_url.to_string(),
-        image_info_media_type: delivery.image_info.media_type.clone(),
-        image_info_byte_size: delivery.image_info.byte_size,
-        image_info_sha256: delivery.image_info.sha256.clone(),
+        image_info_media_type: delivery.artifact_contract.document.media_type.clone(),
+        image_info_byte_size: delivery.artifact_contract.document.byte_size,
+        image_info_sha256: delivery.artifact_contract.document.sha256.clone(),
     })
 }
 
@@ -281,9 +282,22 @@ fn matches_query(record: &ImageRecord, query: &ImageQuery) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aos_registry_surface::manifest::parse_package_file;
+    use aos_registry_surface::manifest::{
+        immutable_image_contract_object_key, immutable_image_object_key, parse_package_file,
+    };
 
     fn package() -> PackageToml {
+        let image_sha256 = "a".repeat(64);
+        let image_info_sha256 = "c".repeat(64);
+        let image_filename = "aos-server.img.zst";
+        let image_info_filename = "image-info.json";
+        let image_object_key = immutable_image_object_key(&image_sha256, image_filename);
+        let image_info_object_key = immutable_image_contract_object_key(
+            &image_sha256,
+            &image_info_sha256,
+            image_info_filename,
+        );
+
         parse_package_file(&format!(
             r#"
 [package]
@@ -302,13 +316,16 @@ closure_size = 1
 source_drv = ""
 source_nar_hash = ""
 
+[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["image-artifact-contract-v1"]
+
 [[versions.platforms.x86_64-linux.images]]
 format = "raw"
 store_path = "/aos/store/00000000000000000000000000000000-server-raw"
 nar_hash = "sha256:0000000000000000000000000000000000000000000000000000"
 nar_size = 1
-sb_signer_cert_sha256 = "{signer}"
-sbat = [{{ component = "aos", generation = 1 }}]
 
 [versions.platforms.x86_64-linux.images.delivery]
 schema_version = 1
@@ -317,38 +334,28 @@ platform = "x86_64-linux"
 architecture = "x86_64"
 logical_image_id = "{logical}"
 logical_disk_sha256 = "{disk}"
-rootfs_sha256 = "{rootfs}"
-filename = "aos-server.img.zst"
-object_key = "images/sha256/{image}/aos-server.img.zst"
+filename = "{image_filename}"
+object_key = "{image_object_key}"
 media_type = "application/vnd.aos.disk-image.raw+zstd"
 compression = "zstd"
 byte_size = 10
 sha256 = "{image}"
 compatible_targets = ["bare-metal"]
 
-[versions.platforms.x86_64-linux.images.delivery.uki]
-filename = "aos-server.efi"
-esp_path = "EFI/Linux/aos-server.efi"
-byte_size = 4
-sha256 = "{uki}"
-verification = "policy-verified"
-signer_cert_sha256 = "{signer}"
-sbat = [{{ component = "aos", generation = 1 }}]
+[versions.platforms.x86_64-linux.images.delivery.artifact_contract]
+schema = "aos.test.boot-artifacts/v1"
 
-[versions.platforms.x86_64-linux.images.delivery.image_info]
-filename = "image-info.json"
-object_key = "images/sha256/{image}/metadata/{info}/image-info.json"
+[versions.platforms.x86_64-linux.images.delivery.artifact_contract.document]
+filename = "{image_info_filename}"
+object_key = "{image_info_object_key}"
 media_type = "application/vnd.aos.image-info+json"
 byte_size = 20
 sha256 = "{info}"
 "#,
             logical = "b".repeat(64),
             disk = "a".repeat(64),
-            rootfs = "f".repeat(64),
-            signer = "9".repeat(64),
-            image = "a".repeat(64),
-            uki = "d".repeat(64),
-            info = "c".repeat(64),
+            image = image_sha256,
+            info = image_info_sha256,
         ))
         .unwrap()
     }

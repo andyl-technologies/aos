@@ -69,7 +69,7 @@ All ground-truthed against the current tree:
   build time reuses them as-is; typed validation comes from evaluating the
   `unit-options.nix` types over the attrset at render time.
 - **Render as a cheap sibling derivation** (trivial builders exist:
-  `pkgs/build-support/trivial-builders.nix`), surfaced as `pkg.expose` via
+  `pkgs/build-support/_trivial-builders.nix`), surfaced as `pkg.expose` via
   `passthru` — so editing a unit re-renders text and never rebuilds the
   payload, and the payload's closure never references its own integration.
 - **The name `expose` was free at adoption**, and the obvious alternative

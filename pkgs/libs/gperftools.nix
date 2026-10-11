@@ -7,6 +7,25 @@
   version = "2.18.1";
 in
   mkDerivation {
+    # Installation requires the ELF libtcmalloc_minimal.so output.
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
+
     pname = "gperftools";
     inherit version;
 

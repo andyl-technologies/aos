@@ -48,6 +48,46 @@ impl RuntimeRequirement {
     }
 }
 
+/// Reads the selected host release for runtime compatibility evaluation.
+///
+/// Portable scopes may lack an AOS identity; constrained packages fail closed
+/// later when no release is available.
+///
+/// # Errors
+/// Returns an error for an invalid root override, unreadable identity, malformed
+/// release entries, or paths that cannot be resolved inside the selected root.
+pub(crate) fn os_release() -> Result<Option<aos_doc_model::runtime::OsRelease>> {
+    os_release_in(&selected_root()?, env::var_os("AOS_ROOT").is_some())
+}
+
+fn os_release_in(
+    root: &Path,
+    allow_installed_identity: bool,
+) -> Result<Option<aos_doc_model::runtime::OsRelease>> {
+    let identities = ["/usr/lib/aos/toplevel/os-release", "/etc/os-release"];
+    for logical in identities
+        .into_iter()
+        .take(if allow_installed_identity { 2 } else { 1 })
+    {
+        let identity = rooted_path(root, Path::new(logical))?;
+        if !identity.is_file() {
+            continue;
+        }
+        let values = parse_os_release(&identity)?;
+        if values.get("ID").map(String::as_str) != Some("aos") {
+            return Ok(None);
+        }
+        let Some(version) = values.get("VERSION_ID") else {
+            return Ok(None);
+        };
+        return Ok(Some(aos_doc_model::runtime::OsRelease {
+            name: values.get("NAME").cloned().unwrap_or_else(|| "aos".into()),
+            version: version.clone(),
+        }));
+    }
+    Ok(None)
+}
+
 /// Resolves the command's AOS root without silently accepting bad overrides.
 fn selected_root() -> Result<PathBuf> {
     let Some(value) = env::var_os("AOS_ROOT") else {
@@ -92,12 +132,15 @@ fn validate_aos_root(root: &Path, live_only: bool) -> Result<()> {
     if values.get("ID").map(String::as_str) != Some("aos") {
         bail!("{} does not identify ID=aos", identity.display());
     }
-    let module_abi = values
-        .get("AOS_MODULE_ABI")
-        .with_context(|| format!("{} has no AOS_MODULE_ABI", identity.display()))?;
-    module_abi.parse::<u32>().with_context(|| {
+    let library = values
+        .get("AOS_PACKAGE_MODULE_LIBRARY")
+        .with_context(|| format!("{} has no AOS_PACKAGE_MODULE_LIBRARY", identity.display()))?;
+    // Native modules bind compatibility to the retained source library rather
+    // than the retired shared-option-schema ABI integer. Source admission owns
+    // artifact availability and custody; this gate checks the declared identity.
+    crate::deployment::nix::store_root_and_suffix(Path::new(library)).with_context(|| {
         format!(
-            "{} has invalid AOS_MODULE_ABI={module_abi}",
+            "{} has invalid AOS_PACKAGE_MODULE_LIBRARY={library}",
             identity.display()
         )
     })?;
@@ -198,7 +241,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::validate_aos_root;
+    use super::{os_release_in, validate_aos_root};
 
     #[test]
     fn accepts_an_identified_offline_aos_root() {
@@ -206,7 +249,7 @@ mod tests {
         fs::create_dir_all(root.path().join("etc")).unwrap();
         fs::write(
             root.path().join("etc/os-release"),
-            "NAME=AOS\nID=aos\nAOS_MODULE_ABI=7\n",
+            "NAME=AOS\nID=aos\nAOS_PACKAGE_MODULE_LIBRARY=/nix/store/00000000000000000000000000000000-aos-module-library\n",
         )
         .unwrap();
 
@@ -222,7 +265,7 @@ mod tests {
         fs::create_dir_all(root.path().join(&identity[1..]).parent().unwrap()).unwrap();
         fs::write(
             root.path().join(&identity[1..]),
-            "NAME=AOS\nID=aos\nAOS_MODULE_ABI=7\n",
+            "NAME=AOS\nID=aos\nAOS_PACKAGE_MODULE_LIBRARY=/nix/store/00000000000000000000000000000000-aos-module-library\n",
         )
         .unwrap();
         symlink(
@@ -258,12 +301,38 @@ mod tests {
     }
 
     #[test]
+    fn rejects_retired_or_invalid_module_library_identities() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc")).unwrap();
+        let identity = root.path().join("etc/os-release");
+        fs::write(&identity, "ID=aos\nAOS_MODULE_ABI=7\n").unwrap();
+
+        let error = validate_aos_root(root.path(), false).unwrap_err();
+        assert!(format!("{error:#}").contains("has no AOS_PACKAGE_MODULE_LIBRARY"));
+
+        for library in [
+            "/tmp/aos-module-library",
+            "/nix/store/not-a-store-object",
+            "/nix/store/00000000000000000000000000000000-aos-module-library/../foreign",
+        ] {
+            fs::write(
+                &identity,
+                format!("ID=aos\nAOS_PACKAGE_MODULE_LIBRARY={library}\n"),
+            )
+            .unwrap();
+
+            let error = validate_aos_root(root.path(), false).unwrap_err();
+            assert!(format!("{error:#}").contains("has invalid AOS_PACKAGE_MODULE_LIBRARY"));
+        }
+    }
+
+    #[test]
     fn live_runtime_requires_the_immutable_identity() {
         let root = tempdir().unwrap();
         fs::create_dir_all(root.path().join("etc")).unwrap();
         fs::write(
             root.path().join("etc/os-release"),
-            "ID=aos\nAOS_MODULE_ABI=1\n",
+            "ID=aos\nAOS_PACKAGE_MODULE_LIBRARY=/nix/store/00000000000000000000000000000000-aos-module-library\n",
         )
         .unwrap();
 
@@ -276,7 +345,7 @@ mod tests {
         fs::create_dir_all(root.path().join("nix/store/aos-system")).unwrap();
         fs::write(
             root.path().join("nix/store/os-release"),
-            "ID=aos\nAOS_MODULE_ABI=7\n",
+            "ID=aos\nAOS_PACKAGE_MODULE_LIBRARY=/nix/store/00000000000000000000000000000000-aos-module-library\n",
         )
         .unwrap();
         fs::create_dir_all(root.path().join("usr/lib/aos")).unwrap();
@@ -292,5 +361,43 @@ mod tests {
         .unwrap();
 
         validate_aos_root(root.path(), false).unwrap();
+    }
+
+    #[test]
+    fn current_release_prefers_immutable_target_identity() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("usr/lib/aos/toplevel")).unwrap();
+        fs::create_dir_all(root.path().join("etc")).unwrap();
+        fs::write(
+            root.path().join("usr/lib/aos/toplevel/os-release"),
+            "ID=aos\nNAME=Current OS\nVERSION_ID=2.0.0\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("etc/os-release"),
+            "ID=aos\nNAME=Stale OS\nVERSION_ID=1.0.0\n",
+        )
+        .unwrap();
+
+        let release = os_release_in(root.path(), false).unwrap().unwrap();
+
+        assert_eq!(release.name, "Current OS");
+        assert_eq!(release.version, "2.0.0");
+    }
+
+    #[test]
+    fn installed_release_fallback_requires_an_explicit_offline_target() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc")).unwrap();
+        fs::write(
+            root.path().join("etc/os-release"),
+            "ID=aos\nNAME=Offline OS\nVERSION_ID=1.0.0\n",
+        )
+        .unwrap();
+
+        assert_eq!(os_release_in(root.path(), false).unwrap(), None);
+        let release = os_release_in(root.path(), true).unwrap().unwrap();
+        assert_eq!(release.name, "Offline OS");
+        assert_eq!(release.version, "1.0.0");
     }
 }

@@ -9,6 +9,19 @@
   version = "1.4.321.0";
 in
   mkDerivation {
+    # The installed API headers and grammar registry contain no host machine code.
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [];
+      target = [];
+      role = "public-package";
+    };
+
     pname = "spirv-headers";
     inherit version;
 

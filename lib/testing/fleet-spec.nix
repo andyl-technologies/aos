@@ -9,8 +9,8 @@
 #
 # `fleetMachineType.options.packages` derives its enum from this machine's
 # chosen system config, filtered to entries where `bundle = true` on that
-# system. Only bundled packages are listable: the payload and rendered expose
-# artifact must already be baked into the machine image. The type is forced
+# system. Only bundled packages are listable: the payload and package contract
+# must already be baked into the machine image. The type is forced
 # lazily — only when a value is type-checked, by which time `config.system` has
 # been merged from the user's definition.
 {
@@ -107,7 +107,7 @@
         description = ''
           Names of `aos.packages.<name>` to activate at runtime on this
           machine. Each package must have `bundle = true` on the chosen
-          system so the package payload and rendered expose artifact are
+          system so the package payload and package contract are
           already present in the image. The fleet harness seeds the
           per-machine system package profile before stage 2, and APM
           reconciliation attaches and presets the selected package target.

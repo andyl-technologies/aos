@@ -5,21 +5,14 @@
 # containment tracking.
 #
 # These tests run apm in a headless Firecracker microVM with mock toplevels.
-# The toplevels are real Nix derivations containing activation scripts, etc/
-# directories, and systemd unit stubs. The install workflow publishes a real
+# The toplevels are real Nix derivations containing etc/ directories and
+# systemd unit stubs. The install workflow publishes a real
 # sysroot registry entry through APR and downloads it through a generated cache;
 # the rollback/diff tests still seed focused generation state directly.
 #
-# NOTE on the systemd D-Bus migration: when a generation switch produces a
-# non-empty service diff (every upgrade/rollback here, but NOT a fresh
-# install), apm now applies it via the `aos-systemd` D-Bus client instead of
-# fire-and-forget `systemctl` shell-outs. This headless microVM runs no system
-# D-Bus, so that activation step fails with a clear "no system bus" error —
-# AFTER the generation symlink + state.json have already been committed
-# atomically. These tests therefore keep `|| true` on the apm invocation and
-# assert on the committed generation state, which is what they exercise; the
-# live service-activation path (start/stop/restart over a real bus) is covered
-# by the apm-systemd-client fleet test.
+# These focused fixtures exercise generation-state and containment behavior.
+# Checked live provider transitions are covered by the ability qualification
+# tests, which supply authenticated provider packages and runtime authority.
 {
   testing,
   apm,
@@ -122,17 +115,6 @@
                 etcFiles
               )
             )}
-
-            # Activation script
-            cat > $out/activate << 'ACTIVATEEOF'
-            #!${pkgs.bash}/bin/bash
-            set -euo pipefail
-            echo "Activating ${pname} ${version}"
-            ${pkgs.coreutils}/bin/mkdir -p /tmp
-            echo "${version}" > /tmp/activated-${version}
-            echo "${version}" > /tmp/activated-current
-            ACTIVATEEOF
-            chmod +x $out/activate
 
             ${
               if kernelPath != null
@@ -710,8 +692,7 @@ in {
 
       if [ -e /var/lib/profiles/system/state.json ] || \
         [ -e /var/lib/profiles/system/current ] || \
-        [ -e /var/lib/profiles/system/gen-1 ] || \
-        [ -e /tmp/activated-2026.03 ]; then
+        [ -e /var/lib/profiles/system/gen-1 ]; then
         fail "rejected system activation must not create generation state"
       else
         pass "rejected system activation leaves generation state untouched"
@@ -766,8 +747,7 @@ in {
       fi
       assert_store_valid "$TOPLEVEL_STORE" "system toplevel after scoped mirror install"
       if [ -e /var/lib/profiles/system/state.json ] || \
-        [ -e /var/lib/profiles/system/current ] || \
-        [ -e /tmp/activated-2026.03 ]; then
+        [ -e /var/lib/profiles/system/current ]; then
         fail "rejected scoped system install must not activate the sysroot"
       else
         pass "rejected scoped system install leaves generation state untouched"
@@ -852,8 +832,6 @@ in {
       }
       test "$(${pkgs.jq}/bin/jq '.current' /var/lib/profiles/system/state.json)" = "2"
       test "$(readlink /var/lib/profiles/system/current)" = "gen-2"
-      test ! -e /tmp/activated-2026.03
-
       echo "==> system-rollback fail-closed boundary PASSED"
     '';
   };

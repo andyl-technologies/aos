@@ -1,5 +1,6 @@
 ##! pnpm — Fast, disk-space-efficient package manager
 {
+  lib,
   mkCargoPackage,
   mkDerivation,
   fetchCargoDeps,
@@ -69,7 +70,63 @@
   };
 in
   mkCargoPackage {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      role = "public-package";
+    };
     pname = "pnpm";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "pnpm prints the exact manifest name.";
+        "files" = {
+          "package.json" = "{\"name\":\"qualification\",\"version\":\"1.0.0\"}\n";
+        };
+        "input" = "A local package manifest naming the qualification package.";
+        "operation" = "Read the name through pnpm's package-metadata command.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/pnpm"
+              "pkg"
+              "get"
+              "name"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "qualification\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "pnpm rejects the manifest with its parse-error status.";
+        "files" = {
+          "package.json" = "{bad\n";
+        };
+        "input" = "A package manifest containing malformed JSON.";
+        "operation" = "Read metadata from the malformed manifest through pnpm.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/pnpm"
+              "pkg"
+              "get"
+              "name"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version src cargoDeps;
 
     cargoFlags = "--bin pnpm";

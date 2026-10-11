@@ -22,11 +22,11 @@ aos_dev_list() {
     eval_args=(--argstr crossSystem "$cross_system")
   fi
   local entries
-  # Descend through a check scope while it exists. A partial leaf such as
-  # build.aos-dev falls back to the build scope, so completion and filtering
-  # work without evaluating unrelated check trees.
+  # A dotted filter descends through its parent scope. Plain names stay at
+  # the root, so listing one leaf never evaluates its derivation.
   if [[ $category == checks && $filter == *.* ]]; then
-    local scope=$filter
+    local scope=${filter%.}
+    [[ $scope != "$filter" ]] || scope=${scope%.*}
     while :; do
       entries=$(cd "$aos_dev_root" && nix --extra-experimental-features nix-command eval --raw \
         --argstr category "$category" --argstr scope "$scope" \
@@ -35,6 +35,7 @@ aos_dev_list() {
         printf '%s\n' "$entries" | grep -F -- "$filter" || true
         return
       fi
+      [[ $scope == *.* ]] || break
       scope=${scope%.*}
     done
   fi
@@ -82,12 +83,20 @@ aos_dev_target_attr() {
 }
 
 aos_dev_validate_target() {
-  # Most names must be listed exactly. Deep check attrs are evaluated lazily
-  # by Nix and can be addressed directly without flattening the whole tree.
   local category=$1 name=$2 cross_system=${3:-}
-  if [[ $category == checks && $name == *.*.* ]]; then
+  # Exact check and system-build paths go straight to Nix. Listing first would
+  # evaluate unrelated outputs before Nix evaluates the requested target.
+  if [[ $category == checks ]]; then
+    [[ $name =~ ^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$ ]] || \
+      aos_dev_error "invalid check target '$name'"
     return
   fi
+  if [[ $category == builds ]]; then
+    [[ $name =~ ^[A-Za-z0-9_-]+:[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$ ]] || \
+      aos_dev_error "invalid system build target '$name'"
+    return
+  fi
+
   local entries
   entries=$(aos_dev_list "$category" "" "$cross_system")
   if ! printf '%s\n' "$entries" | grep -Fxq -- "$name"; then

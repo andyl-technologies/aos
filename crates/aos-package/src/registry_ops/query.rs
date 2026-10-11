@@ -8,7 +8,9 @@ use crate::registry_ops::config::{
 use crate::registry_ops::git::{commit_registry, current_git_head, refresh_registry_object_store};
 use crate::registry_ops::publish::RegistryPublishLock;
 use crate::registry_ops::signing::resolve_producer_signing_key;
-use crate::registry_ops::store_paths::{extract_hash, first_letter, write_store_files};
+use crate::registry_ops::store_paths::{
+    StoreQueries, extract_hash, first_letter, write_store_files,
+};
 use crate::registry_ops::workflow::{current_git_branch, git_branch_entries};
 use crate::types::validate_package_name;
 use anyhow::{Context, Result, bail};
@@ -623,16 +625,24 @@ pub async fn verify(
 
     if fix {
         let content_addressed = registry_content_addressed(&dir);
+        let store = StoreQueries::new();
         let mut seen = HashSet::new();
         for entry in &all_store_entries {
             if seen.insert(entry.store_hash.clone()) {
-                write_store_files(&dir, &entry.store_path, content_addressed, false, printer)
-                    .with_context(|| {
-                        format!(
-                            "regenerating store/ records for {} ({})",
-                            entry.package_name, entry.store_path
-                        )
-                    })?;
+                write_store_files(
+                    &store,
+                    &dir,
+                    &entry.store_path,
+                    content_addressed,
+                    false,
+                    printer,
+                )
+                .with_context(|| {
+                    format!(
+                        "regenerating store/ records for {} ({})",
+                        entry.package_name, entry.store_path
+                    )
+                })?;
                 repaired += 1;
             }
         }

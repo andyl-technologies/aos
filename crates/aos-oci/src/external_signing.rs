@@ -15,7 +15,8 @@ use anyhow::{Context, Result, ensure};
 use aos_oci_types::limits::MAX_JSON_BYTES;
 use aos_oci_types::{
     Annotations, CONTAINER_DSSE_SIGNATURE_NAMESPACE, CONTAINER_RELEASE_SCHEMA_VERSION,
-    CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE, ContainerDsseEnvelope, ContainerDsseSignature,
+    CONTAINER_RELEASE_SIDECAR_PATH, CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE,
+    CONTAINER_SIGNATURE_INPUT_SCHEMA, ContainerDsseEnvelope, ContainerDsseSignature,
     ContainerRelease, ContainerReleaseEvidence, ContainerSignatureInput, Descriptor, ImageIndex,
     ImageManifest, MediaType, Sha256Digest, to_canonical_json,
 };
@@ -250,6 +251,12 @@ fn validate_publication_inputs(inputs: &Path) -> Result<ValidatedInputs> {
     let signature_input = ContainerSignatureInput::from_canonical_json(&signature_input_bytes)
         .context("validating canonical container signature input")?;
     ensure!(
+        signature_input.schema == CONTAINER_SIGNATURE_INPUT_SCHEMA,
+        "container external signing supports only signature-input schema {}; got {}",
+        CONTAINER_SIGNATURE_INPUT_SCHEMA,
+        signature_input.schema
+    );
+    ensure!(
         signature_input.qualification.ready_for_verified_publication,
         "container signature input is not ready for verified publication"
     );
@@ -325,6 +332,17 @@ fn validate_signing_request(
             && request["input"]["size"] == input_bytes.len(),
         "container signing request does not bind the exact signature input"
     );
+    ensure!(
+        request["requiredOutput"]["payloadMediaType"] == MediaType::DsseEnvelope.as_str()
+            && request["requiredOutput"]["artifactManifestMediaType"]
+                == MediaType::OciImageManifest.as_str()
+            && request["requiredOutput"]["artifactSubject"]
+                == serde_json::to_value(&input.oci.index)?
+            && request["requiredOutput"]["finalSidecarPath"] == CONTAINER_RELEASE_SIDECAR_PATH
+            && request["requiredOutput"]["finalSidecarMediaType"]
+                == MediaType::AosContainerRelease.as_str(),
+        "container signing request required output contract drifted"
+    );
     let mut unsigned = serde_json::to_value(input).context("encoding unsigned release identity")?;
     unsigned
         .as_object_mut()
@@ -387,6 +405,7 @@ fn validate_publication_roots(inputs: &Path, input: &ContainerSignatureInput) ->
 fn unsigned_evidence(input: &ContainerSignatureInput) -> Vec<&Descriptor> {
     vec![
         &input.nix.closure,
+        &input.evidence.abilities,
         &input.evidence.sbom,
         &input.evidence.source,
         &input.evidence.license,
@@ -505,6 +524,7 @@ fn signed_release(
         nix: input.nix.clone(),
         qualification: input.qualification.clone(),
         evidence: ContainerReleaseEvidence {
+            abilities: input.evidence.abilities.clone(),
             sbom: input.evidence.sbom.clone(),
             source: input.evidence.source.clone(),
             license: input.evidence.license.clone(),
@@ -581,6 +601,7 @@ fn validate_finalized_graph(layout: &Path, release: &ContainerRelease) -> Result
     let roots = vec![
         release.oci.index.clone(),
         release.nix.closure.clone(),
+        release.evidence.abilities.clone(),
         release.evidence.sbom.clone(),
         release.evidence.source.clone(),
         release.evidence.license.clone(),

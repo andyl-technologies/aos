@@ -8,6 +8,19 @@
   version = "1.5.2";
 in
   mkDerivation {
+    # The installed transport sources and pkg-config metadata contain no host machine code.
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [];
+      target = [];
+      role = "public-package";
+    };
+
     pname = "xtrans";
     inherit version;
 

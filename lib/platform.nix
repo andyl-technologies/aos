@@ -12,8 +12,9 @@
 # For native builds all three are identical. Cross-compilation decouples them.
 #
 # Constraint model:
-#   Every platform exposes a `constraints` attrset ({ cpu, os, abi }) and a
-#   `canExecute` list of constraint sets for ISA-compatible architectures.
+#   Every platform exposes a `constraints` attrset ({ cpu, os, abi }) and may
+#   add open-ended feature identities supplied by the selected environment.
+#   Its `canExecute` list describes ISA-compatible architectures.
 #   Verification functions (satisfies, canRun, canBuildOn) check compatibility
 #   at evaluation time.
 let
@@ -200,9 +201,14 @@ let
     builtins.all (
       key: let
         req = constraints.${key};
-        actual = platform.constraints.${key};
+        actual =
+          if key == "features"
+          then platform.constraints.features or []
+          else platform.constraints.${key};
       in
-        if builtins.isList req
+        if key == "features"
+        then builtins.all (feature: builtins.elem feature actual) req
+        else if builtins.isList req
         then builtins.elem actual req
         else actual == req
     ) (builtins.attrNames constraints);

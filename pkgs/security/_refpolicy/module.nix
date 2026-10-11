@@ -1,0 +1,198 @@
+##! Owns SELinux configuration, immutable policy input, and ordered services.
+{
+  config,
+  lib,
+  package,
+  dependencies,
+  ...
+}: let
+  cfg = config.aos.security.selinux;
+  policyState = config.aos.abilities.filesystem.operations.persistentAllocate.effects.selinux-policy-state;
+  selinuxConfig = config.aos.abilities.configuration.operations.file.effects.selinux-config;
+  semanageConfig = config.aos.abilities.configuration.operations.file.effects.semanage-config;
+  policyLoadEffect = config.aos.abilities.serviceManagement.operations.realize.effects."selinux.selinux-policy-load";
+  command = artifact: entryPoint: arguments: {
+    executable = {
+      path = "${artifact}/${entryPoint}";
+      inherit arguments;
+    };
+    ignore_failure = false;
+  };
+  policyLoad = {
+    lifecycle = {
+      description = "Load SELinux policy";
+      execution_model = "oneshot";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [
+        (command
+          package
+          "libexec/aos-selinux-load-policy"
+          [cfg.policy cfg.mode])
+      ];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "never";
+      restart_delay_millis = 0;
+      configuration_change_action = "restart";
+      remain_after_exit = true;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    conditions.all = [
+      {
+        kind = "mandatory-access-control";
+        state = "available";
+        negated = false;
+      }
+    ];
+    dependencies = {
+      after = [
+        "local-fs.target"
+        (policyState.outputs.resource)
+      ];
+      before = [
+        "sysinit.target"
+        "systemd-tmpfiles-setup.service"
+      ];
+      requires = [
+        (policyState.outputs.resource)
+        (selinuxConfig.outputs.resource)
+        (semanageConfig.outputs.resource)
+      ];
+      wants = [];
+      wanted_by = ["sysinit.target"];
+    };
+    readiness = {
+      mechanism = "successful-exit";
+      signal_scope = "none";
+      timeout_millis = 90000;
+    };
+  };
+  autorelabel = {
+    autoStart = cfg.autorelabel;
+    lifecycle = {
+      description = "SELinux filesystem relabeling";
+      execution_model = "oneshot";
+      environment_files = [];
+      condition = [
+        (command
+          dependencies.coreutils
+          "bin/test"
+          ["-f" "/.autorelabel"])
+      ];
+      pre_start = [];
+      start = [
+        (command
+          dependencies.policycoreutils
+          "sbin/fixfiles"
+          ["-f" "-F" "relabel"])
+      ];
+      post_start = [
+        (command
+          dependencies.coreutils
+          "bin/rm"
+          ["-f" "/.autorelabel"])
+      ];
+      stop = [];
+      post_stop = [];
+      restart = "never";
+      restart_delay_millis = 0;
+      configuration_change_action = "restart";
+      remain_after_exit = true;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      after = [
+        (policyLoadEffect.outputs.resource)
+        "local-fs.target"
+      ];
+      before = ["sysinit.target"];
+      requires = [(policyLoadEffect.outputs.resource)];
+      wants = [];
+      wanted_by = ["sysinit.target"];
+    };
+    readiness = {
+      mechanism = "successful-exit";
+      signal_scope = "none";
+      timeout_millis = 90000;
+    };
+  };
+in {
+  options.aos.security.selinux = {
+    enable = (lib.mkEnableOption "SELinux mandatory access control") // {extensible = true;};
+    mode = lib.mkOption {
+      type = lib.types.enum ["enforcing" "permissive" "disabled"];
+      default = "enforcing";
+      description = "SELinux operating mode.";
+    };
+    policy = lib.mkOption {
+      type = lib.types.strMatching "[A-Za-z0-9][A-Za-z0-9._-]*";
+      default = "refpolicy";
+      description = "SELinux policy store name to load.";
+    };
+    autorelabel = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Relabel the root filesystem when /.autorelabel exists.";
+    };
+  };
+
+  config = lib.mkMerge [
+    {
+      aos.services = {
+        "selinux.selinux-policy-load" = policyLoad // {enable = cfg.enable;};
+        "selinux.selinux-autorelabel" = autorelabel // {enable = cfg.enable;};
+      };
+    }
+    (lib.mkIf cfg.enable {
+      aos.kernel.commandLineParts.refpolicy = ["enforcing=0" "security=selinux" "selinux=1"];
+      aos.filesystems.etcTrees = [
+        {
+          target = "selinux/${cfg.policy}/contexts";
+          source = "${package}/etc/selinux/refpolicy/contexts";
+        }
+      ];
+      aos.abilities = {
+        filesystem.operations.persistentAllocate.effects.selinux-policy-state.input = {
+          path = "/var/lib/selinux";
+          mode = "0700";
+          owner = "root";
+          group = "root";
+        };
+        configuration.operations.file.effects = {
+          selinux-config.input = {
+            path = "/etc/selinux/config";
+            mode = "0444";
+            content = "# Generated by the refpolicy package module.\nSELINUX=${cfg.mode}\nSELINUXTYPE=${cfg.policy}\n";
+          };
+          semanage-config.input = {
+            path = "/etc/selinux/semanage.conf";
+            mode = "0444";
+            content = ''
+              # Generated by the refpolicy package module.
+              module-store = direct
+              handle-unknown = allow
+              compiler-directory = ${dependencies.policycoreutils}/libexec/selinux/hll
+              [load_policy]
+              path = ${dependencies.policycoreutils}/sbin/load_policy
+              args =
+              [end]
+              [setfiles]
+              path = ${dependencies.policycoreutils}/sbin/setfiles
+              args = -q -c $@ $<
+              [end]
+              [sefcontext_compile]
+              path = ${dependencies.libselinux}/sbin/sefcontext_compile
+              args = $@
+              [end]
+            '';
+          };
+        };
+      };
+    })
+  ];
+}

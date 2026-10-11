@@ -1976,30 +1976,27 @@ mod tests {
     async fn per_train_ledger_migration_retains_baseline_operations() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("hub.db");
-        let db = Database::open(&path).await.unwrap();
+        {
+            let connection = rusqlite::Connection::open(&path).unwrap();
+            connection
+                .execute_batch(super::super::MIGRATIONS[0])
+                .unwrap();
+            connection.execute_batch("CREATE TABLE schema_version(version INTEGER NOT NULL); INSERT INTO schema_version VALUES(1)").unwrap();
+        }
+        // Populate the actual v1 schema without running successor migrations.
+        let backend = crate::backend::SqlxBackend::connect_sqlite(path.to_str().unwrap())
+            .await
+            .unwrap();
+        let db = Database {
+            backend: Box::new(backend),
+        };
         let bundle = admitted_bundle(&db, "ledger-upgrade").await;
         commit_staging(&db, &bundle, "ledger-upgrade").await;
         create_channel(&db, bundle.registry_id, 1, "edge").await;
         drop(db);
 
-        // Rewind to the baseline: every later migration is additive, so a v1
-        // database is exactly this schema without their objects. The
-        // retained operation lives in the frozen baseline ledger.
+        // The retained operation lives in the frozen baseline ledger.
         let connection = rusqlite::Connection::open(&path).unwrap();
-        connection
-            .execute_batch(
-                "DROP TABLE registry_oci_namespaces;
-                 DROP TABLE instance_oci_routes;
-                 DROP TABLE release_channel_advances;
-                 DROP TABLE staged_release_store_roots;
-                 DROP TABLE staged_release_objects;
-                 DROP TABLE staged_release_revision_chunks;
-                 DROP TABLE staged_release_revisions;
-                 DROP TABLE staged_releases;
-                 DROP TABLE registry_public_catalog_heads;
-                 ALTER TABLE oci_gc_runs DROP COLUMN retire_registry;",
-            )
-            .unwrap();
         connection
             .execute(
                 "INSERT INTO release_channel_operations
@@ -2015,9 +2012,6 @@ mod tests {
                     "8".repeat(64)
                 ],
             )
-            .unwrap();
-        connection
-            .execute_batch("UPDATE schema_version SET version = 1")
             .unwrap();
         drop(connection);
 

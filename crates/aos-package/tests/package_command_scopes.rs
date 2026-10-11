@@ -57,12 +57,20 @@ fn image_and_configuration_operations_have_separate_commands() {
         &["image", "upgrade"][..],
         &["image", "rollback", "--generation", "2"][..],
         &["image", "list"][..],
-        &["image", "download", "aos", "--format", "qcow2", "--system"][..],
+        &["image", "prepare", "aos"][..],
     ] {
         let command = parse(arguments);
         assert!(command.is_system());
-        assert_eq!(command.runtime_requirement(), RuntimeRequirement::AosRoot);
+        assert_eq!(command.runtime_requirement(), RuntimeRequirement::LiveAos);
     }
+
+    let system_download = parse(&["image", "download", "aos", "--format", "qcow2", "--system"]);
+    assert!(system_download.is_system());
+    assert_eq!(
+        system_download.runtime_requirement(),
+        RuntimeRequirement::AosRoot
+    );
+
     let portable_download = parse(&["image", "download", "aos", "--format", "qcow2"]);
     assert!(!portable_download.is_system());
     assert_eq!(
@@ -126,7 +134,7 @@ fn system_package_dispatch_does_not_require_image_generation_authority() {
     std::fs::create_dir_all(root.path().join("etc")).expect("identity directory");
     std::fs::write(
         root.path().join("etc/os-release"),
-        "ID=aos\nAOS_MODULE_ABI=1\n",
+        "ID=aos\nAOS_PACKAGE_MODULE_LIBRARY=/nix/store/00000000000000000000000000000000-module-library\n",
     )
     .expect("AOS identity");
     std::fs::write(root.path().join("desired.toml"), "packages = []\n").expect("empty desired set");

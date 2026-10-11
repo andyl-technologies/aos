@@ -7,10 +7,10 @@
 let
   # Directories containing auto-loaded modules
   moduleDirs = [
+    ./abilities
     ./base
     ./security
     ./services
-    ./monitoring
     ./hardware
     ./image
     ./profiles

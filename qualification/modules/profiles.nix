@@ -35,6 +35,15 @@
   # requirements, so the requirement list only carries release/package scopes.
   profileScopes = ["release" "packages"];
 
+  # Native release operations remain obligations of each functional profile.
+  nativeRequirements = [
+    "ability-native-activation"
+    "ability-native-kubernetes"
+    "ability-native-recovery"
+    "ability-crucible-baseline"
+    "ability-native-adapter-matrix"
+  ];
+
   knownRequirement = id:
     builtins.hasAttr id cfg.requirements && builtins.elem cfg.requirements.${id}.scope profileScopes;
 
@@ -77,7 +86,7 @@ in {
       };
       smoke = {
         description = "Automated exact-byte functional checks on the changed targets.";
-        requirements = ["build-integrity" "staging-delivery" "package-function"];
+        requirements = ["build-integrity" "staging-delivery" "package-function"] ++ nativeRequirements;
         claims = "functional";
         change_scoped = true;
         soak_seconds = 0;
@@ -93,7 +102,7 @@ in {
       };
       functional = {
         description = "Reviewed functional qualification of every target with fresh environment fitness.";
-        requirements = ["build-integrity" "staging-delivery" "package-function" "rollout-health"];
+        requirements = ["build-integrity" "staging-delivery" "package-function" "rollout-health"] ++ nativeRequirements;
         claims = "functional";
         change_scoped = false;
         soak_seconds = 0;
@@ -114,7 +123,7 @@ in {
       };
       soak = {
         description = "Complete-matrix qualification with a week of observation and staged rollout.";
-        requirements = ["build-integrity" "staging-delivery" "package-function" "rollout-health" "rollout-observation"];
+        requirements = ["build-integrity" "staging-delivery" "package-function" "rollout-health" "rollout-observation"] ++ nativeRequirements;
         claims = "qualified";
         change_scoped = false;
         soak_seconds = 604800;
@@ -155,6 +164,10 @@ in {
     };
 
     assertions = [
+      {
+        assertion = builtins.all (profile: profile.claims == "none" || builtins.all (id: builtins.elem id profile.requirements) nativeRequirements) profiles;
+        message = "Functional profiles must retain native ability qualification requirements.";
+      }
       {
         assertion = builtins.all (profile: builtins.elem "build-integrity" profile.requirements) profiles;
         message = "Every profile requires build-integrity.";

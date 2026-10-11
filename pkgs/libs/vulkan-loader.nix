@@ -14,6 +14,25 @@
   version = "1.4.321";
 in
   mkDerivation {
+    # The configured X11 and Wayland WSI uses the GNU/Linux graphics stack.
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
+
     pname = "vulkan-loader";
     inherit version;
 

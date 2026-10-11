@@ -4,7 +4,7 @@
 - **Date:** 2026-08-17
 - **Audience:** maintainers of `modules/image/`, `modules/base/_initrd-builder.nix`,
   `modules/base/secure-boot.nix`, `modules/services/boot-substrate.nix`,
-  `pkgs/boot/aos-uki.nix`, the APM system-image lifecycle, and Secure
+  `pkgs/system/_systemd-abilities/platform/_uki-builder.nix`, the APM system-image lifecycle, and Secure
   Boot/measured-boot fleet tests.
 - **Relates to:** [RFC-0006](../0006-secure-boot/README.md),
   [RFC-0011](../0011-on-host-config-eval/README.md).
@@ -226,8 +226,8 @@ Separate recovery UKIs provide stronger and simpler invariants:
 - recovery is never counted;
 - each A/B overwrite has an independent retained recovery copy;
 - recovery carries no normal `.pcrsig` by construction;
-- its initrd can omit normal unlock/provisioning units rather than relying only
-  on target ordering; and
+- its initrd can omit the normal unlock services and resolved provisioning
+  ability stage rather than relying only on target ordering; and
 - firmware rejection of a tampered recovery artifact can be tested directly.
 
 The storage cost is accepted. Correctness takes precedence, and the ESP is
@@ -271,7 +271,8 @@ The recovery build explicitly excludes or masks:
 
 - `aos-var-crypt.service`;
 - normal `sysroot.mount` and switch-root;
-- provisioning evaluation and `aos-repart.service`;
+- the normal initrd resolved ability stage, including storage-provisioning
+  evaluation and effects;
 - configuration activation and package installation;
 - debug autologin gettys;
 - automatic filesystem discovery/mounting; and

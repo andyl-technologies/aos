@@ -28,6 +28,9 @@ use aos_release::evidence::{
 use aos_release::plan::{PlannedDestination, ReleasePlan, SurfaceKind, SurfaceRole};
 use aos_release::platform::Platform;
 use aos_release::qualification::QualificationPhase;
+use aos_release::qualification_evidence::{
+    NATIVE_ADAPTER_MATRIX_REQUIREMENT, validate_matrix_for_case,
+};
 use aos_release::receipt::{
     QualificationReceipt, RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedReceiptEnvelope,
     verify_signed_receipt_with_key,
@@ -422,12 +425,23 @@ pub(super) fn verify_executor_response(
     {
         bail!("qualification response lacks its exact case observation");
     }
+    let matrix_passed = response
+        .evidence
+        .qualification
+        .as_ref()
+        .map(|observation| validate_matrix_for_case(case, observation))
+        .transpose()?
+        .flatten();
+    let matrix_result_mismatch = matrix_passed
+        .is_some_and(|passed| (response.evidence.result == GateResult::Passed) != passed);
     if response.evidence.id != expected_id
         || response.evidence.policy_id != request.policy_id
         || response.evidence.policy_digest != request.policy_digest
         || response.evidence.platform != case.platform
         || response.evidence.subjects != request.subjects
+        || matrix_result_mismatch
         || (response.evidence.result != GateResult::Passed
+            && case.requirement_id != NATIVE_ADAPTER_MATRIX_REQUIREMENT
             && case.claim.as_ref().is_none_or(|claim| claim.blocks_release))
         || response.evidence.authority_id != identity
         || response.evidence.nonce.as_deref() != Some(request.nonce.as_str())

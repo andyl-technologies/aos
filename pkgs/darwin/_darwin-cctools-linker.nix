@@ -15,7 +15,8 @@
 in
   mkDerivation {
     pname = "darwin-cctools-linker";
-    version = "949.0.1-ld64-512.4";
+    # Composite source revisions carry no broader compatibility promise.
+    version = "=949.0.1-ld64-512.4";
 
     src = fetchurl {
       urls = [

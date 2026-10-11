@@ -8,7 +8,7 @@
   - [Use the repository CLI](aos/cli.md)
   - [Manage packages](aos/packages.md)
   - [Configure package registries](aos/registries.md)
-  - [Understand the package sandbox](aos/package-sandbox.md)
+  - [Understand native package runtime policy](aos/package-sandbox.md)
   - [Use Secure Boot and verify package trust](aos/secure-boot.md)
   - [Control access](aos/access-control.md)
   - [Harden an AOS host](aos/security-hardening.md)
@@ -33,3 +33,9 @@
   - [Manage trust and incidents](registry/trust.md)
 - [Operate Crucible](crucible/)
   - [Run Nginx and Curl in Crucible](crucible/quickstart.md)
+
+## Package runtime configuration
+
+The [runtime abilities guide](aos/runtime-abilities.md) shows how package,
+interface, operator, and handler modules produce deferred execution graphs, with
+Nix examples and matching CLI/Hub inspection paths.

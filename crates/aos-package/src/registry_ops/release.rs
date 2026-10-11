@@ -28,7 +28,7 @@ use crate::registry_ops::signing::{
     ResolvedSigningKey, registry_config_by_name, resolve_producer_signing_key,
     resolve_signing_key_source,
 };
-use crate::registry_ops::store_paths::{introspect_store_path, validate_store_path_release_policy};
+use crate::registry_ops::store_paths::{StoreQueries, validate_store_path_release_policy};
 use crate::registry_ops::tags::release_commit;
 use crate::registry_ops::trust::derive_trust_key;
 use crate::security::{key_fingerprint, parse_signing_key};
@@ -130,7 +130,7 @@ pub struct ReleaseStorePublish {
     pub image_disk_paths: Vec<String>,
     pub image_info_paths: Vec<String>,
     pub image_formats: Vec<String>,
-    pub image_uki_paths: Vec<String>,
+    pub image_contract_schemas: Vec<String>,
     pub bless: bool,
     pub message: Option<String>,
     pub registry: String,
@@ -245,7 +245,7 @@ pub async fn release(
     image_disk_paths: &[String],
     image_info_paths: &[String],
     image_formats: &[String],
-    image_uki_paths: &[String],
+    image_contract_schemas: &[String],
     bless: bool,
     message: Option<&str>,
     channel: Option<&str>,
@@ -356,8 +356,9 @@ pub async fn release(
         _ => None,
     };
     if let Some(store_path) = store_path {
-        let info = introspect_store_path(store_path)?;
-        validate_store_path_release_policy(&info)?;
+        let store = StoreQueries::new();
+        let info = store.introspect(store_path)?;
+        validate_store_path_release_policy(&store, &info)?;
     }
     let registry_name = resolve_registry_name(config, registry)?;
     let dir = config.scope.registries_path().join(&registry_name);
@@ -394,7 +395,7 @@ pub async fn release(
         image_disk_paths: image_disk_paths.to_vec(),
         image_info_paths: image_info_paths.to_vec(),
         image_formats: image_formats.to_vec(),
-        image_uki_paths: image_uki_paths.to_vec(),
+        image_contract_schemas: image_contract_schemas.to_vec(),
         bless,
         message: message.map(ToString::to_string),
         registry: registry_name.clone(),
@@ -641,7 +642,7 @@ impl PreparationCheckpoint {
                 "image_disk_paths": publish.image_disk_paths,
                 "image_info_paths": publish.image_info_paths,
                 "image_formats": publish.image_formats,
-                "image_uki_paths": publish.image_uki_paths,
+                "image_contract_schemas": publish.image_contract_schemas,
                 "bless": publish.bless,
                 "message": publish.message,
                 "registry": publish.registry,
@@ -868,12 +869,7 @@ async fn publish_release_store_path(
         &publish_opts.image_disk_paths,
         &publish_opts.image_info_paths,
         &publish_opts.image_formats,
-        &publish_opts.image_uki_paths,
-        None,
-        None,
-        None,
-        None,
-        &[],
+        &publish_opts.image_contract_schemas,
         publish_opts.bless,
         false,
         true,
@@ -881,6 +877,7 @@ async fn publish_release_store_path(
         key,
         key_id,
         None,
+        &StoreQueries::new(),
         printer,
     )
     .await

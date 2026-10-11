@@ -1,4 +1,5 @@
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -8,7 +9,101 @@
   version = "4.2.0";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "tpm2-tss";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The public API returns the expected value and the consumer prints the fixed success line.";
+        "files" = {
+          "primary.c" = "#include <stdint.h>\n#include <stdio.h>\n#include <tss2/tss2_mu.h>\n\nint main(void) {\n    uint8_t buffer[4];\n    size_t offset = 0;\n    UINT32 output = 0;\n\n    if (Tss2_MU_UINT32_Marshal(0x12345678U, buffer, sizeof(buffer), &offset) != TSS2_RC_SUCCESS ||\n        offset != sizeof(buffer)) {\n        return 2;\n    }\n    offset = 0;\n    if (Tss2_MU_UINT32_Unmarshal(buffer, sizeof(buffer), &offset, &output) != TSS2_RC_SUCCESS ||\n        output != 0x12345678U) {\n        return 2;\n    }\n    return puts(\"tpm2-tss api passed\") == EOF;\n}\n";
+        };
+        "input" = "The 32-bit value 0x12345678.";
+        "operation" = "Marshal the value into TPM wire order, then unmarshal it through the TSS MU API.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-ltss2-mu"
+              "-o"
+              "primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "tpm2-tss api passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The public API reports rejection and the consumer exits with the fixed rejection status and diagnostic.";
+        "files" = {
+          "bad-input.c" = "#include <stdint.h>\n#include <stdio.h>\n#include <tss2/tss2_mu.h>\n\nint main(void) {\n    uint8_t buffer[3];\n    size_t offset = 0;\n    if (Tss2_MU_UINT32_Marshal(42U, buffer, sizeof(buffer), &offset) !=\n        TSS2_MU_RC_INSUFFICIENT_BUFFER) {\n        return 2;\n    }\n    fputs(\"tpm2-tss rejected invalid input\\n\", stderr);\n    return 7;\n}\n";
+        };
+        "input" = "A three-byte destination buffer for a four-byte TPM UINT32.";
+        "operation" = "Attempt to marshal the value into the undersized buffer.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-ltss2-mu"
+              "-o"
+              "bad-input-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-consumer"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "tpm2-tss rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

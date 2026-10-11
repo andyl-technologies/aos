@@ -13,15 +13,15 @@ use anyhow::{Result, bail};
 use crate::{
     ApmRegistryCommand, AttestCommand, BranchCommand, CacheCommand, ChangeCommand, ChannelCommand,
     CredentialCommand, DocumentationCacheCommand, DocumentationCommand, ImageCommand, KeysCommand,
-    OptionsCommand, OriginCommand, PackageCommand, RegistryCommand, RegistryStageCommand,
-    RuntimeConfigCommand, SbCertsCommand, StoreCommand, TrustCommand,
+    OriginCommand, PackageCommand, RegistryCommand, RegistryStageCommand, RuntimeConfigCommand,
+    StoreCommand, TrustCommand,
 };
 
 const RUNTIME_ENV: &str = "AOS_RUNTIME";
 const READ_ONLY_ENV: &str = "AOS_CONTAINER_READ_ONLY";
 
-const CONTAINER_HOST_OPERATION_ERROR: &str = "AOS containers support only user-scope package management; --system and host boot, systemd, TPM, and activation operations are unavailable. Run this operation on an AOS machine or VM.";
-const READ_ONLY_MUTATION_ERROR: &str = "this AOS container is read-only; user-scope package mutations are unavailable. Restart it without the runtime's read-only-root option and mount writable APM and Nix state to modify packages.";
+const CONTAINER_HOST_OPERATION_ERROR: &str = "this operation requires host boot or TPM facilities unavailable in an AOS container. Run it on an AOS machine or VM.";
+const READ_ONLY_MUTATION_ERROR: &str = "this AOS container is read-only; package mutations are unavailable. Restart it without the runtime's read-only-root option and mount writable APM and Nix state to modify packages.";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct RuntimeBoundary {
@@ -44,6 +44,18 @@ impl RuntimeBoundary {
         }
     }
 
+    fn profile_scope(self, system: bool) -> crate::types::ProfileScope {
+        if system && !self.container {
+            crate::types::ProfileScope::System
+        } else {
+            crate::types::ProfileScope::User
+        }
+    }
+
+    fn configuration_scope(self) -> crate::types::ProfileScope {
+        self.profile_scope(true)
+    }
+
     fn validate(self, command: &PackageCommand) -> Result<()> {
         if self.container && requires_host_runtime(command) {
             bail!(CONTAINER_HOST_OPERATION_ERROR);
@@ -54,10 +66,7 @@ impl RuntimeBoundary {
         Ok(())
     }
 
-    fn validate_registry(self, command: &RegistryCommand, system: bool) -> Result<()> {
-        if self.container && system {
-            bail!(CONTAINER_HOST_OPERATION_ERROR);
-        }
+    fn validate_registry(self, command: &RegistryCommand, _system: bool) -> Result<()> {
         if self.read_only && !registry_is_read_only(command) {
             bail!(READ_ONLY_MUTATION_ERROR);
         }
@@ -65,28 +74,68 @@ impl RuntimeBoundary {
     }
 }
 
-/// Returns whether the official container restricts packages to user scope.
+/// Returns whether the process runs in the official container environment.
 pub(crate) fn is_container() -> bool {
     RuntimeBoundary::from_env().container
 }
 
-/// Checks the process runtime markers against one parsed package command.
+/// Resolves a requested scope to the profile owned by this runtime.
 ///
-/// This is intentionally the first operation in [`crate::run`].
+/// Container package and registry operations share the user profile seeded by
+/// their image. `--system` aliases that same profile rather than creating a
+/// separate namespace that container startup cannot recover or activate.
+pub(crate) fn profile_scope(system: bool) -> crate::types::ProfileScope {
+    RuntimeBoundary::from_env().profile_scope(system)
+}
+
+/// Selects the native profile whose operator configuration owns this runtime.
+///
+/// Container configuration extends the ordinary user package profile seeded by
+/// the image. Machine configuration continues to own the system profile.
+pub(crate) fn configuration_scope() -> crate::types::ProfileScope {
+    RuntimeBoundary::from_env().configuration_scope()
+}
+
+/// Rejects explicit runtime incompatibilities before image setup can mutate state.
 ///
 /// # Errors
 ///
-/// Returns an error when container mode admits only user scope but the command
-/// requires system or host facilities, or when read-only mode prohibits the
-/// requested mutation.
+/// Returns an error for host-only commands or explicitly read-only mutations.
+pub(crate) fn validate_environment(command: &PackageCommand) -> Result<()> {
+    RuntimeBoundary::from_env().validate(command)
+}
+
+/// Rejects explicitly read-only registry mutations before image setup.
+///
+/// # Errors
+///
+/// Returns an error when the read-only environment prohibits the mutation.
+pub(crate) fn validate_registry_environment(command: &RegistryCommand, system: bool) -> Result<()> {
+    RuntimeBoundary::from_env().validate_registry(command, system)
+}
+
+/// Checks the process runtime markers against one parsed package command.
+///
+/// Explicit environment admission and image setup precede this synchronization.
+///
+/// # Errors
+///
+/// Returns an error when the command requires host boot or TPM facilities, or
+/// when read-only mode prohibits the requested mutation.
 pub(crate) fn validate(command: &PackageCommand) -> Result<()> {
     let mut boundary = RuntimeBoundary::from_env();
     if boundary.container && requires_host_runtime(command) {
         bail!(CONTAINER_HOST_OPERATION_ERROR);
     }
 
-    if let Some(state) = aos_core::container_runtime::synchronize()? {
-        boundary.read_only |= state.is_read_only();
+    // The initializer invokes private deployment helpers while holding its
+    // lock and before publishing readiness. Waiting here would deadlock it.
+    if !command.is_runtime_internal() {
+        if boundary.container && !crate::container_environment::package_state_writable() {
+            boundary.read_only = true;
+        } else if let Some(state) = aos_core::container_runtime::synchronize()? {
+            boundary.read_only |= state.is_read_only();
+        }
     }
     boundary.validate(command)
 }
@@ -95,15 +144,13 @@ pub(crate) fn validate(command: &PackageCommand) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns an error when container mode selects system registry state or when
-/// read-only container mode prohibits the requested authoring mutation.
+/// Returns an error when read-only container mode prohibits the requested
+/// authoring mutation.
 pub(crate) fn validate_registry(command: &RegistryCommand, system: bool) -> Result<()> {
     let mut boundary = RuntimeBoundary::from_env();
-    if boundary.container && system {
-        bail!(CONTAINER_HOST_OPERATION_ERROR);
-    }
-
-    if let Some(state) = aos_core::container_runtime::synchronize()? {
+    if boundary.container && !crate::container_environment::package_state_writable() {
+        boundary.read_only = true;
+    } else if let Some(state) = aos_core::container_runtime::synchronize()? {
         boundary.read_only |= state.is_read_only();
     }
     boundary.validate_registry(command, system)
@@ -111,62 +158,15 @@ pub(crate) fn validate_registry(command: &RegistryCommand, system: bool) -> Resu
 
 /// Returns whether a command requires AOS host facilities unavailable in OCI.
 ///
-/// The match is exhaustive so a future command must receive an explicit
-/// runtime classification before the crate compiles.
+/// Ordinary package and configuration commands are admitted here. Their
+/// ability graphs validate the handlers required by the selected environment.
 fn requires_host_runtime(command: &PackageCommand) -> bool {
     match command {
-        PackageCommand::Image { .. } | PackageCommand::Apply { .. } => true,
-        PackageCommand::Install { system, .. }
-        | PackageCommand::Remove { system, .. }
-        | PackageCommand::Autoremove { system }
-        | PackageCommand::Reinstall { system, .. }
-        | PackageCommand::FullUpgrade { system }
-        | PackageCommand::Hold { system, .. }
-        | PackageCommand::Unhold { system, .. }
-        | PackageCommand::Verify { system, .. }
-        | PackageCommand::Source { system, .. }
-        | PackageCommand::Gc { system }
-        | PackageCommand::Update { system, .. }
-        | PackageCommand::Upgrade { system, .. }
-        | PackageCommand::Rollback { system, .. }
-        | PackageCommand::Search { system, .. }
-        | PackageCommand::Show { system, .. }
-        | PackageCommand::List { system, .. }
-        | PackageCommand::Depends { system, .. }
-        | PackageCommand::Rdepends { system, .. }
-        | PackageCommand::Policy { system, .. }
-        | PackageCommand::Files { system, .. }
-        | PackageCommand::Held { system, .. }
-        | PackageCommand::Orphans { system, .. }
-        | PackageCommand::Clean { system, .. } => *system,
-        PackageCommand::Registry { system, .. } => *system,
-        PackageCommand::Docs { command } => documentation_requires_host_runtime(command),
-        PackageCommand::Options { command } => options_require_host_runtime(command),
-        PackageCommand::Schema { system, .. } => *system,
-        PackageCommand::Attest { command } => match command {
-            AttestCommand::Quote { .. } | AttestCommand::VerifyBootCommit { .. } => true,
-            AttestCommand::Verify { system, .. } | AttestCommand::Catalog { system, .. } => *system,
-            AttestCommand::Enroll { .. } => false,
-        },
-        PackageCommand::TestVerifyPackageAttestation { system, .. } => *system,
-        PackageCommand::Credential(_) => false,
-        PackageCommand::ActivatePreEtcSwap { .. }
-        | PackageCommand::ActivatePostEtcSwap { .. }
-        | PackageCommand::ActivateRestoreRoutedSources { .. }
-        | PackageCommand::RecoverCredentialTransactions
-        | PackageCommand::TestSystemdClient { .. }
-        | PackageCommand::TestReconcileExposedUnits { .. }
-        | PackageCommand::TestProducePackageAttestationQuote { .. }
-        | PackageCommand::LoadEbpfLsmPolicies { .. }
-        | PackageCommand::Eval { .. }
-        | PackageCommand::EvalRetained { .. }
-        | PackageCommand::Materialize { .. }
-        | PackageCommand::ActivateConfig { .. }
-        | PackageCommand::Switch { .. }
-        | PackageCommand::Config { .. }
-        | PackageCommand::Fetch { .. }
-        | PackageCommand::RenderOne { .. }
-        | PackageCommand::GraphCompile { .. } => true,
+        PackageCommand::Image { .. } => true,
+        PackageCommand::Attest {
+            command: AttestCommand::Quote { .. },
+        } => true,
+        _ => false,
     }
 }
 
@@ -189,7 +189,10 @@ fn is_read_only(command: &PackageCommand) -> bool {
         | PackageCommand::Held { .. }
         | PackageCommand::Orphans { .. }
         | PackageCommand::Verify { .. }
-        | PackageCommand::TestVerifyPackageAttestation { .. } => true,
+        | PackageCommand::VerifyDeployment(..)
+        | PackageCommand::DeploymentCurrent { .. }
+        | PackageCommand::DeploymentRetainedEffects { .. }
+        | PackageCommand::DeploymentResult { .. } => true,
         PackageCommand::Docs { command } => documentation_is_read_only(command),
         PackageCommand::Options { .. } | PackageCommand::Schema { .. } => true,
         PackageCommand::Config { command } => runtime_config_is_read_only(command),
@@ -197,13 +200,13 @@ fn is_read_only(command: &PackageCommand) -> bool {
         PackageCommand::Rollback { list, .. } => *list,
         PackageCommand::Attest { command } => matches!(
             command,
-            AttestCommand::Verify { .. }
-                | AttestCommand::Catalog { .. }
-                | AttestCommand::VerifyBootCommit { .. }
+            AttestCommand::Verify { .. } | AttestCommand::Catalog { .. }
         ),
         PackageCommand::Credential(CredentialCommand::Encrypt { output, .. }) => output.is_none(),
         PackageCommand::Registry { command, .. } => apm_registry_is_read_only(command),
         PackageCommand::Install { .. }
+        | PackageCommand::ApplyDeployment(..)
+        | PackageCommand::ContainerStartup(..)
         | PackageCommand::Remove { .. }
         | PackageCommand::Autoremove { .. }
         | PackageCommand::Reinstall { .. }
@@ -214,46 +217,7 @@ fn is_read_only(command: &PackageCommand) -> bool {
         | PackageCommand::Unhold { .. }
         | PackageCommand::Clean { .. }
         | PackageCommand::Gc { .. }
-        | PackageCommand::ActivatePreEtcSwap { .. }
-        | PackageCommand::ActivatePostEtcSwap { .. }
-        | PackageCommand::ActivateRestoreRoutedSources { .. }
-        | PackageCommand::RecoverCredentialTransactions
-        | PackageCommand::TestSystemdClient { .. }
-        | PackageCommand::TestReconcileExposedUnits { .. }
-        | PackageCommand::TestProducePackageAttestationQuote { .. }
-        | PackageCommand::LoadEbpfLsmPolicies { .. }
-        | PackageCommand::Eval { .. }
-        | PackageCommand::EvalRetained { .. }
-        | PackageCommand::Materialize { .. }
-        | PackageCommand::ActivateConfig { .. }
-        | PackageCommand::Switch { .. }
-        | PackageCommand::Fetch { .. }
-        | PackageCommand::RenderOne { .. }
-        | PackageCommand::GraphCompile { .. } => false,
-    }
-}
-
-fn documentation_requires_host_runtime(command: &DocumentationCommand) -> bool {
-    match command {
-        DocumentationCommand::Search { system, .. }
-        | DocumentationCommand::Show { system, .. }
-        | DocumentationCommand::Man { system, .. }
-        | DocumentationCommand::Lsp { system, .. }
-        | DocumentationCommand::Serve { system, .. } => *system,
-        DocumentationCommand::Cache { command } => match command {
-            DocumentationCacheCommand::Status { system }
-            | DocumentationCacheCommand::Gc { system } => *system,
-        },
-        DocumentationCommand::Schema { .. } => false,
-    }
-}
-
-fn options_require_host_runtime(command: &OptionsCommand) -> bool {
-    match command {
-        OptionsCommand::Search { system, .. }
-        | OptionsCommand::Show { system, .. }
-        | OptionsCommand::Complete { system, .. } => *system,
-        OptionsCommand::Compare { .. } => false,
+        | PackageCommand::Switch { .. } => false,
     }
 }
 
@@ -315,9 +279,6 @@ fn registry_is_read_only(command: &RegistryCommand) -> bool {
         | RegistryCommand::Keys {
             command: KeysCommand::List { .. },
         }
-        | RegistryCommand::SbCerts {
-            command: SbCertsCommand::List { .. },
-        }
         | RegistryCommand::Branch {
             command: BranchCommand::List { .. },
         }
@@ -372,7 +333,6 @@ fn registry_is_read_only(command: &RegistryCommand) -> bool {
         | RegistryCommand::Disable { .. }
         | RegistryCommand::Trust { .. }
         | RegistryCommand::Keys { .. }
-        | RegistryCommand::SbCerts { .. }
         | RegistryCommand::Publish { .. }
         | RegistryCommand::Unpublish { .. }
         | RegistryCommand::Commit { .. }
@@ -422,6 +382,142 @@ mod tests {
     }
 
     #[test]
+    fn remove_preserves_user_default_and_selects_system_scope_explicitly() {
+        let user = command(&["remove", "nix-daemon"]);
+        assert!(matches!(
+            &user,
+            PackageCommand::Remove { packages, autoremove: false, system: false }
+                if packages == &["nix-daemon"]
+        ));
+        assert!(!user.is_system());
+        assert_eq!(
+            user.runtime_requirement(),
+            crate::environment::RuntimeRequirement::Portable
+        );
+
+        let system = command(&["remove", "--system", "nix-daemon", "--autoremove"]);
+        assert!(matches!(
+            &system,
+            PackageCommand::Remove { packages, autoremove: true, system: true }
+                if packages == &["nix-daemon"]
+        ));
+        assert!(system.is_system());
+        assert_eq!(
+            system.runtime_requirement(),
+            crate::environment::RuntimeRequirement::AosRoot
+        );
+        assert!(!is_read_only(&system));
+
+        let container = RuntimeBoundary {
+            container: true,
+            read_only: false,
+        };
+        container.validate(&user).unwrap();
+        container.validate(&system).unwrap();
+    }
+
+    #[test]
+    fn image_prepare_requires_a_writable_host_and_system_scope() {
+        for arguments in [
+            &["image", "prepare", "server"][..],
+            &[
+                "image",
+                "prepare",
+                "server",
+                "--registry",
+                "trusted",
+                "--qualified",
+            ][..],
+        ] {
+            let command = command(arguments);
+            assert!(command.is_system());
+            assert_eq!(
+                command.runtime_requirement(),
+                crate::environment::RuntimeRequirement::LiveAos
+            );
+            RuntimeBoundary::default().validate(&command).unwrap();
+            assert!(
+                RuntimeBoundary {
+                    container: true,
+                    read_only: false
+                }
+                .validate(&command)
+                .is_err()
+            );
+            assert!(
+                RuntimeBoundary {
+                    container: false,
+                    read_only: true
+                }
+                .validate(&command)
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn image_prepare_parser_preserves_registry_and_admission_purpose() {
+        let parsed = command(&[
+            "image",
+            "prepare",
+            "server",
+            "--registry",
+            "trusted",
+            "--qualified",
+        ]);
+        assert!(matches!(parsed, PackageCommand::Image {
+            command: crate::ImageCommand::Prepare { package, registry: Some(registry), qualified: true }
+        } if package == "server" && registry == "trusted"));
+        assert!(TestCli::try_parse_from(["apm", "image", "prepare"]).is_err());
+        assert!(
+            TestCli::try_parse_from(["apm", "image", "prepare", "server", "--reboot"]).is_err()
+        );
+    }
+
+    #[test]
+    fn requested_scopes_share_the_container_runtime_profile() {
+        use crate::types::ProfileScope;
+
+        let machine = RuntimeBoundary::default();
+        let container = RuntimeBoundary::from_values(Some(OsStr::new("container")), None);
+        let read_only =
+            RuntimeBoundary::from_values(Some(OsStr::new("container")), Some(OsStr::new("1")));
+        let unmatched = RuntimeBoundary::from_values(Some(OsStr::new("Container")), None);
+
+        for system in [false, true] {
+            assert_eq!(container.profile_scope(system), ProfileScope::User);
+            assert_eq!(read_only.profile_scope(system), ProfileScope::User);
+            let requested = if system {
+                ProfileScope::System
+            } else {
+                ProfileScope::User
+            };
+            assert_eq!(machine.profile_scope(system), requested);
+            assert_eq!(unmatched.profile_scope(system), requested);
+        }
+    }
+
+    #[test]
+    fn operator_configuration_uses_the_profile_seeded_by_its_runtime() {
+        use crate::types::ProfileScope;
+
+        let container = RuntimeBoundary::from_values(Some(OsStr::new("container")), None);
+        let read_only =
+            RuntimeBoundary::from_values(Some(OsStr::new("container")), Some(OsStr::new("1")));
+
+        assert_eq!(container.configuration_scope(), ProfileScope::User);
+        assert_eq!(read_only.configuration_scope(), ProfileScope::User);
+        assert_eq!(
+            RuntimeBoundary::default().configuration_scope(),
+            ProfileScope::System
+        );
+        assert_eq!(
+            RuntimeBoundary::from_values(Some(OsStr::new("Container")), None).configuration_scope(),
+            ProfileScope::System
+        );
+    }
+
+    #[test]
     fn detects_only_the_exact_runtime_markers() {
         assert_eq!(
             RuntimeBoundary::from_values(Some(OsStr::new("container")), Some(OsStr::new("1"))),
@@ -451,9 +547,9 @@ mod tests {
             .expect("unset marker preserves system behavior");
         boundary
             .validate(&command(&[
-                "_test-systemd-client",
-                "is-active",
-                "a.service",
+                "deployment-current",
+                "--profile",
+                "/tmp/profile",
             ]))
             .expect("unset marker preserves hidden behavior");
     }
@@ -489,17 +585,24 @@ mod tests {
             &["rollback", "--system"][..],
             &["gc", "--system"][..],
             &["apply", "--system", "--from", "desired.toml"][..],
+            &["config", "rollback", "--list"][..],
+            &["docs", "search", "hello", "--system"][..],
+            &["deployment-current", "--profile", "/tmp/profile"][..],
+            &["config", "status"][..],
+        ] {
+            boundary
+                .validate(&command(arguments))
+                .expect("portable and graph-validated operations remain admitted");
+        }
+
+        for arguments in [
             &["image", "install", "aos"][..],
             &["image", "upgrade"][..],
             &["image", "rollback"][..],
             &["image", "list"][..],
-            &["config", "rollback", "--list"][..],
-            &["docs", "search", "hello", "--system"][..],
+            &["image", "prepare", "aos"][..],
             &["image", "download", "hello", "--format", "raw"][..],
             &["attest", "quote", "--nonce", "00", "--output-dir", "/tmp/q"][..],
-            &["_test-systemd-client", "is-active", "a.service"][..],
-            &["activate-post-etc-swap", "--plan", "/tmp/plan"][..],
-            &["activate-restore-routed-sources", "--plan", "/tmp/plan"][..],
         ] {
             let error = boundary
                 .validate(&command(arguments))
@@ -536,7 +639,7 @@ mod tests {
             &["source", "hello"][..],
             &["docs", "search", "hello"][..],
             &["options", "show", "services.example.enable"][..],
-            &["schema"][..],
+            &["schema", "hello"][..],
             &["rollback", "--list"][..],
             &["registry", "list"][..],
         ] {
@@ -579,17 +682,16 @@ mod tests {
             .expect_err("registry mutation is rejected");
         assert_eq!(error.to_string(), READ_ONLY_MUTATION_ERROR);
 
-        let error = RuntimeBoundary {
+        RuntimeBoundary {
             container: true,
             read_only: false,
         }
         .validate_registry(&registry_command(&["list"]), true)
-        .expect_err("system registry state is rejected");
-        assert_eq!(error.to_string(), CONTAINER_HOST_OPERATION_ERROR);
+        .expect("system registry state is supported");
     }
 
     #[test]
-    fn system_error_takes_precedence_over_the_read_only_error() {
+    fn read_only_system_mutations_are_rejected() {
         let boundary = RuntimeBoundary {
             container: true,
             read_only: true,
@@ -597,6 +699,6 @@ mod tests {
         let error = boundary
             .validate(&command(&["upgrade", "--system"]))
             .expect_err("system mutation is rejected");
-        assert_eq!(error.to_string(), CONTAINER_HOST_OPERATION_ERROR);
+        assert_eq!(error.to_string(), READ_ONLY_MUTATION_ERROR);
     }
 }

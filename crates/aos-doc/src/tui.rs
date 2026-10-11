@@ -1,12 +1,13 @@
 //! Interactive terminal browser for the documentation index.
 //!
-//! Built on ratatui + crossterm, the TUI presents the [`DocIndex`] across
-//! four tabs, switched with the `1`-`4` keys:
+//! Built on ratatui + crossterm, the TUI presents repository-owned reference
+//! data across two tabs, switched with the `1` and `2` keys:
 //!
 //! 1. **Language** -- chapter/topic tree of the Nix language reference
 //! 2. **Functions** -- module tree, function list, and detail panes
-//! 3. **Options** -- namespace tree, option list, and detail panes
-//! 4. **Packages** -- package tree and detail pane
+//!
+//! Package and option reference data is available through the authenticated
+//! installed-package and Hub documentation modes.
 //!
 //! Navigation is vim-flavored (`j`/`k` move, `h`/`l`/Tab switch panes,
 //! Enter expands tree nodes, `d`/`u` scroll the detail pane) and `/` opens
@@ -82,26 +83,22 @@ fn run_blocking(index: &DocIndex) -> anyhow::Result<()> {
 // Application state
 // ---------------------------------------------------------------------------
 
-/// The four top-level tabs, switched with the `1`-`4` keys.
+/// The repository-owned top-level tabs, switched with the `1` and `2` keys.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Language,
     Functions,
-    Options,
-    Packages,
 }
 
 impl Tab {
-    /// All tabs in display order (matching the `1`-`4` key bindings).
-    const ALL: [Tab; 4] = [Tab::Language, Tab::Functions, Tab::Options, Tab::Packages];
+    /// All repository tabs in display order.
+    const ALL: [Tab; 2] = [Tab::Language, Tab::Functions];
 
     /// Returns this tab's position in the tab bar.
     fn index(self) -> usize {
         match self {
             Tab::Language => 0,
             Tab::Functions => 1,
-            Tab::Options => 2,
-            Tab::Packages => 3,
         }
     }
 
@@ -110,8 +107,6 @@ impl Tab {
         match self {
             Tab::Language => "Language",
             Tab::Functions => "Functions",
-            Tab::Options => "Options",
-            Tab::Packages => "Packages",
         }
     }
 }
@@ -229,9 +224,8 @@ impl TreeState {
 
 /// All mutable UI state for the browser, rebuilt once from the index.
 ///
-/// The Functions and Options tabs are three-pane (tree, list, detail) with
-/// the focused pane tracked by `func_pane`/`opt_pane`; Language and
-/// Packages are two-pane. The search overlay state is shared across tabs.
+/// The Functions tab has tree, list, and detail panes, while Language has a
+/// tree and content pane. The search overlay state is shared across tabs.
 struct App {
     tab: Tab,
     // Tab 1: Language — left chapter/topic tree, right content
@@ -241,13 +235,6 @@ struct App {
     func_list: Vec<usize>,
     func_list_state: ListState,
     func_pane: u8, // 0=tree, 1=list, 2=detail
-    // Tab 3: Options — left namespace tree, middle list, right detail
-    opt_tree: TreeState,
-    opt_list: Vec<usize>,
-    opt_list_state: ListState,
-    opt_pane: u8, // 0=tree, 1=list, 2=detail
-    // Tab 4: Packages — left category tree, right detail
-    pkg_tree: TreeState,
     // Search
     searching: bool,
     search_query: String,
@@ -264,7 +251,7 @@ struct App {
 impl App {
     /// Builds the initial application state from the index: per-category
     /// navigation trees, the language content table, and the initial
-    /// function/option lists derived from the first tree selection.
+    /// function list derived from the first tree selection.
     fn new(index: &DocIndex) -> Self {
         let entries = index.entries.clone();
 
@@ -283,37 +270,12 @@ impl App {
             .collect();
         let func_tree = build_path_tree(&entries, &func_entries, 1);
 
-        // Build option tree.
-        let opt_entries: Vec<usize> = entries
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| e.category == DocCategory::ModuleOption)
-            .map(|(i, _)| i)
-            .collect();
-        let opt_tree = build_path_tree(&entries, &opt_entries, 1);
-
-        // Build package tree.
-        let pkg_entries: Vec<usize> = entries
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| e.category == DocCategory::Package)
-            .map(|(i, _)| i)
-            .collect();
-        let pkg_tree = build_path_tree(&entries, &pkg_entries, 1);
-
         // Initialize function list from first tree selection.
         let func_list =
             Self::children_entries_for_tree(&func_tree, &entries, DocCategory::Function);
         let mut func_list_state = ListState::default();
         if !func_list.is_empty() {
             func_list_state.select(Some(0));
-        }
-
-        let opt_list =
-            Self::children_entries_for_tree(&opt_tree, &entries, DocCategory::ModuleOption);
-        let mut opt_list_state = ListState::default();
-        if !opt_list.is_empty() {
-            opt_list_state.select(Some(0));
         }
 
         App {
@@ -323,11 +285,6 @@ impl App {
             func_list,
             func_list_state,
             func_pane: 0,
-            opt_tree,
-            opt_list,
-            opt_list_state,
-            opt_pane: 0,
-            pkg_tree,
             searching: false,
             search_query: String::new(),
             search_results: Vec::new(),
@@ -362,42 +319,12 @@ impl App {
         self.detail_scroll = 0;
     }
 
-    /// Refreshes the middle option list after a tree selection change.
-    fn update_opt_list(&mut self) {
-        self.opt_list = Self::children_entries_for_tree(
-            &self.opt_tree,
-            &self.entries,
-            DocCategory::ModuleOption,
-        );
-        self.opt_list_state = ListState::default();
-        if !self.opt_list.is_empty() {
-            self.opt_list_state.select(Some(0));
-        }
-        self.detail_scroll = 0;
-    }
-
     /// Returns the entry selected in the Functions list, if any.
     fn selected_func_entry(&self) -> Option<&DocEntry> {
         self.func_list_state
             .selected()
             .and_then(|i| self.func_list.get(i))
             .and_then(|&idx| self.entries.get(idx))
-    }
-
-    /// Returns the entry selected in the Options list, if any.
-    fn selected_opt_entry(&self) -> Option<&DocEntry> {
-        self.opt_list_state
-            .selected()
-            .and_then(|i| self.opt_list.get(i))
-            .and_then(|&idx| self.entries.get(idx))
-    }
-
-    /// Returns the entry for the leaf selected in the Packages tree, if any.
-    fn selected_pkg_entry(&self) -> Option<&DocEntry> {
-        self.pkg_tree
-            .selected_node()
-            .and_then(|nid| self.pkg_tree.nodes[nid].entry_idx)
-            .and_then(|idx| self.entries.get(idx))
     }
 
     /// Returns the `(chapter, topic, summary, body)` to display on the Language tab.
@@ -656,14 +583,6 @@ fn run_event_loop(
                     app.tab = Tab::Functions;
                     app.detail_scroll = 0;
                 }
-                KeyCode::Char('3') => {
-                    app.tab = Tab::Options;
-                    app.detail_scroll = 0;
-                }
-                KeyCode::Char('4') => {
-                    app.tab = Tab::Packages;
-                    app.detail_scroll = 0;
-                }
                 KeyCode::Char('/') => {
                     app.searching = true;
                     app.search_query.clear();
@@ -714,11 +633,6 @@ fn navigate_to_entry(app: &mut App, entry_idx: usize) {
             app.tab = Tab::Functions;
             app.func_pane = 1;
         }
-        DocCategory::ModuleOption => {
-            app.tab = Tab::Options;
-            app.opt_pane = 1;
-        }
-        DocCategory::Package => app.tab = Tab::Packages,
         DocCategory::Type => {
             app.tab = Tab::Functions;
             app.func_pane = 1;
@@ -746,22 +660,6 @@ fn handle_nav_down(app: &mut App) {
             }
             _ => app.detail_scroll = app.detail_scroll.saturating_add(1),
         },
-        Tab::Options => match app.opt_pane {
-            0 => {
-                app.opt_tree.move_down();
-                app.update_opt_list();
-            }
-            1 => {
-                if let Some(sel) = app.opt_list_state.selected() {
-                    if sel + 1 < app.opt_list.len() {
-                        app.opt_list_state.select(Some(sel + 1));
-                        app.detail_scroll = 0;
-                    }
-                }
-            }
-            _ => app.detail_scroll = app.detail_scroll.saturating_add(1),
-        },
-        Tab::Packages => app.pkg_tree.move_down(),
     }
 }
 
@@ -784,22 +682,6 @@ fn handle_nav_up(app: &mut App) {
             }
             _ => app.detail_scroll = app.detail_scroll.saturating_sub(1),
         },
-        Tab::Options => match app.opt_pane {
-            0 => {
-                app.opt_tree.move_up();
-                app.update_opt_list();
-            }
-            1 => {
-                if let Some(sel) = app.opt_list_state.selected() {
-                    if sel > 0 {
-                        app.opt_list_state.select(Some(sel - 1));
-                        app.detail_scroll = 0;
-                    }
-                }
-            }
-            _ => app.detail_scroll = app.detail_scroll.saturating_sub(1),
-        },
-        Tab::Packages => app.pkg_tree.move_up(),
     }
 }
 
@@ -814,18 +696,10 @@ fn handle_enter(app: &mut App) {
             }
             _ => {}
         },
-        Tab::Options => match app.opt_pane {
-            0 => {
-                app.opt_tree.toggle_expand();
-                app.update_opt_list();
-            }
-            _ => {}
-        },
-        Tab::Packages => app.pkg_tree.toggle_expand(),
     }
 }
 
-/// Handles Tab: cycles pane focus on the three-pane tabs.
+/// Handles Tab: cycles pane focus in the Functions tab.
 fn handle_tab_cycle(app: &mut App) {
     match app.tab {
         Tab::Language => {} // 2-pane, tree is the only navigable pane
@@ -833,11 +707,6 @@ fn handle_tab_cycle(app: &mut App) {
             app.func_pane = (app.func_pane + 1) % 3;
             app.detail_scroll = 0;
         }
-        Tab::Options => {
-            app.opt_pane = (app.opt_pane + 1) % 3;
-            app.detail_scroll = 0;
-        }
-        Tab::Packages => {} // 2-pane
     }
 }
 
@@ -847,12 +716,6 @@ fn handle_pane_left(app: &mut App) {
         Tab::Functions => {
             if app.func_pane > 0 {
                 app.func_pane -= 1;
-                app.detail_scroll = 0;
-            }
-        }
-        Tab::Options => {
-            if app.opt_pane > 0 {
-                app.opt_pane -= 1;
                 app.detail_scroll = 0;
             }
         }
@@ -866,12 +729,6 @@ fn handle_pane_right(app: &mut App) {
         Tab::Functions => {
             if app.func_pane < 2 {
                 app.func_pane += 1;
-                app.detail_scroll = 0;
-            }
-        }
-        Tab::Options => {
-            if app.opt_pane < 2 {
-                app.opt_pane += 1;
                 app.detail_scroll = 0;
             }
         }
@@ -935,8 +792,6 @@ fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
     match app.tab {
         Tab::Language => draw_language_tab(f, app, area),
         Tab::Functions => draw_functions_tab(f, app, area),
-        Tab::Options => draw_options_tab(f, app, area),
-        Tab::Packages => draw_packages_tab(f, app, area),
     }
 }
 
@@ -944,10 +799,9 @@ fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let help = match app.tab {
         Tab::Language => "j/k:navigate  Enter:expand/collapse  /:search  q:quit",
-        Tab::Functions | Tab::Options => {
+        Tab::Functions => {
             "j/k:navigate  Tab/h/l:switch pane  Enter:expand  d/u:scroll  /:search  q:quit"
         }
-        Tab::Packages => "j/k:navigate  Enter:expand/collapse  d/u:scroll  /:search  q:quit",
     };
 
     let bar = Paragraph::new(Line::from(vec![
@@ -1148,174 +1002,6 @@ fn draw_functions_tab(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 // ---------------------------------------------------------------------------
-// Tab 3: Options
-// ---------------------------------------------------------------------------
-
-/// Renders the Options tab: namespace tree, option list (with type names),
-/// and option detail. The focused pane gets a cyan border.
-fn draw_options_tab(f: &mut Frame, app: &mut App, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(20),
-            Constraint::Percentage(30),
-            Constraint::Percentage(50),
-        ])
-        .split(area);
-
-    // Left: namespace tree.
-    let tree_border_style = if app.opt_pane == 0 {
-        Style::default().fg(ratatui::style::Color::Cyan)
-    } else {
-        Style::default()
-    };
-    let items: Vec<ListItem> = app
-        .opt_tree
-        .visible
-        .iter()
-        .map(|&nid| {
-            let node = &app.opt_tree.nodes[nid];
-            let indent = "  ".repeat(node.depth);
-            let arrow = if !node.children.is_empty() {
-                if node.expanded { "v " } else { "> " }
-            } else {
-                "  "
-            };
-            ListItem::new(format!("{indent}{arrow}{}", node.label))
-        })
-        .collect();
-
-    let tree_list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Namespaces ")
-                .border_style(tree_border_style),
-        )
-        .highlight_style(
-            Style::default()
-                .fg(ratatui::style::Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        );
-
-    f.render_stateful_widget(tree_list, chunks[0], &mut app.opt_tree.list_state);
-
-    // Middle: option list.
-    let list_border_style = if app.opt_pane == 1 {
-        Style::default().fg(ratatui::style::Color::Cyan)
-    } else {
-        Style::default()
-    };
-    let opt_items: Vec<ListItem> = app
-        .opt_list
-        .iter()
-        .map(|&idx| {
-            let entry = &app.entries[idx];
-            let name = entry.path.rsplit('.').next().unwrap_or(&entry.path);
-            let type_name = entry.type_sig.as_deref().unwrap_or("");
-            let display = if type_name.is_empty() {
-                name.to_string()
-            } else {
-                format!("{name}  {type_name}")
-            };
-            ListItem::new(display)
-        })
-        .collect();
-
-    let opt_list_widget = List::new(opt_items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Options ")
-                .border_style(list_border_style),
-        )
-        .highlight_style(
-            Style::default()
-                .fg(ratatui::style::Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        );
-
-    f.render_stateful_widget(opt_list_widget, chunks[1], &mut app.opt_list_state);
-
-    // Right: option detail.
-    let detail_border_style = if app.opt_pane == 2 {
-        Style::default().fg(ratatui::style::Color::Cyan)
-    } else {
-        Style::default()
-    };
-    let detail = if let Some(entry) = app.selected_opt_entry() {
-        render_option_detail(entry)
-    } else {
-        Text::from("Select an option.")
-    };
-
-    let detail_widget = Paragraph::new(detail)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Detail ")
-                .border_style(detail_border_style),
-        )
-        .wrap(Wrap { trim: false })
-        .scroll((app.detail_scroll, 0));
-
-    f.render_widget(detail_widget, chunks[2]);
-}
-
-// ---------------------------------------------------------------------------
-// Tab 4: Packages
-// ---------------------------------------------------------------------------
-
-/// Renders the Packages tab: package tree (left), package detail (right).
-fn draw_packages_tab(f: &mut Frame, app: &mut App, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
-        .split(area);
-
-    // Left: category tree.
-    let items: Vec<ListItem> = app
-        .pkg_tree
-        .visible
-        .iter()
-        .map(|&nid| {
-            let node = &app.pkg_tree.nodes[nid];
-            let indent = "  ".repeat(node.depth);
-            let arrow = if !node.children.is_empty() {
-                if node.expanded { "v " } else { "> " }
-            } else {
-                "  "
-            };
-            ListItem::new(format!("{indent}{arrow}{}", node.label))
-        })
-        .collect();
-
-    let tree_list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" Packages "))
-        .highlight_style(
-            Style::default()
-                .fg(ratatui::style::Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        );
-
-    f.render_stateful_widget(tree_list, chunks[0], &mut app.pkg_tree.list_state);
-
-    // Right: package detail.
-    let detail = if let Some(entry) = app.selected_pkg_entry() {
-        render_package_detail(entry)
-    } else {
-        Text::from("Select a package from the left panel.")
-    };
-
-    let detail_widget = Paragraph::new(detail)
-        .block(Block::default().borders(Borders::ALL).title(" Detail "))
-        .wrap(Wrap { trim: false })
-        .scroll((app.detail_scroll, 0));
-
-    f.render_widget(detail_widget, chunks[1]);
-}
-
-// ---------------------------------------------------------------------------
 // Search overlay
 // ---------------------------------------------------------------------------
 
@@ -1478,144 +1164,6 @@ fn render_entry_detail(entry: &DocEntry) -> Text<'static> {
             Span::styled("Source: ", Style::default().bold()),
             Span::styled(loc, Style::default().dim()),
         ]));
-    }
-
-    Text::from(lines)
-}
-
-/// Renders a module option entry as styled text: path, type, default,
-/// description, examples, see-also, and the declaring file.
-fn render_option_detail(entry: &DocEntry) -> Text<'static> {
-    let mut lines: Vec<Line> = Vec::new();
-
-    // Title.
-    lines.push(Line::from(Span::styled(
-        entry.path.clone(),
-        Style::default().bold(),
-    )));
-    lines.push(Line::from(""));
-
-    // Type.
-    if let Some(ref sig) = entry.type_sig {
-        lines.push(Line::from(vec![
-            Span::styled("Type: ", Style::default().bold()),
-            Span::styled(
-                sig.clone(),
-                Style::default().fg(ratatui::style::Color::Green),
-            ),
-        ]));
-    }
-
-    // Default.
-    if let Some(ref default) = entry.default {
-        lines.push(Line::from(vec![
-            Span::styled("Default: ", Style::default().bold()),
-            Span::raw(default.clone()),
-        ]));
-    }
-    lines.push(Line::from(""));
-
-    append_description(&mut lines, entry);
-    append_structured_sections(&mut lines, entry);
-    append_lifecycle_metadata(&mut lines, entry);
-
-    // Declared in.
-    if let Some(ref src) = entry.source_file {
-        let loc = if let Some(line) = entry.source_line {
-            format!("{src}:{line}")
-        } else {
-            src.clone()
-        };
-        lines.push(Line::from(vec![
-            Span::styled("Declared in: ", Style::default().bold()),
-            Span::styled(loc, Style::default().dim()),
-        ]));
-    }
-
-    Text::from(lines)
-}
-
-/// Renders a package entry as styled text: name, version, description, and
-/// any dependency/URL metadata recorded in the entry's `extra` map.
-fn render_package_detail(entry: &DocEntry) -> Text<'static> {
-    let mut lines: Vec<Line> = Vec::new();
-
-    // Title.
-    let name = entry.path.rsplit('.').next().unwrap_or(&entry.path);
-    lines.push(Line::from(Span::styled(
-        name.to_string(),
-        Style::default().bold(),
-    )));
-    lines.push(Line::from(""));
-
-    // Version.
-    if let Some(version) = entry.extra.get("version") {
-        lines.push(Line::from(vec![
-            Span::styled("Version: ", Style::default().bold()),
-            Span::raw(version.clone()),
-        ]));
-    }
-
-    if let Some(ref signature) = entry.type_sig {
-        lines.push(Line::from(vec![
-            Span::styled("Type: ", Style::default().bold()),
-            Span::styled(
-                signature.clone(),
-                Style::default().fg(ratatui::style::Color::Green),
-            ),
-        ]));
-    }
-
-    lines.push(Line::from(""));
-    append_description(&mut lines, entry);
-    append_structured_sections(&mut lines, entry);
-    append_lifecycle_metadata(&mut lines, entry);
-
-    // Build deps.
-    if let Some(deps) = entry.extra.get("buildDeps") {
-        lines.push(Line::from(Span::styled(
-            "Build dependencies:",
-            Style::default().bold(),
-        )));
-        for dep in deps.split(", ") {
-            lines.push(Line::from(format!("  - {dep}")));
-        }
-        lines.push(Line::from(""));
-    }
-
-    // Runtime deps.
-    if let Some(deps) = entry.extra.get("runtimeDeps") {
-        lines.push(Line::from(Span::styled(
-            "Runtime dependencies:",
-            Style::default().bold(),
-        )));
-        for dep in deps.split(", ") {
-            lines.push(Line::from(format!("  - {dep}")));
-        }
-        lines.push(Line::from(""));
-    }
-
-    // Source file.
-    if let Some(ref src) = entry.source_file {
-        lines.push(Line::from(vec![
-            Span::styled("Source: ", Style::default().bold()),
-            Span::styled(src.clone(), Style::default().dim()),
-        ]));
-    }
-
-    // Download URLs.
-    if let Some(urls) = entry.extra.get("urls") {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "Download URLs:",
-            Style::default().bold(),
-        )));
-        for url in urls.split(' ') {
-            lines.push(Line::from(Span::styled(
-                format!("  {url}"),
-                Style::default().dim(),
-            )));
-        }
     }
 
     Text::from(lines)
@@ -1814,12 +1362,8 @@ mod tests {
     #[test]
     fn detail_views_render_every_section_once() {
         let function = documented_entry(DocCategory::Function);
-        let option = documented_entry(DocCategory::ModuleOption);
-        let package = documented_entry(DocCategory::Package);
 
         assert_entry_rendered_once(&render_entry_detail(&function));
-        assert_entry_rendered_once(&render_option_detail(&option));
-        assert_entry_rendered_once(&render_package_detail(&package));
     }
 
     #[test]

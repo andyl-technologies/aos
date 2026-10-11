@@ -39,6 +39,25 @@
   version = "11.1";
 in
   mkDerivation {
+    # The client recipe uses Linux AIO, io_uring, SELinux and FUSE mount tools.
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
+
     pname = "glusterfs-client";
     inherit version;
 

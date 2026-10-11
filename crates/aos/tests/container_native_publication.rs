@@ -297,7 +297,7 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
     assert_eq!(staged["schema"], "aos.container.cli/v1");
     assert_eq!(staged["operation"], "publish");
     assert_eq!(staged["state"], "staged");
-    assert_eq!(staged["object_count"], 18);
+    assert_eq!(staged["object_count"], 20);
     assert_eq!(staged["index_digest"], release.oci.index.digest.to_string());
     assert_eq!(staged["tag_updated"], false);
     assert_eq!(staged["verification"], "pending-control-plane-commit");
@@ -314,7 +314,7 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
         .db
         .oci_repository_closed_graph(repository.id, &roots)
         .await?;
-    assert_eq!(graph.len(), 18, "complete staged release graph");
+    assert_eq!(graph.len(), 20, "complete staged release graph");
     publication_phase("stage-distribution", "returned");
     publication_phase("replicate-graph", "begin");
     for object in &graph {
@@ -504,7 +504,7 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
         .db
         .oci_referrers(repository.id, release.oci.index.digest, None)
         .await?;
-    assert_eq!(referrers.len(), 6);
+    assert_eq!(referrers.len(), 7);
     let mut artifact_types = referrers
         .iter()
         .filter_map(|descriptor| descriptor.artifact_type.as_ref())
@@ -513,6 +513,7 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
     artifact_types.sort();
     let mut expected_types = vec![
         MediaType::AosNixClosure.as_str(),
+        MediaType::AosContainerStaticAbilities.as_str(),
         MediaType::SpdxJson.as_str(),
         MediaType::AosSourceClosure.as_str(),
         MediaType::AosLicenseReport.as_str(),
@@ -594,6 +595,7 @@ fn signature_input(release: &ContainerRelease) -> ContainerSignatureInput {
         oci: release.oci.clone(),
         nix: release.nix.clone(),
         evidence: ContainerSignatureInputEvidence {
+            abilities: release.evidence.abilities.clone(),
             sbom: release.evidence.sbom.clone(),
             source: release.evidence.source.clone(),
             license: release.evidence.license.clone(),
@@ -632,6 +634,7 @@ fn release_roots(release: &ContainerRelease) -> Vec<aos_oci_types::Descriptor> {
     vec![
         release.oci.index.clone(),
         release.nix.closure.clone(),
+        release.evidence.abilities.clone(),
         release.evidence.sbom.clone(),
         release.evidence.source.clone(),
         release.evidence.license.clone(),

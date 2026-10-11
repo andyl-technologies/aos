@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -139,6 +140,30 @@ class RebootEvidenceTests(unittest.TestCase):
                 "file=extra-2.raw,format=raw,if=virtio",
             ],
         )
+
+    def test_committed_profile_uses_the_exact_admitted_private_runtime(self):
+        runtime = "/nix/store/" + "a" * 32 + "-package-runtime"
+        packages = {"artifacts": [{"name": "aos", "outputs": {"packageRuntime": runtime}}]}
+        admission = {"roots": [{"storePath": runtime}]}
+        with (
+            patch.object(self.transport, "read_remote_json", side_effect=[packages, admission]),
+            patch.object(self.machine, "ssh", return_value=json.dumps({"generation": 7})) as ssh,
+        ):
+            generation = self.transport.Scenario._native_profile_generation(self.machine)
+
+        self.assertEqual(generation, 7)
+        self.assertIn(runtime + "/bin/aos-package-runtime deployment-current", ssh.call_args.args[0])
+
+    def test_catalog_output_without_admission_cannot_be_executed(self):
+        packages = {"artifacts": [{"name": "aos", "outputs": {"packageRuntime": "/nix/store/unadmitted"}}]}
+        with (
+            patch.object(self.transport, "read_remote_json", side_effect=[packages, {"roots": []}]),
+            patch.object(self.machine, "ssh") as ssh,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "admitted package runtime"):
+                self.transport.Scenario._native_profile_generation(self.machine)
+
+        ssh.assert_not_called()
 
 
 if __name__ == "__main__":

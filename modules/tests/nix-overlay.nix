@@ -32,7 +32,7 @@
           vm.succeed("test -d /nix/store")
           vm.succeed("test -L /usr/lib/aos/toplevel")
           vm.succeed("test -s /usr/lib/aos/nix-registration")
-          vm.succeed("test ! -e /nix.lower && test ! -L /aos-toplevel && test ! -e /aos-registration")
+          vm.succeed("test ! -e /usr/lib/aos/nix && test ! -L /usr/lib/aos/toplevel && test ! -e /usr/lib/aos/nix-registration")
         '';
       }
       {

@@ -365,17 +365,33 @@ service PackageService {
   rpc GetPackage(GetPackageRequest) returns (GetPackageResponse);
 }
 
-// Authenticated package documentation and tooling schema. Canonical document
-// bytes remain sourced from the signed Nix object; search rows are disposable
-// projections rebuilt by registry indexing.
+// Authenticated native package references and typed option tooling. Document
+// bytes retain their exact signed options.json identity; search rows are disposable
+// projections generated from native declarations during release indexing.
 service DocumentationService {
   rpc GetPackageDocumentation(GetPackageDocumentationRequest) returns (GetPackageDocumentationResponse);
+  rpc GetPackageAbilityReference(GetPackageAbilityReferenceRequest) returns (GetPackageAbilityReferenceResponse);
+  rpc GetReleaseAbilityGraph(GetReleaseAbilityGraphRequest) returns (GetReleaseAbilityGraphResponse);
   rpc SearchPackageDocumentation(SearchPackageDocumentationRequest) returns (SearchPackageDocumentationResponse);
   rpc ListPackageOptions(ListPackageOptionsRequest) returns (ListPackageOptionsResponse);
   rpc GetPackageOption(GetPackageOptionRequest) returns (GetPackageOptionResponse);
   rpc ComparePackageDocumentation(ComparePackageDocumentationRequest) returns (ComparePackageDocumentationResponse);
   rpc GetDocumentationArtifact(GetDocumentationArtifactRequest) returns (GetPackageDocumentationResponse);
   rpc GetPackageDocumentationSchema(GetPackageDocumentationSchemaRequest) returns (GetPackageDocumentationSchemaResponse);
+}
+
+// Private, freshness-bounded deployment state layered over authenticated
+// package ability references. Reporter enrollment is an explicit registry
+// administration action; report submission never executes deployment work.
+service AbilityDeploymentService {
+  rpc PlanConfigureReporter(PlanConfigureAbilityDeploymentReporterRequest)
+      returns (TopologyPlanResponse);
+  rpc ConfigureReporter(ApplyTopologyPlanRequest)
+      returns (AbilityDeploymentReporter);
+  rpc ReportPackageOverlay(ReportPackageAbilityDeploymentRequest)
+      returns (PackageAbilityDeploymentResponse);
+  rpc GetPackageOverlay(GetPackageAbilityDeploymentRequest)
+      returns (PackageAbilityDeploymentResponse);
 }
 
 service ChannelService {
@@ -640,6 +656,7 @@ message GetPackageDocumentationRequest {
   string package = 2;
   string version = 3;
   string platform = 4;
+  string release = 5;
 }
 
 message PackageDocumentationIdentity {
@@ -653,7 +670,8 @@ message PackageDocumentationIdentity {
   uint64 nar_size = 8;
   string document_sha256 = 9;
   uint64 document_size = 10;
-  string semantic_schema_sha256 = 11;
+  reserved 11;
+  reserved "semantic_schema_sha256";
   string release = 12;
   string verified_tag_oid = 13;
   string release_snapshot_id = 14;
@@ -663,6 +681,95 @@ message GetPackageDocumentationResponse {
   PackageDocumentationIdentity identity = 1;
   bytes canonical_json = 2;
   string etag = 3;
+}
+
+message GetPackageAbilityReferenceRequest {
+  string registry = 1;
+  string package = 2;
+  string version = 3;
+  string platform = 4;
+  string release = 5;
+}
+
+message PackageAbilityReferenceIdentity {
+  string registry_commit = 1;
+  string package = 2;
+  string version = 3;
+  string platform = 4;
+  reserved 5, 6;
+  reserved "manifest_sha256", "package_digest";
+  string document_sha256 = 7;
+  string release = 8;
+  string verified_tag_oid = 9;
+  string release_snapshot_id = 10;
+}
+
+message GetPackageAbilityReferenceResponse {
+  PackageAbilityReferenceIdentity identity = 1;
+  bytes canonical_json = 2;
+  string etag = 3;
+}
+
+message GetReleaseAbilityGraphRequest {
+  string registry = 1;
+  string release = 2;
+  string platform = 3;
+}
+
+message ReleaseAbilityGraphIdentity {
+  string registry_commit = 1;
+  string release = 2;
+  string platform = 3;
+  string graph_sha256 = 4;
+}
+
+message GetReleaseAbilityGraphResponse {
+  ReleaseAbilityGraphIdentity identity = 1;
+  bytes canonical_json = 2;
+  string etag = 3;
+}
+
+message PlanConfigureAbilityDeploymentReporterRequest {
+  string registry = 1;
+  string deployment = 2;
+  string principal_kind = 3;
+  string principal_ref = 4;
+  bool enabled = 5;
+  uint64 expected_resource_version = 6;
+  string idempotency_key = 7;
+}
+
+message AbilityDeploymentReporter {
+  string registry = 1;
+  string deployment = 2;
+  string principal_kind = 3;
+  string principal_ref = 4;
+  bool enabled = 5;
+  uint64 resource_version = 6;
+}
+
+message ReportPackageAbilityDeploymentRequest {
+  string registry = 1;
+  string deployment = 2;
+  uint64 reporter_resource_version = 3;
+  bytes canonical_json = 4;
+}
+
+message GetPackageAbilityDeploymentRequest {
+  string registry = 1;
+  string deployment = 2;
+  string registry_commit = 3;
+  string package = 4;
+  string version = 5;
+  string platform = 6;
+}
+
+message PackageAbilityDeploymentResponse {
+  bytes canonical_json = 1;
+  string authority = 2;
+  int64 received_at = 3;
+  int64 expires_at = 4;
+  uint64 reporter_resource_version = 5;
 }
 
 message SearchPackageDocumentationRequest {
@@ -682,6 +789,9 @@ message PackageDocumentationSearchResult {
   string title = 6;
   string summary = 7;
   uint64 score = 8;
+  string release = 9;
+  string registry_commit = 10;
+  string document_sha256 = 11;
 }
 
 message SearchPackageDocumentationResponse {
@@ -704,7 +814,7 @@ message ListPackageOptionsRequest {
   string prefix = 5;
   string owner = 6;
   string type = 7;
-  optional bool contributable = 8;
+  optional bool extensible = 8;
   uint32 page_size = 9;
   string page_token = 10;
 }
@@ -716,7 +826,7 @@ message PackageOptionView {
   string type = 4;
   string owner_package = 5;
   string owner_root = 6;
-  bool contributable = 7;
+  bool extensible = 7;
   bytes canonical_option_json = 8;
 }
 
@@ -754,12 +864,19 @@ message GetDocumentationArtifactRequest {
   string document_sha256 = 2;
 }
 
-message GetPackageDocumentationSchemaRequest {}
+message GetPackageDocumentationSchemaRequest {
+  string registry = 1;
+  string package = 2;
+  string version = 3;
+  string platform = 4;
+  string release = 5;
+}
 
 message GetPackageDocumentationSchemaResponse {
-  string schema = 1;
-  string media_type = 2;
-  bytes json_schema = 3;
+  PackageDocumentationIdentity documentation_identity = 1;
+  PackageAbilityReferenceIdentity ability_reference_identity = 2;
+  bytes canonical_json = 3;
+  string etag = 4;
 }
 
 message ListChannelsRequest {

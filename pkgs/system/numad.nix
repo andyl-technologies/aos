@@ -1,5 +1,6 @@
 ##! numad — Automatic NUMA placement daemon
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -7,7 +8,63 @@
   version = "0.5+20150602";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "numad";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Numad documents its interval, logging, and process-placement options.";
+        "files" = {};
+        "input" = "The packaged NUMA placement daemon's option inventory.";
+        "operation" = "Request usage without starting the daemon.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/numad\"] + [\"-h\"], capture_output=True, text=True)\nassert result.returncode == 1 and \"usage:\" in result.stderr.lower() and \"-i\" in result.stderr and \"-p\" in result.stderr, (result.returncode, result.stdout, result.stderr)\nprint(\"numad primary passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "numad primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Numad rejects the unsupported option.";
+        "files" = {};
+        "input" = "A numad invocation containing an unsupported long option.";
+        "operation" = "Parse the invalid option without starting the daemon.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/numad\"] + [\"--aos-invalid-option\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"invalid option\" in result.stderr.lower(), (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"numad rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "numad rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

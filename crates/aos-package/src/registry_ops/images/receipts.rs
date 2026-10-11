@@ -187,10 +187,10 @@ fn committed_image_receipt_objects(
                         insert_image_receipt_object(
                             &mut objects,
                             ImagePublicationReceiptObject {
-                                key: image.delivery.image_info.object_key,
+                                key: image.delivery.artifact_contract.document.object_key,
                                 role: "image-info",
-                                byte_size: image.delivery.image_info.byte_size,
-                                sha256: image.delivery.image_info.sha256,
+                                byte_size: image.delivery.artifact_contract.document.byte_size,
+                                sha256: image.delivery.artifact_contract.document.sha256,
                             },
                         )?;
                     }

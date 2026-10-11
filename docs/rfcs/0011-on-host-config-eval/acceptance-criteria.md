@@ -84,9 +84,9 @@ specification.
 - [x] `systemd-repart` owns first-boot partition creation/growth with root-first
       pending/committed markers, typed validation, lifecycle guards, LUKS/swap
       ordering, durable audit data, and later-boot drift-only dry runs.
-- [x] `aos metadata` supports the advertised config-drive and cloud transports,
-      request bounds, exact-byte platform/signed authorization, and safe parsing
-      of the consumed NoCloud subset.
+- [x] The selected metadata providers support the advertised config-drive and
+      cloud transports, request bounds, exact-byte platform/signed
+      authorization, and safe parsing of the consumed NoCloud subset.
 - [x] DHCP-less OpenStack/DigitalOcean metadata can seed a minimal networkd
       route before stage-2 registry access.
 - [x] Facts are normalized into a content-addressed `facts.json` and typed

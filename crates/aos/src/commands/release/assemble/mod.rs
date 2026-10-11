@@ -21,6 +21,7 @@ use aos_core::nix::NixRunner;
 use aos_core::output::Printer;
 use aos_release::artifact::{
     ArtifactKind, ArtifactRecord, ArtifactRelationship, BundlePath, Compression,
+    ImageArtifactIdentity,
 };
 use aos_release::build::BuildReportV1;
 use aos_release::canonical;
@@ -114,6 +115,7 @@ impl PayloadBuilder {
             kind,
             platform: attributes.platform,
             system_variant: attributes.system_variant,
+            image: attributes.image,
             path: captured.path,
             size_bytes: captured.size_bytes,
             sha256: captured.sha256,
@@ -155,6 +157,7 @@ impl PayloadBuilder {
 struct ArtifactAttributes {
     platform: Option<aos_release::platform::Platform>,
     system_variant: Option<String>,
+    image: Option<ImageArtifactIdentity>,
     media_type: String,
     compression: Compression,
     derivation: Option<String>,
@@ -170,6 +173,7 @@ impl ArtifactAttributes {
         Self {
             platform: None,
             system_variant: None,
+            image: None,
             media_type: media_type.to_owned(),
             compression: Compression::None,
             derivation: None,
@@ -328,6 +332,7 @@ pub(super) fn run(args: &ReleaseAssembleArgs, nix: &NixRunner, printer: &Printer
         kind: ArtifactKind::ReleasePlan,
         platform: None,
         system_variant: None,
+        image: None,
         path: BundlePath::parse("release-plan.json")?,
         size_bytes: u64::try_from(plan_bytes.len())?,
         sha256: plan_digest,
@@ -448,7 +453,6 @@ fn map_decision(
     match decision {
         MatrixCell::Artifact { artifact } => MatrixCell::Artifact {
             artifact: FinalArtifactSet {
-                configuration: artifact.configuration.clone(),
                 artifact_ids: artifact
                     .artifacts
                     .iter()

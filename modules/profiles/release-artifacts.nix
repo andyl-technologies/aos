@@ -7,9 +7,11 @@
 {
   config,
   lib,
+  options,
   ...
 }: let
   cfg = config.aos.release;
+  sshBannerAvailable = builtins.hasAttr "banner" (lib.submoduleOptions options.aos.services.type._elementType ["aos" "services" "ssh"]);
   registryRenderer = import ../base/_apm-registry-renderer.nix {inherit lib;};
   registry = {
     url = cfg.url;
@@ -21,8 +23,6 @@
     caches = [];
     sbDbCerts = [];
   };
-  registryToml = registryRenderer.registryToml cfg.clientName registry;
-  trustedKeys = registryRenderer.trustedKeys registry;
   experimentalRegistryPattern = "andyl/experimental(-v([2-9]|[1-9][0-9]+))?";
   expectedClientName =
     if cfg.registry == "andyl/main"
@@ -165,7 +165,7 @@ in {
       "issue.net" = lib.mkIf (cfg.warning != "") {text = cfg.warning;};
     };
 
-    aos.services.ssh.banner = lib.mkIf (cfg.warning != "") "/etc/issue.net";
+    aos.services.ssh.banner = lib.mkIf (cfg.warning != "" && sshBannerAvailable) "/etc/issue.net";
 
     aos.containers.definitions.aos = {
       filesystem.files =
@@ -174,16 +174,6 @@ in {
             path = "/etc/aos/release-profile";
             mode = "0444";
             text = config.environment.etc."aos/release-profile".text;
-          }
-          {
-            path = "/etc/apm/registries.d/${cfg.clientName}.toml";
-            mode = "0444";
-            text = registryToml;
-          }
-          {
-            path = "/etc/apm/trusted-keys.d/${cfg.clientName}.pub";
-            mode = "0444";
-            text = trustedKeys;
           }
         ]
         ++ lib.optional (cfg.warning != "") {

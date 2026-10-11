@@ -13,12 +13,12 @@ use aos_release::{
     registry::{RegistryTier, channel_kind},
 };
 
+#[path = "../src/test_support/qualification/mod.rs"]
+#[allow(dead_code)]
+mod qualification_fixture;
+
 fn contract() -> QualificationContract {
-    canonical::from_slice(
-        include_bytes!("fixtures/qualification-contract.json"),
-        "qualification fixture",
-    )
-    .unwrap()
+    qualification_fixture::contract().unwrap()
 }
 
 fn gate_ids(

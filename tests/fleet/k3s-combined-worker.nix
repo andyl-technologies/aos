@@ -15,14 +15,13 @@
   lib,
   ...
 }: let
-  workloadImage = import ../../lib/testing/k3s-workload-image.nix {inherit pkgs lib;};
+  workloadImage = import ../../pkgs/kubernetes/_k3s-workload-image.nix {inherit pkgs lib;};
   combinedSystem = mkSystem [
     ../../systems/server.nix
     {
       aos.packages.k3s-combined = {
         package = pkgs.k3s-combined;
         bundle = true;
-        preset = false;
       };
     }
   ];
@@ -33,7 +32,6 @@
       aos.packages.k3s-worker = {
         package = pkgs.k3s-worker;
         bundle = true;
-        preset = false;
       };
     }
   ];
@@ -67,7 +65,7 @@ in {
   };
 
   testScript = ''
-    ${builtins.readFile ../../lib/testing/k3s-lifecycle.py}
+    ${builtins.readFile ../../qualification/providers/k3s/k3s-lifecycle.py}
 
     import base64
     import shlex
@@ -127,15 +125,28 @@ in {
       aos.apm.desiredPackages = [ "k3s-combined" ];
       k3s = {
         enable = true;
-        token.ref = "system-credential:k3s-token";
+        token.name = "k3s-token";
         node = {
           name = "combined";
           ip = "192.168.50.10";
         };
         networking.flannelInterface = "eth0";
-        integrations.resources.aos-contract = {
-          priority = 10;
-          content = "apiVersion: v1\\nkind: Namespace\\nmetadata:\\n  name: aos-runtime-addon-contract\\n";
+        integrations = {
+          resourceGrants = [{
+            contribution = "aos-contract";
+            apiVersion = "v1";
+            kind = "Namespace";
+            name = "aos-runtime-addon-contract";
+            namespace = null;
+          }];
+          resources.aos-contract = {
+            apiVersion = "v1";
+            kind = "Namespace";
+            name = "aos-runtime-addon-contract";
+            namespace = null;
+            priority = 10;
+            spec = {};
+          };
         };
       };
     }
@@ -145,7 +156,7 @@ in {
       k3s = {
         enable = true;
         serverUrl = "https://192.168.50.10:6443";
-        token.ref = "system-credential:k3s-token";
+        token.name = "k3s-token";
         node = {
           name = "worker";
           ip = "192.168.50.11";
@@ -155,12 +166,7 @@ in {
     }
     """)
 
-    for machine, package in (
-        (combined, "k3s-combined"),
-        (worker, "k3s-worker"),
-    ):
-        source = f"/run/credstore/{package}/token"
-        machine.succeed(f"test -s {source} && test $(stat -c %a {source}) = 600")
+    for machine in (combined, worker):
         manifest = machine.succeed("cat /run/aos/manifest.json")
         assert token not in manifest, "cluster token leaked into the manifest"
 
@@ -193,22 +199,6 @@ in {
             print(f"--- {machine.name}: pending jobs ---")
             print(machine.succeed("systemctl list-jobs --no-pager 2>&1 || true"))
             raise
-
-    # ── Package activation targets ─────────────────────────────────
-    combined.wait_until_succeeds(
-        "systemctl is-active aos-pkg-k3s-combined.target", timeout=60
-    )
-    worker.wait_until_succeeds(
-        "systemctl is-active aos-pkg-k3s-worker.target", timeout=60
-    )
-
-    # ── Pre-flight ─────────────────────────────────────────────────
-    combined.wait_until_succeeds(
-        "systemctl is-active k3s-preflight.service", timeout=60
-    )
-    worker.wait_until_succeeds(
-        "systemctl is-active k3s-preflight.service", timeout=60
-    )
 
     # ── Combined server active ──────────────────────────────────────
     # `Type=notify` on combined waits for apiserver+kubelet+node-

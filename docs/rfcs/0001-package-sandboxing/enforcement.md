@@ -111,31 +111,27 @@ KubeArmor/Tetragon use for in-kernel enforcement at LSM hooks. For a fleet OS
 with a signing registry this is a natural distinctive capability: **ship signed
 BPF-LSM policies through the existing registry trust chain.**
 
-**Mechanism.** A host policy artifact (the same `/etc/aos/policy.toml` plane,
-[permissions.md](permissions.md) tiers) references signed BPF-LSM programs the
-fleet loads to (a) live-patch a CVE-class behavior ahead of a kernel update, or
-(b) add fleet-wide hardening (e.g. block unprivileged `unshare`) without
-rebuilding the kernel or the major MAC. Requirements: `CONFIG_BPF_LSM=y`,
+**Mechanism.** A selected security package contributes signed BPF-LSM programs
+and a typed desired policy resource to (a) live-patch a CVE-class behavior ahead
+of a kernel update, or (b) add fleet-wide hardening (e.g. block unprivileged
+`unshare`) without rebuilding the kernel or the major MAC. Requirements:
+`CONFIG_BPF_LSM=y`,
 `CONFIG_BPF_EVENTS=y`, `CONFIG_FUNCTION_TRACER=y`,
 `CONFIG_DYNAMIC_FTRACE=y`, `bpf` in the `lsm=` order, BTF
 (`CONFIG_DEBUG_INFO_BTF` plus the AOS-built `pahole`/dwarves toolchain),
 and privileged load. The function-tracing options are required because BPF-LSM
 links attach through BPF trampolines.
 
-The policy channel is part of signed package metadata, not an ad-hoc host file:
-registry entries carrying BPF-LSM artifacts require `bpf-lsm-policy-v1`,
-installed package metadata records the selected JSON policy, BPF object, and
-program names, and `/etc/aos/policy.toml` selects exact
-`[[ebpf-lsm.policies]]` by registry/package/version/artifact path. At boot,
-`aos-ebpf-lsm-policies.service` prepares bpffs and runs
-`apm _load-ebpf-lsm-policies --system`; during live package activation, APM loads
-the same selected fleet policies before starting package targets. The loader
-resolves artifacts only from installed, signed package metadata rooted in the
-current system package generation, validates that the policy JSON matches the
-host selector, invokes the AOS-built `aos-ebpf-lsm-policy` helper, and pins links
-under `/sys/fs/bpf/aos/lsm`. The helper also verifies or mounts bpffs for direct
-and live-reconcile invocations, treats an already complete pin set as
-idempotently loaded, and never unlinks an existing durable pin during load.
+The policy channel is owned by the selected BPF-LSM package, not an ad-hoc host
+file or generic package metadata extension. Its signed package contract exposes
+the policy-selection interface, exact JSON and BPF-object artifact references,
+and the Linux terminal implementation. The package module authors the desired
+policy resource; the checked ability runtime invokes the selected terminal with
+those exact references and its package-owned pin-directory realization. The
+terminal validates the policy/object pair, pins links under its admitted bpffs
+directory, and records exact ownership so removal cannot unlink another
+resource's pins. Complete owned pin sets are idempotent and partial or unowned
+sets fail closed.
 
 This is **host/fleet policy, not per-package manifest** — it is the dynamic
 counterpart to the static MAC of layer 5. The current seed policy proves the

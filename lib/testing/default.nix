@@ -5,7 +5,7 @@
 # for reusable test assertions.
 #
 # mkVMTest supports two modes:
-#   - System mode (system param): full systemd + agent, for module checks
+#   - System mode (system param): selected platform + agent, for module checks
 #   - Headless mode (rootfsDeps param): test script IS init, for package checks
 #
 # Usage:
@@ -26,13 +26,13 @@
   };
   checks = import ./checks.nix;
 in {
+  mkQualificationAbilityScenario = import ./qualification-ability.nix {inherit pkgs lib;};
+  mkQualificationNativeAdapterMatrixScenario = import ./qualification-native-adapter-matrix.nix {inherit pkgs;};
   mkImageMatrix = import ./image-matrix.nix {inherit pkgs lib;};
   mkQualificationContainerScenario = import ./qualification-container.nix {inherit pkgs lib;};
   mkQualificationImageScenario = import ./qualification-image.nix {inherit pkgs lib;};
   mkQualificationPackageProbe = import ./qualification-package-probe.nix {inherit pkgs lib;};
   mkQualificationPackageScenario = import ./qualification-package.nix {inherit pkgs lib;};
-  mkQualificationRecoveryPackageScenario = import ./qualification-recovery-package.nix {inherit pkgs;};
-  mkQualificationK3sPackageScenario = import ./qualification-k3s-package.nix {inherit pkgs lib;};
   mkQualificationExecutor = import ./qualification.nix {inherit pkgs;};
   mkQualificationReportScenario = import ./qualification-report.nix {inherit pkgs;};
   inherit (vm) mkVMTest mkTestDisk;

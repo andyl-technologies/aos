@@ -5,6 +5,7 @@
 {
   config,
   lib,
+  pkgs,
   ...
 }: {
   system.checks.system-security = {
@@ -30,10 +31,10 @@
         '';
       }
       {
-        name = "firewall-config";
-        description = "firewall configuration is present";
+        name = "firewall-policy";
+        description = "the selected firewall resource is applied";
         script = ''
-          vm.succeed("test -f /etc/nftables.conf")
+          vm.succeed("${pkgs.nftables}/sbin/nft list table inet aos_filter")
         '';
       }
       {

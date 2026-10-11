@@ -10,8 +10,8 @@ pkgs.mkDerivation {
       name = "check";
       script = ''
         mkdir -p modules "$out"
-        cp ${../../lib/testing/qualification_k3s_bindings.py} modules/qualification_k3s_bindings.py
-        cp ${../../lib/testing/qualification_k3s_oci.py} modules/qualification_k3s_oci.py
+        cp ${../../qualification/providers/k3s/qualification_k3s_bindings.py} modules/qualification_k3s_bindings.py
+        cp ${../../qualification/providers/k3s/qualification_k3s_oci.py} modules/qualification_k3s_oci.py
         PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=$PWD/modules \
           python3 ${./k3s-bindings.py}
         PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=$PWD/modules \

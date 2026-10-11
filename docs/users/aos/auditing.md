@@ -94,10 +94,11 @@ Audit service health does not prove that:
 
 - Secure Boot or dm-verity is enforcing;
 - a package came from a trusted registry;
-- an exposed service retained its sandbox;
+- a selected service retained its intended runtime policy;
 - a remote collector received every record; or
 - an attacker with kernel authority could not interfere.
 
 Use [security hardening](security-hardening.md), [Secure Boot](secure-boot.md),
-[registry verification](registries.md), and [package confinement](package-sandbox.md)
+[registry verification](registries.md), and [native package runtime
+policy](package-sandbox.md)
 as separate controls.

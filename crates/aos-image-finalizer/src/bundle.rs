@@ -4,7 +4,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
-use aos_release::artifact::BundlePath;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::platform::Platform;
@@ -13,13 +12,18 @@ use aos_release::signing::{
     verify_response_binding,
 };
 use base64::Engine as _;
+
 use serde::Serialize;
 
 use crate::assembly::{AssemblyFileKind, UnsignedImageAssemblyV1};
-use crate::disk::{FinalDiskLayoutV1, LogicalDiskV1};
+use crate::disk::LogicalDiskV1;
 use crate::finalize::PreparedFilesystemsV1;
 use crate::formats::DiskFormatsV1;
 use crate::input::{VerifiedInput, digest_regular_file};
+use crate::metadata::{
+    ArtifactFact, DiskMetadata, EfiMetadata, ImageMetadata, RootMetadata, artifact_fact,
+    uki_metadata,
+};
 use crate::request::{ImageRequestAuthorizer, ImageSigningIntent, verify_intent};
 use crate::signer::ImageSigner;
 use crate::tools::PinnedTool;
@@ -45,78 +49,10 @@ pub struct SealedImageArtifactsV1 {
 
 #[derive(Serialize)]
 #[serde(deny_unknown_fields)]
-struct ImageMetadata<'a> {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    capabilities: Option<aos_release::qualification::capabilities::ImageCapabilities>,
-    schema_version: &'static str,
-    assembly_digest: Sha256Digest,
-    release_id: &'a str,
-    version: &'a str,
-    platform: Platform,
-    system_variant: &'a str,
-    sbat_generation: u64,
-    secure_boot_certificate_sha256: Sha256Digest,
-    root: RootMetadata,
-    efi: EfiMetadata,
-    disk: DiskMetadata<'a>,
-    formats: Vec<ArtifactFact>,
-}
-
-#[derive(Serialize)]
-#[serde(deny_unknown_fields)]
-struct RootMetadata {
-    filesystem_sha256: Sha256Digest,
-    filesystem_size_bytes: u64,
-    verity_sha256: Sha256Digest,
-    verity_size_bytes: u64,
-    root_hash: String,
-}
-
-#[derive(Serialize)]
-#[serde(deny_unknown_fields)]
-struct EfiMetadata {
-    normal_a: UkiMetadata,
-    normal_b: UkiMetadata,
-    recovery_a: ArtifactFact,
-    recovery_b: ArtifactFact,
-    bootloader: ArtifactFact,
-}
-
-#[derive(Serialize)]
-#[serde(deny_unknown_fields)]
-struct UkiMetadata {
-    artifact: ArtifactFact,
-    expected_ready_pcr11: Sha256Digest,
-    measurement: ArtifactFact,
-    measurement_signature: ArtifactFact,
-}
-
-#[derive(Serialize)]
-#[serde(deny_unknown_fields)]
-struct DiskMetadata<'a> {
-    logical: ArtifactFact,
-    disk_guid: &'a str,
-    fat_volume_id: &'a str,
-    layout: &'a FinalDiskLayoutV1,
-    inactive_slot_state: &'static str,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ArtifactFact {
-    id: String,
-    path: String,
-    size_bytes: u64,
-    sha256: Sha256Digest,
-}
-
-#[derive(Serialize)]
-#[serde(deny_unknown_fields)]
 struct RecoveryBundleManifest<'a> {
     schema: &'static str,
     release: &'a str,
     platform: Platform,
-    module_abi: u64,
     recovery_abi: u64,
     components: Vec<ArtifactFact>,
 }
@@ -251,7 +187,6 @@ pub async fn seal_image_artifacts(
         schema: "aos.recovery-bundle/v1",
         release: &assembly.version,
         platform: assembly.platform,
-        module_abi: assembly.module_abi,
         recovery_abi: assembly.recovery_abi,
         components,
     };
@@ -363,19 +298,22 @@ fn image_metadata<'a>(
             "aos.image.metadata/v1"
         },
         capabilities: prepared.capabilities.clone(),
-        assembly_digest: Sha256Digest::of_canonical(&assembly.schema_version, assembly)?,
-        release_id: &assembly.release_id,
+        assembly_digest: Some(Sha256Digest::of_canonical(
+            &assembly.schema_version,
+            assembly,
+        )?),
+        release_id: Some(&assembly.release_id),
         version: &assembly.version,
         platform: assembly.platform,
         system_variant: &assembly.system_variant,
-        sbat_generation: assembly.sbat_generation,
-        secure_boot_certificate_sha256: digest_regular_file(secure_boot_certificate)?.1,
+        sbat_generation: Some(assembly.sbat_generation),
+        secure_boot_certificate_sha256: Some(digest_regular_file(secure_boot_certificate)?.1),
         root: RootMetadata {
             filesystem_sha256: digest_regular_file(&prepared.root_filesystem)?.1,
             filesystem_size_bytes: fs::metadata(&prepared.root_filesystem)?.len(),
-            verity_sha256: digest_regular_file(&prepared.verity.hash_tree)?.1,
-            verity_size_bytes: fs::metadata(&prepared.verity.hash_tree)?.len(),
-            root_hash: prepared.verity.root_hash.clone(),
+            verity_sha256: Some(digest_regular_file(&prepared.verity.hash_tree)?.1),
+            verity_size_bytes: Some(fs::metadata(&prepared.verity.hash_tree)?.len()),
+            root_hash: Some(prepared.verity.root_hash.clone()),
         },
         efi: EfiMetadata {
             normal_a: uki_metadata(
@@ -392,8 +330,16 @@ fn image_metadata<'a>(
                 &efi.measurement_b.measurement,
                 &efi.measurement_b.signature,
             )?,
-            recovery_a: artifact_fact("recovery-uki-a", "recovery-a.efi", &efi.recovery_uki_a)?,
-            recovery_b: artifact_fact("recovery-uki-b", "recovery-b.efi", &efi.recovery_uki_b)?,
+            recovery_a: Some(artifact_fact(
+                "recovery-uki-a",
+                "recovery-a.efi",
+                &efi.recovery_uki_a,
+            )?),
+            recovery_b: Some(artifact_fact(
+                "recovery-uki-b",
+                "recovery-b.efi",
+                &efi.recovery_uki_b,
+            )?),
             bootloader: artifact_fact("bootloader", "systemd-boot.efi", &efi.bootloader)?,
         },
         disk: DiskMetadata {
@@ -409,40 +355,6 @@ fn image_metadata<'a>(
             artifact_fact("vmdk", "aos.vmdk", &formats.vmdk)?,
             artifact_fact("vhd", "aos.vhd", &formats.vhd)?,
         ],
-    })
-}
-
-fn uki_metadata(
-    id: &str,
-    uki: &Path,
-    expected_ready_pcr11: Sha256Digest,
-    measurement: &Path,
-    signature: &Path,
-) -> Result<UkiMetadata> {
-    Ok(UkiMetadata {
-        artifact: artifact_fact(id, &format!("{id}.efi"), uki)?,
-        expected_ready_pcr11,
-        measurement: artifact_fact(
-            &format!("{id}-measurement"),
-            &format!("{id}.efi.measurement"),
-            measurement,
-        )?,
-        measurement_signature: artifact_fact(
-            &format!("{id}-measurement-signature"),
-            &format!("{id}.efi.measurement.sig"),
-            signature,
-        )?,
-    })
-}
-
-fn artifact_fact(id: &str, relative: &str, path: &Path) -> Result<ArtifactFact> {
-    BundlePath::parse(relative)?;
-    let (size_bytes, sha256) = digest_regular_file(path)?;
-    Ok(ArtifactFact {
-        id: id.to_owned(),
-        path: relative.to_owned(),
-        size_bytes,
-        sha256,
     })
 }
 

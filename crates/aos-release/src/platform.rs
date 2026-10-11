@@ -5,6 +5,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::str::FromStr;
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
@@ -61,6 +62,17 @@ impl Platform {
 impl fmt::Display for Platform {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for Platform {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|platform| platform.as_str() == value)
+            .ok_or_else(|| anyhow::anyhow!("unsupported release platform {value:?}"))
     }
 }
 
@@ -172,5 +184,14 @@ mod tests {
     fn image_platform_set_rejects_darwin() {
         assert!(require_complete_image_platforms(Platform::LINUX.iter()).is_ok());
         assert!(require_complete_image_platforms(Platform::ALL.iter()).is_err());
+    }
+
+    #[test]
+    fn platform_parser_uses_the_canonical_spelling() {
+        assert_eq!(
+            "aarch64-linux".parse::<Platform>().unwrap(),
+            Platform::Aarch64Linux
+        );
+        assert!("linux/arm64".parse::<Platform>().is_err());
     }
 }

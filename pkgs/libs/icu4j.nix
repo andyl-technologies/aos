@@ -3,13 +3,97 @@
   mkDerivation,
   fetchurl,
   buildPackages,
+  lib,
 }: let
   version = "78.3";
   buildJdk = buildPackages.openjdk-17;
   icu4c = buildPackages.icu;
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "icu4j";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "The installed ICU4J archive and its Unicode data.";
+        operation = "Inspect the archive for Java APIs and generated Unicode resources.";
+        expected = "The archive contains UCharacter, Normalizer2, and ICU Unicode data.";
+        files = {};
+        artifacts = [];
+        steps = [
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''                import sys, zipfile
+                with zipfile.ZipFile(sys.argv[1]) as archive:
+                    members = set(archive.namelist())
+                required = {
+                    "com/ibm/icu/lang/UCharacter.class",
+                    "com/ibm/icu/text/Normalizer2.class",
+                    "com/ibm/icu/impl/data/icudata/nfc.nrm",
+                }
+                assert required <= members
+                print("icu4j archive passed")
+              ''
+              "@out@/share/java/icu4j-${version}.jar"
+            ];
+            exit_code = 0;
+            stdout.exact = "icu4j archive passed\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "A class name outside the installed ICU4J API.";
+        operation = "Look up the nonexistent class in the installed archive.";
+        expected = "The archive lookup rejects the missing class.";
+        files = {};
+        artifacts = [];
+        steps = [
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''                import sys, zipfile
+                with zipfile.ZipFile(sys.argv[1]) as archive:
+                    try:
+                        archive.getinfo("com/ibm/icu/text/AosMissingClass.class")
+                    except KeyError:
+                        print("icu4j rejected missing class")
+                    else:
+                        raise SystemExit("icu4j contained the missing class")
+              ''
+              "@out@/share/java/icu4j-${version}.jar"
+            ];
+            exit_code = 0;
+            observes_rejection = true;
+            stdout.exact = "icu4j rejected missing class\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+    };
     inherit version;
 
     src = fetchurl {

@@ -15,6 +15,9 @@ endpoint requires authentication, or its anonymous token cannot access the
 requested content, the matching profile is refreshed and any refresh error is
 reported. An explicit `--token` is used directly.
 
+For AOS host container configuration and lifecycle behavior, see the
+[container user guide](../aos/containers.md).
+
 ## Rollout gates
 
 OCI capabilities are enabled by default, alongside image browsing. Each can be

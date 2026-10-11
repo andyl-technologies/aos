@@ -49,7 +49,6 @@ def fixture_manifest(names=("server",), *, measured=False, lockdown=False):
                 "toplevel": f"/nix/store/{name}-system",
                 "version": "1",
                 "kernel": "6.12",
-                "moduleAbi": 1,
                 "role": "server",
                 "security": copy.deepcopy(security),
             },
@@ -67,7 +66,8 @@ def fixture_report(manifest):
         configured = {
             "generation": 2,
             "runtimeModulesDigest": "b" * 64,
-            "hostNixDigest": "c" * 64,
+            "baselineModulesDigest": "c" * 64,
+            "libraryNarHash": "sha256:" + "d" * 64,
         }
         observations = []
         for number, phase in enumerate(("initial", "warm", "cold"), start=2):
@@ -76,7 +76,6 @@ def fixture_report(manifest):
                 "machine": "aarch64",
                 "kernel": expected["kernel"],
                 "version": expected["version"],
-                "moduleAbi": expected["moduleAbi"],
                 "toplevel": expected["toplevel"],
                 "security": security | {
                     "encryptedState": security["measuredBoot"],
@@ -274,7 +273,7 @@ class FormatTests(unittest.TestCase):
     def prepare(self, root):
         manifest = fixture_manifest()
         system = manifest["systems"][0]
-        logical = b"logical disk"
+        logical = b"logical disk".ljust(512, b"\0")
         for image_format in matrix.FORMATS:
             directory = root / image_format
             directory.mkdir()
@@ -287,7 +286,6 @@ class FormatTests(unittest.TestCase):
                 "platform": "aarch64-linux",
                 "version": "1",
                 "name": "AOS",
-                "moduleAbi": 1,
                 "filename": "disk",
                 "compression": "zstd" if image_format == "raw" else "none",
                 "byteSize": len(encoded),
@@ -295,10 +293,30 @@ class FormatTests(unittest.TestCase):
                 "logicalDiskSha256": hashlib.sha256(logical).hexdigest(),
                 "virtualSizeBytes": len(logical),
                 "artifactBudgetsMiB": {"download": 1},
-                "rootfsSha256": "a" * 64,
-                "uki": {"signed": False, "measured": False},
             }
-            (directory / "image-info.json").write_text(json.dumps(metadata))
+            (directory / "image-delivery.json").write_text(json.dumps(metadata))
+
+            def fact(filename, contents):
+                (directory / filename).write_bytes(contents)
+                return {"path": filename, "size_bytes": len(contents),
+                        "sha256": "sha256:" + hashlib.sha256(contents).hexdigest()}
+
+            root_fact = fact("root.img", b"root")
+            verity = fact("root.verity", b"verity")
+            contract = {
+                "schema_version": "aos.image.metadata/v1", "platform": "aarch64-linux",
+                "version": "1", "system_variant": "server",
+                "disk": {"logical": {"size_bytes": len(logical),
+                                     "sha256": "sha256:" + hashlib.sha256(logical).hexdigest()},
+                         "layout": {"disk_sectors": len(logical) // 512}},
+                "root": {"filesystem_size_bytes": root_fact["size_bytes"],
+                         "filesystem_sha256": root_fact["sha256"], "root_hash": "a" * 64,
+                         "verity_size_bytes": verity["size_bytes"], "verity_sha256": verity["sha256"]},
+                "efi": {"normal_a": {"artifact": fact("aos-a.efi", b"uki-a")},
+                        "normal_b": {"artifact": fact("aos-b.efi", b"uki-b")},
+                        "bootloader": fact("systemd-boot.efi", b"bootloader")},
+            }
+            (directory / "image-info.json").write_text(json.dumps(contract))
         return manifest, system, logical
 
     def test_changed_artifact_bytes_are_rejected_before_decoding(self):
@@ -310,6 +328,86 @@ class FormatTests(unittest.TestCase):
 
             with self.assertRaisesRegex(matrix.MatrixError, "artifact hash differs"):
                 matrix.verify_formats(manifest, system, root)
+
+    def test_delivery_document_has_no_provider_contract_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest, system, _ = self.prepare(root)
+            (root / "raw" / "image-delivery.json").unlink()
+
+            with self.assertRaises(FileNotFoundError):
+                matrix.verify_formats(manifest, system, root)
+
+    def test_delivery_geometry_must_match_canonical_layout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest, system, _ = self.prepare(root)
+            path = root / "raw" / "image-info.json"
+            contract = json.loads(path.read_bytes())
+            contract["disk"]["layout"]["disk_sectors"] += 1
+            path.write_text(json.dumps(contract))
+
+            with self.assertRaisesRegex(matrix.MatrixError, "canonical geometry"):
+                matrix.verify_formats(manifest, system, root)
+
+    def test_provider_artifact_is_checked_independently_of_delivery_hash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest, system, _ = self.prepare(root)
+            (root / "raw" / "aos-a.efi").write_bytes(b"wrong")
+
+            with self.assertRaisesRegex(matrix.MatrixError, "provider artifact hash"):
+                matrix.verify_formats(manifest, system, root)
+
+    def test_canonical_contract_bytes_remain_identical_across_formats(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest, system, _ = self.prepare(root)
+            path = root / "vhd" / "image-info.json"
+            path.write_bytes(path.read_bytes() + b"\n")
+
+            with patch.object(matrix, "run") as command:
+                def decode(arguments):
+                    if arguments[0] == "zstd":
+                        Path(arguments[-1]).write_bytes(b"logical disk".ljust(512, b"\0"))
+                    elif arguments[1] == "info":
+                        return subprocess.CompletedProcess(arguments, 0, '{"virtual-size":512}')
+                    return subprocess.CompletedProcess(arguments, 0, "")
+
+                command.side_effect = decode
+                with self.assertRaisesRegex(matrix.MatrixError, "contract bytes differ"):
+                    matrix.verify_formats(manifest, system, root)
+
+    def test_partial_measurement_facts_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest, system, _ = self.prepare(root)
+            path = root / "raw" / "image-info.json"
+            contract = json.loads(path.read_bytes())
+            contract["efi"]["normal_a"]["expected_ready_pcr11"] = "sha256:" + "a" * 64
+            path.write_text(json.dumps(contract))
+
+            with self.assertRaisesRegex(matrix.MatrixError, "incomplete measurement"):
+                matrix.verify_formats(manifest, system, root)
+
+    def test_equivalent_formats_return_the_pure_provider_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest, system, logical = self.prepare(root)
+
+            def command(arguments):
+                if arguments[0] == "zstd":
+                    Path(arguments[-1]).write_bytes(logical)
+                elif arguments[1] == "info":
+                    return subprocess.CompletedProcess(arguments, 0, '{"virtual-size":512}')
+                return subprocess.CompletedProcess(arguments, 0, "")
+
+            with patch.object(matrix, "run", side_effect=command):
+                cells, _, contract = matrix.verify_formats(manifest, system, root)
+
+            self.assertEqual(len(cells), len(matrix.FORMATS))
+            self.assertEqual(contract, json.loads((root / "raw" / "image-info.json").read_bytes()))
+            self.assertNotIn("virtualSizeBytes", contract)
 
     def test_decoder_byte_difference_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -347,18 +445,21 @@ class ConfigurationTests(unittest.TestCase):
     """Distinguishes initial configuration from committed runtime modules."""
 
     def test_initial_generation_may_omit_runtime_modules(self):
-        manifest = {"inputs": {"host_nix": "host input"}}
+        manifest = {"schema": "aos.package.evaluation-input", "scope": ["profile", "system"],
+                    "configuration": ["/nix/store/baseline/module.nix"], "libraryNarHash": "sha256:" + "a" * 64}
         with (
             patch.object(boot, "read_guest_generation", return_value=1),
             patch.object(boot, "guest", return_value=json.dumps(manifest)),
         ):
             identity = boot.configuration_identity(object(), require_runtime=False)
 
-        self.assertEqual(identity["runtimeModulesDigest"], matrix.digest(None))
-        self.assertEqual(identity["hostNixDigest"], matrix.digest("host input"))
+        self.assertEqual(identity["runtimeModulesDigest"], matrix.digest([]))
+        self.assertEqual(identity["baselineModulesDigest"], matrix.digest(manifest["configuration"]))
+        self.assertEqual(identity["libraryNarHash"], manifest["libraryNarHash"])
 
     def test_configured_generation_requires_runtime_modules(self):
-        manifest = {"inputs": {"host_nix": "host input"}}
+        manifest = {"schema": "aos.package.evaluation-input", "scope": ["profile", "system"],
+                    "configuration": ["/nix/store/baseline/module.nix"], "libraryNarHash": "sha256:" + "a" * 64}
         with (
             patch.object(boot, "read_guest_generation", return_value=1),
             patch.object(boot, "guest", return_value=json.dumps(manifest)),

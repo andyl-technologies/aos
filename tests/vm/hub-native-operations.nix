@@ -180,7 +180,7 @@ in
       echo '==> Rejected private runtime command outside AOS'
       mount -o remount,rw /
       mkdir -p /usr/lib/aos/toplevel
-      printf '%s\n' 'ID=aos' 'AOS_MODULE_ABI=2' >/usr/lib/aos/toplevel/os-release
+      printf '%s\n' 'ID=aos' 'AOS_PACKAGE_MODULE_LIBRARY=/nix/store/00000000000000000000000000000000-aos-module-library' >/usr/lib/aos/toplevel/os-release
       echo '==> Installed live AOS identity fixture'
       if LC_ALL=C APM_SYSTEM_CONFIG_DIR=/tmp/apm-render-config \
         ${pkgs.aos.packageRuntime}/bin/aos-package-runtime --json render-one example \

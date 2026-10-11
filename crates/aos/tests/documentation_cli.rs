@@ -243,3 +243,83 @@ fn explicit_hub_search_uses_remote_source_and_never_falls_back() {
         "{stderr}"
     );
 }
+
+#[test]
+fn native_runtime_documents_work_offline_and_export_html() {
+    let directory = tempfile::tempdir().expect("document directory");
+    let input = directory.path().join("options.json");
+    let output = directory.path().join("reference.html");
+    let document = serde_json::json!({
+        "schema": "aos.module.documentation",
+        "scope": ["package", "example"],
+        "system": "x86_64-linux",
+        "packages": [{"name":"example", "version":"1"}],
+        "options": [],
+        "abilities": {}
+    });
+    std::fs::write(&input, serde_json::to_vec(&document).unwrap()).unwrap();
+
+    let result = run(
+        &[
+            "docs",
+            "runtime",
+            input.to_str().unwrap(),
+            "--format",
+            "json",
+        ],
+        false,
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&result.stdout).unwrap(),
+        document
+    );
+
+    let result = run(
+        &[
+            "docs",
+            "runtime",
+            input.to_str().unwrap(),
+            "--format",
+            "html",
+            "--output",
+            output.to_str().unwrap(),
+        ],
+        false,
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(
+        std::fs::read_to_string(output)
+            .unwrap()
+            .contains("Runtime abilities")
+    );
+    assert!(result.stdout.is_empty());
+}
+
+#[test]
+fn native_runtime_mode_rejects_missing_documents_and_mixed_selectors() {
+    for arguments in [
+        vec!["docs", "runtime"],
+        vec!["docs", "runtime", "options.json", "--system"],
+        vec![
+            "docs",
+            "runtime",
+            "options.json",
+            "--hub",
+            "https://example.test",
+        ],
+        vec!["docs", "package", "example", "--format", "html"],
+    ] {
+        let output = run(&arguments, false);
+        assert!(!output.status.success(), "{arguments:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("runtime"));
+    }
+}

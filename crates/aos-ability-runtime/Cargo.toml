@@ -1,0 +1,21 @@
+[package]
+name = "aos-ability-runtime"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+aos-ability-model.workspace = true
+aos-ability-plan.workspace = true
+aos-contract.workspace = true
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+rustix = { workspace = true, features = ["net", "event"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

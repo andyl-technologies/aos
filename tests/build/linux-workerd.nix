@@ -10,15 +10,20 @@
   };
   target = cross.pkgs;
   packageNames = ["workerd" "workerd-source"];
-  probes = import ../../qualification/package-probes/q-z-fifth-command-tools.nix {
-    testing.mkQualificationPackageProbe = args: args.spec;
+  packageProbeSpec = import ../../lib/testing/qualification-package-spec.nix {
+    lib = cross.lib;
   };
   probeSpecs = pkgs.writeTextFile {
     name = "linux-workerd-probes";
     destination = "/specs.json";
     text = builtins.toJSON (builtins.listToAttrs (map (name: {
         inherit name;
-        value = probes.${name};
+        value = packageProbeSpec {
+          packageName = name;
+          packageProbe = assert target.${name} ? qualificationArtifact;
+          assert target.${name}.qualificationDocument.schema == "aos.package.qualification";
+            target.${name}.qualificationDocument.probe;
+        };
       })
       packageNames));
   };
@@ -27,10 +32,7 @@
     destination = "/probe.py";
     text = builtins.readFile ../../lib/testing/qualification-package-probe.py;
   };
-  mkClosureInfo = import ../../lib/build/closure-info.nix {
-    inherit pkgs;
-    lib = cross.lib;
-  };
+  mkClosureInfo = cross.lib.build.closureInfo {inherit pkgs;};
   packageClosures = builtins.listToAttrs (map (name: {
       inherit name;
       value = mkClosureInfo {rootPaths = [target.${name}];};
@@ -96,10 +98,15 @@
     kernel = target.linux;
     systemdSystemPresets = empty;
   };
-  rootfs = import ../../lib/build/rootfs.nix {
+  rootfs = import ../../pkgs/system/_systemd-abilities/platform/_rootfs-builder.nix {
     pkgs = cross.buildPackages;
     lib = cross.lib;
+    closureInfoFor = cross.lib.build.closureInfo {pkgs = cross.buildPackages;};
     inherit system;
+    kernel = {
+      package = target.linux;
+      configuration.moduleTree = "${target.linux}/lib/modules";
+    };
     pname = "linux-workerd-rootfs";
     shrinkToFit = false;
     minSizeMiB = 2048;

@@ -15,6 +15,25 @@
   };
 in
   mkDerivation {
+    # The native compiler and shared libraries use the GNU/Linux C++ runtime.
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
+
     pname = "glslang";
     inherit version;
     src = fetchurl {

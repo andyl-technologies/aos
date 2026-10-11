@@ -195,6 +195,7 @@ fn validate_roster(roster: &KeysToml) -> Result<()> {
                 entry.id
             );
         }
+
         if let Some(key) = &entry.key {
             parse_signing_key(key)
                 .with_context(|| format!("invalid revoked key '{}'", entry.id))?;

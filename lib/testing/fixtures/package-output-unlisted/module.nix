@@ -1,9 +1,9 @@
 ##! Package-output fixture that requests an unlisted dependency.
 {
   lib,
-  outputs,
+  dependencies,
   ...
 }: {
   options.outputConfinement.hasForbidden = lib.mkOption {type = lib.types.bool;};
-  config.outputConfinement.hasForbidden = outputs.dependencies ? forbidden;
+  config.outputConfinement.hasForbidden = dependencies ? forbidden;
 }

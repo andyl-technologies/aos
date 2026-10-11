@@ -1,0 +1,32 @@
+#!@bash@
+set -euo pipefail
+
+if [ "$#" -lt 2 ]; then
+  echo "usage: aos-zfs-unlock POOL ENCRYPTION_ROOT [EXPECTED_DEVICE...]" >&2
+  exit 2
+fi
+
+pool_name=$1
+encryption_root=$2
+shift 2
+expected_devices=("$@")
+
+if [ -z "${AOS_ZFS_KEY:-}" ] || [ ! -r "$AOS_ZFS_KEY" ]; then
+  echo "aos-zfs-unlock: the selected credential provider supplied no readable key" >&2
+  exit 1
+fi
+
+zpool import -N -f "$pool_name"
+zfs load-key -L "file://$AOS_ZFS_KEY" "$encryption_root"
+
+for device in "${expected_devices[@]}"; do
+  i=0
+  while [ ! -e "$device" ] && [ "$i" -lt 60 ]; do
+    i=$((i + 1))
+    sleep 0.5
+  done
+  [ -e "$device" ] || {
+    echo "aos-zfs-unlock: expected zvol did not appear: $device" >&2
+    exit 1
+  }
+done

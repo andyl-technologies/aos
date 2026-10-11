@@ -4,7 +4,7 @@
 //! within SQL. No query fans out per placement, route, policy, or grant. Callers
 //! retain their existing surface authorization before using these read models.
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 
 use super::*;
 

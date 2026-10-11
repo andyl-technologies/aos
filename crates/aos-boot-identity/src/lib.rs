@@ -6,6 +6,8 @@
 //! security-relevant scalar fields; unrelated repeatable fields such as
 //! `console=` remain outside its policy.
 
+pub mod pe;
+
 use std::error::Error;
 use std::fmt;
 

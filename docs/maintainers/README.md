@@ -69,9 +69,9 @@ HSM status from main's intended signing custody, provider integration, rotation,
 and recovery policy.
 
 [Plan and verify canonical releases](canonical-releases.md) documents the
-fail-closed four-platform release plan, source and authorization preconditions,
-and offline bundle verification. It also identifies which RFC-0017 publication
-phases are not yet authorized for production use.
+fail-closed release-selected target matrix, source and authorization
+preconditions, and offline bundle verification. It also identifies which
+RFC-0017 publication phases are not yet authorized for production use.
 
 [Maintain the AOS trust model](trust-model.md) defines the chain from source and
 release authorization through verified boot, image-baked anchors, signed
@@ -108,15 +108,35 @@ required OpenSSL runtime path. Build and invoke the independent `aos`, `apm`,
 or `apr` program for the surface under test. On-host service commands belong to
 the private `aos-package-runtime` binary.
 
-## Run checks
-
-Start with the evaluation and formatting checks:
+For direct incremental Cargo builds, use the lean shell so the build does not
+pull in integration-test services or the packaged CLI:
 
 ```sh
-nix-build -A checks.eval
+nix develop --file cargo-shell.nix -c cargo build --manifest-path crates/Cargo.toml --bin aos
+crates/target/debug/aos --help
+```
+
+## Run checks
+
+Start with the core evaluation and formatting checks:
+
+```sh
+crates/target/debug/aos test eval core
 crates/target/debug/aos fmt --check
 crates/target/debug/aos test eval
 ```
+
+`aos test eval` runs the focused pure evaluation suites, including module-ABI,
+runtime-role, registry-policy, storage-profile, and config-provenance checks.
+It reports each suite's progress and uses at most two Nix evaluators. Use
+`aos test eval <suite>` to run one suite while iterating. The `core` suite
+builds `checks.eval` for a quick local pass. The CLI stops any individual eval
+suite after two minutes and reports which suite exceeded the limit.
+
+Checks that run an executable or inspect rendered artifacts are under
+`checks.build`, including config evaluation, config materialization, the
+Darling harness, rendered-system checks, and discovered system variants.
+Flake checks include both groups.
 
 VM and fleet checks require a Linux builder with KVM. Package, module, image,
 and CLI changes should run the narrowest relevant build or test in addition to
@@ -134,3 +154,13 @@ the evaluation checks.
 Application packages have a separate [authoring guide](../users/aos/package-authoring.md).
 Registry producers and release automation should continue with the
 [registry operator documentation](../users/registry/).
+
+## Runtime ability infrastructure
+
+The [runtime abilities guide](../users/aos/runtime-abilities.md) explains module
+composition, generated package artifacts, and deferred execution. The
+[native infrastructure contract](../rfcs/0022-abilities-and-effects/infrastructure-cutover.md)
+identifies implemented entry points and limits; the
+[consumer migration handoff](../rfcs/0022-abilities-and-effects/consumer-migration.md)
+tracks publication, APM, boot/image, and indexed-documentation integrations still
+to be moved. Infrastructure checks alone do not qualify existing OS consumers.

@@ -193,6 +193,7 @@ fn container_release_golden_vector() {
             ready_for_verified_publication: true,
         },
         evidence: ContainerReleaseEvidence {
+            abilities: artifact_descriptor(MediaType::AosContainerStaticAbilities, b"abilities"),
             sbom: artifact_descriptor(MediaType::SpdxJson, b"sbom"),
             source: artifact_descriptor(MediaType::AosSourceClosure, b"source"),
             license: artifact_descriptor(MediaType::AosLicenseReport, b"license"),
@@ -204,7 +205,8 @@ fn container_release_golden_vector() {
     release.validate().expect("valid container release");
     let json = to_canonical_json(&release).expect("canonical container release");
     let expected = concat!(
-        r#"{"evidence":{"license":{"artifactType":"application/vnd.aos.license-report.v1+json","digest":"sha256:cc1d3b0234846714b0aeda6cc34b057b4305bb83dd447fb88f816efeb59a4e96","mediaType":"application/vnd.oci.image.manifest.v1+json","size":7},"#,
+        r#"{"evidence":{"abilities":{"artifactType":"application/vnd.aos.container.static-abilities.v1+json","digest":"sha256:cfae417a8bcd2cfe163182bed6d7b730a0c57140cf27d4d0dd14fe2fc47b7c54","mediaType":"application/vnd.oci.image.manifest.v1+json","size":9},"#,
+        r#""license":{"artifactType":"application/vnd.aos.license-report.v1+json","digest":"sha256:cc1d3b0234846714b0aeda6cc34b057b4305bb83dd447fb88f816efeb59a4e96","mediaType":"application/vnd.oci.image.manifest.v1+json","size":7},"#,
         r#""provenance":{"artifactType":"application/vnd.in-toto+json","digest":"sha256:96d815328a42cb4ef89d5e0b7a1df6be43b484832c83a7b4596d8402c7c0b12b","mediaType":"application/vnd.oci.image.manifest.v1+json","size":10},"#,
         r#""sbom":{"artifactType":"application/spdx+json","digest":"sha256:98f3ae1ef67113d8140d4f6cb8d2830070e21ea48f091be519659846c771a374","mediaType":"application/vnd.oci.image.manifest.v1+json","size":4},"#,
         r#""signature":{"artifactType":"application/vnd.dsse.envelope.v1+json","digest":"sha256:1a2fc26dc7ea5a2a4748b7cb2b1ef193d96ab2c99f93092f69e63075b28d1278","mediaType":"application/vnd.oci.image.manifest.v1+json","size":9},"#,

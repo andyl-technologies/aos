@@ -26,6 +26,7 @@
 ##!                      DISTINCT from db and the module-signing key — a
 ##!                      release-time offline key in production.
 {
+  lib,
   mkDerivation,
   openssl,
   efitools,
@@ -41,7 +42,63 @@
   '';
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "secure-boot-test-keys";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Every documented trust domain is present, nonempty, and backed by a distinct private key.";
+        "files" = {};
+        "input" = "The test-only platform, exchange, database, module, and PCR signing hierarchy.";
+        "operation" = "Inspect the PEM boundaries and authenticated-variable payloads in the immutable hierarchy.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib\nroot = pathlib.Path(\"@out@\")\nprivate_names = [\"PK.key\", \"KEK.key\", \"db.key\", \"modsign.key\", \"pcr.key\"]\nprivate_keys = [(root / name).read_bytes() for name in private_names]\nassert all(data.startswith(b\"-----BEGIN PRIVATE KEY-----\") for data in private_keys[:4])\nassert private_keys[4].startswith(b\"-----BEGIN PRIVATE KEY-----\") or private_keys[4].startswith(b\"-----BEGIN RSA PRIVATE KEY-----\")\nassert len(set(private_keys)) == len(private_keys)\nassert all((root / name).stat().st_size > 1024 for name in [\"PK.auth\", \"KEK.auth\", \"db.auth\"])\nmodule = (root / \"modsign.pem\").read_text()\nassert \"PRIVATE KEY\" in module and \"BEGIN CERTIFICATE\" in module\nprint(\"secure-boot-test-keys operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "secure-boot-test-keys operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The fixture rejects the absent production credential.";
+        "files" = {};
+        "input" = "A request for a production signing key in the test-only hierarchy.";
+        "operation" = "Resolve the forbidden production key name.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport pathlib\nassert not pathlib.Path(\"@out@/production.key\").exists()\n\nsys.stderr.write(\"secure-boot-test-keys rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "secure-boot-test-keys rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     version = "1";
     src = null;
 
