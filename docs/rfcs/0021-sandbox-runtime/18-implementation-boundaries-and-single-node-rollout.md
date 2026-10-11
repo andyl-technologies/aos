@@ -61,45 +61,6 @@ fleet, or an online off-host service. It retains the independently protected
 local authority and any required provisioned local floor; it does not claim
 cross-host exclusivity or whole-host rollback resistance without their proofs.
 
-The private `local_inventory::draining::verified_observation` owner is selected
-only by `multi-node`. It retains the existing trusted drain evidence factories,
-protected joins, commitments and currentness validation. Raw drain reports,
-model layouts, phase checks and retained-history validation remain available by
-default; decoded history does not become fresh drain authority. This source
-boundary does not isolate the remaining protected ownership/Journal dependency
-group or qualify distributed execution.
-
-The private `local_inventory::assignment::acceptance_evidence` and
-`restore_admission` owners also require `multi-node`. They retain the original
-sealed assignment-acceptance and destination restore-admission factories, with
-their exact verifier, capability, publication and currentness joins. Local
-assignment models, snapshot manifests and resume DATA, and canonical retained
-history remain available by default. Destination restore-admission evidence is
-not the local snapshot/restore implementation or permission to execute a restore.
-
-Authenticated chunk, dependency-range and protected transfer-checkpoint handoffs
-belong to the existing private `assignment::remote_verification` owner, selected
-only by `multi-node`. Its original carrier checks, scoped commitments and
-streaming/replay validation remain together. Completed snapshot receipts used
-by shared drain observations and canonical Journal history remain available by
-default; their retained model layouts and recovery validation do not depend on
-this selected handoff owner.
-
-The selected `local_inventory::protocol::remote_exchange` owner also retains
-complete authenticated resync inventory and watch-bootstrap validation. Raw
-inventory, cursor and stable-UID semantics, canonical codecs, and retained
-history validation remain available by default.
-
-The complete remote assignment plan and prepared semantic-grant chain also
-requires `multi-node`. `assignment::observation_reducer` retains the private
-move-only plan and its exact effect commitment; `journal::assignment_effect`
-retains the original journal reducer's sealed prepared-grant factory and
-reservoir. The selected protected assignment owner still joins that grant to
-its committed publication and independently current effect-time carrier.
-Default intent and observation models, complete retained-history replay,
-partial-effect recovery and Controller lifecycle transfer inventory remain
-available. This cut adds no authority or distributed qualification.
-
 ## Dependency direction
 
 Arrows below mean "depends on", not IPC or privilege inheritance:
@@ -121,9 +82,12 @@ separate daemon custody, sockets, MAC domains, and failure domains remain.
 
 ## Target crate ownership
 
-Names marked **new** describe planned extractions. Existing names describe
-target responsibilities, not an inventory of current dependencies. A new
-crate needs a cohesive owner, a useful dependency boundary, and concrete
+Planned responsibilities below are TARGET boundaries, not an inventory of
+current dependencies. **New** marks a planned responsibility extraction, not
+necessarily a missing package: Journal, Policy, Ownership, Runtime, Client,
+Services and Coordinator packages exist with remaining boundaries described
+in the current index. Source, Cache and Publisher role packages remain planned.
+A new crate needs a cohesive owner, useful dependency boundary and concrete
 consumers; a helper or individual protocol phase does not warrant a crate.
 
 ### Shared data and mechanisms
@@ -144,72 +108,6 @@ domain owning the state. Generic journal replay returns data and durability
 outcomes, not domain authority. Moving codec primitives into core must not
 move role-specific validation or canonical signing domains there.
 
-The Cache DATA enclosure moves the existing accounting owner and catalog
-transitions once, without native descriptors, protected capabilities, or live
-loans. Protected Cache admission, full and incremental recovery proofs, and
-physical/currentness owners remain in domain integration. This is not a complete
-Cache extraction or isolation of the Cache signer's native dependency closure.
-
-The concrete native journal pilot now owns the original files and append poison,
-configuration DATA, coordinates, identity and namespace-provenance sets, and
-materialized DATA map in `aos-sandbox-journal::owner`. The domain wrapper keeps
-its semantic indexes, genuine loans, admission and final crossings at their
-original steps. Native file replacement retains the original lock and poison;
-upper histories and authority-instance rotation remain upper. This contiguous
-ownership cut is partial: protected opening, typed replay, compaction admission,
-and the protected Policy/Source/Cache/Ownership crate boundaries still require
-their separate migrations.
-
-Borrowed native suffix measurement also owns the exact before/after accounting,
-signed prefix deltas, raw namespace/key duplicate checks, and checked record and
-frame extents in `aos-sandbox-journal::native_suffix`. Actual upper mutation
-graphs stay borrowed through measurement; closed owner semantics, Source forecast
-buffers, every alternative and historical/current cut, and the final headroom
-check remain upper. Removing duplicate key/value and width-only floor buffers
-does not move admission, opening, descriptor custody, or authority below the
-domain boundary, and is not qualification or a complete protected owner cut.
-
-Protocol's `domain_ledger` owns the complete typed transaction/Idempotency
-DATA, legacy capacity-reservation schema and identities, and schema-bound
-record/reducer/replay DATA. It reuses generic Journal framing and bounded
-mechanics; the original role validators still borrow their actual evidence.
-Decoded phases and projections are DATA, not sealed currentness, capacity,
-postcommit authority, or physical admission. Domain wrappers retain the real
-Journal, protected guards, writer/lock loans, native causes, semantic indexes,
-full capacity-family dispatch, and closed authority factories. This shared
-DATA boundary is a prerequisite for further role migration, not removal of the
-whole protected Journal/Policy/Source/Cache/Publisher dependency cycle.
-
-Protocol's `domain_ledger::public_operation` also owns the complete immutable
-public admission/authorization DATA, 64-byte durable metadata, separate closed
-durable method registry, shared Operation state DATA and established resource
-projection/resourceVersion. Private fields remain private. Its checked DATA
-constructors, codecs and projections are publicly accessible across the crate
-boundary and return the lower DATA error; Domain directly uses those identities
-and converts errors to the original Reconciler variants. This is an explicit
-undeployed API cutover, not identical prior visibility. The actual Journal,
-protected admission, authentic clock acquisition, Effect/Repair consistency
-checks and current public authorization remain Domain-owned. Historical DATA
-construction and projection grant no authority and do not complete the
-Controller ledger or protected Journal dependency cut.
-
-Protocol's `public_api::mutation_history` owns complete plain/Nix/FUSE historical
-DATA selection and context binding, Nix and FUSE canonical carriers, original
-authority coordinates and assignment preimages. Canonical codecs, historical
-joins, whole preimage comparisons and compiler resource-version hashing share
-this owner. Its public DATA constructors and comparisons are an explicit
-undeployed API cutover; decoded or assembled history grants no current authority.
-The former Native Nix carrier module is removed and callers use the shared owner.
-
-Native retains authenticated capture, protected Journal selection, paid resource
-owners, writer/descriptor loans, clocks and all current-authority rechecks. The
-public Native FUSE identity keeps a private historical enclosure and its existing
-read surface; there is no public raw-history conversion to that identity. This
-complete historical-family prerequisite adds API and adapter code and earns no
-deletion credit for relocation. It does not complete the durable Effect or
-OwnershipGate extraction, remove protected Controller/Journal admission
-backreferences, or establish production lifecycle qualification.
-
 Controller mutation Effects require retained authenticated admission context;
 the public bare-envelope factory and its acceptance fallback are retired.
 Canonical decoding rejects bare V3/V5/V6 rows, including Applied and terminal
@@ -217,73 +115,6 @@ history, at the existing request-validation frontier. Such rows can block
 whole-ledger reconciliation and public projection; their Journal bytes remain
 intact, with no inferred context, automatic upgrade or deletion. Context-bearing
 history, broker Effects and reserved Observe children retain their own semantics.
-
-Protocol's complete `domain_ledger::operation` DATA owner now holds both native
-Operation record versions, their full decoder and unchecked encoder, all five
-private Copy fields, and the Operation/Effect key grammar. Public DATA getters,
-infallible field assembly and state/metadata replacement are an explicit
-undeployed API cutover; they perform no admission or semantic transition checks.
-Domain keeps the original protected Journal, Effect, OwnershipGate, draft,
-Idempotency, clock, recovery and currentness recipes and converts lower DATA
-errors to the original Reconciler causes at their existing boundaries. Journal's
-actual materialized-row Effect key uses Protocol directly. This cohesive format
-owner relocates one complete recipe and earns no engine-deletion credit; it does
-not complete the protected Controller/Journal boundary.
-
-The complete ordinary/Q04 Effect history codec and its semantic/hash helpers
-belong to a private descendant of the Native Effect owner. Original model fields
-and factory scopes stay intact; current-authority recipes keep their Native owners.
-Domain Journal owns the complete capacity transfer, settlement and Delete recipes;
-fixed history operations preserve their original row and error frontiers. Journal
-retains opaque original Effect/Gate holders without inspecting Native plans or
-drafts. Gate's codec remains with its complete private owner. This organization
-removes aggregate recipe callbacks without removing a Cargo dependency or
-completing the portable Effect/Gate or protected admission boundaries.
-
-Protocol transaction DATA extent accounting and its duplicate-key index share the lower
-journal's `NativeRecordValidation` owner with native suffix measurement. Keys
-borrow the actual records; domain Idempotency checks remain between the extent
-and key-registration stages. The shared fold adds no admission, configuration
-gate, or persistence proof and does not change protected owner boundaries.
-
-The opt-in `protected-unix` feature in `aos-sandbox-journal::protected_storage`
-owns the actual protected directory, basename, UID and passive native compaction
-denial marker, together with rooted traversal, no-follow opening, independent
-name observation and temporary replacement custody. Native Journal keeps this
-location at its original destruction position. Its private `protected_storage`
-group retains opening orchestration, original failure reservoirs, typed replay,
-the public lock-custody type and its private factory, and semantic compaction
-admission. Genuine Controller/Cache/Root/Source loans, currentness checks and
-final authority crossings stay with their native owners. Lower physical
-constructors and observations grant no domain authority. Standalone default
-Journal remains portable; this shared physical owner is a prerequisite and
-does not complete the protected role-crate migration or public lifecycle.
-
-The private `journal::semantic_append` group owns the complete ordinary and
-closed semantic append recipes, paired advisory preflights, Q04 adapters and
-append-only guards as inherent methods on the original Journal. Its private
-`AppendScope` and `PreflightScope` name passive selectors; fourteen escalating
-routing methods are retired. Ordinary appends and forecasts use one fixed
-entrypoint each. Native appends carry the actual original loans separately to
-the unchanged final engine, including all independent Q04 loan lifetimes.
-
-The nine-field forecast scope cannot select project-genesis phases; the original
-fixed recipes retain that separate private selection. Append and forecast keep
-their distinct validation/error order, state-clone and frame lifetimes, Cache
-locks, clocks, first causes and publication chronology. Actual callers retain
-their original outcomes and postchecks. Selector visibility stays within Journal
-and its descendants; protected constructors and crate/public APIs do not widen.
-This dispatch consolidation removes production routing code without a Cargo
-edge cut, complete protected owner migration or production qualification.
-
-Linux owns the unchanged bounded optional credential reader and its retained
-native read DATA; role-specific decoding, key separation, and startup admission
-remain with their original owners.
-
-Agent wire values needed by protocol consumers remain in a portable module
-of `aos-sandbox-agent`; Linux executable/bootstrap/effect code moves to Guest
-or application ownership. Protocol crates must not depend on a concrete agent
-executable implementation merely to use shared message types.
 
 ### Local authority and Controller
 
@@ -308,19 +139,6 @@ coordinator boundary; remote transfer planning does not. An ownership crate
 does not acquire all domain inventories simply because they share a journal.
 Resource-specific inventory authority remains with its physical owner.
 
-The historical lease state machine now resides in `aos-sandbox-ownership`:
-canonical durable records, authenticated historical recovery, successor/CAS
-validation, and borrow-bound preparation/publication of its resident maps.
-Prepared records are inert transaction DATA, not proof of a durable commit.
-The domain adapter retains the original issuer, protected clock and native
-journal, and publishes only after their existing commit succeeds. This is a
-partial extraction, not a completed protected local-owner boundary: fixed
-bootstrap, lease issuance, rollback floors, and local inventory remain with
-their existing owners until their concrete custody boundaries can move intact.
-The existing broker facade becomes the owner of its common authority engine,
-not a reexport of Controller implementation. Physical role/namespace admission
-and semantic commit remain with the respective domain owner.
-
 Concrete Controller runtime integration belongs above session security, not
 inside its general-purpose library or the thin service-entry package. Moving
 this owner must not create a dependency back from security to the runtime.
@@ -330,61 +148,6 @@ absence. Operation flights retain their original session and writer custody.
 Private signing recipes remain private to this concrete owner rather than
 becoming generic signing callbacks. Unconsumed speculative issuance recipes
 are removed instead of gaining new public ports merely to permit relocation.
-
-The complete Controller integration now belongs to
-`aos-sandbox-controller-runtime` above Session Security. Its private retained
-broker-exchange and inventory transport owners move with their actual Controller
-callers, sealed transport targets, and application error projections; Session
-Security has no dependency back to Runtime. Its inventory owner retains the actual
-capture-candidate fence, authenticated session, pending exchange, authority
-effect, output-registration attempt, optional Nix attempt, and Git coverage
-custody in their original drop order. Private Controller credentials and
-concrete exchange decisions belong to this integration group, not generic transport.
-The existing selected service entry and named inventory exports remain the
-application-facing ports. Services selects Runtime for Controller alone;
-other roles keep their original lower owners. This cut does not isolate
-Session Security's concrete domain dependency closure.
-
-Session Security's private `dormant_handshake::host_catalog_publication` owns
-the complete catalog descriptor/recovery reservoir and its execution, physical
-readback, proven-absent retry, and error-terminal recipes. Original fields,
-drop order, native failures, currentness checks, and public paths remain intact.
-Shared session mechanics stay with their original owners. This private grouping
-does not remove domain dependencies or establish runtime qualification.
-
-Initial traffic-key proof stays private and retains only checkpoint drafts.
-Its unused durable typestates are removed; protected Controller and Network
-checkpoint and recovery owners remain in their existing domains.
-
-Controller Runtime's private `resident_custody` child owns the unchanged partial
-parent/worker slots, genuine worker loans, first native causes, and negative
-terminal fences.
-
-Within the Controller integration, private `activation` owns the complete
-ordinary and retained startup recipes, journal assembly, readiness notification
-and serving handoff. Its `configuration` child owns fixed process inputs and
-closed activation parsing. The public run entry is a direct reexport of that
-recipe, not a second startup engine. Resident custody remains in its original
-owner; moving the recipes does not add recovery for callee-local failures.
-
-Private `commands` owns the bounded command vocabulary, admitted request
-payloads, response projection and complete journal-owner dispatch. Private
-`public_rpc` owns client-facing registration, authorization and routing. The
-private `worker` owns the complete reconciliation loop, retained history
-recovery, broker inventories, catalog publication and retry classification.
-Both startup routes borrow that same loop. Private `effects` retains one concrete
-executor with focused admission, lifecycle, snapshot coordination and execution
-children. The original field order, constructor moves, pending native outcomes
-and journal/session borrow boundaries remain on that same owner. The root keeps
-the shared authenticated broker-session slots used across these owners. These
-internal boundaries clarify responsibilities without creating public authority
-factories or isolating the remaining concrete domain dependency closure.
-
-The private Runtime `inventory_transport` module owns the five sealed
-initialization, successor, send, receive, and commit transport stages. It borrows
-the original session; Controller retains preparation, competing-operation gates,
-method context, pending custody, polling, and native-error parking. This module
-boundary remains internal to the complete Controller owner.
 
 The fixed raw ownership-clock sampler now belongs to a private session-security
 mechanics module. Controller credential and lease factories remain private to
@@ -406,23 +169,6 @@ keep historical predecessor, request, session, checkpoint, catalog, and cold
 terminal joins inside their protected owner; detached outcomes or digests
 cannot substitute for that custody.
 
-Canonical broker/lease and Publisher signing preparations and immutable
-completed artifacts belong to Protocol's `authorization_artifact` module.
-Signing keys and protected currentness recipes remain with their original owners;
-this artifact ownership cut does not remove SessionSecurity's domain dependencies.
-
-The pure compiler, its bounded candidate model, and public Policy verifier
-credentials belong to `aos-sandbox-policy`, depending only on Core and
-serialization, hashing, cryptography and error libraries. Their computations
-return nonauthorizing DATA; credential decoding delegates to Core's canonical
-format and does not establish protected custody or currentness. The existing
-offline key-pin helper remains in Services, with an independent build/test
-selection rather than the Policy daemon's security and effect dependency graph.
-Its installed CLI is unchanged; the daemon and aggregate package retain their
-existing dependencies. Protected current-Create source joins, Root binding,
-journal admission, held-cut decisions, publication, and recovery remain in the
-domain integration and still require the larger Policy ownership extraction.
-
 Protected compiler Candidate V3 is the sole retained body grammar. The earlier
 plan-less V2 path and its optional preimage/readback state are removed; old bytes
 are refused without repair or deletion. Canonical fixtures share the existing
@@ -438,17 +184,6 @@ Host, Storage, Mount, and Network retain their existing implementation crates
 `aos-sandbox-guardian`. They own concrete role-specific effects, independently
 verified observations, and their protected state; they do not host the public
 Controller or import its implementation.
-
-`aos-sandbox-guest-root-realization` owns the complete physical fresh-root
-population, fixed SELinux projection/readback, and durable marker publication
-recipes. Host's detached-root verifier, Storage's publisher and inventory, and
-Guest's actual PID 1 manager projection consume this owner directly. Host and
-Storage do not depend on Guest execution merely to realize or inspect a root.
-The separate `aos-sandbox-guest-root-tree` remains a nonauthorizing measurement
-owner. Protected template selection, authenticated admission, root/writer
-custody, replay, deadline predicates, worker quiescence, and ambiguous-outcome
-recovery remain with their original Host, Storage and Guest callers. This cut
-adds no producer or authority and does not qualify the connected lifecycle.
 
 The four Source-provider crates retain distinct responsibilities:
 `protocol` owns decoded messages, `ledger` owns pure records/reducers,
@@ -482,6 +217,270 @@ safe APIs, but does not duplicate business state machines or expose signing
 seeds. Shared application setup remains private. A Controller client does not
 link broker effect implementations just to send local requests. The `aos`
 CLI uses the client crate; privileged helpers remain separately packaged.
+
+## Current ownership and remaining boundaries
+
+The target tables above describe intended responsibilities. This index describes
+current source ownership; a private module grouping is not a Cargo boundary,
+and shared DATA or mechanics are not protected authority. Source links do not
+establish connected behavior or selected qualification.
+
+Current boundaries preserve original resident fields and factory scopes, and
+validation, error, allocation, cleanup, custody and final-crossing chronology.
+Selected native physical ownership is not qualification on other Unix targets.
+
+| Current owner | Responsibility and retained boundary |
+| --- | --- |
+| [Core](../../../crates/aos-sandbox-core/src/lib.rs), Agent wire and Linux | Shared bounded mechanics, portable messages and fixed native mechanics; role validation and authority stay with callers. |
+| [Journal](../../../crates/aos-sandbox-journal/src/lib.rs) | Portable framing/native DATA and opt-in physical custody; Domain retains typed semantic admission and final crossings. |
+| [Protocol](../../../crates/aos-sandbox-protocol/src/lib.rs) | Canonical historical/local DATA; current grants, signing keys and native loans remain upper. |
+| [Domain Journal](../../../crates/aos-sandbox/src/journal.rs) and [protected domain adapter](../../../crates/aos-sandbox/src/protected_domain_journal.rs) | Native role transitions, original retained causes and cross-owner loans; private organization, not protected role-crate isolation. |
+| [Native Source](../../../crates/aos-sandbox/src/source_domain/mod.rs) | Private fixed-writer and four-domain CrossDomain owners; native custody and recovery remain in Domain, without a Source Cargo boundary. |
+| [Ownership](../../../crates/aos-sandbox-ownership/src/lib.rs) and [Policy](../../../crates/aos-sandbox-policy/src/lib.rs) | Historical lease state and pure compiler/verifier DATA; fresh issuance, Root binding and protected publication remain Native. |
+| [Controller Runtime](../../../crates/aos-sandbox-controller-runtime/src/lib.rs), Security and signers | Concrete Controller above session custody; Security and Source/Cache signers still depend on Domain. |
+| [Guest root tree](../../../crates/aos-sandbox-guest-root-tree/src/lib.rs) and [realization](../../../crates/aos-sandbox-guest-root-realization/src/lib.rs) | Separate nonauthorizing measurement and physical realization; original admission/effect/recovery custody remains at callers. |
+| [Coordinator](../../../crates/aos-sandbox-coordinator/src/lib.rs) | Explicitly selected placement/watch/projection; protected remote handoffs remain selected Domain owners. |
+
+### Shared mechanics and canonical DATA
+
+Core's bounded reader serves Cache's fourteen component, atomic-envelope and
+typed-checkpoint roots, without a duplicate recovery byte engine. Cache retains
+headers, capacities, canonical booleans/optional fields, closed codes, commitments
+and semantic validation; envelope hashes include the header and EOF precedes
+digest comparison. Protected Cache admission, custody and recovery authority do
+not change. LocalInventory retained Journal/store/bootstrap/clock formats share
+that reader without private read adapters; original bounds/errors, canonical
+domains, exact authenticated prefixes, protected factories and public Node
+carrier-decoder contracts remain local.
+
+Linux owns the bounded optional credential reader and retained native read DATA;
+role decoding, key separation and startup admission remain upper. Agent's portable
+wire module serves Protocol consumers; Linux executable/bootstrap/effect code
+belongs to Guest or assembly, not a concrete executable dependency of wire users.
+
+Journal's `owner` retains the original files/append poison, configuration,
+coordinates, identity/namespace-provenance sets and materialized DATA map. File
+replacement preserves lock and poison; Domain retains semantic indexes, genuine
+loans, admission/final crossings, histories and authority-instance rotation.
+`native_suffix` borrows actual upper mutation graphs for before/after accounting,
+signed prefix deltas, raw key/namespace duplicate checks and checked record/frame
+extents. Closed semantics, Source forecast buffers, all alternatives and
+historical/current cuts, and final headroom remain upper. Shared accounting
+replaces duplicate key/value and width-only floor buffers without moving
+admission, opening, descriptor custody or authority below Domain.
+
+Protocol transaction extent accounting and its duplicate-key index share
+Journal's `NativeRecordValidation` with suffix measurement. Keys borrow actual
+records; Domain Idempotency checks occur between extent checking and key
+registration. This fold grants no admission, configuration gate or persistence.
+
+Opt-in `protected-unix` selects Journal's physical `protected_storage`: the actual
+directory, basename, UID, passive compaction-denial marker, rooted traversal,
+no-follow opening, independent name observation and temporary replacement custody.
+Domain Journal preserves this location's destruction position. Its private
+`protected_storage` keeps opening orchestration, original failure reservoirs,
+typed replay, the public lock-custody identity/private factory and semantic
+compaction admission. Controller/Cache/Root/Source loans, currentness and final
+authority crossings stay Native; lower constructors/observations grant no domain
+authority. Standalone default Journal remains portable. Protected opening,
+typed replay, compaction admission and protected role migrations are still partial.
+
+Protocol's `domain_ledger` owns complete transaction/Idempotency DATA, legacy
+capacity schema/identities and schema-bound record/reducer/replay DATA, reusing
+Journal framing/bounded mechanics. Role validators still borrow actual evidence.
+Decoded phases/projections are not sealed currentness, capacity, postcommit or
+physical admission. Native wrappers retain actual Journal/guards, writer/lock
+loans, causes, indexes, full capacity-family dispatch and closed factories.
+
+Its `public_operation` owns immutable admission/authorization DATA, 64-byte
+durable metadata, a separate closed durable method registry, Operation state
+and established projection/resourceVersion. Private fields stay private; checked
+constructors/codecs/projections are public passive DATA APIs returning lower
+errors projected to original Reconciler variants. This undeployed cutover changes
+visibility. Journal, admission, authentic clock acquisition, Effect/Repair
+consistency and current public authorization remain Domain-owned.
+
+`public_api::mutation_history` owns complete plain/Nix/FUSE history selection and
+context binding, canonical Nix/FUSE carriers, original authority coordinates,
+assignment preimages/whole comparisons, historical joins and compiler
+resource-version hashing. Native callers use this single owner, not a second Nix
+carrier module. Public DATA constructors/comparisons are undeployed API cutovers,
+not current authority. Native retains authenticated capture, protected selection,
+paid resource owners, writer/descriptor loans, clocks and current-authority
+rechecks. Its public FUSE identity keeps the original read surface/private
+historical enclosure, with no public raw-history conversion.
+
+`domain_ledger::operation` owns both Operation record versions, full decoder,
+unchecked encoder, five private Copy fields and Operation/Effect key grammar.
+Public DATA getters, infallible assembly and state/metadata replacement are
+undeployed cutovers, not admission or semantic transition checks. Domain retains
+Journal, Effect, Gate, draft, Idempotency, clock, recovery/currentness recipes and
+original Reconciler error projections. Journal's materialized-row Effect key
+uses Protocol directly, as does its public projection metadata.
+
+Protocol's `authorization_artifact` owns canonical broker/lease and Publisher
+signing preparations and immutable completed artifacts. Signing keys and
+protected currentness stay with original owners, not this DATA API.
+
+### Native continuations and local authority
+
+The complete ordinary/Q04 Effect history codec and semantic/hash helpers stay
+in a private descendant of Native Effect, with original fields/factory scopes.
+Gate's complete model/codec remains in private `operation_ledger`, using Core's
+reader and Protocol's Operation/key owner; immutable draft validation stays
+Native. Domain Journal owns whole capacity-transfer, settlement and Delete
+recipes, with fixed original row/error frontiers and opaque Effect/Gate histories
+that do not expose Native plans/drafts. Current admission, activation, clocks,
+Journal custody and current-authority recipes remain with their genuine owners;
+there are no aggregate recipe callbacks or portable Effect/Gate closure.
+
+Private `journal::semantic_append` retains complete ordinary/closed append,
+paired advisory preflight, Q04 adapter and append-only-guard inherent recipes on
+the original Journal. Passive private `AppendScope`/`PreflightScope` provide one
+ordinary append and one forecast entrypoint without escalating routing layers.
+Actual original loans reach the unchanged final engine separately, including all
+independent Q04 lifetimes. The nine-field forecast cannot select project genesis;
+fixed recipes retain that private selection. Append/forecast preserve distinct
+validation/errors, state-clone/frame lifetimes, Cache locks, clocks, first causes,
+publication, caller outcomes and postchecks. Selectors stay within Journal and
+descendants; protected constructors and crate/public APIs do not widen.
+
+Linux `journal::controller` owns the intact Controller Journal profile, identity
+and opening-construction group; `JournalShape` stays beside its producer with
+Linux-only availability. Crate-root `protected_domain_journal` keeps original
+Journal custody through planning, append, readback, recovery and postcommit for
+Lifecycle, Hierarchy, Git, Environment, Cache, Policy and Publisher. Publisher's
+two retained-effect recovery paths share one private helper; original transaction
+identity and actual reservation/Journal custody stay Native. These are private
+source responsibilities, not protected Cargo owners.
+
+`source_domain` owns the live fixed Source Journal, paid opening originals and
+original Q04 loans in private `fixed_writer`; private `cross_domain` retains the
+dormant four-domain transaction, replay and postcommit engine. The adapter retains
+actual Journal and evidence-owner loans; snapshots retain instance/sequence/root
+DATA. One crate-private Lifecycle recovery reexport reaches the unchanged existing
+verifier; lifecycle schemas, accepted identities and factories stay Lifecycle-owned.
+This direct owner-path cutover adds no loan, factory, producer or currentness
+authority and establishes neither a Source Cargo boundary nor the complete
+protected Source/Lifecycle closure.
+
+Private `cache_residency::recovery::logical_pin` owns complete Acquire/Renew/Release
+planning with one shared successor recipe. Complete retained-ledger and exact
+PinAcquire/PinDrain checks remain at their original gates; protected commit,
+independent physical settlement, causes and custody stay with native Cache owners.
+Returned payloads remain plans, not current grants.
+
+Protocol `cache_state` owns inert Cache accounting/catalog transitions once,
+without descriptors, protected capabilities or live loans. Protected Cache
+admission, full/incremental recovery proofs and physical/currentness owners
+remain in Domain. Source/Cache/Publisher role crates remain planned; Security and
+Source/Cache signers still depend on Domain. The protected Journal/Policy/Source/
+Cache/Publisher and local Ownership group is not isolated by these prerequisites.
+No DATA enclosure, private grouping or historical construction is a current
+grant, removal of protected Controller/Journal backreferences or public lifecycle
+qualification. Shared engines retire duplicate mechanics; relocated source earns
+zero deletion credit, even when passive APIs/adapters add code.
+
+Ownership holds canonical historical lease records, authenticated historical
+recovery, successor/CAS validation and borrow-bound resident-map preparation/
+publication. Prepared records are inert transaction DATA until the original
+Domain issuer, protected clock and native Journal commit succeeds. Fixed
+bootstrap, lease issuance, rollback floors and local inventory remain upper.
+The broker facade must own its common authority engine rather than reexporting
+Controller implementation; physical role/namespace admission and semantic commit
+belong to the domain owner.
+
+Policy's pure compiler, bounded candidate model and public verifier credentials
+depend only on Core and serialization/hash/cryptography/error libraries. They
+return nonauthorizing DATA; credential decoding delegates to Core's canonical
+format without protected custody/currentness. Services' offline key-pin helper
+has independent build/test selection and unchanged installed CLI; daemon/aggregate
+dependencies remain. Current-Create Source joins, Root binding, Journal admission,
+held-cut decisions, publication and recovery still require Native Policy ownership.
+
+### Runtime custody and physical effects
+
+Runtime owns concrete Controller integration above Security, with no Security
+backedge. Private retained broker exchange/inventory transport keep actual callers,
+sealed targets and application errors. Inventory retains capture-candidate fence,
+authenticated session, pending exchange, authority effect, output-registration
+attempt, optional Nix attempt and Git coverage custody in original drop order.
+Controller credentials/concrete exchange decisions stay private here, not generic
+transport. Existing selected service entry/named inventory ports remain; Services
+selects Runtime only for Controller and other roles retain their lower owners.
+
+Private `resident_custody` retains partial parent/worker slots, genuine worker
+loans, first native causes and negative terminal fences. `activation` owns ordinary/
+retained startup, Journal assembly, readiness and serving; `configuration` owns
+fixed process inputs/closed parsing. Public run directly reexports that recipe;
+there is one startup engine and no added recovery for callee-local failures.
+`commands` owns bounded vocabulary, admitted payloads, response projection and
+Journal dispatch; `public_rpc` owns registration/auth/routing. Both startups borrow
+one `worker` reconciliation/history-recovery/inventory/catalog/retry loop. One
+`effects` executor has admission/lifecycle/snapshot/execution children, preserving
+field order, constructor moves, pending outcomes and Journal/session borrows.
+The root keeps shared authenticated session slots; private organization adds no
+public authority factory or isolated concrete Domain dependency closure.
+
+Private `inventory_transport` owns five sealed initialization/successor/send/
+receive/commit stages borrowing the original session. Controller retains preparation,
+competing-operation gates, method context, pending custody, polling and native
+error parking within this same complete owner.
+
+Security's private `dormant_handshake::host_catalog_publication` retains complete
+catalog descriptor/recovery reservoirs, execution, physical readback, proven-absent
+retry and error-terminal recipes, original fields/drop order/native failures/
+currentness/public paths. Shared session mechanics stay in their original owners.
+Initial traffic-key proof is private checkpoint drafts only, without unused durable
+typestates; protected Controller/Network checkpoint and recovery stay in their
+domains. Neither artifact ownership nor this grouping isolates Security's Domain
+dependency or establishes runtime qualification.
+
+Guest-root-realization owns complete fresh-root population, fixed SELinux
+projection/readback and durable marker publication. Host's detached-root verifier,
+Storage's publisher/inventory and Guest's PID 1 manager consume it directly,
+without Host/Storage importing Guest execution for realization/inspection.
+Guest-root-tree remains nonauthorizing measurement. Original Host/Storage/Guest
+template selection, authenticated admission, root/writer custody, replay, deadline
+predicates, worker quiescence and ambiguous recovery remain upper; this adds no
+producer/authority or connected lifecycle qualification.
+
+### Selected Coordinator and remote owners
+
+Coordinator owns deterministic placement, ordered-watch producer/client handling
+and committed-lease protobuf projection, depending on selected Domain local-control
+contracts without a Domain dependency on its implementation. Selection owns the
+intent adapter; a free converter borrows the actual committed lease. There is no
+parallel remote placement/watch or inherent intent/lease adapter engine. One
+canonical codec owns six generated watch conversions; public structural cursor/
+event constructors, bounded body encoding and exact capability-binding copy are
+undeployed passive API cutovers, not authenticated bootstrap/carrier grants/current
+observations/ownership leases. Sealed producers, protected transport/store and
+genuine custody remain Domain-owned. Explicit Coordinator tests do not change the
+normal application/default-member graph; relocation is not deletion, complete
+Coordinator isolation, protected closure or runtime qualification.
+
+Selected Domain remote owners require `multi-node`: drain `verified_observation`
+keeps trusted evidence factories/protected joins/commitments/currentness; assignment
+`acceptance_evidence`/`restore_admission` keep sealed factories and exact verifier/
+capability/publication/currentness joins. Destination admission is neither local
+snapshot/restore implementation nor permission to restore. `remote_verification`
+keeps authenticated chunks, dependency ranges, protected transfer checkpoints,
+carrier checks/scoped commitments and streaming/replay together; `remote_exchange`
+keeps authenticated resync inventory/watch bootstrap. `observation_reducer` keeps
+the private move-only assignment plan/exact effect commitment;
+`journal::assignment_effect` keeps sealed prepared-grant factory/reservoir. The
+protected owner joins that grant to committed publication and independently
+current effect-time carrier.
+
+Default DATA still includes raw drain reports/model layouts/phase checks, local
+assignment and intent/observation models, snapshot manifests/resume DATA, completed
+snapshot receipts for shared drain/history, raw inventory/cursors/stable-UIDs,
+canonical codecs/retained-history validation, full replay/partial-effect recovery
+and Controller lifecycle transfer inventory. Their retained layouts/recovery do
+not depend on selected handoffs; decoded history is not fresh drain authority.
+These gates do not isolate the remaining protected Ownership/Journal group or
+qualify distributed execution.
 
 ## Interface contracts
 
@@ -527,31 +526,10 @@ preconditions, physical verification and crash boundaries explicit. One
 declarative method registry supplies shared metadata; it does not replace
 method-specific verification with a generic permissive dispatcher.
 
-The complete Cache recovery codec reader now uses Core's bounded byte mechanics
-across its fourteen component, atomic-envelope, and typed-checkpoint parser
-roots. Cache retains its fixed headers, capacity limits, canonical booleans and
-optional fields, closed codes, commitments, and semantic validation. Envelope
-hashing includes the original header, and EOF validation still precedes digest
-comparison. This removes the duplicate recovery byte engine without changing
-protected Cache admission, custody, or recovery authority, and establishes no
-new runtime qualification or protected Cache crate boundary.
-
-LocalInventory retained Journal, store history, bootstrap and clock formats use
-the same Core reader with their original bounds and error classifications.
-Canonical domain checks and exact authenticated-prefix capture remain local;
-the private read adapters are removed. Protected factories and the
-public Node carrier decoder retain their existing contracts.
-
 Do not introduce a universal owner/context containing every role, a field for
 every hypothetical backend, forwarding layers without a contract, or a new
 record family per refactor. Implementation and co-located tests are reviewed
 separately under the repository's file-size and documentation standards.
-
-Reconciler's private `operation_ledger` retains the OwnershipGate model and codec
-and uses Protocol's complete Operation record and key owner directly. Gate
-decoding reuses Core's bounded reader; immutable draft validation stays native.
-Protected admission, activation, currentness, clocks and Journal custody remain
-with their actual owners; the protected-owner extraction is incomplete.
 
 ## Multi-node boundary reserved for later
 
@@ -560,23 +538,6 @@ schemas, messages, version negotiation and assignment/watch/transfer models.
 `aos-sandbox-coordinator` (**new**) owns fleet placement, draining, remote
 reconciliation, transfer and coordinator transport. Shared identities and
 local ownership contracts remain below both crates.
-
-The first complete extracted Coordinator responsibility contains deterministic
-placement, ordered-watch producer/client handling and committed-lease protobuf
-projection. It depends on selected Domain local-control contracts; Domain has no
-dependency on this implementation. The former remote placement/watch modules
-and inherent intent/lease adapters are removed immediately. Selection owns the
-intent adapter, while a free converter borrows the actual committed lease.
-
-The retained canonical codec owns the six generated watch-data conversions once.
-Public structural cursor/event constructors, bounded body encoding and the exact
-capability-binding copy are explicit undeployed DATA API cutovers. They mint no
-authenticated bootstrap, carrier grant, current observation or ownership lease.
-Sealed producers, protected transport/store orchestration and their genuine
-custody remain Domain-owned. Separate explicit Coordinator test selection keeps
-the normal application/default-member feature graph unchanged. This cohort earns
-no deletion credit for relocation and does not complete Coordinator isolation,
-the protected authority boundary or runtime qualification.
 
 The application-level `multi-node` feature is off by default and uses optional
 dependencies. It is not enabled transitively by any single-node role crate, default
