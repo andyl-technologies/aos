@@ -122,6 +122,9 @@ impl CnpController {
 
     /// Takes the original negotiated stream and finite immutable byte custody.
     ///
+    /// Refusal drops the supplied session, custody and route. Native owners that
+    /// must retain these originals use [`Self::new_retained`] with caller-owned slots.
+    ///
     /// # Errors
     /// Refuses expired registration, missing evidence delivery, or zero or
     /// greater-than-one-minute operational exchange budgets.

@@ -25,7 +25,10 @@ The installed provider registry authenticates its implementation revision and
 finite preparation plan. `ProviderWorldPreparation` reserves participant storage
 before native construction and owns one original `PreparedRealization`. It
 adopts each participant before inspecting its callbacks. Failure or unwind
-transfers the complete partial preparation to the pre-reserved world supervisor.
+transfers the participants already owned by that builder to the pre-reserved world
+supervisor. Before appending a participant, the provider must hold any partial
+birth, negotiation and transport journals in its own preowned guard; the builder
+cannot retain resources still local to the provider.
 
 The current installed vendor adapter supports multiple owners of one
 implementation. Mixed implementations must contribute to one shared preparation
