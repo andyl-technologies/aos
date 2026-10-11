@@ -7,8 +7,6 @@
 
 use std::sync::Arc;
 
-use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceId};
-use sha2::{Digest as _, Sha256};
 use crate::environment::protected_journal::{
     EnvironmentProtectedJournalEnvelopeV1, EnvironmentProtectedJournalSchemaV1,
 };
@@ -28,14 +26,16 @@ use crate::lifecycle::LifecycleJournalVerifierV1;
 use crate::lifecycle::protected_journal::{
     LifecycleProtectedJournalEnvelopeV1, LifecycleProtectedJournalSchemaV1,
 };
+use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceId};
 use aos_sandbox_protocol::domain_ledger::records::{
     DurableDomainMemberV1, ProtectedDomainKeyV1, ProtectedDomainSchemaV1, ProtectedRecordRoleV1,
     ProtectedReducerPhaseV1, decode_durable_member, decode_reducer_payload_with_validator,
     encode_durable_member, validate_successor,
 };
+use sha2::{Digest as _, Sha256};
 
-use crate::protected_domain_journal::{ProtectedDomainJournalErrorV1, replay_projection};
 use crate::lifecycle::recover_lifecycle_journal_verifier_v1;
+use crate::protected_domain_journal::{ProtectedDomainJournalErrorV1, replay_projection};
 
 use super::{MAXIMUM_CROSS_DOMAIN_REPLAY_MEMBERS, ProtectedSourceDomainJournalOwnerV1};
 

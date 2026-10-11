@@ -30,8 +30,6 @@ mod phase6;
 mod projection;
 pub mod protected_journal;
 mod protected_owner;
-
-pub(crate) use protected_owner::recover_lifecycle_journal_verifier_v1;
 mod public_admission;
 mod public_operation;
 mod recovery;
@@ -173,6 +171,7 @@ pub use protected_journal::{
     AppliedLifecycleJournalTransactionV1, LifecycleProtectedJournalErrorV1,
     LifecycleProtectedJournalKeyV1, LifecycleProtectedRecordKindV1, lifecycle_protected_key_v1,
 };
+pub(crate) use protected_owner::recover_lifecycle_journal_verifier_v1;
 pub use protected_owner::{
     LifecycleCurrentAuxiliaryPublicationV1, LifecycleOperationAdmissionV1,
     LifecycleProgressCommitOutcomeV1, LifecycleProgressOutcomeUnknownV1,

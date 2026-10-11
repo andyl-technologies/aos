@@ -12,7 +12,9 @@ use aos_sandbox_core::ProjectId;
 
 #[cfg(target_os = "linux")]
 use crate::cache_residency::CacheV8SettledClearV1;
-use crate::journal::{Journal, JournalError, JournalLimits, RecoveryReport, SourceDomainPolicyHoldV1};
+use crate::journal::{
+    Journal, JournalError, JournalLimits, RecoveryReport, SourceDomainPolicyHoldV1,
+};
 #[cfg(target_os = "linux")]
 use crate::policy_compiler::RootV8SettledGrantV1;
 
@@ -73,12 +75,19 @@ impl ControllerSourceJournalConstructionV1 {
             return Err(());
         }
         self.attempted = true;
-        self.before = Some(crate::controller_resource_reservation::ControllerResourcePreopenPostV1::new());
+        self.before =
+            Some(crate::controller_resource_reservation::ControllerResourcePreopenPostV1::new());
         loan.observe_into(self.before.as_mut().ok_or(())?);
-        self.before.as_ref().ok_or(())?.require_success().map_err(|_| ())?;
+        self.before
+            .as_ref()
+            .ok_or(())?
+            .require_success()
+            .map_err(|_| ())?;
         self.opening.open_once(
-            Path::new(PROTECTED_SOURCE_DOMAIN_ROOT), PROTECTED_SOURCE_DOMAIN_JOURNAL,
-            source_domain_journal_limits(), uid,
+            Path::new(PROTECTED_SOURCE_DOMAIN_ROOT),
+            PROTECTED_SOURCE_DOMAIN_JOURNAL,
+            source_domain_journal_limits(),
+            uid,
         );
         if self.opening.failure().is_some() {
             return Err(());
@@ -112,12 +121,17 @@ impl ControllerSourceJournalConstructionV1 {
         if let Some(source) = self.source.as_ref() {
             self.names_post = Some(source.journal.validate_held_protected_names());
         }
-        self.post = Some(crate::controller_resource_reservation::ControllerResourcePreopenPostV1::new());
+        self.post =
+            Some(crate::controller_resource_reservation::ControllerResourcePreopenPostV1::new());
         loan.observe_into(self.post.as_mut().ok_or(())?);
         if self.failure().is_some() || self.source.is_none() {
             return Err(());
         }
-        self.post.as_ref().ok_or(())?.require_success().map_err(|_| ())
+        self.post
+            .as_ref()
+            .ok_or(())?
+            .require_success()
+            .map_err(|_| ())
     }
 
     /// Moves the original into the infallible executor assembly after recovery.
@@ -138,14 +152,18 @@ impl ControllerSourceJournalConstructionV1 {
     /// Borrows the opening cause without projecting later name/profile debt.
     #[must_use]
     pub fn primary_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.before.as_ref().and_then(|post| post.failure())
+        self.before
+            .as_ref()
+            .and_then(|post| post.failure())
             .or_else(|| self.opening.failure())
     }
 
     /// Borrows the retained later Source-name or original-profile debt.
     #[must_use]
     pub fn postcheck_debt(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.names_post.as_ref().and_then(|result| result.as_ref().err())
+        self.names_post
+            .as_ref()
+            .and_then(|result| result.as_ref().err())
             .map(|error| error as &(dyn std::error::Error + 'static))
             .or_else(|| self.post.as_ref().and_then(|post| post.failure()))
     }
@@ -158,7 +176,9 @@ impl ControllerSourceJournalConstructionV1 {
 pub(crate) struct OriginalQ04SourceOwnerCutV1<'source> {
     source: &'source mut ProtectedSourceDomainJournalOwnerV1,
     cut: Option<[u8; crate::policy_compiler::create_q04::IDENTITY_BYTES]>,
-    commits: [Option<Result<crate::journal::CommitResult, crate::policy_compiler::create_q04::CreateQ04ErrorV1>>; 3],
+    commits: [Option<
+        Result<crate::journal::CommitResult, crate::policy_compiler::create_q04::CreateQ04ErrorV1>,
+    >; 3],
     first: Option<crate::policy_compiler::create_q04::CreateQ04ErrorV1>,
     postcheck: Option<crate::policy_compiler::create_q04::CreateQ04ErrorV1>,
     finished: bool,
@@ -167,7 +187,14 @@ pub(crate) struct OriginalQ04SourceOwnerCutV1<'source> {
 #[cfg(target_os = "linux")]
 impl<'source> OriginalQ04SourceOwnerCutV1<'source> {
     pub(crate) fn park(source: &'source mut ProtectedSourceDomainJournalOwnerV1) -> Self {
-        Self { source, cut: None, commits: [None, None, None], first: None, postcheck: None, finished: false }
+        Self {
+            source,
+            cut: None,
+            commits: [None, None, None],
+            first: None,
+            postcheck: None,
+            finished: false,
+        }
     }
 
     pub(crate) fn capture_recipes<'cut>(
@@ -175,14 +202,19 @@ impl<'source> OriginalQ04SourceOwnerCutV1<'source> {
         ledger: &crate::reconciler::OriginalQ04ControllerLedgerV1,
         identity: &'cut crate::policy_compiler::create_q04::Q04CutIdentityV1,
     ) -> Result<crate::journal::SourceQ04TransactionRecipesV1<'cut>, ()> {
-        let returned = crate::journal::SourceQ04TransactionRecipesV1::capture(self.source, ledger, identity);
+        let returned =
+            crate::journal::SourceQ04TransactionRecipesV1::capture(self.source, ledger, identity);
         match returned {
-            Ok(recipes) if self.first.is_none() && self.postcheck.is_none() && self.cut.is_none() => {
+            Ok(recipes)
+                if self.first.is_none() && self.postcheck.is_none() && self.cut.is_none() =>
+            {
                 self.cut = Some(*identity.bytes());
                 Ok(recipes)
             }
             Ok(_) => {
-                self.first.get_or_insert(crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut);
+                self.first.get_or_insert(
+                    crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut,
+                );
                 Err(())
             }
             Err(cause) => {
@@ -229,8 +261,11 @@ impl<'source> OriginalQ04SourceOwnerCutV1<'source> {
 
         let prepared = (|| {
             self.require_cut(recipes.identity())?;
-            if index >= 2 || self.commits[index].is_some()
-                || self.commits[..index].iter().any(|prior| !matches!(prior, Some(Ok(_))))
+            if index >= 2
+                || self.commits[index].is_some()
+                || self.commits[..index]
+                    .iter()
+                    .any(|prior| !matches!(prior, Some(Ok(_))))
             {
                 return Err(CreateQ04ErrorV1::ChangedCut);
             }
@@ -238,19 +273,29 @@ impl<'source> OriginalQ04SourceOwnerCutV1<'source> {
             root.require_lower_transition(index, recipes.release_authorization())
         })();
         self.park_failure(prepared)?;
-        self.commits[index] = Some(self.source.journal.commit_source_q04_original_v1(
-            recipes, index, root, None,
-        ));
+        self.commits[index] = Some(
+            self.source
+                .journal
+                .commit_source_q04_original_v1(recipes, index, root, None),
+        );
         if matches!(self.commits[index], Some(Err(_))) {
             match self.commits[index].take() {
-                Some(Err(cause)) => { self.first = Some(cause); }
-                returned => { self.commits[index] = returned; }
+                Some(Err(cause)) => {
+                    self.first = Some(cause);
+                }
+                returned => {
+                    self.commits[index] = returned;
+                }
             }
         }
         let readback = (|| {
-            let result = self.commits[index].as_ref().and_then(|result| result.as_ref().ok())
+            let result = self.commits[index]
+                .as_ref()
+                .and_then(|result| result.as_ref().ok())
                 .ok_or(CreateQ04ErrorV1::ChangedCut)?;
-            self.source.journal.readback_source_q04_original_v1(recipes, index + 1)?;
+            self.source
+                .journal
+                .readback_source_q04_original_v1(recipes, index + 1)?;
             self.source.journal.require_q04_returned_commit_v1(result)?;
             recipes.require_named_owner(self.source)?;
             root.require_lower_transition(index, recipes.release_authorization())
@@ -258,7 +303,9 @@ impl<'source> OriginalQ04SourceOwnerCutV1<'source> {
         if let Err(cause) = readback {
             self.postcheck.get_or_insert(cause);
         }
-        if self.first.is_some() || self.postcheck.is_some() { return Err(()); }
+        if self.first.is_some() || self.postcheck.is_some() {
+            return Err(());
+        }
         Ok(())
     }
 
@@ -276,7 +323,11 @@ impl<'source> OriginalQ04SourceOwnerCutV1<'source> {
         })();
         self.park_failure(prepared)?;
         clearance.capture_source_clear(
-            self.source, recipes, &mut self.commits[2], &mut self.first, &mut self.postcheck,
+            self.source,
+            recipes,
+            &mut self.commits[2],
+            &mut self.first,
+            &mut self.postcheck,
         )
     }
 
@@ -288,7 +339,9 @@ impl<'source> OriginalQ04SourceOwnerCutV1<'source> {
         signer_generation: u64,
         signer: &ed25519_dalek::SigningKey,
     ) -> Result<(), ()> {
-        if self.first.is_some() || self.postcheck.is_some() || self.finished { return Err(()); }
+        if self.first.is_some() || self.postcheck.is_some() || self.finished {
+            return Err(());
+        }
         invocation.connect_existing_gen1(journal, self.source, project, signer_generation, signer)
     }
 
@@ -299,14 +352,28 @@ impl<'source> OriginalQ04SourceOwnerCutV1<'source> {
         ledger: &crate::reconciler::OriginalQ04ControllerLedgerV1,
         cache: &mut crate::cache_residency::OriginalQ04CacheOwnerCutV1<'_>,
         credentials: &crate::public_api_session::ControllerQ04CredentialCustodyV1,
-        destination: &mut Option<Result<crate::policy_compiler::create_q04::Q04ControllerPreparationV1,
-            crate::policy_compiler::create_q04::CreateQ04ErrorV1>>,
+        destination: &mut Option<
+            Result<
+                crate::policy_compiler::create_q04::Q04ControllerPreparationV1,
+                crate::policy_compiler::create_q04::CreateQ04ErrorV1,
+            >,
+        >,
     ) -> Result<(), ()> {
-        if destination.is_some() || self.first.is_some() || self.postcheck.is_some() || self.finished {
-            return self.park_failure(Err(crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut));
+        if destination.is_some()
+            || self.first.is_some()
+            || self.postcheck.is_some()
+            || self.finished
+        {
+            return self.park_failure(Err(
+                crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut,
+            ));
         }
         *destination = Some(invocation.form_controller_preparation(
-            journal, self.source, ledger, cache, credentials,
+            journal,
+            self.source,
+            ledger,
+            cache,
+            credentials,
         ));
         let prepared = match destination.as_ref() {
             Some(Ok(prepared)) => prepared,
@@ -315,7 +382,11 @@ impl<'source> OriginalQ04SourceOwnerCutV1<'source> {
             _ => return Err(()),
         };
         let postcheck = invocation.recheck_controller_preparation(
-            journal, self.source, ledger, cache, prepared,
+            journal,
+            self.source,
+            ledger,
+            cache,
+            prepared,
         );
         if let Err(cause) = postcheck {
             self.postcheck.get_or_insert(cause);
@@ -334,7 +405,11 @@ impl<'source> OriginalQ04SourceOwnerCutV1<'source> {
         prepared: &crate::policy_compiler::create_q04::Q04ControllerPreparationV1,
     ) -> Result<(), ()> {
         let checked = invocation.recheck_controller_preparation(
-            journal, self.source, ledger, cache, prepared,
+            journal,
+            self.source,
+            ledger,
+            cache,
+            prepared,
         );
         if let Err(cause) = checked {
             self.postcheck.get_or_insert(cause);
@@ -354,8 +429,18 @@ impl<'source> OriginalQ04SourceOwnerCutV1<'source> {
         signer_generation: u64,
         signer: &ed25519_dalek::SigningKey,
     ) -> Result<(), ()> {
-        if self.first.is_some() || self.postcheck.is_some() || self.finished { return Err(()); }
-        invocation.refresh_after_selfwrite(journal, self.source, ledger, transitions, project, signer_generation, signer)
+        if self.first.is_some() || self.postcheck.is_some() || self.finished {
+            return Err(());
+        }
+        invocation.refresh_after_selfwrite(
+            journal,
+            self.source,
+            ledger,
+            transitions,
+            project,
+            signer_generation,
+            signer,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -373,22 +458,36 @@ impl<'source> OriginalQ04SourceOwnerCutV1<'source> {
 
         let prepared = (|| {
             self.require_cut(recipes.identity())?;
-            if self.commits.iter().any(|result| !matches!(result, Some(Ok(_))))
+            if self
+                .commits
+                .iter()
+                .any(|result| !matches!(result, Some(Ok(_))))
                 || !std::ptr::eq(recipes.identity(), cache_recipes.identity())
             {
                 return Err(CreateQ04ErrorV1::ChangedCut);
             }
-            self.source.journal.readback_source_q04_original_v1(recipes, 3)?;
-            let result = self.commits[2].as_ref()
+            self.source
+                .journal
+                .readback_source_q04_original_v1(recipes, 3)?;
+            let result = self.commits[2]
+                .as_ref()
                 .and_then(|returned| returned.as_ref().ok())
                 .ok_or(CreateQ04ErrorV1::ChangedCut)?;
             self.source.journal.require_q04_returned_commit_v1(result)?;
-            recipes.require_named_owner(self.source).map_err(CreateQ04ErrorV1::Journal)
+            recipes
+                .require_named_owner(self.source)
+                .map_err(CreateQ04ErrorV1::Journal)
         })();
         self.park_failure(prepared)?;
         invocation.finish_original_clearance(
-            journal, self.source, ledger, transitions, recipes, cache,
-            cache_recipes, recipes.identity(),
+            journal,
+            self.source,
+            ledger,
+            transitions,
+            recipes,
+            cache,
+            cache_recipes,
+            recipes.identity(),
         )?;
 
         // The invocation just checked the same Source native suffix and final
@@ -402,7 +501,11 @@ impl<'source> OriginalQ04SourceOwnerCutV1<'source> {
         &self,
         identity: &crate::policy_compiler::create_q04::Q04CutIdentityV1,
     ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
-        if self.finished || self.first.is_some() || self.postcheck.is_some() || self.cut.as_ref() != Some(identity.bytes()) {
+        if self.finished
+            || self.first.is_some()
+            || self.postcheck.is_some()
+            || self.cut.as_ref() != Some(identity.bytes())
+        {
             return Err(crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut);
         }
         self.source.require_fixed_named_writer_v1()?;
@@ -416,7 +519,10 @@ impl<'source> OriginalQ04SourceOwnerCutV1<'source> {
         match returned {
             Ok(()) if self.first.is_none() && self.postcheck.is_none() => Ok(()),
             Ok(()) => Err(()),
-            Err(cause) => { self.first.get_or_insert(cause); Err(()) }
+            Err(cause) => {
+                self.first.get_or_insert(cause);
+                Err(())
+            }
         }
     }
 }
@@ -425,7 +531,8 @@ impl<'source> OriginalQ04SourceOwnerCutV1<'source> {
 impl Drop for OriginalQ04SourceOwnerCutV1<'_> {
     fn drop(&mut self) {
         if !self.finished {
-            self.first.get_or_insert(crate::policy_compiler::create_q04::CreateQ04ErrorV1::Unwind);
+            self.first
+                .get_or_insert(crate::policy_compiler::create_q04::CreateQ04ErrorV1::Unwind);
             std::process::exit(1);
         }
     }

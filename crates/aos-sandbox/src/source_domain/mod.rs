@@ -12,25 +12,18 @@ mod cross_domain;
 mod fixed_writer;
 
 pub use cross_domain::{
-    CrossDomainSemanticTupleV1,
-    CrossDomainJournalSuccessorV1,
-    CrossDomainPostcommitRecordV1,
-    CrossDomainJournalSnapshotV1,
-    PreparedCrossDomainJournalTransactionV1,
-    CrossDomainJournalOutcomeUnknownV1,
-    CrossDomainPostcommitCapabilityV1,
-    ValidatedCrossDomainPostcommitV1,
-    AppliedCrossDomainJournalTransactionV1,
-    CrossDomainJournalCommitOutcomeV1,
-    CrossDomainJournalRecoveryV1,
-    ReplayedCrossDomainPostcommitV1,
-    ProtectedCrossDomainJournalV1,
+    AppliedCrossDomainJournalTransactionV1, CrossDomainJournalCommitOutcomeV1,
+    CrossDomainJournalOutcomeUnknownV1, CrossDomainJournalRecoveryV1, CrossDomainJournalSnapshotV1,
+    CrossDomainJournalSuccessorV1, CrossDomainPostcommitCapabilityV1,
+    CrossDomainPostcommitRecordV1, CrossDomainSemanticTupleV1,
+    PreparedCrossDomainJournalTransactionV1, ProtectedCrossDomainJournalV1,
+    ReplayedCrossDomainPostcommitV1, ValidatedCrossDomainPostcommitV1,
 };
-pub use fixed_writer::ProtectedSourceDomainJournalOwnerV1;
 #[cfg(target_os = "linux")]
 pub use fixed_writer::ControllerSourceJournalConstructionV1;
 #[cfg(target_os = "linux")]
 pub(crate) use fixed_writer::OriginalQ04SourceOwnerCutV1;
+pub use fixed_writer::ProtectedSourceDomainJournalOwnerV1;
 
 const MAXIMUM_CROSS_DOMAIN_REPLAY_MEMBERS: usize = 262_144;
 pub(crate) const PROTECTED_SOURCE_DOMAIN_ROOT: &str = "/var/lib/aos/sandbox/source-domains";
