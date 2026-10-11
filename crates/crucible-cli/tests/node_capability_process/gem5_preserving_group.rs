@@ -16,6 +16,9 @@ use crucible_core::{
 use crucible_device::{BlockRequest, BlockResponse, BlockStatus};
 use crucible_node_contract::{ContentRef, Id};
 
+#[path = "gem5_preserving_group/correspondence.rs"]
+mod correspondence;
+
 struct OriginalService {
     child: Child,
     stopping: bool,
@@ -534,24 +537,13 @@ fn ordinary_signed_capture_and_two_source_gone_continues_keep_original_history()
         results[0].0.source_activation,
         results[1].0.source_activation
     );
-    let semantic = |rows: &[(Id, NativePublication)]| {
-        rows.iter()
-            .map(|(node, publication)| {
-                (
-                    node.clone(),
-                    publication.endpoint.clone(),
-                    publication.native_sequence,
-                    publication.publication,
-                    publication.evaluation,
-                    publication.causal_parents.clone(),
-                    publication.payload.clone(),
-                    publication.payload_bytes.clone(),
-                )
-            })
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(semantic(&results[0].1), semantic(&results[1].1));
-    // Fresh operation/publication identities are retained in the raw evidence;
-    // only semantic suffix fields are compared across different current owners.
+    let correspondence = correspondence::compare(&baseline, &results[0], &results[1]).unwrap();
+    fs::write(
+        root.join("publication-correspondence.json"),
+        serde_json::to_vec(&correspondence).unwrap(),
+    )
+    .unwrap();
+    // Raw identities, proofs and causal positions stay in both retained archives.
+    // Each comparison edge is checked against its own ACKed producer and input.
     fresh_service.retire();
 }
