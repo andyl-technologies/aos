@@ -68,6 +68,33 @@ install an independent complete policy before claiming mandatory classes.
 No CLI selector is required for the reusable public host interfaces, but the
 ordinary installed catalog currently exposes only source-owned closed profiles.
 
+## Mixed installed providers
+
+`InstalledProviderRegistry::prepare_mixed_original` prepares a complete,
+disjoint provider partition beneath one original activation and custody slot.
+The registry independently authenticates each local plan and the complete world
+before calling a contributor. `NodeProvider::prepare_original_into` receives a
+borrowed `ProviderWorldContribution`; it appends its original inactive nodes to
+the same preallocated capsule without extracting another provider's resources.
+Partial adoption, refusal and callback unwind retain every adopted participant
+under that global slot. A contributor must separately guard resources it creates
+before their adoption.
+
+The operator installs an `InstalledProviderWorldSource` in addition to the local
+provider source and behavioral authorities. Local accepted profiles do not
+authenticate cross-provider connections, coordination or preservation semantics.
+The daemon's `prepare_mixed_vendor_world` checks ordinary class acceptance and
+the complete graph, then rereads selected provider descriptions and checks the
+retained source, behavioral, class and world revisions as its final validation.
+The common readiness and durable activation barrier still follows preparation.
+
+Contribution methods default to refusal. An implementation must supply and
+qualify its complete-world contribution semantics before this path can run its
+native nodes. Ten mixed-provider controls and six existing custody regressions
+exercise the host registry with inert participants; they do not establish
+ordinary QEMU/gem5 mixed execution, vendor qualification or exact native state
+preservation.
+
 ## Qualification and remaining work
 
 The added native fixture tests actual process ordering, refusal custody and

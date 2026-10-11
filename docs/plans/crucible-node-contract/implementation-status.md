@@ -2048,6 +2048,25 @@ compiler messages have SHA256
 The focused controls use inert nodes and do not establish native shutdown,
 reclamation, ordinary profile qualification or performance improvements.
 
+Checkpoint `26ac82b440` adds mixed installed-provider preparation under one
+original activation and custody slot. Complete source authentication precedes
+contribution; selected descriptions and all retained authority revisions are
+checked after graph admission. Ten mixed-provider controls and six existing
+preparation custody regressions pass, alongside strict compilation and 37
+source-quality checks. These controls use inert participants and do not qualify
+native mixed-backend execution or full-system state preservation.
+
+Checkpoint `62cbf4b7c2`, documented separately by `ac2dfbd8c2`, adds same-stream
+gem5 shutdown reply continuation after eligible transient receive failure.
+It retains the original deadline, partial reply and one-shot request. Nine
+native-free controls pass against the exact functional source: five real Unix
+stream cases and four durable-placement fault cases. The latter preserve the
+original failed-retirement seal until same-byte storage reconciliation. These
+results do not establish native shutdown acknowledgement, reclamation, release
+or ordinary class acceptance. Current combined application-target compilation,
+native qualification and boundary gates remain required; raw evidence stays
+local.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
