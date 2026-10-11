@@ -148,7 +148,7 @@ pub(super) fn scheduler_event_log_entry_with_time(
     let source = scheduler_event_log_payload_source(&payload);
     let level = scheduler_event_log_payload_level(&payload);
     let content_hash = ContentHash::from_canonical_material(
-        "crucible.scheduler.event-log.entry.v5",
+        "crucible.scheduler.event-log.entry.v6",
         &scheduler_event_log_entry_material(
             sequence,
             &time,
@@ -182,7 +182,7 @@ pub(super) fn scheduler_event_log_entry_with_material(
     payload: SchedulerEventLogPayload,
 ) -> SchedulerEventLogEntry {
     let content_hash = ContentHash::from_canonical_material(
-        "crucible.scheduler.event-log.entry.v5",
+        "crucible.scheduler.event-log.entry.v6",
         &scheduler_event_log_entry_material(
             sequence,
             &at,
@@ -215,6 +215,18 @@ pub(super) fn scheduler_event_log_entry_material(
     event_payload: &EventPayload,
     payload: &SchedulerEventLogPayload,
 ) -> String {
+    if let Some(material) = derived_evaluation_boundary_material(
+        sequence,
+        at,
+        source,
+        level,
+        class,
+        event_payload,
+        payload,
+    ) {
+        return material;
+    }
+
     let mut lines = Vec::new();
     lines.push(format!("sequence={sequence}"));
     lines.push(format!("at_virtual_time_ticks={}", at.virtual_time.ticks));
@@ -270,6 +282,44 @@ pub(super) fn scheduler_event_log_entry_material(
         }
     }
     lines.join("\n")
+}
+
+/// Writes the compact identity material of a derived evaluation boundary.
+///
+/// Every committed scheduler RUN appends one boundary whose source, level,
+/// class, projected payload and node-free stamp all follow from its kind. The
+/// compact form omits those fields and is used only when each one holds, so
+/// the material stays injective. Its leading `entry_form` line can never start
+/// the full form, which always begins with `sequence=`. A boundary carrying
+/// any other field value keeps the full form.
+fn derived_evaluation_boundary_material(
+    sequence: u64,
+    at: &EventLogTime,
+    source: &EventSource,
+    level: EventLevel,
+    class: SchedulerEventLogClass,
+    event_payload: &EventPayload,
+    payload: &SchedulerEventLogPayload,
+) -> Option<String> {
+    let SchedulerEventLogPayload::EvaluationBoundary(kind) = payload else {
+        return None;
+    };
+    let derived = at.stamp.node.is_none()
+        && at.stamp.retired.is_none()
+        && *source == scheduler_event_log_payload_source(payload)
+        && level == scheduler_event_log_payload_level(payload)
+        && *event_payload == event_payload_from_scheduler_payload(payload)
+        && event_kind_catalog_class(event_payload) == Some(class);
+    if !derived {
+        return None;
+    }
+
+    Some(format!(
+        "entry_form=evaluation-boundary\nsequence={sequence}\nat_virtual_time_ticks={}\nat_tick={}\nkind={}",
+        at.virtual_time.ticks,
+        at.stamp.tick.ticks,
+        evaluation_boundary_kind_label(*kind),
+    ))
 }
 
 pub(super) fn event_payload_from_scheduler_payload(

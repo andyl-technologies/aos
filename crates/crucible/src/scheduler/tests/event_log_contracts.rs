@@ -213,3 +213,60 @@ fn idle_jump_preserves_exact_tick_and_unchanged_raw_retirement_in_event_stamp() 
         Ok(material)
     );
 }
+
+fn quantum_boundary_entry() -> SchedulerEventLogEntry {
+    scheduler_event_log_entry(
+        99_672,
+        VirtualTime {
+            ticks: 4_128_000_000_000,
+        },
+        SchedulerEventLogPayload::EvaluationBoundary(SchedulerEvaluationBoundaryKind::Quantum),
+    )
+}
+
+fn entry_material(entry: &SchedulerEventLogEntry) -> String {
+    scheduler_event_log_entry_material(
+        entry.sequence,
+        &entry.at,
+        &entry.source,
+        entry.level,
+        entry.class,
+        &entry.event_payload,
+        &entry.payload,
+    )
+}
+
+#[test]
+fn derived_evaluation_boundary_uses_compact_identity_material() {
+    let entry = quantum_boundary_entry();
+
+    let material = entry_material(&entry);
+
+    assert_eq!(
+        material,
+        format!(
+            "entry_form=evaluation-boundary\nsequence=99672\nat_virtual_time_ticks={}\nat_tick={}\nkind=quantum",
+            entry.at.virtual_time.ticks, entry.at.stamp.tick.ticks,
+        )
+    );
+    assert_eq!(entry.canonical_material_len(), material.len());
+    assert!(entry.has_valid_content_hash());
+}
+
+#[test]
+fn evaluation_boundary_with_underived_fields_keeps_full_identity_material() {
+    let compact = quantum_boundary_entry();
+    let mut debug_level = compact.clone();
+    debug_level.level = EventLevel::Debug;
+    let mut node_stamped = compact.clone();
+    node_stamped.at.stamp.node = Some(NodeId {
+        name: String::from("router-a"),
+    });
+
+    for entry in [debug_level, node_stamped] {
+        let material = entry_material(&entry);
+        assert!(material.starts_with("sequence=99672\n"), "{material}");
+        assert!(material.ends_with("payload=evaluation-boundary\nkind=Quantum"));
+        assert_ne!(material, entry_material(&compact));
+    }
+}

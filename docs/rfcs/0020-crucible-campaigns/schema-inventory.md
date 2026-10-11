@@ -76,7 +76,7 @@ rows. They do not create an additional wire or durable schema:
   The `crucible.execution.measurement-definitions` and
   `crucible.execution.measurement-evaluation` registry rows remain version 1;
   their containing scenario or observation codec owns byte compatibility.
-- `crucible.scheduler.event-log.entry.v5` and
+- `crucible.scheduler.event-log.entry.v6` and
   `crucible.session.fork-handle.v1` identify hash material, not separately
   decoded records. `crucible.model.world-fault-topology.v1` is a hash domain
   for JSON carried by the versioned world record. Device snapshot codecs in
