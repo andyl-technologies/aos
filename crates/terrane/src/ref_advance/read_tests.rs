@@ -192,7 +192,7 @@ async fn child_acl_change_accepts_current_admin_on_its_actual_ancestor() {
 }
 
 #[tokio::test]
-async fn child_root_grant_is_valid_but_current_advance_requires_view_root() {
+async fn child_root_grant_advances_only_its_actual_affected_root() {
     use terrane_core::auth::{Attenuation, Grant, Token, Verbs};
 
     let coordinator = fixture().await;
@@ -291,7 +291,7 @@ async fn child_root_grant_is_valid_but_current_advance_requires_view_root() {
             .is_err()
     );
     assert!(coordinator.begin(reference, &scoped, "sdk").await.is_err());
-    let scoped_session = coordinator
+    let mut scoped_session = coordinator
         .begin_scoped(reference, &scoped, &[b"/docs/sub/file".to_vec()], "sdk")
         .await
         .unwrap();
@@ -338,7 +338,7 @@ async fn child_root_grant_is_valid_but_current_advance_requires_view_root() {
     )
     .unwrap();
     candidate.commit.tree = changed_parent.root_identity();
-    candidate.token = scoped;
+    candidate.token = scoped.clone();
     candidate.terminal_secret = terminal;
     for tree in [&changed_docs, &changed_parent] {
         candidate
@@ -348,14 +348,42 @@ async fn child_root_grant_is_valid_but_current_advance_requires_view_root() {
                 bytes: node.encoded().to_vec(),
             }));
     }
-    assert!(
-        coordinator
-            .guard()
-            .admit(reference, session.epoch(), candidate)
-            .await
-            .is_err(),
-        "current admission still requests '/' before deriving the changed child root"
+    let second = coordinator
+        .advance(&mut scoped_session, candidate)
+        .await
+        .unwrap();
+    assert_eq!(second.seq, first.seq + 1);
+    assert_eq!(scoped_session.record(), Some(&second));
+
+    // The signed Original context binds only the actual changed child, while
+    // the unchanged sibling remains outside the attenuated token's scope.
+    let history = coordinator
+        .guard()
+        .verified_history(second.commit)
+        .await
+        .unwrap();
+    let verified = history.commit(&second.commit).unwrap();
+    let context = verified
+        .commit()
+        .profile_pair
+        .commit_context
+        .as_ref()
+        .unwrap();
+    assert_eq!(context.roots().len(), 1);
+    assert_eq!(context.roots()[0].path(), b"/docs/sub");
+    assert_eq!(context.roots()[0].domain(), "public");
+    assert_eq!(
+        verified.commit().provenance.embedded_token.as_ref(),
+        Some(&scoped)
     );
+    let after = coordinator
+        .guard()
+        .verified_tree(second.commit)
+        .await
+        .unwrap();
+    let after_parent = after.evidence.tree(after.evidence.root, 262144).unwrap();
+    assert_eq!(after_parent.props(), parent.props());
+    assert_eq!(after_parent.get(b"secret"), parent.get(b"secret"));
 
     tokio::fs::remove_dir_all(coordinator.store().root())
         .await

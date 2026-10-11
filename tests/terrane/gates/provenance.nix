@@ -4,6 +4,17 @@
     python3 -c 'import pathlib, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit("test result: ok. 1 passed; 0 failed" not in output or "test " + sys.argv[2] + " ... ok" not in output)' "$TMPDIR/test.log" "${path}"
   '';
   runTest = name: runCase "provenance::tests::${name}";
+  runNativeCase = path: ''
+    cargo test --frozen --offline -p terrane --no-default-features --features tokio,surface-sdk --lib ${path} -- --exact --list > "$TMPDIR/inventory.log"
+    python3 ../tests/terrane/check_native_gate.py inventory "$TMPDIR/inventory.log" '["${path}"]'
+    if cargo test --frozen --offline -p terrane --no-default-features --features tokio,surface-sdk --lib ${path} -- --exact --test-threads=1 > "$TMPDIR/native.log"; then
+      python3 ../tests/terrane/check_native_gate.py execution "$TMPDIR/native.log" '["${path}"]'
+    else
+      native_test_status=$?
+      cat "$TMPDIR/native.log" >&2
+      exit "$native_test_status"
+    fi
+  '';
 in {
   prov-commit-signature = sourceGate "prov-commit-signature" ''
     cd crates
@@ -30,7 +41,10 @@ in {
     ${runTest "snapshot::prov_snapshot_verification_rejects_wrong_target_scope_and_signature"}
     ${runTest "snapshot::prov_snapshot_tag_scope_accepts_admin_implication_and_rejects_commit_only"}
     ${runTest "snapshot::prov_snapshot_tag_scope_enforces_exact_source_caveats"}
-    printf 'PASS: pure terminal-key commit signatures and embedded authorization\n' > "$out/result"
+    ${runNativeCase "guard::admission::tests::native_child_only_commit_preserves_ancestor_descriptor_and_original_scope"}
+    ${runNativeCase "guard::admission::tests::native_child_only_scope_refuses_descriptor_policy_domain_and_sibling_changes"}
+    ${runNativeCase "ref_advance::read_tests::child_root_grant_advances_only_its_actual_affected_root"}
+    printf 'PASS: terminal-key signatures, embedded authorization and native affected-root publication\n' > "$out/result"
   '';
 
   prov-selector-presets = sourceGate "prov-selector-presets" ''
