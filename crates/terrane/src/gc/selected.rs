@@ -37,6 +37,9 @@ mod held;
 /// Exposes the closed held context to genuine collector/session producers.
 pub(crate) use held::HeldLeaseContext;
 
+/// Rechecks genuine retained controls without reacquiring their exclusion.
+pub(crate) use held::revalidate_controls;
+
 /// Constructs a context from configured authority and the actual namespace holder.
 ///
 /// # Errors
