@@ -1,3 +1,16 @@
+//! Owns the fixed local bootstrap and issuer-response byte formats.
+//!
+//! Decoding returns raw policy/key bytes or unverified artifacts. Protected file
+//! admission, trust validation and live issuance remain with the parent owner.
+//!
+//! ```text
+//! bootstrap = "AOSMOL01" || policy-len:u32be || canonical-policy ||
+//!             ownership-public-key[32] || sha256(domain || preceding-bytes)
+//! response  = "AOSMOI01" || request-id[16] || claim-digest[32] ||
+//!             sized-lease || sized-signature || sized-receipt ||
+//!             sized-receipt-signature || sha256(domain || preceding-bytes)
+//! ```
+
 use aos_sandbox_core::bounded_codec::BoundedReader;
 use sha2::{Digest as _, Sha256};
 
@@ -6,6 +19,11 @@ use super::{
     UnverifiedOwnershipLeaseResponse, fixed_bootstrap_error,
 };
 
+/// Returns bounded raw policy and key bytes without constructing a trust anchor.
+///
+/// # Errors
+///
+/// Rejects invalid framing, checksum, policy length, missing fields or trailing bytes.
 pub(super) fn decode_bootstrap(
     bytes: &[u8],
 ) -> Result<(Vec<u8>, [u8; 32]), ProtectedLeaseAuthorityErrorV1> {
@@ -35,6 +53,11 @@ pub(super) fn decode_bootstrap(
     Ok((policy_bytes, public_key))
 }
 
+/// Retains exact issuer artifacts after framing and claim-binding checks.
+///
+/// # Errors
+///
+/// Preserves checksum/framing, claim-conflict, artifact-limit and adoption errors.
 pub(super) fn decode_fixed_issuer_response(
     bytes: &[u8],
     claim: &OwnershipClaimV1,

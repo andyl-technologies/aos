@@ -9,13 +9,6 @@
 //! transport. Existing protected file names and canonical records are retained;
 //! their historical coordinator spelling does not grant cross-host exclusivity.
 //!
-//! ```text
-//! bootstrap = "AOSMOL01" || policy-len:u32be || canonical-policy ||
-//!             ownership-public-key[32] || sha256(domain || preceding-bytes)
-//! response  = "AOSMOI01" || request-id[16] || claim-digest[32] ||
-//!             sized-lease || sized-signature || sized-receipt ||
-//!             sized-receipt-signature || sha256(domain || preceding-bytes)
-//! ```
 
 use std::fs::File;
 use std::io::Read as _;
