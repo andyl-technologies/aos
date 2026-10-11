@@ -12,6 +12,7 @@ mod admission;
 mod catalog;
 mod cnp;
 mod issuance;
+mod packet_collection;
 mod production_conformance;
 mod record;
 mod reference_oracle;
@@ -46,8 +47,9 @@ pub use production_conformance::{
     CollectedConformance, ExactCompletionCase, ExactCompletionObservation,
     InstalledConformanceAuthority, InstalledRuntimeWitnessOracle, OriginalCollectionAttempts,
     OriginalCompletionObservation, OriginalCompletionWitness, OriginalProtocolWitness,
-    OriginalRuntimeReportStore, PlannedFixtureAudit, ProductionConformanceRunner, ProtocolCase,
-    ProtocolObservation, QuantizedCompletionCase, QuantizedCompletionObservation,
+    OriginalRealizedCaseReservation, OriginalRuntimeReportStore, PlannedFixtureAudit,
+    ProductionConformanceRunner, ProtocolCase, ProtocolObservation, QuantizedCompletionCase,
+    QuantizedCompletionObservation,
 };
 pub use record::{
     AcceptanceDecision, AcceptanceLimits, AcceptanceRecord, EvaluatedAcceptance,
@@ -55,3 +57,22 @@ pub use record::{
 };
 
 pub use cnp::{CnpBehavioralAcceptance, CnpQualificationProjection, project_cnp_qualification};
+
+pub use packet_collection::{
+    InstalledPacketCollectionAuthority, InstalledPacketFixtureAuthority,
+    InstalledPacketGraphPolicy, InstalledPacketMeasuredFixture, PacketCollectionExecution,
+    PacketCollectionFailure, PacketCollectionInstallation, PacketCollectionInstallationFailure,
+    PacketCollectionLifecycle, PacketCollectionPhase, PacketCurrentScope,
+    PacketExecutionInstallationFailure, PacketFixtureArtifact, PacketFixtureMeasurements,
+    PacketFixturePrepareFailure, PacketFixturePrepareRequest, PacketGraphCurrentScope,
+    PacketGraphEvidence, PacketGraphPolicyTable, PacketGraphPredicate, PacketHostCollection,
+    PacketHostCollectionRequest, PacketHostFailure, PacketHostPhase, PacketHostPreparationFailure,
+    PacketHostSupervisor, PacketIndependentGraphOwner, PacketIndependentGraphRequest,
+    PacketMeasuredFixtureRequest, PacketNativeCase, PacketNativeCurrentScope,
+    PacketNativeObservationStore, PacketNativeOracle, PacketOriginalReservations,
+    PacketOriginalRuntimeFailure, PacketOriginalRuntimeRequest, PacketPeerJournalCustody,
+    PacketPeerJournalSlot, PacketPeerLaunchFailure, PacketPeerLaunchRequest,
+    PacketSupervisionFailure, PacketSupervisionObservation, PacketTemplateExecution,
+    PacketTemplateInstallationFailure, PreparedPacketCollectionPeer, StoredPacketResultPublisher,
+    packet_independent_graph_contract,
+};

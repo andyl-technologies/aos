@@ -24,6 +24,7 @@ mod preparation_probe;
 mod preparation_resend;
 mod process;
 mod readiness;
+mod semantic;
 mod windows;
 
 pub use acceptance::{CnpAcceptanceScope, CnpAcceptedPreparation, CnpRealizationAcceptance};
@@ -35,6 +36,19 @@ pub use preparation::{CnpPreparationFailure, CnpReferencePreparation, CnpReferen
 pub use process::{
     CnpExtensionAttachmentFailure, CnpLaunchFailure, CnpLaunchGuard, CnpPeerCustody,
     CnpProcessCustodySlot,
+};
+
+pub use semantic::{
+    CnpSemanticAcceptance, CnpSemanticAdmissionFailure, CnpSemanticAttachmentFailure,
+    CnpSemanticConformanceAuthority, CnpSemanticConformanceNode, CnpSemanticConformanceProvider,
+    CnpSemanticInstallation, CnpSemanticLaunchFailure, CnpSemanticLaunchGuard,
+    CnpSemanticLaunchReservation, CnpSemanticNode, CnpSemanticPreparation,
+    CnpSemanticPreparationFailure, CnpSemanticProcessCustody, CnpSemanticProcessSlot,
+    CnpSemanticProvider, CnpSemanticProviderFailure, CnpSemanticRealizationScope,
+    CnpSemanticRegistrationPolicy, CnpSemanticRegistry, CnpSemanticReservationFailure,
+    CnpSemanticSource, CnpSemanticSourceRead, CnpSemanticTransition, InstalledCnpConformanceRole,
+    InstalledCnpSemanticRole, PacketNativeWitness, PacketSemanticSource,
+    packet_common_grant_authorization,
 };
 
 /// Runs an actual installed public checksum node under the common quantized runtime.

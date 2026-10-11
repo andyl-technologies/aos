@@ -16,6 +16,7 @@ use crate::ProviderError;
 use crate::handshake::Limits;
 use crate::transport::{FrameReader, write_frame_with_limits};
 
+use super::original_responses::{Journal, OriginalProbeResponses};
 use super::{EndpointMeasurement, ProbeConnector, ProbeSession};
 
 const MAX_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
@@ -31,6 +32,8 @@ pub struct UnixProbeConnector {
     expected_uid: u32,
     expected_executable: ContentRef,
     timeout: Duration,
+    journal: Option<Journal>,
+    started: bool,
 }
 
 impl UnixProbeConnector {
@@ -53,12 +56,43 @@ impl UnixProbeConnector {
             expected_uid,
             expected_executable: measure_executable(expected_executable)?,
             timeout,
+            journal: None,
+            started: false,
         })
+    }
+
+    /// Reserves bounded original incoming-frame custody before the first connection.
+    ///
+    /// The returned opaque handle retains actual peer measurements and complete
+    /// valid wire bodies. Outgoing private credentials are excluded. Exhausted
+    /// credit refuses before receiving another frame; failed or unwound receives
+    /// fence further journal use. Existing protocol reports remain unchanged.
+    /// Incoming Hello credentials remain private; this handle is not a public
+    /// report exporter. The byte ceiling covers retained raw bodies separately
+    /// from the existing bounded parser's current value and protocol report.
+    ///
+    /// # Errors
+    /// Refuses repeat/late installation, zero or over-4096 records, zero or
+    /// over-32-MiB body credit, or inability to reserve the whole row population.
+    pub fn retain_original_responses(
+        &mut self,
+        maximum_records: usize,
+        maximum_bytes: usize,
+    ) -> Result<OriginalProbeResponses, ProviderError> {
+        if self.started || self.journal.is_some() {
+            return Err(ProviderError::Frame(
+                "original probe journal must precede connection",
+            ));
+        }
+        let (journal, originals) = Journal::new(maximum_records, maximum_bytes)?;
+        self.journal = Some(journal);
+        Ok(originals)
     }
 }
 
 impl ProbeConnector for UnixProbeConnector {
     fn connect(&mut self) -> Result<Box<dyn ProbeSession>, ProviderError> {
+        self.started = true;
         // An exhausted listening backlog must refuse promptly; blocking connect
         // would otherwise evade the per-exchange I/O deadline.
         let socket = rustix::net::socket_with(
@@ -100,6 +134,7 @@ impl ProbeConnector for UnixProbeConnector {
             },
             timeout: self.timeout,
             deadline: None,
+            journal: self.journal.clone(),
         }))
     }
 }
@@ -109,6 +144,7 @@ struct UnixProbeSession {
     measurement: EndpointMeasurement,
     timeout: Duration,
     deadline: Option<OperationalDeadline>,
+    journal: Option<Journal>,
 }
 
 impl UnixProbeSession {
@@ -160,15 +196,46 @@ impl ProbeSession for UnixProbeSession {
     }
 
     fn receive(&mut self, limits: Limits) -> Result<Option<Value>, ProviderError> {
-        FrameReader::with_limits(
+        let maximum_bytes = usize::try_from(limits.frame_bytes.get())
+            .map_err(|_| ProviderError::ResourceExhausted("frame allowance representation"))?;
+        let journal = self.journal.clone();
+        let original = match &journal {
+            Some(journal) => match journal.reserve(&self.measurement, maximum_bytes) {
+                Ok(index) => Some(index),
+                Err(error) => {
+                    self.fence();
+                    return Err(error);
+                }
+            },
+            None => None,
+        };
+        let result = FrameReader::with_limits(
             self.io()?,
-            usize::try_from(limits.frame_bytes.get())
-                .map_err(|_| ProviderError::ResourceExhausted("frame allowance representation"))?,
+            maximum_bytes,
             usize::try_from(limits.nesting.get()).map_err(|_| {
                 ProviderError::ResourceExhausted("nesting allowance representation")
             })?,
         )?
-        .read()
+        .read_retained();
+        match result {
+            Ok(frame) => {
+                let (value, bytes) = match frame {
+                    Some(frame) => (Some(frame.value), Some(frame.bytes)),
+                    None => (None, None),
+                };
+                if let (Some(journal), Some(index)) = (journal, original) {
+                    journal.complete(index, maximum_bytes, bytes, false)?;
+                }
+                Ok(value)
+            }
+            Err(error) => {
+                if let (Some(journal), Some(index)) = (journal, original) {
+                    journal.complete(index, maximum_bytes, None, true)?;
+                }
+                self.fence();
+                Err(error)
+            }
+        }
     }
 
     fn fence(&mut self) {

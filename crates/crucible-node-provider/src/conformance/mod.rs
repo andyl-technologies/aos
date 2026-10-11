@@ -15,12 +15,18 @@
 //!
 //! Reports contain identities and verdicts, not control bodies or secrets.
 
+#[cfg(target_os = "linux")]
+mod original_responses;
 mod plan;
 mod report;
 mod runner;
 #[cfg(target_os = "linux")]
 mod unix;
 
+#[cfg(target_os = "linux")]
+pub use original_responses::{
+    OriginalProbeResponse, OriginalProbeResponseState, OriginalProbeResponses,
+};
 pub use plan::{CheckKind, Expectation, IdentityKind, ProbePlan, ProbeStep, ReplyAssertion};
 pub use report::{CheckDisposition, CheckResult, ConformanceReport, EndpointMeasurement};
 pub use runner::{ProbeConnector, ProbeSession, run};

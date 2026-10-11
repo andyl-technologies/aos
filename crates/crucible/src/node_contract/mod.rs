@@ -35,6 +35,11 @@ pub use traits::*;
 pub use types::*;
 
 #[cfg(test)]
+pub(crate) fn test_original_admission(name: &str) -> OperationAdmission {
+    runtime::test_original_admission(name)
+}
+
+#[cfg(test)]
 pub(crate) fn test_nodes(
     graph: &crate::node_admission::AdmittedGraph,
 ) -> Vec<Box<dyn SimulationNode>> {

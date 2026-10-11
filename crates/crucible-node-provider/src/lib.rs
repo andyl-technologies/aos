@@ -22,7 +22,10 @@ pub mod handshake;
 pub mod journal;
 pub mod native_journal;
 pub mod reference_device;
+
 pub mod reference_lineage;
+/// Exposes a finite source-owned packet provider over the public protocol.
+pub mod reference_packet;
 pub mod reference_service;
 pub mod session;
 pub mod transport;

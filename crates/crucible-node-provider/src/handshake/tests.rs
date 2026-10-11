@@ -497,3 +497,51 @@ fn initial_and_resumed_hello_frames_bind_correlation_and_fence_old_scope() {
     assert!(old.ensure_live().is_err());
     new.ensure_live().unwrap();
 }
+
+/// Issues an inert model registrar through the original SDK handshake.
+///
+/// This fixture authenticates no native process, realization, Ready or class.
+///
+/// # Errors
+/// Returns invalid model feature or ordinary SDK negotiation refusal.
+pub(crate) fn controller_authority(
+    evidence: bool,
+) -> Result<(Handshake, ConnectionAuthority), ProviderError> {
+    let mut request = hello();
+    let mut response = result();
+    let installation = TrustedInstallation {
+        session_id: id("session"),
+        incarnation_id: id("incarnation"),
+        measured_implementation: manifest().implementation,
+        launch_receipt: reference(),
+        admission_token: [7; 32],
+    };
+    let mut policy = NegotiationPolicy {
+        supported_features: vec![id("cnp.core/1"), id("cnp.resume/1")],
+        required_features: vec![id("cnp.core/1")],
+        provider_limits: limits(),
+        required_schemas: Vec::new(),
+        required_guarantees: reference(),
+        envelope_extension_features: std::collections::BTreeMap::from([(
+            "resume-envelope".to_owned(),
+            id("cnp.resume/1"),
+        )]),
+    };
+    if evidence {
+        let feature = Id::new("cnp.control-evidence/1")?;
+        request.optional_features.push(feature.clone());
+        request.optional_features.sort();
+        response.selected_features.push(feature.clone());
+        response.selected_features.sort();
+        policy.supported_features.push(feature);
+        policy.supported_features.sort();
+    }
+    let mut handshake = Handshake::new(installation, policy)?;
+    let authority = handshake.admit_exchange(
+        &request,
+        &response,
+        Id::new("controller-model-connection")?,
+        &mut Verifier::default(),
+    )?;
+    Ok((handshake, authority))
+}

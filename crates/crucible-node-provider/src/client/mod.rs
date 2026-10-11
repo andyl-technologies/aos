@@ -7,11 +7,13 @@
 //! owner scope and actual process resources before publishing runtime evidence.
 
 mod content;
+mod controller;
 mod deadline;
 mod reference;
 mod session;
 
 pub use content::ClientContent;
+pub use controller::{CnpController, CnpRegistrarRead, ControllerRoute};
 pub use deadline::{DeadlineStream, ExchangeDeadline};
 pub use reference::{
     LineageWindowRequests, ObservationHandle, ObservationLimits, ObservationScope, ObservedContent,
@@ -23,4 +25,4 @@ pub use reference::{
     ReferenceControllerPreparationFailure, ReferenceObservationSnapshot, TransmissionLimits,
     TransmissionObservation, TransmissionObservationHandle,
 };
-pub use session::{ClientCustody, ClientOriginal, ClientPeer, ClientSession};
+pub use session::{ClientCustody, ClientOriginal, ClientPeer, ClientSession, OriginalHelloJournal};

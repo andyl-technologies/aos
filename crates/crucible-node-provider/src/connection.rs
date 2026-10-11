@@ -17,6 +17,14 @@ use crate::handshake::ConnectionAuthority;
 use crate::session::CorrelationGuard;
 use crate::transport::{FrameReader, write_frame_with_limits};
 
+mod exchange;
+mod packet_schema;
+mod prepared;
+pub(crate) use prepared::serialized_credit;
+
+pub use exchange::{ExchangeFailure, ExchangeRecord, PreparedExchange};
+pub use prepared::PreparedSend;
+
 /// Defines an authenticated stream whose whole connection can be fenced.
 ///
 /// Implementations must bound blocking reads/writes through native deadlines
@@ -139,11 +147,33 @@ pub struct Connection<S: ProviderStream> {
     guard: CorrelationGuard,
     supervisor: Rc<dyn ConnectionSupervisor>,
     schemas: Rc<dyn BodySchemaVerifier>,
+    packet_schema: bool,
     fenced: bool,
     role: EndpointRole,
 }
 
 impl<S: ProviderStream> Connection<S> {
+    pub(crate) fn install_packet_schema(&mut self) -> Result<(), ProviderError> {
+        self.check_authority()?;
+        self.schemas = Rc::new(packet_schema::PacketSchema);
+        self.packet_schema = true;
+        Ok(())
+    }
+
+    pub(crate) fn has_packet_schema(&self) -> bool {
+        self.packet_schema
+    }
+
+    pub(crate) fn provider_authority(&mut self) -> Result<&ConnectionAuthority, ProviderError> {
+        self.check_authority()?;
+        if self.role != EndpointRole::Provider {
+            return Err(ProviderError::Correlation(
+                "native endpoint requires provider direction",
+            ));
+        }
+        Ok(&self.authority)
+    }
+
     /// Installs a completed authenticated hello exchange on its native stream.
     ///
     /// # Errors
@@ -195,6 +225,7 @@ impl<S: ProviderStream> Connection<S> {
             guard,
             supervisor,
             schemas,
+            packet_schema: false,
             fenced: false,
             role,
         })

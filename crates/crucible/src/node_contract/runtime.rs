@@ -1360,6 +1360,11 @@ pub enum RuntimePollFailure {
 mod tests;
 
 #[cfg(test)]
+pub(crate) fn test_original_admission(name: &str) -> OperationAdmission {
+    tests::original_admission(name)
+}
+
+#[cfg(test)]
 pub(crate) fn test_nodes(
     graph: &crate::node_admission::AdmittedGraph,
 ) -> Vec<Box<dyn SimulationNode>> {

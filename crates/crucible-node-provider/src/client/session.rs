@@ -27,6 +27,10 @@ mod resend;
 #[path = "session/lifecycle_resend.rs"]
 mod lifecycle_resend;
 
+#[path = "session/hello_journal.rs"]
+mod hello_journal;
+pub use hello_journal::OriginalHelloJournal;
+
 /// Binds the actual socket peer to independently measured launch facts.
 pub struct ClientPeer {
     /// Names the original retained provider process, never a provider JSON claim.
@@ -59,6 +63,32 @@ pub struct ClientCustody {
 }
 
 impl ClientCustody {
+    pub(super) fn preflight_response(
+        &self,
+        controller_requests: usize,
+        provider_requests: usize,
+        journal_bytes: usize,
+        negotiated_entries: usize,
+    ) -> Result<(), ProviderError> {
+        let maximum = self.maximum_requests.min(negotiated_entries);
+        if self
+            .controller
+            .len()
+            .checked_add(controller_requests)
+            .is_none_or(|total| total > maximum)
+            || self
+                .provider
+                .len()
+                .checked_add(provider_requests)
+                .is_none_or(|total| total > maximum)
+        {
+            return Err(ProviderError::ResourceExhausted(
+                "complete source response journal entries",
+            ));
+        }
+        self.ensure_journal_room(journal_bytes)
+    }
+
     /// Creates bounded ledgers before admitting any wire request.
     ///
     /// # Errors
@@ -168,6 +198,21 @@ impl From<ExchangeDeadline> for InitialDeadline {
 }
 
 impl ClientSession {
+    pub(super) fn install_packet_schema(&mut self) -> Result<(), ProviderError> {
+        // The original Hello is sequence 1. No schema replacement is permitted
+        // after any control or blob frame has entered this connection.
+        if self.sequence != U64::new(2) {
+            return Err(ProviderError::Correlation(
+                "packet schema must precede original control dispatch",
+            ));
+        }
+        self.connection.install_packet_schema()
+    }
+
+    pub(super) fn has_packet_schema(&self) -> bool {
+        self.connection.has_packet_schema()
+    }
+
     /// Authenticates actual peer identity and admits a complete original hello exchange.
     ///
     /// The caller retains native child custody and supplies a trusted installation
@@ -201,6 +246,90 @@ impl ClientSession {
             budget,
             maximum_bytes,
             maximum_nesting,
+            None,
+            |response| handshake.admit_envelopes(hello, response, connection_id, verifier),
+        )
+    }
+
+    /// Authenticates ordinary Hello under the original pre-launch physical cut.
+    ///
+    /// Private bootstrap delivery, socket availability, actual peer measurement
+    /// and every Hello byte share the supplied deadline. No semantic coordinate
+    /// or authority follows from this operational budget. The duration-based
+    /// ordinary negotiation method and its wire representation stay unchanged.
+    ///
+    /// # Errors
+    /// Refuses expiration, foreign peers, changed measured source, failed Hello
+    /// authentication, unsupported schemas or original transport uncertainty.
+    // crucible-lint: allow rust-allow -- Original peer, source verifier, custody and complete deadline are independent trust dependencies.
+    #[allow(clippy::too_many_arguments)]
+    pub fn negotiate_before(
+        stream: std::os::unix::net::UnixStream,
+        peer: &ClientPeer,
+        hello: &Envelope,
+        connection_id: Id,
+        handshake: &mut Handshake,
+        verifier: &mut impl TrustedHandshakeVerifier,
+        supervisor: Rc<dyn ConnectionSupervisor>,
+        schemas: Rc<dyn BodySchemaVerifier>,
+        deadline: ExchangeDeadline,
+        maximum_bytes: usize,
+        maximum_nesting: usize,
+    ) -> Result<Self, ProviderError> {
+        deadline.remaining()?;
+        Self::negotiate_with_admission(
+            stream,
+            peer,
+            hello,
+            supervisor,
+            schemas,
+            deadline,
+            maximum_bytes,
+            maximum_nesting,
+            None,
+            |response| handshake.admit_envelopes(hello, response, connection_id, verifier),
+        )
+    }
+
+    /// Retains the actual original Hello body under one pre-launch deadline.
+    ///
+    /// The caller reserves the journal before Child and retains it on every
+    /// error. A complete received JSON body is recorded before envelope decoding
+    /// or installed authentication. It carries no qualification or lease authority.
+    /// Existing negotiation methods retain their original no-journal behavior.
+    ///
+    /// # Errors
+    /// Refuses a changed or already attempted journal, expired deadline, foreign
+    /// peer, original transport uncertainty or failed Hello authentication. Complete
+    /// failed reply bodies remain retained; an incomplete frame grants no evidence.
+    // crucible-lint: allow rust-allow -- Original kernel peer, source verifier, physical cut and retained Hello journal are separate trust dependencies.
+    #[allow(clippy::too_many_arguments)]
+    pub fn negotiate_recorded_before(
+        stream: std::os::unix::net::UnixStream,
+        peer: &ClientPeer,
+        hello: &Envelope,
+        connection_id: Id,
+        handshake: &mut Handshake,
+        verifier: &mut impl TrustedHandshakeVerifier,
+        supervisor: Rc<dyn ConnectionSupervisor>,
+        schemas: Rc<dyn BodySchemaVerifier>,
+        deadline: ExchangeDeadline,
+        maximum_bytes: usize,
+        maximum_nesting: usize,
+        journal: &mut OriginalHelloJournal,
+    ) -> Result<Self, ProviderError> {
+        journal.begin(hello, maximum_bytes, maximum_nesting)?;
+        deadline.remaining()?;
+        Self::negotiate_with_admission(
+            stream,
+            peer,
+            hello,
+            supervisor,
+            schemas,
+            deadline,
+            maximum_bytes,
+            maximum_nesting,
+            Some(journal),
             |response| handshake.admit_envelopes(hello, response, connection_id, verifier),
         )
     }
@@ -237,6 +366,7 @@ impl ClientSession {
             budget,
             maximum_bytes,
             maximum_nesting,
+            None,
             |response| handshake.admit_envelopes(hello, response, connection_id, verifier),
         )
     }
@@ -275,6 +405,7 @@ impl ClientSession {
             deadline,
             maximum_bytes,
             maximum_nesting,
+            None,
             |response| handshake.admit_envelopes(hello, response, connection_id, verifier),
         )
     }
@@ -290,6 +421,7 @@ impl ClientSession {
         budget: impl Into<InitialDeadline>,
         maximum_bytes: usize,
         maximum_nesting: usize,
+        journal: Option<&mut OriginalHelloJournal>,
         admit: impl FnOnce(&Envelope) -> Result<ConnectionAuthority, ProviderError>,
     ) -> Result<Self, ProviderError> {
         let credentials =
@@ -322,15 +454,27 @@ impl ClientSession {
         };
         let mut reader =
             FrameReader::with_limits(writer.try_clone()?, maximum_bytes, maximum_nesting)?;
-        write_frame_with_limits(
-            &mut writer,
-            &serde_json::to_value(hello).map_err(crucible_node_contract::ContractError::from)?,
-            maximum_bytes,
-            maximum_nesting,
-        )?;
-        let value = reader
-            .read()?
-            .ok_or(ProviderError::Correlation("CNP hello response unavailable"))?;
+        let prepared_hello;
+        let original_hello = match journal.as_ref() {
+            Some(original) => original.request_value(),
+            None => {
+                prepared_hello = serde_json::to_value(hello)
+                    .map_err(crucible_node_contract::ContractError::from)?;
+                &prepared_hello
+            }
+        };
+        write_frame_with_limits(&mut writer, original_hello, maximum_bytes, maximum_nesting)?;
+        let value = if let Some(original) = journal {
+            let frame = reader
+                .read_retained()?
+                .ok_or(ProviderError::Correlation("CNP hello response unavailable"))?;
+            original.retain_response(&frame.bytes)?;
+            frame.value
+        } else {
+            reader
+                .read()?
+                .ok_or(ProviderError::Correlation("CNP hello response unavailable"))?
+        };
         let response = Envelope::decode(&canonical::canonical_json(&value)?, maximum_bytes)?;
         let authority = admit(&response)?;
         let connection = Connection::new(
@@ -608,3 +752,7 @@ pub(super) fn object(value: impl serde::Serialize) -> Result<Map<String, Value>,
         .cloned()
         .ok_or(ProviderError::Frame("client body is not an object"))
 }
+
+#[cfg(test)]
+#[path = "session/controller_fixture.rs"]
+mod controller_fixture;

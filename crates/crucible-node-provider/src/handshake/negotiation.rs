@@ -681,6 +681,20 @@ impl Handshake {
         })
     }
 
+    /// Authenticates a live lease from this exact original registrar.
+    ///
+    /// Equal labels from another handshake do not satisfy native control custody.
+    /// This registration check grants no realization or execution qualification.
+    ///
+    /// # Errors
+    /// Refuses foreign, superseded or contained original registrations.
+    pub fn validate_registration(
+        &self,
+        authority: &ConnectionAuthority,
+    ) -> Result<(), ProviderError> {
+        self.verify_current_authority(authority)
+    }
+
     pub(super) fn verify_current_authority(
         &self,
         authority: &ConnectionAuthority,

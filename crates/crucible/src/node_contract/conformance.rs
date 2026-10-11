@@ -83,6 +83,34 @@ pub struct ConformanceRuntime {
 }
 
 impl ConformanceRuntime {
+    /// Borrows the same opaque original collecting plan retained by this runtime.
+    ///
+    /// This view grants no execution or current-scope permission. Callers still
+    /// authenticate the original installed authority before dispatch; neither
+    /// the graph nor the underlying ordinary runtime can escape through it.
+    pub fn collection_plan(&self) -> &crate::node_admission::InstalledConformancePlan {
+        self.graph.plan()
+    }
+
+    /// Authenticates an inactive owner against the exact retained collecting plan.
+    ///
+    /// This read grants no execution, ordinary graph, activation or mutable
+    /// runtime access. It permits an owning source caller to reject a foreign
+    /// runtime before its first Arm or grant.
+    ///
+    /// # Errors
+    /// Refuses another original plan, an already activated runtime or stale
+    /// whole-world/source/native custody under the original installed authority.
+    pub fn validate_inactive_collection_plan(
+        &mut self,
+        plan: &crate::node_admission::InstalledConformancePlan,
+    ) -> Result<(), RuntimeError> {
+        if self.activation.is_some() || !self.graph.plan().same_original(plan) {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.current()
+    }
+
     /// Transfers the exact collecting world before any operational cleanup callback.
     ///
     /// The private runtime shell remains owned; no ordinary runtime or graph is

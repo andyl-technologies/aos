@@ -28,6 +28,33 @@ pub struct ClientContent {
 }
 
 impl ClientContent {
+    pub(super) fn preflight_capacity(
+        &self,
+        objects: usize,
+        bytes: usize,
+    ) -> Result<(), ProviderError> {
+        if self
+            .objects
+            .len()
+            .checked_add(objects)
+            .is_none_or(|total| total > self.maximum_objects)
+            || self
+                .transfers
+                .len()
+                .checked_add(objects)
+                .is_none_or(|total| total > self.maximum_objects)
+            || self
+                .reserved
+                .checked_add(bytes)
+                .is_none_or(|total| total > self.maximum_bytes)
+        {
+            return Err(ProviderError::ResourceExhausted(
+                "complete source content response credit",
+            ));
+        }
+        Ok(())
+    }
+
     /// Enumerates finite verified object references without granting native authority.
     ///
     /// These references describe byte custody, not a complete semantic receipt

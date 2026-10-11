@@ -1778,3 +1778,13 @@ mod original_lineage_models;
 
 #[path = "runtime_graceful_retirement_tests.rs"]
 mod graceful_retirement;
+
+/// Captures a genuine opaque admission from the inert original-owner fixture.
+pub(super) fn original_admission(name: &str) -> OperationAdmission {
+    let (mut runtime, states) = runtime(OperatingMode::Exact);
+    let activation = activate(&mut runtime);
+    let token = exact(&mut runtime, &activation, name);
+    let admission = states[0].borrow().admission.clone().unwrap();
+    assert!(admission.token().same_authority(&token));
+    admission
+}

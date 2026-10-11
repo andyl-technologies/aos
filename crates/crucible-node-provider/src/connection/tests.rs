@@ -313,3 +313,5 @@ fn a_valid_poll_body_cannot_substitute_another_original_operation() {
     assert!(connection.receive().is_err());
     assert_eq!(supervisor.0.borrow()[0].outgoing, vec![original]);
 }
+
+mod exchange;

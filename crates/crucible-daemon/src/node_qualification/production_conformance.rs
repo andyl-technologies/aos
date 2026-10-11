@@ -24,6 +24,7 @@ mod fixture_audit;
 mod protocol;
 mod protocol_witness;
 mod quantized;
+mod reservations;
 mod runtime_reports;
 mod runtime_witness;
 mod staging;
@@ -33,6 +34,7 @@ pub use exact::{ExactCompletionCase, ExactCompletionObservation};
 pub use fixture_audit::PlannedFixtureAudit;
 pub use protocol_witness::OriginalProtocolWitness;
 pub use quantized::{QuantizedCompletionCase, QuantizedCompletionObservation};
+pub use reservations::OriginalRealizedCaseReservation;
 pub use runtime_reports::{InstalledRuntimeWitnessOracle, OriginalRuntimeReportStore};
 pub use runtime_witness::{OriginalCompletionObservation, OriginalCompletionWitness};
 
@@ -101,6 +103,27 @@ pub trait InstalledConformanceAuthority:
     ) -> Result<(), QualificationError> {
         Err(QualificationError::Refused(
             "no installed original runtime observation sink",
+        ))
+    }
+
+    /// Authenticates a fixed realized-case template before its original Begin.
+    ///
+    /// This callback binds the predeclared semantic programme, case/oracle and
+    /// snapshot ceiling without predicting post-Arm native proof identities.
+    /// The eventual full exact fixture still requires independent source seals.
+    ///
+    /// # Errors
+    /// Defaults to refusal. Unknown templates, changed source/plan and missing
+    /// pre-effect source installation cannot reserve an actual case attempt.
+    fn authenticate_realized_reservation(
+        &self,
+        _population: &WitnessPlan,
+        _case: &str,
+        _oracle: &ContentRef,
+        _maximum_bytes: u64,
+    ) -> Result<(), QualificationError> {
+        Err(QualificationError::Refused(
+            "no installed realized-case reservation authority",
         ))
     }
 
@@ -175,6 +198,7 @@ pub struct ProductionConformanceRunner<'a> {
     population_reference: ContentRef,
     population: WitnessPopulation,
     attempts: OriginalCollectionAttempts,
+    reservation_owner: std::rc::Rc<()>,
     observations: BTreeMap<String, ProtocolObservation>,
     exact_observations: BTreeMap<String, ExactCompletionObservation>,
     quantized_observations: BTreeMap<String, QuantizedCompletionObservation>,
@@ -231,6 +255,7 @@ impl<'a> ProductionConformanceRunner<'a> {
             population_reference: plan_reference.clone(),
             population,
             attempts: OriginalCollectionAttempts::default(),
+            reservation_owner: std::rc::Rc::new(()),
             observations: BTreeMap::new(),
             exact_observations: BTreeMap::new(),
             quantized_observations: BTreeMap::new(),
@@ -399,6 +424,7 @@ impl<'a> ProductionConformanceRunner<'a> {
             &mut runtime.original_witness(),
             Some(activation),
             token,
+            None,
         )
     }
 
@@ -419,7 +445,7 @@ impl<'a> ProductionConformanceRunner<'a> {
         runtime: &mut crucible::node_contract::OriginalRuntimeWitness<'_>,
         token: &crucible::node_contract::OperationToken,
     ) -> Result<&ExactCompletionObservation, QualificationError> {
-        self.collect_exact_original(case, runtime, None, token)
+        self.collect_exact_original(case, runtime, None, token, None)
     }
 
     fn collect_exact_original(
@@ -428,7 +454,11 @@ impl<'a> ProductionConformanceRunner<'a> {
         runtime: &mut crucible::node_contract::OriginalRuntimeWitness<'_>,
         activation: Option<&crucible::node_contract::WorldActivation>,
         token: &crucible::node_contract::OperationToken,
+        reservation: Option<OriginalRealizedCaseReservation>,
     ) -> Result<&ExactCompletionObservation, QualificationError> {
+        if let Some(original) = &reservation {
+            self.require_reserved_exact(&case, original)?;
+        }
         let planned = self
             .plan
             .cases
@@ -437,7 +467,7 @@ impl<'a> ProductionConformanceRunner<'a> {
             .ok_or(QualificationError::Refused("unplanned exact collection"))?;
         if planned.kind != CaseKind::RealizedProvider
             || planned.oracle != case.oracle
-            || self.attempts.attempted(&case.case)
+            || (reservation.is_none() && self.attempts.attempted(&case.case))
         {
             return Err(QualificationError::Refused("changed original exact case"));
         }
@@ -450,32 +480,31 @@ impl<'a> ProductionConformanceRunner<'a> {
         )?;
         self.authority
             .authenticate_exact_fixture(&self.plan, &case)?;
-        // JSON byte arrays/escaped snapshot bytes and duplicate reference
-        // metadata must fit the final evidence credit before body retrieval.
-        let encoded_credit = case
-            .maximum_bytes
-            .checked_mul(6)
-            .and_then(|n| n.checked_add(16_384))
-            .ok_or(QualificationError::Refused(
-                "exact encoding credit overflow",
-            ))?;
-        let reserved =
-            self.reserved_bytes
-                .checked_add(encoded_credit)
+        if reservation.is_none() {
+            // JSON byte arrays/escaped snapshot bytes and duplicate reference
+            // metadata must fit the final evidence credit before body retrieval.
+            let encoded_credit = case
+                .maximum_bytes
+                .checked_mul(6)
+                .and_then(|n| n.checked_add(16_384))
                 .ok_or(QualificationError::Refused(
-                    "exact collection credit overflow",
+                    "exact encoding credit overflow",
                 ))?;
-        if case.maximum_bytes == 0
-            || encoded_credit > self.limits.maximum_evidence_bytes
-            || encoded_credit > self.limits.maximum_claim_bytes as u64
-            || reserved > self.limits.maximum_total_evidence_bytes
-        {
-            return Err(QualificationError::Refused(
-                "exact collection pre-read credit",
-            ));
+            let reserved = self.reserved_bytes.checked_add(encoded_credit).ok_or(
+                QualificationError::Refused("exact collection credit overflow"),
+            )?;
+            if case.maximum_bytes == 0
+                || encoded_credit > self.limits.maximum_evidence_bytes
+                || encoded_credit > self.limits.maximum_claim_bytes as u64
+                || reserved > self.limits.maximum_total_evidence_bytes
+            {
+                return Err(QualificationError::Refused(
+                    "exact collection pre-read credit",
+                ));
+            }
+            self.reserved_bytes = reserved;
+            self.attempts.begin(case.case.clone());
         }
-        self.reserved_bytes = reserved;
-        self.attempts.begin(case.case.clone());
         let (observation, matches) = exact::collect(runtime, activation, token, &case)?;
         self.exact_observations
             .insert(case.case.clone(), observation);
