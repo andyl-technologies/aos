@@ -10,6 +10,8 @@ mod admission;
 mod deletion;
 #[cfg(feature = "std")]
 mod namespaces;
+#[cfg(all(feature = "std", unix))]
+mod routed;
 mod storage;
 
 #[cfg(test)]
@@ -18,16 +20,21 @@ mod tests;
 #[cfg(all(test, feature = "tokio", unix))]
 mod native_tests;
 
+#[cfg(all(test, feature = "tokio", unix))]
+mod native_storage_tests;
+
+#[cfg(all(test, feature = "tokio", unix))]
+mod native_deletion_tests;
+
 pub use access::{DomainAccess, DomainBinding};
 pub use admission::{DomainAdmission, DomainRecord, DomainReference};
-pub use deletion::{
-    DomainAdminRequest, DomainDeletionAudit, DomainDeletionBackend, DomainDeletionEvent,
-    DomainDeletionPlan,
-};
+pub use deletion::{DomainAdminRequest, DomainDeletionAudit, DomainDeletionEvent};
 #[cfg(feature = "std")]
 pub use namespaces::{
     ConfiguredDomainRoute, DomainAuditRoute, DomainFsBinding, DomainNamespace, DomainNamespaces,
 };
+#[cfg(all(feature = "std", unix))]
+pub use routed::{DomainReadRequest, DomainWriteRequest, RoutedDomainStore};
 pub use storage::{DomainDisclosure, DomainStore};
 
 use terrane_core::identity::{Identity, IdentityKind, TERRANE_V1};

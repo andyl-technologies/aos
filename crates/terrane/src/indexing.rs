@@ -28,10 +28,11 @@ use terrane_core::indexing::carrier::SemanticContext;
 use terrane_core::indexing::evaluation::{self, IndexData};
 use terrane_core::indexing::lookup::Prepared;
 use terrane_core::tree_builder::Tree;
+use terrane_core::tree_format::TreeUse;
 
 use crate::store::{StoreErrorKind, StoreFailure};
 
-pub use loading::{load, load_source};
+pub use loading::{load, load_for, load_source, load_source_for};
 pub use sources::{Reconstruction, Sources};
 
 /// Supplies independently selected semantic revisions for active interpretation.
@@ -173,7 +174,7 @@ pub struct Loading {
 
 /// Owns reached immutable namespace bytes independently of auxiliary indexes.
 ///
-/// The selected owner, context and geometry describe ordinary immutable data.
+/// The selected owner, physical use, context and geometry describe immutable data.
 /// Store permissions still apply; this value grants no authorization and proves
 /// no index relationship, current occurrence coverage or producer trust. Trees
 /// reconstructed from it borrow the raw bytes, with no self-referential storage.
@@ -181,6 +182,7 @@ pub struct LoadedSource {
     owner: Digest,
     context: SemanticContext,
     minimum: u64,
+    usage: TreeUse,
     namespace: BTreeMap<Digest, Vec<u8>>,
     roots: BTreeSet<Digest>,
     loading: Loading,
@@ -207,6 +209,14 @@ pub struct Loaded {
 }
 
 impl Loaded {
+    /// Borrows verified-load auxiliary data for internal contextual collection.
+    ///
+    /// The caller still performs sources/prepare and actual role traversal.
+    /// This immutable data supplies no current lookup or collection authority.
+    pub(crate) fn index_data(&self) -> &IndexData {
+        &self.index
+    }
+
     /// Returns namespace and auxiliary acquisition events from bound loading.
     pub fn loading(&self) -> Loading {
         self.loading
