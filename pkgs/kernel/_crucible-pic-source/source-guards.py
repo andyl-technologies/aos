@@ -52,7 +52,7 @@ def main():
     spec.loader.exec_module(module)
     inventory = json.loads((here / 'source-inventory.json').read_text())
     phase = sys.argv[2] if len(sys.argv) == 3 else 'completed'
-    if phase not in ('completed', 'eoi'):
+    if phase not in ('completed', 'eoi', 'deferred'):
         raise ValueError('Unknown source checkpoint')
     module.verify(root, inventory['files'], phase)
     # A later additive role must be absent at the preceding checkpoint; it

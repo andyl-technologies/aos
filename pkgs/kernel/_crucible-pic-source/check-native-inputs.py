@@ -101,7 +101,7 @@ def main():
     target = sys.argv[2]
     here = Path(__file__).parent
     inventory = json.loads((here / 'source-inventory.json').read_text())
-    catalog = {row['path']: row['eoi'] for row in inventory['files']}
+    catalog = {row['path']: row['deferred'] for row in inventory['files']}
     required = json.loads((here / 'native-inputs.json').read_text())[target]
     report = verify(root, target, required, catalog)
     (root / ('pic-' + Path(target).name + '.inputs.json')).write_text(

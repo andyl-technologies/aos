@@ -51,3 +51,9 @@ The retained release predecessor is source-only `GPL-2.0-only` counterfactual
 input. All seventeen EOI model variants retain the complete original PIC MIT
 notice together with their copied GPL-compatible inputs. The timestamp peer
 covers actual-produced nonnegative birth values, not arbitrary forged values.
+
+Deferred PIT publication changes four existing native roles and retains every
+original SPDX notice. Its ten source-extracted models retain GPL-2.0-only scope;
+PIC geometry and partial row fields are explicit modeled peers, not copied MIT
+PIC routines. The prior receiver and original EOI models retain their complete
+MIT notices and are generated at their original source checkpoints.

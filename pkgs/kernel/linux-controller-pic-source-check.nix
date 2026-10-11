@@ -91,6 +91,9 @@ in
           ${python3}/bin/python3 ${fixtures}/generate-models.py "$PWD" "$CC" "$PWD/pic-controls"
           ${python3}/bin/python3 ${fixtures}/apply-eoi-source.py "$PWD" ${patch}/bin/patch
           ${python3}/bin/python3 ${fixtures}/source-guards.py "$PWD" eoi
+          ${python3}/bin/python3 ${fixtures}/generate-eoi-models.py "$PWD" "$CC" "$PWD/eoi-controls"
+          ${python3}/bin/python3 ${fixtures}/apply-deferred-source.py "$PWD" ${patch}/bin/patch
+          ${python3}/bin/python3 ${fixtures}/source-guards.py "$PWD" deferred
 
           compile_native_unit() {
             nativeObject="$1"
@@ -122,18 +125,21 @@ in
           compile_native_unit virt/kvm/irqchip.o
 
           ${python3}/bin/python3 ${fixtures}/check-models.py "$PWD/pic-controls" "$PWD"
-          ${python3}/bin/python3 ${fixtures}/generate-eoi-models.py "$PWD" "$CC" "$PWD/eoi-controls"
           ${python3}/bin/python3 ${fixtures}/check-eoi-models.py "$PWD/eoi-controls" "$PWD"
+          ${python3}/bin/python3 ${fixtures}/generate-queue-models.py "$PWD" "$CC" "$PWD/queue-controls"
+          ${python3}/bin/python3 ${fixtures}/check-queue-models.py "$PWD/queue-controls" "$PWD"
           ${python3}/bin/python3 ${fixtures}/resources.py check "$PWD"
           mkdir -p $out
           cp "$PWD/pic-controls/report.json" $out/source-model-report.json
           cp "$PWD/eoi-controls/report.json" $out/original-eoi-model-report.json
+          cp "$PWD/queue-controls/report.json" $out/deferred-pit-model-report.json
           cat > $out/report <<'REPORT'
           eight x86 native source objects: compiled
           one positive and eleven intended adverse source controls: passed
           copied PIC MIT notice and GPL-compatible scope: retained
           one positive and sixteen intended original EOI adverse source controls: passed
           original EOI source lease and row reconciliation: checked
+          one positive and nine intended deferred PIT publication controls: passed
           full kernel linking, physical guest delivery and PIC producer board: unqualified
           ordinary dual-route/coalescing and FirstBegin IRQchip admission: unsupported
           guest delivery, native hardware, Ready and capture: not qualified

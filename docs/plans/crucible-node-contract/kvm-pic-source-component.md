@@ -64,3 +64,18 @@ interrupt delivery. The timestamp peer covers actual-produced nonnegative
 birth timestamps; it supplies no arbitrary forged-value claim. Deferred
 periodic work across original EOI release and usable full-board admission remain
 separate work, with the original FirstBegin refusal unchanged.
+
+The later deferred PIT source component retains the next original expiry while
+an earlier EOI still owns its release credit. Queue publication remains under
+the original native gate and effect credit, with finite queue/head/generation
+records and post-call uncertainty checks. The model worker ends at its admission
+prefix before IRQ/NMI, and the held queue return is a modeled seam.
+
+The private configured-source cohort passed eight native unit dependency checks
+and ten inert controls (one positive and nine intended assertion failures). Its
+first model type-name compile failure remains recorded separately. This recipe
+generates the twelve receiver models before EOI changes and the seventeen EOI
+models before deferred changes, then compiles the final native units and checks
+all model sets using one original resource reservation. The new registered
+recipe realization is pending; full kernel linking, physical wake, guest
+delivery, board admission, FirstBegin, Ready and capture remain unsupported.
