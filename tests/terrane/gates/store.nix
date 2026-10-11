@@ -51,6 +51,9 @@ in {
     run_store_test store::ordinary_read::tests::ordinary_recipe_preserves_body_error_and_after_read_disappearance --features tokio
     run_store_test store::ordinary_read::tests::ordinary_recipe_rejects_same_bytes_named_inode_replacement --features tokio
     run_store_test store::ordinary_read::tests::ordinary_recipe_cancellation_delivers_no_result_or_authority --features tokio
+    run_store_test store::native_effect::payload_ranges::tests::distinct_leaves_share_original_ancestors_without_retaining_them_globally --features tokio
+    run_store_test store::native_effect::payload_ranges::tests::replaced_ancestor_never_rebinds_original_shared_descriptor --features tokio
+    run_store_test store::native_effect::payload_ranges::tests::changed_ancestor_mode_refuses_old_receipt_and_keeps_capture_independent --features tokio
     run_store_test store::native_effect::payload_ranges::tests::original_ranges_read_exact_bytes_and_revalidate_without_whole_body --features tokio
     run_store_test store::native_effect::payload_ranges::tests::zero_range_at_original_end_is_checked_and_overflow_refuses --features tokio
     run_store_test store::native_effect::payload_ranges::tests::equal_bytes_replaced_leaf_cannot_rebind_original_descriptor --features tokio
