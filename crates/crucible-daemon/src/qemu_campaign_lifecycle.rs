@@ -1902,6 +1902,28 @@ pub enum QemuFreshStartReplayError {
         /// Stable name of the exceeded limit.
         limit: &'static str,
     },
+    /// A replay quantum's event history exceeded the observation projection bound.
+    ///
+    /// The progress fields distinguish a prefix that genuinely outgrows the
+    /// bound from a replay that stopped advancing its schedule toward the
+    /// requested configuration while quanta kept running.
+    #[error(
+        "fresh start replay exceeded `{limit}` at quanta {completed_quanta} with {retained_entries} retained entries ({retained_bytes} bytes) and schedule {schedule_len} of {target_schedule_len}"
+    )]
+    EventLogLimitExceeded {
+        /// Stable name of the exceeded limit.
+        limit: &'static str,
+        /// Entries retained when the bound was reached.
+        retained_entries: usize,
+        /// Canonical bytes retained when the bound was reached.
+        retained_bytes: usize,
+        /// Absolute quantum coordinate of the rejected quantum.
+        completed_quanta: u64,
+        /// Decisions replayed through the rejected quantum.
+        schedule_len: usize,
+        /// Decisions in the requested start configuration.
+        target_schedule_len: usize,
+    },
 }
 
 fn replay_decision_detail(decision: Option<&Decision>) -> String {
@@ -2603,9 +2625,17 @@ pub(crate) fn materialize_start_from<F, D>(
             Vec::new()
         };
 
-        append_start_replay_events(&mut replay, &outcome.event_log_entries)?;
-        append_start_replay_events(&mut replay, &live_network_entries)?;
-        append_start_replay_events(&mut replay, &selection_entries)?;
+        let appended = append_start_replay_events(&mut replay, &outcome.event_log_entries)
+            .and_then(|()| append_start_replay_events(&mut replay, &live_network_entries))
+            .and_then(|()| append_start_replay_events(&mut replay, &selection_entries));
+        if let Err(failure) = appended {
+            return Err(with_replay_progress(
+                failure,
+                &replay,
+                next.schedule.len(),
+                target.schedule.len(),
+            ));
+        }
         replay.terminal_quiescence = outcome.scheduler_quiescence;
         publish_replayed_host_outcomes(lifecycle, target, &mut next, &mut replay)?;
         current = next;
@@ -2783,6 +2813,30 @@ fn append_start_replay_events<F, D>(
     replay.event_log.extend_from_slice(entries);
     replay.event_log_bytes = bytes;
     Ok(())
+}
+
+/// Attaches replay progress to an event-log limit failure from one quantum.
+fn with_replay_progress<F, D>(
+    failure: AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>,
+    replay: &QemuFreshStartMaterialization,
+    schedule_len: usize,
+    target_schedule_len: usize,
+) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
+    match failure {
+        AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+            QemuFreshStartReplayError::LimitExceeded { limit },
+        )) => AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+            QemuFreshStartReplayError::EventLogLimitExceeded {
+                limit,
+                retained_entries: replay.event_log.len(),
+                retained_bytes: replay.event_log_bytes,
+                completed_quanta: replay.completed_quanta,
+                schedule_len,
+                target_schedule_len,
+            },
+        )),
+        failure => failure,
+    }
 }
 
 fn start_replay_limit_failure<F, D>(

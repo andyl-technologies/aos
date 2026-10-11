@@ -3977,3 +3977,6 @@ mod released_publication;
 
 #[path = "tests/network_fault_replay.rs"]
 mod network_fault_replay;
+
+#[path = "tests/replay_limits.rs"]
+mod replay_limits;
