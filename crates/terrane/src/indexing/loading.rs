@@ -1,5 +1,9 @@
 //! Fetches exact namespace and contextual auxiliary closures using only get.
 
+mod frontier;
+#[cfg(test)]
+mod timings;
+
 use super::*;
 use crate::store::ContentStore;
 use terrane_core::identity::{IdentityKind, TERRANE_V1};
@@ -38,11 +42,14 @@ struct Fetcher<'store, S: ?Sized> {
     store: &'store S,
     context: SemanticContext,
     minimum: u64,
+    usage: TreeUse,
     bytes: BTreeMap<Digest, Vec<u8>>,
     namespace: BTreeMap<Digest, Vec<u8>>,
     auxiliary: BTreeMap<Digest, Vec<u8>>,
     roots: BTreeSet<Digest>,
     work: Loading,
+    #[cfg(test)]
+    timings: timings::LoadTimings,
 }
 
 /// Acquires the selected namespace independently of any auxiliary index evidence.
@@ -68,7 +75,29 @@ pub async fn load_source<S: ContentStore + ?Sized>(
     revisions: SemanticRevisions,
     minimum: u64,
 ) -> Result<LoadedSource, Error> {
-    let mut fetcher = Fetcher::new(store, revisions, minimum)?;
+    load_source_for(store, owner, revisions, minimum, TreeUse::Ordinary).await
+}
+
+/// Acquires a canonical namespace under an independently selected physical use.
+///
+/// `usage` must be ordinary namespace or retained overlay-layer context. It
+/// applies to every reached namespace root and physical Node, including graft
+/// targets. It never comes from decoded bytes or an auxiliary index. A Layer
+/// root is actual immutable data; a virtual composite supplies no such root.
+/// Callers must independently authenticate the selected context when required.
+/// No index bindings are followed and this read grants no current authority.
+///
+/// # Errors
+/// Reports the same namespace failures as [`load_source`], and rejects Index or
+/// surface interpretations without attempting an alternative decode.
+pub async fn load_source_for<S: ContentStore + ?Sized>(
+    store: &S,
+    owner: Digest,
+    revisions: SemanticRevisions,
+    minimum: u64,
+    usage: TreeUse,
+) -> Result<LoadedSource, Error> {
+    let mut fetcher = Fetcher::new_for(store, revisions, minimum, usage)?;
     fetcher.walk(Visit::root(owner, None, Vec::new())).await?;
     let loading = fetcher.work;
 
@@ -94,17 +123,49 @@ pub async fn load<S: ContentStore + ?Sized>(
     revisions: SemanticRevisions,
     minimum: u64,
 ) -> Result<Loaded, Error> {
-    let mut fetcher = Fetcher::new(store, revisions, minimum)?;
+    load_for(
+        store,
+        owner,
+        attribute,
+        revisions,
+        minimum,
+        TreeUse::Ordinary,
+    )
+    .await
+}
+
+/// Loads a retained namespace owner and its index under an explicit physical use.
+///
+/// The independently selected ordinary or overlay-layer context applies to the
+/// complete namespace closure. Auxiliary Nodes retain their exact contextual
+/// Index roles. The required owner-local binding is followed and checked by
+/// subsequent reconstruction and preparation; Layer use does not waive it.
+/// Callers must independently authenticate the selected context when required.
+///
+/// # Errors
+/// Reports the same evidence, binding and contextual failures as [`load`], and
+/// rejects Index or surface interpretations without alternative decoding.
+pub async fn load_for<S: ContentStore + ?Sized>(
+    store: &S,
+    owner: Digest,
+    attribute: &str,
+    revisions: SemanticRevisions,
+    minimum: u64,
+    usage: TreeUse,
+) -> Result<Loaded, Error> {
+    let mut fetcher = Fetcher::new_for(store, revisions, minimum, usage)?;
     IndexEvaluationRecipe::new(owner, attribute).map_err(|error| invalid(owner, error))?;
 
     fetcher.walk(Visit::root(owner, None, Vec::new())).await?;
     let namespace_loading = fetcher.work;
 
+    #[cfg(test)]
+    let binding_span = fetcher.timings.span("owner-binding");
     let owner_bytes = fetcher
         .namespace
         .get(&owner)
         .ok_or_else(|| invalid(owner, evaluation::Error::MissingSource))?;
-    let owner_node = decode_node_for(owner_bytes, true, minimum, TreeUse::Ordinary)
+    let owner_node = decode_node_for(owner_bytes, true, minimum, usage)
         .map_err(|error| invalid(owner, error))?;
     increment(&mut fetcher.work.node_decodes, 1, owner)?;
     let property = owner_node
@@ -121,6 +182,8 @@ pub async fn load<S: ContentStore + ?Sized>(
         .get(attribute)
         .ok_or(Error::MissingBinding(owner))?;
     drop(owner_node);
+    #[cfg(test)]
+    drop(binding_span);
     fetcher
         .walk(Visit::root(primary, Some(Role::Primary), Vec::new()))
         .await?;
@@ -138,7 +201,21 @@ pub async fn load<S: ContentStore + ?Sized>(
 }
 
 impl<'store, S: ContentStore + ?Sized> Fetcher<'store, S> {
+    #[cfg(test)]
     fn new(store: &'store S, revisions: SemanticRevisions, minimum: u64) -> Result<Self, Error> {
+        Self::new_for(store, revisions, minimum, TreeUse::Ordinary)
+    }
+
+    fn new_for(
+        store: &'store S,
+        revisions: SemanticRevisions,
+        minimum: u64,
+        usage: TreeUse,
+    ) -> Result<Self, Error> {
+        if !matches!(usage, TreeUse::Ordinary | TreeUse::OverlayLayer) {
+            return Err(Error::Unsupported);
+        }
+
         let context = SemanticContext::new(revisions.property, revisions.attribute, revisions.tree)
             .map_err(|_| Error::Unsupported)?;
         if minimum != CDC_1M_MIN as u64 {
@@ -149,11 +226,14 @@ impl<'store, S: ContentStore + ?Sized> Fetcher<'store, S> {
             store,
             context,
             minimum,
+            usage,
             bytes: BTreeMap::new(),
             namespace: BTreeMap::new(),
             auxiliary: BTreeMap::new(),
             roots: BTreeSet::new(),
             work: Loading::default(),
+            #[cfg(test)]
+            timings: timings::LoadTimings::new(),
         })
     }
 
@@ -162,24 +242,54 @@ impl<'store, S: ContentStore + ?Sized> Fetcher<'store, S> {
             owner,
             context: self.context,
             minimum: self.minimum,
+            usage: self.usage,
             namespace: std::mem::take(&mut self.namespace),
             roots: std::mem::take(&mut self.roots),
             loading,
         }
     }
 
-    async fn read(&mut self, node: Digest) -> Result<Vec<u8>, Error> {
+    async fn read(
+        &mut self,
+        node: Digest,
+        pending: &[Visit],
+        frontier: &mut frontier::Frontier,
+    ) -> Result<Vec<u8>, Error> {
         if let Some(bytes) = self.bytes.get(&node) {
+            #[cfg(test)]
+            self.timings.count("byte-cache-hits", 1);
             return Ok(bytes.clone());
         }
-        let identity = TERRANE_V1
-            .from_digest(IdentityKind::Node, &node)
-            .map_err(|_| invalid(node, evaluation::Error::Source))?;
-        increment(&mut self.work.gets, 1, node)?;
-        let bytes = self
-            .store
-            .get(&identity, None)
-            .await
+        if !frontier.contains(&node) {
+            // The current subject already passed its DFS branch checks. Only
+            // validated parents have placed the other subjects on this stack.
+            let mut reads = vec![node];
+            // Bound planning as well as retained reads. Shared or cached subjects
+            // may fill a large pending stack without filling any read slots;
+            // searching past them would repeatedly scan unrelated DFS work.
+            // Deferred subjects retain their normal validation and error order.
+            for visit in pending.iter().rev().take(frontier::WIDTH - 1) {
+                if reads.len() == frontier.remaining() {
+                    break;
+                }
+                if frontier::permitted(visit)
+                    && !self.bytes.contains_key(&visit.node)
+                    && !frontier.contains(&visit.node)
+                    && !reads.contains(&visit.node)
+                {
+                    reads.push(visit.node);
+                }
+            }
+            #[cfg(test)]
+            self.timings.count("planned-get-subjects", reads.len());
+            for subject in &reads {
+                increment(&mut self.work.gets, 1, *subject)?;
+            }
+            frontier.fill(self.store, &reads).await?;
+        }
+        let bytes = frontier
+            .take(&node)
+            .ok_or_else(|| invalid(node, evaluation::Error::MissingSource))?
             .map_err(|failure| Error::Store { node, failure })?;
         increment(&mut self.work.fetched_bytes, bytes.len(), node)?;
         self.bytes.insert(node, bytes.clone());
@@ -188,6 +298,7 @@ impl<'store, S: ContentStore + ?Sized> Fetcher<'store, S> {
 
     async fn walk(&mut self, first: Visit) -> Result<(), Error> {
         let mut pending = vec![first];
+        let mut frontier = frontier::Frontier::default();
         while let Some(mut visit) = pending.pop() {
             // Physical height and namespace/continuation depth are independent.
             // Cloned active branches preserve valid sharing between siblings.
@@ -208,7 +319,17 @@ impl<'store, S: ContentStore + ?Sized> Fetcher<'store, S> {
             }
             visit.physical.push(visit.node);
 
-            let bytes = self.read(visit.node).await?;
+            #[cfg(test)]
+            let read_span = self.timings.span(if visit.role.is_some() {
+                "auxiliary-read-await"
+            } else {
+                "namespace-read-await"
+            });
+            let bytes = self.read(visit.node, &pending, &mut frontier).await?;
+            #[cfg(test)]
+            drop(read_span);
+            #[cfg(test)]
+            let address_span = self.timings.span("address-hash");
             // A cache hit establishes bytes only, never their contextual use.
             increment(&mut self.work.identity_checks, 1, visit.node)?;
             let digest = TERRANE_V1
@@ -218,14 +339,22 @@ impl<'store, S: ContentStore + ?Sized> Fetcher<'store, S> {
             if digest != visit.node {
                 return Err(invalid(visit.node, evaluation::Error::Relationship));
             }
+            #[cfg(test)]
+            drop(address_span);
             let usage = if visit.role.is_some() {
                 TreeUse::Index
             } else {
-                TreeUse::Ordinary
+                self.usage
             };
+            #[cfg(test)]
+            let decode_span = self.timings.span("node-decode");
             increment(&mut self.work.node_decodes, 1, visit.node)?;
             let node = decode_node_for(&bytes, visit.is_root, self.minimum, usage)
                 .map_err(|error| invalid(visit.node, error))?;
+            #[cfg(test)]
+            drop(decode_span);
+            #[cfg(test)]
+            let context_span = self.timings.span("context-and-traversal");
             if let Some(role) = visit.role {
                 increment(&mut self.work.carrier_checks, 1, visit.node)?;
                 let gap = validate_node(self.context, role, &node, visit.is_root)
@@ -280,6 +409,8 @@ impl<'store, S: ContentStore + ?Sized> Fetcher<'store, S> {
                     }
                 }
             }
+            #[cfg(test)]
+            drop(context_span);
         }
         Ok(())
     }
@@ -308,6 +439,11 @@ fn reject_structural_properties(
     Ok(())
 }
 
+/// Checks cached namespace placement, depth and cycle refusals without new reads.
+///
+/// # Panics
+/// Panics if the independent valid fixture is rejected or a contextual refusal
+/// changes its expected subject, error kind or read accounting.
 #[cfg(test)]
 pub(super) async fn check_source_cached_context_guards<S: ContentStore>(store: &S, owner: Digest) {
     let mut fetcher = Fetcher::new(
@@ -381,6 +517,11 @@ pub(super) async fn check_source_cached_context_guards<S: ContentStore>(store: &
     }
 }
 
+/// Checks cached owner and auxiliary placement, depth and cycle refusals.
+///
+/// # Panics
+/// Panics if the independent valid fixture is rejected or a contextual refusal
+/// changes its expected error kind or read accounting.
 #[cfg(test)]
 pub(super) async fn check_cached_context_guards<S: ContentStore>(
     store: &S,
@@ -393,11 +534,13 @@ pub(super) async fn check_cached_context_guards<S: ContentStore>(
         store,
         context,
         minimum: CDC_1M_MIN as u64,
+        usage: TreeUse::Ordinary,
         bytes: BTreeMap::new(),
         namespace: BTreeMap::new(),
         auxiliary: BTreeMap::new(),
         roots: BTreeSet::new(),
         work: Loading::default(),
+        timings: timings::LoadTimings::new(),
     };
     fetcher
         .walk(Visit::root(owner, None, Vec::new()))

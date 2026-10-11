@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 use terrane_core::{
     auth::{Verb, Verbs},
     identity::{Identity, IdentityKind, TERRANE_V1},
-    properties::{self, Domain, PropertyName, RootLayer, Value},
+    properties::{Domain, PropertyName, RootLayer, Value},
     refs::CommitSource,
 };
 
@@ -28,11 +28,11 @@ use terrane_core::{
 /// The adapter holds ordinary repository signing authority. It is not a
 /// presentation surface and never grants access to the data repository.
 pub struct RegisteredDomainAudit<'a, S: Store, C: Clock, F: LocalFs> {
-    repository: &'a Repository<S, C, F>,
-    authority: &'a LocalAuthority,
-    domain: String,
-    reference: String,
-    configured: &'a domain::ConfiguredDomainRoute,
+    pub(super) repository: &'a Repository<S, C, F>,
+    pub(super) authority: &'a LocalAuthority,
+    pub(super) domain: String,
+    pub(super) reference: String,
+    pub(super) configured: &'a domain::ConfiguredDomainRoute,
 }
 
 impl<S, C, F> Repository<S, C, F>
@@ -134,6 +134,17 @@ where
     C: Clock + Sync,
     F: LocalFs + Sync,
 {
+    /// Borrows the actual registered native factory inputs without minting authority.
+    pub(crate) fn native_binding(
+        &self,
+    ) -> (
+        &Repository<S, C, F>,
+        &LocalAuthority,
+        &domain::ConfiguredDomainRoute,
+    ) {
+        (self.repository, self.authority, self.configured)
+    }
+
     /// Returns an administration request bound to the verified domain route.
     ///
     /// # Errors
@@ -147,7 +158,14 @@ where
         )?)
     }
 
-    async fn load(&self) -> Result<(AuthorizedSnapshot, DomainAccess, RouteMessage), Error> {
+    /// Loads the signed route under independently checked current administration.
+    ///
+    /// # Errors
+    /// Rejects changed backend binding, missing or denied current authority,
+    /// mismatched whole heads, invalid root policy and malformed audit history.
+    pub(super) async fn load(
+        &self,
+    ) -> Result<(AuthorizedSnapshot, DomainAccess, RouteMessage), Error> {
         self.repository.check_audit_backend(self.configured)?;
         let guard = self.repository.coordinator.guard();
         let snapshot = guard
@@ -240,7 +258,11 @@ where
     }
 }
 
-fn check_actor(
+/// Checks the event against the independently qualified audit principal and domain.
+///
+/// # Errors
+/// Rejects differing domains, principals, token identities or non-Node roots.
+pub(super) fn check_actor(
     event: &DomainDeletionEvent,
     domain: &str,
     access: &DomainAccess,
@@ -258,7 +280,12 @@ fn check_actor(
     Ok(())
 }
 
-fn validate_audit_root<S, C, F>(
+/// Checks an empty private audit root with permanent retention and restricted reads.
+///
+/// # Errors
+/// Rejects the target domain, nonempty trees, absent or invalid recorded policy,
+/// missing permanent retention and grants that permit unaudited readers.
+pub(super) fn validate_audit_root<S, C, F>(
     snapshot: &AuthorizedSnapshot,
     repository: &Repository<S, C, F>,
     domain: &str,
@@ -283,17 +310,19 @@ where
         return Err(Error::Denied);
     }
     let properties = tree.props().ok_or(Error::Denied)?;
-    let effective = properties::resolve(
-        &[RootLayer {
-            properties,
-            overrides: &[],
-        }],
-        repository
-            .coordinator
-            .guard()
-            .defaults_for(&snapshot.evidence),
-    )
-    .map_err(|_| Error::Denied)?;
+    let effective = snapshot
+        .interpretation
+        .resolve(
+            &[RootLayer {
+                properties,
+                overrides: &[],
+            }],
+            repository
+                .coordinator
+                .guard()
+                .defaults_for(&snapshot.evidence),
+        )
+        .map_err(|_| Error::Denied)?;
     if effective.get(PropertyName::Retain) != Some(&Value::Text("forever")) {
         return Err(Error::Denied);
     }
@@ -311,7 +340,15 @@ where
     Ok(())
 }
 
-fn validate_chain(snapshot: &AuthorizedSnapshot, domain: &str) -> Result<RouteMessage, Error> {
+/// Checks the exact signed route transitions through the retained audit history.
+///
+/// # Errors
+/// Rejects missing or cyclic history, malformed route records, differing roots
+/// or author identities, invalid transitions and earlier unrelated route records.
+pub(super) fn validate_chain(
+    snapshot: &AuthorizedSnapshot,
+    domain: &str,
+) -> Result<RouteMessage, Error> {
     let head = audit_codec::decode(&snapshot.commit.commit().message)?;
     let mut current = snapshot.commit.identity();
     let mut newer: Option<RouteMessage> = None;
@@ -414,7 +451,9 @@ fn invalid() -> StoreFailure {
         rule_id: "DOM-20",
     }))
 }
-fn failure(error: Error) -> StoreFailure {
+
+/// Preserves a store failure or wraps the original repository failure as unavailable.
+pub(super) fn failure(error: Error) -> StoreFailure {
     match error {
         Error::Store(error) => error,
         error => {

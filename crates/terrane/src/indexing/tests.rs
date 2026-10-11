@@ -1,6 +1,8 @@
 //! Exercises read-only loading with independently assembled canonical wire data.
 
+mod layer;
 mod source;
+mod source_bridge;
 mod source_failures;
 mod wire;
 
@@ -25,7 +27,10 @@ pub(super) trait FixtureValue {
     /// The value required by the fixture's valid baseline or assertion.
     type Value;
 
-    /// Panics when the fixture is rejected, retaining its diagnostic.
+    /// Returns the required fixture value, retaining rejection diagnostics.
+    ///
+    /// # Panics
+    /// Panics when the fixture value is absent or rejected.
     fn require(self) -> Self::Value;
 }
 
@@ -58,6 +63,11 @@ fn load_source_preserves_shared_grafts_and_internal_physical_contexts() {
 #[test]
 fn load_source_keeps_typed_source_failures_and_selected_revisions() {
     source_failures::prove_failures();
+}
+
+#[test]
+fn load_source_drives_initialization_and_loss_rebuild_without_index_evidence() {
+    source_bridge::prove_initialization_and_rebuild();
 }
 
 struct ReadOnly {

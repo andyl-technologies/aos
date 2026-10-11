@@ -20,9 +20,18 @@ use crate::{
 
 use super::{
     Error,
-    retention::{self, BootstrapRecord, CommitAssociation, Record, RegistrationRecord},
+    retention::{
+        self, BootstrapRecord, CommitAssociation, ImportRecord, Record, RegistrationRecord,
+    },
     validate_ancestors, validate_private_directory,
 };
+
+#[cfg(test)]
+fn index_rebuild_trace(phase: &str) {
+    if std::env::var_os("TERRANE_INDEX_REBUILD_TRACE").is_some() {
+        eprintln!("index-rebuild phase={phase}");
+    }
+}
 
 /// Keeps the factory-checked physical association and trusted new-epoch configuration.
 pub(crate) struct NativeRetention {
@@ -77,6 +86,7 @@ where
         let authority = guard
             .bind_original_authority(namespace, control, registration.view())
             .await?;
+        super::disclosure::initialize(guard, &authority, owner_uid).await?;
         Self::from_native_authority(coordinator, authority, owner_uid).await
     }
 
@@ -92,11 +102,17 @@ where
         owner_uid: u32,
     ) -> Result<Self, Error> {
         let guard = coordinator.guard();
+        #[cfg(test)]
+        index_rebuild_trace("native-reopen-registration-read");
         let registration: RegistrationRecord =
             retention::read(guard.store().fs(), control, owner_uid, "registration.cbor").await?;
+        #[cfg(test)]
+        index_rebuild_trace("native-reopen-registration-bind");
         let authority = guard
             .bind_original_authority(namespace, control, registration.view())
             .await?;
+        #[cfg(test)]
+        index_rebuild_trace("native-reopen-checked-authority");
         Self::from_native_authority(coordinator, authority, owner_uid).await
     }
 
@@ -115,13 +131,21 @@ where
         owner_uid: u32,
     ) -> Result<Self, Error> {
         let guard = coordinator.guard();
+        #[cfg(test)]
+        index_rebuild_trace("native-reopen-verifier-install");
         guard.install_original_verifier(&authority).await?;
+        #[cfg(test)]
+        index_rebuild_trace("native-reopen-verifier-installed");
         let retention = NativeRetention {
             authority,
             owner_uid,
             authoring_acl: guard.config().initial_acl.clone(),
         };
+        #[cfg(test)]
+        index_rebuild_trace("native-reopen-retention-load");
         retention.load(guard).await?;
+        #[cfg(test)]
+        index_rebuild_trace("native-reopen-retention-loaded");
         let root = guard.store().root().to_path_buf();
 
         let mut repository = Self::new(coordinator);
@@ -292,6 +316,7 @@ impl NativeRetention {
         let directory = self.authority.control();
         let mut baselines = BTreeMap::new();
         let mut associations = Vec::new();
+        let mut imports = Vec::new();
         for path in fs.read_dir(directory).await? {
             let name = path
                 .file_name()
@@ -310,11 +335,23 @@ impl NativeRetention {
                     retention::read::<_, CommitAssociation>(fs, directory, self.owner_uid, name)
                         .await?,
                 );
+            } else if name.starts_with("disclosure-role-") {
+                // The concrete verifier independently checks configured role rows.
+            } else if name.starts_with("import-binding-") || name.starts_with("import-trust-") {
+                // Paired rows are reread through their exact import selectors below.
+            } else if name.starts_with("import-") {
+                imports.push(
+                    retention::read::<_, ImportRecord>(fs, directory, self.owner_uid, name).await?,
+                );
             } else if name.ends_with(".cbor") && name != "registration.cbor" && name != "token.cbor"
             {
                 // Source retention requires the separate checked import factory.
                 return Err(Error::UnavailableOperation("original authority import"));
             }
+        }
+
+        for import in imports {
+            guard.load_original_import(&self.authority, &import).await?;
         }
 
         for association in associations {
