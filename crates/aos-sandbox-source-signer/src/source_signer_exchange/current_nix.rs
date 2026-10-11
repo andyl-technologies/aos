@@ -1,8 +1,8 @@
 //! Retained CurrentNix Source16 transport and native-result custody.
 //!
-//! The client attempt, bounded I/O reservoirs, and retained signer recipe own
-//! their original results together. The selected parent service still refuses
-//! Source16 before context growth, key access, or native Source observation.
+//! The client attempt and bounded I/O reservoirs retain their original results.
+//! The selected service refuses Source16 before context growth, per-request key
+//! access, or native Source observation.
 //!
 //! ```text
 //! AOSSSR16 | context280 | intent-slot1424
@@ -22,10 +22,6 @@ use super::{
     require_socket_path_custody,
 };
 
-// The original request, key/native/parser Results and reply owner remain on
-// this service frame until every send/shutdown post has run. A failed entered
-// selected attempt terminates without ordinary unwinding of uncertain custody,
-// just as the existing selected successor service does; it never retries.
 // Each successful transfer makes at least one byte of progress. A failed,
 // interrupted or zero-progress call is retained and refuses without retry.
 // The fixed cell bound is reserved before the first clock or I/O crossing.

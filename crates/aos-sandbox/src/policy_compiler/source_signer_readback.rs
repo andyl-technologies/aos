@@ -74,7 +74,8 @@ enum CurrentNixSourceFailureSiteV1 {
 /// This inert destination must precede the reader call. Every entered native,
 /// preparation and clock Result stays resident through independent posts,
 /// including failure. Neither a reply nor this owner issues currentness or a
-/// resource-bank loan. The actual service retains it through send/EOF debt.
+/// resource-bank loan. A serving caller must retain it through response I/O;
+/// the installed Source16 ingress remains closed.
 #[cfg(target_os = "linux")]
 pub struct CurrentNixSourceObservationAttemptV1 {
     entered: bool,
