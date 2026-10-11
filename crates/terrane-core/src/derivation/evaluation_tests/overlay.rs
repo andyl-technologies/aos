@@ -4,7 +4,9 @@
 //! independently selected view interpretation and defaults, never recipe fields.
 
 use super::*;
+use crate::identity::Digest;
 use crate::properties::{Defaults, RootLayer, selected::Selection};
+use crate::tree_format::Entry;
 use core::cell::Cell;
 
 struct Context<'t> {
