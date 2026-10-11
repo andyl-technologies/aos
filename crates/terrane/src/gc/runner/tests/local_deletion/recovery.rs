@@ -456,15 +456,29 @@ async fn cancelled_waiter_retains_exclusion_until_worker_then_fresh_collector_fi
     }
     drop(pending);
     // The actual native worker still retains the same namespace exclusion.
+    let coordination = fixture.config.root.join(
+        terrane_core::bucket::BucketKey::parse("CAPABILITIES")
+            .require()
+            .lock_name(),
+    );
+    let contender = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(coordination)
+        .require();
+    assert!(matches!(
+        contender.try_lock(),
+        Err(std::fs::TryLockError::WouldBlock)
+    ));
+    drop(contender);
+
     {
         let competing = crate::bucket::held::SingleHeld::acquire(fixture.guard().store());
-        tokio::pin!(competing);
-        tokio::select! {
-            _ = &mut competing => panic!("namespace exclusion escaped cancelled native worker"),
-            () = tokio::task::yield_now() => {}
-        }
         release.send(()).require();
-        let holder = competing.await.require();
+        let holder = tokio::time::timeout(Duration::from_secs(90), competing)
+            .await
+            .require()
+            .require();
         drop(holder);
     }
     fixture.fs.assert_consumed();
