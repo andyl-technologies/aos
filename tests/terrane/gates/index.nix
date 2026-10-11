@@ -46,6 +46,9 @@
     "indexing::maintenance::update::publication_tests::initialization_exports_full_population_including_canonical_empty_root"
     "indexing::maintenance::update::publication_tests::emitted_identity_reused_from_old_closure_is_excluded"
     "indexing::maintenance::update::publication_tests::installation_refuses_new_root_without_its_emitted_bytes"
+    "indexing::maintenance::update::publication_tests::unchanged_gap_validates_changed_primary_once"
+    "indexing::maintenance::update::publication_tests::changed_gap_keeps_intermediate_and_final_primary_validation"
+    "indexing::maintenance::update::publication_tests::primary_batch_refuses_malformed_output_before_property_completion"
     "indexing::lookup::tests::candidate_ranges_match_independent_typed_rows_with_logarithmic_work"
     "indexing::lookup::tests::occurrence_walk_preserves_local_hops_gaps_and_sharing"
     "indexing::lookup::tests::lookup_preparation_refuses_divergent_data_and_separates_validation_work"
@@ -86,6 +89,13 @@
     "indexing::tests::index_loader_refuses_divergent_relationships_and_keeps_work_separate"
     "indexing::tests::layer::load_layer_source_preserves_explicit_usage_and_canonical_closure"
     "indexing::tests::layer::load_layer_index_checks_complete_owner_binding_without_ordinary_fallback"
+    "indexing::loading::frontier::tests::delayed_first_read_polls_all_eight_and_bounds_completed_buffer"
+    "indexing::loading::frontier::tests::fast_later_failure_cannot_replace_delayed_dfs_failure"
+    "indexing::loading::frontier::tests::cancellation_drops_every_started_store_future"
+    "indexing::loading::frontier::tests::invalid_prospective_branches_issue_no_reads"
+    "indexing::loading::frontier::tests::cached_namespace_still_checks_placement_depth_and_cycles"
+    "indexing::loading::frontier::tests::unsupported_semantics_refuse_before_any_store_read"
+    "indexing::loading::frontier::tests::long_cached_duplicate_and_invalid_prefixes_defer_distant_subjects"
   ];
 
   nativeTokioTests = [
@@ -98,6 +108,7 @@
     "guard::history::completion::owner_preparation_tests::repeated_owner_preparation_reuses_only_fixed_canonical_tree_work"
     "guard::history::completion::owner_preparation_tests::owner_preparation_reuse_preserves_each_occurrence_policy_and_role"
     "guard::history::completion::owner_preparation_tests::owner_preparation_reuse_never_crosses_inputs_geometry_or_invocations"
+    "guard::history::completion::owner_preparation_tests::requirements_root_reuse_preserves_failure_order_and_discards_failed_walks"
     "guard::history::candidate_preparation_tests::identical_candidate_preparation_reuses_only_operation_local_pure_work"
     "guard::history::candidate_preparation_tests::candidate_preparation_reuse_distinguishes_complete_inputs_and_typed_geometry"
     "guard::history::candidate_preparation_tests::candidate_preparation_reuse_rechecks_physical_and_issuer_refusals"

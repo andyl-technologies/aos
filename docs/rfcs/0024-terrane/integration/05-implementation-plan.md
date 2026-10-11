@@ -246,6 +246,15 @@ cohort selectors are also corrected against the actual compiled lexical module
 names. The six new retirement-barrier witnesses raise the capability gate's
 required count from forty-eight to fifty-four and await a subsequent candidate.
 
+Storage recovery allows qualification of frozen tree `4eb4688d42f7` to resume.
+Its native library build and fresh all-target SDK compilation pass; archive,
+strict Clippy and current owning gates remain pending. Five additional isolated
+worklines prepare bounded frontier planning, unchanged-gap validation, canonical
+root reuse, publication control-pin lookup and finer overlay publication markers.
+Their full proposed diffs pass independent source review. Twelve exact selectors
+are registered before adoption; runtime and Nix qualification remain pending.
+The DRV-29 blocker and all six growing-population witnesses remain required.
+
 These results accept no additional task, milestone exit or freeze. Every owning
 task gate and the complete current T1 floor remain required before a formal
 trunk merge or task checkbox advances.
