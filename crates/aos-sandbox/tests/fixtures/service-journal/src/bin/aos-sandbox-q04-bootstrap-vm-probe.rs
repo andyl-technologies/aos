@@ -24,7 +24,7 @@ use aos_sandbox::cache_residency::{
     verify_closed_cache_owner_readback_v2,
 };
 use aos_sandbox::journal::controller::production_journal_limits;
-use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use aos_sandbox::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
     PinnedControllerHoldSignerV1, PinnedSourceHoldReadbackSignerV1, PolicyCompilerProtectedOwnerV1,
     PolicyDeploymentInputsV1, SourceHoldReadbackChallengeV1,

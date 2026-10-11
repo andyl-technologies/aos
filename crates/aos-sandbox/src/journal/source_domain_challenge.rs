@@ -292,7 +292,7 @@ mod tests {
 
     use super::*;
     use crate::journal::JournalLimits;
-    use crate::lifecycle::protected_journal_join::source_domain_journal_limits;
+    use crate::source_domain::source_domain_journal_limits;
 
     #[test]
     fn challenge_preserves_capacity_for_v8_release_and_marker_clear() {

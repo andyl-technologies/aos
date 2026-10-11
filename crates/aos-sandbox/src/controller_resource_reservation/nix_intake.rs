@@ -31,7 +31,7 @@ use crate::cli_model::authorization_adapter::{
 };
 use crate::controller::ControllerProtectedClockV1;
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
-use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use crate::normal_root::{NormalRootStartupErrorV1, ProductionControllerNormalRootProfileV1};
 use crate::policy_compiler::{CurrentNixPreflightAttemptV1, CurrentNixPreflightOriginalsV1};
 use crate::production_operation_compiler::{NixStartAdmissionCarrierV2, NixStartContinuationErrorV2};

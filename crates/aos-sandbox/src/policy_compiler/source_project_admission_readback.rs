@@ -28,7 +28,7 @@ use crate::journal::{
     SourceProjectAdmissionChallengeV1, SourceProjectAdmissionReservationV1,
     SourceProjectAdmissionTerminalV1, replay_source_project_admission_challenge_v1,
 };
-use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 
 use super::source_hold_readback::{
     PinnedSourceHoldReadbackSignerV1, SourceHoldReadbackChallengeV1, SourceHoldReadbackErrorV1,
@@ -860,7 +860,7 @@ mod tests {
 
     use super::*;
     use crate::Journal;
-    use crate::lifecycle::protected_journal_join::source_domain_journal_limits;
+    use crate::source_domain::source_domain_journal_limits;
     use crate::policy_compiler::encode_source_hold_readback_signer_credential_v1;
 
     #[test]

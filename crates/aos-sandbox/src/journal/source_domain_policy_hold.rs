@@ -520,7 +520,7 @@ pub(crate) struct SourceQ04TransactionRecipesV1<'cut> {
 #[cfg(target_os = "linux")]
 impl<'cut> SourceQ04TransactionRecipesV1<'cut> {
     pub(crate) fn capture(
-        source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        source: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
         ledger: &crate::reconciler::OriginalQ04ControllerLedgerV1,
         identity: &'cut Q04CutIdentityV1,
     ) -> Result<Self, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
@@ -595,7 +595,7 @@ impl<'cut> SourceQ04TransactionRecipesV1<'cut> {
 
     pub(crate) fn bind_observed_release(
         &mut self,
-        source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        source: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
         root: &crate::policy_compiler::create_q04::OriginalQ04RootCacheLoanV1<'_, '_, '_>,
     ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
         use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
@@ -637,10 +637,10 @@ impl<'cut> SourceQ04TransactionRecipesV1<'cut> {
 
     pub(crate) fn require_fixed_journal(&self, journal: &Journal) -> Result<(), JournalError> {
         journal.require_protected_named_location(
-            std::path::Path::new(crate::lifecycle::protected_journal_join::PROTECTED_SOURCE_DOMAIN_ROOT),
+            std::path::Path::new(crate::source_domain::PROTECTED_SOURCE_DOMAIN_ROOT),
             JOURNAL_NAME,
             self.identity.source_uid(),
-            crate::lifecycle::protected_journal_join::source_domain_journal_limits(),
+            crate::source_domain::source_domain_journal_limits(),
         )?;
         if journal.protected_writer_physical_names_v1()? != self.names {
             return Err(JournalError::ProtectedBoundary);
@@ -650,7 +650,7 @@ impl<'cut> SourceQ04TransactionRecipesV1<'cut> {
 
     pub(crate) fn require_named_owner(
         &self,
-        source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        source: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
     ) -> Result<(), JournalError> {
         source.require_fixed_named_writer_v1()?;
         if source.journal().protected_owner_uid()? != self.identity.source_uid()
@@ -1150,7 +1150,7 @@ mod tests {
     use super::*;
     use crate::hierarchy::protected_journal::HierarchyProtectedJournalOwnerV1;
     use crate::journal::JournalLimits;
-    use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+    use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 
     struct TestDirectory(PathBuf);
 

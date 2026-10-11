@@ -34,7 +34,7 @@ use crate::journal::{
     IdempotencyKey, Journal, JournalError, JournalTransaction, RecordNamespace,
     SourceProjectAdmissionReservationV1,
 };
-use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use crate::policy_compiler::{
     HistoricalCreateProjectSourceHeadsV1, create_project_source_commitment_v1,
     project_admission_client_nonce_v1,

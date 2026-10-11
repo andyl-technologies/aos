@@ -54,7 +54,7 @@ use aos_sandbox::journal::{
     SOURCE_PROJECT_ADMISSION_RESERVATION_BYTES_V1, SourceDomainPolicyHoldV1,
     SourceProjectAdmissionChallengeV1, SourceProjectAdmissionReservationV1,
 };
-use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use aos_sandbox::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
     CLOSED_POLICY_BINDING_BYTES_V2, CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1,
     CONTROLLER_PROJECT_DISPATCH_READBACK_BYTES_V1, CONTROLLER_PROJECT_TERMINAL_READBACK_BYTES_V1,

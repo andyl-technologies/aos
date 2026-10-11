@@ -18,7 +18,7 @@ use crate::hierarchy::controller_genesis::hold_existing_completed_source_genesis
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 use crate::hierarchy::protected_journal::retained_tree_inventory_data_v1;
 use crate::hierarchy::source_genesis::observe_retained_source_genesis_v1;
-use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use crate::normal_root::ProductionControllerNormalRootProfileV1;
 
 use super::super::source_genesis_root::{

@@ -39,7 +39,7 @@ use crate::journal::{
     SourceDomainPolicyHoldV1,
 };
 use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
-use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 
 use super::cache_journal_readback::read_fixed_policy_cache_hold_v1;
 use super::cache_readback_pin::CACHE_PIN_KEY;

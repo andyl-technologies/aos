@@ -19,7 +19,7 @@ use crate::hierarchy::protected_journal::{
     capture_current_nix_inventory_v1,
 };
 use crate::journal::ProtectedJournalNamesV1;
-use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use crate::production_operation_compiler::{NixStartAdmissionCarrierV2, NixStartAdmissionErrorV2};
 use crate::reconciler::{PublicMutationEffectV1, ReconcilerError};
 use crate::runtime_authority::{

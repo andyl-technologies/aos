@@ -136,7 +136,7 @@ impl OriginalQ04CacheClearanceLoanV1<'_, '_, '_, '_, '_> {
     // not the actual retained Cache owner or its unfinished final settlement.
     pub(crate) fn capture_source_clear(
         mut self,
-        source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        source: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
         recipes: &crate::journal::SourceQ04TransactionRecipesV1<'_>,
         destination: &mut Option<
             Result<

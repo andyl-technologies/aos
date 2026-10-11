@@ -14,7 +14,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use aos_sandbox::journal::controller::production_journal_limits;
-use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use aos_sandbox::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
     CONTROLLER_PROJECT_DISPATCH_READBACK_BYTES_V1, PinnedControllerHoldSignerV1,
     ROOT_PROJECT_HISTORY_RETIRE_MAGIC, ROOT_PROJECT_NEGATIVE_INTENT_QUERY_MAGIC,

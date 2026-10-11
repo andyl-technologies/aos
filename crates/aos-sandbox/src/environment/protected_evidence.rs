@@ -21,7 +21,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::journal::{Journal, JournalError, JournalLimits, RecordNamespace, RecoveryReport};
 use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
-use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 
 use super::authority_clock::validate_bracketed_samples_v1;
 use super::{

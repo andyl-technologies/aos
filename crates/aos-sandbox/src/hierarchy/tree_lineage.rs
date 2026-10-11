@@ -23,8 +23,8 @@ use aos_sandbox_core::{ObjectDigest, ProjectId, Revision};
 use crate::journal::JournalLimits;
 use crate::journal::{Journal, JournalError, JournalRecord, RecordNamespace};
 use aos_sandbox_protocol::domain_ledger::records::decode_reducer_payload_with_validator;
-use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
-use crate::lifecycle::protected_journal_join::{
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
+use crate::source_domain::{
     PROTECTED_SOURCE_DOMAIN_JOURNAL, PROTECTED_SOURCE_DOMAIN_ROOT, source_domain_journal_limits,
 };
 

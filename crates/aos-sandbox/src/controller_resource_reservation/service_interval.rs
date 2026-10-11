@@ -120,7 +120,7 @@ impl OriginalReceiver {
     // fresh receiver nor payment. The selected caller must own its Result.
     pub(super) fn require_same_source(
         &self,
-        source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        source: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
     ) -> Result<(), ResourceReservationErrorV1> {
         if self.source_object != std::ptr::from_ref(source) as usize
             || self.source_sequence != source.journal().snapshot_sequence()
@@ -146,7 +146,7 @@ impl OriginalReceiver {
 
     pub(super) fn capture(
         controller: &Journal,
-        source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        source: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
         profile: &ProductionControllerNormalRootProfileV1,
     ) -> Result<Self, ResourceReservationErrorV1> {
         Ok(Self {
@@ -163,7 +163,7 @@ impl OriginalReceiver {
     pub(super) fn require_same(
         &self,
         controller: &Journal,
-        source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        source: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
         profile: &ProductionControllerNormalRootProfileV1,
     ) -> Result<(), ResourceReservationErrorV1> {
         if self.controller_object != std::ptr::from_ref(controller) as usize
@@ -366,7 +366,7 @@ impl ControllerFirstGlobalPrefixAttemptV1 {
     pub fn prepare_once(
         &mut self,
         journal: &mut Journal,
-        source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        source: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
         profile: &ProductionControllerNormalRootProfileV1,
         shape: Result<(), ResourceReservationErrorV1>,
     ) -> Result<(), ResourceReservationErrorV1> {
@@ -459,7 +459,7 @@ impl ControllerFirstGlobalPrefixAttemptV1 {
     fn prepare_body(
         &mut self,
         journal: &mut Journal,
-        source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        source: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
         profile: &ProductionControllerNormalRootProfileV1,
     ) -> Result<(), ResourceReservationErrorV1> {
         let original = self.original.as_ref()
@@ -560,7 +560,7 @@ impl ControllerFirstGlobalPrefixAttemptV1 {
         &self,
         bank: &Arc<Mutex<ControllerResourceBankOpeningV1>>,
         controller: &Journal,
-        source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        source: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
         profile: &ProductionControllerNormalRootProfileV1,
     ) -> Result<FirstGlobalPrefixLoan<'_>, ResourceReservationErrorV1> {
         if self.failure().is_some() || self.wait_capacity == 0 || self.loan_taken.get()

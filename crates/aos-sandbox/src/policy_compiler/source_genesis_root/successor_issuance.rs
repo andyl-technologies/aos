@@ -26,7 +26,7 @@ use crate::hierarchy::source_successor::{
     BODY_BYTES, SourceSuccessorApprovalDataV2, SourceSuccessorIntentDataV2,
 };
 use crate::journal::controller_source_successor_issuance::PublicationCustodyV2;
-use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use crate::normal_root::{
     ProductionControllerNormalRootProfileV1, SourceSuccessorCredentialCustodyV2,
     SourceSuccessorCredentialErrorV2,

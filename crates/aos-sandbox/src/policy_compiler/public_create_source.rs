@@ -43,7 +43,7 @@ use crate::journal::{
 };
 #[cfg(target_os = "linux")]
 use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
-use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use crate::publisher_policy::{PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore};
 use crate::reconciler::{
     EffectPlan, ReconcilerError, checked_live_create_sandbox_admission_revision_v1,

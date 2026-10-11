@@ -20,7 +20,7 @@ use crate::journal::{
 use crate::journal::{
     replay_source_domain_challenge_v1, replay_source_project_admission_challenge_v1,
 };
-use crate::lifecycle::protected_journal_join::{
+use crate::source_domain::{
     PROTECTED_SOURCE_DOMAIN_JOURNAL, PROTECTED_SOURCE_DOMAIN_ROOT, source_domain_journal_limits,
 };
 

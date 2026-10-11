@@ -20,7 +20,7 @@ use super::{
     ResourceReservationErrorV1, ReturnedAppend, bank, bootstrap,
 };
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
-use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use crate::normal_root::{NormalRootStartupErrorV1, ProductionControllerNormalRootProfileV1};
 use crate::{Journal, JournalError};
 

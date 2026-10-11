@@ -74,7 +74,7 @@ use aos_sandbox::journal::controller::{
 use aos_sandbox::hierarchy::controller_genesis_input::{
     ControllerSourceGenesisInputErrorV1, ProvisionedControllerSourceGenesisInputV1,
 };
-use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use aos_sandbox::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::lifecycle::{
     LifecycleCancelIdempotencyDigestV1, LifecycleCurrentAuxiliaryPublicationV1,
     LifecycleIntentV1, LifecycleOperationAdmissionV1, LifecycleOperationV1,

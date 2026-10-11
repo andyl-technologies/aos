@@ -10,7 +10,7 @@ use rand::{TryRngCore as _, rngs::OsRng};
 use sha2::{Digest as _, Sha256};
 
 use crate::journal::Journal;
-use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 
 use super::protected_journal::{
     AppliedLifecycleJournalTransactionV1, LifecycleJournalCommitOutcomeV1,

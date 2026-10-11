@@ -969,7 +969,7 @@ impl<'original, 'profile> GitCoverageReadMetadataOperationV1<'original, 'profile
 
     pub(crate) fn compare_source(
         &mut self,
-        source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        source: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
         inputs: &crate::public_api_session::GitCoverageCredentialCustodyV1,
     ) -> Result<(), ()> {
         self.account.compare_completed_original_source_cut(source, inputs)

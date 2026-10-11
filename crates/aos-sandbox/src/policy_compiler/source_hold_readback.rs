@@ -23,7 +23,7 @@ use crate::hierarchy::protected_journal::HierarchyProtectedJournalOwnerV1;
 use crate::journal::{
     SourceDomainChallengeV1, SourceDomainPolicyHoldV1, replay_source_domain_challenge_v1,
 };
-use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use crate::role_credential::{decode_role_credential, encode_role_credential};
 
 const MAGIC: &[u8; 8] = b"AOSSRB01";

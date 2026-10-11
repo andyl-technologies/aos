@@ -31,7 +31,7 @@ use sha2::{Digest as _, Sha256};
 use crate::Journal;
 use crate::hierarchy::protected_journal::HierarchyProtectedJournalOwnerV1;
 use crate::journal::{JournalRecord, JournalTransaction, RecordNamespace};
-use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use crate::publisher_policy::{PublisherPolicyLimits, PublisherPolicyStore};
 
 use super::deployment_head::{

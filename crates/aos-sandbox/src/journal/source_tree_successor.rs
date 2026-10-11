@@ -1034,10 +1034,10 @@ pub(crate) fn require_capacity_owner(
                 return Err(JournalError::ProtectedBoundary);
             }
             journal.require_protected_named_location(
-                Path::new(crate::lifecycle::protected_journal_join::PROTECTED_SOURCE_DOMAIN_ROOT),
-                crate::lifecycle::protected_journal_join::PROTECTED_SOURCE_DOMAIN_JOURNAL,
+                Path::new(crate::source_domain::PROTECTED_SOURCE_DOMAIN_ROOT),
+                crate::source_domain::PROTECTED_SOURCE_DOMAIN_JOURNAL,
                 location.expected_uid(),
-                crate::lifecycle::protected_journal_join::source_domain_journal_limits(),
+                crate::source_domain::source_domain_journal_limits(),
             )
         }
         GlobalCapacityReservationPurposeV1::ControllerFirstSourceSuccessorComplete => {

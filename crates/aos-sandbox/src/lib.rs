@@ -131,6 +131,7 @@ pub(crate) mod protected_domain_journal;
 pub mod production_operation_compiler;
 #[cfg(target_os = "linux")]
 pub mod source_provider_startup;
+pub mod source_domain;
 
 #[cfg(target_os = "linux")]
 pub use production_operation_compiler::{

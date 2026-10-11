@@ -12,7 +12,7 @@ use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, RevocationScopeId};
 use ed25519_dalek::{Signer as _, SigningKey};
 
 use super::*;
-use crate::lifecycle::protected_journal_join::source_domain_journal_limits;
+use crate::source_domain::source_domain_journal_limits;
 use crate::policy_compiler::controller_project_admission_readback::sign_synthetic_controller_project_admission_v1;
 use crate::policy_compiler::source_project_admission_readback::sign_source_project_admission_fields_v1;
 use crate::policy_compiler::{

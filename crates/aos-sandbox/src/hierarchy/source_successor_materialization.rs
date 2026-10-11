@@ -16,7 +16,7 @@ use crate::journal::{
     CommitResult, Journal, JournalError, JournalRecord,
     JournalTransaction, ProtectedJournalNamesV1, RecordNamespace,
 };
-use crate::lifecycle::protected_journal_join::{
+use crate::source_domain::{
     PROTECTED_SOURCE_DOMAIN_JOURNAL, PROTECTED_SOURCE_DOMAIN_ROOT,
     ProtectedSourceDomainJournalOwnerV1, source_domain_journal_limits,
 };

@@ -22,7 +22,7 @@ use crate::protected_domain_journal::{
     ReplayedDomainPostcommitV1, ValidatedDomainPostcommitV1,
     protected_current_record_candidates_v1,
 };
-use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 
 use super::artifact_codec::{
     decode_detach_progress_v1, decode_protected_detach_head_v1,
@@ -1498,7 +1498,7 @@ mod inventory_data_tests {
 
     use super::*;
     use crate::journal::JournalError;
-    use crate::lifecycle::protected_journal_join::PROTECTED_SOURCE_DOMAIN_JOURNAL;
+    use crate::source_domain::PROTECTED_SOURCE_DOMAIN_JOURNAL;
 
     #[test]
     fn structural_inventory_data_retains_the_original_empty_source_writer() {

@@ -118,7 +118,7 @@ impl ProjectPreparationReservationAttemptV1 {
     pub(crate) fn prepare_original_intake_once(
         &mut self,
         journal: &mut Journal,
-        source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        source: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
         bank: &Arc<Mutex<ControllerResourceBankOpeningV1>>,
         profile: &ProductionControllerNormalRootProfileV1,
     ) -> Result<(), ResourceReservationErrorV1> {

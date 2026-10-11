@@ -154,7 +154,7 @@ enum OriginalSourceCutReadV1<'captured> {
 // Keeps comparison inside the SAME native loan, then ends it before callers
 // park owned DATA/error and run their independent final named-writer bookend.
 fn read_original_source_cut(
-    original: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+    original: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
     original_inputs: &crate::public_api_session::GitCoverageCredentialCustodyV1,
     read: OriginalSourceCutReadV1<'_>,
 ) -> Result<GitCoverageNativeCutDataV1, RootFlightFailureV1> {
@@ -432,7 +432,7 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
     /// name debt remain owned here. CacheBootstrap cannot supply this cut.
     pub fn capture_original_source_cut_v1(
         &mut self,
-        original: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        original: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
         original_inputs: &crate::public_api_session::GitCoverageCredentialCustodyV1,
     ) -> Result<(), ()> {
         if self.phase != AccountPhaseV1::Fresh || self.source_cut.is_some() {
@@ -455,7 +455,7 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
 
     pub(crate) fn compare_original_source_cut(
         &mut self,
-        original: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        original: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
         original_inputs: &crate::public_api_session::GitCoverageCredentialCustodyV1,
     ) -> Result<(), ()> {
         let returned = read_original_source_cut(
@@ -479,7 +479,7 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
 
     pub(crate) fn compare_completed_original_source_cut(
         &mut self,
-        original: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        original: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
         original_inputs: &crate::public_api_session::GitCoverageCredentialCustodyV1,
     ) -> Result<(), ()> {
         if !matches!(self.phase, AccountPhaseV1::LocallyCompleted | AccountPhaseV1::ExistingLocallyCompleted) {

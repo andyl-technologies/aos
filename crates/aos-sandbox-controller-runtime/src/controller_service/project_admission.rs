@@ -14,7 +14,7 @@ use aos_sandbox::journal::{
     SourceProjectAdmissionChallengeKindV1, SourceProjectAdmissionChallengeV1,
     SourceProjectAdmissionReservationV1,
 };
-use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use aos_sandbox::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
     ControllerProjectAdmissionChallengeV1, CurrentCreateProjectPolicySourceV1,
     RootProjectAdmissionOutcomeKindV1, RootProjectAdmissionOutcomeProofV1,

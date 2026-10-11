@@ -47,7 +47,7 @@ impl Fixture {
         let source = Journal::open_protected_at_uid(
             source_directory.path(),
             "source-domains-v1.journal",
-            crate::lifecycle::protected_journal_join::source_domain_journal_limits(),
+            crate::source_domain::source_domain_journal_limits(),
             uid,
         )
         .unwrap()

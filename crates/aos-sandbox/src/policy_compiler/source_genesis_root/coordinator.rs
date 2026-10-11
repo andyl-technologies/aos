@@ -21,7 +21,7 @@ use crate::hierarchy::source_genesis::{
     acknowledge_source_tree_genesis_v1, append_source_tree_genesis_v1,
     observe_retained_source_genesis_v1, observe_source_genesis_attempt_v1,
 };
-use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use crate::normal_root::ProductionControllerNormalRootProfileV1;
 
 use super::controller_readback::{

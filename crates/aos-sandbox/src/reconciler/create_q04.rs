@@ -310,7 +310,7 @@ fn capture_controller_q04_acknowledgement(
 #[allow(clippy::too_many_arguments)]
 pub fn continue_original_create_q04_policy_subgate_v1(
     journal: &mut Journal,
-    source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+    source: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
     initialization: &mut crate::cache_residency::CacheResidentInitializationV1,
     cache_owner: &mut crate::cache_residency::CacheResidencyProtectedOwnerV1,
     physical: &crate::cache_residency::DormantCacheOwnerV1,
@@ -339,7 +339,7 @@ pub fn continue_original_create_q04_policy_subgate_v1(
     let continued = (|| -> Result<(), ()> {
         // Keep acquisition and terminal parent reborrows in one continuation.
         // These same short loans end only after their original clearance.
-        let mut source = crate::lifecycle::protected_journal_join::OriginalQ04SourceOwnerCutV1::park(&mut *source_original);
+        let mut source = crate::source_domain::OriginalQ04SourceOwnerCutV1::park(&mut *source_original);
         let mut cache = match initialization.begin_original_q04(cache_owner, physical) {
             Ok(cache) => cache,
             // The actual initializer, including its original result, is still

@@ -35,7 +35,7 @@ use crate::journal::{
     JournalRecord, JournalTransaction, RecordNamespace, SourceProjectAdmissionChallengeV1,
     SourceProjectAdmissionReservationV1, encoded_transaction_append_bytes,
 };
-use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use crate::policy_compiler::{
     CurrentCreatePolicySourceErrorV1, CurrentCreateProjectPolicySourceV1,
     RootProjectAdmissionOutcomeKindV1, RootProjectAdmissionOutcomeProofV1,

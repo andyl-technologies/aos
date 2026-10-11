@@ -19,7 +19,7 @@ use crate::hierarchy::protected_journal::retained_tree_inventory_data_v1;
 use crate::hierarchy::source_genesis::{
     observe_retained_source_genesis_v1, observe_source_genesis_attempt_v1,
 };
-use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use crate::normal_root::ProductionControllerNormalRootProfileV1;
 
 use super::flight::{OriginalRootGenesisFlightV1, OriginalRootGenesisOpeningClockV2};

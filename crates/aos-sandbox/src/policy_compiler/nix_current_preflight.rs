@@ -658,7 +658,7 @@ impl<'source> CurrentNixPreflightAttemptV1<'source> {
     pub(crate) fn capture_current_originals_once(
         &mut self,
         controller: &mut crate::Journal,
-        source: &'source mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        source: &'source mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
         carrier: &crate::production_operation_compiler::NixStartAdmissionCarrierV2,
         binding: &crate::runtime_authority::RuntimeAuthorityBindingV1,
         original_clock: Option<RawPairedClockSample>,

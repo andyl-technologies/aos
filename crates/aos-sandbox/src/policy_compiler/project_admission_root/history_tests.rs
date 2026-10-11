@@ -16,7 +16,7 @@ use crate::journal::{
     GlobalCapacityReservationPurposeV1, JournalLimits, JournalRecord,
     SourceProjectAdmissionReservationV1,
 };
-use crate::lifecycle::protected_journal_join::source_domain_journal_limits;
+use crate::source_domain::source_domain_journal_limits;
 use crate::policy_compiler::controller_project_terminal_readback::sign_synthetic_controller_project_terminal_v1;
 use crate::policy_compiler::source_project_admission_readback::sign_test_source_project_completed_terminal_readback_v1;
 use crate::policy_compiler::{

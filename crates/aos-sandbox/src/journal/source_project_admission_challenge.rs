@@ -997,7 +997,7 @@ mod tests {
 
     use super::*;
     use crate::journal::JournalLimits;
-    use crate::lifecycle::protected_journal_join::source_domain_journal_limits;
+    use crate::source_domain::source_domain_journal_limits;
     use crate::policy_compiler::{
         test_root_project_reservation_cancellation_v1, test_source_project_admission_outcome_v1,
     };

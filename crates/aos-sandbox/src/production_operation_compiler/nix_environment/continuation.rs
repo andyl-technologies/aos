@@ -201,7 +201,7 @@ impl<'current> PaidNixStartAcquisitionV1<'current> {
     /// the destination. The marker cannot replace the actual input owner.
     pub fn capture_current_nix_preflight_once<'source>(
         &mut self,
-        source: &'source mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        source: &'source mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
         destination: &mut crate::policy_compiler::CurrentNixPreflightAttemptV1<'source>,
     ) -> Option<Result<(), ()>> {
         self.current_mut().map(|current| {
@@ -222,7 +222,7 @@ impl<'current> PaidNixStartAcquisitionV1<'current> {
     /// by the same intake on the selected path before this projection returns.
     pub fn close_into_intake(
         self,
-        source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        source: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
     ) -> Result<(), crate::ResourceReservationErrorV1> {
         self.close_originals_into_intake(source, None)
     }
@@ -238,7 +238,7 @@ impl<'current> PaidNixStartAcquisitionV1<'current> {
     /// This never completes generation or lends operation/Storage authority.
     pub fn close_with_input_into_intake(
         self,
-        source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        source: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
         input: crate::policy_compiler::CurrentNixPreflightOriginalsV1,
     ) -> Result<(), crate::ResourceReservationErrorV1> {
         self.close_originals_into_intake(source, Some(input))
@@ -246,7 +246,7 @@ impl<'current> PaidNixStartAcquisitionV1<'current> {
 
     fn close_originals_into_intake(
         self,
-        source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        source: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
         input: Option<crate::policy_compiler::CurrentNixPreflightOriginalsV1>,
     ) -> Result<(), crate::ResourceReservationErrorV1> {
         let Self { current, mut originals, journal, intake } = self;
@@ -663,7 +663,7 @@ impl CurrentRetainedNixStartV2<'_> {
     /// reached input failures retain both independent Current bookends.
     pub(crate) fn capture_current_nix_preflight_once<'source>(
         &mut self,
-        source: &'source mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        source: &'source mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
         destination: &mut crate::policy_compiler::CurrentNixPreflightAttemptV1<'source>,
     ) -> Result<(), ()> {
         // Latch before any fallible gate, evaluator or Source observation.

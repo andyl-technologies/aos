@@ -1304,7 +1304,7 @@ mod tests {
     use ed25519_dalek::{Signer as _, SigningKey};
 
     use super::*;
-    use crate::lifecycle::protected_journal_join::source_domain_journal_limits;
+    use crate::source_domain::source_domain_journal_limits;
     use crate::policy_compiler::encode_source_hold_readback_signer_credential_v1;
 
     #[test]

@@ -16,7 +16,7 @@ use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aos_sandbox::journal::SourceProjectAdmissionReservationV1;
-use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use aos_sandbox::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
     PolicyDeploymentInputsV1, RootProjectAdmissionOutcomeKindV1, RootProjectAdmissionStageV1,
     SourceHoldReadbackChallengeV1, abort_fixed_root_project_admission_over_socket_v1,

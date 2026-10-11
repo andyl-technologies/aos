@@ -15,7 +15,7 @@ use crate::cache_residency::{CacheResidencyProtectedOwnerV1, DormantCacheOwnerV1
 use crate::journal::controller::production_journal_limits;
 use crate::journal::SourceDomainPolicyHoldV1;
 use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
-use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 
 use super::{CurrentCreatePolicySourceErrorV1, RootV8SettledGrantV1};
 

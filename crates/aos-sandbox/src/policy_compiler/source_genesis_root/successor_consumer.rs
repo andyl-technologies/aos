@@ -41,7 +41,7 @@ use crate::hierarchy::{
     SourceSuccessorObservationViewV3, observe_source_project_continuation_v3,
 };
 use issuance::IssuanceKeyRecipeV3;
-use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use crate::normal_root::ProductionControllerNormalRootProfileV1;
 
 use super::records::SourceHierarchyFloorRecordV1;

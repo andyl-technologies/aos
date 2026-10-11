@@ -988,7 +988,7 @@ pub(super) mod tests {
     use ed25519_dalek::{Signer as _, SigningKey};
 
     use super::*;
-    use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+    use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
     use crate::JournalLimits;
     use crate::hierarchy::graph::SandboxTreeV1;
     use aos_sandbox_core::source_tree_model::TreeLimitsV1;

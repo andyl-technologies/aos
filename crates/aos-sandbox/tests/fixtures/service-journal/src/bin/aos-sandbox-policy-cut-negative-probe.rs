@@ -6,7 +6,7 @@
 use std::{cell::Cell, error::Error, path::Path};
 
 use aos_sandbox::journal::{Journal, JournalLimits};
-use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use aos_sandbox::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
     CurrentCreatePolicySourceErrorV1, with_current_parentless_create_ancestry_v1,
 };

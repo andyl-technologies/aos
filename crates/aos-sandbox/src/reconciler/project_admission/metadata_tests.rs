@@ -9,7 +9,7 @@ use crate::policy_compiler::HistoricalCreateProjectSourceHeadsV1;
 
 use super::*;
 use crate::journal::Journal;
-use crate::lifecycle::protected_journal_join::source_domain_journal_limits;
+use crate::source_domain::source_domain_journal_limits;
 use crate::reconciler::effect::{EffectLedgerRecord, EffectState, decode_effect, encode_effect};
 
 const FIXED_BODY_BYTES: usize = 1024;
