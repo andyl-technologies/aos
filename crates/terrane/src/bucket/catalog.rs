@@ -10,6 +10,52 @@ use terrane_core::bucket::{
 };
 use terrane_core::identity::{Identity, IdentityKind, TERRANE_V1};
 
+/// Supplies actual ordinary artifact reads without interpreting their contents.
+#[cfg_attr(feature = "send", async_trait::async_trait)]
+#[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
+pub(in crate::bucket) trait CatalogReads: BucketBinding {
+    /// Returns exact bytes and physical read data for one canonical artifact.
+    ///
+    /// # Errors
+    /// Preserves unsafe layout, unavailable I/O and actual read failures.
+    async fn read_artifact(
+        &self,
+        key: &BucketKey,
+    ) -> Result<super::publication::receipts::RecordRead, StoreFailure>;
+
+    /// Supplies a bounded member only for an explicitly ranged chunk request.
+    ///
+    /// Returning `None` preserves complete container verification for ordinary
+    /// full-body callers. Implementations retain any returned member's closing
+    /// observations through independent identity and dictionary verification.
+    ///
+    /// # Errors
+    /// Preserves membership, framing and actual bounded physical read failures.
+    async fn read_member(
+        &self,
+        _catalog: &Catalog,
+        _identity: &Identity,
+    ) -> Result<Option<(Vec<u8>, usize)>, StoreFailure> {
+        Ok(None)
+    }
+}
+
+#[cfg_attr(feature = "send", async_trait::async_trait)]
+#[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
+impl<F, C, V> CatalogReads for FileBucket<F, C, V>
+where
+    F: LocalFs + BucketBinding,
+    C: Clock + BucketBinding,
+    V: ContentValidator + BucketBinding,
+{
+    async fn read_artifact(
+        &self,
+        key: &BucketKey,
+    ) -> Result<super::publication::receipts::RecordRead, StoreFailure> {
+        self.read_optional_observed(key).await
+    }
+}
+
 /// Holds one verified selection and its complete conditional-write preimage.
 pub(super) struct Catalog {
     /// The persisted profile, capabilities, and selected generation.
@@ -86,7 +132,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         } else {
             None
         };
-        self.verify_catalog(capability_bytes, capabilities, manifest)
+        self.verify_catalog(capability_bytes, capabilities, manifest, self)
             .await
     }
 
@@ -102,6 +148,18 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     pub(super) async fn catalog_observed(
         &self,
         observed: &super::publication::SelectedObservation<'_>,
+    ) -> Result<Catalog, StoreFailure> {
+        self.catalog_observed_with_reads(observed, self).await
+    }
+
+    /// Retains every actual direct catalog read under a private operation scope.
+    ///
+    /// # Errors
+    /// Preserves the ordinary complete selected catalog checks and read failures.
+    pub(in crate::bucket) async fn catalog_observed_with_reads<R: CatalogReads + ?Sized>(
+        &self,
+        observed: &super::publication::SelectedObservation<'_>,
+        reads: &R,
     ) -> Result<Catalog, StoreFailure> {
         if observed.identity().root() != self.root() {
             return Err(files::layout_corrupt());
@@ -129,15 +187,16 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         } else {
             None
         };
-        self.verify_catalog(capability_bytes, capabilities, manifest)
+        self.verify_catalog(capability_bytes, capabilities, manifest, reads)
             .await
     }
 
-    async fn verify_catalog(
+    async fn verify_catalog<R: CatalogReads + ?Sized>(
         &self,
         capability_bytes: Vec<u8>,
         capabilities: BucketCapabilities,
         manifest: Option<GenerationManifest>,
+        reads: &R,
     ) -> Result<Catalog, StoreFailure> {
         let mut shards = Vec::new();
         let mut inventory = None;
@@ -153,24 +212,25 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             }
             for entry in &manifest.shards {
                 let shard = u8::try_from(entry.shard).map_err(|_| files::layout_corrupt())?;
-                let bytes = self
-                    .verified_artifact(
-                        generation,
-                        entry.shard,
-                        "idx",
-                        IdentityKind::Index,
-                        entry.index_hash,
-                        entry.index_size,
-                    )
-                    .await?;
+                let bytes = Self::verified_artifact(
+                    generation,
+                    entry.shard,
+                    "idx",
+                    IdentityKind::Index,
+                    entry.index_hash,
+                    entry.index_size,
+                    reads,
+                )
+                .await?;
                 if let Some((hash, size)) = entry.filter {
-                    self.verified_artifact(
+                    Self::verified_artifact(
                         generation,
                         entry.shard,
                         "flt",
                         IdentityKind::Filter,
                         hash,
                         size,
+                        reads,
                     )
                     .await?;
                 }
@@ -190,20 +250,18 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         })
     }
 
-    async fn verified_artifact(
-        &self,
+    async fn verified_artifact<R: CatalogReads + ?Sized>(
         generation: u64,
         shard: u64,
         suffix: &str,
         kind: IdentityKind,
         hash: [u8; 32],
         size: u64,
+        reads: &R,
     ) -> Result<Vec<u8>, StoreFailure> {
         let key = registered(&format!("objects/index/{generation}/{shard}.{suffix}"))?;
-        let bytes = self
-            .read_optional(&key)
-            .await?
-            .ok_or_else(files::layout_corrupt)?;
+        let read = reads.read_artifact(&key).await?;
+        let bytes = read.bytes().ok_or_else(files::layout_corrupt)?;
         let identity = TERRANE_V1
             .from_digest(kind, &hash)
             .map_err(|_| files::layout_corrupt())?;
@@ -211,9 +269,9 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             return Err(files::layout_corrupt());
         }
         TERRANE_V1
-            .verify(&identity, &bytes)
+            .verify(&identity, bytes)
             .map_err(|_| files::layout_corrupt())?;
-        Ok(bytes)
+        Ok(bytes.to_vec())
     }
 
     /// Installs an immutable artifact or verifies identical existing bytes.
@@ -638,13 +696,14 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         // Retain the existing independent artifact identity verification at its
         // exact registered key after native durable installation and selection.
         for entry in &manifest.shards {
-            self.verified_artifact(
+            Self::verified_artifact(
                 generation,
                 entry.shard,
                 "idx",
                 IdentityKind::Index,
                 entry.index_hash,
                 entry.index_size,
+                self,
             )
             .await?;
         }
@@ -676,13 +735,14 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             let key = registered(&format!("objects/index/{generation}/{}.idx", shard.shard()))?;
             self.immutable(&key, &bytes).await?;
             // Verify durable bytes before the manifest can promise them.
-            self.verified_artifact(
+            Self::verified_artifact(
                 generation,
                 u64::from(shard.shard()),
                 "idx",
                 IdentityKind::Index,
                 hash,
                 bytes.len() as u64,
+                self,
             )
             .await?;
             entries.push(GenerationShard {

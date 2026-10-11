@@ -47,6 +47,14 @@ impl LocalFs for ReadOnlyFs {
         TokioLocalFs.lock_existing_exclusive(path).await
     }
 
+    async fn try_lock_existing_shared(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        TokioLocalFs.try_lock_existing_shared(path).await
+    }
+
+    async fn try_lock_existing_exclusive(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        TokioLocalFs.try_lock_existing_exclusive(path).await
+    }
+
     async fn write_new(&self, _path: &Path, _bytes: &[u8]) -> std::io::Result<()> {
         self.denied()
     }
