@@ -16,6 +16,8 @@
 //! ```
 
 mod loading;
+
+/// Stores freshly replayed Nodes and Memo records through ordinary admission.
 pub mod persistence;
 
 #[cfg(test)]
