@@ -22,17 +22,17 @@ use aos_sandbox_core::{
 use buffa::Message as _;
 use ed25519_dalek::SigningKey;
 
-use aos_sandbox_ownership_protocol::{
-    OwnershipAuthorityVerifier, OwnershipClaimV1, OwnershipTransactionReceiptV1,
-    UnverifiedOwnershipLeaseResponse, ExpectedOwnershipLease,
-};
-use crate::dispatch_template::BrokerDispatchSemanticIdentityV1;
 use crate::authorization_artifact::{
     BrokerPlanPreparation, ReturnedSignature, SignedBrokerPlan, SigningAuthority,
 };
+use crate::dispatch_template::BrokerDispatchSemanticIdentityV1;
+use aos_sandbox_ownership_protocol::{
+    ExpectedOwnershipLease, OwnershipAuthorityVerifier, OwnershipClaimV1,
+    OwnershipTransactionReceiptV1, UnverifiedOwnershipLeaseResponse,
+};
 
-use crate::authorization_artifact::tests::{authority, key_reference};
 use super::*;
+use crate::authorization_artifact::tests::{authority, key_reference};
 
 fn descriptor(kind: PortableMediaType, byte: u8) -> ObjectDescriptor {
     ObjectDescriptor::new(
@@ -637,31 +637,41 @@ fn recomputed_outer_digest_does_not_hide_receipt_substitution_or_truncation() {
     }
 }
 
-
 #[test]
 fn publication_decoders_reject_every_truncated_canonical_prefix() {
     let (draft, prepared) = activation_fixture(1);
     let current = encode_current(&prepared);
 
     for length in 0..draft.canonical_bytes().len() {
-        assert!(matches!(
-            AuthorityPublicationDraftV1::from_canonical_bytes(&draft.canonical_bytes()[..length]),
-            Err(PublicationHistoryError::InvalidDraft)
-        ), "accepted truncated draft at {length}");
+        assert!(
+            matches!(
+                AuthorityPublicationDraftV1::from_canonical_bytes(
+                    &draft.canonical_bytes()[..length]
+                ),
+                Err(PublicationHistoryError::InvalidDraft)
+            ),
+            "accepted truncated draft at {length}"
+        );
     }
 
     for length in 0..prepared.canonical_bytes().len() {
         let prefix = &prepared.canonical_bytes()[..length];
-        assert!(matches!(
-            decode_prepared(prefix, publication_digest(prefix)),
-            Err(PublicationHistoryError::CorruptCurrent)
-        ), "accepted resealed truncated publication at {length}");
+        assert!(
+            matches!(
+                decode_prepared(prefix, publication_digest(prefix)),
+                Err(PublicationHistoryError::CorruptCurrent)
+            ),
+            "accepted resealed truncated publication at {length}"
+        );
     }
 
     for length in 0..current.len() {
-        assert!(matches!(
-            decode_current(&current[..length]),
-            Err(PublicationHistoryError::CorruptCurrent)
-        ), "accepted truncated current envelope at {length}");
+        assert!(
+            matches!(
+                decode_current(&current[..length]),
+                Err(PublicationHistoryError::CorruptCurrent)
+            ),
+            "accepted truncated current envelope at {length}"
+        );
     }
 }

@@ -313,8 +313,7 @@ fn decode_manifest(bytes: &[u8]) -> Result<CanonicalAssignmentManifestV1, Runtim
 fn read_manifest_bytes<'a>(
     reader: &mut BoundedReader<'a, RuntimeAuthorityError>,
 ) -> Result<&'a [u8], RuntimeAuthorityError> {
-    let length = usize::try_from(reader.u32()?)
-        .map_err(|_| RuntimeAuthorityError::CorruptState)?;
+    let length = usize::try_from(reader.u32()?).map_err(|_| RuntimeAuthorityError::CorruptState)?;
     reader.bytes(length)
 }
 

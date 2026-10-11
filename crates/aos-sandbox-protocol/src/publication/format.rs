@@ -72,8 +72,8 @@ pub fn decode_current(
     let lease_generation = reader.u64()?;
     let lease_digest = ObjectDigest::from_bytes(reader.array()?);
     let digest = ObjectDigest::from_bytes(reader.array()?);
-    let length = usize::try_from(reader.u64()?)
-        .map_err(|_| PublicationHistoryError::CorruptCurrent)?;
+    let length =
+        usize::try_from(reader.u64()?).map_err(|_| PublicationHistoryError::CorruptCurrent)?;
     if length > MAXIMUM_PUBLICATION_BYTES || length != reader.remaining() {
         return Err(PublicationHistoryError::CorruptCurrent);
     }
@@ -432,14 +432,12 @@ pub(super) fn validate_encoded_publication(
         let verb = reader.u32()?;
         let target_start = bytes.len() - reader.remaining();
         let target = reader.u8()?;
-        reader.bytes(
-            match target {
-                1 => 0,
-                2 => 32,
-                3 => 64,
-                _ => return Err(PublicationHistoryError::CorruptCurrent),
-            },
-        )?;
+        reader.bytes(match target {
+            1 => 0,
+            2 => 32,
+            3 => 64,
+            _ => return Err(PublicationHistoryError::CorruptCurrent),
+        })?;
         let target_bytes = &bytes[target_start..bytes.len() - reader.remaining()];
         let commitment = ObjectDigest::from_bytes(reader.array()?);
         let maximum_body = body

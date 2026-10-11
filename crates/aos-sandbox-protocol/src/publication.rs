@@ -29,7 +29,7 @@ use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::format::{
     decode_broker_authorization_plan, decode_ownership_lease, decode_signature, encode_signature,
 };
-use aos_sandbox_core::model::{SignaturePurpose, KeyReference};
+use aos_sandbox_core::model::{KeyReference, SignaturePurpose};
 use aos_sandbox_core::{
     BrokerAudience, BrokerAuthorizationPlan, BrokerVerb, CanonicalAssignmentManifestV1,
     DecodeLimits, ObjectDigest, OperationId, OwnershipLease, ProtocolVersion, RawPairedClockSample,
@@ -37,21 +37,21 @@ use aos_sandbox_core::{
 };
 use sha2::{Digest as _, Sha256};
 
+use crate::authorization_artifact::SignedBrokerPlan;
+use crate::dispatch_template::{BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1};
 use aos_sandbox_ownership_protocol::{
     OwnershipClaimAction, OwnershipClaimV1, OwnershipTransactionReceiptV1, SignedOwnershipLease,
 };
-use crate::authorization_artifact::SignedBrokerPlan;
-use crate::dispatch_template::{BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1};
 
 mod draft;
 mod format;
-pub use format::{decode_current, decode_prepared, decode_prepared_with_artifacts, encode_current};
-use format::validate_encoded_publication;
 use draft::{
     decode_draft, draft_digest, encode_bound_draft, encode_draft, encode_proposal,
     encode_recovered_draft, encode_target, validate_draft, validate_encoded_size,
     validate_proposal,
 };
+use format::validate_encoded_publication;
+pub use format::{decode_current, decode_prepared, decode_prepared_with_artifacts, encode_current};
 
 const MAGIC: &[u8; 8] = b"AOSCPUB1";
 const VERSION: u16 = 1;

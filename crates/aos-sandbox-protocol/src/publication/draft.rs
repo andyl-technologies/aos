@@ -306,14 +306,12 @@ pub(super) fn decode_draft(
         let verb = reader.u32()?;
         let target_start = bytes.len() - reader.remaining();
         let target = reader.u8()?;
-        reader.bytes(
-            match target {
-                1 => 0,
-                2 => 32,
-                3 => 64,
-                _ => return Err(PublicationHistoryError::InvalidDraft),
-            },
-        )?;
+        reader.bytes(match target {
+            1 => 0,
+            2 => 32,
+            3 => 64,
+            _ => return Err(PublicationHistoryError::InvalidDraft),
+        })?;
         let target_bytes = &bytes[target_start..bytes.len() - reader.remaining()];
         let commitment = ObjectDigest::from_bytes(reader.array()?);
         let maximum_body = body
