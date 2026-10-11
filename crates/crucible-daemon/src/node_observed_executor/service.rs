@@ -44,7 +44,7 @@ pub use debug::{
 };
 pub use original_lineage::OriginalLineageHostInstallation;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     panic::{AssertUnwindSafe, catch_unwind},
     path::PathBuf,
     sync::{
@@ -173,6 +173,7 @@ struct RootWorker {
 
 struct ActorStorage {
     root_installation: root_preparation::worker::Installation,
+    capability_installation: capability_preparation::group::Installation,
     capability_archive: PathBuf,
     condition_archive: PathBuf,
     preparations: Option<ConditionalPreparationLedger>,
@@ -315,6 +316,8 @@ impl NodeObservationService {
         let actor_root_preparations = root_preparations.clone();
         let root_installation =
             root_preparation::worker::Installation::from_configuration(&configuration)?;
+        let capability_installation =
+            capability_preparation::group::Installation::from_configuration(&configuration);
         let capability_archive = configuration.socket_parent.join("capability-clock-archive");
         let condition_archive = configuration
             .socket_parent
@@ -361,6 +364,7 @@ impl NodeObservationService {
                                 preserving_debug: actor_preserving_debug,
                                 root_preparations: actor_root_preparations,
                                 root_installation,
+                                capability_installation,
                                 capability_archive,
                                 condition_archive,
                                 transcripts,
@@ -560,6 +564,11 @@ fn run_actor(
     let mut preserving_workers = debug_preserving::actor::Workers::new();
     let mut root_workers: BTreeMap<ExecutionId, RootWorker> = BTreeMap::new();
     let mut retired_roots: BTreeMap<ExecutionId, BTreeSet<ContentId>> = BTreeMap::new();
+    let mut capability_lanes = capability_preparation::group::Lanes::new();
+    // Original lifetime debit bounds map plus fallback together. Reserve the
+    // complete fallback before accepting any fallible ownership transfer.
+    let mut held_refusals =
+        VecDeque::with_capacity(capability_preparation::ledger::MAXIMUM_RECORDS);
     let mut context = Context::from_waker(Waker::noop());
     loop {
         let turn_deadline = ProcessDeadline::after(Duration::from_millis(1));
@@ -586,21 +595,81 @@ fn run_actor(
                     // catalog and original workers with this owning actor.
                     reply_refusal(command, NodeObservationServiceError::Unavailable);
                 } else {
-                    handle_command(
-                        command,
-                        ActorOwners {
-                            workers: &mut workers,
-                            debug_workers: &mut debug_workers,
-                            preserving_workers: &mut preserving_workers,
-                            root_workers: &mut root_workers,
-                        },
-                        &mut catalog,
-                        maximum_worlds.saturating_sub(retired_roots.len()),
-                        &storage,
-                    );
+                    match command {
+                        Command::CapabilityPreparation {
+                            request,
+                            reservation,
+                            ledger,
+                        } if capability_preparation::group::Lanes::selects(&request) => {
+                            let occupied = workers.len()
+                                + debug_workers.len()
+                                + preserving_workers.len()
+                                + root_workers.len()
+                                + retired_roots.len()
+                                + capability_lanes.len();
+                            // Excess requests only reconcile their original
+                            // data reservation. They never prepare native owners.
+                            let available = if held_refusals.is_empty() {
+                                maximum_worlds
+                            } else {
+                                0
+                            };
+                            let admission = crate::node_control::execution_id(&request.execution)
+                                .map_err(refused)
+                                .and_then(|execution| {
+                                    require_grouped_preparation_capacity(
+                                        &catalog, execution, available, occupied,
+                                    )
+                                });
+                            let lane_stopping = if admission.is_err() {
+                                Arc::new(AtomicBool::new(true))
+                            } else {
+                                stopping.clone()
+                            };
+                            let rejected = capability_lanes.start(
+                                request,
+                                *reservation,
+                                ledger,
+                                &storage,
+                                lane_stopping,
+                            );
+                            if let Some(original) = rejected {
+                                // Originals cannot be cloned or redispatched: the
+                                // same 4096 lifetime debit covers map and fallback.
+                                // This move uses already reserved holder capacity.
+                                held_refusals.push_back(original);
+                            }
+                        }
+                        command => handle_command(
+                            command,
+                            ActorOwners {
+                                workers: &mut workers,
+                                debug_workers: &mut debug_workers,
+                                preserving_workers: &mut preserving_workers,
+                                root_workers: &mut root_workers,
+                            },
+                            &mut catalog,
+                            if held_refusals.is_empty() {
+                                maximum_worlds
+                                    .saturating_sub(retired_roots.len() + capability_lanes.len())
+                            } else {
+                                // Fence new owners, while existing-owner control
+                                // still passes through the ordinary dispatcher.
+                                0
+                            },
+                            &storage,
+                        ),
+                    }
                 }
             }))
             .is_err()
+        {
+            stopping.store(true, Ordering::Release);
+        }
+        if catch_unwind(AssertUnwindSafe(|| {
+            capability_lanes.poll(&mut held_refusals);
+        }))
+        .is_err()
         {
             stopping.store(true, Ordering::Release);
         }
@@ -722,6 +791,8 @@ fn run_actor(
             && preserving_workers.is_empty()
             && debug_workers.is_empty()
             && root_workers.is_empty()
+            && capability_lanes.is_empty()
+            && held_refusals.is_empty()
             && reclaimed
         {
             retired.store(true, Ordering::Release);
@@ -770,6 +841,25 @@ pub(in crate::node_observed_executor) fn original_lineage_available_worlds(
     maximum_worlds: usize,
 ) -> usize {
     maximum_worlds.saturating_sub(catalog.original_lineage_preparation_count())
+}
+
+/// Checks retained original ownership and shared capacity before a grouped lane.
+///
+/// # Errors
+/// Refuses a source-owned original nonce or capacity already spent by complete
+/// inactive/refused source capsules and other actor owners. No preparation or
+/// thread is constructed by this check.
+pub(in crate::node_observed_executor) fn require_grouped_preparation_capacity(
+    catalog: &InstalledNodeCatalog,
+    execution: ExecutionId,
+    maximum_worlds: usize,
+    occupied: usize,
+) -> Result<(), NodeObservationServiceError> {
+    require_unowned_original_lineage_execution(catalog, execution)?;
+    if occupied >= original_lineage_available_worlds(catalog, maximum_worlds) {
+        return Err(refused("finite native world capacity unavailable"));
+    }
+    Ok(())
 }
 
 fn handle_command(

@@ -79,6 +79,10 @@ struct NativeState {
     ack_calls: usize,
     ack_fail: bool,
     quarantine_calls: usize,
+    graceful_available: bool,
+    graceful_panics: bool,
+    graceful_calls: usize,
+    retirement_transfer_calls: usize,
     reclamation_pending: bool,
     invalid_reclamation: bool,
     retained_outputs: Vec<Id>,
@@ -671,6 +675,29 @@ impl SimulationNode for TestNode {
         self.state.borrow_mut().quarantine_calls += 1;
     }
 
+    fn graceful_retirement_available(&self) -> bool {
+        self.state.borrow().graceful_available
+    }
+
+    fn shutdown_resources(&mut self) -> Result<(), OperationFailure> {
+        let mut state = self.state.borrow_mut();
+        state.graceful_calls += 1;
+        assert!(!state.graceful_panics, "authored graceful hook unwind");
+        Ok(())
+    }
+
+    fn transfer_retirement_resources(&mut self) -> Result<(), OperationFailure> {
+        let mut state = self.state.borrow_mut();
+        if state.graceful_calls != 1 || state.reclamation_pending || state.invalid_reclamation {
+            return Err(OperationFailure {
+                effects: EffectKnowledge::Unknown,
+                reason: "original model has not actually retired".into(),
+            });
+        }
+        state.retirement_transfer_calls += 1;
+        Ok(())
+    }
+
     fn poll_reclamation(
         &mut self,
         owner: &OwnerIdentity,
@@ -857,6 +884,7 @@ fn runtime(mode: OperatingMode) -> (NodeRuntime, Vec<Rc<RefCell<NativeState>>>) 
         terminal: None,
         condition_stop: None,
         collecting: None,
+        graceful_retirement: false,
     };
     (runtime, vec![a_state, b_state])
 }
@@ -1747,3 +1775,6 @@ pub(super) fn terminal_read_failure_fixture(
 
 #[path = "runtime_original_input_lineage_models.rs"]
 mod original_lineage_models;
+
+#[path = "runtime_graceful_retirement_tests.rs"]
+mod graceful_retirement;

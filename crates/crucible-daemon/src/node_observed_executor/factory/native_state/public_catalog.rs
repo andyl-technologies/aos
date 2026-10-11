@@ -140,6 +140,12 @@ pub(in super::super) fn scenario(
                 "actual catalog host changed before independent group selection",
             ));
         }
+        if super::host_group::selection::preserving_selected(selections) {
+            // Compile source metadata with the actual daemon identity. The
+            // raw-demand resolver and genuine whole-world preparation remain
+            // mandatory before this baseline can authorize any native action.
+            return catalog.independent_native_scenario(selections);
+        }
         let installed = super::super::InstalledGem5ClosedProfile::built_in()?;
         return Ok(super::host_group::profile::IndependentGroupProfile::build(
             installed, catalog, selections,

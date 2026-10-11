@@ -20,6 +20,7 @@ fn original() -> MetadataClosure {
         root: canonical::content_ref(&body, "application/json").unwrap(),
         body,
         members: record.members,
+        capability: None,
     }
 }
 

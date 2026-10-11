@@ -144,6 +144,15 @@ impl RuntimeCustodyQueue {
 
         match result {
             Poll::Ready(Ok(())) => {
+                if guarded
+                    .custody
+                    .as_ref()
+                    .is_some_and(WholeRuntimeCustody::retirement_history_pending)
+                {
+                    // Guard Drop restores the same complete capsule. The
+                    // original mailbox remains charged until durable release.
+                    return Poll::Pending;
+                }
                 mailbox.reserved.set(false);
                 drop(guarded.custody.take());
                 drop(guarded);

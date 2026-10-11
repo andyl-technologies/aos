@@ -83,6 +83,10 @@ impl AdmissionEvidence for CapabilityAdmission<'_> {
             ));
         }
         self.original.authenticate_authority(binding)?;
+        if policy::gem5_group_preserving(&self.resolved.candidate.selections) {
+            return super::preserving_group::qualify(&selected.kind, requirement)
+                .map_err(|error| refused(&error.to_string()));
+        }
         policy::qualify_kind(
             &selected.kind,
             requirement,

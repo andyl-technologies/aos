@@ -66,6 +66,24 @@ impl InstalledMixedEngine {
         )
     }
 
+    pub(in crate::node_observed_executor::factory::native_state) fn prepare_independent_preserving_capability_group(
+        &self,
+        catalog: &InstalledNodeCatalog,
+        selections: &[InstalledNodeSelection],
+        expected: &crate::node_scenario::NodeScenario,
+        activation_id: Id,
+        capabilities: &super::super::super::ResolvedCapabilityWorld,
+    ) -> Result<IndependentLiveWorld, NodeObservedError> {
+        self.prepare_independent_group_selected(
+            catalog,
+            selections,
+            expected,
+            activation_id,
+            Some(capabilities),
+            true,
+        )
+    }
+
     fn prepare_independent_group_selected(
         &self,
         catalog: &InstalledNodeCatalog,
@@ -102,6 +120,18 @@ impl InstalledMixedEngine {
                 "complete independent group differs from actual installed source",
             ));
         }
+        // The new ordinary source retains all original private ACK attempts.
+        // Legacy live and mechanism-only preparations preserve their old path.
+        let acknowledgement_history = if preserving && capabilities.is_some() {
+            Some(
+                crucible_node_provider::gem5::Gem5AcknowledgementHistory::reserve(
+                    native_resources("x86_64")?.maximum_prefixes,
+                )
+                .map_err(error)?,
+            )
+        } else {
+            None
+        };
         let limits = RuntimeLimits {
             maximum_nodes: 4,
             maximum_owners: 4,
@@ -215,9 +245,14 @@ impl InstalledMixedEngine {
             })
             .map_err(error)?;
         let namespace = self.namespace()?;
-        let mut native =
-            Gem5NativeProcess::spawn(launch(&self.installed, "x86_64", &cpu, &namespace)?, slot)
-                .map_err(error)?;
+        let launch = launch(&self.installed, "x86_64", &cpu, &namespace)?;
+        let mut native = match acknowledgement_history {
+            Some(history) => {
+                Gem5NativeProcess::spawn_with_acknowledgement_history(launch, slot, history)
+            }
+            None => Gem5NativeProcess::spawn(launch, slot),
+        }
+        .map_err(error)?;
         let capture = native
             .capture(
                 Id::new(format!("initial/{}", fresh_nonce()?))?,

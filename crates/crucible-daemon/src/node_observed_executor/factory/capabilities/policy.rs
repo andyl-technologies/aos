@@ -39,13 +39,17 @@ pub(in crate::node_observed_executor::factory) fn matches(
         demand
             .match_contract(descriptor, binding, &capabilities, &guarantees)
             .map_err(|error| refused(&error.to_string()))?;
-        qualify_kind(
-            &selected.kind,
-            demand,
-            standalone_clock(selections),
-            condition_preservation(selections),
-            gem5_ordinary(selections) || gem5_storage_group(selections),
-        )?;
+        if gem5_group_preserving(selections) {
+            super::preserving_group::qualify(&selected.kind, demand)?;
+        } else {
+            qualify_kind(
+                &selected.kind,
+                demand,
+                standalone_clock(selections),
+                condition_preservation(selections),
+                gem5_ordinary(selections) || gem5_storage_group(selections),
+            )?;
+        }
     }
     Ok(())
 }
@@ -239,4 +243,10 @@ pub(super) fn gem5_ordinary(selections: &[InstalledNodeSelection]) -> bool {
 pub(super) fn gem5_storage_group(selections: &[InstalledNodeSelection]) -> bool {
     super::super::native_state::host_group::selection::IndependentGroupSelection::new(selections)
         .is_ok()
+}
+
+pub(in crate::node_observed_executor::factory) fn gem5_group_preserving(
+    selections: &[InstalledNodeSelection],
+) -> bool {
+    super::preserving_group::selected(selections)
 }

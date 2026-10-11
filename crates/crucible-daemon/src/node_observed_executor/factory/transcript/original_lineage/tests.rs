@@ -238,7 +238,8 @@ fn archive_refusal_keeps_original_capsule_and_never_redispatches_inspector() {
     // Even this pre-native refusal owns its nonce and a complete actor slot.
     // Every create/resume route uses these guards before its native dispatch.
     use crate::node_observed_executor::service::{
-        original_lineage_available_worlds, require_unowned_original_lineage_execution,
+        original_lineage_available_worlds, require_grouped_preparation_capacity,
+        require_unowned_original_lineage_execution,
     };
     assert!(require_unowned_original_lineage_execution(&catalog, execution).is_err());
     assert!(
@@ -252,11 +253,24 @@ fn archive_refusal_keeps_original_capsule_and_never_redispatches_inspector() {
     assert_eq!(original_lineage_available_worlds(&catalog, 0), 0);
     assert_eq!(original_lineage_available_worlds(&catalog, 4), 3);
 
+    // The threaded grouped route must consume the same actual inactive source
+    // credit before building its separate catalog or native owner lane.
+    let other = ExecutionId::from_bytes([150; 16]).unwrap();
+    assert!(require_grouped_preparation_capacity(&catalog, other, 1, 0).is_err());
+    assert!(require_grouped_preparation_capacity(&catalog, other, 2, 1).is_err());
+    assert!(require_grouped_preparation_capacity(&catalog, other, 2, 0).is_ok());
+    assert!(require_grouped_preparation_capacity(&catalog, execution, 8, 0).is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(catalog.custody().reserved_worlds(), 0);
+
     // Genuine empty queue reclamation releases capsule credit, never its nonce.
     catalog.retire_original_lineage_preparations();
     assert_eq!(catalog.original_lineage_preparation_count(), 0);
     assert_eq!(original_lineage_available_worlds(&catalog, 4), 4);
     assert!(require_unowned_original_lineage_execution(&catalog, execution).is_err());
+    // Reclamation restores world capacity but never remints the original nonce.
+    assert!(require_grouped_preparation_capacity(&catalog, other, 1, 0).is_ok());
+    assert!(require_grouped_preparation_capacity(&catalog, execution, 8, 0).is_err());
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 

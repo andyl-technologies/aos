@@ -15,9 +15,13 @@ use crucible_node_contract::canonical;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, sync::Arc};
 
+pub(in crate::node_observed_executor::service::capability_preparation) mod failed_retirement;
+pub(in crate::node_observed_executor::service::capability_preparation) mod retirement;
+
 const MAXIMUM_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 const MAXIMUM_RECORD_BYTES: usize = 16 * 1024 * 1024;
-const MAXIMUM_RECORDS: usize = 4096;
+// A separately bounded data-only refusal queue uses this same lifetime credit.
+pub(in super::super) const MAXIMUM_RECORDS: usize = 4096;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -36,6 +40,13 @@ pub(crate) struct CapabilityPreparationLedger {
 pub(crate) struct CapabilityReservation {
     pub(crate) record: CapabilityPreparationRecord,
     pub(crate) original_dispatch: bool,
+    identity: ContentId,
+}
+
+/// Retains the exact completed body independently of fallible durable placement.
+pub(super) struct SealedCompletion {
+    record: CapabilityPreparationRecord,
+    bytes: Vec<u8>,
     identity: ContentId,
 }
 
@@ -186,6 +197,15 @@ impl CapabilityPreparationLedger {
         reservation: &CapabilityReservation,
         outcome: CapabilityPreparationState,
     ) -> Result<CapabilityPreparationRecord, NodeObservationServiceError> {
+        let sealed = self.seal_completion(reservation, outcome)?;
+        self.place_completion(reservation, &sealed)
+    }
+
+    pub(super) fn seal_completion(
+        &self,
+        reservation: &CapabilityReservation,
+        outcome: CapabilityPreparationState,
+    ) -> Result<SealedCompletion, NodeObservationServiceError> {
         if !reservation.original_dispatch
             || !matches!(
                 reservation.record.outcome,
@@ -205,8 +225,31 @@ impl CapabilityPreparationLedger {
             outcome,
             ..reservation.record.clone()
         };
+        let bytes = record.canonical_bytes()?;
+        let identity = ContentId::for_bytes(ObjectKind::Trace, 1, &bytes);
+        Ok(SealedCompletion {
+            record,
+            bytes,
+            identity,
+        })
+    }
+
+    pub(super) fn place_completion(
+        &self,
+        reservation: &CapabilityReservation,
+        sealed: &SealedCompletion,
+    ) -> Result<CapabilityPreparationRecord, NodeObservationServiceError> {
+        let record = &sealed.record;
         let _guard = self.refs.acquire_publication_guard().map_err(refused)?;
-        let identity = self.put_record(&record)?;
+        let identity = sealed.identity;
+        if !self
+            .blobs
+            .put_if_absent(identity, &BlobHandle::from_bytes(sealed.bytes.clone()))
+            .map_err(refused)?
+            .is_durable()
+        {
+            return Err(refused("original completed capability body is not durable"));
+        }
         match self
             .refs
             .compare_exchange(
@@ -216,7 +259,7 @@ impl CapabilityPreparationLedger {
             )
             .map_err(refused)?
         {
-            RefCasOutcome::Advanced { next } if next == identity => Ok(record),
+            RefCasOutcome::Advanced { next } if next == identity => Ok(record.clone()),
             RefCasOutcome::Conflict {
                 current: Some(current),
                 ..
@@ -225,6 +268,217 @@ impl CapabilityPreparationLedger {
                 "original capability completion requires reconciliation",
             )),
         }
+    }
+
+    /// Durably roots identical completed bytes while native retirement is pending.
+    ///
+    /// The public original state stays AwaitingAdmission until cleanup and its
+    /// authenticated source relation are complete. This separate ref grants no
+    /// replay permission and is included in the original ledger's GC inventory.
+    pub(super) fn persist_completion(
+        &self,
+        reservation: &CapabilityReservation,
+        sealed: &SealedCompletion,
+    ) -> Result<(), NodeObservationServiceError> {
+        if !reservation.original_dispatch
+            || sealed.record.execution != reservation.record.execution
+            || sealed.record.request != reservation.record.request
+        {
+            return Err(refused(
+                "held native result differs from its original reservation",
+            ));
+        }
+        let _guard = self.refs.acquire_publication_guard().map_err(refused)?;
+        self.put(sealed.identity, sealed.bytes.clone())?;
+        let reference = retained_completion_ref(&sealed.record.execution)?;
+        match self
+            .refs
+            .compare_exchange(&reference, None, sealed.identity)
+            .map_err(refused)?
+        {
+            RefCasOutcome::Advanced { next } if next == sealed.identity => Ok(()),
+            RefCasOutcome::Conflict {
+                current: Some(current),
+                ..
+            } if current == sealed.identity => Ok(()),
+            _ => Err(refused(
+                "held native result requires exact-byte reconciliation",
+            )),
+        }
+    }
+
+    /// Rechecks exact durable original result and authenticated cleanup before release.
+    pub(super) fn authenticate_supervisor_release(
+        &self,
+        reservation: &CapabilityReservation,
+        sealed: &SealedCompletion,
+        source: &crucible::node_state::NativeArchiveRecord,
+        authenticator: &super::group::retirement_auth::Authenticator,
+    ) -> Result<(), NodeObservationServiceError> {
+        if !reservation.original_dispatch
+            || self
+                .refs
+                .read_ref(&operation_ref(&reservation.record.execution)?)
+                .map_err(refused)?
+                != Some(sealed.identity)
+            || self
+                .refs
+                .read_ref(&retained_completion_ref(&reservation.record.execution)?)
+                .map_err(refused)?
+                != Some(sealed.identity)
+            || self.read_bytes(sealed.identity, MAXIMUM_RECORD_BYTES)? != sealed.bytes
+        {
+            return Err(refused(
+                "original durable supervisor result or retention root differs",
+            ));
+        }
+        let request_bytes = self.read_bytes(
+            ContentId::parse(&sealed.record.request).map_err(refused)?,
+            MAXIMUM_REQUEST_BYTES,
+        )?;
+        let request = CapabilityPreparationRequest::from_json(&request_bytes)?;
+        let CapabilityPreparationState::Native {
+            artifact, scenario, ..
+        } = &sealed.record.outcome
+        else {
+            return Err(refused(
+                "unresolved original result cannot release supervisor custody",
+            ));
+        };
+        let world =
+            crate::node_scenario::NodeScenario::from_json(scenario.as_slice()).map_err(refused)?;
+        let configuration =
+            crate::node_scenario::NodeRunConfiguration::from_json(request.configuration.as_slice())
+                .map_err(refused)?;
+        if request.execution != reservation.record.execution
+            || sealed.record.request != reservation.record.request
+            || artifact != source.artifact()
+            || world.world.identity().map_err(refused)? != source.manifest().world_binding_hash
+            || configuration.horizon_ps != source.manifest().cut.time_ps
+            || !super::super::original_claim::OriginalClaims::new(
+                self.blobs.clone(),
+                self.refs.clone(),
+            )?
+            .existing(
+                &request.execution,
+                super::super::original_claim::Route::Capability,
+                &request_bytes,
+            )?
+        {
+            return Err(refused(
+                "original complete supervisor request/source/claim differs",
+            ));
+        }
+        self.authenticate_retirement(
+            &request.execution,
+            &sealed.record.request,
+            source,
+            authenticator,
+        )
+    }
+
+    /// Authenticates an operator-owned original capture, rather than a signed DTO alone.
+    pub(super) fn authenticate_capture(
+        &self,
+        request: &CapabilityPreparationRequest,
+        source: &crucible::node_state::NativeArchiveRecord,
+        authenticator: &super::group::retirement_auth::Authenticator,
+    ) -> Result<(), NodeObservationServiceError> {
+        let namespace = RefName::new("node-capability-preparations").map_err(refused)?;
+        let mut after = None;
+        let mut count = 0;
+        let mut original = None;
+        loop {
+            let page = self
+                .refs
+                .scan_refs(&namespace, after.as_ref(), 64)
+                .map_err(refused)?;
+            for entry in page.entries() {
+                count += 1;
+                if count > MAXIMUM_RECORDS {
+                    return Err(refused("original capture inventory exceeds finite credit"));
+                }
+                let execution = entry
+                    .name()
+                    .as_str()
+                    .rsplit('/')
+                    .next()
+                    .ok_or_else(|| refused("original capability namespace differs"))?;
+                let record = self.read(entry.target(), execution)?;
+                let CapabilityPreparationState::Native {
+                    artifact: saved,
+                    scenario,
+                    ..
+                } = &record.outcome
+                else {
+                    continue;
+                };
+                if saved != source.artifact() {
+                    continue;
+                }
+                let saved_world =
+                    crate::node_scenario::NodeScenario::from_json(scenario.as_slice())
+                        .map_err(refused)?;
+                let bytes = self.read_bytes(
+                    ContentId::parse(&record.request).map_err(refused)?,
+                    MAXIMUM_REQUEST_BYTES,
+                )?;
+                let captured = CapabilityPreparationRequest::from_json(&bytes)?;
+                if original.is_some()
+                    || !matches!(
+                        captured.action,
+                        super::CapabilityPreparationAction::Capture {}
+                    )
+                    || captured.requirements != request.requirements
+                    || encode(&captured.candidates)? != encode(&request.candidates)?
+                    || saved_world.world.identity().map_err(refused)?
+                        != source.manifest().world_binding_hash
+                {
+                    return Err(refused(
+                        "original operator capture route or authored requirements differ",
+                    ));
+                }
+                if !super::super::original_claim::OriginalClaims::new(
+                    self.blobs.clone(),
+                    self.refs.clone(),
+                )?
+                .existing(
+                    &captured.execution,
+                    super::super::original_claim::Route::Capability,
+                    &bytes,
+                )? {
+                    return Err(refused(
+                        "original capture lacks its common capability claim",
+                    ));
+                }
+                let configuration = crate::node_scenario::NodeRunConfiguration::from_json(
+                    captured.configuration.as_slice(),
+                )
+                .map_err(refused)?;
+                if configuration.horizon_ps != source.manifest().cut.time_ps {
+                    return Err(refused(
+                        "operator capture cut differs from the original signed source",
+                    ));
+                }
+                self.authenticate_retirement(
+                    &captured.execution,
+                    &record.request,
+                    source,
+                    authenticator,
+                )?;
+                original = Some(captured.execution);
+            }
+            after = page.next_after().cloned();
+            if after.is_none() {
+                break;
+            }
+        }
+        if original.is_none() {
+            return Err(refused(
+                "signed source has no original operator capture claim",
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn retention_roots(
@@ -323,6 +577,46 @@ impl CapabilityPreparationLedger {
                 let record = self.read(entry.target(), execution)?;
                 roots.insert(entry.target());
                 roots.insert(ContentId::parse(&record.request).map_err(refused)?);
+                if let Some(completed) = self
+                    .refs
+                    .read_ref(&retained_completion_ref(execution)?)
+                    .map_err(refused)?
+                {
+                    let retained = self.read(completed, execution)?;
+                    if retained.request != record.request
+                        || matches!(
+                            retained.outcome,
+                            CapabilityPreparationState::AwaitingAdmission {}
+                        )
+                    {
+                        return Err(refused(
+                            "held native result differs from its original context",
+                        ));
+                    }
+                    roots.insert(completed);
+                }
+                if let Some(retirement) = self
+                    .refs
+                    .read_ref(
+                        &RefName::new(format!("node-capability-native-retirement/{execution}"))
+                            .map_err(refused)?,
+                    )
+                    .map_err(refused)?
+                {
+                    self.read_bytes(retirement, 128 * 1024)?;
+                    roots.insert(retirement);
+                }
+                if let Some(retirement) = self
+                    .refs
+                    .read_ref(
+                        &RefName::new(format!("node-capability-failed-retirement/{execution}"))
+                            .map_err(refused)?,
+                    )
+                    .map_err(refused)?
+                {
+                    self.read_bytes(retirement, 128 * 1024)?;
+                    roots.insert(retirement);
+                }
             }
             after = page.next_after().cloned();
             if after.is_none() {
@@ -401,6 +695,11 @@ impl CapabilityPreparationLedger {
         }
         Ok(())
     }
+}
+
+fn retained_completion_ref(execution: &str) -> Result<RefName, NodeObservationServiceError> {
+    validate_execution(execution)?;
+    RefName::new(format!("node-capability-native-results/{execution}")).map_err(refused)
 }
 
 fn operation_ref(execution: &str) -> Result<RefName, NodeObservationServiceError> {

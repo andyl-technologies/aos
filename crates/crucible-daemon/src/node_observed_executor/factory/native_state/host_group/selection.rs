@@ -27,6 +27,13 @@ pub(in crate::node_observed_executor::factory::native_state) fn selected(
     })
 }
 
+/// Recognizes only the complete independently qualified preserving source family.
+pub(in crate::node_observed_executor::factory) fn preserving_selected(
+    selections: &[InstalledNodeSelection],
+) -> bool {
+    IndependentGroupSelection::new_preserving(selections).is_ok()
+}
+
 impl<'a> IndependentGroupSelection<'a> {
     /// Validates the supported disconnected CPU plus independently owned group.
     ///

@@ -92,6 +92,11 @@ pub use native_state::public_group::{
     InstalledIndependentNativePreservation, InstalledIndependentNativeRestore,
     InstalledPreparedIndependentNativeWorld,
 };
+
+pub(crate) use native_state::public_group::{
+    FailureRetirementSummary, OriginalFailedNativeRelease, OriginalFailedSupervision,
+    OriginalNativeSupervision, PreparedFailureRetirement,
+};
 pub use native_state::{
     InstalledGem5Isa, NativeCapturePoint, NativeWorldOutcome, NativeWorldRecord,
     NativeWorldRequest, NativeWorldRetention, NativeWorldService,

@@ -413,6 +413,31 @@ fn inventory_length(value: &(impl Serialize + ?Sized)) -> Result<usize, Operatio
     Ok(counter.0)
 }
 
+pub(super) fn retirement_native(
+    node: &HostModelNode,
+    model: &HostModel,
+    maximum: usize,
+) -> Result<Vec<u8>, OperationFailure> {
+    let native = model.capture(maximum)?;
+    let wire = Wire {
+        schema_version: 1,
+        profile: HOST_EXACT_PROFILE,
+        boundary: node.boundary,
+        native: &native,
+        native_sequence: node.native_sequence.into(),
+        staged: node.staged.as_ref().map(input_wire),
+        input_history: InputHistoryWire(&node.input_history),
+        pending_causes: CausesWire(&node.pending_causes),
+        operations: OperationsWire(&node.completed),
+        recorded_ingress: None,
+        producer_observations: None,
+    };
+    if inventory_length(&wire)? > maximum {
+        return Err(failure("original Host retirement history exceeds credit"));
+    }
+    bounded_bytes(&wire, maximum)
+}
+
 pub(super) fn capture_live(
     node: &HostModelNode,
     activation: &WorldActivation,
@@ -507,7 +532,10 @@ pub(super) fn capture_live(
     })
 }
 
-fn bounded_bytes(value: &impl Serialize, maximum: usize) -> Result<Vec<u8>, OperationFailure> {
+pub(super) fn bounded_bytes(
+    value: &impl Serialize,
+    maximum: usize,
+) -> Result<Vec<u8>, OperationFailure> {
     let mut output = LimitedWriter {
         bytes: Vec::new(),
         maximum,

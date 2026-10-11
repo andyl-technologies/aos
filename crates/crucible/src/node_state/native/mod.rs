@@ -130,6 +130,22 @@ impl AuthenticatedNativeSource<'_> {
 /// complete native ledgers and every image/resource dependency. Source image
 /// certificates never qualify a fresh live peer or grant execution authority.
 pub trait NativeWorldFactory {
+    /// Narrows native records independently of reserved immutable and portable bytes.
+    ///
+    /// The legacy default preserves the original limit. A selected installed
+    /// policy can supply a smaller positive ceiling; the host refuses widening
+    /// before any native capture hook. This callback grants no capture authority.
+    ///
+    /// # Errors
+    /// Refuses a changed selected source or an unauthenticated operation budget.
+    fn native_capture_record_ceiling(
+        &self,
+        _graph: &AdmittedGraph,
+        _scheduler: &crate::node_scheduling::SchedulingSnapshot,
+    ) -> Result<Option<usize>, StateError> {
+        Ok(None)
+    }
+
     /// Authenticates the selected original-epoch codec before native effects or allocation.
     ///
     /// Legacy factory policies remain unsupported for scheduler edition two.

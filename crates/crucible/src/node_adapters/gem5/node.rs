@@ -738,6 +738,48 @@ impl SimulationNode for QualifiedGem5Node {
         let _retained_failure = self.preparation.native.begin_quarantine();
     }
 
+    fn graceful_retirement_available(&self) -> bool {
+        self.preparation.native.graceful_shutdown_available()
+    }
+
+    fn shutdown_resources(&mut self) -> Result<(), OperationFailure> {
+        self.quarantined = true;
+        self.preparation
+            .native
+            .begin_graceful_shutdown()
+            .map_err(|error| OperationFailure {
+                effects: EffectKnowledge::Unknown,
+                reason: error.to_string(),
+            })
+    }
+
+    fn transfer_retirement_resources(&mut self) -> Result<(), OperationFailure> {
+        if !self.quarantined || self.reclamation.is_none() {
+            return Err(refusal(
+                "original gem5 supervisor transfer precedes actual reclamation",
+            ));
+        }
+        self.preparation
+            .native
+            .transfer_gracefully_reclaimed_to_supervisor()
+            .map_err(|error| refusal(&error.to_string()))
+    }
+
+    fn retirement_history_pending(&self) -> bool {
+        self.preparation.native.graceful_retirement_requested()
+    }
+
+    fn retirement_history_credit(&self) -> Option<usize> {
+        Some(64 * 1024 * 1024 + 65_536 * (2 * 516 + 128 + 9) + 64)
+    }
+
+    fn retirement_history(
+        &self,
+        maximum_bytes: usize,
+    ) -> Result<Vec<InputPayload>, OperationFailure> {
+        super::retirement::history(self, maximum_bytes)
+    }
+
     fn poll_reclamation(
         &mut self,
         owner: &OwnerIdentity,

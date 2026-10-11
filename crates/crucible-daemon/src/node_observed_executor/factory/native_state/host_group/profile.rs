@@ -31,11 +31,33 @@ pub(in crate::node_observed_executor::factory::native_state) struct IndependentG
 }
 
 impl IndependentGroupProfile {
+    pub(in crate::node_observed_executor::factory::native_state) fn archive_credit(
+        &self,
+    ) -> Result<(crucible::node_state::NativeArchiveLimits, ContentRef), NodeObservedError> {
+        let credit = self
+            .metadata
+            .as_ref()
+            .ok_or_else(|| refused("selected complete metadata scope is absent"))?
+            .credit()?;
+        Ok((credit.limits(), credit.reference().clone()))
+    }
+
     pub(in crate::node_observed_executor::factory::native_state) fn with_capabilities(
         mut self,
         resolved: &super::super::super::ResolvedCapabilityWorld,
     ) -> Result<Self, NodeObservedError> {
-        self.scenario = resolved.gem5_scenario(&self.scenario)?;
+        let selected = if self.preserving {
+            resolved.gem5_preserving_scenario(&self.scenario)?
+        } else {
+            resolved.gem5_scenario(&self.scenario)?
+        };
+        if self.preserving {
+            self.metadata
+                .as_mut()
+                .ok_or_else(|| refused("preserving group has no original metadata root"))?
+                .attach_capabilities(&self.scenario, &selected)?;
+        }
+        self.scenario = selected;
         Ok(self)
     }
 

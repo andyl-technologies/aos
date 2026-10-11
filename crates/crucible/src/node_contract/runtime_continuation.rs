@@ -545,9 +545,23 @@ pub struct WholeRuntimeCustody {
     reclamation_cursor: Option<Id>,
     pending_retirement: bool,
     borrowed_retirement: bool,
+    graceful_retirement: bool,
 }
 
 impl WholeRuntimeCustody {
+    /// Reports original whole-world history still held after native reaping.
+    ///
+    /// This sticky obligation prevents a fallback queue from releasing its
+    /// admitted slot merely because physical owners have reclamation receipts.
+    pub fn retirement_history_pending(&self) -> bool {
+        self.graceful_retirement
+            || self
+                .nodes
+                .values()
+                .chain(self.rejected_nodes.iter())
+                .any(|node| node.retirement_history_pending())
+    }
+
     /// Retains an inactive resource capsule in the same finite owning supervisor.
     pub fn from_prepared_resources(
         prepared: Box<dyn PreparedNativeResources>,
@@ -576,6 +590,7 @@ impl WholeRuntimeCustody {
             reclamation_cursor: None,
             pending_retirement: false,
             borrowed_retirement: false,
+            graceful_retirement: false,
         }
     }
 
@@ -703,11 +718,13 @@ impl WholeRuntimeCustody {
         if self.pending_retirement {
             // The queue's PollingCustody already owns this complete capsule.
             // Any native/getter unwind therefore restores the same original.
-            for node in self.nodes.values_mut() {
-                node.quarantine_resources();
-            }
-            for node in &mut self.rejected_nodes {
-                node.quarantine_resources();
+            if !self.graceful_retirement {
+                for node in self.nodes.values_mut() {
+                    node.quarantine_resources();
+                }
+                for node in &mut self.rejected_nodes {
+                    node.quarantine_resources();
+                }
             }
             self.rejected_reclamation = self
                 .rejected_nodes
@@ -924,12 +941,18 @@ impl WholeRuntimeCustody {
             reclamation_cursor: None,
             pending_retirement: false,
             borrowed_retirement: false,
+            graceful_retirement: false,
         }
     }
 }
 
 impl Drop for WholeRuntimeCustody {
     fn drop(&mut self) {
+        if self.graceful_retirement {
+            // The installed queue retains this complete capsule until typed
+            // durable release. Its purpose never invokes legacy containment.
+            return;
+        }
         // Installed supervisors keep this complete capsule until reclamation.
         // Native guard transfer remains mandatory if a supervisor shuts down.
         for node in self.nodes.values_mut() {
@@ -949,8 +972,10 @@ impl NodeRuntime {
         let Some(slot) = self.custody_slot.take() else {
             return;
         };
-        for node in self.nodes.values_mut() {
-            node.quarantine_resources();
+        if !self.graceful_retirement {
+            for node in self.nodes.values_mut() {
+                node.quarantine_resources();
+            }
         }
         let custody = WholeRuntimeCustody {
             authority: Rc::clone(&self.authority),
@@ -973,6 +998,7 @@ impl NodeRuntime {
             reclamation_cursor: None,
             pending_retirement: false,
             borrowed_retirement: false,
+            graceful_retirement: self.graceful_retirement,
         };
         slot.retain(custody);
     }

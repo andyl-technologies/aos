@@ -50,6 +50,25 @@ mod exact;
 #[path = "containment.rs"]
 mod containment;
 
+#[path = "graceful_shutdown.rs"]
+mod graceful_shutdown;
+
+pub use graceful_shutdown::Gem5ShutdownExchange;
+
+#[path = "retirement_transfer.rs"]
+mod retirement_transfer;
+
+#[path = "retirement_history.rs"]
+mod retirement_history;
+
+#[path = "retirement_digest.rs"]
+mod retirement_digest;
+
+#[path = "acknowledgement_history.rs"]
+mod acknowledgement_history;
+
+pub use acknowledgement_history::{Gem5AcknowledgementExchange, Gem5AcknowledgementHistory};
+
 pub use containment::{Gem5CensusDiagnostic, Gem5QuarantineCustody, Gem5ReclamationProof};
 
 pub use exact::{Gem5ExactAuthority, Gem5ExactProfileVerifier};
@@ -123,6 +142,8 @@ pub struct Gem5NativeCustody {
     pub pending: Option<Id>,
     /// Retains the latest authentic ACK identity for unchanged retries.
     pub last_acknowledged: Option<Id>,
+    /// Retains an explicitly prebirth-reserved original private ACK journal.
+    pub acknowledgement_history: Option<Gem5AcknowledgementHistory>,
     /// Retains an uncertain original image-capture operation.
     pub unresolved_capture: Option<Id>,
     /// Retains the complete sealed source image for any live reconstructed child.
@@ -131,6 +152,8 @@ pub struct Gem5NativeCustody {
     pub preparation: Gem5PreparationCustody,
     /// Retains original process-group termination and actual reaping progress.
     pub quarantine: Option<Gem5QuarantineCustody>,
+    // Travels with the whole capsule even when original identity validation fails.
+    graceful_retirement_requested: bool,
 }
 
 /// Supplies a preallocated persistent native custody slot before spawning.
@@ -159,10 +182,13 @@ pub struct Gem5NativeProcess {
     completed: BTreeMap<Id, Gem5Completion>,
     pending: Option<Id>,
     last_acknowledged: Option<Id>,
+    acknowledgement_history: Option<Gem5AcknowledgementHistory>,
     unresolved: Option<Gem5Run>,
     unresolved_capture: Option<Id>,
     source_image: Option<crate::gem5::Gem5CapturedImage>,
     quarantine: Option<Gem5QuarantineCustody>,
+    graceful_retirement_requested: bool,
+    graceful_retirement_transferred: bool,
     preparation: Gem5PreparationCustody,
     supervisor: Option<Box<dyn Gem5CustodySlot>>,
 }
@@ -176,6 +202,30 @@ impl Gem5NativeProcess {
     pub fn spawn(
         launch: Gem5Launch,
         supervisor: Box<dyn Gem5CustodySlot>,
+    ) -> Result<Self, ProviderError> {
+        Self::spawn_reserved(launch, supervisor, None)
+    }
+
+    /// Launches with complete bounded original private ACK retention.
+    ///
+    /// The supplied holder is allocated before any Child or native callback.
+    /// It is moved through preparation refusal and actual driver supervision.
+    /// This records transport history; it grants no cleanup or release authority.
+    ///
+    /// # Errors
+    /// Refuses the same source, launch and preparation failures as [`Self::spawn`].
+    pub fn spawn_with_acknowledgement_history(
+        launch: Gem5Launch,
+        supervisor: Box<dyn Gem5CustodySlot>,
+        history: Gem5AcknowledgementHistory,
+    ) -> Result<Self, ProviderError> {
+        Self::spawn_reserved(launch, supervisor, Some(history))
+    }
+
+    fn spawn_reserved(
+        launch: Gem5Launch,
+        supervisor: Box<dyn Gem5CustodySlot>,
+        acknowledgement_history: Option<Gem5AcknowledgementHistory>,
     ) -> Result<Self, ProviderError> {
         preflight(&launch)?;
         let script = install(
@@ -303,10 +353,12 @@ impl Gem5NativeProcess {
                     unresolved: None,
                     pending: None,
                     last_acknowledged: None,
+                    acknowledgement_history,
                     unresolved_capture: None,
                     source_image: None,
                     preparation,
                     quarantine: None,
+                    graceful_retirement_requested: false,
                 });
                 return Err(error);
             }
@@ -321,11 +373,14 @@ impl Gem5NativeProcess {
             completed: BTreeMap::new(),
             pending: None,
             last_acknowledged: None,
+            acknowledgement_history,
             unresolved: None,
             unresolved_capture: None,
             source_image: None,
             preparation,
             quarantine: None,
+            graceful_retirement_requested: false,
+            graceful_retirement_transferred: false,
             supervisor: Some(supervisor),
         })
     }
@@ -482,11 +537,15 @@ impl Gem5NativeProcess {
                 "gem5 publication lacks original pending output",
             ));
         }
-        let response = self.exchange(json!({"kind":"acknowledge","operation":operation}))?;
-        if response != json!({"kind":"acknowledged","operation":operation}) {
-            return Err(ProviderError::Correlation(
-                "gem5 native acknowledgment differs",
-            ));
+        if self.acknowledgement_history.is_some() {
+            self.acknowledge_retained(operation)?;
+        } else {
+            let response = self.exchange(json!({"kind":"acknowledge","operation":operation}))?;
+            if response != json!({"kind":"acknowledged","operation":operation}) {
+                return Err(ProviderError::Correlation(
+                    "gem5 native acknowledgment differs",
+                ));
+            }
         }
         self.pending = None;
         self.last_acknowledged = Some(operation.clone());
@@ -586,8 +645,8 @@ impl Gem5NativeProcess {
     }
 }
 
-impl Drop for Gem5NativeProcess {
-    fn drop(&mut self) {
+impl Gem5NativeProcess {
+    fn transfer_original_custody(&mut self) {
         // Both fields are installed together before a live driver exists, and
         // only Drop consumes them. The reserved slot transfers custody once.
         if let (Some(child), Some(supervisor)) = (self.child.take(), self.supervisor.take()) {
@@ -602,6 +661,7 @@ impl Drop for Gem5NativeProcess {
                 unresolved: self.unresolved.take(),
                 pending: self.pending.take(),
                 last_acknowledged: self.last_acknowledged.take(),
+                acknowledgement_history: self.acknowledgement_history.take(),
                 unresolved_capture: self.unresolved_capture.take(),
                 source_image: self.source_image.take(),
                 preparation: std::mem::replace(
@@ -609,8 +669,15 @@ impl Drop for Gem5NativeProcess {
                     Gem5PreparationCustody::AwaitingReady,
                 ),
                 quarantine: self.quarantine.take(),
+                graceful_retirement_requested: self.graceful_retirement_requested,
             });
         }
+    }
+}
+
+impl Drop for Gem5NativeProcess {
+    fn drop(&mut self) {
+        self.transfer_original_custody();
     }
 }
 

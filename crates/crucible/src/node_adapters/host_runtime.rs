@@ -667,6 +667,65 @@ impl SimulationNode for HostModelNode {
         self.quarantined = true;
     }
 
+    fn graceful_retirement_available(&self) -> bool {
+        matches!(
+            self.model.as_ref(),
+            Some(HostModel::Clock(_) | HostModel::ScriptedSource(_))
+        ) || matches!(self.model.as_ref(), Some(HostModel::Io(node)) if node.block_device().is_some())
+    }
+
+    fn shutdown_resources(&mut self) -> Result<(), OperationFailure> {
+        // The selected no-archive path owns no external Host process. Moving
+        // its model out of execution retains actual CoW and future queues; it
+        // does not reconstruct them from an output receipt or scalar cursor.
+        if !self.graceful_retirement_available() {
+            return Err(failure("graceful Host retirement model is not selected"));
+        }
+        self.graceful_retirement = true;
+        self.quarantined = true;
+        Ok(())
+    }
+
+    fn transfer_retirement_resources(&mut self) -> Result<(), OperationFailure> {
+        if !self.graceful_retirement
+            || self.model.is_some()
+            || self.retired_model.is_none()
+            || self
+                .route
+                .owners
+                .iter()
+                .any(|owner| !self.reclamations.contains_key(owner))
+        {
+            return Err(failure(
+                "original graceful Host capsule has no complete reclamation",
+            ));
+        }
+        // No separate process sink is needed. The actual model/COW/pending
+        // state remains in this same runtime until durable release is qualified.
+        Ok(())
+    }
+
+    fn retirement_history_pending(&self) -> bool {
+        self.graceful_retirement
+    }
+
+    fn retirement_history_credit(&self) -> Option<usize> {
+        Some(self.limits.maximum_capture_bytes.min(16 * 1024 * 1024))
+    }
+
+    fn retirement_history(
+        &self,
+        maximum_bytes: usize,
+    ) -> Result<Vec<crate::node_scheduling::InputPayload>, OperationFailure> {
+        let (reference, bytes) = super::retirement::history(self, maximum_bytes)?;
+        let mut bodies = Vec::new();
+        bodies
+            .try_reserve_exact(1)
+            .map_err(|_| failure("Host retirement body holder allocation"))?;
+        bodies.push(crate::node_scheduling::InputPayload { reference, bytes });
+        Ok(bodies)
+    }
+
     fn poll_reclamation(
         &mut self,
         owner: &OwnerIdentity,
@@ -675,13 +734,24 @@ impl SimulationNode for HostModelNode {
         if !self.quarantined || !self.route.owners.contains(owner) {
             return Poll::Ready(Err(failure("host owner not under original quarantine")));
         }
-        self.model.take();
-        let result =
-            self.receipt("host-model-dropped-v1")
-                .map(|receipt| NativeReclamationReceipt {
-                    owner: owner.clone(),
-                    receipt,
-                });
+        let label = if self.graceful_retirement {
+            if self.retired_model.is_none() {
+                self.retired_model = self.model.take();
+            }
+            if self.retired_model.is_none() {
+                return Poll::Ready(Err(failure(
+                    "original graceful Host model custody unavailable",
+                )));
+            }
+            "host-model-retained-for-retirement-v1"
+        } else {
+            self.model.take();
+            "host-model-dropped-v1"
+        };
+        let result = self.receipt(label).map(|receipt| NativeReclamationReceipt {
+            owner: owner.clone(),
+            receipt,
+        });
         if let Ok(receipt) = &result {
             self.reclamations.insert(owner.clone(), receipt.clone());
         }
@@ -692,7 +762,10 @@ impl SimulationNode for HostModelNode {
         &self,
         receipt: &NativeReclamationReceipt,
     ) -> Result<(), OperationFailure> {
-        if self.model.is_some() || self.reclamations.get(&receipt.owner) != Some(receipt) {
+        if self.model.is_some()
+            || (self.graceful_retirement && self.retired_model.is_none())
+            || self.reclamations.get(&receipt.owner) != Some(receipt)
+        {
             return Err(failure(
                 "host model not actually destroyed under retained owner custody",
             ));

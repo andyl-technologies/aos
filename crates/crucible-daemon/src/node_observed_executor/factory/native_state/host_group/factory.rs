@@ -39,6 +39,108 @@ pub(in crate::node_observed_executor::factory::native_state) struct IndependentN
 }
 
 impl IndependentNativeFactory {
+    pub(in crate::node_observed_executor::factory::native_state) fn authenticate_failure_retirement(
+        &self,
+        original: &super::failure_retirement::FailureRetirementPreparation,
+    ) -> Result<(), super::super::super::NodeObservedError> {
+        original.authenticate(&self.profile)
+    }
+
+    pub(in crate::node_observed_executor::factory::native_state) fn failed_queue(
+        &self,
+    ) -> &Gem5CustodyQueue {
+        &self.queue
+    }
+
+    pub(in crate::node_observed_executor::factory::native_state) fn authenticate_capture_credit(
+        &self,
+        reference: &crucible_node_contract::ContentRef,
+    ) -> Result<(), crate::node_observed_executor::NodeObservedError> {
+        let metadata = self
+            .evidence
+            .metadata()
+            .map_err(|error| super::super::super::refused(&error.message))?;
+        if metadata.credit()?.reference() != reference {
+            return Err(super::super::super::refused(
+                "actual installed archive credit differs from prebirth source selection",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(in crate::node_observed_executor::factory::native_state) fn authenticate_supervision(
+        &self,
+        graph: &AdmittedGraph,
+        archive: NativeArchiveRecord,
+        requirements: crucible::node_state::StateRequirements,
+    ) -> Result<
+        super::super::custody::AuthenticatedSupervision,
+        crate::node_observed_executor::NodeObservedError,
+    > {
+        self.check_graph(graph)
+            .map_err(|error| super::super::super::refused(&error.to_string()))?;
+        super::super::custody::AuthenticatedSupervision::authenticate(
+            archive,
+            graph,
+            self,
+            requirements,
+            self.profile.native.installed.maximum_microsteps(),
+        )
+        .map_err(|error| super::super::super::refused(&error.to_string()))
+    }
+
+    pub(in crate::node_observed_executor::factory::native_state) fn supervise_original(
+        &self,
+        target: &ActivationRecord,
+        source: &mut Option<super::super::custody::AuthenticatedSupervision>,
+    ) -> Result<(), crate::node_observed_executor::NodeObservedError> {
+        self.queue
+            .supervise_original(target, source)
+            .map_err(|error| super::super::super::refused(&error.to_string()))
+    }
+
+    pub(in crate::node_observed_executor::factory::native_state) fn release_supervised(
+        &self,
+        target: &ActivationRecord,
+        reopened: &super::super::custody::AuthenticatedSupervision,
+    ) -> Result<(), crate::node_observed_executor::NodeObservedError> {
+        self.queue
+            .release_supervised(target, reopened)
+            .map_err(|error| super::super::super::refused(&error.to_string()))
+    }
+
+    pub(in crate::node_observed_executor::factory::native_state) fn retirement(
+        &self,
+        target: &ActivationRecord,
+    ) -> Result<
+        Option<(crucible_node_contract::ContentRef, Vec<u8>)>,
+        crate::node_observed_executor::NodeObservedError,
+    > {
+        self.queue
+            .original_group_retirement(target)
+            .map_err(|error| super::super::super::refused(&error.to_string()))
+    }
+
+    pub(in crate::node_observed_executor::factory::native_state) fn initial_publisher(
+        &self,
+        stored: crate::node_observed_executor::StoredWorldActivationPublisher,
+    ) -> super::super::publication::NativeCustodyPublisher {
+        super::super::publication::NativeCustodyPublisher {
+            stored,
+            queue: self.queue.clone(),
+            restored: None,
+        }
+    }
+
+    pub(in crate::node_observed_executor::factory::native_state) fn reclaimed(
+        &self,
+        target: &ActivationRecord,
+    ) -> Result<bool, crate::node_observed_executor::NodeObservedError> {
+        self.queue
+            .original_group_reclaimed(target)
+            .map_err(|error| super::super::super::refused(&error.to_string()))
+    }
+
     pub(in crate::node_observed_executor::factory::native_state) fn for_live(
         world: &IndependentLiveWorld,
         queue: Gem5CustodyQueue,
@@ -125,6 +227,33 @@ impl IndependentNativeFactory {
 }
 
 impl NativeWorldFactory for IndependentNativeFactory {
+    fn native_capture_record_ceiling(
+        &self,
+        graph: &AdmittedGraph,
+        scheduler: &SchedulingSnapshot,
+    ) -> Result<Option<usize>, StateError> {
+        self.check_graph(graph)?;
+        if graph.capability_selection().is_none() {
+            return Ok(None);
+        }
+        let queued_payload_bytes = scheduler
+            .payload_objects
+            .iter()
+            .try_fold(0usize, |total, payload| {
+                total.checked_add(payload.bytes.len())
+            })
+            .ok_or_else(|| error("actual queued payload credit overflows this host"))?;
+        Ok(Some(
+            self.evidence
+                .metadata()
+                .map_err(error)?
+                .credit()
+                .map_err(error)?
+                .native_record_ceiling(queued_payload_bytes)
+                .map_err(error)?,
+        ))
+    }
+
     fn authenticate_source(
         &self,
         graph: &AdmittedGraph,

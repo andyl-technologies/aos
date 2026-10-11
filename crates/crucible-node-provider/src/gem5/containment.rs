@@ -46,6 +46,37 @@ fn kernel_pid(pid: u32) -> Result<Pid, ProviderError> {
     ))
 }
 
+pub(super) fn validate_original_identity(
+    child: &Child,
+    identity: &KernelIdentity,
+) -> Result<(), ProviderError> {
+    if child.id() != identity.pid
+        || closure::kernel_start_ticks(identity.pid)? != identity.start_ticks
+        || getpgid(Some(kernel_pid(identity.pid)?)).map_err(std::io::Error::from)?
+            != kernel_pid(identity.pid)?
+    {
+        return Err(ProviderError::Correlation(
+            "graceful Shutdown changed its original child/start/private group",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn graceful_state(
+    identity: &KernelIdentity,
+    deadline: OperationalDeadline,
+) -> Gem5QuarantineCustody {
+    Gem5QuarantineCustody {
+        pid: identity.pid,
+        start_ticks: identity.start_ticks.clone(),
+        deadline,
+        reaped: None,
+        proof: None,
+        census_diagnostic: None,
+        shutdown: Some(Gem5ShutdownExchange::reserved()),
+    }
+}
+
 pub(super) fn observe_exit(child: &Child) -> Result<Option<WaitIdStatus>, ProviderError> {
     waitid(
         WaitId::Pid(kernel_pid(child.id())?),
@@ -64,9 +95,15 @@ pub struct Gem5QuarantineCustody {
     reaped: Option<std::process::ExitStatus>,
     proof: Option<Gem5ReclamationProof>,
     census_diagnostic: Option<Gem5CensusDiagnostic>,
+    pub(super) shutdown: Option<Gem5ShutdownExchange>,
 }
 
 impl Gem5QuarantineCustody {
+    /// Borrows the original one-shot graceful exchange without native authority.
+    pub fn shutdown_exchange(&self) -> Option<&Gem5ShutdownExchange> {
+        self.shutdown.as_ref()
+    }
+
     /// Returns the original private process group that received termination.
     pub fn process_group(&self) -> u32 {
         self.pid
@@ -194,6 +231,15 @@ impl Gem5NativeProcess {
     /// Refuses missing actual child custody, a changed kernel identity, a group
     /// outside the launch scope, or failure to signal the original private group.
     pub fn begin_quarantine(&mut self) -> Result<(), ProviderError> {
+        if self.graceful_retirement_requested {
+            return if self.quarantine.is_some() {
+                Ok(())
+            } else {
+                Err(ProviderError::Conflict(
+                    "original graceful intent forbids signaling fallback without identity",
+                ))
+            };
+        }
         let child = self.child.as_mut().ok_or(ProviderError::Correlation(
             "gem5 quarantine omits original child",
         ))?;
@@ -231,6 +277,15 @@ impl Gem5NativeCustody {
     /// # Errors
     /// Refuses changed kernel identity, an escaped group, or signal failure.
     pub fn begin_quarantine(&mut self) -> Result<(), ProviderError> {
+        if self.graceful_retirement_requested {
+            return if self.quarantine.is_some() {
+                Ok(())
+            } else {
+                Err(ProviderError::Conflict(
+                    "original graceful intent forbids signaling fallback without identity",
+                ))
+            };
+        }
         begin_quarantine(
             &mut self.child,
             self.kernel_identity.as_ref(),
@@ -312,6 +367,7 @@ fn begin_quarantine(
         reaped,
         proof: None,
         census_diagnostic: None,
+        shutdown: None,
     });
     if let Some(stream) = stream.take() {
         stream.shutdown(std::net::Shutdown::Both)?;
@@ -338,14 +394,25 @@ fn poll_reclamation<'a>(
         }
         let members = group_members_with_diagnostic(state.pid, &mut state.census_diagnostic)?;
         if let Some(status) = state.reaped.filter(|_| members.is_empty()) {
-            let bytes = canonical::canonical_json(&json!({
+            let mut record = json!({
                 "schema":"crucible.gem5.native-reclamation.v1",
                 "owner":launch.owner,"incarnation":launch.incarnation,
                 "generation":launch.generation,"pid":state.pid.to_string(),
                 "start_ticks":state.start_ticks,"source_scope":closure::source_scope(launch)?,
                 "exit_code":status.code(),"exit_signal":status.signal(),
                 "remaining_group_members":[],
-            }))?;
+            });
+            if let Some(exchange) = &state.shutdown {
+                // A lost original reply remains explicit even if the kernel
+                // independently proves that this exact child/group is gone.
+                record["graceful_shutdown"] = json!({
+                    "written_bytes":exchange.written_bytes().to_string(),
+                    "received_bytes":exchange.received_bytes(),
+                    "acknowledged":exchange.acknowledged(),
+                    "signal_fallback":false,
+                });
+            }
+            let bytes = canonical::canonical_json(&record)?;
             state.proof = Some(Gem5ReclamationProof {
                 owner: launch.owner.clone(),
                 incarnation: launch.incarnation.clone(),

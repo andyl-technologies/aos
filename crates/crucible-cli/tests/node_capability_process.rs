@@ -554,3 +554,6 @@ mod host_roster;
 
 #[path = "node_capability_process/gem5_host_group.rs"]
 mod gem5_host_group;
+
+#[path = "node_capability_process/gem5_preserving_group.rs"]
+mod gem5_preserving_group;

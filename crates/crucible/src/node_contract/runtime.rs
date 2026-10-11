@@ -131,6 +131,8 @@ pub struct NodeRuntime {
     terminal: Option<super::terminal::TerminalState>,
     condition_stop: Option<super::condition_debug::ConditionStopState>,
     collecting: Option<Rc<crate::node_admission::ConformanceGraph>>,
+    // Fixed before any graceful adapter callback, including unsupported reads.
+    pub(super) graceful_retirement: bool,
 }
 
 impl NodeRuntime {
@@ -296,6 +298,7 @@ impl NodeRuntime {
             terminal: None,
             condition_stop: None,
             collecting,
+            graceful_retirement: false,
         })
     }
 
@@ -837,7 +840,155 @@ impl NodeRuntime {
         QuarantinedRuntime {
             runtime: self,
             cursor: None,
+            shutdown_failure: None,
+            retirement_transferred: false,
         }
+    }
+
+    /// Takes an original capsule only after every adapter supports graceful cleanup.
+    ///
+    /// An unsupported owner retains the caller's same runtime slot, fenced
+    /// for retirement. Every native/model handle and original ledger remains owned.
+    /// Each selected adapter receives its original Shutdown hook once; a lost
+    /// reply remains held in the returned capsule without signaling fallback.
+    /// The caller must independently authenticate the installed cleanup scope.
+    /// Actual native reclamation alone never authorizes state or history discard.
+    ///
+    /// # Errors
+    /// Refuses an empty slot or an unsupported actual adapter. An occupied
+    /// slot is fenced for retirement before adapter reads; no Shutdown frame
+    /// is sent until every actual adapter supports the selected hook.
+    pub fn take_graceful_retirement(
+        original: &mut Option<Self>,
+    ) -> Result<QuarantinedRuntime, RuntimeError> {
+        let runtime = original
+            .as_mut()
+            .ok_or(RuntimeError::OutstandingObligations)?;
+        // Purpose is an infallible world-level custody fact. A panic in even
+        // the first adapter cannot expose legacy signaling in runtime Drop.
+        runtime.graceful_retirement = true;
+        for owner in runtime.owners.values_mut() {
+            if owner.lifecycle != Lifecycle::Released {
+                owner.lifecycle = Lifecycle::Quarantined;
+            }
+        }
+        if runtime
+            .nodes
+            .values()
+            .any(|node| !node.graceful_retirement_available())
+        {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        let mut runtime = original
+            .take()
+            .ok_or(RuntimeError::OutstandingObligations)?;
+        let mut failure = None;
+        for node in runtime.nodes.values_mut() {
+            if let Err(error) = node.shutdown_resources()
+                && failure.is_none()
+            {
+                failure = Some(error);
+            }
+        }
+        Ok(QuarantinedRuntime {
+            runtime,
+            cursor: None,
+            shutdown_failure: failure,
+            retirement_transferred: false,
+        })
+    }
+
+    pub(super) fn transfer_reclaimed_adapters(&mut self) -> Result<(), RuntimeError> {
+        for node in self.nodes.values_mut() {
+            node.transfer_retirement_resources()
+                .map_err(|_| RuntimeError::UnsupportedFacet)?;
+        }
+        Ok(())
+    }
+
+    /// Reads the existing original scheduler without initializing or advancing it.
+    ///
+    /// This operational history retains unresolved queues and original cursors;
+    /// it grants no capture, scheduling, continuation or release permission.
+    ///
+    /// # Errors
+    /// Refuses foreign activation, an absent original scheduler or invalid
+    /// snapshot geometry while retaining the same owning runtime.
+    pub fn retirement_scheduler_snapshot(
+        &self,
+        activation: &WorldActivation,
+        cut: crucible_node_contract::Position,
+        ordinal: crucible_node_contract::U64,
+    ) -> Result<crate::node_scheduling::SchedulingSnapshot, RuntimeError> {
+        self.validate_activation(activation)?;
+        self.scheduler
+            .as_ref()
+            .ok_or(RuntimeError::NotActivated)?
+            .snapshot(cut, ordinal)
+            .map_err(|error| RuntimeError::SchedulerRefused(error.to_string()))
+    }
+
+    /// Reads complete original adapter histories within prebirth aggregate credit.
+    ///
+    /// Every actual adapter's upper bound is charged before the first history
+    /// reader is called. The result retains operational bodies only and grants
+    /// no execution, capture, restoration or native resource-release authority.
+    ///
+    /// # Errors
+    /// Refuses unsupported adapters, exhausted aggregate credit, changed routes
+    /// or nonmatching original full-content bodies while retaining this runtime.
+    pub fn retirement_histories(
+        &self,
+        activation: &WorldActivation,
+        maximum_total_bytes: usize,
+    ) -> Result<Vec<super::RetainedRetirementHistory>, RuntimeError> {
+        self.validate_activation(activation)?;
+        if self.nodes.is_empty()
+            || self.nodes.len() > 64
+            || maximum_total_bytes == 0
+            || maximum_total_bytes > 2 * 1024 * 1024 * 1024
+        {
+            return Err(RuntimeError::ResourceLimit);
+        }
+        self.nodes.values().try_fold(0usize, |total, node| {
+            let credit = node
+                .retirement_history_credit()
+                .ok_or(RuntimeError::UnsupportedFacet)?;
+            total
+                .checked_add(credit)
+                .filter(|total| *total <= maximum_total_bytes)
+                .ok_or(RuntimeError::ResourceLimit)
+        })?;
+        let mut histories = Vec::new();
+        histories
+            .try_reserve_exact(self.nodes.len())
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        for (node_id, node) in &self.nodes {
+            let maximum = node
+                .retirement_history_credit()
+                .ok_or(RuntimeError::UnsupportedFacet)?;
+            let bodies = node
+                .retirement_history(maximum)
+                .map_err(|_| RuntimeError::UnsupportedFacet)?;
+            if node.route().node != *node_id || bodies.is_empty() || bodies.len() > 16 {
+                return Err(RuntimeError::InvalidRoute);
+            }
+            bodies.iter().try_fold(0usize, |total, object| {
+                object
+                    .reference
+                    .verify(&object.bytes)
+                    .map_err(|_| RuntimeError::InvalidReceipt)?;
+                total
+                    .checked_add(object.bytes.len())
+                    .filter(|total| *total <= maximum)
+                    .ok_or(RuntimeError::ResourceLimit)
+            })?;
+            histories.push(super::RetainedRetirementHistory {
+                route: node.route().clone(),
+                bodies,
+            });
+        }
+        Ok(histories)
     }
 
     pub(crate) fn unreleased_owner_count(&self) -> usize {
@@ -923,7 +1074,10 @@ impl NodeRuntime {
         }
     }
 
-    fn validate_activation(&self, activation: &WorldActivation) -> Result<(), RuntimeError> {
+    pub(super) fn validate_activation(
+        &self,
+        activation: &WorldActivation,
+    ) -> Result<(), RuntimeError> {
         if !self.activated {
             return Err(RuntimeError::NotActivated);
         }
@@ -932,6 +1086,17 @@ impl NodeRuntime {
         {
             return Err(RuntimeError::ForeignAuthority);
         }
+        Ok(())
+    }
+
+    pub(super) fn release_retired_custody_slot(&mut self) -> Result<(), RuntimeError> {
+        if !self.graceful_retirement || self.unreleased_owner_count() != 0 {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        // The installed release callback has already discharged durable history
+        // and original supervisor custody. Dropping this unused mailbox handle
+        // releases only the same runtime's reservation, without cleanup hooks.
+        self.custody_slot.take();
         Ok(())
     }
 

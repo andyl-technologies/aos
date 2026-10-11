@@ -283,11 +283,13 @@ impl Gem5NativeProcess {
                     completed: image.completed.clone(),
                     pending: image.pending.clone(),
                     last_acknowledged: image.last_acknowledged.clone(),
+                    acknowledgement_history: None,
                     unresolved: None,
                     unresolved_capture: Some(image.capture.clone()),
                     source_image: Some(image.clone()),
                     preparation,
                     quarantine: None,
+                    graceful_retirement_requested: false,
                 });
                 return Err(error);
             }
@@ -302,11 +304,14 @@ impl Gem5NativeProcess {
             completed: image.completed.clone(),
             pending: image.pending.clone(),
             last_acknowledged: image.last_acknowledged.clone(),
+            acknowledgement_history: None,
             unresolved: None,
             unresolved_capture: None,
             source_image: Some(image.clone()),
             preparation,
             quarantine: None,
+            graceful_retirement_requested: false,
+            graceful_retirement_transferred: false,
             supervisor: Some(supervisor),
         })
     }

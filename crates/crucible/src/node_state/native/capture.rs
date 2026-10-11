@@ -227,6 +227,10 @@ impl NativeArchive {
         } else {
             self.limits.native
         };
+        let native_limits = super::extensions::credits::narrow_native_records(
+            native_limits,
+            factory.native_capture_record_ceiling(graph, &coordinator.scheduler)?,
+        )?;
         let mut objects = Objects::new(self, edition);
         for (reference, bytes) in content.entries() {
             let dependencies = immutable.dependencies(

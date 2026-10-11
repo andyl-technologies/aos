@@ -47,14 +47,43 @@ impl InstalledMixedEngine {
         selections: &[InstalledNodeSelection],
         archive: NativeArchiveRecord,
     ) -> Result<IndependentColdWorld, NodeObservedError> {
+        self.prepare_independent_cold_group_selected(catalog, selections, archive, None)
+    }
+
+    pub(in crate::node_observed_executor::factory::native_state) fn prepare_independent_cold_capability_group(
+        &self,
+        catalog: &InstalledNodeCatalog,
+        selections: &[InstalledNodeSelection],
+        archive: NativeArchiveRecord,
+        capabilities: &super::super::super::ResolvedCapabilityWorld,
+    ) -> Result<IndependentColdWorld, NodeObservedError> {
+        self.prepare_independent_cold_group_selected(
+            catalog,
+            selections,
+            archive,
+            Some(capabilities),
+        )
+    }
+
+    fn prepare_independent_cold_group_selected(
+        &self,
+        catalog: &InstalledNodeCatalog,
+        selections: &[InstalledNodeSelection],
+        archive: NativeArchiveRecord,
+        capabilities: Option<&super::super::super::ResolvedCapabilityWorld>,
+    ) -> Result<IndependentColdWorld, NodeObservedError> {
         let selected = IndependentGroupSelection::new_preserving(selections)?;
         let artifacts = GroupArtifacts::materialize(catalog, selections, &archive)?;
-        let profile = Rc::new(IndependentGroupProfile::build_preserving_scoped(
+        let profile = IndependentGroupProfile::build_preserving_scoped(
             self.installed.clone(),
             catalog,
             selections,
             artifacts.registry(),
-        )?);
+        )?;
+        let profile = Rc::new(match capabilities {
+            None => profile,
+            Some(resolved) => profile.with_capabilities(resolved)?,
+        });
         if archive.manifest().world_binding_hash != profile.scenario.world.identity()?
             || measure_executable(&catalog.host_executable)? != catalog.host_identity
             || measure_executable(&catalog.device_executable)? != catalog.device_identity
@@ -190,10 +219,21 @@ impl InstalledMixedEngine {
             host_bindings,
             native_graph,
         )?);
+        let capability_admission = capabilities.map(|resolved| {
+            super::super::super::capabilities::admission::CapabilityAdmission {
+                original: evidence.as_ref(),
+                resolved,
+            }
+        });
+        let admission: &dyn crucible::node_admission::AdmissionEvidence =
+            match &capability_admission {
+                None => evidence.as_ref(),
+                Some(admission) => admission,
+            };
         let graph = Rc::new(
             profile
                 .scenario
-                .admit(evidence.bindings(), evidence.as_ref(), admission_limits())
+                .admit(evidence.bindings(), admission, admission_limits())
                 .map_err(error)?,
         );
         let namespace = self.namespace()?;

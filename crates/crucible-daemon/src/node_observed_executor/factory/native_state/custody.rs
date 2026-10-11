@@ -17,6 +17,17 @@ use crucible::node_state::{NativeArchiveRecord, PublicationKnowledge};
 use crucible_node_contract::ContentRef;
 use crucible_node_provider::gem5::{Gem5CustodySlot, Gem5NativeCustody};
 
+mod failed;
+mod supervision;
+
+pub(super) use failed::{
+    AuthenticatedFailedSupervision, FailedHistoryReferences, NativeFailedRelease,
+};
+pub(super) use supervision::AuthenticatedSupervision;
+
+/// Carries exact content references and bytes for original retirement history.
+pub(super) type RetirementRecords = Vec<(ContentRef, Vec<u8>)>;
+
 /// Reports failed finite native custody preparation without losing resources.
 #[derive(Debug, thiserror::Error)]
 pub(super) enum NativeCustodyError {
@@ -97,8 +108,30 @@ struct Entry {
 
 struct Registry {
     slots: Vec<Option<Entry>>,
+    supervised: Vec<Option<supervision::SupervisedEntry>>,
+    failed_supervised: Vec<Option<failed::FailedSupervisedEntry>>,
     accepting: bool,
     shutdown: bool,
+}
+
+impl Registry {
+    fn entries(&self) -> impl Iterator<Item = &Entry> {
+        self.slots
+            .iter()
+            .flatten()
+            .chain(
+                self.supervised
+                    .iter()
+                    .flatten()
+                    .map(|entry| &entry.original),
+            )
+            .chain(
+                self.failed_supervised
+                    .iter()
+                    .flatten()
+                    .map(|entry| &entry.original),
+            )
+    }
 }
 
 struct Shared {
@@ -143,9 +176,7 @@ impl Gem5CustodyQueue {
         self.owner
             .shared
             .lock()
-            .slots
-            .iter()
-            .flatten()
+            .entries()
             .all(|entry| !entry.in_flight && entry.custody.is_some() && entry.proof.is_some())
     }
 
@@ -157,9 +188,7 @@ impl Gem5CustodyQueue {
         self.owner
             .shared
             .lock()
-            .slots
-            .iter()
-            .flatten()
+            .entries()
             .find(|entry| entry.scope.activation == *activation)
             .map(|entry| entry.scope.publication)
             .ok_or(NativeCustodyError::Refused(
@@ -198,14 +227,44 @@ impl Gem5CustodyQueue {
     ) -> Result<bool, NativeCustodyError> {
         let registry = self.owner.shared.lock();
         let original = registry
-            .slots
-            .iter()
-            .flatten()
+            .entries()
             .find(|entry| entry.scope.activation == *target)
             .ok_or(NativeCustodyError::Refused(
                 "original native reservation is unavailable for reclamation",
             ))?;
         Ok(!original.in_flight && original.custody.is_some() && original.proof.is_some())
+    }
+
+    /// Copies the exact sealed original proof only after native group reclamation.
+    pub(super) fn original_group_retirement(
+        &self,
+        target: &ActivationRecord,
+    ) -> Result<Option<(ContentRef, Vec<u8>)>, NativeCustodyError> {
+        let registry = self.owner.shared.lock();
+        let original = registry
+            .entries()
+            .find(|entry| entry.scope.activation == *target)
+            .ok_or(NativeCustodyError::Refused(
+                "original retirement reservation absent",
+            ))?;
+        if original.in_flight || original.custody.is_none() {
+            return Ok(None);
+        }
+        let Some((reference, bytes)) = &original.proof else {
+            return Ok(None);
+        };
+        if bytes.len() > 64 * 1024 {
+            return Err(NativeCustodyError::Refused(
+                "original retirement proof exceeds fixed credit",
+            ));
+        }
+        reference
+            .verify(bytes)
+            .map_err(|_| NativeCustodyError::Refused("original retirement proof body differs"))?;
+        let mut retained = Vec::new();
+        retained.try_reserve_exact(bytes.len())?;
+        retained.extend_from_slice(bytes);
+        Ok(Some((reference.clone(), retained)))
     }
 
     /// Starts one owning cleanup worker and reserves every native slot.
@@ -222,9 +281,17 @@ impl Gem5CustodyQueue {
         let mut slots = Vec::new();
         slots.try_reserve_exact(capacity)?;
         slots.resize_with(capacity, || None);
+        let mut supervised = Vec::new();
+        supervised.try_reserve_exact(capacity)?;
+        supervised.resize_with(capacity, || None);
+        let mut failed_supervised = Vec::new();
+        failed_supervised.try_reserve_exact(capacity)?;
+        failed_supervised.resize_with(capacity, || None);
         let shared = Arc::new(Shared {
             registry: Mutex::new(Registry {
                 slots,
+                supervised,
+                failed_supervised,
                 accepting: true,
                 shutdown: false,
             }),
@@ -260,23 +327,26 @@ impl Gem5CustodyQueue {
             ));
         }
         if registry
-            .slots
-            .iter()
-            .flatten()
+            .entries()
             .any(|entry| entry.scope.owner == scope.owner)
         {
             return Err(NativeCustodyError::Refused(
                 "original native owner incarnation already has reserved custody",
             ));
         }
-        let index =
-            registry
-                .slots
-                .iter()
-                .position(Option::is_none)
-                .ok_or(NativeCustodyError::Refused(
-                    "native cleanup reservation is exhausted",
-                ))?;
+        let index = registry
+            .slots
+            .iter()
+            .enumerate()
+            .find(|(index, entry)| {
+                entry.is_none()
+                    && registry.supervised[*index].is_none()
+                    && registry.failed_supervised[*index].is_none()
+            })
+            .map(|(index, _)| index)
+            .ok_or(NativeCustodyError::Refused(
+                "native cleanup reservation is exhausted",
+            ))?;
         let mut failure = String::new();
         failure.try_reserve_exact(1024)?;
         registry.slots[index] = Some(Entry {
@@ -344,7 +414,138 @@ impl Gem5CustodyQueue {
     /// Returns the number of reserved, retained or reclaimed original capsules.
     #[cfg(test)]
     pub(super) fn reserved_owners(&self) -> usize {
-        self.owner.shared.lock().slots.iter().flatten().count()
+        self.owner.shared.lock().entries().count()
+    }
+
+    /// Transfers the same complete original capsule into installed supervision.
+    ///
+    /// The source remains with the caller on refusal. Moving a capsule preserves
+    /// its original owner credit; this method releases no reservation capacity.
+    ///
+    /// # Errors
+    /// Refuses incomplete or mismatched original source, capsule or release proof.
+    pub(super) fn supervise_original(
+        &self,
+        target: &ActivationRecord,
+        source: &mut Option<AuthenticatedSupervision>,
+    ) -> Result<(), NativeCustodyError> {
+        let mut registry = self.owner.shared.lock();
+        if let Some(held) = registry
+            .supervised
+            .iter()
+            .flatten()
+            .find(|entry| &entry.original.scope.activation == target)
+        {
+            if source
+                .as_ref()
+                .is_some_and(|source| source.same_original(&held.source))
+            {
+                return Ok(());
+            }
+            return Err(NativeCustodyError::Refused(
+                "original supervisor source differs",
+            ));
+        }
+        let index = registry
+            .slots
+            .iter()
+            .position(|entry| {
+                entry
+                    .as_ref()
+                    .is_some_and(|entry| &entry.scope.activation == target)
+            })
+            .ok_or(NativeCustodyError::Refused(
+                "original supervisor capsule absent",
+            ))?;
+        if registry.supervised[index].is_some() {
+            return Err(NativeCustodyError::Refused(
+                "original supervisor capacity occupied",
+            ));
+        }
+        source
+            .as_ref()
+            .ok_or(NativeCustodyError::Refused(
+                "authenticated supervisor source absent",
+            ))?
+            .validate_entry(registry.slots[index].as_mut().ok_or(
+                NativeCustodyError::Refused("original supervisor entry absent"),
+            )?)?;
+
+        // All fallible validation precedes taking either unique owner. The
+        // preallocated matching supervisor slot retains the entire entry.
+        let authenticated = source.take().ok_or(NativeCustodyError::Refused(
+            "original authenticated supervisor source disappeared",
+        ))?;
+        let Some(original) = registry.slots[index].take() else {
+            *source = Some(authenticated);
+            return Err(NativeCustodyError::Refused(
+                "original capsule disappeared before transfer",
+            ));
+        };
+        registry.supervised[index] = Some(supervision::SupervisedEntry {
+            original,
+            source: authenticated,
+        });
+        Ok(())
+    }
+
+    /// Releases a settled supervisor only after fresh durable source reopening.
+    ///
+    /// A freshly source-qualified archive and the same actual kernel proof must
+    /// agree with the complete held journal. Uncertainty remains retained and
+    /// continues consuming capacity on every refusal.
+    ///
+    /// # Errors
+    /// Refuses another archive, unresolved diagnostics or changed original custody.
+    pub(super) fn release_supervised(
+        &self,
+        target: &ActivationRecord,
+        reopened: &AuthenticatedSupervision,
+    ) -> Result<(), NativeCustodyError> {
+        let mut registry = self.owner.shared.lock();
+        let index = registry
+            .supervised
+            .iter()
+            .position(|entry| {
+                entry
+                    .as_ref()
+                    .is_some_and(|entry| &entry.original.scope.activation == target)
+            })
+            .ok_or(NativeCustodyError::Refused(
+                "original supervised capsule absent",
+            ))?;
+        let original = registry.supervised[index]
+            .as_mut()
+            .ok_or(NativeCustodyError::Refused(
+                "original supervised entry absent",
+            ))?;
+        if !original.original.failure.is_empty()
+            || original.original.custody.as_ref().is_some_and(|custody| {
+                custody
+                    .quarantine
+                    .as_ref()
+                    .is_some_and(|quarantine| quarantine.census_diagnostic().is_some())
+            })
+        {
+            return Err(NativeCustodyError::Refused(
+                "original supervisor diagnostics are not durably discharged",
+            ));
+        }
+        if !original.source.same_original(reopened)
+            || original.source.artifact() != reopened.artifact()
+        {
+            return Err(NativeCustodyError::Refused(
+                "fresh durable supervisor source differs",
+            ));
+        }
+        reopened.validate_entry(&mut original.original)?;
+        let released = registry.supervised[index].take();
+        drop(registry);
+        // The complete immutable archive is already durably reopened. No
+        // unresolved original output/private ACK or actual native group remains.
+        drop(released);
+        self.owner.shared.changed.notify_one();
+        Ok(())
     }
 
     /// Retains publication knowledge for the exact original activation only.
@@ -361,7 +562,7 @@ impl Gem5CustodyQueue {
     ) -> Result<(), NativeCustodyError> {
         let mut registry = self.owner.shared.lock();
         let mut found = false;
-        for entry in registry.slots.iter().flatten() {
+        for entry in registry.entries() {
             if &entry.scope.activation != activation {
                 continue;
             }
@@ -382,6 +583,16 @@ impl Gem5CustodyQueue {
         for entry in registry.slots.iter_mut().flatten() {
             if &entry.scope.activation == activation {
                 entry.scope.publication = publication;
+            }
+        }
+        for entry in registry.supervised.iter_mut().flatten() {
+            if &entry.original.scope.activation == activation {
+                entry.original.scope.publication = publication;
+            }
+        }
+        for entry in registry.failed_supervised.iter_mut().flatten() {
+            if &entry.original.scope.activation == activation {
+                entry.original.scope.publication = publication;
             }
         }
         Ok(())
@@ -583,7 +794,10 @@ fn cleanup_turn(shared: &Arc<Shared>) -> bool {
     // An orphaned original journal remains owned even after native reaping.
     // Only an explicit transfer to its original supervisor frees a slot.
     let registry = shared.lock();
-    registry.shutdown && registry.slots.iter().all(Option::is_none)
+    registry.shutdown
+        && registry.slots.iter().all(Option::is_none)
+        && registry.supervised.iter().all(Option::is_none)
+        && registry.failed_supervised.iter().all(Option::is_none)
 }
 
 #[cfg(test)]

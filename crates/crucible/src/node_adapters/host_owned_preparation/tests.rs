@@ -227,6 +227,50 @@ fn original_ready_mapping_rechecks_full_owner_and_body_custody() {
 }
 
 #[test]
+fn original_history_keeps_same_model_and_preparation_after_retained_move() {
+    let (mut adapter, graph, record) = fixture();
+    adapter
+        .qualify_public_initial_owned_model(&graph, &SelectedModelPolicy)
+        .unwrap();
+    adapter.arm(&record).unwrap();
+    let original = adapter.retirement_history(1 << 20).unwrap();
+    original[0].reference.verify(&original[0].bytes).unwrap();
+
+    // This is an inert model move, not physical reclamation or release proof.
+    adapter.retired_model = adapter.model.take();
+    assert_eq!(adapter.retirement_history(1 << 20).unwrap(), original);
+    assert!(adapter.continuation_bytes().is_err());
+    assert!(
+        adapter
+            .retirement_history(original[0].bytes.len() - 1)
+            .is_err()
+    );
+    assert_eq!(
+        adapter.retirement_history(original[0].bytes.len()).unwrap(),
+        original
+    );
+
+    adapter
+        .public_model_preparation
+        .as_mut()
+        .unwrap()
+        .session_bytes[0] ^= 1;
+    assert!(adapter.retirement_history(1 << 20).is_err());
+    adapter
+        .public_model_preparation
+        .as_mut()
+        .unwrap()
+        .session_bytes[0] ^= 1;
+    assert_eq!(adapter.retirement_history(1 << 20).unwrap(), original);
+}
+
+#[test]
+fn ordinary_unselected_host_cannot_supply_complete_failure_preparation() {
+    let (adapter, _, _) = fixture();
+    assert!(adapter.retirement_history(1 << 20).is_err());
+}
+
+#[test]
 fn restored_or_already_armed_model_cannot_mint_original_mapping() {
     let (mut restored, graph, _) = fixture();
     restored.preparation_origin = HostPreparationOrigin::Restored;

@@ -23,6 +23,18 @@ pub struct ReadyAttestation {
     pub ready_receipt: crucible_node_contract::ContentRef,
 }
 
+/// Describes byte-owning original adapter history without native permissions.
+///
+/// Only an actual owning runtime can authenticate the source of a returned
+/// inventory. Constructing this data value does not authorize resource release,
+/// restoration, readiness or any modeled operation.
+pub struct RetainedRetirementHistory {
+    /// Names the actual original adapter route whose bodies were read.
+    pub route: NodeRoute,
+    /// Keeps complete full-content bodies under the selected prebirth credit.
+    pub bodies: Vec<crate::node_scheduling::InputPayload>,
+}
+
 /// Defines heterogeneous process-local participant behavior without downcasts.
 ///
 /// Common mutations receive opaque coordinator admissions. Role and facet
@@ -885,6 +897,78 @@ pub trait SimulationNode {
     /// discard obligations when a caller or runtime is dropped. Implementations
     /// integrate their native resource guards and quarantine registry here.
     fn quarantine_resources(&mut self);
+
+    /// Reports mechanical availability of the installed same-owner cleanup hook.
+    ///
+    /// The default refuses. This read grants no resource-release or restoration
+    /// authority; the whole-world factory must separately qualify every owner.
+    fn graceful_retirement_available(&self) -> bool {
+        false
+    }
+
+    /// Requests authentic same-owner graceful retirement without a signal fallback.
+    ///
+    /// This optional cleanup path grants no semantic execution or settlement.
+    /// The default refuses; adapters must retain the original session, every
+    /// operation/ACK and any lost Shutdown response before attempting effects.
+    ///
+    /// # Errors
+    /// Returns unsupported cleanup or unresolved original obligations while
+    /// retaining the complete capsule. A refusal cannot authorize replacement.
+    fn shutdown_resources(&mut self) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::Unknown,
+            reason: "same-owner graceful retirement is unsupported".into(),
+        })
+    }
+
+    /// Moves physically reclaimed original native custody to its reserved supervisor.
+    ///
+    /// This move preserves original owner credit and modeled history. It does
+    /// not authorize native journal release or destruction of the runtime.
+    ///
+    /// # Errors
+    /// Refuses unsupported custody transfer or absent actual reclamation proof.
+    fn transfer_retirement_resources(&mut self) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::Unknown,
+            reason: "original reclaimed supervisor transfer is unsupported".into(),
+        })
+    }
+
+    /// Reports the selected upper bound before original history is materialized.
+    ///
+    /// The default refuses. This is mechanical finite geometry, not installed
+    /// cleanup permission; the owning factory must authenticate its source.
+    fn retirement_history_credit(&self) -> Option<usize> {
+        None
+    }
+
+    /// Reads complete retained native history without issuing a native command.
+    ///
+    /// This operational body grants no capture, restoration or resource-release
+    /// authority. The default refuses; a selected codec must retain original
+    /// model, preparation, input, operation and acknowledgement bytes together.
+    ///
+    /// # Errors
+    /// Refuses unsupported history, changed original custody or finite credit.
+    fn retirement_history(
+        &self,
+        _maximum_bytes: usize,
+    ) -> Result<Vec<crate::node_scheduling::InputPayload>, OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "complete original retirement history is unsupported".into(),
+        })
+    }
+
+    /// Reports original retirement state that still requires durable release.
+    ///
+    /// Physical reaping does not discharge this state. Fallback custody must
+    /// retain its whole capsule and admitted slot while this returns true.
+    fn retirement_history_pending(&self) -> bool {
+        false
+    }
 
     /// Polls actual reclamation of one original native owner under supervision.
     ///

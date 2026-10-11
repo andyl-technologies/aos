@@ -8,6 +8,7 @@
 //! Raw requirements remain immutable bytes. Candidate recipes select installed
 //! models; they cannot supply resolved authority or replace catalog policy.
 
+pub(super) mod group;
 pub(super) mod ledger;
 mod native;
 #[cfg(test)]
@@ -45,15 +46,15 @@ pub struct CapabilityCandidateRecipe {
     pub selections: Vec<InstalledNodeSelection>,
 }
 
-/// Selects live observation or the independently qualified standalone Clock codec.
+/// Selects live observation or an independently qualified installed preservation codec.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CapabilityPreparationAction {
     /// Executes the selected complete world through its ordinary observed worker.
     Observe {},
-    /// Captures an actual standalone Clock at the configuration's planner horizon.
+    /// Captures the selected qualified world at the configuration's planner horizon.
     Capture {},
-    /// Continues an authenticated original standalone Clock under fresh custody.
+    /// Continues an authenticated original qualified world under fresh custody.
     Continue {
         /// Names the original signed native artifact in the installed local archive.
         source: ContentRef,
@@ -136,6 +137,7 @@ impl CapabilityPreparationRequest {
             source.validate().map_err(refused)?;
         }
 
+        super::debug::budget::bounded_json(self, 4 * 1024 * 1024)?;
         if encode(self)?.len() > 4 * 1024 * 1024 {
             return Err(refused("capability original request exceeds byte credit"));
         }

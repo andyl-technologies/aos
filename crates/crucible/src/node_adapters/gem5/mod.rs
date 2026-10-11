@@ -27,6 +27,7 @@ mod preparation_mapping;
 mod public_continuation;
 mod reconciliation;
 mod restore;
+mod retirement;
 mod supplementary;
 
 pub use capture::{

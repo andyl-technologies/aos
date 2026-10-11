@@ -13,7 +13,7 @@ use crucible_node_contract::{
 };
 use std::sync::{Arc, Mutex, atomic::AtomicBool, mpsc};
 
-fn request() -> CapabilityPreparationRequest {
+pub(super) fn request() -> CapabilityPreparationRequest {
     use crucible::node_admission::*;
     let model = canonical::content_ref(
         b"model-only policy body, no native authority",
@@ -78,7 +78,7 @@ fn request() -> CapabilityPreparationRequest {
     }
 }
 
-fn storage(
+pub(super) fn storage(
     directory: &std::path::Path,
 ) -> (Arc<dyn ImmutableBlobBackend>, Arc<dyn MutableRefBackend>) {
     (
@@ -400,4 +400,87 @@ fn retained_claim_without_own_admission_record_cannot_redispatch() {
         ledger.retention_roots().unwrap(),
         claims.retention_roots().unwrap()
     );
+}
+
+#[test]
+fn held_completed_body_is_gc_rooted_before_public_terminal_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let (blobs, refs) = storage(directory.path());
+    let ledger = ledger::CapabilityPreparationLedger::new(blobs.clone(), refs.clone()).unwrap();
+    let original = request();
+    let reservation = ledger.reserve(&original).unwrap();
+    let sealed = ledger
+        .seal_completion(
+            &reservation,
+            CapabilityPreparationState::Unavailable {
+                reason: "inert retained body, no native retirement authority".into(),
+            },
+        )
+        .unwrap();
+
+    ledger.persist_completion(&reservation, &sealed).unwrap();
+    let reference = RefName::new(format!(
+        "node-capability-native-results/{}",
+        original.execution
+    ))
+    .unwrap();
+    let completed = refs.read_ref(&reference).unwrap().unwrap();
+    assert!(ledger.retention_roots().unwrap().contains(&completed));
+    assert!(matches!(
+        ledger.state(&original.execution).unwrap().outcome,
+        CapabilityPreparationState::AwaitingAdmission {}
+    ));
+    assert!(!ledger.reserve(&original).unwrap().original_dispatch);
+
+    ledger.persist_completion(&reservation, &sealed).unwrap();
+    assert_eq!(refs.read_ref(&reference).unwrap(), Some(completed));
+    ledger.place_completion(&reservation, &sealed).unwrap();
+    assert!(matches!(
+        ledger.state(&original.execution).unwrap().outcome,
+        CapabilityPreparationState::Unavailable { .. }
+    ));
+    assert!(!ledger.reserve(&original).unwrap().original_dispatch);
+}
+
+#[test]
+fn another_completed_body_or_original_reservation_cannot_replace_held_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let (blobs, refs) = storage(directory.path());
+    let ledger = ledger::CapabilityPreparationLedger::new(blobs, refs.clone()).unwrap();
+    let original = request();
+    let reservation = ledger.reserve(&original).unwrap();
+    let first = ledger
+        .seal_completion(
+            &reservation,
+            CapabilityPreparationState::Unavailable {
+                reason: "original bytes".into(),
+            },
+        )
+        .unwrap();
+    let changed = ledger
+        .seal_completion(
+            &reservation,
+            CapabilityPreparationState::Unavailable {
+                reason: "different bytes".into(),
+            },
+        )
+        .unwrap();
+    ledger.persist_completion(&reservation, &first).unwrap();
+    let reference = RefName::new(format!(
+        "node-capability-native-results/{}",
+        original.execution
+    ))
+    .unwrap();
+    let identity = refs.read_ref(&reference).unwrap();
+
+    assert!(ledger.persist_completion(&reservation, &changed).is_err());
+    let mut another = original.clone();
+    another.execution = "89898989898989898989898989898989".into();
+    let foreign = ledger.reserve(&another).unwrap();
+    assert!(ledger.persist_completion(&foreign, &first).is_err());
+    assert_eq!(refs.read_ref(&reference).unwrap(), identity);
+    assert!(matches!(
+        ledger.state(&original.execution).unwrap().outcome,
+        CapabilityPreparationState::AwaitingAdmission {}
+    ));
 }

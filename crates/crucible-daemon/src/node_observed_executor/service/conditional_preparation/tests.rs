@@ -539,6 +539,18 @@ fn queued_shutdown_completion_panic_preserves_original_and_reclaims_native_world
             catalog,
             1,
             ActorStorage {
+                capability_installation:
+                    super::super::capability_preparation::group::Installation::from_configuration(
+                        &super::super::NodeObservationServiceConfig {
+                            installed_artifacts: Vec::new(),
+                            device_executable: executable.clone(),
+                            expected_device: measure_executable(&executable).unwrap(),
+                            socket_parent: directory.path().to_owned(),
+                            control_timeout: Duration::from_secs(5),
+                            maximum_worlds: 1,
+                            maximum_pending_requests: 1,
+                        },
+                    ),
                 root_installation: super::super::root_preparation::worker::Installation {
                     companion: executable.clone(),
                     expected_companion: measure_executable(&executable).unwrap(),

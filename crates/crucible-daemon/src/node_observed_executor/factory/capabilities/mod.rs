@@ -9,6 +9,7 @@ mod condition;
 mod gem5;
 mod native;
 pub(super) mod policy;
+mod preserving_group;
 mod staging;
 
 pub use native::InstalledCapabilityClockFactory;
@@ -78,6 +79,15 @@ impl InstalledNodeCatalog {
         candidates: &[InstalledCapabilityCandidate],
         requirements: CapabilityRequirements,
     ) -> Result<ResolvedCapabilityWorld, NodeObservedError> {
+        self.resolve_capabilities_source(candidates, requirements, None)
+    }
+
+    fn resolve_capabilities_source(
+        &self,
+        candidates: &[InstalledCapabilityCandidate],
+        requirements: CapabilityRequirements,
+        source: Option<&crucible::node_state::NativeArchiveRecord>,
+    ) -> Result<ResolvedCapabilityWorld, NodeObservedError> {
         requirements
             .validate()
             .map_err(|error| refused(&error.to_string()))?;
@@ -91,7 +101,7 @@ impl InstalledNodeCatalog {
         }
         let mut chosen = None;
         for candidate in candidates {
-            let scenario = self.scenario(&candidate.selections)?;
+            let scenario = self.capability_baseline(&candidate.selections, source)?;
             if policy::matches(&candidate.selections, &scenario, &requirements).is_err() {
                 continue;
             }
@@ -128,10 +138,54 @@ impl InstalledNodeCatalog {
         let demands: CapabilityRequirements =
             serde_json::from_value(canonical::parse_json(original, 1024 * 1024)?)?;
         let mut resolved = self.resolve_capabilities(candidates, demands)?;
-        let baseline = self.scenario(&resolved.candidate.selections)?;
+        let baseline = self.capability_baseline(&resolved.candidate.selections, None)?;
         resolved.scenario = bind_original_requirements(baseline, &resolved.requirements, original)?;
         resolved.requirements_bytes = original.to_vec();
         Ok(resolved)
+    }
+
+    /// Resolves original raw demands against independently enrolled signed inputs.
+    ///
+    /// The signed archive supplies original bodies only. It cannot install a
+    /// script, base image, operation policy, owner or replacement capability.
+    ///
+    /// # Errors
+    /// Refuses missing independent enrollment, changed complete source world,
+    /// invalid demands, ambiguous candidates or another supported source family.
+    pub(crate) fn resolve_capabilities_raw_from_source(
+        &self,
+        candidates: &[InstalledCapabilityCandidate],
+        original: &[u8],
+        source: &crucible::node_state::NativeArchiveRecord,
+    ) -> Result<ResolvedCapabilityWorld, NodeObservedError> {
+        let demands: CapabilityRequirements =
+            serde_json::from_value(canonical::parse_json(original, 1024 * 1024)?)?;
+        let mut resolved = self.resolve_capabilities_source(candidates, demands, Some(source))?;
+        if !preserving_group::selected(&resolved.candidate.selections) {
+            return Err(refused(
+                "signed mixed inputs require their distinct full preserving source",
+            ));
+        }
+        let baseline = self.capability_baseline(&resolved.candidate.selections, Some(source))?;
+        resolved.scenario = bind_original_requirements(baseline, &resolved.requirements, original)?;
+        resolved.requirements_bytes = original.to_vec();
+        if source.manifest().world_binding_hash != resolved.scenario.world.identity()? {
+            return Err(refused(
+                "original raw demands or selected complete source world differ",
+            ));
+        }
+        Ok(resolved)
+    }
+
+    fn capability_baseline(
+        &self,
+        selections: &[InstalledNodeSelection],
+        source: Option<&crucible::node_state::NativeArchiveRecord>,
+    ) -> Result<NodeScenario, NodeObservedError> {
+        if preserving_group::selected(selections) {
+            return self.independent_native_source_scenario(selections, source);
+        }
+        self.scenario(selections)
     }
 
     /// Creates an ordinary observed executor from an authenticated capability resolution.

@@ -37,6 +37,7 @@ pub(crate) fn prepared(
         world_preparation: None,
         limits,
         reclamation_cursor: None,
+        graceful_retirement: false,
         pending_retirement: true,
         borrowed_retirement: true,
     });
@@ -88,6 +89,7 @@ impl NodeRuntime {
             world_preparation,
             limits: self.limits,
             reclamation_cursor: None,
+            graceful_retirement: self.graceful_retirement,
             pending_retirement: true,
             borrowed_retirement: true,
         });

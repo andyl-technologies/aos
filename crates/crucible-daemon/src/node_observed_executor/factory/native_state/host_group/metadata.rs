@@ -47,6 +47,7 @@ pub(super) struct MetadataClosure {
     root: ContentRef,
     body: Vec<u8>,
     members: Vec<Member>,
+    capability: Option<super::capability_metadata::CapabilityMetadata>,
 }
 
 impl MetadataClosure {
@@ -157,11 +158,54 @@ impl MetadataClosure {
             root,
             body,
             members: record.members,
+            capability: None,
         })
+    }
+
+    /// Adds the distinct typed outer codec while retaining the original root.
+    pub(super) fn attach_capabilities(
+        &mut self,
+        baseline: &NodeScenario,
+        selected: &NodeScenario,
+    ) -> Result<(), NodeObservedError> {
+        if self.capability.is_some() {
+            return Err(refused("original capability metadata was already selected"));
+        }
+        self.capability = Some(super::capability_metadata::CapabilityMetadata::new(
+            baseline,
+            selected,
+            &self.root,
+            self.members.iter().map(|member| &member.reference),
+        )?);
+        Ok(())
+    }
+
+    pub(super) fn credit(
+        &self,
+    ) -> Result<&super::archive_credit::ArchiveCredit, NodeObservedError> {
+        self.capability
+            .as_ref()
+            .map(|codec| codec.credit())
+            .ok_or_else(|| refused("complete archive credit requires selected capability scope"))
+    }
+
+    pub(super) fn credit_body(&self, reference: &ContentRef) -> Option<&[u8]> {
+        self.capability
+            .as_ref()
+            .map(|codec| codec.credit())
+            .filter(|credit| credit.reference() == reference)
+            .map(|credit| credit.body())
     }
 
     /// Returns a role only for an exact full reference in the authored roster.
     pub(super) fn role(&self, reference: &ContentRef) -> Option<MetadataRole> {
+        if self
+            .capability
+            .as_ref()
+            .is_some_and(|codec| codec.contains(reference))
+        {
+            return Some(MetadataRole::SourceDefinition);
+        }
         self.members
             .iter()
             .find(|member| &member.reference == reference)
@@ -185,6 +229,11 @@ impl MetadataClosure {
         maximum: usize,
     ) -> Result<Vec<ContentRef>, StateError> {
         reference.verify(bytes).map_err(error)?;
+        if let Some(codec) = &self.capability
+            && let Some(dependencies) = codec.dependencies(reference, bytes, maximum)?
+        {
+            return Ok(dependencies);
+        }
         if !self.is_root(reference) {
             return self.role(reference).map(|_| Vec::new()).ok_or_else(|| {
                 error("immutable object has no exact source-authored metadata role")
@@ -219,6 +268,9 @@ impl MetadataClosure {
                 error("signed original metadata member is absent or has a foreign role")
             })?;
             member.reference.verify(bytes).map_err(error)?;
+        }
+        if let Some(codec) = &self.capability {
+            codec.authenticate_complete(content)?;
         }
         Ok(())
     }

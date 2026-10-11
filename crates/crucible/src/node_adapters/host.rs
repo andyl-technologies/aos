@@ -312,6 +312,9 @@ pub struct HostModelNode {
     binding: NodeBinding,
     route: NodeRoute,
     model: Option<HostModel>,
+    // Inactive original bytes remain with the actual capsule until durable release.
+    retired_model: Option<HostModel>,
+    graceful_retirement: bool,
     initial: Rc<Vec<u8>>,
     boundary: Position,
     thread: std::thread::ThreadId,
@@ -520,6 +523,8 @@ impl HostModelNode {
                 owners: vec![owner],
             },
             model: Some(model),
+            retired_model: None,
+            graceful_retirement: false,
             initial: Rc::new(initial),
             boundary,
             thread: std::thread::current().id(),
@@ -704,6 +709,11 @@ impl HostModelNode {
     fn capture(&self) -> Result<Vec<u8>, OperationFailure> {
         self.model
             .as_ref()
+            .or_else(|| {
+                (self.quarantined && self.graceful_retirement)
+                    .then_some(self.retired_model.as_ref())
+                    .flatten()
+            })
             .ok_or_else(|| failure("host model released"))?
             .capture(self.limits.maximum_capture_bytes)
     }
@@ -744,6 +754,9 @@ pub(super) mod rate_alarm_evidence;
 
 #[path = "host_runtime.rs"]
 mod runtime;
+
+#[path = "host_retirement.rs"]
+mod retirement;
 
 #[path = "host_execution.rs"]
 mod execution;

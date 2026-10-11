@@ -39,6 +39,63 @@ pub(super) struct OriginalOwnedModelPreparation {
     previous: Option<ContentRef>,
 }
 
+#[derive(serde::Serialize)]
+pub(super) struct RetirementPreparation<'a> {
+    token: &'a Id,
+    session: &'a ContentRef,
+    session_bytes: &'a [u8],
+    initial_native: &'a ContentRef,
+    native_ready: &'a ContentRef,
+    native_ready_bytes: &'a [u8],
+    world_owners: &'a [OwnerIdentity],
+    ready: Option<(
+        crate::node_contract::RetirementActivation<'a>,
+        &'a ReadyAttestation,
+        &'a [u8],
+    )>,
+}
+
+impl OriginalOwnedModelPreparation {
+    pub(super) fn retirement_record(
+        &self,
+        initial: &[u8],
+    ) -> Result<RetirementPreparation<'_>, OperationFailure> {
+        if self.previous.is_some() {
+            return Err(failure(
+                "inherited model retirement history requires its own codec",
+            ));
+        }
+        self.session
+            .verify(&self.session_bytes)
+            .map_err(|error| failure(&error.to_string()))?;
+        self.initial_native
+            .verify(initial)
+            .map_err(|error| failure(&error.to_string()))?;
+        self.native_ready
+            .verify(&self.native_ready_bytes)
+            .map_err(|error| failure(&error.to_string()))?;
+        if let Some((_, ready, bytes)) = &self.ready {
+            ready
+                .ready_receipt
+                .verify(bytes)
+                .map_err(|error| failure(&error.to_string()))?;
+        }
+        Ok(RetirementPreparation {
+            token: &self.token,
+            session: &self.session,
+            session_bytes: &self.session_bytes,
+            initial_native: &self.initial_native,
+            native_ready: &self.native_ready,
+            native_ready_bytes: &self.native_ready_bytes,
+            world_owners: &self.world_owners,
+            ready: self
+                .ready
+                .as_ref()
+                .map(|(activation, ready, bytes)| (activation.into(), ready, bytes.as_slice())),
+        })
+    }
+}
+
 impl HostModelNode {
     /// Selects public initial preparation of an actual original Script or Block.
     ///

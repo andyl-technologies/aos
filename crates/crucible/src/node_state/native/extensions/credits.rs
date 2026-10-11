@@ -83,3 +83,24 @@ pub(in crate::node_state::native) fn remaining_native(
 fn limit(subject: &'static str) -> StateError {
     crate::node_state::closure::limit(subject)
 }
+
+/// Keeps unused portable allowance from expanding selected native-record credit.
+pub(in crate::node_state::native) fn narrow_native_records(
+    mut limits: NativeCaptureLimits,
+    ceiling: Option<usize>,
+) -> Result<NativeCaptureLimits, StateError> {
+    if let Some(ceiling) = ceiling {
+        if ceiling == 0 || ceiling > limits.maximum_total_record_bytes {
+            return Err(limit(
+                "installed native record ceiling widens available credit",
+            ));
+        }
+        limits.maximum_total_record_bytes = ceiling;
+        limits.maximum_record_bytes = limits.maximum_record_bytes.min(ceiling);
+    }
+    Ok(limits)
+}
+
+#[cfg(test)]
+#[path = "record_credit_tests.rs"]
+mod tests;

@@ -150,10 +150,15 @@ impl IndependentGroupEvidence {
 
     pub(super) fn known_immutable_reference(&self, reference: &ContentRef) -> bool {
         self.profile
-            .scenario
-            .content
-            .iter()
-            .any(|object| &object.reference == reference)
+            .metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.credit_body(reference).is_some())
+            || self
+                .profile
+                .scenario
+                .content
+                .iter()
+                .any(|object| &object.reference == reference)
             || self.native.known_immutable_reference(reference)
             || self.host.known_immutable_reference(reference)
     }
@@ -228,6 +233,15 @@ impl AdmissionEvidence for IndependentGroupEvidence {
     ) -> Result<Vec<u8>, EvidenceError> {
         if reference.length.get() > maximum_bytes as u64 {
             return Err(error("independent group content exceeds caller credit"));
+        }
+        if let Some(bytes) = self
+            .profile
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.credit_body(reference))
+        {
+            reference.verify(bytes).map_err(error)?;
+            return Ok(bytes.to_vec());
         }
         if let Some(object) = self
             .profile
