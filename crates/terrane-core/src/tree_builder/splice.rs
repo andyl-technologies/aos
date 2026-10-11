@@ -13,11 +13,10 @@ use crate::{
 };
 
 use super::{
-    Error, Factory, Mutation, StoredNode, Tree, Work,
+    Error, Factory, Mutation, StoredNode, Tree, Work, batch,
     chunk::{self, Item},
     cursor::LevelCursor,
-    links,
-    mutation::{self, Replacement},
+    links, mutation,
 };
 
 /// Identifies an existing subtree and a replacement with identical bounds.
@@ -48,10 +47,7 @@ pub(super) struct Change<'a> {
 }
 
 fn combine(total: &mut Work, work: Work) {
-    total.node_reads += work.node_reads;
-    total.validation_reads += work.validation_reads;
-    total.item_encodings += work.item_encodings;
-    total.node_encodings += work.node_encodings;
+    total.combine(work);
 }
 
 fn locate<'tree, 'a>(
@@ -135,31 +131,17 @@ pub(super) fn apply_edits<'a>(
         previous_key = Some(key.as_slice());
     }
 
-    // Higher-level replacements go first. Their descendants remain available
-    // by identity for subsequent disjoint lower-level replacements.
-    ordered.sort_by_key(|patch| core::cmp::Reverse(patch.target.level()));
-    let mut result = tree.clone();
-    let mut emitted = Vec::new();
+    let mut factory = Factory::new(tree.min_chunk_size, tree.usage);
     for patch in &ordered {
-        let Ok(old) = locate(&result, &patch.target, &mut work.validation_reads) else {
-            return Ok(SpliceOutcome::RechunkRequired(work));
-        };
-        if old.identity() != patch.old_identity {
-            return Ok(SpliceOutcome::RechunkRequired(work));
-        }
-        let mut factory = Factory::new(tree.min_chunk_size, tree.usage);
-        if !compatible(&result, &patch.target, &mut factory)? {
+        if !compatible(tree, &patch.target, &mut factory)? {
             combine(&mut work, factory.work);
             return Ok(SpliceOutcome::RechunkRequired(work));
         }
-        let mutation = adopt(&result, Rc::clone(&patch.target), &mut factory)?;
-        result.root = mutation;
-        combine(&mut work, factory.work);
-        emitted.extend(factory.emitted);
     }
 
     // Only the final map is admitted. A hard-link set or directory subtree
     // can have invalid intermediate states while its complete delta is applied.
+    let mut effective = Vec::new();
     for (key, new) in edits {
         let old = mutation::lookup(tree, key, &mut work.validation_reads);
         if old == new.as_ref() {
@@ -170,17 +152,33 @@ pub(super) fn apply_edits<'a>(
             old: old.cloned(),
             new: new.clone(),
         });
-        let item = new.as_ref().map(|entry| LeafItem {
-            key: key.clone(),
-            entry: entry.clone(),
-        });
-        let next = mutation::edit(&result, key, item)?;
-        combine(&mut work, next.work);
-        emitted.extend(next.emitted);
-        result = next.tree;
+        effective.push((key.clone(), new.clone()));
     }
+    let targets: Vec<_> = ordered
+        .iter()
+        .map(|patch| Rc::clone(&patch.target))
+        .collect();
+    if effective.is_empty() && targets.is_empty() {
+        let mut unchanged = tree.unchanged();
+        unchanged.work = work;
+        return Ok(SpliceOutcome::Applied(unchanged));
+    }
+    let Some(root) = batch::rechunk(tree, &effective, &targets, &mut factory)? else {
+        combine(&mut work, factory.work);
+        return Ok(SpliceOutcome::RechunkRequired(work));
+    };
+    let next = tree.finish(root, factory);
+    combine(&mut work, next.work);
+    let emitted = next.emitted;
+    let mut result = next.tree;
 
     for patch in &ordered {
+        let mut certification = Factory::new(tree.min_chunk_size, tree.usage);
+        let accepted = compatible(&result, &patch.target, &mut certification)?;
+        combine(&mut work, certification.work);
+        if !accepted {
+            return Ok(SpliceOutcome::RechunkRequired(work));
+        }
         let Ok(present) = locate(&result, &patch.target, &mut work.validation_reads) else {
             return Ok(SpliceOutcome::RechunkRequired(work));
         };
@@ -206,24 +204,6 @@ pub(super) fn apply_edits<'a>(
         emitted,
         work,
     }))
-}
-
-fn adopt<'a>(
-    tree: &Tree<'a>,
-    target: Rc<StoredNode<'a>>,
-    factory: &mut Factory<'a>,
-) -> Result<Rc<StoredNode<'a>>, Error> {
-    let last = target.last_key().ok_or(Error::Node)?.to_vec();
-    let level = target.level();
-    let mut replacement = Replacement {
-        first: last.clone(),
-        last,
-        nodes: alloc::vec![target],
-    };
-    for parent_level in level + 1..=tree.root().level() {
-        replacement = mutation::edit_parents(tree, parent_level, replacement, factory)?;
-    }
-    mutation::finish_nodes(tree, replacement.nodes, factory)
 }
 
 fn edge<'node, 'a>(
@@ -291,8 +271,14 @@ fn cut_before(
                 let canonical = chunk::leaf_bytes(item, &[], factory.min_chunk_size)?;
                 let stored = chunk::leaf_bytes(item, previous, factory.min_chunk_size)?;
                 factory.work.item_encodings += 2;
-                last_decision = boundary::decide(size, stored.len() as u64, &canonical)
-                    .map_err(|_| Error::Limit)?;
+                factory.work.adoption.item_reads += 1;
+                factory.work.adoption.item_bytes_encoded += canonical.len() + stored.len();
+                last_decision = chunk::decide(
+                    size,
+                    stored.len() as u64,
+                    &canonical,
+                    &mut factory.work.adoption,
+                )?;
                 size += stored.len() as u64;
                 previous = &item.key;
             }
@@ -305,14 +291,23 @@ fn cut_before(
             let next = next.first().ok_or(Error::Node)?;
             let stored = chunk::leaf_bytes(next, previous, factory.min_chunk_size)?;
             factory.work.item_encodings += 1;
+            factory.work.adoption.item_reads += 1;
+            factory.work.adoption.item_bytes_encoded += stored.len();
+            factory.work.adoption.frontier_checks += 1;
             Ok(size + stored.len() as u64 > boundary::MAX_NODE)
         }
         NodeItems::Internal(_) => {
             for child in node.children() {
                 let canonical = Item::Child(Rc::clone(child)).canonical(factory.min_chunk_size)?;
                 factory.work.item_encodings += 1;
-                last_decision = boundary::decide(size, canonical.len() as u64, &canonical)
-                    .map_err(|_| Error::Limit)?;
+                factory.work.adoption.item_reads += 1;
+                factory.work.adoption.item_bytes_encoded += canonical.len();
+                last_decision = chunk::decide(
+                    size,
+                    canonical.len() as u64,
+                    &canonical,
+                    &mut factory.work.adoption,
+                )?;
                 size += canonical.len() as u64;
             }
             if last_decision == BoundaryDecision::CloseAfter {
@@ -321,6 +316,9 @@ fn cut_before(
             let next = following.children().first().ok_or(Error::Node)?;
             let canonical = Item::Child(Rc::clone(next)).canonical(factory.min_chunk_size)?;
             factory.work.item_encodings += 1;
+            factory.work.adoption.item_reads += 1;
+            factory.work.adoption.item_bytes_encoded += canonical.len();
+            factory.work.adoption.frontier_checks += 1;
             Ok(size + canonical.len() as u64 > boundary::MAX_NODE)
         }
     }

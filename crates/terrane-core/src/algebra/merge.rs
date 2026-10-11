@@ -525,7 +525,7 @@ fn merge_at<'a>(
         crate::tree_format::TreeUse::Ordinary
     };
     let mut tree = ours.with_usage(usage)?;
-    let mut mutation_work = nested_work;
+    let mut mutation_work = nested_work.clone();
     let blocked: Vec<_> = updates
         .iter()
         .filter(|(_, value)| {
@@ -642,10 +642,7 @@ fn merge_at<'a>(
 }
 
 fn add_work(total: &mut Work, work: Work) {
-    total.node_reads += work.node_reads;
-    total.validation_reads += work.validation_reads;
-    total.item_encodings += work.item_encodings;
-    total.node_encodings += work.node_encodings;
+    total.combine(work);
 }
 
 fn has_conflicts(tree: &Tree<'_>) -> bool {

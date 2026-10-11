@@ -84,6 +84,7 @@ pub(super) struct LevelCursor<'tree, 'a> {
     stack: Vec<(&'tree StoredNode<'a>, usize)>,
     pub(super) next: Option<&'tree StoredNode<'a>>,
     pub(super) reads: usize,
+    pub(super) comparisons: usize,
 }
 
 impl<'tree, 'a> LevelCursor<'tree, 'a> {
@@ -93,13 +94,15 @@ impl<'tree, 'a> LevelCursor<'tree, 'a> {
             stack: Vec::new(),
             next: None,
             reads: 0,
+            comparisons: 0,
         };
         let mut node = root;
         while node.level() > level {
             cursor.reads += 1;
-            let index = node
-                .children()
-                .partition_point(|child| child.last_key().is_some_and(|last| last < key));
+            let index = node.children().partition_point(|child| {
+                cursor.comparisons += 1;
+                child.last_key().is_some_and(|last| last < key)
+            });
             // Point insertion beyond the last key begins in the final node.
             let index = index.min(node.children().len().saturating_sub(1));
             cursor.stack.push((node, index + 1));

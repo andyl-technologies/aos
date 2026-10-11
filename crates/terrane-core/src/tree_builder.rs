@@ -12,6 +12,7 @@
 //! {1: level, 2: [leaf-item / child-ref, ...], ? 3: root-properties}
 //! ```
 
+mod batch;
 mod chunk;
 mod cursor;
 mod links;
@@ -24,6 +25,12 @@ mod tests;
 
 #[cfg(test)]
 mod splice_tests;
+
+#[cfg(test)]
+mod batch_tests;
+
+#[cfg(test)]
+mod frontier_tests;
 
 use alloc::{rc::Rc, vec::Vec};
 
@@ -117,8 +124,89 @@ impl<'a> StoredNode<'a> {
     }
 }
 
-/// Counts actual node reads and encodings during a persistent edit.
+/// Counts observable canonical-stream operations, independently of logical changes.
+///
+/// Byte counts measure canonical encoding outputs and hash preimages, not
+/// allocator traffic, memory copies, or codec validation instructions.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct StreamWork {
+    /// Input items inspected by merge and items consumed by the chunker.
+    ///
+    /// Passing a retained item from merge into the chunker counts both reads.
+    pub item_reads: usize,
+    /// Explicit ordered-key comparisons in the editor.
+    pub comparisons: usize,
+    /// Boundary decisions, pending-region checks, and completion frontier checks.
+    pub frontier_checks: usize,
+    /// Bytes in full-key and prefix-compressed item encoding outputs.
+    pub item_bytes_encoded: usize,
+    /// Bytes in canonical node encoding outputs, including framing and properties.
+    pub node_bytes_encoded: usize,
+    /// Actual item-hash preimage bytes; early boundary exits contribute zero.
+    pub item_bytes_hashed: usize,
+    /// Actual Node identity preimage bytes, including domain and zero separator.
+    pub node_bytes_hashed: usize,
+}
+
+impl StreamWork {
+    fn since(self, before: Self) -> Self {
+        Self {
+            item_reads: self.item_reads - before.item_reads,
+            comparisons: self.comparisons - before.comparisons,
+            frontier_checks: self.frontier_checks - before.frontier_checks,
+            item_bytes_encoded: self.item_bytes_encoded - before.item_bytes_encoded,
+            node_bytes_encoded: self.node_bytes_encoded - before.node_bytes_encoded,
+            item_bytes_hashed: self.item_bytes_hashed - before.item_bytes_hashed,
+            node_bytes_hashed: self.node_bytes_hashed - before.node_bytes_hashed,
+        }
+    }
+
+    fn combine(&mut self, other: Self) {
+        self.item_reads += other.item_reads;
+        self.comparisons += other.comparisons;
+        self.frontier_checks += other.frontier_checks;
+        self.item_bytes_encoded += other.item_bytes_encoded;
+        self.node_bytes_encoded += other.node_bytes_encoded;
+        self.item_bytes_hashed += other.item_bytes_hashed;
+        self.node_bytes_hashed += other.node_bytes_hashed;
+    }
+}
+
+/// Identifies one connected canonical resynchronization stream at one level.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundaryRegion {
+    /// Level of the stream: zero denotes leaf items.
+    pub level: u8,
+    /// Last key of the first old node whose boundary is invalidated.
+    pub invalidated: Vec<u8>,
+    /// Recovered old boundary, or `None` when processing reaches the stream tail.
+    pub resynchronized: Option<Vec<u8>>,
+    /// Last old-node key processed, including tails and deletion to empty.
+    pub last: Vec<u8>,
+    /// Actual canonical-stream operations performed in this region.
+    pub work: StreamWork,
+}
+
+/// Records canonical processing of a newly created ancestor level to its tail.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NewLevelWork {
+    /// New ancestor level absent from the old tree.
+    pub level: u8,
+    /// First input child subtree's least key.
+    pub first: Vec<u8>,
+    /// Last input child subtree's greatest key; this stream ends at its tail.
+    pub last: Vec<u8>,
+    /// Actual canonical item and node operations at this new level.
+    pub work: StreamWork,
+}
+
+/// Reports editing work separately from independent validation and seeks.
+///
+/// This pure Tree seam measures canonical-stream outputs and hash preimages;
+/// it does not establish DRV-29 logical deltas or a complete index-maintenance
+/// bound. Codec-internal validation is not a measured stream operation.
+/// Construction uses its own private factory and is never added to an edit.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Work {
     /// Nodes inspected while seeking and rechunking the changed ranges.
     pub node_reads: usize,
@@ -128,6 +216,50 @@ pub struct Work {
     pub item_encodings: usize,
     /// Canonical nodes encoded, including the final root property map.
     pub node_encodings: usize,
+    /// Total canonical work, partitioned exhaustively by the fields below.
+    ///
+    /// Equals existing `regions`, `new_levels`, `completion`, `root_properties`
+    /// and `preparation` summed once. Adoption, seeks and validation are separate.
+    pub stream: StreamWork,
+    /// Canonical streams at levels newly created during root growth.
+    pub new_levels: Vec<NewLevelWork>,
+    /// Empty-root encoding and hierarchy completion/collapse frontier work.
+    pub completion: StreamWork,
+    /// Final root encoding when applying a distinct property map.
+    pub root_properties: StreamWork,
+    /// Canonical replacement-frontier comparisons before ancestor streams.
+    pub preparation: StreamWork,
+    /// Explicit key comparisons made while locating streams, outside regions.
+    pub seek_comparisons: usize,
+    /// Separate boundary certification work for attempted subtree adoption.
+    pub adoption: StreamWork,
+    /// Ordered traces of connected sparse-edit streams at all affected levels.
+    pub regions: Vec<BoundaryRegion>,
+}
+
+impl Work {
+    /// Adds every counter and appends region traces in execution order.
+    ///
+    /// Counts use ordinary `usize` arithmetic, like the original counters;
+    /// they are not saturated or deduplicated. Callers must keep accumulated
+    /// reports within the addressable operation count.
+    ///
+    /// # Panics
+    /// Panics on counter overflow when overflow checks are enabled.
+    pub fn combine(&mut self, other: Self) {
+        self.node_reads += other.node_reads;
+        self.validation_reads += other.validation_reads;
+        self.item_encodings += other.item_encodings;
+        self.node_encodings += other.node_encodings;
+        self.stream.combine(other.stream);
+        self.new_levels.extend(other.new_levels);
+        self.completion.combine(other.completion);
+        self.root_properties.combine(other.root_properties);
+        self.preparation.combine(other.preparation);
+        self.seek_comparisons += other.seek_comparisons;
+        self.adoption.combine(other.adoption);
+        self.regions.extend(other.regions);
+    }
 }
 
 /// Contains an edited tree, its newly emitted nodes, and measured work.
@@ -348,8 +480,9 @@ impl<'a> Tree<'a> {
 
     /// Applies strictly sorted sparse entry changes as one atomic transaction.
     ///
-    /// A missing entry value removes its key. Each changed key rechunks its
-    /// local stream and ancestors; intervening key ranges are not enumerated.
+    /// A missing entry value removes its key. Overlapping affected streams are
+    /// processed together at leaves and every ancestor level. Distant regions
+    /// seek past unaffected nodes after recovering a compatible canonical cut.
     /// Ancestors and complete hard-link deltas are validated on the final map.
     ///
     /// # Errors
@@ -466,6 +599,13 @@ impl<'a> Factory<'a> {
         is_root: bool,
     ) -> Result<Rc<StoredNode<'a>>, Error> {
         let encoded = encode_node_for(&node, is_root, self.min_chunk_size, self.usage)?;
+        self.work.stream.node_bytes_encoded += encoded.len();
+        self.work.stream.node_bytes_hashed += encoded.len()
+            + TERRANE_V1
+                .domain(IdentityKind::Node)
+                .map_err(|_| Error::Node)?
+                .len()
+            + 1;
         let identity = TERRANE_V1
             .calculate(IdentityKind::Node, &encoded)
             .map_err(|_| Error::Node)?
@@ -533,6 +673,11 @@ impl<'a> Factory<'a> {
         }
         let mut decoded = node.node.clone();
         decoded.props = props;
-        self.make(decoded, node.children.clone(), true)
+        let before = self.work.stream;
+        let root = self.make(decoded, node.children.clone(), true)?;
+        self.work
+            .root_properties
+            .combine(self.work.stream.since(before));
+        Ok(root)
     }
 }

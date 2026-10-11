@@ -7,10 +7,7 @@ use crate::tree_format::{
 };
 
 use super::{
-    Error, Factory, Mutation, StoredNode, Tree,
-    chunk::{self, Chunker, Item},
-    cursor::LevelCursor,
-    links,
+    Error, Factory, Mutation, NewLevelWork, StoredNode, Tree, chunk, cursor::LevelCursor, links,
 };
 
 pub(super) fn lookup<'tree, 'a>(
@@ -154,14 +151,8 @@ pub(super) fn edit<'a>(
     key: &[u8],
     item: Option<LeafItem<'a>>,
 ) -> Result<Mutation<'a>, Error> {
-    let mut factory = Factory::new(tree.min_chunk_size, tree.usage);
-    let mut replacement = edit_leaves(tree, key, item, &mut factory)?;
-    for level in 1..=tree.root().level() {
-        replacement = edit_parents(tree, level, replacement, &mut factory)?;
-    }
-
-    let root = finish_nodes(tree, replacement.nodes, &mut factory)?;
-    Ok(tree.finish(root, factory))
+    let edits = alloc::vec![(key.to_vec(), item.map(|item| item.entry))];
+    super::batch::edit(tree, &edits)
 }
 
 pub(super) fn finish_nodes<'a>(
@@ -171,76 +162,53 @@ pub(super) fn finish_nodes<'a>(
 ) -> Result<Rc<StoredNode<'a>>, Error> {
     let mut level = tree.root().level();
     if nodes.is_empty() {
+        let before = factory.work.stream;
         nodes = chunk::leaves(Vec::new(), factory)?;
+        factory
+            .work
+            .completion
+            .combine(factory.work.stream.since(before));
     }
-    while nodes.len() > 1 {
+    loop {
+        factory.work.stream.frontier_checks += 1;
+        factory.work.completion.frontier_checks += 1;
+        if nodes.len() <= 1 {
+            break;
+        }
         level = level.checked_add(1).ok_or(Error::Limit)?;
+        let first = nodes
+            .first()
+            .and_then(|node| node.first_key())
+            .ok_or(Error::Node)?
+            .to_vec();
+        let last = nodes
+            .last()
+            .and_then(|node| node.last_key())
+            .ok_or(Error::Node)?
+            .to_vec();
+        let before = factory.work.stream;
         nodes = chunk::parents(nodes, level, factory)?;
+        factory.work.new_levels.push(NewLevelWork {
+            level,
+            first,
+            last,
+            work: factory.work.stream.since(before),
+        });
     }
     let mut root = nodes.pop().ok_or(Error::Node)?;
     // A single node at the preceding level is already the canonical root.
-    while root.children().len() == 1 {
+    loop {
+        factory.work.stream.frontier_checks += 1;
+        factory.work.completion.frontier_checks += 1;
+        if root.children().len() != 1 {
+            break;
+        }
+        factory.work.stream.item_reads += 1;
+        factory.work.completion.item_reads += 1;
         root = Rc::clone(&root.children()[0]);
     }
     let root = factory.root(root, tree.root.node.props.clone())?;
     Ok(root)
-}
-
-fn edit_leaves<'a>(
-    tree: &Tree<'a>,
-    key: &[u8],
-    item: Option<LeafItem<'a>>,
-    factory: &mut Factory<'a>,
-) -> Result<Replacement<'a>, Error> {
-    let target_cursor = LevelCursor::seek(tree.root(), 0, key);
-    let target = target_cursor.next.ok_or(Error::Node)?;
-    let mut cursor = target_cursor.with_predecessor();
-    let mut first = None;
-    let mut last = Vec::new();
-    let mut changed = false;
-    let mut chunker = Chunker::new(0);
-    let mut replacement_item = item;
-
-    for node in cursor.by_ref() {
-        let node_last = node.last_key().map_or(&[][..], |key| key);
-        if first.is_none() {
-            first = Some(node_last.to_vec());
-        }
-        last = node_last.to_vec();
-        let NodeItems::Leaf(entries) = node.items() else {
-            return Err(Error::Node);
-        };
-        let mut entries = entries.clone();
-        if core::ptr::eq(node, target) {
-            match entries.binary_search_by(|entry| entry.key.as_slice().cmp(key)) {
-                Ok(index) => {
-                    if let Some(item) = replacement_item.take() {
-                        entries[index] = item;
-                    } else {
-                        entries.remove(index);
-                    }
-                }
-                Err(index) => {
-                    if let Some(item) = replacement_item.take() {
-                        entries.insert(index, item);
-                    }
-                }
-            }
-            changed = true;
-        }
-        for item in entries {
-            chunker.push(Item::Leaf(item), factory)?;
-        }
-        if changed && chunker.is_empty() {
-            break;
-        }
-    }
-    factory.work.node_reads += cursor.reads;
-    Ok(Replacement {
-        first: first.ok_or(Error::Node)?,
-        last,
-        nodes: chunker.finish(factory)?,
-    })
 }
 
 pub(super) fn edit_parents<'a>(
@@ -249,43 +217,22 @@ pub(super) fn edit_parents<'a>(
     replacement: Replacement<'a>,
     factory: &mut Factory<'a>,
 ) -> Result<Replacement<'a>, Error> {
-    let mut cursor = LevelCursor::seek(tree.root(), level, &replacement.first).with_predecessor();
-    let mut chunker = Chunker::new(level);
-    let mut inserted = false;
-    let mut first = None;
-    let mut last = Vec::new();
-
-    for node in cursor.by_ref() {
-        let node_last = node.last_key().ok_or(Error::Node)?;
-        if first.is_none() {
-            first = Some(node_last.to_vec());
-        }
-        last = node_last.to_vec();
-        for child in node.children() {
-            let child_key = child.last_key().ok_or(Error::Node)?;
-            if child_key >= replacement.first.as_slice() && child_key <= replacement.last.as_slice()
-            {
-                if !inserted {
-                    for new_child in &replacement.nodes {
-                        chunker.push(Item::Child(Rc::clone(new_child)), factory)?;
-                    }
-                    inserted = true;
-                }
-            } else {
-                chunker.push(Item::Child(Rc::clone(child)), factory)?;
-            }
-        }
-        if inserted && node_last >= replacement.last.as_slice() && chunker.is_empty() {
-            break;
-        }
-    }
-    if !inserted {
+    let mut replacements = super::batch::parents(tree, level, alloc::vec![replacement], factory)?;
+    if replacements.len() != 1 {
         return Err(Error::Node);
     }
-    factory.work.node_reads += cursor.reads;
-    Ok(Replacement {
-        first: first.ok_or(Error::Node)?,
-        last,
-        nodes: chunker.finish(factory)?,
-    })
+    replacements.pop().ok_or(Error::Node)
+}
+
+/// Locates a known old node while accounting for the certification seek.
+pub(super) fn lookup_node<'tree, 'a>(
+    tree: &'tree Tree<'a>,
+    level: u8,
+    key: &[u8],
+    reads: &mut usize,
+) -> Result<&'tree StoredNode<'a>, Error> {
+    let mut cursor = LevelCursor::seek(tree.root(), level, key);
+    let node = cursor.next().ok_or(Error::Node)?;
+    *reads += cursor.reads;
+    Ok(node)
 }

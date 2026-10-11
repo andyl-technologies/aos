@@ -8,7 +8,7 @@ use crate::{
     tree_format::{LeafItem, Node, NodeItems, encode_entry},
 };
 
-use super::{Error, Factory, StoredNode};
+use super::{Error, Factory, StoredNode, StreamWork};
 
 pub(super) enum Item<'a> {
     Leaf(LeafItem<'a>),
@@ -75,7 +75,9 @@ impl<'a> Chunker<'a> {
     }
 
     pub(super) fn push(&mut self, item: Item<'a>, factory: &mut Factory<'a>) -> Result<(), Error> {
+        factory.work.stream.item_reads += 1;
         let canonical = item.canonical(factory.min_chunk_size)?;
+        factory.work.stream.item_bytes_encoded += canonical.len();
         factory.work.item_encodings += 1;
         let mut stored_length = match &item {
             Item::Leaf(leaf) => {
@@ -84,16 +86,22 @@ impl<'a> Chunker<'a> {
                     .last()
                     .map_or(&[][..], |prior| prior.key.as_slice());
                 factory.work.item_encodings += 1;
-                leaf_bytes(leaf, previous, factory.min_chunk_size)?.len() as u64
+                let stored = leaf_bytes(leaf, previous, factory.min_chunk_size)?;
+                factory.work.stream.item_bytes_encoded += stored.len();
+                stored.len() as u64
             }
             Item::Child(_) => canonical.len() as u64,
         };
-        let mut decision =
-            boundary::decide(self.bytes, stored_length, &canonical).map_err(|_| Error::Limit)?;
+        let mut decision = decide(
+            self.bytes,
+            stored_length,
+            &canonical,
+            &mut factory.work.stream,
+        )?;
         if decision == BoundaryDecision::SplitBefore {
             self.close(factory)?;
             stored_length = canonical.len() as u64;
-            decision = boundary::decide(0, stored_length, &canonical).map_err(|_| Error::Limit)?;
+            decision = decide(0, stored_length, &canonical, &mut factory.work.stream)?;
         }
 
         match item {
@@ -171,4 +179,22 @@ pub(super) fn parents<'a>(
         chunker.push(Item::Child(child), factory)?;
     }
     chunker.finish(factory)
+}
+
+/// Records exactly the branches in the unchanged boundary decision routine.
+pub(super) fn decide(
+    size: u64,
+    stored: u64,
+    canonical: &[u8],
+    work: &mut StreamWork,
+) -> Result<BoundaryDecision, Error> {
+    work.frontier_checks += 1;
+    if size <= boundary::MAX_NODE
+        && stored <= boundary::MAX_NODE
+        && canonical.len() as u64 <= boundary::MAX_NODE
+        && (boundary::MIN_NODE..boundary::MAX_NODE).contains(&(size + stored))
+    {
+        work.item_bytes_hashed += canonical.len();
+    }
+    boundary::decide(size, stored, canonical).map_err(|_| Error::Limit)
 }

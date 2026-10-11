@@ -88,12 +88,15 @@ fn rechunk<'a>(
     entries: &[LeafItem<'a>],
     factory: &mut Factory<'a>,
 ) -> Result<Replacement<'a>, Error> {
+    let before = factory.work.stream;
     let mut cursor = LevelCursor::seek(tree.root(), 0, start).with_predecessor();
+    factory.work.seek_comparisons += cursor.comparisons;
     let mut chunker = Chunker::new(0);
     let mut inserted = false;
     let mut passed_end = false;
     let mut first = None;
     let mut last = Vec::new();
+    let mut recovered = false;
     for node in cursor.by_ref() {
         let node_last = node.last_key().map_or(&[][..], |key| key);
         if first.is_none() {
@@ -104,6 +107,8 @@ fn rechunk<'a>(
             return Err(Error::Node);
         };
         for item in items {
+            factory.work.stream.item_reads += 1;
+            factory.work.stream.comparisons += 1;
             if item.key.as_slice() < start {
                 chunker.push(Item::Leaf(item.clone()), factory)?;
                 continue;
@@ -114,12 +119,16 @@ fn rechunk<'a>(
                 }
                 inserted = true;
             }
+            factory.work.stream.comparisons += usize::from(end.is_some());
             if end.is_some_and(|end| item.key.as_slice() >= end) {
                 chunker.push(Item::Leaf(item.clone()), factory)?;
                 passed_end = true;
             }
         }
+        factory.work.stream.frontier_checks += 1;
         if inserted && passed_end && chunker.is_empty() {
+            factory.work.stream.comparisons += 1;
+            recovered = node.last_key() != tree.root().last_key();
             break;
         }
     }
@@ -129,11 +138,10 @@ fn rechunk<'a>(
         }
     }
     factory.work.node_reads += cursor.reads;
-    Ok(Replacement {
-        first: first.ok_or(Error::Node)?,
-        last,
-        nodes: chunker.finish(factory)?,
-    })
+    let nodes = chunker.finish(factory)?;
+    let first = first.ok_or(Error::Node)?;
+    super::batch::record(factory, 0, &first, &last, recovered, before);
+    Ok(Replacement { first, last, nodes })
 }
 
 fn changes<'a>(old: &[LeafItem<'a>], entries: &[LeafItem<'a>]) -> Result<Vec<Change<'a>>, Error> {

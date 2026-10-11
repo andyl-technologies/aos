@@ -397,8 +397,5 @@ fn graft_mutate<'a>(
 }
 
 fn add_work(total: &mut crate::tree_builder::Work, added: crate::tree_builder::Work) {
-    total.node_reads += added.node_reads;
-    total.validation_reads += added.validation_reads;
-    total.item_encodings += added.item_encodings;
-    total.node_encodings += added.node_encodings;
+    total.combine(added);
 }
