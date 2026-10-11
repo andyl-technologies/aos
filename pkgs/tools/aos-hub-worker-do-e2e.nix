@@ -883,13 +883,30 @@
         || privateApi.text.includes('"downloadUrl"')
         || privateApi.text.includes('"objectKey"')
         || !privateApi.text.includes('"storePath":"/nix/store/')
-        || privateApi.text.includes('"cacheUrls"')) {
+        || JSON.stringify(privateApi.value?.images?.[0]?.cacheUrls)
+          !== JSON.stringify([BASE + "/failure/images-private"])) {
       throw new Error(`private image API: ''${privateApi.response.status} ''${privateApi.text}`);
     }
     const privateUrl = privateApi.value?.images?.[0]?.downloadUrl;
     if (privateUrl !== undefined) {
       throw new Error(`private store-backed image exposed a direct download URL: ''${privateUrl}`);
     }
+    const privateImage = privateApi.value.images[0];
+    const privateStoreHash = privateImage.storePath.split("/").pop().slice(0, 32);
+    const privateNarinfoUrl = BASE + "/failure/images-private/" + privateStoreHash + ".narinfo";
+    const anonymousNarinfo = await fetch(privateNarinfoUrl);
+    if (![401, 403].includes(anonymousNarinfo.status)) {
+      throw new Error("private image narinfo did not require authentication");
+    }
+    const privateNarinfo = await fetch(privateNarinfoUrl, { headers });
+    if (privateNarinfo.status !== 200
+        || !(await privateNarinfo.text()).includes("StorePath: " + privateImage.storePath)) {
+      throw new Error(`authenticated private image narinfo was unavailable: ''${privateNarinfo.status}`);
+    }
+    fs.writeFileSync(path.join(fixtureRoot, "worker-private-token"), token, {
+      mode: 0o600,
+      flag: "wx",
+    });
 
     async function cacheRpc(method, body) {
       const response = await fetch(BASE + `/aos.hub.v1.BinaryCacheService/''${method}`, {
@@ -1118,6 +1135,13 @@ in
             --registry failure/images-public --channel stable --format raw \
             --output "\$work/worker-cli.img" >/dev/null
           ${diffutils}/bin/cmp "\$work/worker-cli.img" "\$(${coreutils}/bin/cat "\$work/producer/raw-path")"
+          AOS_TOKEN="\$(${coreutils}/bin/cat "\$work/producer/worker-private-token")" \
+            ${aos}/bin/aos image download \
+            --hub http://127.0.0.1:8799 \
+            --registry failure/images-private --channel stable --format qcow2 \
+            --output "\$work/worker-private.qcow2" >/dev/null
+          ${diffutils}/bin/cmp "\$work/worker-private.qcow2" "\$(${coreutils}/bin/cat "\$work/producer/qcow2-path")"
+          echo "aos-hub-worker public and private CLI image bytes: PASS"
           EOF
           chmod +x "$out/bin/aos-hub-worker-do-e2e"
         '';

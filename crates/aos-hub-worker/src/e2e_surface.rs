@@ -13,8 +13,9 @@ use sha2::{Digest, Sha256};
 use worker::{SqlStorage, SqlStorageValue};
 
 use aos_hub_core::db::{
-    Database, EndpointHostInput, EndpointRevisionSpec, GrantResource, NewSurfacePlacementSpec,
-    RouteSpec, SurfacePlacementRecord, SurfaceTarget,
+    Database, EndpointHostInput, EndpointRevisionSpec, GrantResource, NewRegistryPublication,
+    NewSurfacePlacementSpec, RegistryPublicationManifestObject, RouteSpec,
+    SetRegistryPublicationPlacement, SurfacePlacementRecord, SurfaceTarget,
 };
 use aos_hub_core::fetch::{
     StreamedRead, SurfaceFetch, SurfaceInventoryChunk, SurfaceInventoryHead, SurfaceListPage,
@@ -191,6 +192,8 @@ impl DoE2eSurfaceProvider {
                 db.list_system_images(registry_id).await?.len() == 2,
                 "signed store-backed image encodings were not indexed"
             );
+            record_image_cache_presence(db, registry_id, &placement, fetch.as_ref(), &fixture)
+                .await?;
             configure_hub_route(
                 db,
                 SurfaceTarget::Registry(registry_id),
@@ -206,6 +209,142 @@ impl DoE2eSurfaceProvider {
         );
         Ok(fixture)
     }
+}
+
+/// Publishes the measured fixture inventory on its selected combined route.
+///
+/// Writing fixture bytes alone does not authorize a placement read. Narinfo is
+/// mutable metadata, so it also needs the publication and placement watermarks.
+async fn record_image_cache_presence(
+    db: &Database,
+    registry_id: i64,
+    placement: &SurfacePlacementRecord,
+    fetch: &dyn SurfaceFetch,
+    fixture: &WorkerImageFixture,
+) -> Result<()> {
+    let objects = fixture
+        .objects
+        .iter()
+        .filter(|(path, _)| aos_hub_core::keymap::is_machine_path(path))
+        .map(|(path, bytes)| {
+            Ok(RegistryPublicationManifestObject {
+                object_key: path.clone(),
+                object_kind: if aos_hub_core::keymap::is_mutable_path(path) {
+                    "mutable_pointer"
+                } else {
+                    "immutable"
+                }
+                .into(),
+                expected_hash: hex::encode(Sha256::digest(bytes)),
+                expected_size: i64::try_from(bytes.len())?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    anyhow::ensure!(!objects.is_empty(), "image fixture has no NAR closure");
+    let publication_id = format!("worker-image-cache-{registry_id}");
+    let inventory = objects
+        .iter()
+        .map(|object| {
+            (
+                &object.object_key,
+                &object.expected_hash,
+                object.expected_size,
+            )
+        })
+        .collect::<Vec<_>>();
+    let manifest_digest = hex::encode(Sha256::digest(serde_json::to_vec(&inventory)?));
+    let refs = fixture
+        .objects
+        .get("info/refs")
+        .context("image fixture has no refs")?;
+    let now = aos_hub_core::clock::now_unix_secs();
+    db.create_registry_publication(&NewRegistryPublication {
+        publication_id: publication_id.clone(),
+        registry_id,
+        generation: format!("worker-image-cache-{manifest_digest}"),
+        manifest_digest,
+        refs_digest: hex::encode(Sha256::digest(refs)),
+        default_commit: None,
+        parent_publication_id: None,
+    })
+    .await?;
+    for batch in objects.chunks(aos_hub_core::db::MAX_REGISTRY_MANIFEST_ADMISSION_BATCH) {
+        db.admit_registry_publication_manifest_objects(registry_id, &publication_id, batch)
+            .await?;
+    }
+    db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+        publication_id: publication_id.clone(),
+        placement_id: placement.id,
+        required: true,
+        state: "preparing".into(),
+        observed_at: now,
+    })
+    .await?;
+
+    for declared in objects {
+        let object = db
+            .surface_object_named(SurfaceTarget::Registry(registry_id), &declared.object_key)
+            .await?
+            .context("image cache declaration disappeared")?;
+        let etag = fetch
+            .inventory_strong_etag(&declared.object_key)
+            .await?
+            .context("image cache object has no storage version")?;
+        db.record_registry_publication_object_presence(
+            &publication_id,
+            object.id,
+            placement.id,
+            &declared.expected_hash,
+            declared.expected_size,
+            Some(&etag),
+            now,
+        )
+        .await?;
+    }
+    anyhow::ensure!(
+        db.advance_registry_publication(&publication_id, "preparing", "writing_pointers", now)
+            .await?,
+        "image fixture could not enter pointer phase"
+    );
+    let placement = db
+        .surface_placement(placement.id)
+        .await?
+        .context("image placement disappeared")?;
+    let placement = db
+        .begin_registry_pointer_advance(
+            &publication_id,
+            placement.id,
+            placement.resource_version,
+            placement
+                .watermark_resource_version
+                .context("image placement has no watermark")?,
+            now,
+        )
+        .await?;
+    db.finalize_registry_pointer_advance(
+        &publication_id,
+        placement.id,
+        placement.resource_version,
+        placement
+            .watermark_resource_version
+            .context("image placement watermark disappeared")?,
+        now,
+    )
+    .await?;
+    db.promote_registry_publication_mutable_objects(&publication_id)
+        .await?;
+    anyhow::ensure!(
+        db.advance_registry_publication(&publication_id, "writing_pointers", "ready", now)
+            .await?,
+        "image fixture publication could not become ready"
+    );
+    let state = db
+        .registry_publication_state(registry_id)
+        .await?
+        .context("image publication state disappeared")?;
+    db.set_current_registry_publication(registry_id, &publication_id, Some(state.resource_version))
+        .await?;
+    Ok(())
 }
 
 pub(crate) async fn configure_hub_route(
@@ -296,8 +435,9 @@ pub(crate) async fn configure_hub_route(
         &canonical_url,
     )?;
     let route_id = format!("worker-e2e-{}", slug.replace('/', "-"));
+    // Registry consumers require Git, NAR, and Web on one selected route.
     let (serves_git, serves_cache) = match surface {
-        SurfaceTarget::Registry(_) => (true, false),
+        SurfaceTarget::Registry(_) => (true, true),
         SurfaceTarget::BinaryCache(_) => (false, true),
     };
     let route = db
@@ -362,7 +502,7 @@ pub(crate) async fn configure_hub_route(
     )
     .await?;
     let audiences: &[&str] = match surface {
-        SurfaceTarget::Registry(_) => &["git", "web"],
+        SurfaceTarget::Registry(_) => &["git", "nix_cache", "web"],
         SurfaceTarget::BinaryCache(_) => &["nix_cache", "web"],
     };
     for audience in audiences {
