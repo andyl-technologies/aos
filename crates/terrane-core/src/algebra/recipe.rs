@@ -261,6 +261,8 @@ impl Recipe<'_> {
     /// # Errors
     /// Rejects noncanonical CBOR, unsupported operations or arguments, malformed
     /// identities, and trust arguments inconsistent with the policy list.
+    /// Graft entries exceeding the standalone Entry byte limit are rejected
+    /// before their bytes are copied into the owned recipe.
     /// Trust configuration remains unauthenticated until [`OwnedRecipe::bind_verified`].
     pub fn decode(bytes: &[u8]) -> Result<OwnedRecipe, RecipeError> {
         let mut decoder = cbor::Decoder::new(bytes);
@@ -307,17 +309,16 @@ impl Recipe<'_> {
                 {
                     return Err(RecipeError::Schema);
                 }
-                let at = decoder.bytes(4096).map_err(RecipeError::Encoding)?.to_vec();
-                crate::tree_format::validate_key(&at).map_err(|_| RecipeError::Schema)?;
+                let at = decoder.bytes(4096).map_err(RecipeError::Encoding)?;
+                crate::tree_format::validate_key(at).map_err(|_| RecipeError::Schema)?;
                 if decoder.text(bytes.len()).map_err(RecipeError::Encoding)? != "entry" {
                     return Err(RecipeError::Schema);
                 }
                 let entry = decoder
-                    .bytes(bytes.len())
-                    .map_err(RecipeError::Encoding)?
-                    .to_vec();
+                    .bytes(crate::tree_format::MAX_NODE_ITEMS_BYTES)
+                    .map_err(RecipeError::Encoding)?;
                 let valid_target = {
-                    let value = crate::tree_format::decode_entry_bytes(&entry, 0)
+                    let value = crate::tree_format::decode_entry_bytes(entry, 0)
                         .map_err(|_| RecipeError::Schema)?;
                     matches!(value.kind, crate::tree_format::EntryKind::Tree { root, .. } if root == roots[1])
                 };
@@ -337,7 +338,13 @@ impl Recipe<'_> {
                     0xf5 => true,
                     _ => return Err(RecipeError::Schema),
                 };
-                graft = Some(OwnedGraft { at, entry, replace });
+                // Retain graft fields only after the borrowed Entry passes its
+                // existing byte bound, schema and target-root checks.
+                graft = Some(OwnedGraft {
+                    at: at.to_vec(),
+                    entry: entry.to_vec(),
+                    replace,
+                });
                 None
             }
             "merge" if fields == 3 && roots.len() == 3 => {
