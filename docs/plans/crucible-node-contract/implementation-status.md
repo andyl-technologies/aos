@@ -2018,6 +2018,29 @@ selector, complete-world activation, native class, readiness and conditional
 capture remain separate requirements. Package data and generic factory callbacks
 do not supply that authority. Raw evidence remains local.
 
+Committed checkpoint `03e54e906a`, formatted by `6a63581741`, adds separately
+authorized finite conformance collection, original staged-input custody and
+durable result publication. Its frozen 8,935-file image passes 195 selected
+tests: 104 core, 86 daemon, four provider and one CLI. Declared all-target
+strict checks pass; independent review verifies four rebuilt daemon/CLI groups
+and their 24 retained artifacts. All 37 source-quality checks and formatting of
+136 Rust files pass. Separate hermetic application compilation passes 167 test
+targets, including 69 integration targets, for its selected 5,767-file image;
+daemon and CLI sources are excluded and these targets are not executed. The
+actual three-peer, nine-window fixture has not run, and the ordinary typed
+profile remains unqualified against the full 382-requirement catalog. The
+original registered QEMU ABI comparison remains failed; the historical
+performance comparisons below supply no performance result for this checkpoint.
+Raw evidence remains local.
+
+Checkpoint `7f48787c88` retains original typed provider, reader and whole-world
+custody across borrowed retirement and callback unwinds. Its frozen 8,939-file
+image passes seven focused lifecycle controls, strict compilation, core library
+and daemon lifecycle-target compilation, 37 source-quality checks and formatting
+of 17 Rust files. Fresh application-wide test-target compilation is pending.
+The focused controls use inert nodes and do not establish native shutdown,
+reclamation, ordinary profile qualification or performance improvements.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
