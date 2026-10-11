@@ -85,6 +85,13 @@ in
 
           # All generated compiler/model files share one finite reservation.
           ${python3}/bin/python3 ${fixtures}/resources.py initialize "$PWD"
+          # Preserve the preceding receiver controls at their exact source
+          # checkpoint before composing the later original EOI mechanism.
+          ${python3}/bin/python3 ${fixtures}/source-guards.py "$PWD" completed
+          ${python3}/bin/python3 ${fixtures}/generate-models.py "$PWD" "$CC" "$PWD/pic-controls"
+          ${python3}/bin/python3 ${fixtures}/apply-eoi-source.py "$PWD" ${patch}/bin/patch
+          ${python3}/bin/python3 ${fixtures}/source-guards.py "$PWD" eoi
+
           compile_native_unit() {
             nativeObject="$1"
             nativeLog="pic-$(basename "$nativeObject").log"
@@ -109,22 +116,25 @@ in
 
           # Object compilation uses the original AOS CONFIG_WERROR configuration.
           # It does not establish that these source inputs form a linked kernel.
-          ${python3}/bin/python3 ${fixtures}/source-guards.py "$PWD"
           for nativeUnit in i8254 ioapic lapic irq x86 crucible-clock i8259; do
             compile_native_unit "arch/x86/kvm/$nativeUnit.o"
           done
           compile_native_unit virt/kvm/irqchip.o
 
-          ${python3}/bin/python3 ${fixtures}/generate-models.py "$PWD" "$CC" "$PWD/pic-controls"
           ${python3}/bin/python3 ${fixtures}/check-models.py "$PWD/pic-controls" "$PWD"
+          ${python3}/bin/python3 ${fixtures}/generate-eoi-models.py "$PWD" "$CC" "$PWD/eoi-controls"
+          ${python3}/bin/python3 ${fixtures}/check-eoi-models.py "$PWD/eoi-controls" "$PWD"
           ${python3}/bin/python3 ${fixtures}/resources.py check "$PWD"
           mkdir -p $out
           cp "$PWD/pic-controls/report.json" $out/source-model-report.json
+          cp "$PWD/eoi-controls/report.json" $out/original-eoi-model-report.json
           cat > $out/report <<'REPORT'
           eight x86 native source objects: compiled
           one positive and eleven intended adverse source controls: passed
           copied PIC MIT notice and GPL-compatible scope: retained
-          full kernel linking, PIC producer board enrollment and original EOI: unqualified
+          one positive and sixteen intended original EOI adverse source controls: passed
+          original EOI source lease and row reconciliation: checked
+          full kernel linking, physical guest delivery and PIC producer board: unqualified
           ordinary dual-route/coalescing and FirstBegin IRQchip admission: unsupported
           guest delivery, native hardware, Ready and capture: not qualified
           REPORT

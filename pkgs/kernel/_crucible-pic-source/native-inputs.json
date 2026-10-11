@@ -22,7 +22,8 @@
     "include/linux/kvm_crucible_completion.h",
     "include/linux/kvm_host.h",
     "include/trace/syscall.h",
-    "include/uapi/linux/kvm.h"
+    "include/uapi/linux/kvm.h",
+    "arch/x86/kvm/crucible-pit-pic-ack.inc.c"
   ],
   "arch/x86/kvm/ioapic.o": [
     "arch/x86/include/asm/kvm_host.h",
@@ -212,6 +213,7 @@
     "include/linux/kvm_host.h",
     "include/trace/define_trace.h",
     "include/trace/syscall.h",
-    "include/uapi/linux/kvm.h"
+    "include/uapi/linux/kvm.h",
+    "arch/x86/kvm/crucible-pic-eoi.inc.c"
   ]
 }

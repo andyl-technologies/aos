@@ -39,3 +39,15 @@ is linked into the Apache host or included by permissive protocol crates.
 The source closure also retains the original Stage7 GPL declarations in `include/linux/kvm_crucible_clock_math.h` and `include/linux/kvm_crucible_completion.h` unchanged.
 
 | `virt/kvm/crucible-clock-continuation.inc.c` | new | `GPL-2.0-only` (original SPDX notice retained) |
+
+Original EOI source additions retain their GPL notices:
+
+| Source path | Status | Notice |
+| --- | --- | --- |
+| `arch/x86/kvm/crucible-pic-eoi.inc.c` | new | `GPL-2.0-only` |
+| `arch/x86/kvm/crucible-pit-pic-ack.inc.c` | new | `GPL-2.0-only` |
+
+The retained release predecessor is source-only `GPL-2.0-only` counterfactual
+input. All seventeen EOI model variants retain the complete original PIC MIT
+notice together with their copied GPL-compatible inputs. The timestamp peer
+covers actual-produced nonnegative birth values, not arbitrary forged values.

@@ -51,8 +51,14 @@ def main():
     module = module_from_spec(spec)
     spec.loader.exec_module(module)
     inventory = json.loads((here / 'source-inventory.json').read_text())
-    module.verify(root, inventory['files'], 'completed')
-    verify_quoted_closure(root, inventory['files'])
+    phase = sys.argv[2] if len(sys.argv) == 3 else 'completed'
+    if phase not in ('completed', 'eoi'):
+        raise ValueError('Unknown source checkpoint')
+    module.verify(root, inventory['files'], phase)
+    # A later additive role must be absent at the preceding checkpoint; it
+    # enters the complete quoted-include census only after exact application.
+    present = [row for row in inventory['files'] if row[phase] is not None]
+    verify_quoted_closure(root, present)
     if 'CONFIG_WERROR=y' not in (root / '.config').read_text().splitlines():
         raise ValueError('Original strict AOS kernel configuration changed')
     clock = (root / 'arch/x86/kvm/crucible-clock.c').read_text()
