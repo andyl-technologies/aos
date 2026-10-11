@@ -22,6 +22,8 @@ mod collection_history;
 #[cfg(unix)]
 mod conflicts;
 #[cfg(unix)]
+mod control_lock;
+#[cfg(unix)]
 mod coverage;
 #[cfg(unix)]
 mod current_authority;
@@ -52,6 +54,8 @@ mod parents;
 mod producers;
 #[cfg(unix)]
 mod raw_kinds;
+#[cfg(unix)]
+mod recorded;
 #[cfg(unix)]
 mod rotation;
 #[cfg(unix)]
@@ -228,6 +232,20 @@ async fn independent_factory_claims(
     crate::repository::local_authority::LocalAuthority,
     std::path::PathBuf,
 ) {
+    independent_factory_profile(domain, principal_kind, groups, None).await
+}
+
+/// Chooses actual authoring inputs before initializing any protected native state.
+async fn independent_factory_profile(
+    domain: &str,
+    principal_kind: terrane_core::refs::PrincipalKind,
+    groups: Vec<String>,
+    authoring: Option<crate::guard::AuthoringNamespaceProfile>,
+) -> (
+    NativeFixture<TokioLocalFs>,
+    crate::repository::local_authority::LocalAuthority,
+    std::path::PathBuf,
+) {
     use crate::repository::local_authority::{LocalAuthority, LocalAuthorityParameters};
     use crate::store::LocalFs;
     use std::os::unix::fs::MetadataExt;
@@ -273,13 +291,19 @@ async fn independent_factory_claims(
     let bucket = FileBucket::open(config(root).await, TokioLocalFs, TokioClock, Validator)
         .await
         .unwrap();
-    let coordinator = Coordinator::new(
-        Guard::new(
+    let keys = vec![authority.issuer_key().clone()];
+    let guard = match authoring {
+        Some(profile) => Guard::new_with_authoring_namespace_profile(
             bucket,
             TokioClock,
-            vec![authority.issuer_key().clone()],
+            keys,
             guard_config,
+            profile,
         ),
+        None => Guard::new(bucket, TokioClock, keys, guard_config),
+    };
+    let coordinator = Coordinator::new(
+        guard,
         CommitTiming::new(
             Duration::from_secs(30),
             Duration::from_secs(60),
