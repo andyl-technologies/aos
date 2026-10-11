@@ -1,6 +1,6 @@
 //! Constructs and exhaustively checks immutable hierarchical index relationships.
 //!
-//! Inputs are a closed graph of canonical namespace trees, an ordinary recipe,
+//! Inputs are a closed graph of canonical ordinary or overlay-layer trees, a recipe,
 //! and an explicit carrier semantic context. Results contain owned Node bytes,
 //! not producer evidence, current policy, lookup authority or a verified index.
 //! Missing inline values remain represented even when no candidates exist.
@@ -12,6 +12,9 @@
 //! ```
 
 mod verification;
+
+#[cfg(test)]
+mod layer_tests;
 
 pub use verification::verify;
 
@@ -160,25 +163,13 @@ pub struct PhysicalWork {
     pub reconstructions: Vec<ReconstructionWork>,
 }
 
-/// Counts the actual initial empty frame before measured index reconstruction.
-///
-/// The existing persistent editor supplies subsequent insertion/property work.
-/// This small report does not require incremental or streaming constructors.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct InitialFrameWork {
-    /// Canonical bytes encoded for the initial empty physical frame.
-    pub node_bytes_encoded: usize,
-    /// Node-domain identity preimage bytes hashed for that frame.
-    pub node_bytes_hashed: usize,
-}
-
 /// Separates the initial empty frame, full insertion, and final root properties.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReconstructionWork {
     /// Supplied physical-tree root checked against this reconstruction.
     pub root: Digest,
     /// One initial empty Node encoding and identity hash; no item operations.
-    pub initial: InitialFrameWork,
+    pub initial: crate::tree_builder::StreamWork,
     /// Actual full-insertion work, including boundary short-circuit decisions.
     pub entries: crate::tree_builder::Work,
     /// Actual property replacement work; unchanged properties produce zero work.
@@ -210,7 +201,7 @@ impl<'graph, 'value> Source<'graph, 'value> {
         let tree = self.trees.get(&root).ok_or(Error::MissingSource)?;
         if self.minimum != CDC_1M_MIN as u64
             || tree.root_identity() != root
-            || tree.usage() != TreeUse::Ordinary
+            || !matches!(tree.usage(), TreeUse::Ordinary | TreeUse::OverlayLayer)
             || tree.min_chunk_size() != self.minimum
         {
             return Err(Error::Source);
