@@ -435,12 +435,19 @@ where
         .await?
         .ok_or_else(invalid)?;
     if selected == snapshot {
-        return super::super::hold_consumed_controls(
+        // Installation mutates protected import records even when the current
+        // Guard snapshot already matches. Retained readers can outlive their
+        // backend holder, so namespace exclusion cannot replace a writer lock.
+        let controls = concrete
+            .hold_original_registration_write(authority, observed.identity())
+            .await?;
+        return super::super::refresh_consumed_controls(
             concrete,
             authority,
             destination.store(),
             observed,
             consumed,
+            controls,
         )
         .await;
     }

@@ -387,7 +387,7 @@ pub(super) async fn retain_signed(
         let destination = holder.destination();
         let proof = destination.identity_proof();
         let _controls = old
-            .hold_original_registration(original.baseline().authority(), &proof)
+            .hold_original_registration_write(original.baseline().authority(), &proof)
             .await?;
         retention::retain(
             &TokioLocalFs,
