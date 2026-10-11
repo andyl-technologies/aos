@@ -2617,6 +2617,7 @@ dependencies = [
  "crucible-guest",
  "crucible-harness",
  "crucible-node-contract",
+ "crucible-node-provider",
  "crucible-protocol",
  "crucible-qemu",
  "crucible-session",

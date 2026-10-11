@@ -19,6 +19,9 @@ use crucible_node_contract::{ContentRef, Id};
 #[path = "gem5_preserving_group/correspondence.rs"]
 mod correspondence;
 
+#[path = "gem5_preserving_group/failed_retirement.rs"]
+mod failed_retirement;
+
 struct OriginalService {
     child: Child,
     stopping: bool,
