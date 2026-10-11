@@ -211,6 +211,72 @@ impl<S: Store, C: Clock> Guard<S, C> {
         Ok(roots)
     }
 
+    /// Derives publication units from canonical witnesses and exact per-view selections.
+    ///
+    /// The local comparison commit grants no authority and is never signed or
+    /// persisted. Existing publication compares against its actual current head,
+    /// independently of the immutable target's original signed first parent.
+    ///
+    /// # Errors
+    /// Rejects absent prior commits, mismatched roots or incomplete canonical evidence.
+    pub(super) fn candidate_root_changes(
+        &self,
+        commit: &terrane_core::refs::Commit,
+        candidate: &super::TreeEvidence,
+        selection: &properties::selected::Selection,
+        previous: Option<super::admission::CandidatePrevious<'_>>,
+        fresh: bool,
+    ) -> Result<terrane_core::provenance::RootChangePlan, StoreFailure> {
+        use terrane_core::{provenance, tree_format::TreeUse};
+
+        if commit.tree != candidate.root {
+            return Err(invalid());
+        }
+        let mut history = provenance::VerifiedHistory::new_selected(
+            self.config().min_chunk_size,
+            selection.clone(),
+        )
+        .map_err(|_| invalid())?;
+        let mut insert = |evidence: &super::TreeEvidence| -> Result<(), StoreFailure> {
+            let nodes = evidence
+                .nodes
+                .iter()
+                .map(|(identity, bytes)| (*identity, bytes.clone()))
+                .collect::<Vec<_>>();
+            for root in &evidence.roots {
+                match evidence.root_usage(*root) {
+                    TreeUse::Ordinary => history.insert_tree(*root, &nodes),
+                    TreeUse::OverlayLayer => history.insert_overlay_tree(*root, &nodes),
+                    TreeUse::Index | TreeUse::Surface | TreeUse::ConflictSurface => {
+                        return Err(invalid());
+                    }
+                }
+                .map_err(|_| invalid())?;
+            }
+            Ok(())
+        };
+        insert(candidate)?;
+        if !fresh {
+            insert(previous.ok_or_else(invalid)?.evidence)?;
+        }
+        if fresh {
+            return provenance::derive_fresh_roots(&history, commit, self.defaults_for(candidate))
+                .map_err(|_| invalid());
+        }
+        let prior = previous.ok_or_else(invalid)?;
+        let verified = prior.commit.ok_or_else(invalid)?;
+        if verified.commit().tree != prior.evidence.root {
+            return Err(invalid());
+        }
+        history
+            .insert_commit_selected(verified.clone(), prior.interpretation.selection())
+            .map_err(|_| invalid())?;
+        let mut comparison = commit.clone();
+        comparison.parents = vec![verified.identity()];
+        provenance::derive_root_changes(&history, &comparison, self.defaults_for(candidate))
+            .map_err(|_| invalid())
+    }
+
     /// Projects the actual closed authoring selection into signed-view ordinary data.
     ///
     /// # Errors

@@ -217,3 +217,305 @@ async fn existing_commit_admission_rechecks_protected_original_association_acros
     );
     assert!(!association.exists());
 }
+
+/// Builds two independently governed children beneath a parent without Commit rights.
+fn child_scope_request(
+    parents: Vec<[u8; 32]>,
+    child_bytes: &[u8],
+    other_bytes: &[u8],
+    descriptor: &'static [u8],
+    parent_acl: &'static [u8],
+    parent_domain: &'static [u8],
+) -> crate::guard::CommitRequest {
+    use terrane_core::tree_builder::Tree;
+    use terrane_core::tree_format::{Attribute, Entry, EntryKind, LeafItem, Property, TreeUse};
+
+    let mut request = request_file(parents.clone(), child_bytes);
+    let child = request.commit.tree;
+    let other = request_file(parents, other_bytes);
+    let graft = |key: &[u8], root| LeafItem {
+        key: key.to_vec(),
+        entry: Entry {
+            kind: EntryKind::Tree { root, props: None },
+            attrs: vec![Attribute {
+                name: "note",
+                value: descriptor,
+            }],
+            attrs_present: true,
+            xattrs: Vec::new(),
+            xattrs_present: false,
+            provenance: None,
+        },
+    };
+    let parent = Tree::build(
+        vec![graft(b"child", child), graft(b"other", other.commit.tree)],
+        Some(vec![
+            Property {
+                name: "acl",
+                value: parent_acl,
+            },
+            Property {
+                name: "domain",
+                value: parent_domain,
+            },
+        ]),
+        262144,
+        TreeUse::Ordinary,
+    )
+    .unwrap();
+    request.commit.tree = parent.root_identity();
+    request.uploads.extend(other.uploads);
+    request
+        .uploads
+        .extend(parent.nodes().map(|node| crate::guard::StagedUpload::Meta {
+            kind: IdentityKind::Node,
+            bytes: node.encoded().to_vec(),
+        }));
+    request
+}
+
+fn child_scope_token() -> (Vec<u8>, [u8; 32]) {
+    use terrane_core::auth::{Attenuation, Grant, Token, Verbs};
+
+    let terminal = [0x63; 32];
+    let token = Token::decode(&token())
+        .unwrap()
+        .attenuate(
+            Attenuation {
+                not_after: None,
+                not_before: None,
+                grants: Some(vec![
+                    Grant::new(format!("{SOURCE}:/child"), Verbs::new(5).unwrap()).unwrap(),
+                ]),
+                caveats: Vec::new(),
+            },
+            &crate::ref_advance::tests::secret(),
+            terrane_core::auth::public_key_from_secret(&terminal),
+        )
+        .unwrap()
+        .encode();
+    (token, terminal)
+}
+
+const PARENT_ACL: &[u8] = b"\x81\x82\x66writer\x0b";
+const PARENT_DOMAIN: &[u8] = b"\x66public";
+
+#[tokio::test]
+async fn native_child_only_commit_preserves_ancestor_descriptor_and_original_scope() {
+    use terrane_core::auth::Verb;
+
+    let native = fixture().await;
+    let mut baseline = native.begin(SOURCE, &token(), "sdk").await.unwrap();
+    let first = native
+        .advance(
+            &mut baseline,
+            child_scope_request(
+                Vec::new(),
+                b"old child",
+                b"stable other",
+                b"\x61x",
+                PARENT_ACL,
+                PARENT_DOMAIN,
+            ),
+        )
+        .await
+        .unwrap();
+    let (scoped, terminal) = child_scope_token();
+    assert!(
+        native
+            .guard()
+            .authorize(SOURCE, &token(), Verb::Commit, &[b"/".to_vec()], "sdk")
+            .await
+            .is_err()
+    );
+    assert!(
+        native
+            .guard()
+            .authorize(SOURCE, &scoped, Verb::Commit, &[b"/".to_vec()], "sdk")
+            .await
+            .is_err()
+    );
+    let mut session = native
+        .begin_scoped(SOURCE, &scoped, &[b"/child".to_vec()], "sdk")
+        .await
+        .unwrap();
+    let mut request = child_scope_request(
+        vec![first.commit],
+        b"new child",
+        b"stable other",
+        b"\x61x",
+        PARENT_ACL,
+        PARENT_DOMAIN,
+    );
+    request.token = scoped.clone();
+    request.terminal_secret = terminal;
+
+    let second = native.advance(&mut session, request).await.unwrap();
+
+    assert_eq!(second.seq, first.seq + 1);
+    assert_eq!(
+        native.store().ref_get(SOURCE).await.unwrap(),
+        Some(second.clone())
+    );
+    let history = native
+        .guard()
+        .verified_history(second.commit)
+        .await
+        .unwrap();
+    let verified = history.commit(&second.commit).unwrap();
+    let context = verified
+        .commit()
+        .profile_pair
+        .commit_context
+        .as_ref()
+        .unwrap();
+    assert_eq!(context.roots().len(), 1);
+    assert_eq!(context.roots()[0].path(), b"/child");
+    assert_eq!(context.roots()[0].domain(), "public");
+    assert_eq!(
+        verified.commit().provenance.embedded_token.as_ref(),
+        Some(&scoped)
+    );
+    let original = native.guard().original_commit(&second.commit).unwrap();
+    native
+        .guard()
+        .revalidate_original_context(&original, crate::guard::HistoryObservation::default())
+        .await
+        .unwrap();
+    let prior = native.guard().verified_tree(first.commit).await.unwrap();
+    let after = native.guard().verified_tree(second.commit).await.unwrap();
+    let before_tree = prior.evidence.tree(prior.evidence.root, 262144).unwrap();
+    let after_tree = after.evidence.tree(after.evidence.root, 262144).unwrap();
+    assert_eq!(before_tree.props(), after_tree.props());
+    let mut prior_descriptor = before_tree.get(b"child").unwrap().clone();
+    let mut next_descriptor = after_tree.get(b"child").unwrap().clone();
+    if let terrane_core::tree_format::EntryKind::Tree { root, .. } = &mut prior_descriptor.kind {
+        *root = [0; 32];
+    }
+    if let terrane_core::tree_format::EntryKind::Tree { root, .. } = &mut next_descriptor.kind {
+        *root = [0; 32];
+    }
+    assert_eq!(prior_descriptor, next_descriptor);
+    assert_eq!(before_tree.get(b"other"), after_tree.get(b"other"));
+}
+
+#[tokio::test]
+async fn native_child_only_scope_refuses_descriptor_policy_domain_and_sibling_changes() {
+    let native = fixture().await;
+    let mut baseline = native.begin(SOURCE, &token(), "sdk").await.unwrap();
+    let first = native
+        .advance(
+            &mut baseline,
+            child_scope_request(
+                Vec::new(),
+                b"old child",
+                b"stable other",
+                b"\x61x",
+                PARENT_ACL,
+                PARENT_DOMAIN,
+            ),
+        )
+        .await
+        .unwrap();
+    let (scoped, terminal) = child_scope_token();
+    let guard = observed(native.guard());
+    let cases = [
+        (
+            "descriptor",
+            b"new child".as_slice(),
+            b"stable other".as_slice(),
+            b"\x61y".as_slice(),
+            PARENT_ACL,
+            PARENT_DOMAIN,
+            "commit",
+        ),
+        (
+            "root policy",
+            b"new child".as_slice(),
+            b"stable other".as_slice(),
+            b"\x61x".as_slice(),
+            b"\x81\x82\x66writer\x18\x1f".as_slice(),
+            PARENT_DOMAIN,
+            "admin",
+        ),
+        (
+            "domain",
+            b"new child".as_slice(),
+            b"stable other".as_slice(),
+            b"\x61x".as_slice(),
+            PARENT_ACL,
+            b"\x6cprivate:test".as_slice(),
+            "commit",
+        ),
+        (
+            "sibling",
+            b"old child".as_slice(),
+            b"changed other".as_slice(),
+            b"\x61x".as_slice(),
+            PARENT_ACL,
+            PARENT_DOMAIN,
+            "commit",
+        ),
+    ];
+    for (case, child, other, descriptor, acl, domain, verb) in cases {
+        let mut request =
+            child_scope_request(vec![first.commit], child, other, descriptor, acl, domain);
+        request.token = scoped.clone();
+        request.terminal_secret = terminal;
+        guard.store().reset();
+
+        let failure = match guard.admit(SOURCE, first.writer_epoch + 1, request).await {
+            Err(failure) => failure,
+            Ok(_) => panic!("{case} must require independently governed affected authority"),
+        };
+
+        assert!(
+            matches!(failure.kind(), StoreErrorKind::Denied { verb: actual, pattern } if *actual == verb && pattern == SOURCE),
+            "{case}: {failure:?}"
+        );
+        guard.store().assert_no_effects();
+        let before = {
+            let holder = crate::bucket::held::SingleHeld::acquire(native.store())
+                .await
+                .unwrap();
+            holder
+                .destination()
+                .observe_publication()
+                .await
+                .unwrap()
+                .stamp()
+        };
+        let mut session = native
+            .begin_scoped(SOURCE, &scoped, &[b"/child".to_vec()], "sdk")
+            .await
+            .unwrap();
+        let mut request =
+            child_scope_request(vec![first.commit], child, other, descriptor, acl, domain);
+        request.token = scoped.clone();
+        request.terminal_secret = terminal;
+        let failure = native.advance(&mut session, request).await.unwrap_err();
+        assert!(
+            matches!(failure, crate::ref_advance::AdvanceError::Store(ref failure)
+            if matches!(failure.kind(), StoreErrorKind::Denied { verb: actual, pattern } if *actual == verb && pattern == SOURCE)),
+            "{case}: {failure:?}"
+        );
+        let holder = crate::bucket::held::SingleHeld::acquire(native.store())
+            .await
+            .unwrap();
+        assert_eq!(
+            holder
+                .destination()
+                .observe_publication()
+                .await
+                .unwrap()
+                .stamp(),
+            before,
+            "{case}"
+        );
+        drop(holder);
+        assert_eq!(
+            native.store().ref_get(SOURCE).await.unwrap(),
+            Some(first.clone())
+        );
+    }
+}

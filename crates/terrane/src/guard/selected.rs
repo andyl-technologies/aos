@@ -661,7 +661,7 @@ where
             session.reference(),
             &admitted.token,
             admitted.publication_verb,
-            &[],
+            admitted.publication_paths(),
             &admitted.surface,
             history,
         )

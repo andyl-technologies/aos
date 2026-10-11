@@ -6,7 +6,9 @@ use terrane_core::auth::Verb;
 use terrane_core::identity::{Digest, IdentityKind, TERRANE_V1};
 use terrane_core::tree_format::{ContentRef, EntryKind};
 
-use super::admission::{CandidateInterpretation, CandidateRequest, CandidateValidation};
+use super::admission::{
+    CandidateInterpretation, CandidatePrevious, CandidateRequest, CandidateValidation,
+};
 use super::{AdmittedCommit, Guard, TreeEvidence, denied, invalid};
 use crate::domain::DomainRecord;
 use crate::store::{Clock, Store, StoreFailure};
@@ -19,13 +21,19 @@ impl<S: Store, C: Clock> Guard<S, C> {
         token: &[u8],
         surface: &str,
     ) -> Result<AdmittedCommit, StoreFailure> {
-        let authorization = self
-            .authorize(reference, token, Verb::Commit, &[], surface)
-            .await?;
-        let expected = authorization
-            .record()
-            .cloned()
+        terrane_core::refs::RefName::parse(reference)
+            .map_err(|_| denied(reference, Verb::Commit))?;
+        let now = self.now(reference, Verb::Commit)?;
+        let authenticated = terrane_core::auth::verify(token, self.keys(), now)
+            .map_err(|_| denied(reference, Verb::Commit))?;
+        let expected = self
+            .store()
+            .ref_get(reference)
+            .await?
             .ok_or_else(|| denied(reference, Verb::Commit))?;
+        if expected.home != self.config().home {
+            return Err(denied(reference, Verb::Commit));
+        }
         let history = self.verified_history(expected.commit).await?;
         let mut pending = history
             .commit(&expected.commit)
@@ -50,10 +58,11 @@ impl<S: Store, C: Clock> Guard<S, C> {
             return Err(denied(reference, Verb::Commit));
         }
 
-        let previous = self.verified_tree(expected.commit).await?.evidence;
+        let previous = self.verified_tree(expected.commit).await?;
         let selected = self.verified_tree(target).await?;
         let records = self.existing_records(&selected.evidence).await?;
         let request = CandidateRequest {
+            commit: selected.commit.commit(),
             uploads: &[],
             token,
             surface,
@@ -61,7 +70,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
         };
         let previous_interpretation = self.select_view(
             expected.commit,
-            previous.root,
+            previous.evidence.root,
             super::HistoryObservation::default(),
         )?;
         let admission_interpretation = self.select_view(
@@ -77,6 +86,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
         let CandidateValidation {
             requirements,
             admin_checks,
+            root_claims,
         } = self
             .validate_candidate(
                 reference,
@@ -86,7 +96,11 @@ impl<S: Store, C: Clock> Guard<S, C> {
                     selected: &admission_interpretation,
                     profile: &admission_profile,
                 },
-                Some((&previous, &previous_interpretation)),
+                Some(CandidatePrevious {
+                    evidence: &previous.evidence,
+                    interpretation: &previous_interpretation,
+                    commit: Some(&previous.commit),
+                }),
             )
             .await?;
         let timestamp = self.now(reference, Verb::Commit)?;
@@ -109,13 +123,19 @@ impl<S: Store, C: Clock> Guard<S, C> {
             requirements,
             admin_checks,
             publication_reference: reference.to_owned(),
+            publication_paths: root_claims
+                .iter()
+                .map(|(path, _)| path.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
             uploads: Vec::new(),
             observed_current: Some(expected.clone()),
             expected: Some(expected),
             surface: surface.to_owned(),
             source_authorization: None,
             token: token.to_vec(),
-            principal: authorization.subject().to_owned(),
+            principal: authenticated.authority().subject.clone(),
             timestamp,
             publication_verb: Verb::Commit,
             policy_override: None,
@@ -164,6 +184,12 @@ impl<S: Store, C: Clock> Guard<S, C> {
             &selected.commit,
             &admission_interpretation,
         )?;
+        let publication_paths = selected
+            .evidence
+            .occurrences(self.config().min_chunk_size)?
+            .into_iter()
+            .map(|root| root.path)
+            .collect();
         Ok(AdmittedCommit {
             tree_usage: terrane_core::tree_format::TreeUse::Ordinary,
             overlay_sources: Vec::new(),
@@ -183,6 +209,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
             requirements: Vec::new(),
             admin_checks: Vec::new(),
             publication_reference: reference.to_owned(),
+            publication_paths,
             uploads: Vec::new(),
             observed_current: Some(expected.clone()),
             expected: Some(expected),

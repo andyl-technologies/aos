@@ -202,7 +202,17 @@ impl<S: Store, C: Clock> Guard<S, C> {
         admitted: &super::AdmittedCommit,
         observation: super::HistoryObservation<'_>,
     ) -> Result<Vec<super::AuthorizedRef>, StoreFailure> {
-        let mut captured = Vec::new();
+        let mut captured = vec![
+            self.authorize_observed(
+                &admitted.publication_reference,
+                &admitted.token,
+                admitted.publication_verb,
+                admitted.publication_paths(),
+                &admitted.surface,
+                observation,
+            )
+            .await?,
+        ];
         for check in &admitted.admin_checks {
             let mut authorized = false;
             for path in &check.alternatives {

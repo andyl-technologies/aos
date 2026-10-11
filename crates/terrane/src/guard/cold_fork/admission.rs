@@ -171,6 +171,7 @@ where
             requirements: Vec::new(),
             admin_checks,
             publication_reference: reference.to_owned(),
+            publication_paths: destination.root_paths.clone(),
             uploads: Vec::new(),
             expected: None,
             observed_current: None,

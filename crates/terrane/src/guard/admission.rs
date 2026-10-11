@@ -57,6 +57,16 @@ pub(super) struct AdminCheck {
 pub(super) struct CandidateValidation {
     pub(super) requirements: Vec<super::attributes::RequirementEvidence>,
     pub(super) admin_checks: Vec<AdminCheck>,
+    /// Exact canonical candidate/prior root claims selected by this validation.
+    pub(super) root_claims: Vec<(Vec<u8>, String)>,
+}
+
+/// Retains the checked prior tree and its independently selected signed view.
+#[derive(Clone, Copy)]
+pub(super) struct CandidatePrevious<'a> {
+    pub(super) evidence: &'a TreeEvidence,
+    pub(super) interpretation: &'a super::SelectedReadInterpretation,
+    pub(super) commit: Option<&'a VerifiedCommit>,
 }
 
 /// Separates new authoring from an existing view's independently selected meaning.
@@ -117,6 +127,8 @@ pub(crate) struct AdmittedCommit {
     pub(super) requirements: Vec<super::attributes::RequirementEvidence>,
     pub(super) admin_checks: Vec<AdminCheck>,
     pub(super) publication_reference: String,
+    /// Canonical current publication units, independent of signed historical claims.
+    pub(super) publication_paths: Vec<Vec<u8>>,
     pub(crate) uploads: Vec<StagedUpload>,
     pub(crate) expected: Option<RefRecord>,
     /// Captures live authority separately from the signed historical first parent.
@@ -128,6 +140,13 @@ pub(crate) struct AdmittedCommit {
     pub(crate) timestamp: u64,
     pub(crate) publication_verb: Verb,
     pub(crate) policy_override: Option<Option<terrane_core::refs::RefPolicy>>,
+}
+
+impl AdmittedCommit {
+    /// Borrows exact canonical current units retained by owning admission.
+    pub(crate) fn publication_paths(&self) -> &[Vec<u8>] {
+        &self.publication_paths
+    }
 }
 
 /// Retains the owned source evidence and replacement baseline for one admission.
@@ -142,6 +161,7 @@ struct AdmissionSources {
 }
 
 pub(super) struct CandidateRequest<'a> {
+    pub(super) commit: &'a terrane_core::refs::Commit,
     pub(super) uploads: &'a [StagedUpload],
     pub(super) token: &'a [u8],
     pub(super) surface: &'a str,
@@ -151,6 +171,7 @@ pub(super) struct CandidateRequest<'a> {
 impl<'a> From<&'a CommitRequest> for CandidateRequest<'a> {
     fn from(request: &'a CommitRequest) -> Self {
         Self {
+            commit: &request.commit,
             uploads: &request.uploads,
             token: &request.token,
             surface: &request.surface,
@@ -424,21 +445,20 @@ impl<S: Store, C: Clock> Guard<S, C> {
                 StagedUpload::Chunk { profile, .. } if profile.as_ref() != self.config().chunk_profile.as_ref())) {
             return Err(denied(reference, Verb::Commit));
         }
-        #[cfg(test)]
-        trace_index_admission("current-authorization-before");
-        let authorization = self
-            .authorize_observed(
-                reference,
-                &request.token,
-                Verb::Commit,
-                &[],
-                &request.surface,
-                observation,
-            )
-            .await?;
-        #[cfg(test)]
-        trace_index_admission("current-authorization-after");
-        let live_record = authorization.record().cloned();
+        // Authenticate the capability before loading canonical comparison data.
+        // Current root authority is checked only at independently derived units.
+        terrane_core::refs::RefName::parse(reference)
+            .map_err(|_| denied(reference, Verb::Commit))?;
+        let now = self.now(reference, Verb::Commit)?;
+        let token = auth::verify(&request.token, self.keys(), now)
+            .map_err(|_| denied(reference, Verb::Commit))?;
+        let live_record = self.store().ref_get(reference).await?;
+        if live_record
+            .as_ref()
+            .is_some_and(|record| record.home != self.config().home)
+        {
+            return Err(denied(reference, Verb::Commit));
+        }
         let expected = base.or_else(|| live_record.clone());
         if expected
             .as_ref()
@@ -452,9 +472,6 @@ impl<S: Store, C: Clock> Guard<S, C> {
         {
             return Err(denied(reference, Verb::Commit));
         }
-        let now = self.now(reference, Verb::Commit)?;
-        let token = auth::verify(&request.token, self.keys(), now)
-            .map_err(|_| denied(reference, Verb::Commit))?;
         #[cfg(test)]
         trace_index_admission("candidate-load-before");
         let mut candidate = TreeEvidence::load_tree_for(
@@ -505,13 +522,20 @@ impl<S: Store, C: Clock> Guard<S, C> {
         let CandidateValidation {
             mut requirements,
             mut admin_checks,
+            mut root_claims,
         } = self
             .validate_candidate_observed(
                 reference,
                 CandidateRequest::from(&request),
                 &candidate,
                 CandidateInterpretation::Authoring,
-                previous.as_ref().zip(previous_interpretation.as_ref()),
+                previous.as_ref().zip(previous_interpretation.as_ref()).map(
+                    |(evidence, interpretation)| CandidatePrevious {
+                        evidence,
+                        interpretation,
+                        commit: previous_commit.as_ref(),
+                    },
+                ),
                 observation,
             )
             .await?;
@@ -606,7 +630,13 @@ impl<S: Store, C: Clock> Guard<S, C> {
                         CandidateRequest::from(&request),
                         &candidate,
                         CandidateInterpretation::Authoring,
-                        previous.as_ref().zip(previous_interpretation.as_ref()),
+                        previous.as_ref().zip(previous_interpretation.as_ref()).map(
+                            |(evidence, interpretation)| CandidatePrevious {
+                                evidence,
+                                interpretation,
+                                commit: previous_commit.as_ref(),
+                            },
+                        ),
                         observation,
                     )
                     .await?;
@@ -614,6 +644,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
                 trace_index_admission("completed-candidate-validation-after");
                 requirements = checked.requirements;
                 admin_checks = checked.admin_checks;
+                root_claims = checked.root_claims;
             }
         }
         #[cfg(test)]
@@ -646,7 +677,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
                 self.defaults_for(&candidate),
             )
             .map_err(|_| denied(reference, Verb::Commit))?;
-        let root_bindings = self.authoring_candidate_roots(&candidate)?;
+        let root_bindings = root_claims;
         let roots = root_bindings
             .iter()
             .map(|(path, domain)| RequestRoot { path, domain })
@@ -931,6 +962,12 @@ impl<S: Store, C: Clock> Guard<S, C> {
             requirements,
             admin_checks,
             publication_reference: reference.to_owned(),
+            publication_paths: root_bindings
+                .iter()
+                .map(|(path, _)| path.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
             uploads: request.uploads,
             expected,
             observed_current: live_record,
@@ -969,7 +1006,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
         request: CandidateRequest<'_>,
         candidate: &TreeEvidence,
         interpretation: CandidateInterpretation<'_>,
-        previous: Option<(&TreeEvidence, &super::SelectedReadInterpretation)>,
+        previous: Option<CandidatePrevious<'_>>,
     ) -> Result<CandidateValidation, StoreFailure> {
         self.validate_candidate_observed(
             reference,
@@ -993,7 +1030,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
         request: CandidateRequest<'_>,
         candidate: &TreeEvidence,
         interpretation: CandidateInterpretation<'_>,
-        previous: Option<(&TreeEvidence, &super::SelectedReadInterpretation)>,
+        previous: Option<CandidatePrevious<'_>>,
         observation: super::HistoryObservation<'_>,
     ) -> Result<CandidateValidation, StoreFailure> {
         // A copied source is a content baseline, not the prior authority of
@@ -1003,6 +1040,13 @@ impl<S: Store, C: Clock> Guard<S, C> {
         // Keep one exact candidate interpretation through resolution and raw
         // graft validation without copying preservation names per occurrence.
         let property_selection = interpretation.property_selection(self)?;
+        let plan = self.candidate_root_changes(
+            request.commit,
+            candidate,
+            &property_selection,
+            previous,
+            initial_view,
+        )?;
 
         self.validate_candidate_namespace_attributes(
             candidate,
@@ -1026,7 +1070,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
         let minimum = self.config().min_chunk_size;
         let occurrences = candidate.occurrences(minimum)?;
         let old_occurrences = previous
-            .map(|(evidence, _)| evidence.occurrences(minimum))
+            .map(|previous| previous.evidence.occurrences(minimum))
             .transpose()?
             .unwrap_or_default();
         let mut staged = BTreeSet::<Digest>::new();
@@ -1111,8 +1155,10 @@ impl<S: Store, C: Clock> Guard<S, C> {
             let old_effective = old_layers
                 .as_ref()
                 .zip(previous)
-                .map(|(layers, (previous, selected))| {
-                    selected.resolve(layers, self.defaults_for(previous))
+                .map(|(layers, previous)| {
+                    previous
+                        .interpretation
+                        .resolve(layers, self.defaults_for(previous.evidence))
                 })
                 .transpose()
                 .map_err(|_| denied(reference, Verb::Commit))?;
@@ -1135,16 +1181,6 @@ impl<S: Store, C: Clock> Guard<S, C> {
             {
                 return Err(denied(reference, Verb::Commit));
             }
-            let authorized = self
-                .authorize_observed(
-                    reference,
-                    request.token,
-                    Verb::Commit,
-                    std::slice::from_ref(&occurrence.path),
-                    request.surface,
-                    observation,
-                )
-                .await?;
             let mut administrator = self
                 .current_admin_observed(
                     reference,
@@ -1188,7 +1224,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
             }
             let tree = candidate.tree(occurrence.root, minimum)?;
             let old_tree = match (previous, old_occurrence) {
-                (Some((previous, _)), Some(old)) => Some(previous.tree(old.root, minimum)?),
+                (Some(previous), Some(old)) => Some(previous.evidence.tree(old.root, minimum)?),
                 _ => None,
             };
             let changed = tree
@@ -1282,11 +1318,85 @@ impl<S: Store, C: Clock> Guard<S, C> {
             {
                 return Err(denied(reference, Verb::Commit));
             }
-            let _ = authorized;
+        }
+        for required in plan.required_admin() {
+            let alternatives = old_occurrences
+                .iter()
+                .filter(|root| super::scope::contains_root(&root.path, required.path()))
+                .map(|root| root.path.clone())
+                .collect::<Vec<_>>();
+            let mut permitted = false;
+            for path in &alternatives {
+                if self
+                    .current_admin_observed(
+                        reference,
+                        request.token,
+                        std::slice::from_ref(path),
+                        request.surface,
+                        observation,
+                    )
+                    .await?
+                {
+                    permitted = true;
+                    break;
+                }
+            }
+            if !permitted {
+                return Err(denied(reference, Verb::Admin));
+            }
+            admin_checks.push(AdminCheck { alternatives });
+        }
+        // Canonical change units include removed roots under their prior policy.
+        // Propagated child target hashes alone never add an ancestor decision.
+        let mut root_claims = BTreeSet::new();
+        for affected in plan.affected() {
+            self.authorize_observed(
+                reference,
+                request.token,
+                Verb::Commit,
+                &[affected.path().to_vec()],
+                request.surface,
+                observation,
+            )
+            .await?;
+            root_claims.insert((affected.path().to_vec(), affected.domain().to_owned()));
+        }
+        if root_claims.is_empty() {
+            let root = occurrences
+                .iter()
+                .find(|root| root.path == b"/")
+                .ok_or_else(super::invalid)?;
+            let layers = root
+                .layers
+                .iter()
+                .map(|(properties, overrides)| RootLayer {
+                    properties,
+                    overrides,
+                })
+                .collect::<Vec<_>>();
+            let policy = property_selection
+                .resolve(&layers, self.defaults_for(candidate))
+                .map_err(|_| denied(reference, Verb::Commit))?;
+            self.authorize_observed(
+                reference,
+                request.token,
+                Verb::Commit,
+                &[root.path.clone()],
+                request.surface,
+                observation,
+            )
+            .await?;
+            root_claims.insert((
+                root.path.clone(),
+                domain_label(&policy)
+                    .map_err(|_| denied(reference, Verb::Commit))?
+                    .to_owned(),
+            ));
         }
         Ok(CandidateValidation {
             requirements,
             admin_checks,
+            root_claims: root_claims.into_iter().collect(),
         })
     }
 }
