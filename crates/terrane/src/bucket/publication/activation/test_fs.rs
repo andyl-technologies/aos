@@ -16,13 +16,19 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
+/// Selects a fixed genesis boundary at which the fixture refuses an effect.
 pub(in super::super) enum Stop {
+    /// Refuses the create-once genesis slot before native submission.
     BeforeSlot,
+    /// Refuses the final Active registration after the genesis slot is selected.
     AfterSlot,
 }
 
+/// Holds the actual submitted genesis-slot worker until the fixture releases it.
 pub(in super::super) struct Gate {
+    /// Signals that the native worker reached its precheck boundary.
     pub(in super::super) arrived: std::sync::mpsc::Sender<()>,
+    /// Keeps the native worker paused while it retains its original receipts.
     pub(in super::super) release: std::sync::mpsc::Receiver<()>,
 }
 
@@ -35,26 +41,38 @@ struct State {
     noop_probe: AtomicBool,
 }
 
+/// Forwards native reads and effects while observing fixed activation boundaries.
 #[derive(Clone, Default)]
 pub(in super::super) struct ProbeFs(Arc<State>);
 
 impl ProbeFs {
+    /// Refuses effects at the selected fixed activation boundary.
+    ///
+    /// # Panics
+    /// Panics if fixture synchronization is poisoned.
     pub(in super::super) fn stop(&self, stop: Stop) {
         *self.0.stop.lock().unwrap() = Some(stop);
     }
 
+    /// Pauses the next actual submitted genesis-slot worker before its checks.
+    ///
+    /// # Panics
+    /// Panics if fixture synchronization is poisoned.
     pub(in super::super) fn gate(&self, gate: Gate) {
         *self.0.gate.lock().unwrap() = Some(gate);
     }
 
+    /// Counts ordinary lock creation and filesystem mutations separately from effects.
     pub(in super::super) fn ordinary_effects(&self) -> usize {
         self.0.ordinary_effects.load(Ordering::SeqCst)
     }
 
+    /// Makes configured range reads return an additional unexpected byte.
     pub(in super::super) fn wrong_range(&self) {
         self.0.wrong_range.store(true, Ordering::SeqCst);
     }
 
+    /// Acknowledges CAP create-new probes without executing their native command.
     pub(in super::super) fn noop_probe(&self) {
         self.0.noop_probe.store(true, Ordering::SeqCst);
     }
