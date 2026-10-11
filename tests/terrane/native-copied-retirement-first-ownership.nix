@@ -6,6 +6,8 @@
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_index_only_selects_new_destination_owner"
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_trash_only_selects_new_destination_owner"
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_all_absent_selects_new_destination_owner"
+    "gc::runner::copied_retirement_tests::gc_copied_retirement_native_absent_source_exclusion_selects_new_destination_owner"
+    "gc::runner::copied_retirement_tests::gc_copied_retirement_native_new_exclusion_preserves_unrelated_binding"
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_missing_foreign_original_keeps_complete_live_data"
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_unresolved_live_data_refuses_before_preparation"
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_incomplete_ref_or_absent_history_refuses_preparation"
@@ -46,6 +48,6 @@ in
       python3 ../tests/terrane/check_native_gate.py execution \
         "$TMPDIR/copied-retirement-test.log" "[\"$test_name\"]"
     done
-    printf 'PASS: local copied-destination first ownership and retained-pair prerequisites (25 exact cases)\n' \
+    printf 'PASS: local copied-destination first ownership and retained-pair prerequisites (27 exact cases)\n' \
       > "$out/result"
   ''

@@ -133,6 +133,30 @@ Workers retain disjoint file ownership and separate worktrees. Independent
 review remains separate. One coordinated compiler serves build and Nix requests.
 T2 and branch worklines remain deferred.
 
+The latest frozen payload-sharing tree `ee7171fa88a7` passes native build,
+strict all-target SDK and Core Clippy, all-target test compilation and the exact
+formatter pair. Its inventories contain 1,101 SDK tests and 764 no-default Core
+tests. All seventeen payload-sharing counterproofs and twelve quick native/Core
+cases pass with unchanged source, compiler inputs, executables and limits.
+Both 1,024-entry ordinary and adversarial native growth populations pass
+naturally in 1,117.411 and 1,161.338 seconds. The 2,048-entry ordinary population
+is externally stopped at the approved 1,800-second cap, with actual terminal
+`-15` after 1,802.696 seconds. It has no assertion result. The remaining growth
+populations and heavy runs are unstarted; DRV-29 remains unqualified. Independent
+review validates all 990 sealed packet payloads and identical full source/input/
+executable seals. Owning gates, mandatory application targets, per-crate Nextest
+and the full current T1 floor remain pending.
+
+Parallel source review identifies and corrects the DRV-22 nested-overlay memo
+replay gap, preserving the original recipe and Memo bytes and requiring separate
+original-occurrence and projected-result policy checks. Five pure regressions
+and a native persistence/reopening witness are registered before composition.
+GC review also identifies a copied-destination refusal when a valid burned pack
+has no remaining source exclusion, and a cancellation witness whose asynchronous
+poll cannot prove retained exclusion. Isolated corrections and independent source
+review are in progress. These source results do not complete a task or advance
+T1's freeze.
+
 Additional isolated worklines inspect growing-index completion, indexed replay
 and permanent recovery, while a separate worker qualifies the five public SDK
 checkout cases against the retained `d116ffe6239a` archive. All five exact cases

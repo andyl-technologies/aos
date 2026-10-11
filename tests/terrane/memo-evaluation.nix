@@ -9,6 +9,11 @@
     "memo_rebuild_returns_complete_output_closure"
     "memo_rejects_missing_inputs_and_unsupported_recipes"
     "memo_preserves_context_and_operand_configuration"
+    "overlay::complete_nested_overlay_uses_same_evaluator_for_disabled_miss_hit_and_rebuild"
+    "overlay::cached_nested_overlay_cannot_bypass_missing_roots_or_independent_policy"
+    "overlay::every_cache_mode_rechecks_projected_policy_independently_of_source_policy"
+    "overlay::shared_overlay_target_retains_distinct_original_occurrence_policies"
+    "overlay::nested_overlay_rebinds_recorded_domains_without_using_them_as_policy_context"
   ];
 
   runTest = name: ''

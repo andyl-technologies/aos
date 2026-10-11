@@ -13,6 +13,11 @@
     "derivation::evaluation_tests::memo_rebuild_returns_complete_output_closure"
     "derivation::evaluation_tests::memo_rejects_missing_inputs_and_unsupported_recipes"
     "derivation::evaluation_tests::memo_preserves_context_and_operand_configuration"
+    "derivation::evaluation_tests::overlay::complete_nested_overlay_uses_same_evaluator_for_disabled_miss_hit_and_rebuild"
+    "derivation::evaluation_tests::overlay::cached_nested_overlay_cannot_bypass_missing_roots_or_independent_policy"
+    "derivation::evaluation_tests::overlay::every_cache_mode_rechecks_projected_policy_independently_of_source_policy"
+    "derivation::evaluation_tests::overlay::shared_overlay_target_retains_distinct_original_occurrence_policies"
+    "derivation::evaluation_tests::overlay::nested_overlay_rebinds_recorded_domains_without_using_them_as_policy_context"
   ];
 
   nativeTests = [
@@ -34,6 +39,7 @@
     "derivation::tests::native::common_memo_optional_loss_preserves_disabled_results"
     "derivation::tests::native::common_memo_divergence_refuses_until_complete_persisted_rebuild"
     "derivation::tests::native::common_memo_replay_preserves_actual_current_original_and_trust_checks"
+    "derivation::tests::native::overlay::native_nested_overlay_reopens_closure_and_rechecks_policy"
     "gc::runner::walk::tests::native::memos::gc_memo_native_retains_only_independently_live_output_nodes"
   ];
 
@@ -88,6 +94,6 @@ in {
     ${builtins.concatStringsSep "\n" (map (runTest "terrane-core") coreTests)}
     ${builtins.concatStringsSep "\n" (map (runTest "terrane") nativeTests)}
     ${builtins.concatStringsSep "\n" (map runRetainedTest retainedTests)}
-    printf 'PASS: 28 named common Memo replay, native persistence and conditional retention cases\n' > "$out/result"
+    printf 'PASS: 34 named common Memo replay, native persistence and conditional retention cases\n' > "$out/result"
   '';
 }
