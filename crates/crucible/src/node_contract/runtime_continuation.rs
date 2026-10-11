@@ -886,47 +886,21 @@ impl WholeRuntimeCustody {
     }
 
     pub(crate) fn from_prepared(
-        mut nodes: Vec<Box<dyn SimulationNode>>,
+        nodes: Vec<Box<dyn SimulationNode>>,
         activation: ActivationRecord,
         limits: RuntimeLimits,
     ) -> Self {
-        for node in &mut nodes {
-            node.quarantine_resources();
-        }
-        let rejected_reclamation = nodes
-            .iter()
-            .enumerate()
-            .flat_map(|(index, node)| {
-                node.route()
-                    .owners
-                    .iter()
-                    .cloned()
-                    .map(move |owner| (index, owner))
-            })
-            .collect();
-        let owners = activation
-            .owners
-            .iter()
-            .cloned()
-            .map(|identity| {
-                (
-                    identity.owner.clone(),
-                    OwnerCustody {
-                        identity,
-                        lifecycle: Lifecycle::Quarantined,
-                        operation: None,
-                        domains: Default::default(),
-                    },
-                )
-            })
-            .collect();
+        // Store every original participant before invoking its native cleanup
+        // or metadata callbacks. Queue-owned polling catches those callbacks.
+        // Unconstructed activation owners have no native cleanup obligation;
+        // each actual rejected participant supplies its complete owner route.
         Self {
             authority: Rc::new(()),
             nodes: BTreeMap::new(),
             rejected_nodes: nodes,
-            rejected_reclamation,
+            rejected_reclamation: Default::default(),
             snapshots: BTreeMap::new(),
-            owners,
+            owners: BTreeMap::new(),
             operations: BTreeMap::new(),
             input_batches: BTreeMap::new(),
             scheduler: None,
@@ -939,8 +913,8 @@ impl WholeRuntimeCustody {
             world_preparation: None,
             limits,
             reclamation_cursor: None,
-            pending_retirement: false,
-            borrowed_retirement: false,
+            pending_retirement: true,
+            borrowed_retirement: true,
             graceful_retirement: false,
         }
     }
@@ -1066,3 +1040,7 @@ where
 
 #[path = "runtime_continuation/borrowed_retirement.rs"]
 mod borrowed_retirement;
+
+#[cfg(test)]
+#[path = "runtime_continuation/preparation_drop_tests.rs"]
+mod preparation_drop_tests;

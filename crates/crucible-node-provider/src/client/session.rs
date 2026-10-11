@@ -109,6 +109,19 @@ impl ClientCustody {
         })
     }
 
+    /// Returns the original unrecycled request capacity per endpoint namespace.
+    pub fn maximum_requests(&self) -> usize {
+        self.maximum_requests
+    }
+
+    /// Returns the independently bounded raw journal and content reservations.
+    ///
+    /// The two stores each retain their original complete bytes, so callers
+    /// reserve both extents. This does not describe decoded semantic storage.
+    pub fn byte_reservations(&self) -> (usize, usize) {
+        (self.maximum_bytes, self.content.byte_ceiling())
+    }
+
     /// Returns retained originals including requests whose effects remain unknown.
     pub fn originals(&self) -> impl Iterator<Item = &ClientOriginal> {
         self.controller.values().chain(self.provider.values())

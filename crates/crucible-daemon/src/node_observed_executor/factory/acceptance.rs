@@ -159,6 +159,13 @@ impl<'a> SourceBindingPolicy<'a> {
 }
 
 impl InstalledAcceptancePolicy for SourceBindingPolicy<'_> {
+    fn provider_revision(
+        &self,
+        scope: &crucible::node_contract::ProviderAuthorizationScope,
+    ) -> Result<crucible::node_contract::ProviderAuthorizationLease, QualificationError> {
+        self.installed.provider_revision(scope)
+    }
+
     fn scope_for_node(&self, node: &Id) -> Result<AcceptanceScope<'_>, QualificationError> {
         let binding = self
             .scenario

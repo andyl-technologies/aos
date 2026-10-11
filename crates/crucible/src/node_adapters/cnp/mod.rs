@@ -74,3 +74,6 @@ pub use lineage_reader::{
     LineageControlledReference, LineagePreparationFailure, LineageReferenceQualification,
     LineageRuntimeCustody, LineageRuntimeCustodySlot,
 };
+
+/// Adapts independently installed vendor profiles with original CNP custody.
+pub mod vendor;

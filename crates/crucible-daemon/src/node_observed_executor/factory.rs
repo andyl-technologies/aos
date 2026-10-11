@@ -11,6 +11,7 @@ mod host_state;
 mod io;
 mod kvm;
 pub(super) mod recorded_ingress;
+mod vendors;
 
 mod condition_debug;
 mod controlled;
@@ -502,6 +503,7 @@ pub struct InstalledNodeCatalog {
     custody: RuntimeCustodyQueue,
     artifacts: BTreeMap<String, InstalledIoArtifact>,
     behavioral_acceptance: Option<acceptance::InstalledBehavioralAcceptance>,
+    vendor_providers: Option<crucible::node_contract::InstalledProviderRegistry>,
     original_lineage: transcript::original_lineage::selection::Installation,
 }
 
@@ -548,6 +550,7 @@ impl InstalledNodeCatalog {
             custody,
             artifacts: BTreeMap::new(),
             behavioral_acceptance: None,
+            vendor_providers: None,
             original_lineage: transcript::original_lineage::selection::Installation::new(),
         })
     }

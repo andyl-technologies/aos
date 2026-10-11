@@ -26,6 +26,8 @@ pub struct PreparedRealization {
     pub(super) activation: ActivationRecord,
     pub(super) limits: RuntimeLimits,
     pub(super) custody_slot: Option<Box<dyn RuntimeCustodySlot>>,
+    pub(super) provider_authorization:
+        Option<super::provider_revision::ProviderPreparationAuthorization>,
 }
 
 impl PreparedRealization {
@@ -45,6 +47,7 @@ impl PreparedRealization {
             activation,
             limits,
             custody_slot: Some(custody_slot),
+            provider_authorization: None,
         }
     }
 
@@ -55,6 +58,35 @@ impl PreparedRealization {
     /// record; actual owner preparation and the runtime barrier remain mandatory.
     pub fn activation_record(&self) -> &ActivationRecord {
         &self.activation
+    }
+
+    /// Borrows actual inactive participants for pre-admission graph construction.
+    ///
+    /// Metadata inspection grants no execution or mutation authority. The owning
+    /// capsule and its reserved supervision slot remain intact across callbacks.
+    pub fn participants(&self) -> impl ExactSizeIterator<Item = &dyn SimulationNode> {
+        self.nodes.iter().map(|node| node.as_ref())
+    }
+
+    /// Checks retained original vendor source, evidence and normal class currency.
+    ///
+    /// This direct read invokes no provider, codec, source or policy callback.
+    /// The catalog uses it after complete graph admission, with the same original
+    /// revision leases installed by the registry before realization validation.
+    /// It grants no graph, readiness, operation or acceptance authority itself.
+    ///
+    /// # Errors
+    /// Refuses absent registry authorization, absent ordinary class currency,
+    /// foreign scope or any withdrawn original authority.
+    pub fn authenticate_provider_authorization(
+        &self,
+    ) -> Result<(), crate::node_admission::EvidenceError> {
+        self.provider_authorization
+            .as_ref()
+            .ok_or_else(|| crate::node_admission::EvidenceError {
+                message: "original installed vendor authorization absent".into(),
+            })?
+            .authenticate(true)
     }
 
     /// Admits prepared native handles into an inactive whole-world runtime.
@@ -113,6 +145,43 @@ pub struct RealizationFailure {
 pub trait NodeProvider {
     /// Returns the immutable provider implementation and profile manifest.
     fn describe(&self) -> &ProviderManifest;
+
+    /// Regenerates exact immutable planning metadata before native allocation.
+    ///
+    /// Implementations enforce the borrowed host limits before constructing the
+    /// plan. The registry subsequently authenticates source and behavioral scope.
+    /// This callback must not create autonomous resources or native effects.
+    ///
+    /// # Errors
+    /// Defaults to no-effect refusal for providers without installed planning.
+    fn plan(
+        &self,
+        _request: super::ProviderPlanningRequest<'_>,
+    ) -> Result<super::ProviderPreparationPlan, RealizationFailure> {
+        Err(RealizationFailure {
+            reason: "original installed provider planning is unsupported".into(),
+            retained: None,
+        })
+    }
+
+    /// Prepares original inactive nodes before their complete graph can be sealed.
+    ///
+    /// This consumes the pre-reserved custody slot. Every partial allocation must
+    /// enter that same owning capsule before another callback or possible failure.
+    /// Ordinary readiness and all-owner durable activation remain separate.
+    ///
+    /// # Errors
+    /// Defaults to refusal before allocation. Implementations return all native
+    /// resources in `retained` on any possibly effectful preparation failure.
+    fn prepare_original(
+        &mut self,
+        _request: super::OriginalRealizationRequest<'_>,
+    ) -> Result<PreparedRealization, RealizationFailure> {
+        Err(RealizationFailure {
+            reason: "original pre-admission provider realization is unsupported".into(),
+            retained: None,
+        })
+    }
 
     /// Prepares requested nodes while withholding all semantic execution.
     ///

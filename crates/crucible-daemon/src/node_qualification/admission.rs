@@ -44,6 +44,23 @@ pub trait InstalledAcceptancePolicy: InstalledQualificationAuthority {
     /// Implementations must bound owned returned metadata before allocation and
     /// borrow original bytes from a finite retained owner.
     fn scope_for_node(&self, node: &Id) -> Result<AcceptanceScope<'_>, QualificationError>;
+
+    /// Lends the revision retained with this policy's actual accepted original scope.
+    ///
+    /// Existing full current unit, class and original-evidence reauthentication
+    /// remains mandatory. This currency fence cannot accept a missing report.
+    /// Scope withdrawal must revoke the same owner before returning a lease.
+    ///
+    /// # Errors
+    /// Defaults to refusal without independently installed revision support.
+    fn provider_revision(
+        &self,
+        _scope: &crucible::node_contract::ProviderAuthorizationScope,
+    ) -> Result<crucible::node_contract::ProviderAuthorizationLease, QualificationError> {
+        Err(QualificationError::Refused(
+            "normal provider class revision is unsupported",
+        ))
+    }
 }
 
 /// Adds fresh behavioral acceptance checks without replacing native authority.
@@ -186,5 +203,18 @@ impl AdmissionEvidence for BehavioralAdmissionEvidence<'_> {
             })?;
         }
         self.underlying.qualify(claim)
+    }
+}
+
+impl crucible::node_contract::InstalledProviderClassAdmission for BehavioralAdmissionEvidence<'_> {
+    fn current_class_revision(
+        &self,
+        scope: &crucible::node_contract::ProviderAuthorizationScope,
+    ) -> Result<crucible::node_contract::ProviderAuthorizationLease, EvidenceError> {
+        self.policy
+            .provider_revision(scope)
+            .map_err(|error| EvidenceError {
+                message: error.to_string(),
+            })
     }
 }
