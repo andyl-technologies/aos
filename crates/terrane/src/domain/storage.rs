@@ -101,8 +101,8 @@ impl<S: ContentStore> DomainStore<S> {
     /// # Errors
     ///
     /// Returns `Denied` for different principals, missing source commit/ref/path evidence,
-    /// or missing source read or destination commit authority, `Invalid(Upload)` if the uploaded bytes
-    /// differ from the source, or a backend verification/admission failure.
+    /// or missing source read or destination commit authority, `Invalid(Upload)` if the uploaded
+    /// content identity or canonical metadata differs, or a backend verification/admission failure.
     /// The coordinator must still record and validate the disclosure in the signed commit provenance.
     pub async fn disclose_from<T: ContentStore>(
         &self,

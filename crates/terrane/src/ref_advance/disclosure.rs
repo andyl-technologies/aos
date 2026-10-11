@@ -30,7 +30,7 @@ pub struct DisclosureUpload {
     pub destination_token: Vec<u8>,
     /// Registered operation surface for both authorization requests.
     pub surface: String,
-    /// Canonical upload whose bytes must equal the verified source encoding.
+    /// Upload matching the verified source plaintext or exact canonical metadata.
     pub upload: StagedUpload,
 }
 
