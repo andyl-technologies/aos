@@ -94,7 +94,9 @@ impl<S: ContentStore> DomainStore<S> {
     /// Source reads and destination writes use separate guard decisions for
     /// the same authenticated principal. The destination backend validates a
     /// fresh upload even when the identity is already present elsewhere; no
-    /// old-domain record is reused.
+    /// old-domain record is reused. A chunk may use a different valid storage
+    /// encoding because its identity binds the verified plaintext; metadata
+    /// must retain its exact canonical bytes.
     ///
     /// # Errors
     ///
@@ -131,11 +133,16 @@ impl<S: ContentStore> DomainStore<S> {
             })?
             .to_vec();
         let bytes = source.get(source_access, identity, None).await?;
-        let (offered_kind, offered_bytes) = match upload {
-            ContentUpload::Chunk(chunk) => (IdentityKind::Chunk, chunk.encoded),
-            ContentUpload::Meta(meta) => (meta.kind(), meta.bytes()),
+        let matches_source = match upload {
+            // Chunk identity names plaintext, not the storage envelope. The
+            // destination backend independently verifies this fresh offer;
+            // valid recompression must not require reuse of source records.
+            ContentUpload::Chunk(chunk) => {
+                identity.kind() == IdentityKind::Chunk && chunk.identity == identity
+            }
+            ContentUpload::Meta(meta) => meta.kind() == identity.kind() && meta.bytes() == bytes,
         };
-        if offered_kind != identity.kind() || offered_bytes != bytes {
+        if !matches_source {
             return Err(StoreFailure::new(StoreErrorKind::Invalid(
                 InvalidReason::Upload { rule_id: "DOM-7" },
             )));
@@ -326,5 +333,28 @@ impl<S: ContentStore> DomainStore<S> {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(all(feature = "std", unix))]
+impl<F, B, V> DomainStore<crate::bucket::held::HeldBucket<'_, F, B, V, true>>
+where
+    F: crate::store::LocalFs + crate::bucket::BucketBinding,
+    B: crate::store::Clock + crate::bucket::BucketBinding,
+    V: crate::store::ContentValidator + crate::bucket::BucketBinding,
+{
+    /// Stages routed bytes with genuine caller and signed-route native checks.
+    ///
+    /// # Errors
+    /// Preserves destination Commit denial, offered-byte validation and actual
+    /// contextual native effect failures, including indeterminate cancellation.
+    pub(crate) async fn put_contextual(
+        &self,
+        access: &DomainAccess,
+        upload: ContentUpload<'_>,
+        context: &crate::selected_bridge::native_guard::meta_batch::ImmutableEffectContext<'_, '_>,
+    ) -> Result<Identity, StoreFailure> {
+        self.check(access, Verb::Commit)?;
+        self.backend.put_contextual(upload, context).await
     }
 }
