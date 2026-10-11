@@ -1,8 +1,12 @@
 //! Checks registered execution profiles without claiming any native authority.
 
-use alloc::borrow::ToOwned;
+#![allow(
+    clippy::expect_used,
+    reason = "unregistered revision fixtures must fail their assertions"
+)]
 
 use super::*;
+use alloc::borrow::ToOwned;
 
 fn registered(property: u64, attribute: u64) -> ConfiguredRegistryInputs {
     ConfiguredRegistryInputs {
@@ -23,14 +27,43 @@ fn registered(property: u64, attribute: u64) -> ConfiguredRegistryInputs {
 
 #[test]
 fn active_registry_supports_exact_three_two_one_without_relabeling_legacy() {
-    assert_eq!(registered(1, 1).validate(), Ok(()));
-    assert_eq!(registered(2, 1).validate(), Ok(()));
-    assert_eq!(registered(3, 2).validate(), Ok(()));
-    for (property, attribute) in [(1, 2), (2, 2), (3, 1), (3, 3)] {
+    for property in 1..=3 {
+        for attribute in [1, 2] {
+            let registries = registered(property, attribute);
+            assert_eq!(registries.validate(), Ok(()));
+            assert_eq!(
+                ConfiguredRegistryInputs::property_revision_for(&registries.behavioral_properties),
+                Ok(property)
+            );
+            let bytes = registries.encode().expect("registered ordinary scalars");
+            assert_eq!(ConfiguredRegistryInputs::decode(&bytes), Ok(registries));
+        }
+    }
+
+    for property in [0, 4, u64::MAX] {
+        let mut unknown = registered(3, 2);
+        unknown.property_revision = property;
+        assert_eq!(unknown.validate(), Err(EvidenceError::UnsupportedRevision));
+    }
+    for attribute in [0, 3, u64::MAX] {
         assert_eq!(
-            registered(property, attribute).validate(),
+            registered(3, attribute).validate(),
             Err(EvidenceError::UnsupportedRevision)
         );
+    }
+
+    // Registered ordinary scalars do not enable an executable carrier tuple.
+    use crate::indexing::carrier::SemanticContext;
+    assert!(SemanticContext::new(3, 2, 1).is_ok());
+    for (property, attribute, tree) in [
+        (1, 1, 1),
+        (1, 2, 1),
+        (2, 2, 1),
+        (3, 1, 1),
+        (3, 3, 1),
+        (3, 2, 2),
+    ] {
+        assert!(SemanticContext::new(property, attribute, tree).is_err());
     }
 }
 

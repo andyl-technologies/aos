@@ -9,6 +9,7 @@
 //! label cannot replace an original canonical owner.
 
 mod bootstrap;
+mod recorded;
 mod snapshot;
 
 pub(super) use bootstrap::CheckedBootstrap;
@@ -85,6 +86,42 @@ pub struct RootChangePlan {
 }
 
 impl RootChangePlan {
+    /// Derives unsigned fresh roots under the supplied exact interpretation.
+    ///
+    /// # Errors
+    /// Rejects missing or malformed physical evidence and invalid selected policy.
+    pub fn derive_fresh_with_properties(
+        history: &VerifiedHistory,
+        candidate: &Commit,
+        defaults: Defaults<'_>,
+        context: &crate::properties::semantics::RecordedContext,
+    ) -> Result<Self, Rejected> {
+        fresh_plan(
+            history,
+            candidate,
+            defaults,
+            crate::properties::selected::Selection::Recorded(context.clone()),
+        )
+    }
+
+    /// Derives unsigned parent changes under the supplied exact interpretation.
+    ///
+    /// # Errors
+    /// Rejects missing or malformed physical evidence and invalid selected policy.
+    pub fn derive_with_properties(
+        history: &VerifiedHistory,
+        candidate: &Commit,
+        defaults: Defaults<'_>,
+        context: &crate::properties::semantics::RecordedContext,
+    ) -> Result<Self, Rejected> {
+        changes_selected(
+            history,
+            candidate,
+            defaults,
+            crate::properties::selected::Selection::Recorded(context.clone()),
+        )
+    }
+
     /// Returns the canonical candidate tree identity used to derive this plan.
     pub fn candidate_tree(&self) -> Digest {
         self.candidate
@@ -126,6 +163,7 @@ pub struct VerifiedRootScope {
     plan: RootChangePlan,
     claims: Vec<AffectedRoot>,
     bootstrap: Option<bootstrap::CheckedBootstrap>,
+    selection: crate::properties::selected::Selection,
 }
 
 impl VerifiedRootScope {
@@ -135,7 +173,11 @@ impl VerifiedRootScope {
     /// Returns [`Rejected`] for different canonical scope or conflicting retained
     /// physical-authority/ref/epoch/bootstrap ACL associations.
     pub(super) fn merge_checked(&self, other: &Self) -> Result<Self, Rejected> {
-        if self.view != other.view || self.plan != other.plan || self.claims != other.claims {
+        if self.view != other.view
+            || self.plan != other.plan
+            || self.claims != other.claims
+            || self.selection != other.selection
+        {
             return Err(Rejected);
         }
         let bootstrap = match (&self.bootstrap, &other.bootstrap) {
@@ -150,6 +192,7 @@ impl VerifiedRootScope {
             plan: self.plan.clone(),
             claims: self.claims.clone(),
             bootstrap,
+            selection: self.selection.clone(),
         })
     }
 
@@ -330,6 +373,43 @@ fn canonical_ancestor<'a>(snapshot: &'a Snapshot, path: &[u8]) -> Option<&'a Roo
         .max_by_key(|root| root.path.len())
 }
 
+// Equal tree roots establish unchanged content, not continuation of the same
+// protected authoring authority. Optional ordinary scope annotations do not
+// claim physical continuity; explicit original evidence must establish it.
+fn requires_bootstrap_comparison(
+    history: &VerifiedHistory,
+    record: &Commit,
+    original: Option<&bootstrap::CheckedBootstrap>,
+) -> Result<bool, Rejected> {
+    let first_parent = record.parents.first().ok_or(Rejected)?;
+    let parent = history.commit(first_parent).ok_or(Rejected)?.commit();
+    let reference = record
+        .profile_pair
+        .commit_context
+        .as_ref()
+        .ok_or(Rejected)?
+        .reference();
+    let Some(parent_context) = parent.profile_pair.commit_context.as_ref() else {
+        // Legacy verification authenticates a trusted original request, but
+        // does not retain its complete context here. It cannot prove authority
+        // continuity; the candidate needs its own independent comparison.
+        return Ok(true);
+    };
+    if parent_context.reference() != reference {
+        return Ok(true);
+    }
+
+    let Some(original) = original else {
+        return Ok(false);
+    };
+    let previous = history
+        .root_scopes
+        .get(first_parent)
+        .and_then(|scope| scope.bootstrap.as_ref())
+        .ok_or(Rejected)?;
+    Ok(previous.authority != original.authority)
+}
+
 /// Verifies original signed claims against canonical prior/candidate root changes.
 ///
 /// Each claim must name an actual root, never a file path. Broader same-domain
@@ -432,19 +512,29 @@ fn verify_context(
             return Err(Rejected);
         }
     }
-    if plan.fresh {
+    let compare_bootstrap =
+        plan.fresh || requires_bootstrap_comparison(history, record, bootstrap.as_ref())?;
+    if compare_bootstrap {
         let original = bootstrap.as_ref().ok_or(Rejected)?;
+        let main = snapshot::at_path(
+            history,
+            record.tree,
+            b"/",
+            defaults,
+            history.view_selection(view)?,
+        )?;
+        if bootstrap::widens(main.acl().ok_or(Rejected)?, &original.acl) {
+            plan.required_admin
+                .push(affected(&main, RootSide::Candidate, true));
+        }
+    }
+    if plan.fresh {
         let current = snapshot::complete(
             history,
             record.tree,
             defaults,
             history.view_selection(view)?,
         )?;
-        let main = current.roots.get(b"/".as_slice()).ok_or(Rejected)?;
-        if bootstrap::widens(main.acl().ok_or(Rejected)?, &original.acl) {
-            plan.required_admin
-                .push(affected(main, RootSide::Candidate, true));
-        }
         for child in current.roots.values() {
             if let Some(parent) = canonical_ancestor(&current, &child.path)
                 && child.widens_delegation(parent)
@@ -453,9 +543,9 @@ fn verify_context(
                     .push(affected(parent, RootSide::Candidate, true));
             }
         }
-        plan.required_admin.sort();
-        plan.required_admin.dedup();
     }
+    plan.required_admin.sort();
+    plan.required_admin.dedup();
     let mut claims = Vec::new();
     for claim in context.roots() {
         let current = snapshot::at_path(
@@ -478,7 +568,9 @@ fn verify_context(
                         parent.commit().tree,
                         claim.path(),
                         defaults,
-                        history.view_selection(parent.identity())?,
+                        // Removed-claim scope resolves raw prior roots
+                        // under the candidate interpretation.
+                        history.view_selection(view)?,
                     )
                 })
         };
@@ -492,7 +584,7 @@ fn verify_context(
             (None, None) => return Err(Rejected),
         }
     }
-    if (plan.fresh || record.parents.is_empty())
+    if compare_bootstrap
         && !claims
             .iter()
             .any(|claim| claim.path == b"/" && claim.side == RootSide::Candidate)
@@ -577,6 +669,7 @@ fn verify_context(
         plan,
         claims,
         bootstrap,
+        selection: history.view_selection(view)?,
     };
     if let Some(previous) = history.root_scopes.get(&view) {
         scope = previous.merge_checked(&scope)?;
@@ -601,4 +694,44 @@ fn ancestor(parent: &[u8], child: &[u8]) -> bool {
         || child
             .strip_prefix(parent)
             .is_some_and(|suffix| suffix.starts_with(b"/"))
+}
+
+// Pure unsigned parent-data seam; it installs no authenticated view or scope.
+#[cfg(test)]
+fn derive_with_selected_parent_tree(
+    history: &VerifiedHistory,
+    candidate: &Commit,
+    defaults: Defaults<'_>,
+    context: &crate::properties::semantics::RecordedContext,
+    parent_tree: impl FnOnce(Digest) -> Option<Digest>,
+) -> Result<RootChangePlan, Rejected> {
+    let Some(first_parent) = candidate.parents.first().copied() else {
+        return fresh_plan(
+            history,
+            candidate,
+            defaults,
+            crate::properties::selected::Selection::Recorded(context.clone()),
+        );
+    };
+    let previous = parent_tree(first_parent).ok_or(Rejected)?;
+    if previous == candidate.tree {
+        return Ok(RootChangePlan {
+            candidate: candidate.tree,
+            first_parent: Some(first_parent),
+            affected: Vec::new(),
+            required_admin: Vec::new(),
+            fresh: false,
+        });
+    }
+    let previous = snapshot::complete_with_properties(history, previous, defaults, context)?;
+    let current = snapshot::complete_with_properties(history, candidate.tree, defaults, context)?;
+    let old_root = previous.roots.get(b"/".as_slice()).ok_or(Rejected)?;
+    let new_root = current.roots.get(b"/".as_slice()).ok_or(Rejected)?;
+    if old_root.implicit_owner() && new_root.implicit_owner() && old_root.domain != new_root.domain
+    {
+        // Changing an implicit root's digest cannot silently change its owner.
+        // DOM-1 requires materializing the existing label before that edit.
+        return Err(Rejected);
+    }
+    Ok(diff(candidate, &previous, &current))
 }

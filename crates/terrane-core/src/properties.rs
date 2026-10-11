@@ -5,7 +5,9 @@
 //! callers remain responsible for fetching records and enforcing storage policy.
 
 mod registry;
+pub mod semantics;
 
+/// Owns explicitly selected Legacy, Active and exact Recorded execution.
 pub mod selected;
 mod validation;
 mod value;
@@ -18,7 +20,7 @@ pub use validation::{
 
 use crate::auth::{Verb, Verbs};
 use crate::cbor;
-use crate::tree_format::{MAX_GRAFT_DEPTH, Property};
+use crate::tree_format::Property;
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -173,7 +175,9 @@ impl<'a> EffectiveProperties<'a> {
 /// Resolves registered values along a view-specific, ancestor-first graft path.
 ///
 /// No cache is retained. Unknown names are rejected; callers preserving later
-/// registered names must keep their raw bytes outside behavioral policy.
+/// registered names must keep their raw bytes outside behavioral policy. These
+/// entrypoints use current revision 3; recorded revisions use
+/// [`semantics::RecordedContext`].
 ///
 /// # Errors
 /// Rejects malformed properties, invalid defaults, and more than 64 graft edges.
@@ -191,72 +195,14 @@ pub fn resolve<'a>(
 /// never from names asserted by an untrusted property writer.
 ///
 /// # Errors
-/// Rejects unregistered or malformed values, invalid defaults, and excessive
-/// graft depth, with the same rules as [`resolve`].
+/// Rejects unregistered or malformed values, invalid defaults, excessive graft
+/// depth, and ambiguous extension vocabulary, with the same rules as [`resolve`].
 pub fn resolve_with_registry<'a>(
     path: &[RootLayer<'a>],
     defaults: Defaults<'a>,
     later_registered: &[&str],
 ) -> Result<EffectiveProperties<'a>, Error> {
-    if path.len().saturating_sub(1) > MAX_GRAFT_DEPTH {
-        return Err(Error::Limit);
-    }
-    let mut values = registry::defaults(defaults)?;
-    let mut wipe_set = false;
-    for (position, layer) in path.iter().enumerate() {
-        for properties in [layer.properties, layer.overrides] {
-            validate_preserved_map(properties, later_registered)?;
-        }
-        // A graft-local override replaces the whole binding, including its
-        // inherit flag. A local non-inheriting override must not uncover the
-        // referenced root's own value in descendant roots.
-        for property in layer
-            .properties
-            .iter()
-            .filter(|property| {
-                !layer
-                    .overrides
-                    .iter()
-                    .any(|other| other.name == property.name)
-            })
-            .chain(layer.overrides.iter())
-        {
-            if PropertyName::parse(property.name).is_err() {
-                continue;
-            }
-            let (name, value) = validate_property(property)?;
-            let (_, inherit) = registry::binding(property.value)?;
-            if !inherit && position + 1 != path.len() {
-                continue;
-            }
-            if name == PropertyName::Wipe {
-                wipe_set = true;
-            }
-            if let Some(existing) = values.iter_mut().find(|(key, _)| *key == name) {
-                existing.1 = value;
-            }
-        }
-    }
-    let mut effective = EffectiveProperties {
-        values,
-        active_index_roots: None,
-    };
-    if !wipe_set {
-        let wipe = if matches!(effective.domain()?, Domain::Private(_)) {
-            "zero"
-        } else {
-            "none"
-        };
-        if let Some((_, value)) = effective
-            .values
-            .iter_mut()
-            .find(|(name, _)| *name == PropertyName::Wipe)
-        {
-            *value = Value::Text(wipe);
-        }
-    }
-    validate_domain_policy(&effective)?;
-    Ok(effective)
+    semantics::RecordedContext::new(3, 3, later_registered)?.resolve(path, defaults)
 }
 
 /// Validates all property names and values in a root property map.
@@ -264,29 +210,23 @@ pub fn resolve_with_registry<'a>(
 /// # Errors
 /// Rejects unknown names, duplicate names, oversized maps, or invalid values.
 pub fn validate_map(properties: &[Property<'_>]) -> Result<(), Error> {
-    let mut bytes = 0usize;
-    for property in properties {
-        if property.name.is_empty() || property.name.len() > 255 {
-            return Err(Error::Limit);
-        }
-        bytes = bytes
-            .checked_add(property.name.len())
-            .and_then(|size| size.checked_add(property.value.len()))
-            .ok_or(Error::Limit)?;
-        if bytes > 65536 {
-            return Err(Error::Limit);
-        }
-    }
-    for (position, property) in properties.iter().enumerate() {
-        if properties[..position]
-            .iter()
-            .any(|other| other.name == property.name)
-        {
-            return Err(Error::InvalidValue);
-        }
-        validate_property(property)?;
-    }
-    Ok(())
+    semantics::RecordedContext::new(3, 3, &[])?.validate_map(properties)
+}
+
+/// Validates a graft-entry property map, excluding owner-only index bindings.
+///
+/// Trusted later-version names remain preserved according to
+/// [`validate_preserved_map`]. An `index-roots` binding belongs to the target
+/// root's own node and cannot be supplied by an occurrence's graft override.
+///
+/// # Errors
+/// Rejects owner-only bindings at any graft, unregistered names, malformed
+/// values, duplicates, or oversized maps.
+pub fn validate_graft_overrides(
+    properties: &[Property<'_>],
+    later_registered: &[&str],
+) -> Result<(), Error> {
+    semantics::RecordedContext::new(3, 3, later_registered)?.validate_graft_overrides(properties)
 }
 
 /// Checks that deduplication cannot exceed the effective domain's scope.
@@ -370,44 +310,14 @@ fn acl_allows(grants: &[(&str, u8)], principal: &str, verb: Verb) -> bool {
 ///
 /// # Errors
 /// Rejects unknown names not in either registry, invalid known properties,
-/// duplicate names, malformed preserved CBOR, or an oversized map.
+/// duplicate names, malformed preserved CBOR, an oversized map, or ambiguous
+/// extension vocabulary.
 pub fn validate_preserved_map(
     properties: &[Property<'_>],
     later_registered: &[&str],
 ) -> Result<(), Error> {
-    let mut bytes = 0usize;
-    for property in properties {
-        if property.name.is_empty() || property.name.len() > 255 {
-            return Err(Error::Limit);
-        }
-        bytes = bytes
-            .checked_add(property.name.len())
-            .and_then(|size| size.checked_add(property.value.len()))
-            .ok_or(Error::Limit)?;
-        if bytes > 65536 {
-            return Err(Error::Limit);
-        }
-    }
-    for (position, property) in properties.iter().enumerate() {
-        if properties[..position]
-            .iter()
-            .any(|other| other.name == property.name)
-        {
-            return Err(Error::InvalidValue);
-        }
-        match PropertyName::parse(property.name) {
-            Ok(_) => {
-                validate_property(property)?;
-            }
-            Err(_) if later_registered.contains(&property.name) => {
-                let mut decoder = cbor::Decoder::new(property.value);
-                value::skip_value(&mut decoder, 65536)?;
-                decoder.finish()?;
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    Ok(())
+    semantics::RecordedContext::new(3, 3, later_registered)?
+        .validate(properties, semantics::Placement::Data)
 }
 
 #[cfg(test)]

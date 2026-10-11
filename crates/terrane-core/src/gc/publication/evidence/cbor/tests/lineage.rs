@@ -224,3 +224,59 @@ fn contextual_signed_commit_accepts_distinct_selected_tag() {
             .reference()
     );
 }
+
+#[test]
+fn enclosing_lineage_fences_structural_gap_property_without_namespace_activation() {
+    let properties = b"\xa1\x6aindex-gaps\x00";
+    let root = ConsumedRootPolicy {
+        root: [8; 32],
+        path: b"/".to_vec(),
+        layers: vec![ConsumedRootLayer {
+            properties: properties.to_vec(),
+            overrides: vec![0xa0],
+        }],
+    };
+    let mut root_wire = vec![0x83];
+    fixture_digest(&mut root_wire, &[8; 32]);
+    root_wire.extend_from_slice(&[0x41, b'/', 0x81, 0x82]);
+    fixture_string(&mut root_wire, 0x40, properties);
+    root_wire.extend_from_slice(&[0x41, 0xa0]);
+    assert_eq!(root.encode().unwrap(), root_wire);
+    assert_eq!(ConsumedRootPolicy::decode(&root_wire).unwrap(), root);
+
+    for revision in [1, 2, 3] {
+        for attribute_revision in [1, 2] {
+            let mut inputs = used();
+            inputs.registries.property_revision = revision;
+            inputs.registries.attribute_revision = attribute_revision;
+            if revision >= 2 {
+                inputs
+                    .registries
+                    .behavioral_properties
+                    .push("index-roots".into());
+            }
+            if revision == 3 {
+                inputs
+                    .registries
+                    .behavioral_properties
+                    .push("index-gaps".into());
+            } else {
+                inputs.registries.later_properties.push("index-gaps".into());
+            }
+            inputs.registries.behavioral_properties.sort();
+            inputs.views.push(ConsumedViewPolicy {
+                view: [9; 32],
+                default_domain: "public".into(),
+                roots: vec![root.clone()],
+            });
+            if revision == 3 {
+                assert_eq!(inputs.encode(), Err(EvidenceError::Schema));
+            } else {
+                let encoded = inputs.encode().unwrap();
+                assert_eq!(LineageUsedInputs::decode(&encoded).unwrap(), inputs);
+                inputs.registries.later_properties.clear();
+                assert_eq!(inputs.encode(), Err(EvidenceError::Schema));
+            }
+        }
+    }
+}

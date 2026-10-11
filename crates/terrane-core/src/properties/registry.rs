@@ -11,6 +11,7 @@
 
 use super::{Defaults, Domain, Error};
 use crate::cbor::Decoder;
+use crate::indexing::{IndexRoots, carrier::GapBinding};
 use crate::tree_format::Property;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -85,7 +86,9 @@ property_names! {
     Passthrough => ("passthrough", Realization), Wipe => ("wipe", Realization),
     OnRelease => ("on-release", Realization), Acl => ("acl", Authority),
     Hashes => ("hashes", Requirement), Classify => ("classify", Requirement),
-    Index => ("index", Requirement), StrictAttrs => ("strict-attrs", Requirement),
+    Index => ("index", Requirement), IndexRoots => ("index-roots", Requirement),
+    IndexGaps => ("index-gaps", Requirement),
+    StrictAttrs => ("strict-attrs", Requirement),
 }
 
 /// A validated, typed property value borrowing encoded text.
@@ -99,6 +102,10 @@ pub enum Value<'a> {
     Boolean(bool),
     /// An ordered list or set of validated text names.
     Names(Vec<&'a str>),
+    /// Noninherited index Node bindings belonging only to the current root.
+    IndexRoots(IndexRoots<'a>),
+    /// A structural auxiliary pointer with no namespace policy or default.
+    IndexGaps(GapBinding),
     /// A TTL in seconds.
     Ttl(u64),
     /// A reflog entry count.
@@ -179,6 +186,23 @@ pub fn validate_property<'a>(property: &Property<'a>) -> Result<(PropertyName, V
     let name = PropertyName::parse(property.name)?;
     if property.value.len() > 65536 {
         return Err(Error::Limit);
+    }
+    if name == PropertyName::IndexGaps {
+        let gap = GapBinding::decode_binding(property.value).map_err(|error| match error {
+            crate::indexing::Error::Cbor(error) => Error::Cbor(error),
+            crate::indexing::Error::Limit => Error::Limit,
+            _ => Error::InvalidValue,
+        })?;
+        return Ok((name, Value::IndexGaps(gap)));
+    }
+    if name == PropertyName::IndexRoots {
+        let roots = IndexRoots::decode_binding(property.value).map_err(|error| match error {
+            crate::indexing::Error::Cbor(error) => Error::Cbor(error),
+            crate::indexing::Error::UnknownAttribute => Error::UnknownAttribute,
+            crate::indexing::Error::Limit => Error::Limit,
+            crate::indexing::Error::Schema => Error::InvalidValue,
+        })?;
+        return Ok((name, Value::IndexRoots(roots)));
     }
     // Check canonical ordering before typed parsers allocate. Generic nesting
     // consumes traversal state proportional to the bounded encoded input.
@@ -374,7 +398,17 @@ fn selector(decoder: &mut Decoder<'_>) -> Result<(), Error> {
             return Err(Error::InvalidValue);
         }
         match atom {
-            "issuer" | "subject" | "group" | "signed-by-key" => nonempty(decoder.text(65536)?)?,
+            "issuer" | "subject" | "group" => nonempty(decoder.text(65536)?)?,
+            "signed-by-key" => {
+                let key = decoder.text(65536)?;
+                if key.len() != 64
+                    || !key
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+                {
+                    return Err(Error::InvalidValue);
+                }
+            }
             "source" => choice(
                 decoder.text(65536)?,
                 &[
@@ -447,6 +481,10 @@ pub(super) fn defaults(context: Defaults<'_>) -> Result<Vec<(PropertyName, Value
         (Hashes, Value::Names(Vec::new())),
         (Classify, Value::Names(Vec::new())),
         (Index, Value::Names(Vec::new())),
+        (
+            IndexRoots,
+            Value::IndexRoots(crate::indexing::IndexRoots::default()),
+        ),
         (StrictAttrs, Value::Boolean(false)),
     ])
 }

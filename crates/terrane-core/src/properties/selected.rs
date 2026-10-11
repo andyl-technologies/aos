@@ -7,67 +7,55 @@ use super::*;
 use crate::indexing::IndexRoots;
 
 /// Names exact registered namespace interpretations without selecting authority.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Selection {
     /// Retains the original 33-name Legacy property and attribute1 behavior.
     Legacy,
     /// Selects current property3/attribute2/tree1 execution explicitly.
     Active,
+    /// Retains independently supplied exact historical property interpretation.
+    Recorded(super::semantics::RecordedContext),
 }
 
 impl Selection {
     /// Resolves all ordinary values and exact owner-local structural bindings.
     ///
     /// # Errors
-    /// Rejects unknown/malformed properties, inherited or graft-override pointers, every
-    /// namespace index-gaps placement, invalid policy or excessive graft depth.
+    /// Rejects unknown or malformed properties, active inherited or graft-override
+    /// pointers, active namespace gaps, invalid policy or excessive graft depth.
+    /// Recorded preserve-only names receive canonical syntax validation only.
     pub fn resolve<'a>(
-        self,
+        &self,
         path: &[RootLayer<'a>],
         defaults: Defaults<'a>,
     ) -> Result<EffectiveProperties<'a>, Error> {
-        if self == Self::Legacy {
-            return super::resolve(path, defaults);
-        }
-        for layer in path {
-            if layer
-                .overrides
-                .iter()
-                .any(|property| property.name == "index-roots")
-            {
-                return Err(Error::InvalidValue);
+        match self {
+            Self::Legacy => {
+                super::semantics::RecordedContext::new(1, 1, &[])?.resolve(path, defaults)
             }
-            for properties in [layer.properties, layer.overrides] {
-                if properties
-                    .iter()
-                    .any(|property| property.name == "index-gaps")
-                {
-                    return Err(Error::InvalidValue);
-                }
-                validate_preserved_map(properties, &["index-roots"])?;
-                for property in properties {
-                    if property.name == "index-roots" {
-                        IndexRoots::decode_binding(property.value)
-                            .map_err(|_| Error::InvalidValue)?;
-                    }
-                }
+            Self::Active => {
+                super::semantics::RecordedContext::new(3, 3, &[])?.resolve(path, defaults)
             }
+            Self::Recorded(context) => context.resolve(path, defaults),
         }
-        // index-gaps is deliberately absent from the namespace registry here:
-        // its only valid role is checked by the actual auxiliary primary loader.
-        let mut effective = resolve_with_registry(path, defaults, &["index-roots"])?;
-        if let Some(layer) = path.last() {
-            let local = layer
-                .properties
-                .iter()
-                .find(|property| property.name == "index-roots");
-            effective.active_index_roots = local
-                .map(|property| {
-                    IndexRoots::decode_binding(property.value).map_err(|_| Error::InvalidValue)
-                })
-                .transpose()?;
+    }
+
+    /// Checks original maps before graft replacements can hide invalid placement.
+    ///
+    /// # Errors
+    /// Rejects invalid raw maps or structural owner-local/graft placement.
+    pub(crate) fn validate_layer(
+        &self,
+        properties: &[Property<'_>],
+        overrides: &[Property<'_>],
+    ) -> Result<(), Error> {
+        match self {
+            Self::Legacy => super::semantics::RecordedContext::new(1, 1, &[])?
+                .validate_layer(properties, overrides),
+            Self::Active => super::semantics::RecordedContext::new(3, 3, &[])?
+                .validate_layer(properties, overrides),
+            Self::Recorded(context) => context.validate_layer(properties, overrides),
         }
-        Ok(effective)
     }
 }
 
@@ -82,4 +70,8 @@ impl<'a> EffectiveProperties<'a> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "invalid selected-property test fixtures must fail their assertions"
+)]
 mod tests;

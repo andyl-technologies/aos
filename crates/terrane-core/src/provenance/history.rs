@@ -17,6 +17,12 @@ use alloc::{
 };
 
 mod merge;
+mod policy_layers;
+
+#[cfg(test)]
+mod entry_lookup_tests;
+
+pub(super) use policy_layers::PolicyLayer;
 
 /// Names an entry in the immutable tree evidence of a signed commit.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -35,6 +41,9 @@ pub struct VerifiedHistory {
     pub(super) commits: BTreeMap<Digest, VerifiedCommit>,
     pub(super) graph: CommitGraph,
     nodes: BTreeMap<Digest, Vec<u8>>,
+    // One canonical entry map per distinct validated leaf, shared across roots.
+    // These bytes accelerate pure lookup; root reachability remains independent.
+    leaf_entries: BTreeMap<Digest, BTreeMap<Vec<u8>, Vec<u8>>>,
     roots: BTreeMap<Digest, BTreeSet<Digest>>,
     min_chunk_size: u64,
     selected_current: crate::properties::selected::Selection,
@@ -81,6 +90,7 @@ impl VerifiedHistory {
             commits: BTreeMap::new(),
             graph: CommitGraph::new(),
             nodes: BTreeMap::new(),
+            leaf_entries: BTreeMap::new(),
             roots: BTreeMap::new(),
             usage: BTreeMap::new(),
             min_chunk_size,
@@ -99,9 +109,17 @@ impl VerifiedHistory {
     /// Adds a commit whose signature and authorizing capability were verified.
     ///
     /// # Errors
-    /// Returns [`Rejected`] for a cycle or conflicting immutable record.
+    /// Returns [`Rejected`] for a cycle, conflicting immutable record or Recorded
+    /// installation requiring an exact per-view selection.
     pub fn insert_commit(&mut self, commit: VerifiedCommit) -> Result<(), Rejected> {
-        self.insert_commit_selected(commit, self.selected_current)
+        // Recorded history requires an exact independently supplied view selection.
+        if matches!(
+            &self.selected_current,
+            crate::properties::selected::Selection::Recorded(_)
+        ) {
+            return Err(Rejected);
+        }
+        self.insert_commit_selected(commit, self.selected_current.clone())
     }
 
     /// Binds one actual authenticated view to its independently selected semantics.
@@ -118,7 +136,14 @@ impl VerifiedHistory {
         if self
             .view_selections
             .get(&identity)
-            .is_some_and(|old| *old != selected)
+            .is_some_and(|old| old != &selected)
+        {
+            return Err(Rejected);
+        }
+        if self
+            .commits
+            .get(&identity)
+            .is_some_and(|old| old != &commit)
         {
             return Err(Rejected);
         }
@@ -141,12 +166,26 @@ impl VerifiedHistory {
         &self,
         view: Digest,
     ) -> Result<crate::properties::selected::Selection, Rejected> {
-        self.view_selections.get(&view).copied().ok_or(Rejected)
+        self.view_selections.get(&view).cloned().ok_or(Rejected)
+    }
+
+    /// Returns the exact independently installed ordinary property selection.
+    ///
+    /// The cloned configuration grants no admission, evaluation or publication
+    /// authority and cannot install a selection recovered from decoded claims.
+    ///
+    /// # Errors
+    /// Rejects an absent immutable view association without a current fallback.
+    pub fn property_selection(
+        &self,
+        view: Digest,
+    ) -> Result<crate::properties::selected::Selection, Rejected> {
+        self.view_selection(view)
     }
 
     /// Returns the explicitly configured input for unsigned authoring preparation.
     pub(super) fn candidate_selection(&self) -> crate::properties::selected::Selection {
-        self.selected_current
+        self.selected_current.clone()
     }
 
     /// Adds a complete canonical node witness for one root.
@@ -226,6 +265,7 @@ impl VerifiedHistory {
         let mut entries = Vec::new();
         let mut seen = BTreeSet::new();
         let mut grafts = BTreeSet::new();
+        let mut leaf_entries = BTreeMap::new();
         while let Some((identity, is_root)) = pending.pop() {
             if !seen.insert(identity) {
                 return Err(Rejected);
@@ -236,6 +276,17 @@ impl VerifiedHistory {
             match &node.items {
                 NodeItems::Leaf(items) => {
                     entries.extend(items.iter().cloned());
+                    if !self.leaf_entries.contains_key(&identity) {
+                        let mut encoded = BTreeMap::new();
+                        for item in items {
+                            let bytes = tree_format::encode_entry(&item.entry, self.min_chunk_size)
+                                .map_err(|_| Rejected)?;
+                            if encoded.insert(item.key.clone(), bytes).is_some() {
+                                return Err(Rejected);
+                            }
+                        }
+                        leaf_entries.insert(identity, encoded);
+                    }
                     for item in items {
                         if let EntryKind::Tree { root, .. } = item.entry.kind {
                             grafts.insert(root);
@@ -273,6 +324,7 @@ impl VerifiedHistory {
         drop(entries);
 
         self.nodes = candidate;
+        self.leaf_entries.extend(leaf_entries);
         self.roots.insert(root, grafts);
         self.usage.insert(root, usage);
         Ok(())
@@ -338,6 +390,13 @@ impl VerifiedHistory {
         let mut is_root = true;
         loop {
             let bytes = self.nodes.get(&current).ok_or(Rejected)?;
+            if let Some(entries) = self.leaf_entries.get(&current) {
+                // Every insertion still checks this leaf in its actual root,
+                // TreeUse and child-summary context before installing the map.
+                let entry = entries.get(path).ok_or(Rejected)?;
+                return tree_format::decode_entry_bytes(entry, self.min_chunk_size)
+                    .map_err(|_| Rejected);
+            }
             let node = tree_format::decode_node_for(bytes, is_root, self.min_chunk_size, usage)
                 .map_err(|_| Rejected)?;
             match node.items {
@@ -407,68 +466,36 @@ impl VerifiedHistory {
         Ok((location, properties.into_iter().flatten().collect()))
     }
 
+    /// Reads ancestor-first layers without erasing a graft binding's placement.
+    ///
+    /// The selected root comes from the existing checked immutable view. No
+    /// recorded interpretation is inferred from that root or its raw names.
+    ///
+    /// # Errors
+    /// Rejects absent views/paths, missing or invalid physical evidence, invalid
+    /// keys, graft cycles and paths deeper than the existing 64-edge limit.
+    pub(super) fn locate_policy_layers(
+        &self,
+        view: Digest,
+        path: &[u8],
+    ) -> Result<(EntryLocation, Vec<PolicyLayer<'_>>), Rejected> {
+        let root = self.commits.get(&view).ok_or(Rejected)?.commit().tree;
+        self.policy_layers_from_root(view, root, path)
+    }
+
     pub(super) fn locate_policies(
         &self,
         view: Digest,
         path: &[u8],
     ) -> Result<(EntryLocation, Vec<Vec<crate::tree_format::Property<'_>>>), Rejected> {
-        let mut root = self.commits.get(&view).ok_or(Rejected)?.commit().tree;
-        if self.usage.get(&root) == Some(&tree_format::TreeUse::Index) {
-            tree_format::validate_index_key(path).map_err(|_| Rejected)?;
-        } else {
-            tree_format::validate_key(path).map_err(|_| Rejected)?;
+        let (location, layers) = self.locate_policy_layers(view, path)?;
+        let selected = self.view_selection(view)?;
+        for layer in &layers {
+            selected
+                .validate_layer(&layer.properties, layer.overrides.as_deref().unwrap_or(&[]))
+                .map_err(|_| Rejected)?;
         }
-        let mut relative = path;
-        let mut roots = BTreeSet::new();
-        let mut properties = Vec::new();
-        let mut pending_overrides: Option<Vec<crate::tree_format::Property<'_>>> = None;
-        loop {
-            if !roots.insert(root) || roots.len() > tree_format::MAX_GRAFT_DEPTH + 1 {
-                return Err(Rejected);
-            }
-            let mut root_properties = self.root_properties(root)?;
-            if let Some(overrides) = pending_overrides.take() {
-                // TREE-13 defines graft props as this target root's properties
-                // in the current view. Ancestor requirements stay separate.
-                for replacement in overrides {
-                    root_properties.retain(|property| property.name != replacement.name);
-                    root_properties.push(replacement);
-                }
-            }
-            properties.push(root_properties);
-            if self.root_entry(root, relative).is_ok() {
-                return Ok((
-                    EntryLocation {
-                        commit: view,
-                        root,
-                        path: relative.to_vec(),
-                    },
-                    properties,
-                ));
-            }
-
-            let mut selected = None;
-            for (position, byte) in relative.iter().enumerate() {
-                if *byte != b'/' {
-                    continue;
-                }
-                let Ok(entry) = self.root_entry(root, &relative[..position]) else {
-                    continue;
-                };
-                if let EntryKind::Tree {
-                    root: target,
-                    props,
-                } = &entry.kind
-                {
-                    selected = Some((*target, &relative[position + 1..], props.clone()));
-                    break;
-                }
-            }
-            let (target, remaining, overrides) = selected.ok_or(Rejected)?;
-            pending_overrides = overrides;
-            root = target;
-            relative = remaining;
-        }
+        Ok((location, policy_layers::legacy_properties(layers)))
     }
 
     pub(super) fn dependencies(
@@ -932,4 +959,37 @@ pub fn source_commit_references(commit: &VerifiedCommit) -> impl Iterator<Item =
                 })
                 .chain(receipt.reintroduced_from.iter().map(|source| source.commit))
         })
+}
+
+#[cfg(test)]
+impl VerifiedHistory {
+    /// Revalidates physical fixtures and reinserts already signature-checked records.
+    ///
+    /// This creates a fresh independently configured test history. No checked
+    /// root scope, admission flag, side evidence or disclosure completion is copied.
+    ///
+    /// # Errors
+    /// Rejects absent selections and any canonical tree or immutable commit conflict.
+    pub(super) fn fixture_with_selections(
+        &self,
+        selections: &BTreeMap<Digest, crate::properties::selected::Selection>,
+    ) -> Result<Self, Rejected> {
+        let mut history = Self::new_selected(self.min_chunk_size, self.selected_current.clone());
+        let nodes: Vec<_> = self
+            .nodes
+            .iter()
+            .map(|(identity, bytes)| (*identity, bytes.clone()))
+            .collect();
+        for root in self.roots.keys() {
+            history.insert_tree_for(*root, &nodes, *self.usage.get(root).ok_or(Rejected)?)?;
+        }
+        for (view, commit) in &self.commits {
+            let selected = selections
+                .get(view)
+                .cloned()
+                .unwrap_or(self.view_selection(*view)?);
+            history.insert_commit_selected(commit.clone(), selected)?;
+        }
+        Ok(history)
+    }
 }

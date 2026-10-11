@@ -33,6 +33,8 @@ enum PolicyValue {
     Unsigned(u64),
     Boolean(bool),
     Names(Vec<String>),
+    IndexRoots(Vec<(String, Digest)>),
+    IndexGaps(Digest),
     Ttl(u64),
     Count(u64),
     Quota(u64, u64),
@@ -50,6 +52,14 @@ impl From<&Value<'_>> for PolicyValue {
             Value::Names(values) => {
                 Self::Names(values.iter().map(|value| (*value).to_string()).collect())
             }
+            Value::IndexRoots(roots) => Self::IndexRoots(
+                roots
+                    .as_bindings()
+                    .iter()
+                    .map(|binding| (binding.attribute.to_string(), binding.node))
+                    .collect(),
+            ),
+            Value::IndexGaps(gap) => Self::IndexGaps(gap.node()),
             Value::Ttl(value) => Self::Ttl(*value),
             Value::Count(value) => Self::Count(*value),
             Value::Quota { root, principal } => Self::Quota(*root, *principal),
@@ -108,8 +118,17 @@ impl Root {
         !self.local.iter().any(|(name, _)| name == "domain")
     }
 
+    // An absent owner binding and the registered empty owner default have the
+    // same namespace policy. Raw local properties remain compared separately.
+    fn namespace_policy(&self) -> impl Iterator<Item = &(PropertyName, PolicyValue)> {
+        self.effective.iter().filter(|(name, value)| {
+            !(*name == PropertyName::IndexRoots
+                && matches!(value, PolicyValue::IndexRoots(bindings) if bindings.is_empty()))
+        })
+    }
+
     pub fn same_policy(&self, other: &Self) -> bool {
-        if self.effective != other.effective {
+        if !self.namespace_policy().eq(other.namespace_policy()) {
             return false;
         }
         let old = self
@@ -157,8 +176,12 @@ fn properties<'a>(
     history: &'a VerifiedHistory,
     root: Digest,
     overrides: Vec<Property<'a>>,
+    selection: &properties::selected::Selection,
 ) -> Result<Vec<Property<'a>>, Rejected> {
     let mut properties = history.root_properties(root)?;
+    selection
+        .validate_layer(&properties, &overrides)
+        .map_err(|_| Rejected)?;
     for replacement in overrides {
         properties.retain(|property| property.name != replacement.name);
         properties.push(replacement);
@@ -219,6 +242,7 @@ fn state(
     };
     let effective = PropertyName::ALL
         .iter()
+        .filter(|name| **name != PropertyName::IndexGaps && policy.get(**name).is_some())
         .map(|name| Ok((*name, PolicyValue::from(policy.get(*name).ok_or(Rejected)?))))
         .collect::<Result<Vec<_>, Rejected>>()?;
     let local = layers
@@ -263,10 +287,10 @@ pub(super) fn complete(
         if !prefix.is_empty() {
             tree_format::validate_key(&prefix).map_err(|_| Rejected)?;
         }
-        layers.push(properties(history, root, overrides)?);
+        layers.push(properties(history, root, overrides, &selection)?);
         let mut absolute = vec![b'/'];
         absolute.extend_from_slice(&prefix);
-        let mut current = state(root, absolute.clone(), &layers, defaults, selection)?;
+        let mut current = state(root, absolute.clone(), &layers, defaults, selection.clone())?;
         for item in history.root_items(root)? {
             let mut entry = item.entry;
             if let EntryKind::Tree {
@@ -333,7 +357,7 @@ pub(super) fn at_path(
         if !seen.insert(root) || seen.len() > tree_format::MAX_GRAFT_DEPTH + 1 {
             return Err(Rejected);
         }
-        layers.push(properties(history, root, overrides)?);
+        layers.push(properties(history, root, overrides, &selection)?);
         if remaining.is_empty() {
             return state(root, path.to_vec(), &layers, defaults, selection);
         }
@@ -359,3 +383,50 @@ pub(super) fn at_path(
         overrides = properties;
     }
 }
+
+#[cfg(test)]
+mod tests;
+
+/// Enumerates ordinary raw evidence under an explicitly supplied exact context.
+///
+/// # Errors
+/// Preserves canonical tree, graft placement, selected policy and domain failures.
+#[cfg(test)]
+pub(super) fn complete_with_properties(
+    history: &VerifiedHistory,
+    root: Digest,
+    defaults: Defaults<'_>,
+    context: &properties::semantics::RecordedContext,
+) -> Result<Snapshot, Rejected> {
+    complete(
+        history,
+        root,
+        defaults,
+        properties::selected::Selection::Recorded(context.clone()),
+    )
+}
+
+/// Resolves raw prior or candidate root evidence under the supplied context.
+///
+/// # Errors
+/// Preserves missing evidence, malformed placement and selected policy failures.
+#[cfg(test)]
+pub(super) fn at_path_with_properties(
+    history: &VerifiedHistory,
+    root: Digest,
+    path: &[u8],
+    defaults: Defaults<'_>,
+    context: &properties::semantics::RecordedContext,
+) -> Result<Root, Rejected> {
+    at_path(
+        history,
+        root,
+        path,
+        defaults,
+        properties::selected::Selection::Recorded(context.clone()),
+    )
+}
+
+#[cfg(test)]
+#[path = "snapshot/tests_private.rs"]
+mod tests_private;

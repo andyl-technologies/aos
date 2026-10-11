@@ -67,14 +67,15 @@ impl ConfiguredRegistryInputs {
     ///
     /// This identifies ordinary configuration data; it does not select a Guard
     /// or establish current authority. Revision 1 retains its original 33 names,
-    /// and revision 2 adds only the owner-local `index-roots` binding.
+    /// revision 2 adds only the owner-local `index-roots` binding, and revision 3
+    /// adds only the auxiliary-root `index-gaps` binding.
     ///
     /// # Errors
     /// Rejects names that are unsorted, duplicated, malformed, or do not match
-    /// either complete registered vocabulary.
+    /// a complete registered vocabulary.
     pub fn property_revision_for(properties: &[String]) -> Result<u64, EvidenceError> {
         names(properties)?;
-        for revision in [1, 2] {
+        for revision in [1, 2, 3] {
             if properties
                 .iter()
                 .map(String::as_str)
@@ -165,13 +166,10 @@ fn names(names: &[String]) -> Result<(), EvidenceError> {
 
 impl Validate for ConfiguredRegistryInputs {
     fn validate(&self) -> Result<(), EvidenceError> {
-        // Registered active3/2 execution is distinct from ordinary Legacy1/1.
-        // This validates semantics only; a genuine producer selects each view.
-        let supported_pair = matches!(
-            (self.property_revision, self.attribute_revision),
-            (1 | 2, 1) | (3, 2)
-        );
-        if !supported_pair
+        // D-105 retains registered scalar revisions independently as ordinary
+        // data. The executable carrier separately requires exact 3/2/1.
+        if !matches!(self.property_revision, 1..=3)
+            || !matches!(self.attribute_revision, 1 | 2)
             || [
                 self.selector_revision,
                 self.tree_revision,
@@ -393,5 +391,150 @@ mod tests {
         registry.validate()?;
         assert!(property_map(map, Some(&registry)).is_err());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod private_registry_tests {
+    #![allow(
+        clippy::unwrap_used,
+        reason = "Fixture failures intentionally panic in tests."
+    )]
+    use super::*;
+
+    fn registry(revision: u64, attribute_revision: u64) -> ConfiguredRegistryInputs {
+        let mut behavioral_properties: Vec<String> = REVISION_ONE_PROPERTIES
+            .iter()
+            .map(|name| (*name).into())
+            .collect();
+        if revision >= 2 {
+            behavioral_properties.push("index-roots".into());
+        }
+        if revision >= 3 {
+            behavioral_properties.push("index-gaps".into());
+        }
+        behavioral_properties.sort();
+
+        ConfiguredRegistryInputs {
+            property_revision: revision,
+            behavioral_properties,
+            attribute_revision,
+            selector_revision: 1,
+            tree_revision: 1,
+            chunk_revision: 1,
+            identity_profile: "terrane-v1".into(),
+            later_properties: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn property_and_attribute_revisions_bind_structural_index_names_exactly() {
+        for revision in 1..=3 {
+            for attribute_revision in [1, 2] {
+                let model = registry(revision, attribute_revision);
+                assert_eq!(model.behavioral_properties.len(), 32 + revision as usize);
+                assert_eq!(model.validate(), Ok(()));
+                assert_eq!(
+                    ConfiguredRegistryInputs::property_revision_for(&model.behavioral_properties),
+                    Ok(revision)
+                );
+
+                for mismatched in 1..=3 {
+                    if mismatched != revision {
+                        let mut wrong = model.clone();
+                        wrong.property_revision = mismatched;
+                        assert_eq!(wrong.validate(), Err(EvidenceError::Contradiction));
+                    }
+                }
+                for unknown in [0, 4, u64::MAX] {
+                    let mut wrong = model.clone();
+                    wrong.property_revision = unknown;
+                    assert_eq!(wrong.validate(), Err(EvidenceError::UnsupportedRevision));
+                }
+                for unknown in [0, 3, u64::MAX] {
+                    let mut wrong = model.clone();
+                    wrong.attribute_revision = unknown;
+                    assert_eq!(wrong.validate(), Err(EvidenceError::UnsupportedRevision));
+                }
+                for field in 0..3 {
+                    let mut wrong = model.clone();
+                    match field {
+                        0 => wrong.selector_revision = 2,
+                        1 => wrong.tree_revision = 2,
+                        _ => wrong.chunk_revision = 2,
+                    }
+                    assert_eq!(wrong.validate(), Err(EvidenceError::UnsupportedRevision));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_semantic_contexts_preserve_inert_index_carriers() {
+        // Independent canonical maps deliberately carry invalid active values.
+        let roots = b"\xa1\x6bindex-roots\x00";
+        let gaps = b"\xa1\x6aindex-gaps\x00";
+        for attribute_revision in [1, 2] {
+            for revision in [1, 2] {
+                let mut model = registry(revision, attribute_revision);
+                model.later_properties.push("index-gaps".into());
+                if revision == 1 {
+                    model.later_properties.push("index-roots".into());
+                    assert_eq!(property_map(roots, Some(&model)), Ok(()));
+                } else {
+                    assert!(property_map(roots, Some(&model)).is_err());
+                }
+                assert_eq!(model.validate(), Ok(()));
+                assert_eq!(property_map(gaps, Some(&model)), Ok(()));
+                model.later_properties.clear();
+                assert_eq!(property_map(gaps, Some(&model)), Err(EvidenceError::Schema));
+            }
+            let current = registry(3, attribute_revision);
+            assert_eq!(
+                property_map(gaps, Some(&current)),
+                Err(EvidenceError::Schema)
+            );
+        }
+
+        use crate::indexing::carrier::{SemanticContext, validate_namespace_attributes};
+        use crate::tree_format::{Attribute, Entry, EntryKind};
+
+        // Presence and digest width cannot activate a historical pointer.
+        let mut pointer = alloc::vec![0x58, 0x20];
+        pointer.extend_from_slice(&[7; 32]);
+        for value in [&pointer[..], &b"\x00"[..]] {
+            let entry = Entry {
+                kind: EntryKind::Directory { mode: 0o755 },
+                attrs: alloc::vec![Attribute {
+                    name: "index.occurrences",
+                    value
+                }],
+                attrs_present: true,
+                xattrs: Vec::new(),
+                xattrs_present: false,
+                provenance: None,
+            };
+            assert_eq!(validate_namespace_attributes(1, &entry), Ok(()));
+            assert!(validate_namespace_attributes(2, &entry).is_err());
+            for unknown in [0, 3, u64::MAX] {
+                assert!(validate_namespace_attributes(unknown, &entry).is_err());
+            }
+        }
+        assert!(SemanticContext::new(3, 2, 1).is_ok());
+        for (property, attribute, tree) in [
+            (1, 1, 1),
+            (2, 2, 1),
+            (3, 1, 1),
+            (4, 2, 1),
+            (3, 3, 1),
+            (3, 2, 2),
+        ] {
+            assert!(SemanticContext::new(property, attribute, tree).is_err());
+        }
+
+        // Unfenced nested records defer both new names to the enclosing fence.
+        assert_eq!(property_map(roots, None), Ok(()));
+        assert_eq!(property_map(gaps, None), Ok(()));
+        assert!(property_map(b"\xa1\x66domain\x00", None).is_err());
     }
 }

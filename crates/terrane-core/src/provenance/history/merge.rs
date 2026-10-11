@@ -52,7 +52,9 @@ impl VerifiedHistory {
             {
                 return Err(Rejected);
             }
-            candidate.insert_commit(commit.clone())?;
+            // Preserve the sender's exact immutable-view interpretation. A
+            // receiver's authoring selection cannot reinterpret imported history.
+            candidate.insert_commit_selected(commit.clone(), other.view_selection(*identity)?)?;
         }
         for (identity, bytes) in &other.nodes {
             if candidate

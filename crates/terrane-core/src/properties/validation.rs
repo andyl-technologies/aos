@@ -186,9 +186,16 @@ fn satisfies(
                         } else {
                             "class.shebang"
                         };
-                        if attr(entry, required, derived)?.is_none() {
+                        let Some(detail) = attr(entry, required, derived)? else {
                             return Ok(false);
-                        }
+                        };
+                        // Presence alone does not satisfy a typed classification
+                        // requirement. Reuse the registered schema without reading
+                        // content or replacing the caller's producer verification.
+                        let attribute = crate::derived::AttributeName::parse(required)
+                            .map_err(|_| Error::InvalidValue)?;
+                        crate::derived::AttributeValue::decode(attribute, detail)
+                            .map_err(|_| Error::InvalidValue)?;
                     }
                 }
             }
@@ -260,6 +267,16 @@ pub trait CommitContext {
     fn later_registered_properties(&self) -> &[&str] {
         &[]
     }
+
+    /// Borrows the independently selected semantics for changed graft overrides.
+    ///
+    /// Recorded callers retain the same selection used to resolve their parent
+    /// and target policies. This input grants no authority. The default preserves
+    /// current-semantics validation for existing implementations, including their
+    /// trusted [`Self::later_registered_properties`] vocabulary.
+    fn property_selection(&self) -> Option<&super::selected::Selection> {
+        None
+    }
 }
 
 struct SliceContext<'a> {
@@ -321,7 +338,13 @@ fn validate_changed_entry(
             }
             EntryKind::Tree { root, props } => {
                 if let Some(props) = props {
-                    super::validate_preserved_map(props, context.later_registered_properties())?;
+                    match context.property_selection() {
+                        Some(selection) => selection.validate_layer(&[], props)?,
+                        None => super::validate_graft_overrides(
+                            props,
+                            context.later_registered_properties(),
+                        )?,
+                    }
                 }
                 if !domain.permits_reference(context.reference_domain(*root)?) {
                     return Err(Error::Domain);
@@ -416,6 +439,16 @@ pub fn completeness(
     derived: &[DerivedAttribute<'_>],
     indexes: &[&str],
 ) -> Result<Completeness, Error> {
+    if !matches!(
+        property,
+        PropertyName::Hashes
+            | PropertyName::Classify
+            | PropertyName::Index
+            | PropertyName::StrictAttrs
+    ) {
+        return Err(Error::InvalidValue);
+    }
+
     let mut report = Completeness::default();
     for (entry, policy) in entries {
         if object(entry).is_none() && property != PropertyName::StrictAttrs {
