@@ -364,6 +364,7 @@ async fn stale_inventory_listing_objects_is_recollected_before_deletion() {
                 observed_hash: untracked,
                 byte_size: 19,
                 strong_etag: "\"stale\"".into(),
+                provider_version: None,
             }],
             now: stale_at + 1,
             lease_seconds: 100,

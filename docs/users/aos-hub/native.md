@@ -29,6 +29,20 @@ printf '%s\n' "$ROOT_PASSWORD" | \
 at the instance root. It is safe to run schema migration again after an update.
 Do not put passwords directly on the command line.
 
+For jobs without stdin, supply an owner-private credential file instead:
+
+```sh
+./result/bin/aos-hub --root ./hub-state init \
+  --root-email ops@example.com \
+  --root-password-file /run/credentials/hub-root-password
+```
+
+The file must contain UTF-8 and pass the Native credential ownership, permission,
+link and size checks. Use mode `0400` or `0600` in a directory that other users
+cannot modify. Trailing CR/LF terminators are removed; other whitespace is
+preserved. Choose exactly one password source. Native recovery also accepts
+`reset-root --email ops@example.com --password-file PATH`.
+
 Start the server:
 
 ```sh
@@ -178,7 +192,7 @@ link-local, and metadata addresses.
 Probe liveness and database access at:
 
 ```sh
-curl -fsS http://127.0.0.1:8420/healthz
+curl -fsS http://127.0.0.1:8420/-/health
 ```
 
 Prometheus metrics are served at `/metrics`. They cover indexing, webhooks,
@@ -192,7 +206,7 @@ For an AOS module deployment, update the containing system variant or sysroot
 generation and deploy it through the normal AOS image or userspace-generation
 workflow. The unit remains pinned to its old Nix store path until that system
 generation changes. After either update path, watch `aos-hub.service` and verify
-`/healthz` before returning traffic.
+`/-/health` before returning traffic.
 
 Native magic-link mail currently writes links to the service log rather than
 delivering mail. Use password, passkey, or OIDC sign-in for production until an

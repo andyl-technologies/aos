@@ -3,6 +3,11 @@
 //! The registry authenticates disk bytes and an opaque provider-owned artifact
 //! contract. It does not interpret boot media, slot, recovery, verification, or
 //! filesystem fields inside that contract.
+//!
+//! One artifact set may contain several disk encodings. Each format selects
+//! `image-delivery-<format>.json`; single-format producers may retain the
+//! original `image-delivery.json`. All encodings bind the same opaque
+//! `image-info.json` and immutable artifact-set reference.
 
 use crate::registry::parse::{
     ImageArtifactContractDocumentReference, ImageArtifactContractReference, ImageCompression,
@@ -78,6 +83,7 @@ pub(in crate::registry_ops) fn inspect_published_image(
     release: &str,
     platform: &str,
 ) -> Result<PublishedImage> {
+    validate_single_filename(format, "image format")?;
     if store_dir_from_store_path(&payload.path).is_none() {
         bail!("published image artifact set must be a canonical Nix store path");
     }
@@ -110,10 +116,18 @@ pub(in crate::registry_ops) fn inspect_published_image(
 
     // Delivery facts and provider facts have separate owners. The registry
     // interprets the former while authenticating the latter as opaque bytes.
-    let delivery_path = root_path.join("image-delivery.json");
+    let format_delivery = format!("image-delivery-{format}.json");
+    let delivery_name = match fs::symlink_metadata(root_path.join(&format_delivery)) {
+        Ok(_) => format_delivery,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            "image-delivery.json".to_string()
+        }
+        Err(error) => return Err(error).context("inspecting image delivery envelope"),
+    };
+    let delivery_path = root_path.join(&delivery_name);
     let (mut delivery_file, delivery_identity) = open_stable_regular_file_at_with_links(
         &root_file,
-        "image-delivery.json",
+        &delivery_name,
         &delivery_path,
         true,
     )?;

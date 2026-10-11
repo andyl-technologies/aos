@@ -25,6 +25,10 @@ use super::{
     VerifiedContainerReleaseDescriptor,
 };
 
+#[path = "oci_direct_repository.rs"]
+mod direct_repository;
+#[path = "oci_guarded_catalog.rs"]
+mod guarded_catalog;
 #[path = "oci_publication.rs"]
 mod publication;
 #[path = "oci_upload.rs"]
@@ -46,8 +50,9 @@ const OCI_MANIFEST_COLUMNS: &str = "manifest.registry_id, manifest.digest,
     manifest.platform_os_version, manifest.platform_os_features_json,
     manifest.annotations_json, manifest.descriptor_count,
     stored_blob.surface_object_id, object.object_key, manifest.created_at";
-const OCI_MANIFEST_REFERENCE_PREDICATE: &str = "((link.digest = ?2 AND ?2 IS NOT NULL)
-                         OR (tag.name = ?3 AND ?3 IS NOT NULL))";
+const OCI_MANIFEST_REFERENCE_PREDICATE: &str =
+    "((link.digest = ?2 AND CAST(?2 AS VARCHAR) IS NOT NULL)
+                         OR (tag.name = ?3 AND CAST(?3 AS VARCHAR) IS NOT NULL))";
 const OCI_UPLOAD_COLUMNS: &str = "id, registry_id, repository_id, publication_id,
     quota_reservation_id, writer_id, token_id, expected_digest, expected_size,
     maximum_size, uploaded_size, staging_placement_id,
@@ -57,7 +62,8 @@ const OCI_UPLOAD_COLUMNS: &str = "id, registry_id, repository_id, publication_id
     materialization_binding_write_revision, sha256_state_version, sha256_h0,
     sha256_h1, sha256_h2, sha256_h3, sha256_h4, sha256_h5, sha256_h6,
     sha256_h7, sha256_total_bytes, sha256_tail_hex, state, expires_at, created_at,
-    finished_at, cleanup_state, cleanup_finished_at, resource_version";
+    finished_at, cleanup_state, cleanup_finished_at, resource_version, authenticated_source_sha256,
+    authenticated_source_bytes";
 const OCI_PUBLICATION_COLUMNS: &str = "id, registry_id, repository_id, writer_id,
     token_id, target_tag, expected_tag_version, expected_tag_digest, root_digest,
     catalog_digest, release_tag, sidecar_sha256, confirmation_hash, topology_digest,
@@ -260,6 +266,13 @@ fn oci_publication_confirmation_hash_fields(
 }
 
 fn validate_catalog(input: &IndexOciRepositoryCatalog) -> Result<()> {
+    validate_catalog_with_readbacks(input, &[])
+}
+
+fn validate_catalog_with_readbacks(
+    input: &IndexOciRepositoryCatalog,
+    readbacks: &[crate::oci_projection::guard::VerifiedOciProjection],
+) -> Result<()> {
     if input.observed_at <= 0 {
         bail!("OCI catalog observation time must be positive");
     }
@@ -305,8 +318,16 @@ fn validate_catalog(input: &IndexOciRepositoryCatalog) -> Result<()> {
                 if let Some(image_config) = image_config {
                     let config = ImageConfig::from_json(image_config.config_json.as_bytes())?;
                     let config_platform = config.platform();
-                    if Sha256Digest::digest(image_config.config_json.as_bytes())
-                        != document.config.digest
+                    let exact_config_bytes =
+                        Sha256Digest::digest(image_config.config_json.as_bytes())
+                            == document.config.digest;
+                    let authenticated_projection = readbacks.iter().any(|proof| {
+                        proof.check(&document.config, crate::clock::now_unix_secs()).is_ok_and(|projection| {
+                            matches!(projection, crate::oci_projection::OciDocumentProjection::Config(observed) if observed == &config)
+                                && aos_oci_types::to_canonical_json(&config).is_ok_and(|canonical| canonical == image_config.config_json.as_bytes())
+                        })
+                    });
+                    if (!exact_config_bytes && !authenticated_projection)
                         || platform.as_ref() != Some(&config_platform)
                         || config.rootfs.diff_ids.len() != document.layers.len()
                         || image_config.layers.len() != document.layers.len()
@@ -932,19 +953,19 @@ fn extend_projection_identity_guards(
                  WHERE manifest.registry_id = ?2 AND manifest.digest = ?4
                    AND manifest.media_type = ?5 AND manifest.byte_size = ?6
                    AND (manifest.artifact_type = ?7
-                     OR (manifest.artifact_type IS NULL AND ?7 IS NULL))
+                     OR (manifest.artifact_type IS NULL AND CAST(?7 AS VARCHAR) IS NULL))
                    AND (manifest.subject_digest = ?8
-                     OR (manifest.subject_digest IS NULL AND ?8 IS NULL))
+                     OR (manifest.subject_digest IS NULL AND CAST(?8 AS VARCHAR) IS NULL))
                    AND (manifest.config_digest = ?9
-                     OR (manifest.config_digest IS NULL AND ?9 IS NULL))
+                     OR (manifest.config_digest IS NULL AND CAST(?9 AS VARCHAR) IS NULL))
                    AND (manifest.platform_os = ?10
-                     OR (manifest.platform_os IS NULL AND ?10 IS NULL))
+                     OR (manifest.platform_os IS NULL AND CAST(?10 AS VARCHAR) IS NULL))
                    AND (manifest.platform_architecture = ?11
-                     OR (manifest.platform_architecture IS NULL AND ?11 IS NULL))
+                     OR (manifest.platform_architecture IS NULL AND CAST(?11 AS VARCHAR) IS NULL))
                    AND (manifest.platform_variant = ?12
-                     OR (manifest.platform_variant IS NULL AND ?12 IS NULL))
+                     OR (manifest.platform_variant IS NULL AND CAST(?12 AS VARCHAR) IS NULL))
                    AND (manifest.platform_os_version = ?13
-                     OR (manifest.platform_os_version IS NULL AND ?13 IS NULL))
+                     OR (manifest.platform_os_version IS NULL AND CAST(?13 AS VARCHAR) IS NULL))
                    AND manifest.platform_os_features_json = ?14
                    AND manifest.annotations_json = ?15
                    AND manifest.descriptor_count = ?16
@@ -994,13 +1015,13 @@ fn extend_projection_identity_guards(
                        AND edge.target_digest = ?7 AND edge.media_type = ?8
                        AND edge.byte_size = ?9
                        AND (edge.platform_os = ?10
-                         OR (edge.platform_os IS NULL AND ?10 IS NULL))
+                         OR (edge.platform_os IS NULL AND CAST(?10 AS VARCHAR) IS NULL))
                        AND (edge.platform_architecture = ?11
-                         OR (edge.platform_architecture IS NULL AND ?11 IS NULL))
+                         OR (edge.platform_architecture IS NULL AND CAST(?11 AS VARCHAR) IS NULL))
                        AND (edge.platform_variant = ?12
-                         OR (edge.platform_variant IS NULL AND ?12 IS NULL))
+                         OR (edge.platform_variant IS NULL AND CAST(?12 AS VARCHAR) IS NULL))
                        AND (edge.platform_os_version = ?13
-                         OR (edge.platform_os_version IS NULL AND ?13 IS NULL))
+                         OR (edge.platform_os_version IS NULL AND CAST(?13 AS VARCHAR) IS NULL))
                        AND edge.platform_os_features_json = ?14
                        AND edge.annotations_json = ?15)",
                 vals![
@@ -1312,7 +1333,11 @@ pub struct OciLayerProjection {
 /// Exact runnable-image configuration projected during catalog admission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OciImageConfigProjection {
-    /// Exact bounded configuration JSON bytes as UTF-8.
+    /// Bounded configuration metadata as UTF-8 JSON.
+    ///
+    /// Standalone admission retains original bytes. Guarded Hybrid admission
+    /// stores the canonical semantic projection after independently proving the
+    /// original digest; this serialization is never its content identity.
     pub config_json: String,
     /// Canonical AOS/Nix system selector.
     pub aos_system: String,
@@ -1417,7 +1442,14 @@ fn validate_sha_progress(state: &OciSha256State, uploaded_size: u64) -> Result<(
 fn build_oci_catalog_statements(
     input: &IndexOciRepositoryCatalog,
 ) -> Result<Vec<CheckedStatement>> {
-    validate_catalog(input)?;
+    build_oci_catalog_statements_with_readbacks(input, &[])
+}
+
+fn build_oci_catalog_statements_with_readbacks(
+    input: &IndexOciRepositoryCatalog,
+    readbacks: &[crate::oci_projection::guard::VerifiedOciProjection],
+) -> Result<Vec<CheckedStatement>> {
+    validate_catalog_with_readbacks(input, readbacks)?;
     let now = input.observed_at;
     let repository_id = portable_relational_id(Uuid::new_v4());
     let mut statements = Vec::<CheckedStatement>::new();
@@ -2484,7 +2516,7 @@ impl Database {
             .query(
                 "SELECT name, digest, source_kind, resource_version, updated_at
                  FROM oci_tags
-                 WHERE repository_id = ?1 AND (?2 IS NULL OR name > ?2)
+                 WHERE repository_id = ?1 AND (CAST(?2 AS VARCHAR) IS NULL OR name > ?2)
                  ORDER BY name LIMIT ?3",
                 &vals![repository_id, last.map(Tag::as_str), limit],
             )
@@ -2569,7 +2601,7 @@ impl Database {
                  WHERE link.repository_id = ?1
                    AND manifest.subject_digest = ?2
                    AND manifest.artifact_type IS NOT NULL
-                   AND (?3 IS NULL OR manifest.artifact_type = ?3)
+                   AND (CAST(?3 AS VARCHAR) IS NULL OR manifest.artifact_type = ?3)
                  ORDER BY manifest.digest LIMIT ?4",
                 &vals![
                     repository_id,
@@ -2852,10 +2884,58 @@ fn parse_annotations(value: &str) -> Result<Annotations> {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
     use super::*;
     use crate::db::{
         ApplyOciAdminMutation, OciManualTagMutationOperation, PlanOciManualTagMutation,
     };
+
+    struct CountedClaimBackend {
+        inner: Box<dyn crate::backend::Backend>,
+        transactions: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::backend::Backend for CountedClaimBackend {
+        fn dialect(&self) -> crate::dialect::Dialect {
+            self.inner.dialect()
+        }
+
+        async fn migrate_schema(&self) -> anyhow::Result<()> {
+            self.inner.migrate_schema().await
+        }
+
+        async fn execute(&self, sql: &str, params: &[crate::value::Value]) -> Result<u64> {
+            self.transactions.fetch_add(1, Ordering::Relaxed);
+            self.inner.execute(sql, params).await
+        }
+
+        async fn execute_insert(&self, sql: &str, params: &[crate::value::Value]) -> Result<i64> {
+            self.transactions.fetch_add(1, Ordering::Relaxed);
+            self.inner.execute_insert(sql, params).await
+        }
+
+        async fn query(&self, sql: &str, params: &[crate::value::Value]) -> Result<Vec<Row>> {
+            self.inner.query(sql, params).await
+        }
+
+        async fn execute_batch(&self, sql: &str) -> Result<()> {
+            self.transactions.fetch_add(1, Ordering::Relaxed);
+            self.inner.execute_batch(sql).await
+        }
+
+        async fn batch(&self, statements: &[Statement]) -> Result<()> {
+            self.transactions.fetch_add(1, Ordering::Relaxed);
+            self.inner.batch(statements).await
+        }
+
+        async fn checked_batch(&self, statements: &[CheckedStatement]) -> Result<()> {
+            self.transactions.fetch_add(1, Ordering::Relaxed);
+            self.inner.checked_batch(statements).await
+        }
+    }
 
     fn descriptor(media_type: MediaType, bytes: &[u8]) -> Descriptor {
         Descriptor {
@@ -3347,34 +3427,25 @@ mod tests {
             ("platform_variant", 12),
         ] {
             let equality = format!("manifest.{column} = ${parameter}");
-            let null_check = format!("manifest.{column} IS NULL AND ${parameter} IS NULL");
+            let null_check =
+                format!("manifest.{column} IS NULL AND CAST(${parameter} AS VARCHAR) IS NULL");
             assert!(postgres.sql.contains(&equality), "{}", postgres.sql);
             assert!(postgres.sql.contains(&null_check), "{}", postgres.sql);
-            assert!(
-                postgres.sql.find(&equality) < postgres.sql.find(&null_check),
-                "PostgreSQL must infer ${parameter} from typed equality first: {}",
-                postgres.sql
-            );
         }
     }
 
     #[test]
-    fn manifest_reference_predicate_types_nullable_parameters_before_null_checks() {
+    fn manifest_reference_predicate_casts_nullable_parameters() {
         let postgres = crate::dialect::Dialect::Postgres
             .translate(OCI_MANIFEST_REFERENCE_PREDICATE)
             .unwrap();
 
         for (equality, null_check) in [
-            ("link.digest = $2", "$2 IS NOT NULL"),
-            ("tag.name = $3", "$3 IS NOT NULL"),
+            ("link.digest = $2", "CAST($2 AS VARCHAR) IS NOT NULL"),
+            ("tag.name = $3", "CAST($3 AS VARCHAR) IS NOT NULL"),
         ] {
             assert!(postgres.sql.contains(equality), "{}", postgres.sql);
             assert!(postgres.sql.contains(null_check), "{}", postgres.sql);
-            assert!(
-                postgres.sql.find(equality) < postgres.sql.find(null_check),
-                "PostgreSQL must infer nullable reference parameters from typed equality first: {}",
-                postgres.sql
-            );
         }
     }
 
@@ -3520,6 +3591,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn portable_sha256_resumes_after_json_transfer() {
+        let mut native = OciSha256State::initial();
+        native.update(&vec![b'a'; 65]).unwrap();
+        let encoded = serde_json::to_vec(&native).unwrap();
+
+        let mut worker: OciSha256State = serde_json::from_slice(&encoded).unwrap();
+        worker.update(b"next chunk").unwrap();
+
+        let mut expected = vec![b'a'; 65];
+        expected.extend_from_slice(b"next chunk");
+        assert_eq!(
+            worker.final_digest().unwrap(),
+            Sha256Digest::digest(&expected)
+        );
+
+        let mut unknown_field: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        unknown_field["extra"] = serde_json::Value::Bool(true);
+        assert!(serde_json::from_value::<OciSha256State>(unknown_field).is_err());
     }
 
     #[tokio::test]
@@ -4195,7 +4287,12 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_uploads_charge_one_shared_digest_once() {
-        let (db, registry_id, placement_id) = catalog_database().await;
+        let (mut db, registry_id, placement_id) = catalog_database().await;
+        let transactions = Arc::new(AtomicUsize::new(0));
+        db.backend = Box::new(CountedClaimBackend {
+            inner: db.backend,
+            transactions: Arc::clone(&transactions),
+        });
         let catalog = catalog_fixture(registry_id, placement_id);
         record_catalog_bytes(&db, &catalog).await;
         let repository = db.index_oci_repository_catalog(&catalog).await.unwrap();
@@ -4325,9 +4422,17 @@ mod tests {
             db.claim_oci_upload(&claim(&uploads[0])).await.unwrap(),
             OciBlobClaimOutcome::Claimed
         );
+        let transactions_before_wait = transactions.load(Ordering::Relaxed);
+        for _ in 0..32 {
+            assert_eq!(
+                db.claim_oci_upload(&claim(&uploads[1])).await.unwrap(),
+                OciBlobClaimOutcome::InProgress
+            );
+        }
         assert_eq!(
-            db.claim_oci_upload(&claim(&uploads[1])).await.unwrap(),
-            OciBlobClaimOutcome::InProgress
+            transactions.load(Ordering::Relaxed),
+            transactions_before_wait,
+            "digest waiters must leave the SQL writer available to the finalizer"
         );
 
         let first = db

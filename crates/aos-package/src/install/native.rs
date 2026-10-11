@@ -609,6 +609,34 @@ pub(crate) fn recover(profile: &Profile) -> Result<()> {
     consumer.recover(cancellation.token())
 }
 
+/// Refuses legacy package metadata before opening a store connection or importing bytes.
+///
+/// # Errors
+/// Returns an error if a selected or installed package lacks a Native deployment envelope.
+pub(crate) fn validate_package_envelopes(
+    installed: &[InstalledMeta],
+    closures: &[ResolvedClosure],
+) -> Result<()> {
+    for meta in closures.iter().flat_map(|closure| &closure.closure) {
+        ensure!(
+            meta.deployment.is_some(),
+            "package {}@{} has no native deployment envelope",
+            meta.name,
+            meta.version
+        );
+    }
+    for meta in installed {
+        ensure!(
+            meta.apm
+                .as_ref()
+                .is_some_and(|package| package.deployment.is_some()),
+            "installed root {} has no authenticated native package envelope",
+            meta.store_path
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn prepare(
     config: &ApmConfig,
     profile: &Profile,
@@ -647,23 +675,8 @@ fn prepare_with_inputs(
     base: Option<(EvaluationInput, Deployment)>,
     configured_names: &BTreeSet<String>,
 ) -> Result<Prepared> {
-    for meta in closures.iter().flat_map(|closure| &closure.closure) {
-        ensure!(
-            meta.deployment.is_some(),
-            "package {}@{} has no native deployment envelope",
-            meta.name,
-            meta.version
-        );
-    }
-    for meta in installed {
-        ensure!(
-            meta.apm
-                .as_ref()
-                .is_some_and(|package| package.deployment.is_some()),
-            "installed root {} has no authenticated native package envelope",
-            meta.store_path
-        );
-    }
+    validate_package_envelopes(installed, closures)?;
+
     let executable = packaged_path("AOS_NIX_STORE")?;
     let mut temporary_roots =
         crate::store::temp_roots::TemporaryRoots::open(&executable, &Default::default())?;

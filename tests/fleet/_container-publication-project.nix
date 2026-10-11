@@ -5,25 +5,80 @@
   packages,
 }: let
   system = pkgs.stdenv.hostPlatform.system;
-  names = builtins.attrNames packages;
+  moduleDependencies = import ../../lib/packages/module-dependencies.nix;
+  dependenciesFor = package:
+    packageArtifacts.dependencyValues (package.runtimeDeps or [])
+    ++ map moduleDependencies.seed (package.moduleDeps or []);
+  # APR publishes all ordinary packages declared by one source build. Retain
+  # the real named output packages, including their own native metadata.
+  publicationClosure = builtins.genericClosure {
+    startSet =
+      lib.mapAttrsToList (name: package: {
+        key = name;
+        inherit package;
+      })
+      packages;
+    operator = record:
+      (lib.mapAttrsToList (name: definition: let
+        package = packages.${name} or pkgs.${name}
+        or (throw "Fixture source build declares unavailable subpackage '${name}'.");
+        output = record.package.${definition.output};
+      in
+        if package.drvPath != record.package.drvPath || builtins.toString package != builtins.toString output
+        then throw "Fixture subpackage '${name}' differs from its declared source build output."
+        else {
+          key = name;
+          inherit package;
+        })
+      (record.package.outputPackages or {}))
+      ++ map (package: {
+        key = packageArtifacts.nameFor package;
+        inherit package;
+      })
+      (dependenciesFor record.package);
+  };
+  publicationPackages = builtins.listToAttrs (map (record: {
+      name = record.key;
+      value = record.package;
+    })
+    publicationClosure);
+  names = builtins.attrNames publicationPackages;
   policy = import ../../pkgs/_target-policy.nix {
-    inherit lib packages;
+    inherit lib;
+    packages = publicationPackages;
     releasePlatforms = [system];
   };
   inventory = policy.releaseDerivations {
-    inherit system packages names;
+    inherit system names;
+    packages = publicationPackages;
   };
-  # Recipe paths retain source evidence without requesting every compiler or
-  # sibling output that the recipe's original evaluation made available.
+  # APR authenticates every output of the evaluated source build, including
+  # outputs that are not separate published packages. Keep them registered in
+  # the fixture store alongside their recipes and package metadata.
   retainArtifact = artifact: [artifact (builtins.unsafeDiscardOutputDependency artifact.drvPath)];
-  nativeRoots = lib.concatMap (name: let
-    package = packages.${name};
-    artifacts =
-      [package package.deploymentArtifact package.documentationArtifact]
-      ++ lib.optional (package ? qualificationArtifact && package.qualificationArtifact != null) package.qualificationArtifact;
-  in
-    lib.concatMap retainArtifact artifacts)
-  names;
+  packageArtifacts = import ../../lib/packages/artifacts.nix {};
+  selectedPackages = builtins.attrValues publicationPackages;
+  # Deployment modules resolve provider packages through the authenticated
+  # catalog, including providers absent from an executable's runtime closure.
+  dependencies = lib.concatMap dependenciesFor selectedPackages;
+  # Retaining dependency payloads alone does not authenticate an installation.
+  dependencyPublicationRoots = lib.filter (package:
+    !(builtins.elem package.drvPath (map (root: root.drvPath) (builtins.attrValues packages))))
+  (lib.uniqueBy (package: package.drvPath) dependencies);
+  sourceOutputs = lib.concatMap (package:
+    map (outputName:
+      if outputName == "out"
+      then package
+      else package.${outputName})
+    (package.outputs or ["out"]))
+  (selectedPackages ++ dependencies);
+  # The release policy names a distinct deployment companion for each output.
+  # Use its retention projection so the fixture and APR select the same roots.
+  publicationRoots = policy.releaseDerivationRoots {
+    inherit system names;
+    packages = publicationPackages;
+  };
+  nativeRoots = lib.uniqueBy builtins.toString (lib.concatMap retainArtifact (sourceOutputs ++ publicationRoots));
   # Inventory locators deliberately have no string context. Restore retention
   # from their actual package roots without inventing publication metadata.
   inventoryFile = pkgs.writeTextFile {
@@ -42,5 +97,5 @@
     '';
   };
 in {
-  inherit project inventory inventoryFile nativeRoots;
+  inherit project inventory inventoryFile nativeRoots dependencyPublicationRoots;
 }

@@ -12,6 +12,8 @@ use aos_package::registry::hub_publication::{
 use aos_remote::{hub_rpc as HubTopologyMethod, hub_types};
 use inventory::publication_manifest_request;
 
+mod direct_upload;
+
 /// Handles the hub publish command family through the public API.
 ///
 /// # Errors
@@ -123,7 +125,7 @@ pub(crate) async fn upload_registry_publication(
     root: &std::path::Path,
     printer: &Printer,
 ) -> Result<hub_types::RegistryPublication> {
-    hub_publication::upload_registry_publication(
+    hub_publication::upload_registry_publication_with_options(
         &PublicationAccess {
             hub: access.hub.clone(),
             token: access.token.clone(),
@@ -132,6 +134,7 @@ pub(crate) async fn upload_registry_publication(
         manifest,
         root,
         printer,
+        direct_upload::options(access),
     )
     .await
 }
@@ -148,7 +151,7 @@ pub(crate) async fn prepare_registry_publication(
     root: &std::path::Path,
     printer: &Printer,
 ) -> Result<hub_types::RegistryPublication> {
-    hub_publication::prepare_registry_publication(
+    hub_publication::prepare_registry_publication_with_options(
         &PublicationAccess {
             hub: access.hub.clone(),
             token: access.token.clone(),
@@ -157,9 +160,13 @@ pub(crate) async fn prepare_registry_publication(
         manifest,
         root,
         printer,
+        direct_upload::options(access),
     )
     .await
 }
 
 /// Re-exports shared descriptor-pinned inventory helpers for command consumers.
 pub(crate) use aos_package::registry::hub_publication::inventory;
+
+#[cfg(test)]
+mod transport_tests;

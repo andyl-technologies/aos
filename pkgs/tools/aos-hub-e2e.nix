@@ -169,7 +169,7 @@ mkDerivation {
           --channel stable --architecture x86_64 --target qemu-kvm)"
         if printf '%s' "$image_show" | grep -q '"format":"qcow2"' \
            && printf '%s' "$image_show" | grep -q '"releaseVerification":"verified"' \
-           && printf '%s' "$image_show" | grep -q '"bootVerification":"signed-unverified"'; then
+           && printf '%s' "$image_show" | grep -q '"bootVerification":"provider-contract:aos.hub-test.image-artifacts/v2"'; then
           pass "aos image show resolves target to complete integrity metadata"
         else die "aos image show did not resolve qemu-kvm to QCOW2"; fi
 

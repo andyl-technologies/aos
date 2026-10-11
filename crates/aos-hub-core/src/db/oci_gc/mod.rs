@@ -12,6 +12,7 @@ use aos_oci_types::{MediaType, RepositoryName, Sha256Digest};
 mod cancel;
 mod inventory;
 mod inventory_model;
+mod inventory_progress;
 mod plan;
 mod plan_frontier;
 mod plan_model;
@@ -27,6 +28,7 @@ mod tests;
 
 pub use cancel::*;
 pub use inventory::*;
+pub use inventory_progress::*;
 pub use plan::*;
 pub use purge_plan::*;
 pub use remediation::*;
@@ -213,6 +215,8 @@ pub struct OciGcPlacementActionRecord {
     pub expected_size: u64,
     /// Strong entity tag frozen by provider enumeration, when present.
     pub expected_strong_etag: Option<String>,
+    /// Provider upload incarnation frozen by the reviewed inventory.
+    pub expected_provider_version: Option<String>,
     /// Whether the sealed inventory contained the canonical key.
     pub inventory_entry_present: bool,
     /// Exact provider inventory generation used by the plan.

@@ -10,7 +10,8 @@ use super::*;
 /// `words` are the eight chaining words after all complete 64-byte blocks;
 /// `total_bytes` includes both those blocks and `tail`. The tail is encoded as
 /// lowercase hexadecimal so every SQL transport preserves it byte-for-byte.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OciSha256State {
     /// Encoding version, currently [`OCI_SHA256_STATE_VERSION`].
     pub version: u32,

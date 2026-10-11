@@ -83,6 +83,40 @@ let
       qualificationKeys = "hub-qualification-keys";
     };
   };
+  hybridConfiguration = {
+    enable = true;
+    deploymentId = "hub-hybrid-v1";
+    externalUrl = "https://hub.example.test";
+    hybrid = {
+      enable = true;
+      workerUrl = "https://storage.example.test";
+      originUrl = "https://native.example.test";
+    };
+    credentials = {
+      jwtSecret = "hub-jwt";
+      instanceSecretKey = "hub-instance-key";
+      databaseUrl = "hub-database-url";
+      hybridIngressKey = "hub-ingress-key";
+      storageWorkKey = "hub-storage-key";
+      routeReservationKeys = "hub-route-keys";
+      domainProbeSignerManifest = "hub-probe-manifest";
+    };
+  };
+  hybrid = evaluate hybridConfiguration;
+  hybridService = builtins.head (builtins.filter (node: node.input ? service && node.input.service == "aos-hub") (builtins.attrValues hybrid.config.aos.activation.graph.nodes));
+  hybridProxy = evaluate (hybridConfiguration
+    // {
+      hybrid = hybridConfiguration.hybrid // {uploadMode = "worker_proxy";};
+    });
+  hybridProxyService = builtins.head (builtins.filter (node: node.input ? service && node.input.service == "aos-hub") (builtins.attrValues hybridProxy.config.aos.activation.graph.nodes));
+  hybridWithoutDatabase = evaluate {
+    enable = true;
+    hybrid.enable = true;
+    credentials = {
+      routeReservationKeys = "hub-route-keys";
+      domainProbeSignerManifest = "hub-probe-manifest";
+    };
+  };
   invalid = evaluate {enable = true;};
   incompleteRelease = evaluate {
     enable = true;
@@ -95,6 +129,10 @@ let
   nodes = builtins.attrValues evaluated.config.aos.activation.graph.nodes;
   service = builtins.head (builtins.filter (node: node.input ? service && node.input.service == "aos-hub") nodes);
   allocations = builtins.filter (node: node.input ? path && node.input.path == "/var/lib/aos-hub") nodes;
+  prerequisiteNodeIds = builtins.attrNames (lib.filterAttrs (_: node:
+    (node.input ? path && node.input.path == "/var/lib/aos-hub")
+    || (builtins.elemAt node.identity 3 == "network" && builtins.elemAt node.identity 4 == "ready"))
+  evaluated.config.aos.activation.graph.nodes);
   credentials = builtins.filter (node: builtins.elemAt node.identity 3 == "credential" && builtins.elemAt node.identity 4 == "deliver") nodes;
   credentialViews = builtins.listToAttrs (builtins.map (view: {
       name = view.name;
@@ -133,7 +171,19 @@ let
     (builtins.attrNames expectedCredentialEnvironment);
     hubRejectsMissingAuthority = !(assertionsPass invalid);
     hubRejectsPartialReleaseAuthority = !(assertionsPass incompleteRelease);
+    hubHybridConfigurationPasses = assertionsPass hybrid;
+    hubHybridDefaultsToSignedDirect = hybridService.input.environment.variables.HUB_HYBRID_UPLOAD_MODE == "direct";
+    hubHybridExplicitWorkerProxy = assertionsPass hybridProxy && hybridProxyService.input.environment.variables.HUB_HYBRID_UPLOAD_MODE == "worker_proxy";
+    hubHybridUsesRemoteWork =
+      builtins.elem "hybrid" (builtins.head hybridService.input.lifecycle.start).executable.arguments
+      && hybridService.input.environment.variables.HUB_HYBRID_WORKER_URL == "https://storage.example.test"
+      && hybridService.input.environment.variables.HUB_HYBRID_ORIGIN_URL == "https://native.example.test";
+    hubHybridKeepsTypedCredentials = builtins.length hybridService.input.credentials.views == 7;
+    hubHybridRejectsMissingDatabase = !(assertionsPass hybridWithoutDatabase);
     hubOrdersPrerequisites = builtins.length service.dependencies >= 4;
+    hubOrdersNetworkAndState = builtins.length prerequisiteNodeIds == 2 && builtins.all (id: builtins.elem id service.dependencies) prerequisiteNodeIds;
+    hubKeepsReceiptsOutOfUnitDependencies = builtins.all (field: service.input.dependencies.${field} == []) ["after" "before" "requires" "wants"];
+    hubRequiresStateMount = builtins.length service.input.dependencies.required_mounts == 1 && (builtins.head service.input.dependencies.required_mounts).output == "path";
   };
 in
   assert builtins.all (value: value) (builtins.attrValues checks); checks

@@ -1,0 +1,29 @@
+AUXILIARY FIXTURE SOURCE ONLY, not pristine runtime source.
+
+Add to existing c334 fleet.rs immediately after mod background:
+    #[path = "fleet/pack_memory.rs"]
+    mod pack_memory;
+Install native-caller.rs at that exact child path.
+
+Append to existing c334 mirror/hybrid.rs:
+    /// Drives one already admitted metadata original through normal persistence.
+    #[cfg(test)]
+    pub(crate) async fn pack_memory_metadata_phase(
+        db: &Database,
+        work: &RemoteStorageWorkClient,
+        item: aos_hub_core::mirror_batch::MirrorBatchItem,
+    ) -> Result<MirrorProgress> {
+        let mut results = batch::run(db, work, vec![item], None).await;
+        ensure!(results.len() == 1, "metadata phase result count differs");
+        results.pop().context("metadata phase result absent")?.1
+    }
+
+No other Native source overlay. Capture base/preimages, this exact declaration/
+wrapper delta and child bytes separately. Compile default Native lib once through
+actual AOS dev environment offline/locked with postgres,required-live-dialects;
+ordinary Native package remains unchanged. Register exactly ignored selector:
+storage_work::external_oci::tests::fleet::pack_memory::actual_pack_memory_native_consumer
+
+Do not reuse old helper acceptance: input.expectedExecutableSha256 must equal
+new auxiliary ELF. Real MirrorFunctional/Pack admission and current SQL/source
+inputs are independent prerequisites after realization, not created by this child.

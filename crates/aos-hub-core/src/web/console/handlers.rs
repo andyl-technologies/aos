@@ -147,21 +147,26 @@ impl Session {
         mint_csrf_token(&self.secret)
     }
 
+    // Only SessionAuth from genuine cookie validation supplies these pins.
+    // Keeping the raw cookie solely in Session prevents it entering a JWT.
+    fn access_auth(&self) -> crate::db::TokenAuth {
+        crate::db::TokenAuth {
+            token_id: format!("browser-session-{}", self.auth.user_id),
+            owner: self.principal(),
+            owner_incarnation: Some(self.auth.owner_incarnation.clone()),
+            browser_session_id_hash: Some(self.auth.session_id_hash.clone()),
+            scope: Scope::root(),
+            permissions: iam::role_grants(Role::Owner).to_vec(),
+        }
+    }
+
     fn api_bearer(&self, deps: &ConsoleDeps) -> anyhow::Result<String> {
         let ttl = self
             .auth
             .expires_at
             .saturating_sub(crate::clock::now_unix_secs())
             .clamp(1, BROWSER_ACCESS_TOKEN_TTL_SECS);
-        let token = deps.jwt_keys.mint(
-            &crate::db::TokenAuth {
-                token_id: format!("browser-session-{}", self.auth.user_id),
-                owner: self.principal(),
-                scope: Scope::root(),
-                permissions: iam::role_grants(Role::Owner).to_vec(),
-            },
-            ttl,
-        )?;
+        let token = deps.jwt_keys.mint(&self.access_auth(), ttl)?;
         Ok(format!("Bearer {token}"))
     }
 }
@@ -188,13 +193,13 @@ pub(crate) async fn session_token(deps: ConsoleDeps, headers: HeaderMap) -> Resp
         }
     };
     if !request_has_exact_origin(&headers, &deps.external_url) {
-        return (StatusCode::FORBIDDEN, "invalid request origin").into_response();
+        return observed_session_refusal("invalid request origin", "session_origin_refused");
     }
     let csrf = headers
         .get("x-aos-csrf")
         .and_then(|value| value.to_str().ok());
     if !csrf.is_some_and(|token| verify_csrf_token(&session.secret, token)) {
-        return (StatusCode::FORBIDDEN, "invalid CSRF token").into_response();
+        return observed_session_refusal("invalid CSRF token", "session_csrf_refused");
     }
 
     let grants = match session.grants(&deps.db).await {
@@ -213,12 +218,7 @@ pub(crate) async fn session_token(deps: ConsoleDeps, headers: HeaderMap) -> Resp
         Ok(permissions) => permissions,
         Err(error) => return internal(error),
     };
-    let auth = crate::db::TokenAuth {
-        token_id: format!("browser-session-{}", session.auth.user_id),
-        owner: session.principal(),
-        scope: Scope::root(),
-        permissions: iam::role_grants(Role::Owner).to_vec(),
-    };
+    let auth = session.access_auth();
     let access_token = match deps.jwt_keys.mint(&auth, BROWSER_ACCESS_TOKEN_TTL_SECS) {
         Ok(token) => token,
         Err(error) => return internal(error),
@@ -241,14 +241,30 @@ pub(crate) async fn session_token(deps: ConsoleDeps, headers: HeaderMap) -> Resp
             .collect(),
         route_permissions,
     };
-    (
+    let evidence = crate::application_body_observation::canonical(&body, 128 * 1024).map(|reply| {
+        crate::application_body_observation::BodyEvidence {
+            constructor: "browser_session_token",
+            constructor_source_sha256: crate::application_body_observation::image(include_bytes!(
+                "handlers.rs"
+            ))
+            .sha256,
+            request: None,
+            reply,
+            required_projection: "actual_session_origin_csrf_and_bounded_grants_checks",
+        }
+    });
+    let mut response = (
         [
             (header::CACHE_CONTROL, "no-store"),
             (header::PRAGMA, "no-cache"),
         ],
         Json(body),
     )
-        .into_response()
+        .into_response();
+    if let Some(evidence) = evidence {
+        response.extensions_mut().insert(evidence);
+    }
+    response
 }
 
 async fn route_permissions(
@@ -356,7 +372,13 @@ pub(crate) async fn management_app(deps: ConsoleDeps, headers: HeaderMap) -> Res
          <noscript>The AOS Hub management console requires JavaScript.</noscript>\n\
          </body>\n</html>\n"
     );
-    (
+    let evidence = crate::application_body_observation::produced_evidence(
+        html.as_bytes(),
+        "authenticated_management_app",
+        include_bytes!("handlers.rs"),
+        "current_console_template_and_bounded_chrome_projection",
+    );
+    let mut response = (
         [
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
             (header::CACHE_CONTROL, "no-store"),
@@ -368,7 +390,11 @@ pub(crate) async fn management_app(deps: ConsoleDeps, headers: HeaderMap) -> Res
         ],
         html,
     )
-        .into_response()
+        .into_response();
+    if let Some(evidence) = evidence {
+        response.extensions_mut().insert(evidence);
+    }
+    response
 }
 
 fn html_attribute(value: &str) -> String {
@@ -2250,4 +2276,19 @@ async fn password_login_enabled(deps: &ConsoleDeps) -> bool {
         Ok(Some(value)) => !matches!(value.as_str(), "off" | "false" | "0"),
         _ => true,
     }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod authentication_tests;
+
+fn observed_session_refusal(body: &'static str, constructor: &'static str) -> Response {
+    let mut response = (StatusCode::FORBIDDEN, body).into_response();
+    crate::application_body_observation::produced(
+        &mut response,
+        body.as_bytes(),
+        constructor,
+        include_bytes!("handlers.rs"),
+        "actual_refused_session_origin_or_csrf_branch",
+    );
+    response
 }

@@ -1,0 +1,15 @@
+# Generation-thirteen additions to the immutable generation-twelve classification.
+native_direct_uploads	retain	session_id	text	no	1	retain
+native_direct_uploads	retain	deployment_id	text	no	0	retain
+native_direct_uploads	retain	principal_id	text	no	0	retain
+native_direct_uploads	retain	client_operation_id	text	no	0	retain
+native_direct_uploads	retain	oci_upload_id	text	yes	0	retain
+native_direct_uploads	retain	state	text	no	0	retain
+native_direct_uploads	retain	source_sha256	text	no	0	fingerprint
+native_direct_uploads	retain	declared_size	integer	no	0	retain
+native_direct_uploads	retain	verified_sha256	text	yes	0	fingerprint
+native_direct_uploads	retain	verified_size	integer	yes	0	retain
+native_direct_uploads	retain	materialization_placement_id	integer	yes	0	retain
+native_direct_uploads	retain	materialization_binding_id	integer	yes	0	retain
+native_direct_uploads	retain	state_json	text	no	0	private_json
+native_direct_uploads	retain	resource_version	integer	no	0	retain

@@ -1,5 +1,8 @@
 # Deploy the hosted AOS Hub
 
+For a Worker-fronted Native Hub with PostgreSQL, use the
+[hybrid deployment runbook](aos-hub-hybrid-deployment.md).
+
 The ANDYL-hosted staging and production Hubs are deployed manually by an
 operator. The packaged `aos-hub-cloudflare` installer invokes its bundled
 Wrangler, and Wrangler uses the operator's interactive Cloudflare OAuth session.

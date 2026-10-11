@@ -36,7 +36,8 @@ fn out_dir() -> BuildResult<PathBuf> {
 }
 
 fn manifest_dir() -> BuildResult<PathBuf> {
-    // A shared target directory can reuse this executable in another checkout.
+    // Cargo may reuse this compiled script across checkouts. Resolve the source
+    // root at execution time so manifest and console checks use the current tree.
     std::env::var_os("CARGO_MANIFEST_DIR")
         .map(PathBuf::from)
         .ok_or_else(|| failure("prost-build: CARGO_MANIFEST_DIR is not set"))
@@ -48,6 +49,10 @@ fn main() -> BuildResult<()> {
     let descriptor_path = out_dir()?.join("aos.hub.v1.descriptor.bin");
 
     prost_build::Config::new()
+        .skip_debug([
+            ".aos.hub.v1.DirectPartGrant",
+            ".aos.hub.v1.DirectRequiredHeader",
+        ])
         .file_descriptor_set_path(&descriptor_path)
         .compile_protos(&[&proto], &[proto_root])?;
 
@@ -96,6 +101,7 @@ fn preserve_open_enum_numbers(descriptor: &FileDescriptorSet) -> BuildResult<()>
         ("EndpointIngressKind", "ingress_kind", "ingressKind"),
         ("HubDeliveryKind", "delivery_kind", "deliveryKind"),
         ("ContainerRegistryPurgeFenceAction", "action", "action"),
+        ("StorageAuthorityDesiredState", "state", "state"),
     ] {
         let serialize = format!(
             "            let v = {enum_name}::try_from(self.{field_name})\n\
@@ -203,6 +209,7 @@ fn assert_open_enum_field_inventory(descriptor: &FileDescriptorSet) -> BuildResu
         "TestPlacementPolicyRevisionRequest.access_class:.aos.hub.v1.AccessClass:single",
         "TopologyPinImpact.allowed_actions:.aos.hub.v1.PinResolutionAction:repeated",
         "ContainerRegistryPurgeFence.action:.aos.hub.v1.ContainerRegistryPurgeFenceAction:single",
+        "SetStorageAuthorityAdmissionDecision.state:.aos.hub.v1.StorageAuthorityDesiredState:single",
     ]
     .into_iter()
     .map(str::to_owned)

@@ -281,11 +281,16 @@ pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestVio
                         | "BinaryCacheService/BeginCacheMultipartUpload"
                         | "BinaryCacheService/CompleteCacheMultipartUpload"
                         | "BinaryCacheService/AbortCacheMultipartUpload"
+                        | "DirectUploadService/BeginBatch"
+                        | "DirectUploadService/GrantPartsBatch"
+                        | "DirectUploadService/ReportPartsBatch"
+                        | "DirectUploadService/CompleteBatch"
+                        | "DirectUploadService/Abort"
                         | "AbilityDeploymentService/ReportPackageOverlay"
                 ) {
                     violations.push(violation(
                         method,
-                        "data-plane write exception is limited to canonical publication and cache-upload methods",
+                        "data-plane write exception is limited to canonical publication, cache and direct-upload methods",
                     ));
                 }
             }
@@ -1621,8 +1626,16 @@ mod tests {
         assert!(validate_method_manifest(&[
             write("BinaryCacheService", "CreateCacheObjectUploads"),
             write("BinaryCacheService", "RegisterCacheNarinfos"),
+            write("DirectUploadService", "BeginBatch"),
+            write("DirectUploadService", "GrantPartsBatch"),
+            write("DirectUploadService", "ReportPartsBatch"),
+            write("DirectUploadService", "CompleteBatch"),
+            write("DirectUploadService", "Abort"),
         ])
         .is_empty());
+        assert!(
+            !validate_method_manifest(&[write("DirectUploadService", "UploadObject")]).is_empty()
+        );
         assert_eq!(
             validate_method_manifest(&[write("IdentityService", &["Mint", "Token"].concat(),)])
                 .len(),

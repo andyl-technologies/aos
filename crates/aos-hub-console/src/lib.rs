@@ -17,6 +17,22 @@ pub mod route;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod staging;
 
+#[cfg(any(target_arch = "wasm32", test))]
+#[path = "workflows/cache_objects/direct/model.rs"]
+mod direct_upload_model;
+
+#[cfg(any(target_arch = "wasm32", test))]
+#[path = "workflows/registry_publication/direct_model.rs"]
+mod publication_upload_model;
+
+#[cfg(any(target_arch = "wasm32", test))]
+#[path = "workflows/cache_objects/direct/pool.rs"]
+mod direct_upload_pool;
+
+#[cfg(any(target_arch = "wasm32", test))]
+#[path = "workflows/cache_objects/direct/lifecycle_model.rs"]
+mod cache_upload_lifecycle_model;
+
 #[cfg(target_arch = "wasm32")]
 pub mod app;
 #[cfg(target_arch = "wasm32")]

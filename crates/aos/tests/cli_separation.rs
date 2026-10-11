@@ -232,7 +232,8 @@ fn image_preparation_is_public_and_rejects_container_before_state_access() -> Re
         .output()?;
     assert!(!output.status.success());
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("AOS containers support only user-scope")
+        String::from_utf8_lossy(&output.stderr)
+            .contains("requires host boot or TPM facilities unavailable in an AOS container")
     );
     assert_eq!(std::fs::read_dir(home.path())?.count(), 0);
     Ok(())

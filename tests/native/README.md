@@ -58,6 +58,11 @@ rendered-page assertions, browser errors, and desktop/narrow screenshots. Chrome
 is not introduced as a Hub package dependency. Stop the fixture with Ctrl-C after
 inspection.
 
+The settings fixture's registry has no indexed publication. The browser checks
+that its overview explains the first-publication prerequisite without requesting
+committed metadata that does not exist. Indexed registries still load their
+metadata editor and expose genuine API failures.
+
 ## Coverage limits
 
 The fixture's CDN is intentionally unconfigured: verification must fail and

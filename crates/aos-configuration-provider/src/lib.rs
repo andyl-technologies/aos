@@ -42,6 +42,10 @@ struct Effect {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Input {
+    // The executor resolves this prerequisite and orders the overlay mount.
+    // Portable file reconciliation does not select or mount host generations.
+    #[serde(default, rename = "configurationGeneration")]
+    _configuration_generation: Option<String>,
     path: String,
     #[serde(default)]
     content: Option<String>,

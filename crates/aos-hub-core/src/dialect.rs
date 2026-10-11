@@ -173,6 +173,16 @@ impl Dialect {
             // sqlite and postgres share ON CONFLICT, so no upsert rewrite.
             _ => sql.to_string(),
         };
+        let sql = if self == Dialect::Mysql {
+            // MySQL and MariaDB use these CAST target names. Rewrite them
+            // before generic DDL types turn TEXT and BLOB into column types.
+            let sql = replace_word(&sql, "AS BIGINT", "AS SIGNED");
+            let sql = replace_word(&sql, "AS VARCHAR", "AS CHAR");
+            let sql = replace_word(&sql, "AS TEXT", "AS CHAR");
+            replace_word(&sql, "AS BLOB", "AS BINARY")
+        } else {
+            sql
+        };
         let sql = self.rewrite_ddl_types(&sql);
         let sql = self.quote_reserved(&sql);
         Ok(self.rewrite_placeholders(&sql))
@@ -382,24 +392,38 @@ impl Dialect {
         }
         if self == Dialect::Mysql
             && s.contains("CREATE TABLE")
-            && s.contains("package_documentation_search(")
+            && (s.contains("package_documentation(") || s.contains("package_documentation_search("))
         {
-            // Four utf8mb4 VARCHAR(255) columns exceed InnoDB's index limit.
-            // Keep every original value and index an unambiguous JSON tuple
-            // instead. A digest collision rejects the insert; no write uses
-            // this digest to replace or resolve another document's identity.
-            // Stored generated columns may be unique, but not primary, keys
-            // on MariaDB. The parent documentation foreign key stays intact.
+            // Preserve byte-exact comparisons and matching parent/search
+            // foreign-key types. The version can contain multi-byte text;
+            // package names and platforms have a 512-byte token contract.
+            for column in ["package_name", "platform"] {
+                s = s.replace(
+                    &format!("{column} VARCHAR(255) NOT NULL"),
+                    &format!("{column} VARBINARY(512) NOT NULL"),
+                );
+            }
             s = s.replace(
-                "document_key VARCHAR(255) NOT NULL,",
-                "document_key VARCHAR(255) NOT NULL,\n  document_identity_digest BINARY(32) \
-GENERATED ALWAYS AS (UNHEX(SHA2(JSON_ARRAY(package_name, package_version, platform, \
-CAST(kind AS CHAR), document_key), 256))) STORED,",
+                "package_version VARCHAR(255) NOT NULL",
+                "package_version VARBINARY(1024) NOT NULL",
             );
-            s = s.replace(
-                "PRIMARY KEY(\n    registry_id, package_name, package_version, platform, kind, document_key\n  )",
-                "UNIQUE(registry_id, document_identity_digest)",
-            );
+            if s.contains("package_documentation_search(") {
+                // The full search tuple exceeds InnoDB's composite-key limit.
+                // A unique generated digest rejects duplicates or collisions;
+                // ordinary lookups still compare the original binary values.
+                // HEX gives JSON_ARRAY text inputs on both MySQL and MariaDB,
+                // retaining every byte without binary-character-set coercion.
+                s = s.replace(
+                    "document_key VARCHAR(255) NOT NULL,",
+                    "document_key VARBINARY(1024) NOT NULL,\n  document_identity_digest BINARY(32) \
+GENERATED ALWAYS AS (UNHEX(SHA2(JSON_ARRAY(HEX(package_name), HEX(package_version), \
+HEX(platform), HEX(kind), HEX(document_key)), 256))) STORED,",
+                );
+                s = s.replace(
+                    "PRIMARY KEY(\n    registry_id, package_name, package_version, platform, kind, document_key\n  )",
+                    "UNIQUE(registry_id, document_identity_digest)",
+                );
+            }
         }
         if self == Dialect::Mysql && s.contains("consumer_cache_publication_intents") {
             // The portable schema keeps the full committed URL and keys it by

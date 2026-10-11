@@ -28,6 +28,8 @@ pub struct PublicationAccess {
 /// Bounds each part to the publication service's 8 MiB wire contract.
 const MAX_PUBLICATION_PART_BYTES: u64 = 8 * 1024 * 1024;
 
+mod direct_upload;
+
 /// Uploads and commits one exact registry surface without advancing a channel.
 ///
 /// Release orchestration reuses this bounded publication primitive after it
@@ -44,7 +46,15 @@ pub async fn upload_registry_publication(
     printer: &Printer,
 ) -> Result<hub_types::RegistryPublication> {
     upload_registry_publication_with_commit(
-        access, registry, manifest, root, printer, true, false, None,
+        access,
+        registry,
+        manifest,
+        root,
+        printer,
+        true,
+        false,
+        None,
+        direct_upload::options(access),
     )
     .await
 }
@@ -63,7 +73,15 @@ pub async fn prepare_registry_publication(
     printer: &Printer,
 ) -> Result<hub_types::RegistryPublication> {
     upload_registry_publication_with_commit(
-        access, registry, manifest, root, printer, false, false, None,
+        access,
+        registry,
+        manifest,
+        root,
+        printer,
+        false,
+        false,
+        None,
+        direct_upload::options(access),
     )
     .await
 }
@@ -94,6 +112,45 @@ pub async fn stage_registry_candidate(
         false,
         true,
         Some((revision, expected_revision)),
+        direct_upload::options(access),
+    )
+    .await
+}
+
+/// Uploads and commits one exact publication using explicit Direct client options.
+///
+/// # Errors
+/// Returns an error for invalid inventory, changed admission, refused transport,
+/// transfer failure, or a failed final publication barrier.
+pub async fn upload_registry_publication_with_options(
+    access: &PublicationAccess,
+    registry: &str,
+    manifest: Option<&std::path::Path>,
+    root: &std::path::Path,
+    printer: &Printer,
+    options: aos_remote::DirectUploadOptions,
+) -> Result<hub_types::RegistryPublication> {
+    upload_registry_publication_with_commit(
+        access, registry, manifest, root, printer, true, false, None, options,
+    )
+    .await
+}
+
+/// Prepares exact publication bytes while withholding the mutable publication commit.
+///
+/// # Errors
+/// Returns an error for invalid inventory, changed admission, refused transport,
+/// transfer failure, or inconsistent verified readback.
+pub async fn prepare_registry_publication_with_options(
+    access: &PublicationAccess,
+    registry: &str,
+    manifest: Option<&std::path::Path>,
+    root: &std::path::Path,
+    printer: &Printer,
+    options: aos_remote::DirectUploadOptions,
+) -> Result<hub_types::RegistryPublication> {
+    upload_registry_publication_with_commit(
+        access, registry, manifest, root, printer, false, false, None, options,
     )
     .await
 }
@@ -107,7 +164,10 @@ async fn upload_registry_publication_with_commit(
     commit: bool,
     immutable_only: bool,
     stage: Option<(&aos_registry_surface::staging::StageRevision, u64)>,
+    options: aos_remote::DirectUploadOptions,
 ) -> Result<hub_types::RegistryPublication> {
+    // Keep invocation counters through inventory, admission and final controls.
+    let mut metrics_report = direct_upload::report_on_completion(&options);
     let mut pinned = match manifest {
         Some(manifest) => {
             let request = publication_manifest_request(manifest, registry)?;
@@ -194,8 +254,27 @@ async fn upload_registry_publication_with_commit(
         None
     };
     let client = publication_client(access).await?;
-    bind_publication_parent(&client, &mut pinned.request).await?;
-    let publication = begin_registry_publication_chunked(&client, &pinned.request).await?;
+    let discovery = aos_remote::discover_publication_transport(&client, &options).await?;
+    let direct_required = discovery.transfer_mode()
+        == hub_types::direct_upload::DirectAdvertisedTransferMode::DirectRequired;
+    if !direct_required {
+        metrics_report.suppress();
+    }
+    let prepared = if direct_required {
+        Some(
+            aos_remote::prepare_direct_publication(&client, &pinned.request, &options, &discovery)
+                .await?,
+        )
+    } else {
+        None
+    };
+    let publication = match &prepared {
+        Some(prepared) => prepared.publication.clone(),
+        None => {
+            bind_publication_parent(&client, &mut pinned.request).await?;
+            begin_registry_publication_chunked(&client, &pinned.request).await?
+        }
+    };
     let publication_id = publication.publication_id.clone();
     if let (Some(client), Some((revision, _))) = (&stage_client, stage) {
         client
@@ -282,38 +361,64 @@ async fn upload_registry_publication_with_commit(
             let pointer_start = objects.partition_point(|object| object.kind != "mutable_pointer");
             let (immutable_objects, pointer_objects) = objects.split_at(pointer_start);
 
-            upload_publication_object_class(
-                access,
-                &publication_id,
-                &pinned.root,
-                &pinned.request.objects,
-                immutable_objects,
-                printer,
-                "Uploading immutable publication objects",
-            )
-            .await?;
-            if !immutable_only {
+            let staged_direct = match &prepared {
+                Some(prepared) => {
+                    direct_upload::upload_if_required(
+                        &options,
+                        &client,
+                        prepared,
+                        &pinned.root,
+                        &pinned.request.objects,
+                        &objects,
+                        immutable_only,
+                    )
+                    .await?
+                }
+                None => false,
+            };
+            if !staged_direct {
                 upload_publication_object_class(
                     access,
                     &publication_id,
                     &pinned.root,
                     &pinned.request.objects,
-                    pointer_objects,
+                    immutable_objects,
                     printer,
-                    "Uploading publication pointers",
+                    "Uploading immutable publication objects",
                 )
                 .await?;
+                if !immutable_only {
+                    upload_publication_object_class(
+                        access,
+                        &publication_id,
+                        &pinned.root,
+                        &pinned.request.objects,
+                        pointer_objects,
+                        printer,
+                        "Uploading publication pointers",
+                    )
+                    .await?;
+                }
             }
             let client = publication_client(access).await?;
             if commit {
-                client
-                    .call_topology(
-                        HubTopologyMethod::CommitRegistryPublication,
-                        &hub_types::CommitRegistryPublicationRequest {
-                            publication_id: publication_id.to_string(),
-                        },
-                    )
-                    .await
+                match &prepared {
+                    Some(prepared) => {
+                        aos_remote::commit_direct_publication(&client, prepared, &options)
+                            .await
+                            .map_err(Into::into)
+                    }
+                    None => {
+                        client
+                            .call_topology(
+                                HubTopologyMethod::CommitRegistryPublication,
+                                &hub_types::CommitRegistryPublicationRequest {
+                                    publication_id: publication_id.to_string(),
+                                },
+                            )
+                            .await
+                    }
+                }
             } else {
                 let result: hub_types::RegistryPublication = client
                     .call_topology(
@@ -328,6 +433,16 @@ async fn upload_registry_publication_with_commit(
                     .iter()
                     .map(|object| (object.path.as_str(), object))
                     .collect::<std::collections::BTreeMap<_, _>>();
+                anyhow::ensure!(
+                    result.publication_id == publication.publication_id
+                        && result.registry == publication.registry
+                        && result.generation == publication.generation
+                        && result.manifest_digest == publication.manifest_digest
+                        && result.refs_digest == publication.refs_digest
+                        && result.default_commit == publication.default_commit
+                        && result.parent_publication_id == publication.parent_publication_id,
+                    "Hub changed the original prepared publication"
+                );
                 anyhow::ensure!(
                     observed.len() == declared.len()
                         && result.objects.len() == declared.len()
@@ -925,3 +1040,6 @@ fn publication_manifest_chunk_digest(
 }
 
 pub mod inventory;
+
+#[cfg(test)]
+mod transport_tests;

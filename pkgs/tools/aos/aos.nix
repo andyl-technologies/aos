@@ -423,7 +423,8 @@
       ++ apmRuntimeTools
       ++ lib.optionals (!isDarwinCross) linuxRuntimeDeps;
 
-    # APM needs this runtime source before a host has a retained descriptor.
+    # Profile evaluation imports this retained source tree at runtime. Keep
+    # its identity intact when the installed wrappers are reference-scrubbed.
     nukeRefsKeep = [lib.packageModuleLibrary];
 
     # mkDerivation normally constructs one RPATH from every runtimeDep. That

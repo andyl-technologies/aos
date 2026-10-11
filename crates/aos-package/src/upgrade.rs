@@ -314,6 +314,8 @@ pub async fn run(
     let trust_ctx = registries.trust_context_for_roots(&trust_roots);
     trust_ctx.enforce_totality()?;
 
+    crate::install::native::validate_package_envelopes(&installed, &native_closures)?;
+
     // Filter to only missing store paths.
     let mut store_paths: Vec<String> = all_new_metas.iter().map(|m| m.store_path.clone()).collect();
     store_paths.extend(

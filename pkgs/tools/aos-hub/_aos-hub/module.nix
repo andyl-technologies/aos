@@ -27,6 +27,22 @@
       handle = "jwt-secret";
       environment = "HUB_JWT_SECRET_FILE";
     };
+    instanceSecretKey = {
+      handle = "instance-secret-key";
+      environment = "AOS_HUB_SECRET_KEY_FILE";
+    };
+    databaseUrl = {
+      handle = "database-url";
+      environment = "HUB_DATABASE_URL_FILE";
+    };
+    hybridIngressKey = {
+      handle = "hybrid-ingress-key";
+      environment = "HUB_HYBRID_INGRESS_KEY_FILE";
+    };
+    storageWorkKey = {
+      handle = "storage-work-key";
+      environment = "HUB_STORAGE_WORK_KEY_FILE";
+    };
     deliveryAttestationKey = {
       handle = "delivery-attestation-key";
       environment = "HUB_DELIVERY_ATTESTATION_KEY_FILE";
@@ -87,7 +103,9 @@
     cfg.credentials.releasePublicationKeys
     cfg.credentials.qualificationKeys
   ];
-  releaseEvidenceConfigured = builtins.any (value: value != null) releaseEvidenceValues;
+  releaseEvidenceConfigured =
+    (cfg.deploymentId != null && !cfg.hybrid.enable)
+    || builtins.any (value: value != null) (builtins.tail releaseEvidenceValues);
   releaseEvidenceComplete = builtins.all (value: value != null) releaseEvidenceValues;
   usesTls = cfg.credentials.tlsCertificate != null;
   boundedString = types.str;
@@ -114,8 +132,15 @@
     {
       HUB_DNS_JSON_ENDPOINT = cfg.dnsJsonEndpoint;
     }
-    // lib.optionalAttrs releaseEvidenceComplete {
+    // lib.optionalAttrs (cfg.deploymentId != null) {
       HUB_DEPLOYMENT_ID = cfg.deploymentId;
+    }
+    // lib.optionalAttrs cfg.hybrid.enable {
+      HUB_HYBRID_WORKER_URL = cfg.hybrid.workerUrl;
+      HUB_HYBRID_ORIGIN_URL = cfg.hybrid.originUrl;
+      HUB_HYBRID_UPLOAD_MODE = cfg.hybrid.uploadMode;
+    }
+    // lib.optionalAttrs releaseEvidenceComplete {
       HUB_RELEASE_RECEIPT_KEY_ID = cfg.releaseReceiptKeyId;
       HUB_CHANNEL_RECEIPT_KEY_ID = cfg.channelReceiptKeyId;
     }
@@ -173,6 +198,7 @@
             "--reindex-interval"
             (toString cfg.reindexInterval)
           ]
+          ++ lib.optionals cfg.hybrid.enable ["--topology" "hybrid"]
           ++ lib.optionals (cfg.externalUrl != null) ["--external-url" cfg.externalUrl]
         ))
       ];
@@ -180,7 +206,7 @@
       stop = [];
       post_stop = [];
       restart = "always";
-      restart_delay_millis = 5000;
+      restart_delay_millis = 15000;
       remain_after_exit = false;
       start_timeout_millis = 90000;
       stop_timeout_millis = 90000;
@@ -189,14 +215,14 @@
       (resultOf "network-readiness" "resource")
       (resultOf "state-storage" "resource")
     ];
+    # Network and allocation receipts order native effects. They are not
+    # service identities and must not become systemd unit dependencies.
     dependencies = {
-      after = [
-        (resultOf "network-readiness" "resource")
-        (resultOf "state-storage" "resource")
-      ];
+      after = [];
       before = [];
-      requires = [(resultOf "state-storage" "resource")];
-      wants = [(resultOf "network-readiness" "resource")];
+      requires = [];
+      wants = [];
+      required_mounts = [(resultOf "state-storage" "path")];
     };
     supervision = {
       startup_protocol = "process";
@@ -272,6 +298,28 @@ in {
       default = "/var/lib/aos-hub";
       description = "Persistent directory containing the hub database and local storage bindings.";
     };
+    hybrid = {
+      uploadMode = lib.mkOption {
+        type = types.enum ["direct" "worker_proxy"];
+        default = "direct";
+        description = "Client upload transport. Worker proxy compatibility keeps upload bytes in Workers; direct requires signed provider URLs.";
+      };
+      enable = lib.mkOption {
+        type = types.bool;
+        default = false;
+        description = "Enable Worker-fronted Native Hub serving with remote storage processing.";
+      };
+      workerUrl = lib.mkOption {
+        type = types.nullOr endpoint;
+        default = null;
+        description = "HTTPS origin of the paired storage Worker.";
+      };
+      originUrl = lib.mkOption {
+        type = types.nullOr endpoint;
+        default = null;
+        description = "Private HTTPS origin the Worker uses to reach this Native Hub.";
+      };
+    };
     externalUrl = lib.mkOption {
       type = optionalString;
       default = null;
@@ -321,6 +369,23 @@ in {
       aos.services.hub = lib.mkDefault (service // {enable = cfg.enable;});
 
       assertions = [
+        {
+          assertion =
+            !serviceEnabled
+            || !cfg.hybrid.enable
+            || (cfg.deploymentId
+              != null
+              && cfg.hybrid.workerUrl != null
+              && cfg.hybrid.originUrl != null
+              && cfg.credentials.databaseUrl != null
+              && cfg.credentials.hybridIngressKey != null
+              && cfg.credentials.storageWorkKey != null
+              && cfg.credentials.jwtSecret != null
+              && cfg.credentials.instanceSecretKey != null
+              && cfg.externalUrl != null
+              && lib.hasPrefix "https://" cfg.externalUrl);
+          message = "hybrid Hub requires deploymentId, HTTPS externalUrl, workerUrl and originUrl, plus databaseUrl, hybridIngressKey, storageWorkKey, jwtSecret, and instanceSecretKey credentials";
+        }
         {
           assertion = !serviceEnabled || cfg.credentials.routeReservationKeys != null;
           message = "aos.registry-hub.credentials.routeReservationKeys is required";

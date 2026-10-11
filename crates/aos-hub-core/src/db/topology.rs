@@ -2958,6 +2958,7 @@ impl Database {
                 )
                 .unchecked(),
                 reservation_statement.unchecked(),
+                // KEYTEXT64 casts keep nullable route IDs typed in PostgreSQL.
                 Statement::new(
                     "INSERT INTO routes (id, url_reservation_id, resource_version,
                  endpoint_id, endpoint_generation, endpoint_ingress_kind, consumer_scope_key,
@@ -2973,7 +2974,7 @@ impl Database {
                  SELECT ?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                    ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
                    ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?32
-                 WHERE (?33 IS NULL OR EXISTS (
+                 WHERE (CAST(?33 AS VARCHAR(64)) IS NULL OR EXISTS (
                    SELECT 1 FROM routes predecessor
                    WHERE predecessor.id = ?33 AND predecessor.resource_version = ?34
                      AND predecessor.enabled = 1
@@ -3027,7 +3028,7 @@ impl Database {
                 Statement::new(
                     "INSERT INTO route_oci_capabilities (route_id, serves_web, created_at)
                      SELECT ?1, ?2, ?3 WHERE ?4 = 1
-                       AND EXISTS (SELECT 1 FROM routes WHERE id = ?1)",
+                       AND EXISTS (SELECT 1 FROM routes WHERE id = CAST(?1 AS VARCHAR(64)))",
                     vals![id, spec.serves_web, now, spec.serves_oci],
                 )
                 .unchecked(),
@@ -3035,7 +3036,7 @@ impl Database {
                     "INSERT INTO route_replacements
                      (successor_route_id, predecessor_route_id,
                       predecessor_resource_version, created_at)
-                     SELECT ?1, ?2, ?3, ?4 WHERE ?2 IS NOT NULL
+                     SELECT ?1, ?2, ?3, ?4 WHERE CAST(?2 AS VARCHAR(64)) IS NOT NULL
                        AND EXISTS (SELECT 1 FROM routes WHERE id = ?1)",
                     vals![
                         id,
@@ -3111,6 +3112,7 @@ impl Database {
                     ],
                 )
                 .unchecked(),
+                // Absent gateway IDs need an explicit KEYTEXT64 type in PostgreSQL.
                 Statement::new(
                     "INSERT INTO gateway_scope_grant_pins
                      (pin_id, gateway_id, generation, consumer_scope_key,
@@ -3119,7 +3121,8 @@ impl Database {
                       resource_version)
                      SELECT ?1, ?2, ?3, ?4, grant_generation, 'active', 'route',
                        ?5, 1, ?6, 1 FROM gateway_revision_route_scopes
-                     WHERE ?2 IS NOT NULL AND gateway_id = ?2 AND generation = ?3
+                     WHERE CAST(?2 AS VARCHAR(64)) IS NOT NULL
+                       AND gateway_id = CAST(?2 AS VARCHAR(64)) AND generation = ?3
                        AND consumer_scope_key = ?4 AND state = 'active' AND ?7 = 1",
                     vals![
                         format!("gateway-pin:{}", Uuid::new_v4().simple()),
@@ -3163,6 +3166,7 @@ impl Database {
                     ],
                 )
                 .unchecked(),
+                // Public routes have no access boundary, so type that NULL explicitly.
                 Statement::new(
                     "INSERT INTO network_policy_serving_pins
                      (pin_id, boundary_id, revision, consumer_scope_key,
@@ -3176,7 +3180,8 @@ impl Database {
                      JOIN network_policy_revision_lifecycle l
                        ON l.boundary_id = s.boundary_id AND l.revision = ?3
                       AND l.state = 'active'
-                     WHERE ?2 IS NOT NULL AND s.boundary_id = ?2
+                     WHERE CAST(?2 AS VARCHAR(64)) IS NOT NULL
+                       AND s.boundary_id = CAST(?2 AS VARCHAR(64))
                        AND s.consumer_scope_key = ?4 AND s.state = 'active' AND ?9 = 1",
                     vals![
                         format!("boundary-pin:{}", Uuid::new_v4().simple()),
@@ -3952,9 +3957,17 @@ impl Database {
             }
         };
         let (registry_id, cache_id) = surface.ids();
-        let surface_predicate = match surface {
-            SurfaceTarget::Registry(_) => "registry_id = ?1 AND cache_id IS NULL",
-            SurfaceTarget::BinaryCache(_) => "registry_id IS NULL AND cache_id = ?2",
+        let (surface_id, surface_predicate, update_route_predicate) = match surface {
+            SurfaceTarget::Registry(id) => (
+                id,
+                "registry_id = ?1 AND cache_id IS NULL",
+                "r.registry_id = ?1 AND r.cache_id IS NULL",
+            ),
+            SurfaceTarget::BinaryCache(id) => (
+                id,
+                "registry_id IS NULL AND cache_id = ?1",
+                "r.registry_id IS NULL AND r.cache_id = ?1",
+            ),
         };
         let route_surface_predicate = match surface {
             SurfaceTarget::Registry(_) => "r.registry_id = ?1 AND r.cache_id IS NULL",
@@ -3965,15 +3978,15 @@ impl Database {
             self.backend
                 .execute(
                     &format!(
-                        "UPDATE route_advertisements SET route_id = ?4,
-                         resource_version = resource_version + 1, updated_at = ?5
-                         WHERE {surface_predicate} AND audience = ?3
-                           AND resource_version = ?6 AND EXISTS (
-                             SELECT 1 FROM routes r WHERE r.id = ?4
-                               AND {route_surface_predicate}
+                        "UPDATE route_advertisements SET route_id = ?3,
+                         resource_version = resource_version + 1, updated_at = ?4
+                         WHERE {surface_predicate} AND audience = ?2
+                           AND resource_version = ?5 AND EXISTS (
+                             SELECT 1 FROM routes r WHERE r.id = ?3
+                               AND {update_route_predicate}
                                AND r.enabled = 1 AND {capability} = 1)"
                     ),
-                    &vals![registry_id, cache_id, audience, route_id, now, expected],
+                    &vals![surface_id, audience, route_id, now, expected],
                 )
                 .await?
         } else {
@@ -4008,19 +4021,18 @@ impl Database {
         surface: SurfaceTarget,
         audience: &str,
     ) -> Result<Option<RouteAdvertisementRecord>> {
-        let (registry_id, cache_id) = surface.ids();
-        let surface_predicate = match surface {
-            SurfaceTarget::Registry(_) => "registry_id = ?1 AND cache_id IS NULL",
-            SurfaceTarget::BinaryCache(_) => "registry_id IS NULL AND cache_id = ?2",
+        let (surface_id, surface_predicate) = match surface {
+            SurfaceTarget::Registry(id) => (id, "registry_id = ?1 AND cache_id IS NULL"),
+            SurfaceTarget::BinaryCache(id) => (id, "registry_id IS NULL AND cache_id = ?1"),
         };
         self.backend
             .query_opt(
                 &format!(
                     "SELECT registry_id, cache_id, audience, route_id,
                  resource_version, created_at, updated_at FROM route_advertisements
-                 WHERE {surface_predicate} AND audience = ?3"
+                 WHERE {surface_predicate} AND audience = ?2"
                 ),
-                &vals![registry_id, cache_id, audience],
+                &vals![surface_id, audience],
             )
             .await?
             .map(|row| {
@@ -4215,10 +4227,11 @@ impl Database {
         surface: SurfaceTarget,
         audience: &str,
     ) -> Result<Option<ReadyRouteAdvertisementIdentity>> {
-        let (registry_id, cache_id) = surface.ids();
-        let surface_predicate = match surface {
-            SurfaceTarget::Registry(_) => "cr.registry_id = ?1 AND cr.cache_id IS NULL",
-            SurfaceTarget::BinaryCache(_) => "cr.registry_id IS NULL AND cr.cache_id = ?2",
+        // Bind only the selected identity. PostgreSQL cannot infer the type of
+        // an unused NULL parameter left by the other surface branch.
+        let (surface_id, surface_predicate) = match surface {
+            SurfaceTarget::Registry(id) => (id, "cr.registry_id = ?1 AND cr.cache_id IS NULL"),
+            SurfaceTarget::BinaryCache(id) => (id, "cr.registry_id IS NULL AND cr.cache_id = ?1"),
         };
         self.backend
             .query_opt(
@@ -4242,7 +4255,7 @@ impl Database {
                   AND ao.configuration_digest = h.configuration_digest
                   AND ao.access_policy_digest = h.access_policy_digest
                   AND ao.state = 'verified'
-                 WHERE {surface_predicate} AND cr.audience = ?3
+                 WHERE {surface_predicate} AND cr.audience = ?2
                    AND r.enabled = 1
                    AND (r.mode <> 'direct' OR EXISTS (
                      SELECT 1 FROM direct_route_evidence de
@@ -4267,7 +4280,7 @@ impl Database {
                        AND eo.state = 'healthy' AND eo.listener_observed = 1
                        AND (e.scheme = 'http' OR eo.tls_observed = 1)))"
                 ),
-                &vals![registry_id, cache_id, audience],
+                &vals![surface_id, audience],
             )
             .await?
             .map(|row| {

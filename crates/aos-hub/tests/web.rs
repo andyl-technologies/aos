@@ -523,12 +523,9 @@ async fn registry_home_carries_setup_snippets_and_fingerprints() {
         body.contains("substituters = http://127.0.0.1:8420/demo"),
         "{body}"
     );
-    // This fixture has registry anchors but no cache-specific signing keys.
-    // Stock Nix must not be instructed to trust registry keys as cache keys.
-    assert!(
-        !body.contains("trusted-public-keys ="),
-        "registry anchors must not be advertised as Nix cache keys"
-    );
+    // Registry SSH trust anchors are not Nix narinfo public keys. This fixture
+    // has no configured cache signer, so setup must not invent a Nix key.
+    assert!(!body.contains("trusted-public-keys ="), "{body}");
     // The pinned anchor appears in full and as a SHA256: fingerprint.
     assert!(body.contains(&fixture.trust_key), "{body}");
     assert!(body.contains("SHA256:"), "{body}");

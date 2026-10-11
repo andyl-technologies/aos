@@ -49,6 +49,13 @@ fn validate_inventory_entry(entry: &OciProviderInventoryEntryInput) -> Result<()
     validate_key_bytes(&entry.object_key, "OCI provider object key", 512)?;
     let canonical = crate::surface_write::strong_if_match_etag(&entry.strong_etag)?;
     validate_key_bytes(&canonical, "OCI provider strong etag", 512)?;
+    if entry
+        .provider_version
+        .as_deref()
+        .is_some_and(|version| !crate::storage_work::valid_provider_version(version))
+    {
+        bail!("OCI provider inventory upload version is invalid");
+    }
     i64::try_from(entry.byte_size).context("OCI provider inventory byte size exceeds int64")?;
     Ok(())
 }
@@ -121,12 +128,12 @@ pub(super) fn inventory_entry_statements(
                    (generation_id, registry_id, placement_id, object_key,
                     object_digest, observed_hash, byte_size, strong_etag,
                     surface_object_id, catalog_object_resource_version,
-                    classification, deleted_at)
+                    classification, deleted_at, provider_version)
                  SELECT generation.id, generation.registry_id,
                         generation.placement_id, ?3, ?4, ?5, ?6, ?7,
                         object.id, object.resource_version,
                         CASE WHEN object.id IS NULL
-                          THEN 'untracked' ELSE 'tracked' END, NULL
+                          THEN 'untracked' ELSE 'tracked' END, NULL, ?13
                  FROM oci_provider_inventory_generations generation
                  LEFT JOIN surface_objects object
                    ON object.registry_id = generation.registry_id
@@ -143,6 +150,9 @@ pub(super) fn inventory_entry_statements(
                    AND generation.collector_claim_token = ?9
                    AND generation.collector_lease_expires_at > ?10
                    AND generation.state = 'collecting'
+                   AND (EXISTS (SELECT 1 FROM bindings binding
+                     WHERE binding.id = generation.binding_id
+                       AND binding.kind <> 'deployment_r2') OR CAST(?13 AS VARCHAR) IS NOT NULL)
                    AND registry_state.mutation_epoch = generation.captured_mutation_epoch
                    AND (SELECT COUNT(*) FROM oci_provider_inventory_entries current
                      WHERE current.generation_id = generation.id) < ?11
@@ -164,7 +174,8 @@ pub(super) fn inventory_entry_statements(
                     collector_claim_token,
                     now,
                     i64::try_from(OCI_GC_MAX_INVENTORY_OBJECTS)?,
-                    i64::try_from(OCI_GC_MAX_INVENTORY_KEY_BYTES)?
+                    i64::try_from(OCI_GC_MAX_INVENTORY_KEY_BYTES)?,
+                    entry.provider_version
                 ],
             )
             .unchecked(),
@@ -176,6 +187,7 @@ pub(super) fn inventory_entry_statements(
                  WHERE generation_id = ?1 AND object_key = ?3
                    AND object_digest = ?4 AND observed_hash = ?5
                    AND byte_size = ?6 AND strong_etag = ?7
+                   AND (provider_version = ?10 OR (provider_version IS NULL AND CAST(?10 AS VARCHAR) IS NULL))
                    AND deleted_at IS NULL
                    AND EXISTS (SELECT 1 FROM oci_provider_inventory_generations generation
                      WHERE generation.id = ?1 AND generation.collector_id = ?2
@@ -191,7 +203,8 @@ pub(super) fn inventory_entry_statements(
                     byte_size,
                     crate::surface_write::strong_if_match_etag(&entry.strong_etag)?,
                     collector_claim_token,
-                    now
+                    now,
+                    entry.provider_version
                 ],
             )
             .expecting(1),

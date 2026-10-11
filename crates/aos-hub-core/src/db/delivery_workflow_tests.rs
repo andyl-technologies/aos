@@ -184,9 +184,7 @@ async fn verified_fixture() -> (Database, DeliveryWorkflowRecord, DeliveryActiva
 
 #[tokio::test]
 async fn public_object_delivery_requires_current_route_and_exact_publication_evidence() {
-    use crate::db::{
-        SetRegistryPublicationObject, SetRegistryPublicationPlacement, SetSurfaceObject,
-    };
+    use crate::db::{RegistryPublicationManifestObject, SetRegistryPublicationPlacement};
 
     let (db, workflow, route) = verified_fixture().await;
     let SurfaceTarget::Registry(registry_id) = workflow.surface else {
@@ -217,16 +215,22 @@ async fn public_object_delivery_requires_current_route_and_exact_publication_evi
 
     let hash = "a".repeat(64);
     let key = format!("oci/blobs/sha256/{hash}");
-    let object = db
-        .create_surface_object(&SetSurfaceObject {
-            surface: workflow.surface,
+    db.admit_registry_publication_manifest_objects(
+        registry_id,
+        "workflow-publication",
+        &[RegistryPublicationManifestObject {
             object_key: key.clone(),
-            content_hash: Some(hash.clone()),
-            size: Some(42),
+            expected_hash: hash.clone(),
+            expected_size: 42,
             object_kind: "immutable".into(),
-            mutable_publication_id: None,
-        })
+        }],
+    )
+    .await
+    .unwrap();
+    let object = db
+        .surface_object_named(workflow.surface, &key)
         .await
+        .unwrap()
         .unwrap();
     db.backend
         .execute(
@@ -246,15 +250,6 @@ async fn public_object_delivery_requires_current_route_and_exact_publication_evi
     })
     .await
     .unwrap();
-    db.set_registry_publication_object(&SetRegistryPublicationObject {
-        publication_id: "workflow-publication".into(),
-        surface_object_id: object.id,
-        object_kind: "immutable".into(),
-        expected_hash: hash.clone(),
-        expected_size: 42,
-    })
-    .await
-    .unwrap();
     db.record_registry_publication_object_presence(
         "workflow-publication",
         object.id,
@@ -266,6 +261,15 @@ async fn public_object_delivery_requires_current_route_and_exact_publication_evi
     )
     .await
     .unwrap();
+
+    assert_eq!(
+        db.surface_object_usage(object.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .accounted_bytes,
+        42
+    );
 
     assert_eq!(
         db.public_object_delivery_url(registry_id, &key, &hash, 42)

@@ -18,6 +18,9 @@ use crate::fetch::{SurfaceFetch, SurfaceProvider};
 
 use super::{RpcError, RpcService};
 
+const POINTER_UPLOAD_CONCURRENCY: usize = 8;
+const POINTER_PRECONDITION_CONCURRENCY: usize = 4;
+
 /// Reads only the exact verified draft inventory over the committed surface.
 struct CandidateFetch<'a> {
     provider: Arc<dyn SurfaceProvider>,
@@ -29,6 +32,86 @@ struct CandidateFetch<'a> {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl SurfaceFetch for CandidateFetch<'_> {
+    fn storage_local_git_inspection(&self) -> bool {
+        self.provider.storage_local_git_inspection()
+    }
+
+    async fn inspect_git_object(
+        &self,
+        oid: aos_registry_surface::object::Oid,
+    ) -> anyhow::Result<Option<(aos_registry_surface::object::ObjectKind, Vec<u8>)>> {
+        let path = oid.loose_path();
+        if let Some(bytes) = self.prepared_objects.get(path.as_str()) {
+            return aos_registry_surface::object::decode_loose(bytes, Some(oid)).map(Some);
+        }
+        self.provider
+            .placement_fetcher(&self.placement)
+            .await?
+            .inspect_git_object(oid)
+            .await
+    }
+
+    async fn inspect_git_objects(
+        &self,
+        oids: &[aos_registry_surface::object::Oid],
+    ) -> anyhow::Result<Vec<Option<(aos_registry_surface::object::ObjectKind, Vec<u8>)>>> {
+        let mut results = vec![None; oids.len()];
+        let mut pending = Vec::new();
+        for (position, oid) in oids.iter().copied().enumerate() {
+            let path = oid.loose_path();
+            if let Some(bytes) = self.prepared_objects.get(path.as_str()) {
+                results[position] = Some(aos_registry_surface::object::decode_loose(
+                    bytes,
+                    Some(oid),
+                )?);
+            } else {
+                pending.push((position, oid));
+            }
+        }
+        if !pending.is_empty() {
+            let requested = pending.iter().map(|(_, oid)| *oid).collect::<Vec<_>>();
+            let inspected = self
+                .provider
+                .placement_fetcher(&self.placement)
+                .await?
+                .inspect_git_objects(&requested)
+                .await?;
+            anyhow::ensure!(
+                inspected.len() == pending.len(),
+                "staged Git inspection batch is incomplete"
+            );
+            for ((position, _), object) in pending.into_iter().zip(inspected) {
+                results[position] = object;
+            }
+        }
+        Ok(results)
+    }
+
+    async fn verify_git_pack_index(
+        &self,
+        path: &str,
+        index: &[u8],
+        companion_sha256: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.provider
+            .placement_fetcher(&self.placement)
+            .await?
+            .verify_git_pack_index(path, index, companion_sha256)
+            .await
+    }
+
+    async fn inventory_evidence_bounded(
+        &self,
+        path: &str,
+        maximum_bytes: u64,
+    ) -> anyhow::Result<Option<crate::fetch::SurfaceObjectEvidence>> {
+        self.provider
+            .placement_fetcher(&self.placement)
+            .await?
+            .inventory_evidence_bounded(path, maximum_bytes)
+            .await
+    }
+
     fn describe(&self) -> String {
         format!("staged release on placement {}", self.placement.id)
     }
@@ -390,18 +473,44 @@ impl RpcService {
             .iter()
             .map(|object| (object.object_key.as_str(), object))
             .collect();
+        let mut pending = Vec::new();
         for pointer in pointers {
             let object = objects_by_path.get(pointer.path.as_str()).ok_or_else(|| {
                 RpcError::FailedPrecondition("prepared pointer is absent from publication".into())
             })?;
             if !object.verified {
-                self.upload_registry_publication_object(
-                    auth,
-                    publication_id,
-                    object.surface_object_id,
-                    axum::body::Body::from(pointer.bytes.clone()),
-                )
-                .await?;
+                pending.push((pointer, object.surface_object_id));
+            }
+        }
+
+        // Initialize the pointer phase alone. Independent metadata can then
+        // overlap, but discovery refs and HEAD wait for every earlier rank.
+        for group in pending.chunk_by(|left, right| {
+            aos_registry_surface::publication::pointer_upload_rank(&left.0.path)
+                == aos_registry_surface::publication::pointer_upload_rank(&right.0.path)
+        }) {
+            let Some((first, rest)) = group.split_first() else {
+                continue;
+            };
+            self.upload_registry_publication_object(
+                auth,
+                publication_id,
+                first.1,
+                axum::body::Body::from(first.0.bytes.clone()),
+            )
+            .await?;
+
+            for batch in rest.chunks(POINTER_UPLOAD_CONCURRENCY) {
+                let mut uploads = Vec::with_capacity(batch.len());
+                for (pointer, object_id) in batch {
+                    uploads.push(self.upload_registry_publication_object(
+                        auth,
+                        publication_id,
+                        *object_id,
+                        axum::body::Body::from(pointer.bytes.clone()),
+                    ));
+                }
+                futures_util::future::try_join_all(uploads).await?;
             }
         }
         drop(objects_by_path);
@@ -606,6 +715,7 @@ impl RpcService {
         publication_id: &str,
         resuming: bool,
     ) -> Result<(), RpcError> {
+        let read_limit = self.effective_complete_upload_bytes().await;
         // The read-only lookup leaves every placement watermark unchanged.
         for placement in self
             .registry_publication_required_placements(publication_id)
@@ -616,23 +726,39 @@ impl RpcService {
                 .placement_fetcher(&placement)
                 .await
                 .map_err(precondition)?;
-            for pointer in &revision.publication {
-                let current = fetch
-                    .fetch_bounded(&pointer.path, self.effective_complete_upload_bytes().await)
-                    .await
-                    .map_err(precondition)?;
-                let current_hash = current
-                    .as_ref()
-                    .map(|bytes| format!("sha256:{}", hex::encode(Sha256::digest(bytes))));
-                let intended = format!("sha256:{}", hex::encode(Sha256::digest(&pointer.bytes)));
-                if current_hash != pointer.expected_sha256
-                    && !(resuming && current_hash.as_deref() == Some(intended.as_str()))
-                {
-                    return Err(RpcError::FailedPrecondition(format!(
-                        "prepared pointer '{}' changed on placement {}",
-                        pointer.path, placement.id,
-                    )));
+            for batch in revision
+                .publication
+                .chunks(POINTER_PRECONDITION_CONCURRENCY)
+            {
+                let mut checks = Vec::with_capacity(batch.len());
+                for pointer in batch {
+                    let fetch = &fetch;
+                    let placement_id = placement.id;
+                    checks.push(async move {
+                        // Only the exact predecessor digest crosses the runtime
+                        // boundary. Hybrid providers hash encoded Git sources in
+                        // Workers; Native providers retain their bounded stream.
+                        let current_hash = pointer_predecessor_hash(
+                            fetch.as_ref(),
+                            &pointer.path,
+                            read_limit as u64,
+                        )
+                        .await
+                        .map_err(precondition)?;
+                        let intended =
+                            format!("sha256:{}", hex::encode(Sha256::digest(&pointer.bytes)));
+                        if current_hash != pointer.expected_sha256
+                            && !(resuming && current_hash.as_deref() == Some(intended.as_str()))
+                        {
+                            return Err(RpcError::FailedPrecondition(format!(
+                                "prepared pointer '{}' changed on placement {}",
+                                pointer.path, placement_id,
+                            )));
+                        }
+                        Ok::<_, RpcError>(())
+                    });
                 }
+                futures_util::future::try_join_all(checks).await?;
             }
         }
         Ok(())
@@ -843,10 +969,90 @@ impl RpcService {
     }
 }
 
+/// Observes a pointer's physical digest without transferring its body to the caller.
+async fn pointer_predecessor_hash(
+    fetch: &dyn SurfaceFetch,
+    path: &str,
+    maximum_bytes: u64,
+) -> anyhow::Result<Option<String>> {
+    let Some(evidence) = fetch
+        .inventory_evidence_bounded(path, maximum_bytes)
+        .await?
+    else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        u64::try_from(evidence.size).is_ok_and(|size| size <= maximum_bytes),
+        "prepared pointer predecessor exceeds its byte limit"
+    );
+    Ok(Some(format!("sha256:{}", hex::encode(evidence.sha256))))
+}
+
 fn invalid(error: impl std::fmt::Display) -> RpcError {
     RpcError::invalid(error.to_string())
 }
 
 fn precondition(error: impl std::fmt::Display) -> RpcError {
     RpcError::FailedPrecondition(format!("{error:#}"))
+}
+
+#[cfg(test)]
+mod pointer_hash_tests {
+    use super::*;
+    use crate::fetch::SurfaceObjectEvidence;
+
+    struct HashOnlyFetch {
+        evidence: Option<SurfaceObjectEvidence>,
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for HashOnlyFetch {
+        fn describe(&self) -> String {
+            "remote pointer hash fixture".into()
+        }
+
+        async fn fetch(&self, _: &str) -> anyhow::Result<Option<Vec<u8>>> {
+            anyhow::bail!("encoded pointer bodies cannot cross this port")
+        }
+
+        async fn inventory_evidence_bounded(
+            &self,
+            path: &str,
+            maximum_bytes: u64,
+        ) -> anyhow::Result<Option<SurfaceObjectEvidence>> {
+            assert_eq!(path, "objects/aos-index-v1/all");
+            assert_eq!(maximum_bytes, 4096);
+            Ok(self.evidence.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn pointer_preconditions_use_physical_hashes_without_fetching_bodies() {
+        let digest: [u8; 32] = Sha256::digest(b"encoded predecessor").into();
+        let mut fetch = HashOnlyFetch {
+            evidence: Some(SurfaceObjectEvidence {
+                sha256: digest,
+                size: 4096,
+                strong_etag: None,
+                provider_version: None,
+            }),
+        };
+        let path = "objects/aos-index-v1/all";
+
+        assert_eq!(
+            pointer_predecessor_hash(&fetch, path, 4096).await.unwrap(),
+            Some(format!("sha256:{}", hex::encode(digest)))
+        );
+
+        for size in [-1, 4097] {
+            fetch.evidence.as_mut().unwrap().size = size;
+            assert!(pointer_predecessor_hash(&fetch, path, 4096).await.is_err());
+        }
+
+        fetch.evidence = None;
+        assert_eq!(
+            pointer_predecessor_hash(&fetch, path, 4096).await.unwrap(),
+            None
+        );
+    }
 }

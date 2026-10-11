@@ -68,6 +68,23 @@ use anyhow::{bail, Context, Result};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
+mod direct_upload;
+mod mirror_acceptance;
+
+pub use mirror_acceptance::{
+    activate_hybrid_mirror, activate_hybrid_mirror_live, HybridMirrorAcceptanceConfig,
+    HybridMirrorLiveAcceptanceConfig, HybridMirrorTrustConfig,
+};
+
+/// Secret-free managed R2 configuration for the hybrid direct upload broker.
+pub use direct_upload::{
+    activate_hybrid_direct_upload, deploy_hybrid, inspect_hybrid_direct_upload,
+    read_hybrid_direct_upload_selectors, HybridDeploySecretFiles,
+    HybridDirectUploadAcceptanceConfig, HybridDirectUploadClockConfig,
+    HybridDirectUploadDeployConfig, HybridDirectUploadQualificationConfig,
+    HybridDirectUploadQueueConfig, HybridDirectUploadTrustConfig,
+};
+
 /// The R2 binding name — must match the Worker's bindings.
 const R2_BINDING: &str = aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT;
 /// The KV binding name — must match the Worker's bindings.
@@ -252,6 +269,279 @@ pub struct DeployConfig {
     pub logpush: bool,
 }
 
+/// The Worker edge profile paired with one Native PostgreSQL Hub.
+///
+/// Native owns SQL authority and sessions. Optional direct uploads use a
+/// purpose-specific signed acceptance registry and separate verification queues.
+#[derive(Clone, Debug)]
+pub struct HybridDeployConfig {
+    /// Public Cloudflare Worker name.
+    pub name: String,
+    /// R2 bucket attached as the storage executor's deployment binding.
+    pub bucket: String,
+    /// Identity shared with the paired Native origin.
+    pub deployment_id: String,
+    /// Canonical public HTTPS origin served by this Worker.
+    pub external_url: String,
+    /// Private HTTPS origin of the Native Hub.
+    pub native_origin_url: String,
+    /// Complete set of Cloudflare custom domains managed by this deployment.
+    pub custom_domains: Vec<String>,
+    /// Whether the staged artifact includes the static asset bundle.
+    pub serve_assets: bool,
+    /// Reviewed managed direct upload coordinates; signing secrets are separate.
+    pub direct_upload: Option<HybridDirectUploadDeployConfig>,
+    /// Independent transport clock for an external-only direct upload broker.
+    pub direct_upload_clock: Option<HybridDirectUploadClockConfig>,
+    /// Stable independently installed reviewer and acceptance registry binding.
+    pub direct_upload_trust: Option<HybridDirectUploadTrustConfig>,
+    /// Separate reviewer role and KV binding for measured mirror and pack purposes.
+    pub mirror_trust: Option<HybridMirrorTrustConfig>,
+    /// Separate bounded queue bindings installed before qualification.
+    pub direct_upload_queues: Option<HybridDirectUploadQueueConfig>,
+    /// Optional checked acceptance for matching the intended deployment bindings.
+    /// The artifact is published separately without replacing the Worker version.
+    pub direct_upload_acceptance: Option<HybridDirectUploadAcceptanceConfig>,
+    /// Enables only the separately authenticated hosted measurement endpoint.
+    pub direct_upload_conformance: bool,
+    /// Separately enabled bounded isolated qualification fixtures, never production authority.
+    pub direct_upload_qualification: Option<HybridDirectUploadQualificationConfig>,
+}
+
+/// Renders a hybrid Worker profile without Worker-only stateful bindings.
+///
+/// Secrets `HUB_HYBRID_INGRESS_KEY` and `HUB_STORAGE_WORK_KEY` are applied
+/// separately and must match the Native origin's key files.
+/// Direct upload additionally requires the separately installed Worker secrets
+/// `HUB_DIRECT_UPLOAD_R2_ACCESS_KEY_ID`, `HUB_DIRECT_UPLOAD_R2_SECRET_ACCESS_KEY`,
+/// `HUB_DIRECT_UPLOAD_GUARD_KEY` and `HUB_DIRECT_UPLOAD_JOURNAL_KEY`.
+/// Production dispatch requires independent acceptance of this exact unchanged
+/// hosted Worker version in the purpose-specific KV registry.
+///
+/// # Errors
+///
+/// Returns an error for missing identity, malformed HTTPS origins, or a loop
+/// that would proxy public traffic back into the same Worker.
+pub fn render_hybrid_wrangler_toml(cfg: &HybridDeployConfig) -> Result<String> {
+    anyhow::ensure!(
+        !cfg.name.is_empty() && !cfg.bucket.is_empty(),
+        "hybrid Worker name and R2 bucket are required"
+    );
+    anyhow::ensure!(
+        !cfg.deployment_id.is_empty()
+            && cfg.deployment_id.len() <= 128
+            && cfg
+                .deployment_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')),
+        "hybrid deployment ID is invalid"
+    );
+    let public = url::Url::parse(&cfg.external_url).context("parsing hybrid public origin")?;
+    let native = url::Url::parse(&cfg.native_origin_url).context("parsing hybrid Native origin")?;
+    for (label, origin) in [("public", &public), ("Native", &native)] {
+        anyhow::ensure!(
+            origin.scheme() == "https"
+                && origin.path() == "/"
+                && origin.query().is_none()
+                && origin.fragment().is_none()
+                && origin.username().is_empty()
+                && origin.password().is_none(),
+            "hybrid {label} URL must be an exact HTTPS origin"
+        );
+    }
+    anyhow::ensure!(
+        public.origin() != native.origin(),
+        "hybrid Native origin must differ from the public Worker origin"
+    );
+
+    let routes = cfg
+        .custom_domains
+        .iter()
+        .map(|domain| {
+            format!(
+                "[[routes]]\npattern = {}\ncustom_domain = true\n\n",
+                toml_string(domain)
+            )
+        })
+        .collect::<String>();
+    let assets = if cfg.serve_assets {
+        "[assets]\ndirectory = \"./assets\"\nhtml_handling = \"none\"\n\n"
+    } else {
+        ""
+    };
+    if let Some(clock) = &cfg.direct_upload_clock {
+        clock.validate(&cfg.deployment_id)?;
+        if let Some(profile) = &cfg.direct_upload {
+            anyhow::ensure!(
+                clock.qualification == profile.clock_qualification
+                    && clock.uncertainty_seconds == profile.clock_uncertainty_seconds,
+                "direct upload transport and managed clocks differ"
+            );
+        }
+    }
+    let (mut direct_variables, direct_binding) = match &cfg.direct_upload {
+        Some(profile) => {
+            profile.validate(&cfg.deployment_id, &cfg.bucket)?;
+            (
+                profile.render_variables(),
+                direct_upload::DIRECT_UPLOAD_BINDING,
+            )
+        }
+        None => match &cfg.direct_upload_clock {
+            Some(clock) => (
+                clock.render_variables(),
+                direct_upload::DIRECT_UPLOAD_BINDING,
+            ),
+            None => (String::new(), ""),
+        },
+    };
+    let direct_enabled = cfg.direct_upload.is_some() || cfg.direct_upload_clock.is_some();
+    let mut direct_bindings = direct_binding.to_string();
+    if direct_enabled {
+        let trust = cfg
+            .direct_upload_trust
+            .as_ref()
+            .context("direct upload requires independent reviewer trust and acceptance registry")?;
+        let queues = cfg
+            .direct_upload_queues
+            .as_ref()
+            .context("direct upload requires separate bounded verification queues")?;
+        trust.validate()?;
+        queues.validate()?;
+        for (binding, policy) in [
+            ("HUB_DIRECT_VERIFY_BULK", &queues.bulk_delivery_policy),
+            (
+                "HUB_DIRECT_VERIFY_METADATA",
+                &queues.metadata_delivery_policy,
+            ),
+        ] {
+            direct_variables.push_str(&format!(
+                "{binding}_MAX_BATCH_SIZE = {}\n{binding}_MAX_CONCURRENT_INVOCATIONS = {}\n",
+                toml_string(&policy.maximum_batch_size.get().to_string()),
+                toml_string(
+                    &policy
+                        .maximum_concurrent_invocations
+                        .as_ref()
+                        .context("hosted queue invocation bound absent")?
+                        .get()
+                        .to_string()
+                ),
+            ));
+        }
+        if let Some(limits) = &cfg.direct_upload_qualification {
+            limits.validate()?;
+            direct_variables.push_str(&format!(
+                "HUB_DIRECT_QUALIFY_MAX_PROVIDER_REQUESTS = {}\nHUB_DIRECT_QUALIFY_MAX_OBJECT_BYTES = {}\n",
+                toml_string(&limits.maximum_provider_requests.get().to_string()),
+                toml_string(&limits.maximum_object_bytes.get().to_string()),
+            ));
+        }
+        direct_variables.push_str(&format!(
+            "HUB_DIRECT_UPLOAD_QUALIFICATION_ENABLED = {}\n",
+            toml_string(if cfg.direct_upload_qualification.is_some() {
+                "true"
+            } else {
+                "false"
+            }),
+        ));
+        direct_variables.push_str(&format!(
+            "HUB_DIRECT_UPLOAD_PUBLIC_ORIGIN = {}\nHUB_DIRECT_UPLOAD_QUALIFICATION_PUBLIC_KEY = {}\nHUB_DIRECT_VERIFY_BULK_NAME = {}\nHUB_DIRECT_VERIFY_METADATA_NAME = {}\nHUB_DIRECT_VERIFY_MAX_PARALLEL_OBJECTS = {}\nHUB_DIRECT_UPLOAD_CONFORMANCE_ENABLED = {}\n",
+            toml_string(&cfg.external_url), toml_string(&trust.public_key),
+            toml_string(&queues.bulk), toml_string(&queues.metadata),
+            toml_string(&queues.maximum_parallel_objects.to_string()),
+            toml_string(if cfg.direct_upload_conformance { "true" } else { "false" }),
+        ));
+        direct_bindings.push_str(&format!(
+            "\n[[kv_namespaces]]\nbinding = \"HUB_DIRECT_UPLOAD_ACCEPTANCE\"\nid = {}\n\n[version_metadata]\nbinding = \"CF_VERSION_METADATA\"\n",
+            toml_string(&trust.namespace_id),
+        ));
+        direct_bindings.push_str(&queues.render_bindings()?);
+    } else {
+        anyhow::ensure!(
+            cfg.direct_upload_trust.is_none()
+                && cfg.direct_upload_queues.is_none()
+                && cfg.direct_upload_acceptance.is_none()
+                && cfg.direct_upload_qualification.is_none()
+                && !cfg.direct_upload_conformance,
+            "direct upload bindings require a managed profile or transport clock"
+        );
+    }
+    anyhow::ensure!(
+        !cfg.direct_upload_conformance || cfg.direct_upload.is_some(),
+        "hosted SDK conformance requires managed R2 profile coordinates"
+    );
+    if let Some(trust) = &cfg.mirror_trust {
+        trust.validate()?;
+        anyhow::ensure!(
+            cfg.direct_upload.is_some() && cfg.direct_upload_trust.is_some(),
+            "mirror trust requires managed R2 and independently installed direct trust"
+        );
+        direct_variables.push_str(&format!(
+            "HUB_MIRROR_QUALIFICATION_PUBLIC_KEY = {}\n",
+            toml_string(&trust.public_key),
+        ));
+        direct_bindings.push_str(&format!(
+            "\n[[kv_namespaces]]\nbinding = \"HUB_MIRROR_ACCEPTANCE\"\nid = {}\n",
+            toml_string(&trust.namespace_id),
+        ));
+    }
+    if let Some(acceptance) = &cfg.direct_upload_acceptance {
+        acceptance.validate(cfg)?;
+    }
+    Ok(format!(
+        "# Generated hybrid AOS Hub Worker profile.\n\
+         name = {name}\n\
+         main = \"shim.mjs\"\n\
+         compatibility_date = \"{compat}\"\n\
+         compatibility_flags = [\"nodejs_compat\", \"enable_request_signal\"]\n\
+         \n[vars]\n\
+         HUB_TOPOLOGY = \"hybrid\"\n\
+         HUB_DEPLOYMENT_ID = {deployment_id}\n\
+         HUB_EXTERNAL_URL = {external_url}\n\
+         HUB_HYBRID_ORIGIN_URL = {native_origin_url}\n\
+         {direct_variables}\
+         \n[limits]\n\
+         cpu_ms = {cpu_limit_ms}\n\
+         subrequests = {subrequest_limit}\n\
+         \n{assets}{routes}[placement]\n\
+         mode = \"off\"\n\
+         \n[[r2_buckets]]\n\
+         binding = \"{r2_binding}\"\n\
+         bucket_name = {bucket}\n\
+         \n[[durable_objects.bindings]]\n\
+         name = \"HYBRID_OBJECT_GUARD\"\n\
+         class_name = \"HybridObjectGuard\"\n\
+         \n[[durable_objects.bindings]]\n\
+         name = \"HYBRID_BINDING_STATE\"\n\
+         class_name = \"HybridBindingState\"\n\
+         \n[[migrations]]\n\
+         tag = \"hybrid-object-guard-v1\"\n\
+         new_sqlite_classes = [\"HybridObjectGuard\"]\n\
+         \n[[migrations]]\n\
+         tag = \"hybrid-binding-state-v1\"\n\
+         new_sqlite_classes = [\"HybridBindingState\"]\n\
+         \n[[durable_objects.bindings]]\n\
+         name = \"HYBRID_AUTHORITY_STATE\"\n\
+         class_name = \"HybridAuthorityState\"\n\
+         \n[[migrations]]\n\
+         tag = \"hybrid-authority-state-v1\"\n\
+         new_sqlite_classes = [\"HybridAuthorityState\"]\n\
+         {direct_bindings}\
+         \n[observability]\n\
+         enabled = true\n\
+         head_sampling_rate = 1.0\n",
+        name = toml_string(&cfg.name),
+        compat = COMPAT_DATE,
+        deployment_id = toml_string(&cfg.deployment_id),
+        external_url = toml_string(&cfg.external_url),
+        native_origin_url = toml_string(&cfg.native_origin_url),
+        cpu_limit_ms = WORKER_CPU_LIMIT_MS,
+        subrequest_limit = WORKER_SUBREQUEST_LIMIT,
+        r2_binding = R2_BINDING,
+        bucket = toml_string(&cfg.bucket),
+    ))
+}
+
 /// Renders the deployment `wrangler.toml` over the prebuilt wasm dist.
 ///
 /// `main` is `shim.mjs` (relative to the config's directory, where the dist is
@@ -290,6 +580,7 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
     // they run the shared service by issuing short transactions to HubDb. An
     // operator may temporarily change this to `read` or `off` for a staged
     // rollback without migrating or reconciling any database rows.
+    vars.push_str("HUB_TOPOLOGY = \"worker_only\"\n");
     vars.push_str("HUB_REQUEST_SHARDING = \"on\"\n");
     vars.push_str(&format!(
         "HUB_OCI_PULL_ENABLED = \"{}\"\nHUB_OCI_PUSH_ENABLED = \"{}\"\nHUB_OCI_VERIFIED_PUBLICATION_ENABLED = \"{}\"\nHUB_OCI_ADMINISTRATION_ENABLED = \"{}\"\nHUB_OCI_GC_ENABLED = \"{}\"\n",
@@ -1723,6 +2014,76 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hybrid_profile_has_only_r2_and_public_edge_bindings() {
+        let cfg = HybridDeployConfig {
+            name: "aos-hybrid".into(),
+            bucket: "aos-hybrid-surfaces".into(),
+            deployment_id: "deployment-1".into(),
+            external_url: "https://hub.example.test".into(),
+            native_origin_url: "https://native.example.test".into(),
+            custom_domains: vec!["hub.example.test".into()],
+            serve_assets: true,
+            direct_upload: None,
+            direct_upload_clock: None,
+            mirror_trust: None,
+            direct_upload_trust: None,
+            direct_upload_queues: None,
+            direct_upload_acceptance: None,
+            direct_upload_conformance: false,
+            direct_upload_qualification: None,
+        };
+        let source = render_hybrid_wrangler_toml(&cfg).unwrap();
+        let parsed: toml::Value = toml::from_str(&source).unwrap();
+        assert_eq!(parsed["vars"]["HUB_TOPOLOGY"].as_str(), Some("hybrid"));
+        let flags = parsed["compatibility_flags"].as_array().unwrap();
+        assert!(flags
+            .iter()
+            .any(|flag| flag.as_str() == Some("enable_request_signal")));
+        assert_eq!(
+            parsed["vars"]["HUB_DEPLOYMENT_ID"].as_str(),
+            Some("deployment-1")
+        );
+        assert_eq!(
+            parsed["r2_buckets"][0]["bucket_name"].as_str(),
+            Some(cfg.bucket.as_str())
+        );
+        assert_eq!(
+            parsed["durable_objects"]["bindings"][0]["name"].as_str(),
+            Some("HYBRID_OBJECT_GUARD")
+        );
+        assert_eq!(
+            parsed["migrations"][0]["new_sqlite_classes"][0].as_str(),
+            Some("HybridObjectGuard")
+        );
+        assert_eq!(
+            parsed["durable_objects"]["bindings"][1]["name"].as_str(),
+            Some("HYBRID_BINDING_STATE")
+        );
+        assert_eq!(
+            parsed["migrations"][1]["new_sqlite_classes"][0].as_str(),
+            Some("HybridBindingState")
+        );
+        assert_eq!(
+            parsed["durable_objects"]["bindings"][2]["name"].as_str(),
+            Some("HYBRID_AUTHORITY_STATE")
+        );
+        assert_eq!(
+            parsed["migrations"][2]["new_sqlite_classes"][0].as_str(),
+            Some("HybridAuthorityState")
+        );
+        assert!(parsed["vars"]
+            .get("HUB_EXTERNAL_GUARD_NAMESPACE_ID")
+            .is_none());
+        assert!(parsed.get("queues").is_none());
+        assert!(parsed.get("kv_namespaces").is_none());
+        assert!(parsed.get("triggers").is_none());
+
+        let mut looped = cfg;
+        looped.native_origin_url = looped.external_url.clone();
+        assert!(render_hybrid_wrangler_toml(&looped).is_err());
+    }
+
+    #[test]
     fn kv_id_parses_by_title() {
         let json = r#"[{"id":"ns-1","title":"other"},{"id":"ns-2","title":"SESSIONS"}]"#;
         assert_eq!(parse_kv_id(json, "SESSIONS").unwrap(), "ns-2");
@@ -1846,6 +2207,7 @@ mod tests {
         assert_eq!(parsed["name"].as_str(), Some("aos-hub"));
         assert_eq!(parsed["main"].as_str(), Some("shim.mjs"));
         assert_eq!(parsed["vars"]["HUB_REQUEST_SHARDING"].as_str(), Some("on"));
+        assert_eq!(parsed["vars"]["HUB_TOPOLOGY"].as_str(), Some("worker_only"));
         assert_eq!(
             parsed["vars"]["HUB_OCI_PULL_ENABLED"].as_str(),
             Some("true")

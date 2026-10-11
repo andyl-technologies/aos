@@ -1,0 +1,501 @@
+//! Accounting for offered plans and observed response bodies, including cancellation.
+//!
+//! Request bodies offered to the HTTP client are not proof of delivery. Response
+//! bytes count only chunks exposed by the client, excluding transport framing,
+//! unread error bodies, and any internal prefetch. Provider telemetry supplies
+//! independent measurements; this event preserves application payload evidence
+//! on every exit without claiming wire billing.
+
+use std::time::Instant;
+
+use aos_hub_core::storage_work::StorageWorkPlan;
+use sha2::{Digest as _, Sha256};
+
+pub(super) mod context;
+
+/// Correlates one HTTP call without authenticating or authorizing its contents.
+pub(super) const STORAGE_CALL_ID_HEADER: &str = "x-aos-storage-call-id";
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthenticatedControlBody {
+    version: u8,
+    transport_call_id: String,
+    route: String,
+    plan_id: String,
+    operation: String,
+    request_sha256: String,
+    reply_sha256: String,
+    request_bytes: usize,
+    reply_bytes: usize,
+}
+
+/// Retains counters until the exchange completes or its future is dropped.
+pub(super) struct ExchangeTelemetry<'a> {
+    plan_id: &'a str,
+    operation: &'a str,
+    dispatcher: tracing::Dispatch,
+    span: tracing::Span,
+    started: Instant,
+    attempts: usize,
+    offered_plan_bytes: u64,
+    observed_body_bytes: u64,
+    discarded_status_responses: usize,
+    outcome: &'static str,
+    transport_call_id: String,
+    control_body: Option<AuthenticatedControlBody>,
+}
+
+impl<'a> ExchangeTelemetry<'a> {
+    pub(super) fn new(plan: &'a StorageWorkPlan) -> Self {
+        Self::control(&plan.plan_id, plan.operation.kind())
+    }
+
+    /// Records the same byte contract for a separate closed control exchange.
+    pub(super) fn control(plan_id: &'a str, operation: &'a str) -> Self {
+        Self {
+            plan_id,
+            operation,
+            dispatcher: tracing::dispatcher::get_default(Clone::clone),
+            span: tracing::Span::current(),
+            started: Instant::now(),
+            attempts: 0,
+            offered_plan_bytes: 0,
+            observed_body_bytes: 0,
+            discarded_status_responses: 0,
+            outcome: "cancelled",
+            transport_call_id: uuid::Uuid::new_v4().simple().to_string(),
+            control_body: None,
+        }
+    }
+
+    /// Returns this invocation's fresh observational ID, distinct from its plan.
+    pub(super) fn transport_call_id(&self) -> &str {
+        &self.transport_call_id
+    }
+
+    pub(super) fn offer_plan(&mut self, length: usize) {
+        self.attempts += 1;
+        self.offered_plan_bytes = self.offered_plan_bytes.saturating_add(length as u64);
+    }
+
+    /// Retains hashes of an actual offered control without claiming acceptance.
+    pub(super) fn offer_control(&mut self, route: &str, body: &[u8]) {
+        self.offer_plan(body.len());
+        self.control_body = Some(AuthenticatedControlBody {
+            version: 2,
+            transport_call_id: self.transport_call_id.clone(),
+            route: route.into(),
+            plan_id: self.plan_id.into(),
+            operation: self.operation.into(),
+            request_sha256: hex::encode(Sha256::digest(body)),
+            reply_sha256: String::new(),
+            request_bytes: body.len(),
+            reply_bytes: 0,
+        });
+    }
+
+    /// Marks exact consumed bytes only after the caller's existing authenticator.
+    pub(super) fn authenticated_control(&mut self, reply: &[u8]) {
+        if let Some(body) = self.control_body.as_mut() {
+            body.reply_sha256 = hex::encode(Sha256::digest(reply));
+            body.reply_bytes = reply.len();
+        }
+    }
+
+    /// Carries successful transport facts without asserting later SQL acceptance.
+    pub(super) fn control_observation(&self) -> Option<context::ControlObservation> {
+        let body = self.control_body.as_ref()?;
+        if self.outcome != "success" || body.reply_sha256.is_empty() {
+            return None;
+        }
+        Some(context::ControlObservation::new(
+            body.clone(),
+            self.dispatcher.clone(),
+            self.span.clone(),
+        ))
+    }
+
+    pub(super) fn observe_body(&mut self, length: usize) {
+        self.observed_body_bytes = self.observed_body_bytes.saturating_add(length as u64);
+    }
+
+    pub(super) fn discard_status_response(&mut self) {
+        self.discarded_status_responses += 1;
+    }
+
+    pub(super) fn finish(&mut self, outcome: &'static str) {
+        self.outcome = outcome;
+    }
+
+    fn emit_authenticated_control(&self) {
+        let Some(body) = &self.control_body else {
+            return;
+        };
+        if self.outcome != "success" || body.reply_sha256.is_empty() {
+            return;
+        }
+
+        // Instrumentation failure cannot change the authenticated reply.
+        // The receipt proves transport acceptance only: SQL, purpose,
+        // placement and provider joins remain independent obligations.
+        let Ok(encoded) = serde_json::to_string(body) else {
+            return;
+        };
+        match self.operation {
+            "external_copy_control" | "external_copy_metadata" => {
+                tracing::info!("external_copy_authenticated {encoded}");
+            }
+            "OciDocumentProjection" => {
+                tracing::info!("oci_projection_authenticated {encoded}");
+            }
+            "external_oci_control" | "external_oci_source" | "external_oci_cleanup" => {
+                tracing::info!("external_oci_authenticated {encoded}");
+            }
+            "managed_oci_cleanup" => {
+                tracing::info!("managed_oci_cleanup_authenticated {encoded}");
+            }
+            "mirror_guard_control" | "mirror_guard_batch" => {
+                tracing::info!("mirror_guard_authenticated {encoded}");
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Drop for ExchangeTelemetry<'_> {
+    fn drop(&mut self) {
+        // A cancelled future may be dropped outside its subscriber wrapper.
+        // Retain the original dispatcher and task context for this final event.
+        let _subscriber = tracing::dispatcher::set_default(&self.dispatcher);
+        let _span = self.span.enter();
+        self.emit_authenticated_control();
+        tracing::info!(
+            transport_call_id = %self.transport_call_id,
+            offered_request_sha256 = self.control_body.as_ref().map(|body| body.request_sha256.as_str()).unwrap_or(""),
+            plan_id = %self.plan_id,
+            operation = self.operation,
+            exchange_attempts = self.attempts,
+            offered_plan_bytes = self.offered_plan_bytes,
+            observed_body_bytes = self.observed_body_bytes,
+            discarded_status_responses = self.discarded_status_responses,
+            outcome = self.outcome,
+            exchange_elapsed_ms = self.started.elapsed().as_millis() as u64,
+            "hybrid storage exchange accounting"
+        );
+    }
+}
+
+#[cfg(test)]
+pub(super) mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use aos_hub_core::storage_work::{StorageWorkOperation, StorageWorkOutcome, StorageWorkResult};
+    use sha2::Digest as _;
+    use tracing::Subscriber;
+    use tracing::field::{Field, Visit};
+    use tracing::instrument::WithSubscriber as _;
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    use super::StorageWorkPlan;
+    use crate::storage_work::RemoteStorageWorkClient;
+
+    type Fields = BTreeMap<String, String>;
+
+    #[derive(Clone, Default)]
+    pub(in crate::storage_work) struct RecordedEvents(Arc<Mutex<Vec<Fields>>>);
+
+    impl<S: Subscriber> Layer<S> for RecordedEvents {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut visitor = RecordedFields::default();
+            event.record(&mut visitor);
+            self.0.lock().unwrap().push(visitor.0);
+        }
+    }
+
+    impl RecordedEvents {
+        pub(in crate::storage_work) fn final_sql(&self) -> Vec<serde_json::Value> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|fields| {
+                    fields
+                        .get("message")
+                        .and_then(|message| message.strip_prefix("storage_final_sql_checked "))
+                        .map(|encoded| serde_json::from_str(encoded).unwrap())
+                })
+                .collect()
+        }
+
+        pub(in crate::storage_work) fn authenticated_controls(&self) -> Vec<serde_json::Value> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|fields| {
+                    fields
+                        .get("message")
+                        .and_then(|message| message.strip_prefix("external_copy_authenticated "))
+                        .map(|encoded| serde_json::from_str(encoded).unwrap())
+                })
+                .collect()
+        }
+
+        pub(in crate::storage_work) fn exchange(&self) -> Fields {
+            let events = self.0.lock().unwrap();
+            let exchanges: Vec<_> = events
+                .iter()
+                .filter(|fields| {
+                    fields
+                        .get("message")
+                        .is_some_and(|message| message == "hybrid storage exchange accounting")
+                })
+                .collect();
+            assert_eq!(exchanges.len(), 1, "{events:?}");
+            exchanges[0].clone()
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordedFields(Fields);
+
+    impl Visit for RecordedFields {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            self.0.insert(field.name().into(), value.into());
+        }
+
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            self.0.insert(field.name().into(), format!("{value:?}"));
+        }
+    }
+
+    #[test]
+    fn mirror_guard_receipt_requires_complete_authenticated_success() {
+        for operation in ["mirror_guard_control", "mirror_guard_batch"] {
+            for outcome in ["success", "invalid_result", "cancelled"] {
+                let recorded = RecordedEvents::default();
+                let subscriber = tracing_subscriber::registry().with(recorded.clone());
+                let request = b"retained signed challenge";
+                let reply = b"retained verified reply";
+                let call_id = tracing::subscriber::with_default(subscriber, || {
+                    let mut exchange =
+                        super::ExchangeTelemetry::control("original-nonce", operation);
+                    let call_id = exchange.transport_call_id().to_owned();
+                    exchange.offer_control("/exact-mirror-route", request);
+                    exchange.observe_body(reply.len());
+                    // This exercises instrumentation only. The clients invoke
+                    // this hook after their existing MAC and freshness checks.
+                    exchange.authenticated_control(reply);
+                    exchange.finish(outcome);
+                    call_id
+                });
+                let rows = recorded.0.lock().unwrap();
+                let receipts: Vec<serde_json::Value> = rows
+                    .iter()
+                    .filter_map(|fields| {
+                        fields
+                            .get("message")
+                            .and_then(|message| message.strip_prefix("mirror_guard_authenticated "))
+                            .map(|body| serde_json::from_str(body).unwrap())
+                    })
+                    .collect();
+
+                if outcome == "success" {
+                    assert_eq!(receipts.len(), 1);
+                    let receipt = &receipts[0];
+                    assert_eq!(receipt["version"], 2);
+                    assert_eq!(receipt["transportCallId"], call_id);
+                    assert_eq!(receipt["operation"], operation);
+                    assert_eq!(receipt["route"], "/exact-mirror-route");
+                    assert_eq!(receipt["requestBytes"], request.len());
+                    assert_eq!(receipt["replyBytes"], reply.len());
+                    assert_eq!(
+                        receipt["requestSha256"],
+                        hex::encode(super::Sha256::digest(request))
+                    );
+                    assert_eq!(
+                        receipt["replySha256"],
+                        hex::encode(super::Sha256::digest(reply))
+                    );
+                } else {
+                    assert!(receipts.is_empty());
+                }
+                drop(rows);
+                let accounting = recorded.exchange();
+                assert_eq!(accounting["outcome"], outcome);
+                assert_eq!(accounting["transport_call_id"], call_id);
+                assert_eq!(accounting["observed_body_bytes"], reply.len().to_string());
+            }
+        }
+    }
+
+    fn plan() -> StorageWorkPlan {
+        let now = aos_hub_core::clock::now_unix_secs();
+        StorageWorkPlan {
+            version: 1,
+            plan_id: "11111111111111111111111111111111".into(),
+            deployment_id: "exchange-deployment".into(),
+            issued_at: now,
+            expires_at: now + 30,
+            placement_id: 1,
+            placement_resource_version: 1,
+            binding_id: 1,
+            binding_resource_version: 1,
+            binding_kind: "deployment_r2".into(),
+            binding_snapshot_revision: None,
+            credential_references: Vec::new(),
+            placement_prefix: "registry".into(),
+            operation: StorageWorkOperation::Head {
+                path: "object".into(),
+            },
+        }
+    }
+
+    pub(in crate::storage_work) async fn serve(
+        app: axum::Router,
+    ) -> (RemoteStorageWorkClient, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut client = RemoteStorageWorkClient::new(
+            "https://worker.example",
+            "exchange-deployment".into(),
+            b"hybrid-storage-test-key-with-thirty-two-bytes",
+        )
+        .unwrap();
+        client.endpoint = format!("http://{address}/");
+        (client, server)
+    }
+
+    #[tokio::test]
+    async fn retry_accounting_separates_offered_plans_from_observed_bodies() {
+        let plan = plan();
+        let result = StorageWorkResult {
+            versioned_sources: Vec::new(),
+            plan_id: plan.plan_id.clone(),
+            placement_id: 1,
+            placement_resource_version: 1,
+            binding_id: 1,
+            binding_resource_version: 1,
+            source_bytes: 0,
+            outcome: StorageWorkOutcome::NotFound,
+        };
+        let response = serde_json::to_vec(&result).unwrap();
+        let expected_response_bytes = response.len();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::post(move || {
+                let attempts = Arc::clone(&attempts);
+                let response = response.clone();
+                async move {
+                    if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                        (
+                            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                            b"unread error body".to_vec(),
+                        )
+                    } else {
+                        (axum::http::StatusCode::OK, response)
+                    }
+                }
+            }),
+        );
+        let (client, server) = serve(app).await;
+        let recorded = RecordedEvents::default();
+        let subscriber = tracing_subscriber::registry().with(recorded.clone());
+
+        client
+            .execute(&plan)
+            .with_subscriber(subscriber)
+            .await
+            .unwrap();
+        server.abort();
+
+        let event = recorded.exchange();
+        assert_eq!(event["outcome"], "success");
+        assert_eq!(event["exchange_attempts"], "2");
+        assert_eq!(
+            event["offered_plan_bytes"],
+            (2 * serde_json::to_vec(&plan).unwrap().len()).to_string()
+        );
+        assert_eq!(
+            event["observed_body_bytes"],
+            expected_response_bytes.to_string()
+        );
+        assert_eq!(event["discarded_status_responses"], "1");
+    }
+
+    #[tokio::test]
+    async fn malformed_response_bytes_remain_accounted_without_logging_the_body() {
+        let private_body = "private object contents must stay out of logs";
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::post(move || async move { private_body }),
+        );
+        let (client, server) = serve(app).await;
+        let recorded = RecordedEvents::default();
+        let subscriber = tracing_subscriber::registry().with(recorded.clone());
+
+        assert!(
+            client
+                .execute(&plan())
+                .with_subscriber(subscriber)
+                .await
+                .is_err()
+        );
+        server.abort();
+
+        let event = recorded.exchange();
+        assert_eq!(event["outcome"], "malformed_result");
+        assert_eq!(event["observed_body_bytes"], private_body.len().to_string());
+        assert!(!format!("{:?}", recorded.0.lock().unwrap()).contains(private_body));
+    }
+
+    #[tokio::test]
+    async fn cancelled_caller_records_the_plan_already_offered() {
+        let (started, received) = tokio::sync::oneshot::channel();
+        let started = Arc::new(Mutex::new(Some(started)));
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::post(move || {
+                let started = Arc::clone(&started);
+                async move {
+                    started.lock().unwrap().take().unwrap().send(()).unwrap();
+                    std::future::pending::<&'static str>().await
+                }
+            }),
+        );
+        let (client, server) = serve(app).await;
+        let plan = plan();
+        let recorded = RecordedEvents::default();
+        let subscriber = tracing_subscriber::registry().with(recorded.clone());
+        let mut request = Box::pin(client.execute(&plan).with_subscriber(subscriber));
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::select! {
+                result = &mut request => panic!("request completed before cancellation: {result:?}"),
+                result = received => result.unwrap(),
+            }
+        }).await.unwrap();
+        drop(request);
+        server.abort();
+
+        let event = recorded.exchange();
+        assert_eq!(event["outcome"], "cancelled");
+        assert_eq!(event["exchange_attempts"], "1");
+        assert_eq!(
+            event["offered_plan_bytes"],
+            serde_json::to_vec(&plan).unwrap().len().to_string()
+        );
+        assert_eq!(event["observed_body_bytes"], "0");
+    }
+}

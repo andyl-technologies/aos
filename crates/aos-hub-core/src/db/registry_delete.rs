@@ -15,7 +15,7 @@
 //! [`RegistryDeletionOutcome::Blocked`] with the exact blocker breakdown rather
 //! than as an opaque checked-batch failure.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use super::{
     sanitize_log_text, unix_now, Database, NewTopologyEvent, RegistryDeletionReadiness,
@@ -139,6 +139,19 @@ impl Database {
             return Ok(RegistryDeletionOutcome::Stale);
         }
 
+        let mirror = self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM mirror_import_objects WHERE registry_id = ?1 LIMIT 1",
+                &vals![registry_id],
+            )
+            .await?;
+        if mirror.is_some() {
+            bail!(
+                "registry retains a mirror original; settle its exact provider effects and acknowledge the Native commit before deletion"
+            );
+        }
+
         let now = unix_now();
         let readiness = self
             .registry_deletion_readiness(registry_id, now)
@@ -203,7 +216,10 @@ impl Database {
         };
         let summary = format!("delete registry identity '{}'", current.slug);
 
-        let mut statements = vec![
+        let (mut statements, charge_retirement) = self
+            .mirror_usage_retirement_statements(registry_id, current.org_id, now)
+            .await?;
+        statements.extend([
             // Reassert quiescence while taking the registry row's write
             // lock. Publication admission must retain the same parent row,
             // so it cannot race new work behind this teardown fence. An
@@ -212,6 +228,8 @@ impl Database {
             Statement::new(
                 "UPDATE registries SET updated_at = updated_at
                  WHERE id = ?1 AND scope_key = ?2 AND resource_version = ?3
+                   AND NOT EXISTS (SELECT 1 FROM mirror_import_objects
+                     WHERE registry_id = ?1)
                    AND NOT EXISTS (SELECT 1 FROM registry_publications
                      WHERE registry_id = ?1
                        AND state IN ('preparing', 'writing_pointers'))
@@ -320,7 +338,7 @@ impl Database {
                 ],
             )
             .expecting(1),
-        ];
+        ]);
         if let Some(operation) = operation {
             statements.extend(operation_success_statements(&operation, now));
         }
@@ -520,6 +538,11 @@ impl Database {
             delete("registry_placement_publication_watermarks", registry_id),
             delete("registry_index_publication_state", registry_id),
             delete("object_placements", registry_id),
+        ]);
+        // The empty-provider and purge fences above authorize actual logical
+        // deletion. Refund only retained charges in this same transaction.
+        statements.extend(charge_retirement);
+        statements.extend([
             delete("surface_objects", registry_id),
             delete("registry_publication_state", registry_id),
             Statement::new(

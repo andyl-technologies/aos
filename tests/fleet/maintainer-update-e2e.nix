@@ -321,7 +321,7 @@ in {
       # Both deterministic upstream discovery and candidate source retrieval
       # cross the TLS edge. The source route itself is served by the native Hub.
       maintainer.succeed(
-          f"{CURL_CA} -fsS https://aos.andyl.org/healthz | grep -q ok"
+          f"{CURL_CA} -fsS https://aos.andyl.org/-/health | grep -q ok"
       )
       maintainer.succeed(
           f"{CURL_CA} -fsS 'https://aos.andyl.org/repos/andyl-technologies/maintain-fixture/tags?per_page=100&page=1' "

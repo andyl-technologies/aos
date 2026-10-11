@@ -22,6 +22,11 @@
         defaultDefinition = lib.mkOption {
           type = lib.types.functionTo lib.types.anything;
         };
+        companionDefinitions = lib.mkOption {
+          type = lib.types.functionTo lib.types.anything;
+          default = _: {};
+          description = "Additional service artifact definitions supplied by this backend.";
+        };
         buildContainer = lib.mkOption {
           type = lib.types.functionTo lib.types.anything;
         };

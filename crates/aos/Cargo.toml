@@ -55,7 +55,7 @@ aos-ability-model = { workspace = true }
 aos-ability-plan = { workspace = true }
 aos-ability-runtime = { workspace = true }
 aos-core = { workspace = true }
-aos-net = { workspace = true, features = ["transfer"] }
+aos-net = { workspace = true, features = ["direct-upload"] }
 aos-oci = { workspace = true }
 aos-oci-types = { workspace = true }
 aos-server = { workspace = true }
