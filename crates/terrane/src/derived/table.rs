@@ -7,7 +7,10 @@
 
 use super::{Error, PlaintextObject, compute};
 use crate::store::{ContentStore, ContentUpload, MetaUpload, StoreErrorKind};
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use terrane_core::{
     derived::{AttrRecord, AttributeName, AttributeValue, Function, VerifiedAttributeEvidence},
     identity::{Digest, Identity, IdentityKind, TERRANE_V1},
@@ -145,7 +148,41 @@ struct Stored {
     evidence: Option<ProducerEvidence>,
 }
 
+// Failed plaintext retrieval cannot establish an immutable value contradiction.
+// Each verification owns a fresh marker; compute propagates failed reads before
+// it can compare any value. The atomic keeps this borrowed reader Sync for Send
+// futures without changing the underlying reader's error.
+struct VerificationReader<'a, O> {
+    object: &'a O,
+    read_failed: AtomicBool,
+}
+
+#[cfg_attr(feature = "send", async_trait::async_trait)]
+#[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
+impl<O: PlaintextObject + Sync> PlaintextObject for VerificationReader<'_, O> {
+    fn digest(&self) -> Digest {
+        self.object.digest()
+    }
+
+    fn size(&self) -> u64 {
+        self.object.size()
+    }
+
+    async fn read_range(&self, offset: u64, length: usize) -> Result<Vec<u8>, Error> {
+        let result = self.object.read_range(offset, length).await;
+        if result.is_err() {
+            self.read_failed.store(true, Ordering::Relaxed);
+        }
+
+        result
+    }
+}
+
 /// A rebuildable per-object side table retaining all versions and producers.
+///
+/// The attribute SDK uses [`Self::get`] for metadata-only reads and [`Self::put`]
+/// to publish canonical records through an injected content store. Producer
+/// evidence remains independent of content recomputation.
 #[derive(Default)]
 pub struct SideTable {
     records: BTreeMap<Key, Stored>,
@@ -335,6 +372,26 @@ impl SideTable {
         Ok(identity)
     }
 
+    /// Returns a record for one exact function version and producer from metadata.
+    ///
+    /// Both the function name and version must match. When `require_trusted` is
+    /// `true`, only a supported function with independently verified producer
+    /// evidence is eligible. Unsupported versions and records without such
+    /// evidence remain available when `require_trusted` is `false`.
+    ///
+    /// A missing or ineligible record returns `None`. A hit performs no storage
+    /// or plaintext I/O and does not recompute the value or establish provenance.
+    pub fn get(
+        &self,
+        object: Digest,
+        name: AttributeName,
+        function: &Function,
+        producer: Digest,
+        require_trusted: bool,
+    ) -> Option<&AttrRecord> {
+        self.lookup(object, name, function, producer, require_trusted)
+    }
+
     /// Looks up one exact version and producer entirely from metadata.
     ///
     /// A trust-requiring caller cannot receive an unsupported function or an
@@ -429,8 +486,9 @@ impl SideTable {
     /// Recomputes an implemented record and quarantines any mismatching value.
     ///
     /// # Errors
-    /// Returns read or producer errors. Unsupported versions remain retained
-    /// and untrusted; mismatch removes the exact record before returning failure.
+    /// Returns read or producer errors. Read failures and unsupported versions
+    /// retain the record; a mismatch or malformed executable established from
+    /// successfully read plaintext removes the exact record before returning.
     pub async fn verify<O: PlaintextObject + Sync>(
         &mut self,
         identity: &Identity,
@@ -452,12 +510,18 @@ impl SideTable {
         {
             return Err(terrane_core::derived::Error::UnsupportedFunction.into());
         }
-        let result = match compute(object, &[record.value.name()]).await {
+        let reader = VerificationReader {
+            object,
+            read_failed: AtomicBool::new(false),
+        };
+        let result = match compute(&reader, &[record.value.name()]).await {
             Ok(computed) => computed
                 .first()
                 .ok_or(Error::InvalidRead)
                 .and_then(|value| record.verify_value(value).map_err(Error::from)),
-            Err(error @ Error::Derived(_)) => Err(error),
+            Err(error @ Error::Derived(_)) if !reader.read_failed.load(Ordering::Relaxed) => {
+                Err(error)
+            }
             Err(error) => return Err(error),
         };
         if let Err(error) = result {
