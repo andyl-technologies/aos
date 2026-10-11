@@ -104,7 +104,7 @@ impl Gem5QuarantineCustody {
         self.shutdown.as_ref()
     }
 
-    /// Returns the original private process group that received termination.
+    /// Returns the original private process-group identity held by this custody.
     pub fn process_group(&self) -> u32 {
         self.pid
     }

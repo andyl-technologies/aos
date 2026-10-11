@@ -858,6 +858,12 @@ impl NodeRuntime {
     /// Refuses an empty slot or an unsupported actual adapter. An occupied
     /// slot is fenced for retirement before adapter reads; no Shutdown frame
     /// is sent until every actual adapter supports the selected hook.
+    ///
+    /// # Panics
+    /// Propagates adapter availability or Shutdown callback panics. Availability
+    /// callbacks run while the caller still owns the fenced runtime. A Shutdown
+    /// callback runs after taking it; unwind then follows the runtime's existing
+    /// Drop/custody transfer, without returning a capsule or an error.
     pub fn take_graceful_retirement(
         original: &mut Option<Self>,
     ) -> Result<QuarantinedRuntime, RuntimeError> {

@@ -9,8 +9,10 @@ use super::{NodeRuntime, RuntimePollFailure};
 /// Retains a quarantined world's native handles and original effect ledger.
 ///
 /// This owned transfer exposes no execution or semantic publication interface.
-/// Cleanup failure keeps the value intact. Dropping it invokes every native
-/// adapter's resource-supervision hook through the contained runtime's drop path.
+/// Cleanup failure keeps the value intact. Legacy containment invokes adapter
+/// quarantine hooks on Drop. Graceful-purpose containment skips those hooks and
+/// uses the runtime's existing whole-world custody transfer, retaining original
+/// history independently of physical reclamation.
 #[must_use = "retain containment custody until native reclamation or supervised transfer"]
 pub struct QuarantinedRuntime {
     pub(crate) runtime: NodeRuntime,

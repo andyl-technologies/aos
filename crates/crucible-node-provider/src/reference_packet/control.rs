@@ -309,7 +309,7 @@ impl PacketControl {
         Ok(())
     }
 
-    /// Borrows genuine native state without executing a callback or changing its gate.
+    /// Copies a native state snapshot without executing a callback or changing its gate.
     pub fn inventory(&self) -> PacketInventory {
         self.program.inventory()
     }
@@ -354,6 +354,11 @@ impl PacketControl {
     /// Refuses another source dialect, invalid requests or native dispatch,
     /// failed preparation, and original/body capacity exhaustion. A callback
     /// error grants neither rollback nor permission to reexecute an original.
+    ///
+    /// # Panics
+    /// Installed preparation or source callbacks may panic. The caller must
+    /// retain this borrowed dispatcher and its original native custody across
+    /// unwind; a panic does not authorize reexecution or imply rollback.
     pub fn dispatch_with_preflight(
         &mut self,
         request: &Envelope,

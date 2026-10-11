@@ -2,7 +2,7 @@
 //!
 //! The complete request is prepared before Child. Complete incoming wire JSON is
 //! retained before envelope or handshake authentication, including a refused
-//! response. This private journal is data, not lease or native authority; it is
+//! response. This private journal is data, not lease or native authority; it
 //! preserves complete validated response body bytes and secret Hello material.
 
 use std::io::{self, Write};

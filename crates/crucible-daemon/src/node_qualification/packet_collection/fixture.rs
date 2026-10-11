@@ -2,7 +2,7 @@
 //!
 //! The explicit host selection binds actual source files, peer and harness ELF,
 //! the full pinned RFC catalog, complete Refused population, original private
-//! launch and independently owned UDP oracle. It grants collection only; all
+//! launch and independently owned UnixDatagram oracle. It grants collection only; all
 //! ordinary behavioral acceptance remains refused. Native gate and original
 //! process custody are authenticated later by the actual source adapter.
 
@@ -46,7 +46,7 @@ pub(super) type FixtureBodies = BTreeMap<ContentRef, Vec<u8>>;
 
 /// Borrows the complete independently selected singleton fixture before Child.
 ///
-/// The caller owns the original private launch and actual UDP socket. Non-Node
+/// The caller owns the original private launch and actual UnixDatagram socket. Non-Node
 /// graph evidence retains the same independent source-installed policy and
 /// exact bounded predicates. Every final read re-evaluates those predicates
 /// and requires its actual direct current-scope authority. Initial answers or
@@ -66,7 +66,7 @@ pub struct PacketMeasuredFixtureRequest<'a> {
     pub requirements: &'a ScenarioRequirements,
     /// Retains independent structural, schema, inventory and semantic evidence.
     pub graph_evidence: Rc<InstalledPacketGraphPolicy>,
-    /// Moves the actual independently owned and already bound UDP effect receiver.
+    /// Moves the actual independently owned and already bound UnixDatagram effect receiver.
     pub effects: UnixDatagram,
     /// Names the fixed original whole-programme operation.
     pub operation: Id,

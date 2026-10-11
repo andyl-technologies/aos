@@ -3,8 +3,10 @@
 //! This source oracle authenticates actual original native CNP journals and the
 //! complete independently selected two-callback program. It is not an acceptance
 //! policy: generic preparation still requires the independent complete normative
-//! class report before Admit, and reauthenticates it on every common use. Its
-//! portable records cannot construct common activation, admissions or tokens.
+//! class report before ordinary Admit, and reauthenticates it on every ordinary
+//! use. The distinct opaque collecting route instead requires its installed
+//! Refused plan and original source custody without issuing class acceptance.
+//! Portable records cannot construct common activation, admissions or tokens.
 
 use crucible_node_contract::*;
 use crucible_node_provider::{

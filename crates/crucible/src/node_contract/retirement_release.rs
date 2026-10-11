@@ -37,6 +37,10 @@ impl QuarantinedRuntime {
     /// # Errors
     /// Refuses absent custody, another opaque activation, incomplete original
     /// Shutdown/reaping/transfer, or default-refused installed authentication.
+    ///
+    /// # Panics
+    /// Propagates installed authentication callback panics. Authentication runs
+    /// before taking the original Option, so its unwind retains that same owner.
     pub fn release_after_authenticated_supervision(
         original: &mut Option<Self>,
         activation: &WorldActivation,

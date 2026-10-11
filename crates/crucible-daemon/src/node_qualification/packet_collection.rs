@@ -4,6 +4,13 @@
 //! and current scope. This wrapper joins it to the actual selected native source,
 //! its opaque collection plan and retained original completion reports. It never
 //! supplies ordinary Node qualification or turns report parsing into permission.
+//!
+//! The principal path measures and installs `InstalledPacketMeasuredFixture`,
+//! reserves `PreparedPacketCollectionPeer`, and retains the complete invocation
+//! in `PacketHostCollection`. Its owning execution is polled under the original
+//! publishers; `PacketHostSupervisor` retains uncertain peer and journal custody.
+//! Lower-level `lifecycle`, `execution` and witness-template APIs support expert
+//! callers that keep the same original plan, runtime, publishers and case tickets.
 
 use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
 

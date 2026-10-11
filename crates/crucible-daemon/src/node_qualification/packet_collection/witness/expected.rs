@@ -4,7 +4,7 @@
 //! Child. Only an original source-validated complete receipt supplies its dynamic
 //! proof identity. Expected common fields are derived from the fixed programme,
 //! not copied from a common completion or portable report. The independently
-//! owned UDP observations remain mandatory before any common outcome is read.
+//! owned UnixDatagram observations remain mandatory before any common outcome is read.
 
 use crucible::node_contract::{
     ExactBoundaryPolicy, OperationOutcome, OwnerIdentity, ProgressEvidence, StopReason,

@@ -100,6 +100,12 @@ impl<S: ProviderStream> Connection<S> {
     /// Returns the same fenced connection and complete original list for invalid
     /// scope/body/sequence, insufficient whole-prefix credit or revoked authority.
     /// Preparation failure performs no transport write or native callback.
+    ///
+    /// # Panics
+    /// Installed schema verifiers or supervision callbacks may panic. This
+    /// consuming helper drops its local capsule on unwind; it does not retain
+    /// originals outside the callback. The packet endpoint instead prepares a
+    /// preowned capsule by borrow, retaining it across callback unwind.
     pub fn prepare_exchange(
         self,
         originals: Vec<Envelope>,
@@ -217,6 +223,11 @@ impl<S: ProviderStream> PreparedExchange<S> {
     /// # Errors
     /// Keeps the complete original owner on I/O, malformed/foreign traffic,
     /// unexpected requests, source disagreement or a second publication attempt.
+    ///
+    /// # Panics
+    /// Source validators, schema verifiers or supervision callbacks may panic.
+    /// The borrowed capsule retains received replies and original progress; its
+    /// incomplete-attempt guard fences the connection.
     pub fn publish(
         &mut self,
         validate: &mut dyn FnMut(&Envelope, &ReceivedFrame) -> Result<(), ProviderError>,
@@ -245,6 +256,10 @@ impl<S: ProviderStream> PreparedExchange<S> {
     ///
     /// Success discharges transport correlation only. A failed or unwound
     /// publication returns its already fenced original connection and progress.
+    ///
+    /// # Panics
+    /// Supervision callbacks may panic while fencing an incomplete exchange.
+    /// This consuming method then drops its local records during unwind.
     pub fn into_parts(mut self) -> (Connection<S>, ExchangeRecord) {
         if self.phase != Phase::Complete {
             self.connection.contain(ConnectionFailure::Closed);
@@ -252,7 +267,11 @@ impl<S: ProviderStream> PreparedExchange<S> {
         (self.connection, self.record)
     }
 
-    /// Fences an unpublished prospective prefix while retaining every original.
+    /// Returns a fenced unpublished prefix with its complete originals.
+    ///
+    /// # Panics
+    /// Supervision callbacks may panic while fencing the connection. This
+    /// consuming method then drops its local records during unwind.
     pub fn abort(self, error: ProviderError) -> Box<ExchangeFailure<S>> {
         self.fail(error, ConnectionFailure::Closed)
     }

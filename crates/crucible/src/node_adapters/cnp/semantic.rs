@@ -2,7 +2,9 @@
 //!
 //! The public transport does not define arbitrary role receipt semantics. This
 //! module requires a separately installed native oracle and behavioral acceptance
-//! authority before mapping a realized provider into common node operations.
+//! authority for ordinary mapping into common node operations. A separate
+//! opaque collecting route authenticates its original Refused fixture plan and
+//! source custody; that route grants no ordinary behavioral qualification.
 //! The legacy checksum realization and receipt dialect remain independent.
 
 mod budget;

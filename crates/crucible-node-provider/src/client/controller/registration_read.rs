@@ -29,8 +29,10 @@ impl CnpRegistrarRead {
     /// Reads the real original SDK gate and registration epoch directly.
     ///
     /// No schema verifier, installed callback or native control is invoked.
-    /// Native dispatch must still use the same SDK lease, whose registration
-    /// check serializes the actual write against revocation.
+    /// Native dispatch must still use the same SDK lease. Its gate serializes
+    /// bounded journal registration against revocation; subsequent socket writes
+    /// remain outside that mutex. Immediate transport checks and custody of
+    /// already registered original work remain separate obligations.
     ///
     /// # Errors
     /// Refuses a contended, fenced or revoked original registration.
