@@ -636,3 +636,32 @@ fn recomputed_outer_digest_does_not_hide_receipt_substitution_or_truncation() {
         ));
     }
 }
+
+
+#[test]
+fn publication_decoders_reject_every_truncated_canonical_prefix() {
+    let (draft, prepared) = activation_fixture(1);
+    let current = encode_current(&prepared);
+
+    for length in 0..draft.canonical_bytes().len() {
+        assert!(matches!(
+            AuthorityPublicationDraftV1::from_canonical_bytes(&draft.canonical_bytes()[..length]),
+            Err(PublicationHistoryError::InvalidDraft)
+        ), "accepted truncated draft at {length}");
+    }
+
+    for length in 0..prepared.canonical_bytes().len() {
+        let prefix = &prepared.canonical_bytes()[..length];
+        assert!(matches!(
+            decode_prepared(prefix, publication_digest(prefix)),
+            Err(PublicationHistoryError::CorruptCurrent)
+        ), "accepted resealed truncated publication at {length}");
+    }
+
+    for length in 0..current.len() {
+        assert!(matches!(
+            decode_current(&current[..length]),
+            Err(PublicationHistoryError::CorruptCurrent)
+        ), "accepted truncated current envelope at {length}");
+    }
+}

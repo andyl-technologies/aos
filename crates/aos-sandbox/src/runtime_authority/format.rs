@@ -21,6 +21,7 @@
 //!         || binding-digest:32
 //! ```
 
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::{
     CanonicalAssignmentManifestV1, DecodeLimits, ObjectDigest, OperationId, PrincipalId, SandboxId,
 };
@@ -63,18 +64,18 @@ pub(super) fn decode_pending(
     bytes: &[u8],
 ) -> Result<RuntimeAuthorityPendingV1, RuntimeAuthorityError> {
     validate_header(bytes, PENDING_MAGIC, PENDING_VERSION, FIXED_PENDING_BYTES)?;
-    let mut cursor = 10;
-    let state = RuntimeAuthorityStateV1::from_code(take_u8(bytes, &mut cursor)?)?;
-    let expected_revision = decode_optional_revision(bytes, &mut cursor)?;
-    let revision = take_u64(bytes, &mut cursor)?;
-    let operation = OperationId::from_bytes(take_array(bytes, &mut cursor)?);
-    let request_digest = take_array(bytes, &mut cursor)?;
-    let predecessor_digest = decode_optional_digest(bytes, &mut cursor)?;
-    let holder = decode_holder(bytes, &mut cursor)?;
-    let source_draft_digest = ObjectDigest::from_bytes(take_array(bytes, &mut cursor)?);
-    let assignment_digest = ObjectDigest::from_bytes(take_array(bytes, &mut cursor)?);
-    let manifest = decode_manifest(take_length_prefixed(bytes, &mut cursor)?)?;
-    if cursor != bytes.len()
+    let mut reader = BoundedReader::new(&bytes[10..], |_| RuntimeAuthorityError::CorruptState);
+    let state = RuntimeAuthorityStateV1::from_code(reader.u8()?)?;
+    let expected_revision = decode_optional_revision(&mut reader)?;
+    let revision = reader.u64()?;
+    let operation = OperationId::from_bytes(reader.array()?);
+    let request_digest = reader.array()?;
+    let predecessor_digest = decode_optional_digest(&mut reader)?;
+    let holder = decode_holder(&mut reader)?;
+    let source_draft_digest = ObjectDigest::from_bytes(reader.array()?);
+    let assignment_digest = ObjectDigest::from_bytes(reader.array()?);
+    let manifest = decode_manifest(read_manifest_bytes(&mut reader)?)?;
+    if !reader.is_empty()
         || operation.as_bytes() == &[0; 16]
         || request_digest == [0; 32]
         || source_draft_digest.as_bytes() == &[0; 32]
@@ -127,20 +128,20 @@ pub(super) fn decode_binding(
     bytes: &[u8],
 ) -> Result<RuntimeAuthorityBindingV1, RuntimeAuthorityError> {
     validate_header(bytes, BINDING_MAGIC, BINDING_VERSION, FIXED_BINDING_BYTES)?;
-    let mut cursor = 10;
-    let state = RuntimeAuthorityStateV1::from_code(take_u8(bytes, &mut cursor)?)?;
-    let revision = take_u64(bytes, &mut cursor)?;
-    let operation = OperationId::from_bytes(take_array(bytes, &mut cursor)?);
-    let request_digest = take_array(bytes, &mut cursor)?;
-    let predecessor_digest = decode_optional_digest(bytes, &mut cursor)?;
-    let holder = decode_holder(bytes, &mut cursor)?;
-    let source_draft_digest = ObjectDigest::from_bytes(take_array(bytes, &mut cursor)?);
-    let publication_digest = ObjectDigest::from_bytes(take_array(bytes, &mut cursor)?);
-    let lease_generation = take_u64(bytes, &mut cursor)?;
-    let lease_digest = ObjectDigest::from_bytes(take_array(bytes, &mut cursor)?);
-    let assignment_digest = ObjectDigest::from_bytes(take_array(bytes, &mut cursor)?);
-    let manifest = decode_manifest(take_length_prefixed(bytes, &mut cursor)?)?;
-    if cursor != bytes.len()
+    let mut reader = BoundedReader::new(&bytes[10..], |_| RuntimeAuthorityError::CorruptState);
+    let state = RuntimeAuthorityStateV1::from_code(reader.u8()?)?;
+    let revision = reader.u64()?;
+    let operation = OperationId::from_bytes(reader.array()?);
+    let request_digest = reader.array()?;
+    let predecessor_digest = decode_optional_digest(&mut reader)?;
+    let holder = decode_holder(&mut reader)?;
+    let source_draft_digest = ObjectDigest::from_bytes(reader.array()?);
+    let publication_digest = ObjectDigest::from_bytes(reader.array()?);
+    let lease_generation = reader.u64()?;
+    let lease_digest = ObjectDigest::from_bytes(reader.array()?);
+    let assignment_digest = ObjectDigest::from_bytes(reader.array()?);
+    let manifest = decode_manifest(read_manifest_bytes(&mut reader)?)?;
+    if !reader.is_empty()
         || operation.as_bytes() == &[0; 16]
         || request_digest == [0; 32]
         || source_draft_digest.as_bytes() == &[0; 32]
@@ -190,11 +191,11 @@ pub(super) fn decode_head(bytes: &[u8]) -> Result<RuntimeAuthorityHeadV1, Runtim
     if bytes.len() != HEAD_BYTES {
         return Err(RuntimeAuthorityError::CorruptState);
     }
-    let mut cursor = 10;
-    let sandbox = SandboxId::from_bytes(take_array(bytes, &mut cursor)?);
-    let revision = take_u64(bytes, &mut cursor)?;
-    let binding_digest = ObjectDigest::from_bytes(take_array(bytes, &mut cursor)?);
-    if cursor != bytes.len()
+    let mut reader = BoundedReader::new(&bytes[10..], |_| RuntimeAuthorityError::CorruptState);
+    let sandbox = SandboxId::from_bytes(reader.array()?);
+    let revision = reader.u64()?;
+    let binding_digest = ObjectDigest::from_bytes(reader.array()?);
+    if !reader.is_empty()
         || sandbox.as_bytes() == &[0; 16]
         || revision == 0
         || binding_digest.as_bytes() == &[0; 32]
@@ -255,11 +256,10 @@ fn encode_optional_revision(bytes: &mut Vec<u8>, revision: Option<u64>) {
 }
 
 fn decode_optional_revision(
-    bytes: &[u8],
-    cursor: &mut usize,
+    reader: &mut BoundedReader<'_, RuntimeAuthorityError>,
 ) -> Result<Option<u64>, RuntimeAuthorityError> {
-    let present = take_u8(bytes, cursor)?;
-    let revision = take_u64(bytes, cursor)?;
+    let present = reader.u8()?;
+    let revision = reader.u64()?;
     match (present, revision) {
         (OPTIONAL_ABSENT, 0) => Ok(None),
         (OPTIONAL_PRESENT, 1..) => Ok(Some(revision)),
@@ -276,10 +276,9 @@ fn encode_optional_digest(bytes: &mut Vec<u8>, digest: Option<ObjectDigest>) {
 }
 
 fn decode_optional_digest(
-    bytes: &[u8],
-    cursor: &mut usize,
+    reader: &mut BoundedReader<'_, RuntimeAuthorityError>,
 ) -> Result<Option<ObjectDigest>, RuntimeAuthorityError> {
-    let digest = ObjectDigest::from_bytes(take_array(bytes, cursor)?);
+    let digest = ObjectDigest::from_bytes(reader.array()?);
     Ok((digest.as_bytes() != &[0; 32]).then_some(digest))
 }
 
@@ -292,10 +291,9 @@ fn encode_holder(bytes: &mut Vec<u8>, holder: Option<PrincipalId>) {
 }
 
 fn decode_holder(
-    bytes: &[u8],
-    cursor: &mut usize,
+    reader: &mut BoundedReader<'_, RuntimeAuthorityError>,
 ) -> Result<Option<PrincipalId>, RuntimeAuthorityError> {
-    let holder = PrincipalId::from_bytes(take_array(bytes, cursor)?);
+    let holder = PrincipalId::from_bytes(reader.array()?);
     Ok((holder.as_bytes() != &[0; 16]).then_some(holder))
 }
 
@@ -312,47 +310,12 @@ fn decode_manifest(bytes: &[u8]) -> Result<CanonicalAssignmentManifestV1, Runtim
         .map_err(|_| RuntimeAuthorityError::CorruptState)
 }
 
-fn take_length_prefixed<'a>(
-    bytes: &'a [u8],
-    cursor: &mut usize,
+fn read_manifest_bytes<'a>(
+    reader: &mut BoundedReader<'a, RuntimeAuthorityError>,
 ) -> Result<&'a [u8], RuntimeAuthorityError> {
-    let length = usize::try_from(u32::from_be_bytes(take_array(bytes, cursor)?))
+    let length = usize::try_from(reader.u32()?)
         .map_err(|_| RuntimeAuthorityError::CorruptState)?;
-    take(bytes, cursor, length)
-}
-
-fn take_u8(bytes: &[u8], cursor: &mut usize) -> Result<u8, RuntimeAuthorityError> {
-    Ok(*take(bytes, cursor, 1)?
-        .first()
-        .ok_or(RuntimeAuthorityError::CorruptState)?)
-}
-
-fn take_u64(bytes: &[u8], cursor: &mut usize) -> Result<u64, RuntimeAuthorityError> {
-    Ok(u64::from_be_bytes(take_array(bytes, cursor)?))
-}
-
-fn take_array<const N: usize>(
-    bytes: &[u8],
-    cursor: &mut usize,
-) -> Result<[u8; N], RuntimeAuthorityError> {
-    take(bytes, cursor, N)?
-        .try_into()
-        .map_err(|_| RuntimeAuthorityError::CorruptState)
-}
-
-fn take<'a>(
-    bytes: &'a [u8],
-    cursor: &mut usize,
-    length: usize,
-) -> Result<&'a [u8], RuntimeAuthorityError> {
-    let end = cursor
-        .checked_add(length)
-        .ok_or(RuntimeAuthorityError::CorruptState)?;
-    let value = bytes
-        .get(*cursor..end)
-        .ok_or(RuntimeAuthorityError::CorruptState)?;
-    *cursor = end;
-    Ok(value)
+    reader.bytes(length)
 }
 
 fn valid_state_holder(state: RuntimeAuthorityStateV1, holder: Option<PrincipalId>) -> bool {

@@ -181,3 +181,45 @@ fn configured_limits_cannot_weaken_fixed_ceilings() {
         Err(RuntimeAuthorityError::InvalidLimits)
     ));
 }
+
+
+#[test]
+fn runtime_authority_decoders_reject_every_truncated_prefix_and_trailing_byte() {
+    for state in [RuntimeAuthorityStateV1::Bound, RuntimeAuthorityStateV1::Revoked] {
+        let pending_bytes = encode_pending(&pending(state)).unwrap();
+        let binding = binding(state);
+        let binding_bytes = encode_binding(&binding).unwrap();
+        let head_bytes = encode_head(RuntimeAuthorityHeadV1 {
+            sandbox: binding.sandbox(),
+            revision: binding.revision(),
+            binding_digest: binding.digest(),
+        });
+
+        for length in 0..pending_bytes.len() {
+            assert!(matches!(
+                decode_pending(&pending_bytes[..length]),
+                Err(RuntimeAuthorityError::CorruptState)
+            ), "accepted truncated pending record at {length}");
+        }
+        for length in 0..binding_bytes.len() {
+            assert!(matches!(
+                decode_binding(&binding_bytes[..length]),
+                Err(RuntimeAuthorityError::CorruptState)
+            ), "accepted truncated binding at {length}");
+        }
+        for length in 0..head_bytes.len() {
+            assert!(matches!(
+                decode_head(&head_bytes[..length]),
+                Err(RuntimeAuthorityError::CorruptState)
+            ), "accepted truncated head at {length}");
+        }
+
+        let mut trailing_binding = binding_bytes;
+        trailing_binding.push(0);
+        let mut trailing_head = head_bytes;
+        trailing_head.push(0);
+
+        assert!(matches!(decode_binding(&trailing_binding), Err(RuntimeAuthorityError::CorruptState)));
+        assert!(matches!(decode_head(&trailing_head), Err(RuntimeAuthorityError::CorruptState)));
+    }
+}

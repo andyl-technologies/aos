@@ -62,22 +62,22 @@ pub fn decode_current(
     {
         return Err(PublicationHistoryError::CorruptCurrent);
     }
-    let mut cursor = 10;
-    let sandbox = SandboxId::from_bytes(take_array(bytes, &mut cursor)?);
-    let incarnation = take_array(bytes, &mut cursor)?;
-    let epoch = u64::from_be_bytes(take_array(bytes, &mut cursor)?);
-    let desired_generation = u64::from_be_bytes(take_array(bytes, &mut cursor)?);
-    let assignment_digest = ObjectDigest::from_bytes(take_array(bytes, &mut cursor)?);
-    let node = take_array(bytes, &mut cursor)?;
-    let lease_generation = u64::from_be_bytes(take_array(bytes, &mut cursor)?);
-    let lease_digest = ObjectDigest::from_bytes(take_array(bytes, &mut cursor)?);
-    let digest = ObjectDigest::from_bytes(take_array(bytes, &mut cursor)?);
-    let length = usize::try_from(u64::from_be_bytes(take_array(bytes, &mut cursor)?))
+    let mut reader = publication_reader(bytes)?;
+    let sandbox = SandboxId::from_bytes(reader.array()?);
+    let incarnation = reader.array()?;
+    let epoch = reader.u64()?;
+    let desired_generation = reader.u64()?;
+    let assignment_digest = ObjectDigest::from_bytes(reader.array()?);
+    let node = reader.array()?;
+    let lease_generation = reader.u64()?;
+    let lease_digest = ObjectDigest::from_bytes(reader.array()?);
+    let digest = ObjectDigest::from_bytes(reader.array()?);
+    let length = usize::try_from(reader.u64()?)
         .map_err(|_| PublicationHistoryError::CorruptCurrent)?;
-    if length > MAXIMUM_PUBLICATION_BYTES || cursor.checked_add(length) != Some(bytes.len()) {
+    if length > MAXIMUM_PUBLICATION_BYTES || length != reader.remaining() {
         return Err(PublicationHistoryError::CorruptCurrent);
     }
-    let publication = bytes[cursor..].to_vec();
+    let publication = reader.remaining_bytes().to_vec();
     if publication_digest(&publication) != digest {
         return Err(PublicationHistoryError::CorruptCurrent);
     }
@@ -157,14 +157,14 @@ pub fn decode_prepared_with_artifacts(
     {
         return Err(PublicationHistoryError::CorruptCurrent);
     }
-    let mut cursor = 10;
-    let manifest_bytes = take_bytes(bytes, &mut cursor)?;
+    let mut reader = publication_reader(bytes)?;
+    let manifest_bytes = read_bytes(&mut reader)?;
     let manifest = CanonicalAssignmentManifestV1::from_canonical_bytes(
         manifest_bytes,
         DecodeLimits::default(),
     )
     .map_err(|_| PublicationHistoryError::CorruptCurrent)?;
-    let lease_bytes = take_bytes(bytes, &mut cursor)?;
+    let lease_bytes = read_bytes(&mut reader)?;
     let lease = decode_ownership_lease(lease_bytes, DecodeLimits::default())
         .map_err(|_| PublicationHistoryError::CorruptCurrent)?;
     let lease_media = aos_sandbox_core::MediaType::new(
@@ -221,18 +221,18 @@ fn derive_source_draft_digest(
     publication: &[u8],
     templates: &[RecoveredBrokerDispatchTemplateV1],
 ) -> Result<ObjectDigest, PublicationHistoryError> {
-    let mut cursor = 10;
-    let manifest_bytes = take_bytes(publication, &mut cursor)?;
+    let mut reader = publication_reader(publication)?;
+    let manifest_bytes = read_bytes(&mut reader)?;
     let manifest = CanonicalAssignmentManifestV1::from_canonical_bytes(
         manifest_bytes,
         DecodeLimits::default(),
     )
     .map_err(|_| PublicationHistoryError::CorruptCurrent)?;
     for _ in 0..4 {
-        take_bytes(publication, &mut cursor)?;
+        read_bytes(&mut reader)?;
     }
-    let audience_count = take_u32(publication, &mut cursor)?;
-    let audience_bytes = take(publication, &mut cursor, audience_count)?;
+    let audience_count = read_count(&mut reader)?;
+    let audience_bytes = reader.bytes(audience_count)?;
     let audiences = audience_bytes
         .iter()
         .copied()
@@ -259,8 +259,8 @@ pub(super) fn validate_encoded_publication(
     if bytes.len() < 10 || &bytes[..8] != MAGIC || bytes[8..10] != VERSION.to_be_bytes() {
         return Err(PublicationHistoryError::CorruptCurrent);
     }
-    let mut cursor = 10;
-    let manifest_bytes = take_bytes(bytes, &mut cursor)?;
+    let mut reader = publication_reader(bytes)?;
+    let manifest_bytes = read_bytes(&mut reader)?;
     let manifest = CanonicalAssignmentManifestV1::from_canonical_bytes(
         manifest_bytes,
         DecodeLimits::default(),
@@ -275,7 +275,7 @@ pub(super) fn validate_encoded_publication(
     {
         return Err(PublicationHistoryError::CorruptCurrent);
     }
-    let lease_bytes = take_bytes(bytes, &mut cursor)?;
+    let lease_bytes = read_bytes(&mut reader)?;
     let lease = decode_ownership_lease(lease_bytes, DecodeLimits::default())
         .map_err(|_| PublicationHistoryError::CorruptCurrent)?;
     let media = aos_sandbox_core::MediaType::new(
@@ -295,7 +295,7 @@ pub(super) fn validate_encoded_publication(
     {
         return Err(PublicationHistoryError::CorruptCurrent);
     }
-    let signature_bytes = take_bytes(bytes, &mut cursor)?;
+    let signature_bytes = read_bytes(&mut reader)?;
     let signature = decode_signature(signature_bytes, DecodeLimits::default())
         .map_err(|_| PublicationHistoryError::CorruptCurrent)?;
     if encode_signature(&signature) != signature_bytes
@@ -306,7 +306,7 @@ pub(super) fn validate_encoded_publication(
     {
         return Err(PublicationHistoryError::CorruptCurrent);
     }
-    let receipt_bytes = take_bytes(bytes, &mut cursor)?;
+    let receipt_bytes = read_bytes(&mut reader)?;
     let receipt = OwnershipTransactionReceiptV1::from_canonical_bytes(receipt_bytes)
         .map_err(|_| PublicationHistoryError::CorruptCurrent)?;
     if receipt.authority() != signature.statement().signer()
@@ -314,7 +314,7 @@ pub(super) fn validate_encoded_publication(
     {
         return Err(PublicationHistoryError::CorruptCurrent);
     }
-    let receipt_signature_bytes = take_bytes(bytes, &mut cursor)?;
+    let receipt_signature_bytes = read_bytes(&mut reader)?;
     let receipt_signature = decode_signature(receipt_signature_bytes, DecodeLimits::default())
         .map_err(|_| PublicationHistoryError::CorruptCurrent)?;
     let receipt_media = aos_sandbox_core::MediaType::new(
@@ -345,17 +345,17 @@ pub(super) fn validate_encoded_publication(
         canonical_receipt_signature: receipt_signature_bytes.to_vec(),
         digest: lease_digest,
     };
-    let required = take_u32(bytes, &mut cursor)?;
+    let required = read_count(&mut reader)?;
     if required == 0 || required > 4 {
         return Err(PublicationHistoryError::CorruptCurrent);
     }
-    let audiences = take(bytes, &mut cursor, required)?;
+    let audiences = reader.bytes(required)?;
     if audiences.iter().any(|code| !(1..=4).contains(code))
         || audiences.windows(2).any(|pair| pair[0] >= pair[1])
     {
         return Err(PublicationHistoryError::CorruptCurrent);
     }
-    let templates = take_u32(bytes, &mut cursor)?;
+    let templates = read_count(&mut reader)?;
     if templates == 0 || templates > MAXIMUM_TEMPLATES {
         return Err(PublicationHistoryError::CorruptCurrent);
     }
@@ -365,17 +365,15 @@ pub(super) fn validate_encoded_publication(
     let mut plans: BTreeMap<u8, (Vec<u8>, Vec<u8>)> = BTreeMap::new();
     let mut recovered_templates = Vec::with_capacity(templates);
     for _ in 0..templates {
-        let stored_template_digest = ObjectDigest::from_bytes(take_array(bytes, &mut cursor)?);
-        let audience = *take(bytes, &mut cursor, 1)?
-            .first()
-            .ok_or(PublicationHistoryError::CorruptCurrent)?;
+        let stored_template_digest = ObjectDigest::from_bytes(reader.array()?);
+        let audience = reader.u8()?;
         if !audiences.contains(&audience) {
             return Err(PublicationHistoryError::CorruptCurrent);
         }
-        let plan_bytes = take_bytes(bytes, &mut cursor)?;
+        let plan_bytes = read_bytes(&mut reader)?;
         let plan = decode_broker_authorization_plan(plan_bytes, DecodeLimits::default())
             .map_err(|_| PublicationHistoryError::CorruptCurrent)?;
-        let plan_signature = take_bytes(bytes, &mut cursor)?;
+        let plan_signature = read_bytes(&mut reader)?;
         let decoded = decode_signature(plan_signature, DecodeLimits::default())
             .map_err(|_| PublicationHistoryError::CorruptCurrent)?;
         let plan_media = aos_sandbox_core::MediaType::new(
@@ -408,37 +406,33 @@ pub(super) fn validate_encoded_publication(
             }
             _ => {}
         }
-        let method_code = i32::from_be_bytes(take_array(bytes, &mut cursor)?);
+        let method_code = i32::from_be_bytes(reader.array()?);
         if !matches!((audience, method_code), (1, 1) | (2, 4) | (3, 7) | (4, 9)) {
             return Err(PublicationHistoryError::CorruptCurrent);
         }
         let method = broker_method_from_code(method_code)?;
-        let body = take_bytes(bytes, &mut cursor)?;
+        let body = read_bytes(&mut reader)?;
         if !crate::dispatch_template::validate_durable_deadline_free_body(body) {
             return Err(PublicationHistoryError::CorruptCurrent);
         }
-        let roles = take_u32(bytes, &mut cursor)?;
+        let roles = read_count(&mut reader)?;
         if roles > 16 {
             return Err(PublicationHistoryError::CorruptCurrent);
         }
         let mut role_codes = Vec::with_capacity(roles);
         let mut descriptor_roles = Vec::with_capacity(roles);
         for _ in 0..roles {
-            let role = i32::from_be_bytes(take_array(bytes, &mut cursor)?);
+            let role = i32::from_be_bytes(reader.array()?);
             if !(1..=7).contains(&role) || role_codes.contains(&role) {
                 return Err(PublicationHistoryError::CorruptCurrent);
             }
             role_codes.push(role);
             descriptor_roles.push(broker_descriptor_role_from_code(role)?);
         }
-        let verb = u32::from_be_bytes(take_array(bytes, &mut cursor)?);
-        let target_start = cursor;
-        let target = *take(bytes, &mut cursor, 1)?
-            .first()
-            .ok_or(PublicationHistoryError::CorruptCurrent)?;
-        take(
-            bytes,
-            &mut cursor,
+        let verb = reader.u32()?;
+        let target_start = bytes.len() - reader.remaining();
+        let target = reader.u8()?;
+        reader.bytes(
             match target {
                 1 => 0,
                 2 => 32,
@@ -446,8 +440,8 @@ pub(super) fn validate_encoded_publication(
                 _ => return Err(PublicationHistoryError::CorruptCurrent),
             },
         )?;
-        let target_bytes = &bytes[target_start..cursor];
-        let commitment = ObjectDigest::from_bytes(take_array(bytes, &mut cursor)?);
+        let target_bytes = &bytes[target_start..bytes.len() - reader.remaining()];
+        let commitment = ObjectDigest::from_bytes(reader.array()?);
         let maximum_body = body
             .len()
             .checked_add(11)
@@ -495,7 +489,7 @@ pub(super) fn validate_encoded_publication(
             semantics,
         });
     }
-    if cursor != bytes.len() || plans.len() != audiences.len() {
+    if !reader.is_empty() || plans.len() != audiences.len() {
         return Err(PublicationHistoryError::CorruptCurrent);
     }
     Ok(RecoveredPublicationArtifactsV1 {
@@ -567,18 +561,18 @@ mod tests {
     fn old_and_artifact_decoders_keep_malformed_publication_errors_even_without_a_carrier() {
         let (_, original) = crate::publication::tests::activation_fixture(1);
         let bytes = original.canonical_bytes();
-        let mut cursor = 10;
+        let mut reader = publication_reader(bytes).unwrap();
         let mut payload_offsets = Vec::new();
         for _ in 0..5 {
-            let field = take_bytes(bytes, &mut cursor).unwrap();
-            payload_offsets.push(cursor - field.len());
+            let field = read_bytes(&mut reader).unwrap();
+            payload_offsets.push(bytes.len() - reader.remaining() - field.len());
         }
-        let audiences = take_u32(bytes, &mut cursor).unwrap();
-        take(bytes, &mut cursor, audiences).unwrap();
-        assert!(take_u32(bytes, &mut cursor).unwrap() > 0);
-        take(bytes, &mut cursor, 33).unwrap();
-        let first_plan = take_bytes(bytes, &mut cursor).unwrap();
-        payload_offsets.push(cursor - first_plan.len());
+        let audiences = read_count(&mut reader).unwrap();
+        reader.bytes(audiences).unwrap();
+        assert!(read_count(&mut reader).unwrap() > 0);
+        reader.bytes(33).unwrap();
+        let first_plan = read_bytes(&mut reader).unwrap();
+        payload_offsets.push(bytes.len() - reader.remaining() - first_plan.len());
 
         for offset in [0, 8].into_iter().chain(payload_offsets) {
             let mut changed = bytes.to_vec();

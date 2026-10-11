@@ -25,6 +25,7 @@
 use std::collections::BTreeMap;
 
 use aos_proto::aos::sandbox::local::v1::{BrokerDescriptorRole, BrokerMethod};
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::format::{
     decode_broker_authorization_plan, decode_ownership_lease, decode_signature, encode_signature,
 };
@@ -598,40 +599,25 @@ fn put_bytes(bytes: &mut Vec<u8>, value: &[u8]) -> Result<(), PublicationHistory
     Ok(())
 }
 
-fn take<'a>(
-    bytes: &'a [u8],
-    cursor: &mut usize,
-    length: usize,
-) -> Result<&'a [u8], PublicationHistoryError> {
-    let end = cursor
-        .checked_add(length)
-        .filter(|end| *end <= bytes.len())
-        .ok_or(PublicationHistoryError::CorruptCurrent)?;
-    let value = &bytes[*cursor..end];
-    *cursor = end;
-    Ok(value)
-}
-
-fn take_array<const N: usize>(
+fn publication_reader(
     bytes: &[u8],
-    cursor: &mut usize,
-) -> Result<[u8; N], PublicationHistoryError> {
-    take(bytes, cursor, N)?
-        .try_into()
-        .map_err(|_| PublicationHistoryError::CorruptCurrent)
+) -> Result<BoundedReader<'_, PublicationHistoryError>, PublicationHistoryError> {
+    let mut reader = BoundedReader::new(bytes, |_| PublicationHistoryError::CorruptCurrent);
+    reader.bytes(10)?;
+    Ok(reader)
 }
 
-fn take_u32(bytes: &[u8], cursor: &mut usize) -> Result<usize, PublicationHistoryError> {
-    usize::try_from(u32::from_be_bytes(take_array(bytes, cursor)?))
-        .map_err(|_| PublicationHistoryError::CorruptCurrent)
+fn read_count(
+    reader: &mut BoundedReader<'_, PublicationHistoryError>,
+) -> Result<usize, PublicationHistoryError> {
+    usize::try_from(reader.u32()?).map_err(|_| PublicationHistoryError::CorruptCurrent)
 }
 
-fn take_bytes<'a>(
-    bytes: &'a [u8],
-    cursor: &mut usize,
+fn read_bytes<'a>(
+    reader: &mut BoundedReader<'a, PublicationHistoryError>,
 ) -> Result<&'a [u8], PublicationHistoryError> {
-    let length = take_u32(bytes, cursor)?;
-    take(bytes, cursor, length)
+    let length = read_count(reader)?;
+    reader.bytes(length)
 }
 
 impl PublicationHistoryV1 {
@@ -910,18 +896,18 @@ mod historical_output_readback_tests {
     fn resealed_malformed_artifacts_still_fail_the_complete_first_decode() {
         let (_, prepared) = tests::activation_fixture(1);
         let bytes = prepared.canonical_bytes();
-        let mut cursor = 10;
+        let mut reader = publication_reader(bytes).unwrap();
         let mut offsets = vec![0, 8];
         for _ in 0..5 {
-            let field = take_bytes(bytes, &mut cursor).unwrap();
-            offsets.push(cursor - field.len());
+            let field = read_bytes(&mut reader).unwrap();
+            offsets.push(bytes.len() - reader.remaining() - field.len());
         }
-        let audiences = take_u32(bytes, &mut cursor).unwrap();
-        take(bytes, &mut cursor, audiences).unwrap();
-        assert!(take_u32(bytes, &mut cursor).unwrap() > 0);
-        take(bytes, &mut cursor, 33).unwrap();
-        let plan = take_bytes(bytes, &mut cursor).unwrap();
-        offsets.push(cursor - plan.len());
+        let audiences = read_count(&mut reader).unwrap();
+        reader.bytes(audiences).unwrap();
+        assert!(read_count(&mut reader).unwrap() > 0);
+        reader.bytes(33).unwrap();
+        let plan = read_bytes(&mut reader).unwrap();
+        offsets.push(bytes.len() - reader.remaining() - plan.len());
 
         for offset in offsets {
             let mut changed = bytes.to_vec();

@@ -182,8 +182,8 @@ pub(super) fn decode_draft(
     {
         return Err(PublicationHistoryError::InvalidDraft);
     }
-    let mut cursor = 10;
-    let manifest_bytes = take_bytes(bytes, &mut cursor)?;
+    let mut reader = publication_reader(bytes)?;
+    let manifest_bytes = read_bytes(&mut reader)?;
     let manifest = CanonicalAssignmentManifestV1::from_canonical_bytes(
         manifest_bytes,
         DecodeLimits::default(),
@@ -193,11 +193,11 @@ pub(super) fn decode_draft(
         .broker_assignment()
         .map_err(|_| PublicationHistoryError::InvalidDraft)?;
 
-    let audience_count = take_u32(bytes, &mut cursor)?;
+    let audience_count = read_count(&mut reader)?;
     if audience_count == 0 || audience_count > 4 {
         return Err(PublicationHistoryError::InvalidDraft);
     }
-    let audience_codes = take(bytes, &mut cursor, audience_count)?;
+    let audience_codes = reader.bytes(audience_count)?;
     if audience_codes.iter().any(|code| !(1..=4).contains(code))
         || audience_codes.windows(2).any(|pair| pair[0] >= pair[1])
     {
@@ -208,7 +208,7 @@ pub(super) fn decode_draft(
         .copied()
         .map(audience_from_code)
         .collect::<Result<Vec<_>, _>>()?;
-    let template_count = take_u32(bytes, &mut cursor)?;
+    let template_count = read_count(&mut reader)?;
     if template_count == 0 || template_count > MAXIMUM_TEMPLATES {
         return Err(PublicationHistoryError::InvalidDraft);
     }
@@ -218,19 +218,17 @@ pub(super) fn decode_draft(
     let mut prior_order = None;
     let mut recovered_templates = Vec::with_capacity(template_count);
     for _ in 0..template_count {
-        let stored_template_digest = ObjectDigest::from_bytes(take_array(bytes, &mut cursor)?);
-        let audience_code_value = *take(bytes, &mut cursor, 1)?
-            .first()
-            .ok_or(PublicationHistoryError::InvalidDraft)?;
+        let stored_template_digest = ObjectDigest::from_bytes(reader.array()?);
+        let audience_code_value = reader.u8()?;
         let audience = audience_from_code(audience_code_value)?;
         if !required_audiences.contains(&audience) {
             return Err(PublicationHistoryError::InvalidDraft);
         }
 
-        let plan_bytes = take_bytes(bytes, &mut cursor)?;
+        let plan_bytes = read_bytes(&mut reader)?;
         let plan = decode_broker_authorization_plan(plan_bytes, DecodeLimits::default())
             .map_err(|_| PublicationHistoryError::InvalidDraft)?;
-        let plan_signature = take_bytes(bytes, &mut cursor)?;
+        let plan_signature = read_bytes(&mut reader)?;
         let decoded = decode_signature(plan_signature, DecodeLimits::default())
             .map_err(|_| PublicationHistoryError::InvalidDraft)?;
         let plan_media = aos_sandbox_core::MediaType::new(
@@ -279,7 +277,7 @@ pub(super) fn decode_draft(
             _ => {}
         }
 
-        let method_code = i32::from_be_bytes(take_array(bytes, &mut cursor)?);
+        let method_code = i32::from_be_bytes(reader.array()?);
         if !matches!(
             (audience_code_value, method_code),
             (1, 1) | (2, 4) | (3, 7) | (4, 9)
@@ -287,32 +285,28 @@ pub(super) fn decode_draft(
             return Err(PublicationHistoryError::InvalidDraft);
         }
         let method = broker_method_from_code(method_code)?;
-        let body = take_bytes(bytes, &mut cursor)?;
+        let body = read_bytes(&mut reader)?;
         if !crate::dispatch_template::validate_durable_deadline_free_body(body) {
             return Err(PublicationHistoryError::InvalidDraft);
         }
-        let role_count = take_u32(bytes, &mut cursor)?;
+        let role_count = read_count(&mut reader)?;
         if role_count > 16 {
             return Err(PublicationHistoryError::InvalidDraft);
         }
         let mut role_codes = Vec::with_capacity(role_count);
         let mut descriptor_roles = Vec::with_capacity(role_count);
         for _ in 0..role_count {
-            let role = i32::from_be_bytes(take_array(bytes, &mut cursor)?);
+            let role = i32::from_be_bytes(reader.array()?);
             if !(1..=7).contains(&role) || role_codes.contains(&role) {
                 return Err(PublicationHistoryError::InvalidDraft);
             }
             role_codes.push(role);
             descriptor_roles.push(broker_descriptor_role_from_code(role)?);
         }
-        let verb = u32::from_be_bytes(take_array(bytes, &mut cursor)?);
-        let target_start = cursor;
-        let target = *take(bytes, &mut cursor, 1)?
-            .first()
-            .ok_or(PublicationHistoryError::InvalidDraft)?;
-        take(
-            bytes,
-            &mut cursor,
+        let verb = reader.u32()?;
+        let target_start = bytes.len() - reader.remaining();
+        let target = reader.u8()?;
+        reader.bytes(
             match target {
                 1 => 0,
                 2 => 32,
@@ -320,8 +314,8 @@ pub(super) fn decode_draft(
                 _ => return Err(PublicationHistoryError::InvalidDraft),
             },
         )?;
-        let target_bytes = &bytes[target_start..cursor];
-        let commitment = ObjectDigest::from_bytes(take_array(bytes, &mut cursor)?);
+        let target_bytes = &bytes[target_start..bytes.len() - reader.remaining()];
+        let commitment = ObjectDigest::from_bytes(reader.array()?);
         let maximum_body = body
             .len()
             .checked_add(11)
@@ -369,7 +363,7 @@ pub(super) fn decode_draft(
             semantics,
         });
     }
-    if cursor != bytes.len()
+    if !reader.is_empty()
         || plans.len() != required_audiences.len()
         || required_audiences
             .iter()
