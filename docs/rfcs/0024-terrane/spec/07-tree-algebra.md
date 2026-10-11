@@ -30,9 +30,12 @@ being the unit of properties, authority, storage placement, and ownership
 
 Every operation below is defined on roots and produces roots. An operation
 produces either a **virtual** composite, resolved lazily at lookup, or a
-**materialized** root, a single prolly tree. Both forms have the same observable
-namespace; they differ in cost and in whether the result has a single root
-hash that can be sealed, indexed, or exposed by every surface.
+**materialized** root, a single prolly tree. Successful materialization preserves
+the virtual composite's observable namespace. Layer precedence can also yield
+a namespace that violates the ordinary tree's structural rules; materialization
+then reports a structural error as required by ALG-29. The forms differ in cost
+and in whether the result has a single root hash that can be sealed, indexed,
+or exposed by every surface.
 
 ## Operations
 
@@ -232,9 +235,20 @@ operations above.
   MUST be expressible as a **recipe**: a canonical encoding of the operation
   and its input root hashes, as defined in `reference/terrane-v1.cddl`. A
   recipe's hash identifies the composite.
-- **[ALG-29]** An implementation MUST be able to materialize any composite
-  into a single root and MUST record the recipe on the resulting commit's
-  profile so the root can be verified by recomputation.
+- **[ALG-29]** An implementation MUST implement materialization for every
+  registered composite, including representable nested grafts and contextual
+  whiteouts. Successful materialization MUST preserve observable lookup and
+  listing and MUST record the recipe on the resulting commit's profile so the
+  root can be verified by recomputation. If key or layer precedence yields a
+  namespace that cannot obey TREE-4 or TREE-5, materialization MUST report a
+  typed structural error. For example, a higher-layer nondirectory or whiteout
+  at `g` can coexist with a visible lower-layer graft child `g/x` under ALG-9's
+  key precedence; that namespace has no valid ordinary-tree representation.
+  An implementation MUST NOT silently drop visible descendants, change a
+  whiteout's scope, ignore graft targets, or emit a malformed ordinary tree to
+  produce a root. Structural refusal does not permit restricting materialization
+  to composites whose inputs contain no grafts. *See:* D-116 in
+  [`39-decision-register.md`](39-decision-register.md).
 - **[ALG-30]** A materialized composite is a derivation
   ([`10-derived-data.md`](10-derived-data.md) DRV-21). An implementation
   SHOULD memoize it by recipe hash in the derivation memo table, so that

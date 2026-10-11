@@ -2431,6 +2431,37 @@ is added rather than editing history.
     freeze and completes no task or gate.
   - **Affects:** GC-4/7/10/12/15/16/29 and copied first ownership under D-82.
 
+- **[D-116] Reject structurally unrepresentable composite namespaces.**
+  - **Status:** Decided (2026-10-09)
+  - **Decision:** Materialization is implemented for every registered
+    composite, including nested grafts and contextual whiteouts. A successful
+    result preserves observable lookup and listing. When key precedence yields
+    an ordinary namespace that violates TREE-4 or TREE-5, the operation returns
+    a typed structural error rather than changing the virtual namespace.
+  - **Rationale:** ALG-29 previously required materializing any composite,
+    while ALG-9 gives whiteouts key scope and TREE-4 requires directory
+    ancestors. With a whiteout or nondirectory at `g` in the upper layer and a
+    graft at `g` targeting a root containing `x` in the lower layer, virtual
+    lookup still finds `g/x`. The upper layer wins or suppresses `g`, leaving
+    no directory ancestor for that visible child. Those rules cannot all hold
+    in a materialized ordinary tree without structural refusal. Conversely,
+    overlapping grafts and whiteouts within their targets can yield valid
+    namespaces; a physical descriptor merge alone cannot materialize them.
+  - **Alternatives considered:** Hide every descendant of a whiteout or
+    nondirectory (rejected: changes ALG-9's key precedence); drop lower graft
+    children or refuse all graft inputs (rejected: loses representable virtual
+    namespaces); permit malformed ordinary roots (rejected: violates TREE-4/5
+    and makes consumers interpret a different namespace).
+  - **Compatibility:** No input identity, encoding schema, requirement ID,
+    gate name or existing golden byte changes. Correctly materializing graft
+    composites can produce different result roots from a physical descriptor
+    merge that lost visible children, retained contextual whiteouts, or changed
+    inherited authority or trust policy. Existing flat overlay identities and
+    whiteout key scope remain unchanged. Authority and trust compatibility
+    requirements remain mandatory. This correction precedes T1's freeze and
+    completes no task or gate.
+  - **Affects:** ALG-3/9/10/11/29 and TREE-4/5/30.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**
