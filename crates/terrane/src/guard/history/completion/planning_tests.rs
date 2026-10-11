@@ -154,13 +154,13 @@ async fn selected(
     Ok((guard, inputs, evidence))
 }
 
-/// Retains native history with an explicitly preserved later owner binding.
+/// Retains native history with explicitly selected later-property registrations.
 ///
-/// The shared constructor fixes Legacy authoring without later registrations.
-/// Local preparation preserves its retention checks while reusing its history
+/// Local preparation preserves genuine retention checks while reusing the history
 /// guards, read adapters and selected-state observations unchanged.
 async fn historical_fixture(
     graph: wire::Graph,
+    later_properties: &[&str],
 ) -> Result<native::Fixture, Box<dyn std::error::Error>> {
     use std::os::unix::fs::MetadataExt;
     use std::time::Duration;
@@ -196,15 +196,15 @@ async fn historical_fixture(
     )
     .await?;
 
-    // Revision 1 rejects an unregistered index-roots property. Preserve it as
-    // inert later data during authoring; the separately installed revision 3
-    // historical profile must still verify its complete I/P/G relationships.
+    // Revision 1 rejects unregistered index-roots. Explicit registration may
+    // preserve it as inert later data; the separate revision 3 historical
+    // profile must still verify its complete I/P/G relationships.
     let guard = Guard::new_with_authoring_namespace_profile(
         bucket,
         TokioClock,
         seed.guard().keys().to_vec(),
         seed.guard().config().clone(),
-        AuthoringNamespaceProfile::new(1, 3, &["index-roots"], 1)?,
+        AuthoringNamespaceProfile::new(1, 3, later_properties, 1)?,
     );
     let coordinator = Coordinator::new(
         guard,
@@ -741,9 +741,9 @@ async fn paired_preparation_preserves_role_policy_and_refusal_order() -> TestRes
 
 #[tokio::test]
 async fn paired_preparation_keeps_full_history_and_relationship_checks() -> TestResult {
-    // The unregistered Legacy constructor must still refuse the later binding;
+    // Actual authoring without later registration must still refuse the binding;
     // only explicit authoring registration permits this historical fixture.
-    let Err(failure) = native::Fixture::new(wire::Graph::small()).await else {
+    let Err(failure) = historical_fixture(wire::Graph::small(), &[]).await else {
         panic!("unregistered historical owner binding was admitted");
     };
     let Some(crate::repository::Error::Advance(crate::ref_advance::AdvanceError::Store(failure))) =
@@ -759,7 +759,7 @@ async fn paired_preparation_keeps_full_history_and_relationship_checks() -> Test
         }
     );
 
-    let fixture = historical_fixture(wire::Graph::small()).await?;
+    let fixture = historical_fixture(wire::Graph::small(), &["index-roots"]).await?;
     let (guard, inputs, evidence) = selected(&fixture, 2).await?;
     let before = native::selected(&fixture.repository).await?;
     let (pending, plan) = PendingViewUse::prepare_with_plan(&inputs, &fixture.commit, &evidence)?;
@@ -954,7 +954,7 @@ async fn paired_preparation_keeps_full_history_and_relationship_checks() -> Test
         ),
     );
     divergent.rebind(Some(primary), true);
-    let invalid = historical_fixture(divergent).await?;
+    let invalid = historical_fixture(divergent, &["index-roots"]).await?;
     let (guard, inputs, evidence) = selected(&invalid, 2).await?;
     let (pending, plan) = PendingViewUse::prepare_with_plan(&inputs, &invalid.commit, &evidence)?;
     assert_eq!(pending.context.view, invalid.commit.identity());
