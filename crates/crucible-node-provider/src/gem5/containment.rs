@@ -99,6 +99,10 @@ pub struct Gem5QuarantineCustody {
 }
 
 impl Gem5QuarantineCustody {
+    pub(super) fn original_deadline(&self) -> OperationalDeadline {
+        self.deadline
+    }
+
     /// Borrows the original one-shot graceful exchange without native authority.
     pub fn shutdown_exchange(&self) -> Option<&Gem5ShutdownExchange> {
         self.shutdown.as_ref()
@@ -261,6 +265,16 @@ impl Gem5NativeProcess {
     /// Refuses polling before quarantine, changed native identity, kernel census
     /// failure, exhausted finite census credit, or an expired operational budget.
     pub fn poll_reclamation(&mut self) -> Result<Option<&Gem5ReclamationProof>, ProviderError> {
+        if self
+            .quarantine
+            .as_ref()
+            .and_then(|state| state.shutdown.as_ref())
+            .is_some_and(Gem5ShutdownExchange::reply_continuation_pending)
+        {
+            // Receive refusal remains in the exchange. Independently observe
+            // the original kernel owner even if no matching ACK can be recovered.
+            let _retained_receive_refusal = self.continue_graceful_shutdown_reply();
+        }
         let child = self.child.as_mut().ok_or(ProviderError::Correlation(
             "gem5 reclamation omits original child",
         ))?;
@@ -394,6 +408,16 @@ fn poll_reclamation<'a>(
         }
         let members = group_members_with_diagnostic(state.pid, &mut state.census_diagnostic)?;
         if let Some(status) = state.reaped.filter(|_| members.is_empty()) {
+            if state
+                .shutdown
+                .as_ref()
+                .is_some_and(Gem5ShutdownExchange::reply_continuation_pending)
+                && !state.deadline.is_expired()
+            {
+                // The actual wait/census is retained now, but sealing a cached
+                // ACK=false proof would prevent its later genuine reply join.
+                return Ok(None);
+            }
             let mut record = json!({
                 "schema":"crucible.gem5.native-reclamation.v1",
                 "owner":launch.owner,"incarnation":launch.incarnation,

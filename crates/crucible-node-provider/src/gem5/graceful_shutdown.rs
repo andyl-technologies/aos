@@ -13,6 +13,8 @@ use std::io::{Read, Write};
 
 use super::*;
 
+const BODY: &[u8] = b"{\"kind\":\"shutdown\"}";
+
 /// Preserves the exact bounded first Shutdown exchange inside original custody.
 #[derive(Debug)]
 pub struct Gem5ShutdownExchange {
@@ -20,6 +22,7 @@ pub struct Gem5ShutdownExchange {
     received: [u8; 68],
     received_bytes: usize,
     acknowledged: bool,
+    receive_continuation: bool,
 }
 
 impl Gem5ShutdownExchange {
@@ -29,6 +32,7 @@ impl Gem5ShutdownExchange {
             received: [0; 68],
             received_bytes: 0,
             acknowledged: false,
+            receive_continuation: false,
         }
     }
 
@@ -45,6 +49,10 @@ impl Gem5ShutdownExchange {
     /// Reports an exact original reply, independently of child/group reaping.
     pub fn acknowledged(&self) -> bool {
         self.acknowledged
+    }
+
+    pub(super) fn reply_continuation_pending(&self) -> bool {
+        self.receive_continuation
     }
 }
 
@@ -81,6 +89,13 @@ impl Gem5NativeProcess {
     /// Every refusal retains original resources and offers no forceful fallback.
     pub fn begin_graceful_shutdown(&mut self) -> Result<(), ProviderError> {
         if let Some(state) = &self.quarantine {
+            if state
+                .shutdown
+                .as_ref()
+                .is_some_and(Gem5ShutdownExchange::reply_continuation_pending)
+            {
+                return self.continue_graceful_shutdown_reply();
+            }
             return match state.shutdown.as_ref() {
                 Some(exchange) if exchange.acknowledged => Ok(()),
                 Some(_) => Err(ProviderError::Conflict(
@@ -124,15 +139,47 @@ impl Gem5NativeProcess {
         ))?;
         let mut io = DeadlineIo {
             stream,
-            deadline: deadline(self.launch.timeout)?,
+            deadline: budget,
         };
         let exchange = state.shutdown.as_mut().ok_or(ProviderError::Correlation(
             "original Shutdown exchange absent",
         ))?;
-        exchange_once(&mut io, exchange)?;
-        io.remaining()?;
-        exchange.acknowledged = true;
-        Ok(())
+        let result = exchange_once(&mut io, exchange);
+        retain_exchange_result(result, exchange, budget)
+    }
+
+    /// Continues only the same incomplete original Shutdown reply.
+    ///
+    /// A pre-deadline Interrupted or WouldBlock receive refusal may resume on the
+    /// same private stream after its complete first request was written/flushed.
+    /// No write, reconnect or renewed deadline is offered. Kernel/group reaping
+    /// remains independent and cannot replace the actual matching reply.
+    ///
+    /// # Errors
+    /// Refuses absent original custody, a partial request, a nontransient receive
+    /// refusal, EOF, foreign or overcredit replies and the expired first deadline.
+    /// Each refusal retains original resources, bytes and graceful intent.
+    pub fn continue_graceful_shutdown_reply(&mut self) -> Result<(), ProviderError> {
+        let state = self.quarantine.as_mut().ok_or(ProviderError::Conflict(
+            "original Shutdown continuation omits retained exchange",
+        ))?;
+        if self.child.as_ref().map(Child::id) != Some(state.process_group()) {
+            return Err(ProviderError::Correlation(
+                "original Shutdown continuation changed its owning Child",
+            ));
+        }
+        let original_deadline = state.original_deadline();
+        let exchange = state.shutdown.as_mut().ok_or(ProviderError::Conflict(
+            "original Shutdown continuation omits retained reply",
+        ))?;
+        let stream = self.stream.as_mut().ok_or(ProviderError::Conflict(
+            "original Shutdown continuation omits same private stream",
+        ))?;
+        let mut io = DeadlineIo {
+            stream,
+            deadline: original_deadline,
+        };
+        continue_reply(&mut io, exchange, original_deadline)
     }
 }
 
@@ -140,7 +187,6 @@ fn exchange_once(
     io: &mut impl ReadWrite,
     exchange: &mut Gem5ShutdownExchange,
 ) -> Result<(), ProviderError> {
-    const BODY: &[u8] = b"{\"kind\":\"shutdown\"}";
     let mut frame = [0; 23];
     frame[..4].copy_from_slice(&(BODY.len() as u32).to_be_bytes());
     frame[4..].copy_from_slice(BODY);
@@ -155,6 +201,16 @@ fn exchange_once(
     }
     io.flush()?;
 
+    // Only the receive phase can become resumable. A write or flush refusal
+    // never offers another effect-capable request, even before the deadline.
+    exchange.receive_continuation = true;
+    receive_original_reply(io, exchange)
+}
+
+fn receive_original_reply(
+    io: &mut impl Read,
+    exchange: &mut Gem5ShutdownExchange,
+) -> Result<(), ProviderError> {
     read_retained(io, exchange, 4)?;
     let length = u32::from_be_bytes(
         exchange.received[..4]
@@ -173,6 +229,60 @@ fn exchange_once(
         ));
     }
     Ok(())
+}
+
+fn continue_reply(
+    io: &mut impl Read,
+    exchange: &mut Gem5ShutdownExchange,
+    original_deadline: OperationalDeadline,
+) -> Result<(), ProviderError> {
+    if exchange.acknowledged {
+        return Ok(());
+    }
+    if !exchange.receive_continuation || exchange.written_bytes != 23 {
+        return Err(ProviderError::Conflict(
+            "original Shutdown reply is uncertain; no continuation or resend",
+        ));
+    }
+    if original_deadline.is_expired() {
+        exchange.receive_continuation = false;
+        return Err(ProviderError::Conflict(
+            "original Shutdown reply exceeded its first deadline",
+        ));
+    }
+    let result = receive_original_reply(io, exchange);
+    retain_exchange_result(result, exchange, original_deadline)
+}
+
+fn retain_exchange_result(
+    result: Result<(), ProviderError>,
+    exchange: &mut Gem5ShutdownExchange,
+    original_deadline: OperationalDeadline,
+) -> Result<(), ProviderError> {
+    match result {
+        Ok(()) => {
+            exchange.receive_continuation = false;
+            if original_deadline.is_expired() {
+                return Err(ProviderError::Conflict(
+                    "original Shutdown reply exceeded its first deadline",
+                ));
+            }
+            exchange.acknowledged = true;
+            Ok(())
+        }
+        Err(error) => {
+            let transient_receive = matches!(
+                &error,
+                ProviderError::Io(error)
+                    if matches!(error.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock)
+            );
+            exchange.receive_continuation = exchange.receive_continuation
+                && exchange.written_bytes == 23
+                && transient_receive
+                && !original_deadline.is_expired();
+            Err(error)
+        }
+    }
 }
 
 trait ReadWrite: Read + Write {}
@@ -199,3 +309,7 @@ fn read_retained(
 #[cfg(test)]
 #[path = "graceful_shutdown_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "graceful_reply_tests.rs"]
+mod graceful_reply_tests;

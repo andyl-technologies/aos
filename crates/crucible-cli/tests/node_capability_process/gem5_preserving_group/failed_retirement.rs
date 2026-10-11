@@ -11,6 +11,9 @@ use super::*;
 #[path = "failed_retirement/evidence.rs"]
 mod evidence;
 
+#[path = "failed_retirement/seal_storage.rs"]
+mod seal_storage;
+
 #[test]
 #[ignore = "requires installed accepted SE four-owner behavior, current CLI/daemon and genuine original no-archive Shutdown/reap; parks failed custody"]
 fn original_round_exhaustion_retires_without_a_capture_archive() {

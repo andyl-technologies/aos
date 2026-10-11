@@ -283,6 +283,59 @@ pub(super) fn verify_original(
         &format!("node-capability-failed-retirement/{execution}"),
     )?;
     let bytes = body(&blobs, sealed, 128 * 1024)?;
+    verify_loaded_original(blobs, refs, output, refused, baseline, bytes, expected)
+}
+
+/// Checks actual placed-but-unpublished seal data while the storage fault holds.
+///
+/// No mutable seal root or release authority is created by this reader. The
+/// original backend must already contain exactly the held body; native release
+/// remains the owning daemon's separate authenticated supervisor conjunction.
+///
+/// # Errors
+/// Refuses an already-published seal, changed actual blob, or any of the complete
+/// original request, source, history, Shutdown ACK and clean group data checks.
+pub(super) fn verify_unplaced_original(
+    state: &Path,
+    output: &Path,
+    refused: &CapabilityPreparationRecord,
+    baseline: &NodeScenario,
+    identity: ContentId,
+    expected: &[u8],
+) -> Checked<Vec<u8>> {
+    let blobs = DirectoryBlobBackend::new("original-failed-world", state.join("blobs"));
+    let refs = DirectoryRefBackend::new(state.join("refs"));
+    let name = RefName::new(format!(
+        "node-capability-failed-retirement/{}",
+        refused.execution
+    ))
+    .map_err(error)?;
+    require(
+        refs.read_ref(&name).map_err(error)?.is_none(),
+        "storage-refused original seal was already published",
+    )?;
+    let bytes = body(&blobs, identity, 128 * 1024)?;
+    verify_loaded_original(
+        blobs,
+        refs,
+        output,
+        refused,
+        baseline,
+        bytes,
+        Some(expected),
+    )
+}
+
+fn verify_loaded_original(
+    blobs: DirectoryBlobBackend,
+    refs: DirectoryRefBackend,
+    output: &Path,
+    refused: &CapabilityPreparationRecord,
+    baseline: &NodeScenario,
+    bytes: Vec<u8>,
+    expected: Option<&[u8]>,
+) -> Checked<Vec<u8>> {
+    let execution = &refused.execution;
     require(
         expected.is_none_or(|expected| expected == bytes),
         "original failure seal changed",
