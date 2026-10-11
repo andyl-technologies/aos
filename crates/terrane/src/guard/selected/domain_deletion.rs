@@ -12,9 +12,9 @@ use crate::bucket::{
 use crate::domain::{DomainAccess, DomainBinding};
 use crate::guard::{AuthorizedRef, ConsumedResolver, Guard, HistoryObservation};
 use crate::ref_advance::CommitTiming;
-use crate::store::{Clock, ContentValidator, LocalFs, RefStore, StoreErrorKind, StoreFailure};
+use crate::store::{Clock, ContentValidator, LocalFs, StoreErrorKind, StoreFailure};
 use terrane_core::auth::Verb;
-use terrane_core::bucket::BucketCapabilities;
+use terrane_core::bucket::{BucketCapabilities, BucketKey};
 use terrane_core::refs::{RefClass, RefName, RefRecord};
 
 use super::{
@@ -31,7 +31,7 @@ pub(crate) struct QualifiedDomain {
     /// Actual current Admin decisions matching each canonical root occurrence.
     pub(crate) permissions: Vec<DomainAccess>,
     /// Every complete inventoried ref value or absence, including advisory names.
-    pub(crate) records: BTreeMap<String, Option<RefRecord>>,
+    pub(crate) records: BTreeMap<String, Option<Vec<u8>>>,
     /// Exact selected CAPABILITIES bytes carrying complete key-10 inventory.
     pub(crate) capabilities: Vec<u8>,
     /// Actual protected controls, selected preimages and independent request checks.
@@ -136,10 +136,22 @@ where
 
     for name in &names {
         let class = RefName::parse(name).map_err(|_| invalid())?.class();
-        let record = held.store().ref_get(name).await?;
-        records.insert(name.clone(), record.clone());
-        let Some(record) = record else { continue };
-        if class == RefClass::Notes || audit_reference.is_some_and(|reference| reference != name) {
+        let key = BucketKey::ref_record(name).map_err(|_| invalid())?;
+        let bytes = observed.logical().get(key.as_str()).ok_or_else(invalid)?;
+        records.insert(name.clone(), bytes.clone());
+        let Some(bytes) = bytes else { continue };
+
+        // Notes are opaque selected inventory fences, never content roots or
+        // authority edges. Their bytes need not encode an authoritative ref.
+        if class == RefClass::Notes {
+            continue;
+        }
+        let record = RefRecord::decode(bytes).map_err(|_| {
+            StoreFailure::new(StoreErrorKind::Corrupt(
+                crate::store::CorruptSubject::RefName(key.as_str().into()),
+            ))
+        })?;
+        if audit_reference.is_some_and(|reference| reference != name) {
             continue;
         }
         let verified = held.verified_tree_observed(record.commit, history).await?;
@@ -210,7 +222,8 @@ where
 
     // The complete inventory and every whole value are compared while the
     // original namespace exclusion remains held, before retaining effect inputs.
-    if observed
+    let current = held.store().observe_publication_retained().await?;
+    if current
         .logical()
         .get("CAPABILITIES")
         .and_then(Option::as_ref)
@@ -219,7 +232,8 @@ where
         return Err(invalid());
     }
     for (name, expected) in &records {
-        if held.store().ref_get(name).await? != *expected {
+        let key = BucketKey::ref_record(name).map_err(|_| invalid())?;
+        if current.logical().get(key.as_str()) != Some(expected) {
             return Err(invalid());
         }
     }
