@@ -35,12 +35,14 @@ pub(super) enum VerifiedBody {
     ExcludedDetachedIndex,
 }
 
+/// Attributes stored content corruption to the exact requested identity.
 pub(super) fn corrupt(identity: &Identity) -> StoreFailure {
     StoreFailure::new(StoreErrorKind::Corrupt(CorruptSubject::Identity(
         identity.clone(),
     )))
 }
 
+/// Attributes upload rejection to its owning validation rule.
 pub(super) fn invalid(rule_id: &'static str) -> StoreFailure {
     StoreFailure::new(StoreErrorKind::Invalid(InvalidReason::Upload { rule_id }))
 }

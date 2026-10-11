@@ -940,6 +940,10 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     }
 }
 
+/// Parses a canonical key from the registered bucket layout.
+///
+/// # Errors
+/// Returns a malformed-request failure for an invalid or unregistered key.
 pub(super) fn registered(key: &str) -> Result<BucketKey, StoreFailure> {
     BucketKey::parse(key).map_err(|_| files::malformed())
 }

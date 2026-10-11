@@ -8,6 +8,7 @@ use crate::store::{
 use std::path::{Path, PathBuf};
 use terrane_core::bucket::{BucketKey, Mutability};
 
+/// Maps native I/O failure to the store taxonomy while preserving its cause.
 pub(super) fn io_failure(error: std::io::Error) -> StoreFailure {
     let kind = match error.kind() {
         std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem => {
@@ -20,10 +21,12 @@ pub(super) fn io_failure(error: std::io::Error) -> StoreFailure {
     StoreFailure::with_source(kind, error)
 }
 
+/// Reports a malformed request without inventing a backend diagnostic.
 pub(super) fn malformed() -> StoreFailure {
     StoreFailure::new(StoreErrorKind::Invalid(InvalidReason::MalformedRequest))
 }
 
+/// Attributes invalid bucket layout to the capability record.
 pub(super) fn layout_corrupt() -> StoreFailure {
     StoreFailure::new(StoreErrorKind::Corrupt(CorruptSubject::RefName(
         "CAPABILITIES".into(),

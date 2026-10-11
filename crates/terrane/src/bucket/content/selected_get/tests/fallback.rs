@@ -127,6 +127,14 @@ impl LocalFs for OptionalRetention {
     }
 }
 
+/// Exercises copied, unsupported-retention and explicit legacy content reads.
+///
+/// # Errors
+/// Preserves native I/O, path, capability encoding, initialization and read failures.
+///
+/// # Panics
+/// Panics if fixture initialization fails or bytes, physical identities, effect
+/// counts or control absence differ from the required behavior.
 pub(super) async fn check() -> TestResult {
     let fixture = Fixture::new().await?;
     check_quiescent_copy(&fixture).await?;
