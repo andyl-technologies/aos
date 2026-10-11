@@ -27,9 +27,10 @@ impl<'data> Reader<'data> {
         // This constructor emits exactly one empty frame, accounted below.
         // Full insertion and property replacement use the measured editor seam.
         let empty = Tree::build(Vec::new(), None, self.minimum, TreeUse::Index)?;
-        let initial = InitialFrameWork {
+        let initial = crate::tree_builder::StreamWork {
             node_bytes_encoded: empty.root().encoded().len(),
             node_bytes_hashed: self.preimage_length(empty.root().encoded().len())?,
+            ..Default::default()
         };
         let edits: Vec<_> = entries
             .iter()
