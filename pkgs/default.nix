@@ -2024,6 +2024,11 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       linux-controller-response-bytes-stage7-check = callPackage ./kernel/linux-controller-response-bytes-stage7-check.nix {
         inherit linuxSource;
       };
+      # Source component only: no installed kernel or admitted PIC board.
+      linux-controller-pic-source-check = callPackage ./kernel/linux-controller-pic-source-check.nix {
+        inherit linuxSource;
+        linuxStage7Check = self.linux-controller-response-bytes-stage7-check;
+      };
       # Build a kernel variant with extra kconfig appended. Use this — not
       # `linux.override { extraConfig = …; }` — for deployment kernels:
       # `extraConfig` is a linux.nix function arg consumed before
