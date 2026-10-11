@@ -14,6 +14,7 @@ use aos_assessment_runtime::attention_control::{
 use aos_assessment_runtime::control::{
     ScanCancellationV1, ScanListQueryV1, ScanListV1, ScanLookupV1, ScanRetryV1, ScanSubmissionV1,
 };
+use aos_assessment_runtime::scan::ScanState;
 use aos_assessment_runtime::schedules::{SchedulePageV1, ScheduleQueryV1, ScheduleV1};
 use aos_contract::Sha256Digest;
 use aos_core::output::{OutputMode, Printer};
@@ -532,17 +533,94 @@ fn render_alerts(printer: &Printer, page: &AlertPageV1) {
     }
 }
 
+// Waiting only observes the durable operation. The same deadline covers an
+// outstanding HTTP read and polling delay; interrupting never sends a mutation.
+async fn bounded_scan_observation<T>(
+    scan_id: &str,
+    deadline: tokio::time::Instant,
+    observation: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::select! {
+        result = tokio::time::timeout_at(deadline, observation) => {
+            result.map_err(|_| anyhow::anyhow!(
+                "waiting for scan {} timed out; the durable Hub operation continues",
+                escape_terminal(scan_id)
+            ))?
+        }
+        signal = tokio::signal::ctrl_c() => {
+            signal?;
+            anyhow::bail!(
+                "waiting for scan {} interrupted; the durable Hub operation is unchanged",
+                escape_terminal(scan_id)
+            );
+        }
+    }
+}
+
+async fn run_scan_wait(
+    printer: &Printer,
+    access: &crate::cli::HubAccessArgs,
+    registry: &str,
+    scan_id: &str,
+    seconds: u32,
+) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(u64::from(seconds));
+    let lookup = ScanLookupV1 {
+        schema: "aos.assessment-scan-lookup/v1".into(),
+        scan_id: scan_id.into(),
+    };
+    let document_json = serde_json::to_vec(&lookup)?;
+    ScanLookupV1::from_slice(&document_json)?;
+    let (client, receipt) = bounded_scan_observation(scan_id, deadline, async {
+        let client = hub_client(&access.hub, access.token.as_deref()).await?;
+        let response = client
+            .call_topology(
+                hub_rpc::GetPackageScan,
+                &hub_types::AssessmentControlRequest {
+                    registry_slug: registry.into(),
+                    document_json,
+                },
+            )
+            .await?;
+        let receipt = ScanReceiptV1::from_slice(&response.document_json)?;
+        anyhow::ensure!(
+            receipt.scan_id == scan_id,
+            "Hub scan lookup returned a different operation"
+        );
+        Ok((client, receipt))
+    })
+    .await?;
+    let receipt = wait_for_scan_until(&client, registry, receipt, deadline).await?;
+    let state = receipt.state;
+    print_receipt(printer, receipt)?;
+    anyhow::ensure!(
+        matches!(state, ScanState::Succeeded | ScanState::Partial),
+        "Hub assessment scan ended in {}",
+        state.as_str()
+    );
+    Ok(())
+}
+
 async fn wait_for_scan(
     client: &aos_remote::HubClient,
     registry: &str,
-    mut receipt: ScanReceiptV1,
+    receipt: ScanReceiptV1,
     seconds: u32,
 ) -> Result<ScanReceiptV1> {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(u64::from(seconds));
+    wait_for_scan_until(client, registry, receipt, deadline).await
+}
+
+async fn wait_for_scan_until(
+    client: &aos_remote::HubClient,
+    registry: &str,
+    mut receipt: ScanReceiptV1,
+    deadline: tokio::time::Instant,
+) -> Result<ScanReceiptV1> {
     let scan_id = receipt.scan_id.clone();
     let mut delay = 1;
     while !receipt.state.is_terminal() {
-        let next = tokio::time::timeout_at(deadline, async {
+        let next = bounded_scan_observation(&scan_id, deadline, async {
             tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
             let response = client
                 .call_topology(
@@ -558,13 +636,7 @@ async fn wait_for_scan(
                 .await?;
             ScanReceiptV1::from_slice(&response.document_json)
         })
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "waiting for scan {} timed out; the durable Hub operation continues",
-                escape_terminal(&scan_id)
-            )
-        })??;
+        .await?;
         anyhow::ensure!(
             next.scan_id == receipt.scan_id
                 && next.request_digest == receipt.request_digest
@@ -607,6 +679,14 @@ async fn run_scans(printer: &Printer, command: &HubAssessmentScansCmd) -> Result
                 scan_id: scan_id.clone(),
             })?,
         ),
+        HubAssessmentScansCmd::Wait {
+            access,
+            registry,
+            scan_id,
+            timeout,
+        } => {
+            return run_scan_wait(printer, access, registry, scan_id, *timeout).await;
+        }
         HubAssessmentScansCmd::Cancel {
             access,
             registry,
@@ -647,7 +727,7 @@ async fn run_scans(printer: &Printer, command: &HubAssessmentScansCmd) -> Result
                 .call_topology(hub_rpc::ListPackageScans, &request)
                 .await?
         }
-        HubAssessmentScansCmd::Inspect { .. } => {
+        HubAssessmentScansCmd::Inspect { .. } | HubAssessmentScansCmd::Wait { .. } => {
             client
                 .call_topology(hub_rpc::GetPackageScan, &request)
                 .await?
@@ -686,7 +766,16 @@ async fn run_scans(printer: &Printer, command: &HubAssessmentScansCmd) -> Result
         }
         Ok(())
     } else {
-        print_receipt(printer, ScanReceiptV1::from_slice(&response.document_json)?)
+        let receipt = ScanReceiptV1::from_slice(&response.document_json)?;
+        if let HubAssessmentScansCmd::Inspect { scan_id, .. }
+        | HubAssessmentScansCmd::Cancel { scan_id, .. } = command
+        {
+            anyhow::ensure!(
+                receipt.scan_id == *scan_id,
+                "Hub scan response returned a different operation"
+            );
+        }
+        print_receipt(printer, receipt)
     }
 }
 

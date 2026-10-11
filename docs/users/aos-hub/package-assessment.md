@@ -876,3 +876,25 @@ named database on the explicitly selected disposable server and preserves its
 invalid-identity refusal evidence. Scan-authority admission preserves the first
 receipt and credential expiry using an immutable insert followed by an exact
 binding guard in the same transaction; a mismatch rolls back the batch.
+
+### Waiting on an existing Hub scan
+
+`aos hub maintain scans wait SCAN --registry REGISTRY --timeout SECONDS` observes
+one existing operation. Its timeout defaults to 300 seconds and accepts one to
+3,600 seconds, matching `aos maintain scans wait`. The deadline includes
+credential selection, the initial HTTP lookup, polling delays and subsequent
+HTTP reads. Timeout or Ctrl-C stops observation without cancelling, retrying or
+allocating a new operation. Resume by running the command again with the same
+scan identity.
+
+Polling preserves the operation identity, original request commitment,
+generation and resource incarnation, and refuses older receipt revisions.
+Only a terminal receipt is printed. Successful or partial completion exits
+successfully; another terminal state prints its receipt and exits unsuccessfully.
+Partial completion retains its explicit coverage and does not imply a clean
+vulnerability result. `scans inspect` and `scans cancel` also verify that the
+returned receipt names the requested operation before displaying it.
+
+These are read observations through the existing authenticated scan API. Public
+assessment permission policy remains pending; the SQL/CLI and fleet fixtures
+use an isolated transport and establish no public IAM grant.

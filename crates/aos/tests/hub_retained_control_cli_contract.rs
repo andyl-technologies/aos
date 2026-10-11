@@ -459,3 +459,63 @@ fn assessment_configuration_plans_and_applies_require_distinct_exact_inputs() {
         }
     }
 }
+
+#[test]
+fn named_hub_scan_wait_matches_local_timeout_bounds_without_mutation_arguments() {
+    let base = [
+        "aos",
+        "hub",
+        "maintain",
+        "scans",
+        "wait",
+        "exact-scan",
+        "--registry",
+        "fixture",
+    ];
+    let parsed = parse_cli(base).unwrap();
+    let cli::Commands::Hub {
+        command: hub_command,
+    } = parsed.command
+    else {
+        panic!("Hub command expected")
+    };
+    let cli::HubCmd::Assessment {
+        command: cli::HubAssessmentCmd::Scans { command },
+    } = hub_command
+    else {
+        panic!("Hub scans expected")
+    };
+    let cli::HubAssessmentScansCmd::Wait {
+        scan_id, timeout, ..
+    } = command
+    else {
+        panic!("named wait expected")
+    };
+    assert_eq!(scan_id, "exact-scan");
+    assert_eq!(timeout, 300);
+    for timeout in ["1", "3600"] {
+        assert!(parse_cli(base.into_iter().chain(["--timeout", timeout])).is_ok());
+        assert!(
+            parse_cli([
+                "aos",
+                "maintain",
+                "scans",
+                "wait",
+                "exact-scan",
+                "--timeout",
+                timeout
+            ])
+            .is_ok()
+        );
+    }
+    for extra in [
+        vec!["--timeout", "0"],
+        vec!["--timeout", "3601"],
+        vec!["--idempotency-key", "retry"],
+        vec!["--expected-revision", "1"],
+        vec!["--wait"],
+        vec!["--profile", "updates"],
+    ] {
+        assert!(parse_cli(base.into_iter().chain(extra)).is_err());
+    }
+}

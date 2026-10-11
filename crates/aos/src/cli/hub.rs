@@ -617,6 +617,19 @@ pub enum HubAssessmentScansCmd {
         /// Durable operation identity
         scan_id: String,
     },
+    /// Wait for an existing operation without changing it
+    Wait {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry containing the operation
+        #[arg(long)]
+        registry: String,
+        /// Durable operation identity
+        scan_id: String,
+        /// Bound waiting, including the initial lookup, in seconds
+        #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u32).range(1..=3600))]
+        timeout: u32,
+    },
     /// Cancel one exact operation revision
     Cancel {
         #[command(flatten)]

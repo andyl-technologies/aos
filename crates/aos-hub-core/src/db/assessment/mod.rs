@@ -57,6 +57,9 @@ pub use status::{
 mod objects_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
+mod scan_wait_cli_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod scans_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
