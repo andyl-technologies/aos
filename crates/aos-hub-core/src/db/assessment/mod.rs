@@ -15,6 +15,7 @@ mod cache;
 mod clock;
 mod delivery_snapshot;
 mod evaluation;
+mod event_replay;
 mod inventory;
 mod job_authority;
 mod notifications;
@@ -99,6 +100,9 @@ mod notification_work_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32"), feature = "postgres"))]
 mod postgres_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32"), feature = "mysql"))]
+mod mysql_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod status_snapshot_tests;

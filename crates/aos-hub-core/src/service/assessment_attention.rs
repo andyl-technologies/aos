@@ -5,7 +5,7 @@
 
 use aos_assessment_runtime::alerts::Acknowledgement;
 use aos_assessment_runtime::attention_control::{
-    AlertAcknowledgementV1, AlertPageV1, AlertQueryV1, EventPageV1, EventQueryV1,
+    AlertAcknowledgementV1, AlertPageV1, AlertQueryV1, EventQueryV1,
 };
 
 use super::{pb, RpcError, RpcService};
@@ -62,24 +62,16 @@ impl RpcService {
             .authorize_assessment(auth, &registry, "assessment.read")
             .await?;
         require_scope(query.resource_scope.as_deref(), &registry.scope_key)?;
-        let events = self
+        let page = self
             .db
-            .assessment_event_page(registry.id, query.after_sequence, query.limit)
+            .assessment_event_replay_page(
+                registry.id,
+                &registry.scope_key,
+                query.after_sequence,
+                query.limit,
+            )
             .await
-            .map_err(RpcError::internal)?;
-        let page = EventPageV1 {
-            schema: "aos.assessment-event-page/v1".into(),
-            resource_scope: registry.scope_key.clone(),
-            as_of: self
-                .db
-                .assessment_database_time()
-                .await
-                .map_err(RpcError::internal)?,
-            next_sequence: events
-                .last()
-                .map_or(query.after_sequence, |event| event.sequence),
-            events,
-        };
+            .map_err(super::assessment_notifications::retained_page_error)?;
         let document_json = page.to_bytes().map_err(RpcError::internal)?;
         self.recheck_assessment(&claims, &registry, "assessment.read")
             .await?;

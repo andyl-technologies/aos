@@ -9,7 +9,15 @@ use crate::domain::{Permission, Principal};
 
 #[tokio::test]
 async fn private_job_provenance_is_immutable_scoped_and_does_not_extend_expiry() -> Result<()> {
-    let (db, registry_id, mut request) = setup().await?;
+    qualify_private_job(Database::open_in_memory().await?).await
+}
+
+/// Qualifies immutable admission and expiry through the selected actual backend.
+///
+/// # Errors
+/// Returns an error for unavailable persistence or failed scoped admission.
+pub(super) async fn qualify_private_job(database: Database) -> Result<()> {
+    let (db, registry_id, mut request) = super::scans_tests::setup_database(database).await?;
     let original = claims(&db).await?;
     request.actor_ref = super::assessment_actor_ref(&original)?;
     let scan = db.request_assessment_scan(registry_id, &request).await?;

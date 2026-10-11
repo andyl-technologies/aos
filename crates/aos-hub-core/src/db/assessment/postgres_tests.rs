@@ -334,3 +334,24 @@ async fn retained_candidate_stabilization_is_exact_on_postgresql() -> Result<()>
     let db = Database::with_backend(Box::new(backend)).await?;
     super::schedules::stabilization_tests::qualify_epoch_catchup(db).await.map(|_| ())
 }
+
+#[tokio::test]
+#[ignore = "Requires AOS_ASSESSMENT_PG_URL_FILE pointing to a disposable PostgreSQL database"]
+async fn immutable_job_authority_and_original_expiry_on_postgresql() -> Result<()> {
+    let path = std::env::var_os("AOS_ASSESSMENT_PG_URL_FILE")
+        .context("disposable PostgreSQL URL file required")?;
+    let url = std::fs::read_to_string(path)?;
+    let backend = SqlxBackend::connect_postgres(url.trim()).await?;
+    super::authority_tests::qualify_private_job(Database::with_backend(Box::new(backend)).await?).await
+}
+
+#[tokio::test]
+#[ignore = "Requires AOS_ASSESSMENT_PG_URL_FILE pointing to a disposable PostgreSQL database"]
+async fn committed_event_replay_and_lost_custody_on_postgresql() -> Result<()> {
+    let path = std::env::var_os("AOS_ASSESSMENT_PG_URL_FILE")
+        .context("disposable PostgreSQL URL file required")?;
+    let url = std::fs::read_to_string(path)?;
+    let backend = SqlxBackend::connect_postgres(url.trim()).await?;
+    super::event_replay::tests::qualify_replay(Database::with_backend(Box::new(backend)).await?).await?;
+    Ok(())
+}

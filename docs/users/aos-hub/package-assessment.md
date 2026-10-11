@@ -828,3 +828,41 @@ Assessment permission policy remains pending, so this draft does not yet provide
 authorized end-user delivery through these controls. The callback Worker fleet
 suite exercises physical execution and durable replay with paired protocol fixtures;
 it does not establish public service IAM admission.
+
+### Event replay custody
+
+`aos hub maintain events --registry REGISTRY --watch` drains full pages and
+polls idle pages every five seconds. JSON mode emits one versioned
+`aos.hub.cli/v1` envelope per line. Keep the returned resource scope and
+`nextSequence` together when resuming with `--resource-scope` and
+`--after-sequence`. Every poll rechecks current read access.
+
+A single SQL observation captures the current resource incarnation, committed
+allocator, event bodies and heartbeat time. A future reconnect position is
+invalid. Missing successor, interior or tail custody returns `cursor-expired`
+instead of skipping an event or publishing a false idle heartbeat. Sequence
+zero explicitly restarts at the first retained event. At the current committed
+end, an empty heartbeat retains that exact position. Event contents remain
+immutable across polls; replay creates no source work or deliveries.
+
+These v1 positions order one registry resource. Tenant-wide streaming, automatic
+retirement of event/delivery history and slow-consumer streaming controls remain
+separate implementation work. Existing delivery references must be preserved
+when introducing retention; event deletion currently cascades to its outbox.
+
+### SQL backend qualification
+
+Assessment fixtures can run against disposable native SQL databases using
+`AOS_ASSESSMENT_PG_URL_FILE` or `AOS_ASSESSMENT_MYSQL_URL_FILE`. Each variable
+names a private file containing the operator-selected database URL. Tests use
+the production backend, schema admission and checked transactions, including
+immutable pages, concurrent capture limits, clock boundaries and credential
+revocation. They grant no public assessment permissions.
+
+The MySQL-backend fixtures have been exercised with the AOS-built MariaDB
+12.3.3 package. That engine result must be reported separately from qualification
+against an Oracle MySQL server. The schema-identity regression creates a uniquely
+named database on the explicitly selected disposable server and preserves its
+invalid-identity refusal evidence. Scan-authority admission preserves the first
+receipt and credential expiry using an immutable insert followed by an exact
+binding guard in the same transaction; a mismatch rolls back the batch.

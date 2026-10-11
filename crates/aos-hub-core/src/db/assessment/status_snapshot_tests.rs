@@ -282,11 +282,15 @@ pub(super) async fn storage_bounds(db: Database) -> Result<()> {
         Some(&ScanPageError::CapacityExceeded)
     );
 
-    // Every cell fits PostgreSQL's character limits and index tuple allowance.
-    // Aggregate UTF-8 bytes exceed admission while character counts still fit.
-    // Repeated indexed rows simulate corrupt imported metadata; capture must
-    // reject the aggregate before interpreting any of those coordinates.
-    for first in (0..2200).step_by(50) {
+    // MySQL bounds these key cells in bytes; PostgreSQL bounds characters.
+    // Each indexed tuple fits its backend while aggregate UTF-8 bytes exceed
+    // admission and aggregate character counts still fit. Imported corrupt
+    // metadata must fail before coordinate interpretation on every backend.
+    let (rows, coordinate_characters) = match db.backend.dialect() {
+        crate::dialect::Dialect::Mysql => (3500, 200),
+        crate::dialect::Dialect::Sqlite | crate::dialect::Dialect::Postgres => (2200, 400),
+    };
+    for first in (0..rows).step_by(50) {
         let statements = (first..first + 50)
             .map(|index| {
                 crate::backend::Statement::new(
@@ -301,7 +305,7 @@ pub(super) async fn storage_bounds(db: Database) -> Result<()> {
                     vals![
                         registry,
                         format!("size-bound-{index:04}"),
-                        "😀".repeat(400),
+                        "😀".repeat(coordinate_characters),
                         "v".repeat(400)
                     ],
                 )

@@ -148,6 +148,19 @@ contain connection time/health and are not durable events. Slow consumers
 receive a resume cursor and disconnect at the configured buffer limit. The
 server MUST NOT hold a SQL transaction open for the life of a watch stream.
 
+The v1 compatibility replay reader captures its resource incarnation,
+committed allocator, bounded event bodies and database time in one SQL
+statement. An after-position beyond the allocator is invalid. A nonzero
+position MUST NOT advance across missing successor custody. Interior/tail
+gaps, mismatched payload/row positions and missing allocator custody produce
+a typed `cursor-expired` restart response. Sequence zero explicitly starts
+at the first retained event; an idle response at the committed end preserves
+that position. V1 orders one registry resource and does not itself implement
+the tenant-wide streaming contract. Introducing automatic retention MUST
+account for live delivery references and retained audit/callback custody;
+a replay read MUST NOT trigger pruning.
+
+
 ## 6.5. Local and hosted CLI grammar
 
 The existing `aos maintain` grammar and v1 report/update-run semantics remain

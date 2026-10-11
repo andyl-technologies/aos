@@ -24,6 +24,11 @@
   statusBoundsSelector = "db::assessment::status_snapshot_tests::status_captures_bound_concurrent_storage_and_multibyte_metadata";
   statusUnassessedSelector = "db::assessment::status_snapshot_tests::pending_unassessed_heads_keep_null_evidence_and_independent_profiles";
   statusCliSelector = "db::assessment::status_snapshot_cli_tests::actual_cli_retains_status_heads_across_cancellation_and_database_reopen";
+  jobAuthoritySelector = "db::assessment::authority_tests::private_job_provenance_is_immutable_scoped_and_does_not_extend_expiry";
+  eventReplaySelector = "db::assessment::event_replay::tests::committed_replay_requires_contiguous_successor_custody";
+  eventReopenSelector = "db::assessment::event_replay::tests::replay_position_and_expired_custody_survive_database_reopen";
+  eventGapSelector = "db::assessment::event_replay::tests::an_interior_gap_is_not_filtered_event_replay";
+  eventCliSelector = "db::assessment::event_replay::tests::actual_cli_watch_refuses_lost_successor_without_false_heartbeat";
 in
   assert builtins.pathExists (source + "/crates/aos-hub-worker/src/oci_manifest_ingress.rs");
     pkgs.mkCargoPackage {
@@ -96,6 +101,16 @@ in
         grep -Fx '${statusUnassessedSelector}: test' "$out/nix-support/statusUnassessed-test-registration.txt"
         "$out/bin/aos-assessment-retained-pages-fixture" --list --ignored --exact '${statusCliSelector}' > "$out/nix-support/statusCli-test-registration.txt"
         grep -Fx '${statusCliSelector}: test' "$out/nix-support/statusCli-test-registration.txt"
+        "$out/bin/aos-assessment-retained-pages-fixture" --list --exact '${jobAuthoritySelector}' > "$out/nix-support/jobAuthority-test-registration.txt"
+        grep -Fx '${jobAuthoritySelector}: test' "$out/nix-support/jobAuthority-test-registration.txt"
+        "$out/bin/aos-assessment-retained-pages-fixture" --list --exact '${eventReplaySelector}' > "$out/nix-support/eventReplay-test-registration.txt"
+        grep -Fx '${eventReplaySelector}: test' "$out/nix-support/eventReplay-test-registration.txt"
+        "$out/bin/aos-assessment-retained-pages-fixture" --list --exact '${eventReopenSelector}' > "$out/nix-support/eventReopen-test-registration.txt"
+        grep -Fx '${eventReopenSelector}: test' "$out/nix-support/eventReopen-test-registration.txt"
+        "$out/bin/aos-assessment-retained-pages-fixture" --list --exact '${eventGapSelector}' > "$out/nix-support/eventGap-test-registration.txt"
+        grep -Fx '${eventGapSelector}: test' "$out/nix-support/eventGap-test-registration.txt"
+        "$out/bin/aos-assessment-retained-pages-fixture" --list --ignored --exact '${eventCliSelector}' > "$out/nix-support/eventCli-test-registration.txt"
+        grep -Fx '${eventCliSelector}: test' "$out/nix-support/eventCli-test-registration.txt"
       '';
       passthru.testSelector = selector;
       passthru.subscriptionTestSelector = subscriptionSelector;
@@ -116,5 +131,10 @@ in
       passthru.statusBoundsTestSelector = statusBoundsSelector;
       passthru.statusUnassessedTestSelector = statusUnassessedSelector;
       passthru.statusCliTestSelector = statusCliSelector;
+      passthru.jobAuthorityTestSelector = jobAuthoritySelector;
+      passthru.eventReplayTestSelector = eventReplaySelector;
+      passthru.eventReopenTestSelector = eventReopenSelector;
+      passthru.eventGapTestSelector = eventGapSelector;
+      passthru.eventCliTestSelector = eventCliSelector;
       meta.description = "Retained assessment list database and CLI acceptance fixture";
     }

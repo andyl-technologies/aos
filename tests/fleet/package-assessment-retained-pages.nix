@@ -141,5 +141,35 @@ in {
         timeout=240,
     )
     assert "1 passed; 0 failed" in output, output
+    output = hub.succeed(
+        "TOKIO_WORKER_THREADS=2 ${fixture}/bin/aos-assessment-retained-pages-fixture "
+        "--exact ${fixture.passthru.jobAuthorityTestSelector} --nocapture --test-threads=1",
+        timeout=240,
+    )
+    assert "1 passed; 0 failed" in output, output
+    output = hub.succeed(
+        "TOKIO_WORKER_THREADS=2 ${fixture}/bin/aos-assessment-retained-pages-fixture "
+        "--exact ${fixture.passthru.eventReplayTestSelector} --nocapture --test-threads=1",
+        timeout=240,
+    )
+    assert "1 passed; 0 failed" in output, output
+    output = hub.succeed(
+        "TOKIO_WORKER_THREADS=2 ${fixture}/bin/aos-assessment-retained-pages-fixture "
+        "--exact ${fixture.passthru.eventReopenTestSelector} --nocapture --test-threads=1",
+        timeout=240,
+    )
+    assert "1 passed; 0 failed" in output, output
+    output = hub.succeed(
+        "TOKIO_WORKER_THREADS=2 ${fixture}/bin/aos-assessment-retained-pages-fixture "
+        "--exact ${fixture.passthru.eventGapTestSelector} --nocapture --test-threads=1",
+        timeout=240,
+    )
+    assert "1 passed; 0 failed" in output, output
+    output = hub.succeed(
+        "AOS_ASSESSMENT_CLI=${pkgs.aos}/bin/aos TOKIO_WORKER_THREADS=2 ${fixture}/bin/aos-assessment-retained-pages-fixture "
+        "--ignored --exact ${fixture.passthru.eventCliTestSelector} --nocapture --test-threads=1",
+        timeout=240,
+    )
+    assert "PASS: actual CLI watch refuses lost successor without a false heartbeat" in output, output
   '';
 }

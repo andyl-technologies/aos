@@ -180,15 +180,20 @@ impl Database {
                  AND resource.authorization_revision = ?5 AND resource.inventory_digest = assessment_scans.inventory_digest
                  AND resource.policy_digest = assessment_scans.policy_digest) AND ?6 > {clock}"
         ), vals![scan.scan_id, scan.registry_id, scan.request_digest.to_string(), scan.request.actor_ref, scan.authorization_revision, expires]).expecting(1));
+        // MySQL has no predicate on an upsert update. Keep the original row
+        // immutable, then require its exact binding in this same transaction.
+        // A conflict or expired receipt rolls back every preceding fence/write.
         statements.push(Statement::new(format!(
             "INSERT INTO assessment_scan_authorities(scan_id, registry_id, resource_scope, request_digest,
                 actor_ref, authorization_revision, authority_json, expires_at, admitted_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, {clock}) ON CONFLICT(scan_id) DO UPDATE SET
-                 admitted_at = assessment_scan_authorities.admitted_at
-             WHERE assessment_scan_authorities.registry_id = ?2 AND assessment_scan_authorities.resource_scope = ?3
-               AND assessment_scan_authorities.request_digest = ?4 AND assessment_scan_authorities.actor_ref = ?5
-               AND assessment_scan_authorities.authorization_revision = ?6 AND assessment_scan_authorities.expires_at > {clock}"
-        ), vals![scan.scan_id, scan.registry_id, scan.request.resource_scope, scan.request_digest.to_string(), scan.request.actor_ref, scan.authorization_revision, bytes, expires]).expecting(1));
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, {clock}) ON CONFLICT(scan_id) DO NOTHING"
+        ), vals![scan.scan_id, scan.registry_id, scan.request.resource_scope, scan.request_digest.to_string(), scan.request.actor_ref, scan.authorization_revision, bytes, expires]).unchecked());
+        statements.push(Statement::new(format!(
+            "UPDATE assessment_scan_authorities SET admitted_at = admitted_at
+             WHERE scan_id = ?1 AND registry_id = ?2 AND resource_scope = ?3
+               AND request_digest = ?4 AND actor_ref = ?5
+               AND authorization_revision = ?6 AND expires_at > {clock}"
+        ), vals![scan.scan_id, scan.registry_id, scan.request.resource_scope, scan.request_digest.to_string(), scan.request.actor_ref, scan.authorization_revision]).expecting(1));
         self.backend.checked_batch(&statements).await?;
         self.assessment_scan_authority(scan).await?;
         Ok(())
