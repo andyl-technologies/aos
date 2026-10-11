@@ -499,6 +499,11 @@ fn compare_sides(
     Ok(correspondence)
 }
 
+/// Checks complete retained suffix correspondence for the closed four-owner fixture.
+///
+/// # Errors
+/// Refuses missing or changed original operation, publication, input, ACK or
+/// causal-edge custody, unsupported fixture scope, or unequal twin semantics.
 pub(super) fn compare(
     scenario: &NodeScenario,
     left: &(RuntimeSnapshot, Vec<(Id, NativePublication)>),
