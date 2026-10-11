@@ -265,11 +265,19 @@ checks. Twelve exact selectors are registered before adoption. Combined tree
 `cc9eeb200b4e` compiles 1,095 nonignored SDK tests and 764 no-default Core tests;
 Core Clippy passes, but SDK Clippy refuses four test-only `unwrap_err()` calls.
 The reviewed correction preserves every refusal and work assertion. Corrected
-tree `4d4edb4e30b3` passes the exact formatter pair, native build and strict
-all-target SDK Clippy with the original file-descriptor limit restored after
-dev-shell entry. Fresh SDK/Core compilation, runtime and owning Nix qualification
-remain pending on that tree. No formal task merge follows from these results.
-The DRV-29 blocker and all six growing-population witnesses remain required.
+tree `4d4edb4e30b3` passes the exact formatter pair, native build, fresh all-target
+SDK and no-default Core compilation, and strict all-target Clippy for both.
+Its fresh archives contain 1,095 SDK tests and 764 Core tests, with none ignored.
+All twelve new exact counterproofs pass with the original file-descriptor limit
+restored after dev-shell entry and unchanged source, compiler inputs and
+executables. The first 1,024-entry ordinary growth case fails during maintained
+publication with actual descriptor exhaustion after 272.866 seconds under the
+unchanged 1,024 soft limit. Baseline output completes, but reopen and final
+accounting do not; the remaining five growth cases are unrun. Descriptor-lifetime
+diagnosis, heavy collector/recovery cases, owning Nix gates, the complete current
+T1 floor and application-target check remain pending. No formal task merge
+follows from these results. The DRV-29 blocker and all six growing-population
+witnesses remain required.
 
 These results accept no additional task, milestone exit or freeze. Every owning
 task gate and the complete current T1 floor remain required before a formal
