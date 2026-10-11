@@ -12,6 +12,7 @@ mod io;
 mod kvm;
 pub(super) mod recorded_ingress;
 mod vendors;
+mod vendors_mixed;
 
 mod condition_debug;
 mod controlled;

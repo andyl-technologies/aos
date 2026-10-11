@@ -981,3 +981,6 @@ fn missing_normal_revision_refuses_and_revision_owner_supports_send_policy() {
         "source currency cannot replace ordinary accepted class"
     );
 }
+
+#[path = "installed_provider_world_tests.rs"]
+mod mixed_world;

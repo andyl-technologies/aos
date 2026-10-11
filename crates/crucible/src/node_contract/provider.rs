@@ -183,6 +183,31 @@ pub trait NodeProvider {
         })
     }
 
+    /// Contributes original inactive nodes to one already reserved mixed world.
+    ///
+    /// The registry retains the builder outside this callback. Each partial
+    /// native birth must enter the provider's own guard before any callback,
+    /// then enter that same builder before metadata inspection. No second world
+    /// slot, node extraction, respawn, Arm or execution authority is supplied.
+    ///
+    /// # Errors
+    /// Defaults to pre-effect refusal. Effectful failures retain every original
+    /// in the builder or the provider's preowned birth/negotiation capsule.
+    ///
+    /// # Panics
+    /// Provider callbacks may unwind. The registry retains the same builder;
+    /// provider-local originals require its own preowned partial-birth guard.
+    fn prepare_original_into(
+        &mut self,
+        _request: super::ProviderContributionRequest<'_>,
+        _world: &mut super::ProviderWorldContribution<'_, '_>,
+    ) -> Result<(), super::OperationFailure> {
+        Err(super::OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "original mixed-provider contribution unsupported".into(),
+        })
+    }
+
     /// Prepares requested nodes while withholding all semantic execution.
     ///
     /// # Errors

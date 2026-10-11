@@ -16,7 +16,7 @@ use crate::node_admission::EvidenceError;
 use super::{ProviderPlanningRequest, ProviderPreparationPlan};
 
 /// Binds a retained revision to exact original profile and planning metadata.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct ProviderAuthorizationScope {
     profile: Id,
     configuration: ContentRef,
@@ -225,6 +225,11 @@ pub(super) struct ProviderPreparationAuthorization {
     source: ProviderAuthorizationLease,
     behavioral: ProviderAuthorizationLease,
     class: Option<ProviderAuthorizationLease>,
+    additional: Vec<Self>,
+    world: Option<(
+        super::ProviderWorldAuthorizationScope,
+        super::ProviderWorldAuthorizationLease,
+    )>,
 }
 
 impl ProviderPreparationAuthorization {
@@ -239,10 +244,33 @@ impl ProviderPreparationAuthorization {
             source,
             behavioral,
             class,
+            additional: Vec::new(),
+            world: None,
         }
     }
 
+    pub(super) fn combine(
+        mut self,
+        additional: Vec<Self>,
+        scope: super::ProviderWorldAuthorizationScope,
+        world: super::ProviderWorldAuthorizationLease,
+    ) -> Self {
+        self.additional = additional;
+        self.world = Some((scope, world));
+        self
+    }
+
+    pub(super) fn world_scope(&self) -> Option<&super::ProviderWorldAuthorizationScope> {
+        self.world.as_ref().map(|(scope, _)| scope)
+    }
+
     pub(super) fn authenticate(&self, require_class: bool) -> Result<(), EvidenceError> {
+        if let Some((scope, world)) = &self.world {
+            world.authenticate(scope)?;
+        }
+        for contributor in &self.additional {
+            contributor.authenticate(require_class)?;
+        }
         self.source
             .authenticate(&self.scope, ProviderAuthorityKind::Source)?;
         self.behavioral

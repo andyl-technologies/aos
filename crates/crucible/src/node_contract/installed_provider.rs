@@ -122,6 +122,38 @@ pub trait InstalledProviderSource: AdmissionEvidence {
         plan: &ProviderPreparationPlan,
     ) -> Result<(), EvidenceError>;
 
+    /// Authenticates this local profile in the exact complete mixed world.
+    ///
+    /// Existing single-provider qualification cannot silently widen to another
+    /// coordinator, owner roster or another implementation's state and ports.
+    ///
+    /// # Errors
+    /// Defaults to refusal without installed complete-world contribution semantics.
+    fn authenticate_contribution_plan(
+        &self,
+        _manifest: &ProviderManifest,
+        _selection: ProviderPlanningRequest<'_>,
+        _plan: &ProviderPreparationPlan,
+        _scope: &super::ProviderWorldAuthorizationScope,
+        _world_plan: &ProviderPreparationPlan,
+    ) -> Result<(), EvidenceError> {
+        Err(refused("mixed-provider source contribution unsupported"))
+    }
+
+    /// Authenticates the same actual local originals beneath the global capsule.
+    ///
+    /// # Errors
+    /// Defaults to refusal without original global-source/native custody support.
+    fn authenticate_contribution_prepared(
+        &self,
+        _manifest: &ProviderManifest,
+        _plan: &ProviderPreparationPlan,
+        _scope: &super::ProviderWorldAuthorizationScope,
+        _prepared: &PreparedRealization,
+    ) -> Result<(), EvidenceError> {
+        Err(refused("mixed-provider native contribution unsupported"))
+    }
+
     /// Authenticates the complete actual original inactive native realization.
     ///
     /// # Errors
@@ -189,6 +221,10 @@ struct InstalledProvider {
     behavioral: Rc<dyn InstalledProviderBehavioral>,
 }
 
+#[path = "installed_provider_world.rs"]
+mod world;
+pub use world::*;
+
 /// Stores source-installed providers on their original owner thread.
 ///
 /// Providers and nodes need neither `Send` nor `Sync`. Registration does not
@@ -196,6 +232,7 @@ struct InstalledProvider {
 pub struct InstalledProviderRegistry {
     limits: ProviderRegistryLimits,
     providers: BTreeMap<Id, InstalledProvider>,
+    world_source: Option<Rc<dyn super::InstalledProviderWorldSource>>,
 }
 
 impl InstalledProviderRegistry {
@@ -219,6 +256,7 @@ impl InstalledProviderRegistry {
         Ok(Self {
             limits,
             providers: BTreeMap::new(),
+            world_source: None,
         })
     }
 
@@ -679,6 +717,13 @@ fn validate_plan(
 }
 
 pub(super) fn credit(value: &impl Serialize, maximum: usize) -> Result<(), EvidenceError> {
+    measured_credit(value, maximum).map(|_| ())
+}
+
+pub(super) fn measured_credit(
+    value: &impl Serialize,
+    maximum: usize,
+) -> Result<usize, EvidenceError> {
     struct Counter(usize);
     impl Write for Counter {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -692,7 +737,9 @@ pub(super) fn credit(value: &impl Serialize, maximum: usize) -> Result<(), Evide
             Ok(())
         }
     }
-    serde_json::to_writer(Counter(maximum), value).map_err(error)
+    let mut counter = Counter(maximum);
+    serde_json::to_writer(&mut counter, value).map_err(error)?;
+    Ok(maximum - counter.0)
 }
 
 fn error(error: impl std::fmt::Display) -> EvidenceError {
