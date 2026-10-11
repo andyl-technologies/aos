@@ -14,6 +14,8 @@ test-double = ["dep:crucible-shmem"]
 workspace = true
 
 [dependencies]
+crucible-node-contract = { workspace = true }
+crucible-node-provider = { workspace = true }
 blake3 = { workspace = true }
 ciborium = { workspace = true }
 crucible-sim = { path = "../crucible-sim" }
@@ -22,12 +24,16 @@ crucible-cas = { workspace = true }
 crucible-device = { path = "../crucible-device" }
 crucible-shmem = { path = "../crucible-shmem", optional = true }
 crucible-protocol = { path = "../crucible-protocol" }
+hmac = { workspace = true }
 regex = { workspace = true }
+rustix = { workspace = true, features = ["process"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 crucible-shmem = { path = "../crucible-shmem" }

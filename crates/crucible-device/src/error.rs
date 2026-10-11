@@ -20,6 +20,14 @@ use crate::ninep::codec::NinepCodecError;
 /// loudly and reproducibly.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum DeviceError {
+    /// An exact native link cannot park beyond an unresolved original delivery.
+    #[error("exact link delivery {delivery_icount} must settle before ceiling {limit_icount}")]
+    UnsettledExactLinkDelivery {
+        /// Preserves the earliest actual queued delivery time.
+        delivery_icount: u64,
+        /// Names the refused administrative ceiling.
+        limit_icount: u64,
+    },
     /// A complete modeled ARRIVE phase contains an ambiguous request identity.
     #[error("modeled ARRIVE batch repeats the same tick and request identity")]
     AmbiguousModeledArrival,

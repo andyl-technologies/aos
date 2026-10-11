@@ -1,0 +1,195 @@
+# Installed gem5 closed-profile qualification
+
+The `gem5-closed-profile` package produces a source-owned qualification bundle
+for `freestanding-o3-classic-ddr3-v1`. It builds both fixed guest ELFs from source,
+installs the exact native controller/model scripts, and executes independent
+native witnesses before writing its manifest. No raw process image or trace is
+installed in the bundle or checked into this repository.
+
+The package admits only the measured x86-64/AArch64 checksum programs using
+modeled RAM, stdout descriptor 1, and exit. The realized model uses O3, classic
+L1/L2 caches and DDR3, with a native tick of one picosecond. Installed model
+scripts and each actual realized `config.ini` bind all defaults and connections.
+No ingress, host-derived guest input, debug listener, arbitrary guest image,
+or full-system device configuration is included in this profile.
+
+## Actual mechanism checks
+
+Each architecture executes the following against the source-built native
+emulator and source-built DMTCP/helper/auditor:
+
+- Zero-event exclusive stops and unchanged observations.
+- Full-position stops before the first reaction, and exactly one native
+  callback at a one-event budget ceiling.
+- Original immutable operation retries and original receipt recovery.
+- A 5,000-event cut and non-draining opaque process capture at the unchanged
+  native boundary.
+- Independent complete capture closure authentication from original native
+  map, thread-context, descriptor and file-mapping ledgers, raw image bodies,
+  kernel resource census, immutable source assets, and private file custody.
+- Actual guest stdout publication birth inside the native callback, with
+  native tick, global event ordinal, tick ordinal, and original bytes.
+- Source process exit and deletion of the entire original namespace, including
+  owned resources, primary images, supplementary saved copies and temporary
+  files, before two concurrent fresh reconstructions with new control identities.
+- Independent copies of unchanged historical image bytes and complete saved-file
+  rosters, with private per-child saved-copy roots. The native restart hook
+  verifies canonical custody, exact file census, SHA-256 and lengths before
+  resolving a saved-copy path. It never opens or recreates the original root.
+- New captures in each restored owner's private image directory, independently
+  authenticated against its own native map, thread, descriptor and resource
+  ledgers without changing the historical image or advancing a native event.
+- Unchanged captured boundaries and identical native continuation publication
+  suffixes, native checksums, and image contents in both private branches.
+- Actual termination, reaping and empty live kernel census of all three
+  native/helper process groups.
+
+Opaque capture completeness does not relabel the partial typed CPU/cache/device
+inspection as complete. The manifest retains
+`modeled_diagnostics_complete: false` and
+`full_system_device_parity_qualified: false`. Runtime capture authority still
+requires the private provider certificate and installed-profile verifier;
+parsing a manifest or accepting operator-supplied hashes cannot mint it.
+
+## Local source-build result
+
+An independent installed check of the earlier `7mh` bundle refused fresh
+captures in both architectures: the restored owner retained the original
+native capture-custody root, so its new supplementary checkpoint files were
+missing. The earlier `p592` bundle used the same controller and custody helper.
+Their builder-only successes could not establish the required resource-root
+lifecycle in other supported host namespaces.
+
+The corrected owner validates its actual restored private root, updates the
+Python binding and native libc environment, and verifies native readback before
+readiness or any modeled callback. The builder now uses fresh private `/tmp`
+witness trees, which exercise the resource namespace that exposed the defect.
+Independent host checks for both architectures then passed original capture,
+source death and absence, two fresh recaptures with actual supplementary files,
+unchanged continuation and group reaping. The independently checked private
+controller copies have the same SHA-256 as the corrected installed bundle.
+No missing-file or image-body check was relaxed.
+
+A later mixed-world archive test deleted the entire original namespace,
+including the historical checkpoint image directory. That stronger test refused
+restoration: native DMTCP `FileConnection::postRestart` retained an absolute
+`_savedFilePath` beneath the deleted original image's supplementary-files
+directory. Rebinding the live resource path does not rebind this saved copy.
+The `05fw` witnesses removed the original live resource root but retained the
+historical image namespace; they therefore establish their documented native
+continuation mechanism, not portable archive restoration after removal of that
+entire namespace. Production durable archive portability remains refused until
+authenticated saved-copy relocation and both architecture witnesses pass the
+stronger source-namespace deletion gate. Signed checkpoint bytes must remain
+unchanged, and the original namespace must not be recreated.
+
+The subsequent source-built `s7b4` package passes that stronger gate for both
+fixed guest architectures. The native DMTCP hook resolves a saved checkpoint
+copy before `FileConnection::postRestart` probes it. The independently licensed
+custody helper accepts only the sealed launcher's complete historical roster;
+it refuses partial bindings, unrelated prefixes, source/target ancestor aliases,
+noncanonical or nonprivate roots, writable or aliased manifests, changed or
+missing bytes, duplicate/reordered records, and unlisted leaves. Twenty-five
+compiled native positive/adversarial cases pass. The toolkit binary co-retains
+its matching complete patched source tree, all patches, recipe, toolchain
+manifest and LGPL notices through `share/corresponding-source`.
+
+The package's own witnesses and independent installed host witnesses both remove
+the complete original namespace before two concurrent restorations. Every fresh
+owner captures again under a distinct future image directory; its current native
+map/thread/FD/file ledger and raw image bodies pass the independent auditor.
+Original cuts, continuation suffixes, stdout birth positions and checksum bytes
+remain equal, and all three process groups are reaped. The signed historical
+primary image remains unchanged. These tests do not qualify full-system devices,
+arbitrary guest programs, other host ABIs or complete typed diagnostics.
+
+The updated installed manifest is
+`/nix/store/s7b4cpcc10agfrwsvpd7sdpz5hqb4fx0-gem5-closed-profile-1/share/crucible/gem5/closed-profile.json`:
+12,686 bytes, SHA-256
+`306477da3442f63bba3d7a361da3af730862b45c3b3b6907b06639b142c37df7`.
+All 26 installed artifact SHA-256/length bindings were independently remeasured.
+The native executable remains the `rzrp` artifact below. New tools are
+`36fqyiycwrc7d0izhpi5hjrnqcfwq9x3-dmtcp-4.2.0`,
+`x3wf7wgfj04g03m03pv0x4wqp3vg8mcm-gem5-process-custody-1`, and
+`25qysinm1pxdlwvzm0i9bfcr0ln0sz8h-gem5-process-image-inventory-1`.
+The full DMTCP source output is
+`976hj6x3sdxn4nky0zhbnch60bm5iv55-dmtcp-4.2.0-source`.
+The manifest requires `original_image_namespace_absent` and
+`authenticated_saved_copy_relocation` in each architecture's witness; missing
+historical evidence cannot acquire these facts from artifact remeasurement.
+
+The subsequent mixed-world private-route gate found another independent
+resource defect. The provider's artifact installer relied on the process
+umask, and DMTCP's overwrite path recreated every saved file with hardcoded
+`0640`. Fixing installation to atomic `0600` alone cannot preserve private
+custody across that native overwrite. A focused actual source-exit test with
+both an open `0600` state descriptor and a closed-descriptor read-only shared
+mapping reproduces `0600` to `0640` under the earlier toolkit and refuses.
+
+The additive `restore-file-mode-preservation.patch` uses the native file mode
+captured by `fstat` at the original cut. Both recreation paths create with
+those permission bits and apply the exact saved mode after copying, so the
+current umask cannot widen or narrow it. The focused source-built test verifies
+actual `0600` permissions and mapped bytes after two concurrent reconstructions
+and a third restoration after removing the original owned files. No host
+private-route check is relaxed and no post-readiness chmod is used.
+
+The `dq9b95ikih24j6k24l6sdv8ljdvc2viw-gem5-closed-profile-1` successor package
+requires `0600` guest/controller/model copies before launch and checks their
+actual permissions in both restored branches. Both architecture builder gates
+pass, including complete original namespace deletion and fresh native closure
+audits. Its manifest is 13,074 bytes with SHA-256
+`94311b81cccbc926c674ac4d73011be50ab8fb5bde4cb2121ff03aacaf5aa248`;
+all 27 installed artifact SHA-256/length bindings were independently remeasured.
+Its toolkit is `371xhdd7wgdpak50qlhw1mgg3i83xxbc-dmtcp-4.2.0`, co-retaining
+`5q0gvrmc9xpv7rz7fbvcklq9ic3w481n-dmtcp-4.2.0-source`, with custody helper
+`6p5ybzpqk0035pq4h3sy2vjd79yv4qv1-gem5-process-custody-1` and auditor
+`wiw9c7hl9l2w0vlk4lfg0xax3kb1bw87-gem5-process-image-inventory-1`.
+Its required witness fact is `private_launch_artifact_modes_preserved`.
+Independent installed host witnesses for both architectures also pass the
+complete namespace removal, two simultaneous private `0600` reconstructions,
+each fresh native capture audit, unchanged continuation and process-group
+reaping. The actual copied guest/controller/model modes were read back after
+both restorations.
+The earlier namespace-deletion results do not establish this additional
+production private-route policy, and mixed-world admission still requires its
+own actual passing lifecycle gate.
+
+Command, executed on this machine with remote builders disabled:
+
+```text
+aos-dev --release build package gem5-closed-profile --no-out-link \
+  --builders ''
+```
+
+The earlier passing output, whose archive portability limitation is above, is
+`/nix/store/05fw6c809l3j12yp37ip9bld71byk353-gem5-closed-profile-1`.
+Its installed `share/crucible/gem5/closed-profile.json` is 12,230 bytes with SHA-256
+`ada655580bb5262f09c4abb710eab6bb3c2a6be35ff3aaad383b60dff88435a9`.
+All 25 installed artifact bindings were independently remeasured after package
+fixup and scrubbing; every SHA-256 and byte length matched.
+
+The actual native gem5 executable is 157,944,088 bytes with SHA-256
+`20217c64e0f7a4e19008e7ad0c218c81377b8ccf4bcd38b1a18d9507653b69f3`.
+The source manifest binds revision
+`f5c5a6e390f55dd5984977815bf9d0bd05da6945`, its build recipe and the complete
+ordered applied patch list. The bundle also retains upstream gem5/DMTCP source
+archives, recipes and patch sources, installed tools, controller/model bytes,
+known guest artifacts, and the native host ABI scope.
+
+Both real checks passed. The source-exit reconstruction image commitments were:
+
+| Guest ISA | Image SHA-256 | Final native tick (ps) |
+| --- | --- | --- |
+| x86-64 | `a05f9f2c2e1bfad20f191c36259606ced5ac3ddaa9a63a0ccad39ceef5c91719` | 700677000 |
+| AArch64 | `0d876aa16095ae813a768e93e2b2ed57f8de87b5209a3fa64a7b24c0a5fbdff3` | 641023000 |
+
+These commitments identify particular native captures, not a portable process
+ABI or a fidelity certificate. The checked native host ABI was x86-64 Linux
+6.18.54, little-endian, with 4,096-byte pages.
+
+The trusted integration path is a compile-time
+`CRUCIBLE_GEM5_CLOSED_PROFILE_MANIFEST` binding to the source-built installed
+package. Development builds without that binding refuse exact admission.
+Scenario/operator configuration cannot override the trust root or extend the
+fixed guest, model, device, or syscall scope.

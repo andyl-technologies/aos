@@ -12,6 +12,8 @@ in
       base
       != ".git"
       && base != ".crucible"
+      # Local daemon journals are runtime state, never package source.
+      && base != "run-state"
       && base != "target"
       && base != "__pycache__"
       && !lib.hasSuffix ".pyc" base
@@ -33,6 +35,11 @@ in
         || pathString == "${repoRootString}/pkgs/emulation"
         || pathString == "${repoRootString}/pkgs/emulation/crucible-qemu-plugin.nix"
         || pathString == "${repoRootString}/pkgs/emulation/qemu.nix"
+        # Installed-profile tests measure these permissive process-protocol
+        # sources; retaining just their text introduces no emulator linkage.
+        || pathString == "${repoRootString}/pkgs/emulation/_gem5"
+        || pathString == "${repoRootString}/pkgs/emulation/_gem5/native-owner.py"
+        || pathString == "${repoRootString}/pkgs/emulation/_gem5/native-owner-model.py"
         || pathString == "${repoRootString}/pkgs/emulation/qemu-patches"
         || lib.hasPrefix "${repoRootString}/pkgs/emulation/qemu-patches" pathString
         || pathString == "${repoRootString}/pkgs/kernel"
@@ -40,11 +47,14 @@ in
         || pathString == "${repoRootString}/pkgs/kernel/linux.nix"
         || pathString == "${repoRootString}/pkgs/tools"
         || lib.hasPrefix "${repoRootString}/pkgs/tools/crucible" pathString
+        || pathString == "${repoRootString}/pkgs/tools/aos-ability-crucible.nix"
         || pathString == "${repoRootString}/stdenv"
         || pathString == "${repoRootString}/stdenv/phases.nix"
         || pathString == "${repoRootString}/modules"
         || pathString == "${repoRootString}/modules/base"
         || pathString == "${repoRootString}/modules/base/build.nix"
+        || pathString == "${repoRootString}/modules/profiles"
+        || pathString == "${repoRootString}/modules/profiles/ability-crucible.nix"
         || pathString == "${repoRootString}/tests"
         || lib.hasPrefix "${repoRootString}/tests/crucible" pathString
       );

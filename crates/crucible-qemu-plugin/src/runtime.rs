@@ -8,15 +8,29 @@
 //! QEMU callback registration; optional white-box mode remains closed until its
 //! concrete trap and guest-memory callback ABI is available.
 
+mod bounded_original;
 pub(crate) mod callback_quiescence;
+mod installed_endpoint_abi;
+pub(crate) mod installed_endpoint_owner;
+mod installed_teardown;
+#[cfg(not(test))]
+mod installed_workers;
 pub(crate) mod live_callbacks;
 mod live_whitebox;
-mod worker_quiescence;
+pub(crate) mod native_run_control;
+mod root_epoch_callbacks;
+#[cfg(not(test))]
+mod run_workers;
+pub(crate) mod semantic_effect;
+pub(crate) mod semantic_prefix;
+mod teardown_channel;
+pub(crate) mod worker_quiescence;
 
 use callback_quiescence::LiveCallbackQuiescence;
+use teardown_channel::{LiveRuntimeTeardownRouter, TeardownReceiver, TeardownSender};
 use worker_quiescence::{
-    LiveWorkerQuiescence, WORKER_FINGERPRINT, WORKER_REQUIRED, WORKER_RUN_CONTROL, WORKER_TEARDOWN,
-    WorkerForkChildResetError, WorkerQuiescenceSnapshot,
+    LiveWorkerQuiescence, WORKER_FINGERPRINT, WORKER_NATIVE_CONTROL, WORKER_REQUIRED,
+    WORKER_RUN_CONTROL, WORKER_TEARDOWN, WorkerForkChildResetError, WorkerQuiescenceSnapshot,
 };
 
 #[cfg(test)]
@@ -66,39 +80,6 @@ pub(super) enum LiveRuntimeTeardownTrigger {
     SharedShutdown(PluginShutdownRequested),
     /// RUN control was malformed, unsolicited, closed, or otherwise unreadable.
     RunControlFault { diagnostic: String },
-}
-
-/// Replaceable route from callback state to the current process's teardown worker.
-///
-/// A hot-fork child retains callback allocations at their original addresses,
-/// but it does not retain the parent's worker threads. The barrier guarantees
-/// that no callback or lifecycle worker is using this lock across `fork(2)`;
-/// child initialization can therefore replace the disconnected sender before
-/// callback admission reopens.
-pub(super) struct LiveRuntimeTeardownRouter {
-    sender: Mutex<mpsc::Sender<LiveRuntimeTeardownTrigger>>,
-}
-
-impl LiveRuntimeTeardownRouter {
-    fn new(sender: mpsc::Sender<LiveRuntimeTeardownTrigger>) -> Arc<Self> {
-        Arc::new(Self {
-            sender: Mutex::new(sender),
-        })
-    }
-
-    fn send(&self, trigger: LiveRuntimeTeardownTrigger) -> Result<(), ()> {
-        self.sender
-            .lock()
-            .map_err(|_poisoned| ())?
-            .send(trigger)
-            .map_err(|_disconnected| ())
-    }
-
-    fn replace(&self, sender: mpsc::Sender<LiveRuntimeTeardownTrigger>) -> Result<(), ()> {
-        let mut current = self.sender.lock().map_err(|_poisoned| ())?;
-        *current = sender;
-        Ok(())
-    }
 }
 
 /// Process-lifetime ownership of workers created after a successful fork.
@@ -350,6 +331,11 @@ impl OwnedCallbackRegistrationMask {
 /// owned callback may be registered. The allocation remains pinned while the
 /// proof is live, so moving the proof never moves callback-addressable state.
 pub(crate) struct OwnedCallbackRuntimeState {
+    root_epoch: root_epoch_callbacks::NativeRuntimeRootEpoch,
+    callback_roster: live_callbacks::callback_roster::RetainedCallbackRoster,
+    #[cfg(not(test))]
+    installed_endpoint:
+        std::sync::OnceLock<Arc<installed_endpoint_owner::InstalledEndpointCustody>>,
     quiescence: Arc<LiveCallbackQuiescence>,
     workers: Arc<LiveWorkerQuiescence>,
     teardown_router: Arc<LiveRuntimeTeardownRouter>,
@@ -382,8 +368,15 @@ impl OwnedCallbackRuntimeState {
         request_shutdown: QemuRequestShutdownFn,
     ) -> Pin<Box<Self>> {
         Box::pin(Self {
+            root_epoch: root_epoch_callbacks::NativeRuntimeRootEpoch::new(),
+            callback_roster: live_callbacks::callback_roster::RetainedCallbackRoster::default(),
+            #[cfg(not(test))]
+            installed_endpoint: std::sync::OnceLock::new(),
             quiescence: Arc::new(LiveCallbackQuiescence::new()),
-            workers: LiveWorkerQuiescence::new(worker_mask),
+            workers: crate::native_node_control::registered_owner()
+                .and_then(|owner| owner.administrative_modeled_workers())
+                .map(Arc::clone)
+                .unwrap_or_else(|| LiveWorkerQuiescence::new(worker_mask)),
             teardown_router,
             live_vcpu_time: None,
             live_whitebox: None,
@@ -978,10 +971,23 @@ impl OwnedCallbackRuntimeState {
 /// a logical milestone. It can be constructed only after the exact callback
 /// mask for the selected launch mode is complete.
 pub struct RequiredOwnedCallbacksRegistered {
-    state: Pin<Box<OwnedCallbackRuntimeState>>,
+    state: std::mem::ManuallyDrop<Pin<Box<OwnedCallbackRuntimeState>>>,
     registration_mask: OwnedCallbackRegistrationMask,
     #[cfg(test)]
-    _teardown_receiver: Option<mpsc::Receiver<LiveRuntimeTeardownTrigger>>,
+    _teardown_receiver: Option<TeardownReceiver>,
+}
+
+impl Drop for RequiredOwnedCallbacksRegistered {
+    fn drop(&mut self) {
+        if self.state.root_epoch.is_registered() {
+            // Native V9 has no unregister operation. Keep exact userdata, setup
+            // mapping and all original holds alive until the child process exits.
+            return;
+        }
+        // SAFETY: This is the sole drop of the ordinary unregistered allocation;
+        // the epoch case above intentionally retains it for native callbacks.
+        unsafe { std::mem::ManuallyDrop::drop(&mut self.state) };
+    }
 }
 
 impl std::fmt::Debug for RequiredOwnedCallbacksRegistered {
@@ -999,7 +1005,7 @@ impl RequiredOwnedCallbacksRegistered {
         registration_mask: OwnedCallbackRegistrationMask,
     ) -> Self {
         Self {
-            state,
+            state: std::mem::ManuallyDrop::new(state),
             registration_mask,
             #[cfg(test)]
             _teardown_receiver: None,
@@ -1118,7 +1124,7 @@ impl RequiredOwnedCallbacksRegistered {
             ),
             mask,
         );
-        registered._teardown_receiver = Some(teardown_receiver);
+        registered._teardown_receiver = Some(teardown_receiver.into());
         registered
     }
 
@@ -1246,9 +1252,10 @@ fn read_run_control_trigger(
 #[cfg(unix)]
 fn run_control_reader(
     control: ControlLifecycleStream<UnixStream>,
-    teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
+    teardown_sender: impl Into<TeardownSender>,
     workers: Arc<LiveWorkerQuiescence>,
 ) -> bool {
+    let teardown_sender = teardown_sender.into();
     let idle = workers.idle(WORKER_RUN_CONTROL);
     let trigger = read_run_control_trigger(control);
     let pending = idle.received();
@@ -1260,11 +1267,12 @@ fn run_control_reader(
 
 #[cfg(unix)]
 fn run_teardown_worker(
-    teardown_receiver: mpsc::Receiver<LiveRuntimeTeardownTrigger>,
+    teardown_receiver: impl Into<TeardownReceiver>,
     teardown_handle: LiveControlTeardownHandle,
     request_shutdown: QemuRequestShutdownFn,
     workers: Arc<LiveWorkerQuiescence>,
 ) {
+    let teardown_receiver = teardown_receiver.into();
     let idle = workers.idle(WORKER_TEARDOWN);
     let trigger = match teardown_receiver.recv() {
         Ok(trigger) => trigger,
@@ -1410,14 +1418,23 @@ const PLUGIN_CALLBACK_REQUIRED: u64 = ((1_u64 << 12) - 1) & !(1_u64 << 1);
 const PLUGIN_CALLBACK_TB_TRANSLATION: u64 = 1_u64 << 12;
 const PLUGIN_CALLBACK_FLUSH: u64 = 1_u64 << 13;
 fn plugin_worker_mask(args: &PluginArgs) -> u64 {
-    WORKER_REQUIRED | (u64::from(args.fingerprint().is_on()) * WORKER_FINGERPRINT)
+    WORKER_REQUIRED
+        | (u64::from(args.fingerprint().is_on()) * WORKER_FINGERPRINT)
+        | (u64::from(args.native_node_control().is_some()) * WORKER_NATIVE_CONTROL)
 }
 
 fn plugin_resource_manifest(
     plugin_id: QemuPluginId,
     args: &PluginArgs,
     callbacks: &RequiredOwnedCallbacksRegistered,
-) -> Result<crate::QemuPluginResourceManifest, PluginRuntimeInstallError> {
+) -> Result<crate::native_node_control::RegisteredResourceManifest, PluginRuntimeInstallError> {
+    if args.native_node_control().is_some() {
+        let native = crate::native_node_control::registered_owner()
+            .ok_or(PluginRuntimeInstallError::ResourceManifestShape)?;
+        native
+            .start_prepared_protocol_worker(Arc::clone(&callbacks.state.as_ref().get_ref().workers))
+            .map_err(|source| PluginRuntimeInstallError::NativeControlWorkerSpawn { source })?;
+    }
     let setup = callbacks.setup();
     let node_count = setup.mapped_region().header_snapshot().node_count;
     let wake_fd = setup
@@ -1445,7 +1462,7 @@ fn plugin_resource_manifest(
         resource_mask |= PLUGIN_RESOURCE_APP_RANDOM;
     }
 
-    Ok(crate::QemuPluginResourceManifest {
+    let legacy = crate::QemuPluginResourceManifest {
         schema_version: PLUGIN_RESOURCE_MANIFEST_VERSION,
         struct_size,
         process_generation: args.process_generation(),
@@ -1460,7 +1477,13 @@ fn plugin_resource_manifest(
         node_count,
         control_fd: args.sim_fd(),
         wake_fd,
-    })
+    };
+    crate::native_node_control::RegisteredResourceManifest::from_prepared(
+        legacy,
+        args.native_node_control(),
+        callbacks.state.root_epoch.is_registered(),
+    )
+    .ok_or(PluginRuntimeInstallError::ResourceManifestShape)
 }
 
 /// Registers the callback families whose C adapters own live device behavior.
@@ -1554,6 +1577,7 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
     status: *mut crate::QemuPluginHotForkBarrierStatus,
     userdata: *mut std::ffi::c_void,
 ) -> std::os::raw::c_int {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     if status.is_null() || userdata.is_null() {
         return -libc::EINVAL;
     }
@@ -1668,6 +1692,7 @@ extern "C" fn crucible_qemu_plugin_hot_fork_child_runtime(
     status: *mut crate::QemuPluginHotForkChildStatus,
     userdata: *mut std::ffi::c_void,
 ) -> std::os::raw::c_int {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     if status.is_null() || userdata.is_null() {
         return -libc::EINVAL;
     }
@@ -2170,8 +2195,14 @@ impl OwnedCallbackRegistrar for FailClosedOwnedCallbackRegistrar {
     fn register(
         &self,
         args: &PluginArgs,
-        state: Pin<&mut OwnedCallbackRuntimeState>,
+        mut state: Pin<&mut OwnedCallbackRuntimeState>,
     ) -> Result<OwnedCallbackRegistrationMask, OwnedCallbackRegistrationError> {
+        let userdata = state.as_mut().userdata();
+        state
+            .as_ref()
+            .get_ref()
+            .root_epoch
+            .register(args, userdata)?;
         self.live_vcpu_time.register(args, state)
     }
 }
@@ -2188,11 +2219,11 @@ pub struct PluginRuntimeOwner {
     plugin_id: QemuPluginId,
     args: PluginArgs,
     control_interrupt: UnixStream,
-    teardown_interrupt: mpsc::Sender<LiveRuntimeTeardownTrigger>,
+    teardown_interrupt: TeardownSender,
     #[cfg(test)]
     _retained_control: Option<ControlLifecycleStream<UnixStream>>,
     #[cfg(test)]
-    _retained_teardown_receiver: Option<mpsc::Receiver<LiveRuntimeTeardownTrigger>>,
+    _retained_teardown_receiver: Option<TeardownReceiver>,
     control_reader: Option<std::thread::JoinHandle<()>>,
     teardown_worker: Option<std::thread::JoinHandle<()>>,
     _time_control: PluginTimeControlOwnership,
@@ -2385,7 +2416,7 @@ where
             .map_err(registration_error)?
     };
 
-    let (teardown_sender, teardown_receiver) = mpsc::channel();
+    let (teardown_sender, teardown_receiver) = teardown_channel::for_installation(&args)?;
     let teardown_router = LiveRuntimeTeardownRouter::new(teardown_sender.clone());
     let callback_state = OwnedCallbackRuntimeState::pin(
         plugin_worker_mask(&args),
@@ -2507,6 +2538,19 @@ where
             ));
         }
 
+        let callback_runtime = retained.registered_mut()?.userdata();
+        if let Err(error) = semantic_prefix::retain_installed_callbacks(
+            plugin_id,
+            callback_runtime,
+            retained.registered()?.state.as_ref().get_ref(),
+        ) {
+            return Err(fail_post_registration_before_ready_ack_lifecycle(
+                &mut control_stream,
+                error,
+                &mut acknowledgement_state,
+            ));
+        }
+
         post_registration_stage = PostRegistrationStage::SealResourceManifest;
         maybe_inject_post_registration_panic(post_registration_stage);
         let resource_manifest =
@@ -2520,7 +2564,8 @@ where
                     ));
                 }
             };
-        let manifest_status = (capabilities.register_resource_manifest)(&resource_manifest);
+        let manifest_status =
+            (capabilities.register_resource_manifest)(resource_manifest.as_legacy_prefix());
         if manifest_status != 0 {
             return Err(fail_post_registration_before_ready_ack_lifecycle(
                 &mut control_stream,
@@ -2573,44 +2618,16 @@ where
             }
             #[cfg(not(test))]
             let (control_reader, teardown_worker) = {
-                let teardown_handle =
-                    match callbacks_registered.control_teardown_handle(args.slot()) {
-                        Ok(handle) => handle,
-                        Err(error) => fatal_policy.terminate(error),
-                    };
-                let request_shutdown = capabilities.request_shutdown;
-                let teardown_workers = callbacks_registered.worker_quiescence();
-                let teardown_worker = match std::thread::Builder::new()
-                    .name(String::from("crucible-teardown"))
-                    .spawn(move || {
-                        run_runtime_thread_fail_loud("teardown worker", || {
-                            run_teardown_worker(
-                                teardown_receiver,
-                                teardown_handle,
-                                request_shutdown,
-                                teardown_workers,
-                            );
-                        });
-                    }) {
-                    Ok(worker) => worker,
-                    Err(source) => fatal_policy
-                        .terminate(PluginRuntimeInstallError::TeardownWorkerSpawn { source }),
-                };
-                let reader_sender = teardown_sender.clone();
-                let control_workers = callbacks_registered.worker_quiescence();
-                let control_reader = match std::thread::Builder::new()
-                    .name(String::from("crucible-run-control"))
-                    .spawn(move || {
-                        run_runtime_thread_fail_loud("RUN control reader", || {
-                            let _delivered =
-                                run_control_reader(control_stream, reader_sender, control_workers);
-                        });
-                    }) {
-                    Ok(reader) => reader,
-                    Err(source) => fatal_policy
-                        .terminate(PluginRuntimeInstallError::ControlWorkerSpawn { source }),
-                };
-                (Some(control_reader), Some(teardown_worker))
+                let (reader, worker) = installed_workers::start(
+                    &args,
+                    &callbacks_registered,
+                    control_stream,
+                    teardown_receiver,
+                    &teardown_sender,
+                    capabilities.request_shutdown,
+                    fatal_policy,
+                );
+                (Some(reader), Some(worker))
             };
             #[cfg(test)]
             let (retained_control, control_reader, teardown_worker) =
@@ -2816,6 +2833,12 @@ pub(crate) enum PluginLiveBoundaryError {
 /// An error produced while building or publishing the live plugin runtime.
 #[derive(Debug, Error)]
 pub enum PluginRuntimeInstallError {
+    /// The native datagram reader could not bind the actual runtime worker gate.
+    #[error("starting plugin native-control worker failed: {source}")]
+    NativeControlWorkerSpawn {
+        /// Underlying custody or thread-start failure.
+        source: std::io::Error,
+    },
     /// The inherited control descriptor could not be duplicated safely.
     #[error("duplicating plugin control fd {fd} failed: {source}")]
     DuplicateControlFd {
@@ -2835,6 +2858,12 @@ pub enum PluginRuntimeInstallError {
     TeardownSlot {
         /// Underlying mapped-region access error.
         source: crucible_shmem::MappedSetupRegionAccessError,
+    },
+    /// The original fixed-root RUN socket could not be retained in installed custody.
+    #[error("retaining original fixed-root run-control failed: {source}")]
+    RootRunControl {
+        /// Underlying lifecycle, endpoint or retained-owner failure.
+        source: std::io::Error,
     },
     /// The lifecycle control worker thread could not be started.
     #[error("spawning plugin run-control worker failed: {source}")]
@@ -2871,6 +2900,12 @@ pub enum PluginRuntimeInstallError {
     FaultCapabilityAdmission {
         /// Exact bridge or QEMU capability failure.
         source: LiveVcpuTimeCallbackError,
+    },
+    /// Source registration refused the explicit local installed endpoint owner.
+    #[error("original installed endpoint owner refused with status {status}")]
+    InstalledEndpointOwner {
+        /// Original source errno-style refusal, with original owners retained.
+        status: i32,
     },
     /// The fixed plugin resource manifest could not be represented.
     #[error("plugin resource manifest shape is not representable")]

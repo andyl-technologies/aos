@@ -206,3 +206,292 @@ crucible-qemu-plugin	src/block_io_tests	retry	1
 crucible-qemu-plugin	src/ninep_io	retry	1
 crucible-qemu-plugin	src/block_io_tests/inbound_head	retry	1
 crucible-qemu-plugin	src/idle_loop/tests/inbound_cases	retry	1
+
+# RFC-0025 retry names identify original requests, cached receipts or negative
+# retry-authority tests; they never rerun failed tests. Process fixtures poll
+# the same original child or inject one adversarial delay, and every failed
+# assertion remains terminal. Production service/reaper loops pace one owning
+# actor while genuine reclamation or durable publication remains pending.
+# Their lifetime is intentionally not bounded by the sleep interval; they retain
+# original resources and failures instead of redispatching native work.
+crucible	src/node_adapters/cnp/tests	thread::sleep	1
+crucible	src/node_adapters/cnp/tests	std::thread::sleep	1
+crucible	src/node_adapters/cnp/world_tests	thread::sleep	1
+crucible	src/node_adapters/cnp/world_tests	std::thread::sleep	1
+crucible	src/node_adapters/host_scripted_tests	retry	1
+crucible	src/node_adapters/transcript/node_guards	retry	1
+crucible	src/node_state/publication_tests	retry	1
+crucible-campaign	src/observed_node_attempt/tests	retry	1
+crucible-cli	tests/node_host_state_process	thread::sleep	1
+crucible-cli	tests/node_host_state_process	std::thread::sleep	1
+crucible-cli	tests/node_native_state_process	thread::sleep	1
+crucible-cli	tests/node_native_state_process	std::thread::sleep	1
+crucible-cli	tests/node_process	thread::sleep	1
+crucible-cli	tests/node_process	std::thread::sleep	1
+crucible-cli	tests/node_storage_process/host_state	thread::sleep	1
+crucible-cli	tests/node_storage_process/host_state	std::thread::sleep	1
+crucible-cli	tests/node_storage_process	thread::sleep	1
+crucible-cli	tests/node_storage_process	std::thread::sleep	1
+crucible-daemon	src/node_control/daemon	thread::sleep	1
+crucible-daemon	src/node_control/daemon	std::thread::sleep	1
+crucible-daemon	src/node_control/host_state_execution	thread::sleep	1
+crucible-daemon	src/node_control/host_state_service	thread::sleep	1
+crucible-daemon	src/node_observed_executor/activation/tests/native	thread::sleep	1
+crucible-daemon	src/node_observed_executor/activation/tests/native	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/gem5_profile/schema	retry	1
+crucible-daemon	src/node_observed_executor/factory/native_state/custody	thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/native_state/ledger_tests	retry	1
+crucible-daemon	src/node_observed_executor/factory/native_state/service	thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/native_state/tests	thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/native_state/tests	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/reference_public/harness	thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/reference_public/harness	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/transcript/preparation_tests	thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/transcript/preparation_tests	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/transcript/tests	thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/transcript/tests	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/service	thread::sleep	1
+crucible-daemon	src/node_observed_executor/tests/connected	thread::sleep	1
+crucible-daemon	src/node_observed_executor/tests/connected	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/tests/ninep_storage	thread::sleep	1
+crucible-daemon	src/node_observed_executor/tests/ninep_storage	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/tests/storage	thread::sleep	1
+crucible-daemon	src/node_observed_executor/tests/storage	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/tests	thread::sleep	1
+crucible-daemon	src/node_observed_executor/tests	std::thread::sleep	1
+crucible-daemon	src/node_qualification/issuance/tests	retry	1
+crucible-node-provider	src/conformance/tests	retry	1
+crucible-node-provider	src/conformance/tests	thread::sleep	1
+crucible-node-provider	src/connection/tests	retry	1
+crucible-node-provider	src/gem5/closure	thread::sleep	1
+crucible-node-provider	src/gem5/closure	std::thread::sleep	1
+crucible-node-provider	src/gem5/containment_tests	thread::sleep	1
+crucible-node-provider	src/gem5/containment_tests	std::thread::sleep	1
+crucible-node-provider	src/gem5/process	thread::sleep	1
+crucible-node-provider	src/gem5/process	std::thread::sleep	1
+crucible-node-provider	src/gem5/service/tests	retry	1
+crucible-node-provider	src/gem5/tests	retry	1
+crucible-node-provider	src/gem5/tests	thread::sleep	1
+crucible-node-provider	src/gem5/tests	std::thread::sleep	1
+crucible-node-provider	src/journal	retry	1
+crucible-node-provider	src/native_journal/tests	retry	1
+crucible-node-provider	src/reference_device/process	thread::sleep	1
+crucible-node-provider	src/reference_device/process	std::thread::sleep	1
+crucible-node-provider	src/reference_device/supervision	thread::sleep	1
+crucible-node-provider	src/reference_device/supervision	std::thread::sleep	1
+crucible-node-provider	tests/conformance_reference/fixture	thread::sleep	1
+crucible-node-provider	tests/conformance_reference/fixture	std::thread::sleep	1
+crucible-node-provider	tests/reference_device	thread::sleep	1
+crucible-node-provider	tests/reference_device	std::thread::sleep	1
+crucible-qemu	src/native_node_control/administration_tests	retry	1
+crucible-qemu	tests/native_node_control/administration	thread::sleep	1
+crucible-qemu	tests/native_node_control/administration	std::thread::sleep	1
+crucible-qemu	tests/native_node_control	retry	1
+crucible-qemu	tests/native_node_control	thread::sleep	1
+crucible-qemu	tests/native_node_control	std::thread::sleep	1
+crucible-qemu-plugin	src/native_node_control/administration_custody_tests	retry	1
+crucible-qemu-plugin	src/native_node_control/phase_custody_tests	retry	1
+# The absolute original watchdog paces one retained frame wait; ready queues remain deadline bounded.
+crucible-qemu	tests/native_node_control/watchdog	thread::sleep	1
+crucible-qemu	tests/native_node_control/watchdog	std::thread::sleep	1
+# Native process/actor watchdogs keep one absolute deadline and original state;
+# conditional resubmission checks the same retained request rather than rerunning a failed test.
+crucible-cli	tests/node_cache_reuse_process	thread::sleep	1
+crucible-cli	tests/node_cache_reuse_process	std::thread::sleep	1
+crucible-cli	tests/node_terminal_state_process	thread::sleep	1
+crucible-cli	tests/node_terminal_state_process	std::thread::sleep	1
+crucible-daemon	src/node_control/terminal_state_tests	thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/native_state/initial_preparation_tests	thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/native_state/initial_preparation_tests	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/transcript/production_tests	retry	1
+crucible-daemon	src/node_observed_executor/tests/cache_workflow	thread::sleep	1
+crucible-daemon	src/node_observed_executor/tests/cache_workflow	std::thread::sleep	1
+
+# Capability CLI and installed capability/seeded-storage fixtures poll one
+# original child, worker or custody queue under their fixed absolute deadlines;
+# every failed command/assertion remains terminal. The native-state capture
+# retry checks unchanged original image/seal reuse without rerunning a test.
+# Capability/conditional retry names check immutable original reservations and
+# nonce isolation; production replay rechecks its same original queued request
+# before dispatch and never reexecutes a failed assertion or test invocation.
+crucible-cli	tests/node_capability_process	thread::sleep	1
+crucible-cli	tests/node_capability_process	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/capabilities/tests	thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/capabilities/tests	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/native_state/tests	retry	1
+crucible-daemon	src/node_observed_executor/service/capability_preparation/tests	retry	1
+crucible-daemon	src/node_observed_executor/service/conditional_preparation/tests	retry	1
+crucible-daemon	src/node_observed_executor/service/replay	retry	1
+crucible-daemon	src/node_observed_executor/tests/seeded_storage	thread::sleep	1
+crucible-daemon	src/node_observed_executor/tests/seeded_storage	std::thread::sleep	1
+
+# The exact source-qualified completed-lifecycle fixture waits for its one
+# private provider socket and positively reclaimed original process group.
+# run_original uses separate fixed 300-by-10ms watchdogs; it never repeats a
+# failed case or assertion, and no elapsed time enters model Position/state.
+# Source: crates/crucible/src/node_adapters/cnp/lifecycle_resend_tests.rs
+# SHA-256: b48638a941e1e1d930f0c52808b57acaffcfc0cdcf2618026ea993128713e608
+crucible	src/node_adapters/cnp/lifecycle_resend_tests	thread::sleep	1
+crucible	src/node_adapters/cnp/lifecycle_resend_tests	std::thread::sleep	1
+
+# ARM Root waits poll original retained actors, not failed test invocations.
+# arm_root_process accepts one peer under its original launch deadline;
+# arm_root_closure waits for one auditor exit and its authentic group retirement
+# under separate fixed ten-second budgets, propagating the first error.
+# The three actual native fixture loops poll original quarantine capsules whose
+# retirement budgets are fixed by begin_quarantine; every assertion is single-shot.
+# arm_root_io sleeps once past the same original socket deadline to prove that a
+# successful fragment cannot renew it. No wait alters native time or receipts.
+crucible-node-provider	src/gem5/arm_root_closure	std::thread::sleep	1
+crucible-node-provider	src/gem5/arm_root_closure	thread::sleep	1
+crucible-node-provider	src/gem5/arm_root_io	std::thread::sleep	1
+crucible-node-provider	src/gem5/arm_root_io	thread::sleep	1
+crucible-node-provider	src/gem5/arm_root_process	std::thread::sleep	1
+crucible-node-provider	src/gem5/arm_root_process	thread::sleep	1
+crucible-node-provider	tests/gem5_arm_root_archive	std::thread::sleep	1
+crucible-node-provider	tests/gem5_arm_root_archive	thread::sleep	1
+crucible-node-provider	tests/gem5_arm_root_cold	std::thread::sleep	1
+crucible-node-provider	tests/gem5_arm_root_cold	thread::sleep	1
+crucible-node-provider	tests/gem5_arm_root_native	std::thread::sleep	1
+crucible-node-provider	tests/gem5_arm_root_native	thread::sleep	1
+
+# The exact original-conflict native fixture waits for one original private
+# provider socket and positively reclaimed guarded original process group.
+# run_original uses two fixed 300-by-10ms watchdogs, retains each first
+# failure, and never derives model Position/state or retries a failed test.
+# Source: crates/crucible/src/node_adapters/cnp/original_conflict_tests.rs
+# SHA-256: c4c433cb8bae452bf5116c23a97c3d2a55cc2907c45f2c1591fcb4e9472bb477
+crucible	src/node_adapters/cnp/original_conflict_tests	thread::sleep	1
+crucible	src/node_adapters/cnp/original_conflict_tests	std::thread::sleep	1
+
+# This exact provider-loss fixture attempts the same retained conflicting
+# control again and requires sticky refusal, no second transmission, and
+# unchanged original request/response bytes. The retry names protocol
+# behavior; it never repeats a failed case or assertion.
+# Source: crates/crucible-node-provider/tests/client_reference/original_conflict.rs
+# SHA-256: 759be2d4a03c185f7ec48fc7aaba24512369b3b01a70499655aa2ae385e332c7
+crucible-node-provider	tests/client_reference/original_conflict	retry	1
+
+# Original child waits are bounded by absolute process watchdogs; the fixed setup-refusal delay preserves stderr diagnostics. Each first assertion, native mismatch or deadline failure terminates the single test; no test or model computation is repeated.
+# Source: crates/crucible-qemu/tests/native_node_control/construction.rs
+# SHA-256: 5f5bc377e3d08d3759b4ecc85a8d22e1787d576e23041f36a6c0b8a5a2d5c3a6
+crucible-qemu	tests/native_node_control/construction	thread::sleep	1
+crucible-qemu	tests/native_node_control/construction	std::thread::sleep	1
+
+# A repeated original datagram recovers retained reply bytes after modeled loss and must leave the original HOME command absent. The case explicitly forbids a second native effect; its name does not implement a failed-test rerun.
+# Source: crates/crucible-qemu-plugin/src/native_node_control/construction_reducer_tests.rs
+# SHA-256: 893a5774324011b68851dfefd405069329582e06e28984c5a446f488c14d09d1
+crucible-qemu-plugin	src/native_node_control/construction_reducer_tests	retry	1
+crucible-qemu-plugin	src/native_node_control/construction_reducer_tests	rerun	1
+
+# The case repeats a foreign original mapping request and requires sticky taint with unchanged original bytes; it never reruns an assertion or a test.
+# Source: crates/crucible-qemu-plugin/src/native_node_control/preparation_fifo_tests.rs
+# SHA-256: 1f68603a102b7be138d3e93030f16f5b7e7b82e2a4667a90d8c0cc7114fc29c2
+crucible-qemu-plugin	src/native_node_control/preparation_fifo_tests	retry	1
+
+# The cases recover the same retained RUN prefix and terminal frame, asserting endpoint identity and that a successor frame remains undequeued. They exercise protocol idempotence, not failed-test repetition.
+# Source: crates/crucible-qemu-plugin/src/runtime/native_run_control_tests.rs
+# SHA-256: dbe8ae4619e08d9c01e99080c1f34bec7fde24488875a63ca4eaba6ccde7778d
+crucible-qemu-plugin	src/runtime/native_run_control_tests	retry	1
+
+# Authored host capability fixture polls one original native execution under one
+# absolute watchdog; it never reruns a failed assertion, command or test.
+# Source: crates/crucible-daemon/src/node_observed_executor/factory/capabilities/host_exact_tests.rs
+# SHA-256: 1f44a6b6afcd319e3fdf9bf2e8d80ef57d3fd5141a16f0e5969f394043173ff6
+crucible-daemon	src/node_observed_executor/factory/capabilities/host_exact_tests	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/capabilities/host_exact_tests	thread::sleep	1
+
+# The recorded-ingress CLI fixture polls only its original queued request under
+# one absolute twenty-second deadline checked before and after each bounded
+# control exchange. Failed commands and assertions terminate that fixture.
+crucible-cli	tests/node_process/recorded_ingress	thread::sleep	1
+crucible-cli	tests/node_process/recorded_ingress	std::thread::sleep	1
+
+# Distinct ordered-consumption source operational waits and original idempotence.
+
+# The fixed1ms polls wait for actual original native quarantine under one5s absolute watchdog, then compare the original PID/start/ACK/closed receipt. No failed case is repeated.
+# Source: crates/crucible-node-provider/src/reference_lineage/association_tests.rs
+# SHA-256: 32d6f42c8114f771f7bb0a43e34cd9ee3d92a538d4d99cc331b414399867c0e5
+crucible-node-provider	src/reference_lineage/association_tests	thread::sleep	1
+crucible-node-provider	src/reference_lineage/association_tests	std::thread::sleep	1
+
+# The production10ms supervisor cadence polls retained original capsules and real Child/group reclamation. It conveys no modeled time and cannot redispatch a command or release unresolved custody.
+# Source: crates/crucible-node-provider/src/reference_lineage/custody.rs
+# SHA-256: 088cb94447c505a9b556e74e9760215cad56e62a4201e80c609a117cc6290d2c
+crucible-node-provider	src/reference_lineage/custody	thread::sleep	1
+crucible-node-provider	src/reference_lineage/custody	std::thread::sleep	1
+
+# The300ms final-read delay is an adversarial response input crossing one200ms original allowance; complete raw bytes remain Unknown. Other fixed polls use original group/readiness watchdogs. The30s auxiliary child is a finite hostile group member killed/reaped through its actual Child. retry in the loss-case name forbids retransmission and never repeats a failed test.
+# Source: crates/crucible-node-provider/src/reference_lineage/driver_tests.rs
+# SHA-256: 0958b5da05f7a86427c7fcc421a2ae7b239666a780e588d18da9383e6a62623b
+crucible-node-provider	src/reference_lineage/driver_tests	retry	1
+crucible-node-provider	src/reference_lineage/driver_tests	thread::sleep	1
+crucible-node-provider	src/reference_lineage/driver_tests	std::thread::sleep	1
+
+# The1ms readiness polls have one5s original watchdog and actual Child/peer checks. retry names the same original Close receipt idempotence assertion, not repeated execution of a failed case.
+# Source: crates/crucible-node-provider/src/reference_lineage/tests.rs
+# SHA-256: ad3ffc4b2473a81b21a1373ffa75dae791c07e6b18eab6464845994e036d46fb
+crucible-node-provider	src/reference_lineage/tests	retry	1
+crucible-node-provider	src/reference_lineage/tests	thread::sleep	1
+crucible-node-provider	src/reference_lineage/tests	std::thread::sleep	1
+
+# The production1ms readiness polls use one unchanged opaque allowance and actual child exit/peer credentials; no socket fragment renews it.
+# Source: crates/crucible-node-provider/src/reference_lineage/transport.rs
+# SHA-256: dcc66087e9ccec6338c00e4c97d6ae36e97cc8aecfddf794a71dfbb3f2e43c92
+crucible-node-provider	src/reference_lineage/transport	thread::sleep	1
+crucible-node-provider	src/reference_lineage/transport	std::thread::sleep	1
+
+# The single300ms adversarial delay expires the same200ms socket allowance after a positive first fragment. The test requires unread original input and no emitted replacement bytes, without failed-case retry.
+# Source: crates/crucible-node-provider/src/reference_lineage/transport_tests.rs
+# SHA-256: e733a90b8166992df02c18345b80e66cabe1c9972c9003a92b31c2ad51e8fb4f
+crucible-node-provider	src/reference_lineage/transport_tests	thread::sleep	1
+crucible-node-provider	src/reference_lineage/transport_tests	std::thread::sleep	1
+
+# The1ms loop waits for actual original companion quarantine under one3s opaque watchdog; exact original receipts remain retained and the first failed assertion terminates the case.
+# Source: crates/crucible-node-provider/src/reference_service/native_child_tests.rs
+# SHA-256: 0ad40931add0d72dfcab46a197bcd00561eac2b300c0f95d976b033b7d7925d7
+crucible-node-provider	src/reference_service/native_child_tests	thread::sleep	1
+
+# The production1ms reaper polling uses one opaque original quarantine allowance and returns unresolved without dropping the driver/journal. No modeled coordinates or execution retry arise.
+# Source: crates/crucible-node-provider/src/reference_service/native_supervision.rs
+# SHA-256: 5eb6138bb8c3c21d5f9767f20f946ffaba69e91192463fc61abb0c8109c1dbf8
+crucible-node-provider	src/reference_service/native_supervision	thread::sleep	1
+crucible-node-provider	src/reference_service/native_supervision	std::thread::sleep	1
+
+# The original two-group capsule is polled at most300times with10ms cadence after genuine source-owned Shutdown; actual original receipt/ACK and group reclamation are asserted once.
+# Source: crates/crucible-node-provider/tests/lineage_guarded.rs
+# SHA-256: f9e3cecb2054b88bd4608d69f1c26d7d1acf0f7c306c53ba44603cf10bbdc37f
+crucible-node-provider	tests/lineage_guarded	thread::sleep	1
+crucible-node-provider	tests/lineage_guarded	std::thread::sleep	1
+
+# The provider launch has one300-step10ms socket watchdog checking the same original PID. It never repeats realization or a failed assertion.
+# Source: crates/crucible-node-provider/tests/lineage_guarded/fixture.rs
+# SHA-256: eb786cdd91be03e048f2b4c7876f610bd28b17a2225f55a66b721ad3a54a0a86
+crucible-node-provider	tests/lineage_guarded/fixture	thread::sleep	1
+crucible-node-provider	tests/lineage_guarded/fixture	std::thread::sleep	1
+
+# The provider launch has one300-step10ms socket watchdog checking actual original Child.try_wait. No source model event or failed test is repeated.
+# Source: crates/crucible-node-provider/tests/lineage_source/fixture.rs
+# SHA-256: e7cfff159b7ac2dca2ed0ee66695fe796e5afaf5f112362636988aa54ffd48e2
+crucible-node-provider	tests/lineage_source/fixture	thread::sleep	1
+crucible-node-provider	tests/lineage_source/fixture	std::thread::sleep	1
+
+# Both finite teardown tests supervise one actual producer child with one fixed5s deadline. The1ms wait only observes SIGABRT; expiry kills/reaps and fails, including the held-stderr adversary. Neither test retries a failed case or accepts deadline extension.
+crucible-qemu-plugin	src/runtime/teardown_channel_tests	thread::sleep	1
+crucible-qemu-plugin	src/runtime/teardown_channel_tests	std::thread::sleep	1
+# Source: crates/crucible-daemon/src/node_observed_executor/factory/reference_lineage_reader/tests.rs
+# sha256:b8173c1e5b9706edd2d12ee69c28a1a040a2c7d022877499fc3871c2a937910d
+# Native fixture socket readiness and original complete-world reclamation use fixed finite watchdogs; elapsed waits never become model coordinates or rerun a failed original attempt.
+crucible-daemon	src/node_observed_executor/factory/reference_lineage_reader/tests	thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/reference_lineage_reader/tests	std::thread::sleep	1
+
+# The router model returns Retryable once from the SAME pending publication reconciliation, then verifies original route retention and complete reconciliation. No native effects, elapsed wait, failed test rerun, or deadline extension occur.
+# Source: crates/crucible-daemon/src/attempt_execution_router/tests.rs
+# SHA-256: dfdbac5419bd07ff26e28bd7d6c5e15c0bb1eca3c02b9ba23a35fbdb1b7ec5d0
+crucible-daemon	src/attempt_execution_router/tests	retry	1
+# Original initial common-custody containment polls the same retained Child
+# through the real RuntimeCustodyQueue under an absolute five-second deadline.
+# Its one millisecond pause avoids spinning; timeout or failed reap fails the
+# single test. It never repeats setup, an assertion, or a native command.
+crucible-qemu	src/native_node_control/owned_preparation/tests	thread::sleep	1
+crucible-qemu	src/native_node_control/owned_preparation/tests	std::thread::sleep	1

@@ -34,6 +34,7 @@ use crate::{
     PreparedAttemptResult, StagedAttemptResult,
 };
 use crucible::ContentHash;
+use crucible_campaign::executor_node_capabilities::ExecutorNodeRoster;
 
 /// Process-local authority for the exact root selected by durable admission.
 ///
@@ -112,6 +113,39 @@ pub trait AttemptAdmissionValidator {
     /// Returns the stable executor rejection when the immutable request basis
     /// is unavailable, unauthorized, or incompatible with this executor.
     fn validate(&self, request: &SubmitAttemptRequest) -> Result<(), ExecutorRejection>;
+
+    /// Authenticates an explicit node roster before legacy assignment/cache lookup.
+    ///
+    /// The implementation must bind every owner to the request's scenario,
+    /// configuration and existing compatibility lineage. The default refuses:
+    /// a new roster cannot retroactively certify a legacy state artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable rejection when complete realization correspondence
+    /// cannot be authenticated for the legacy request.
+    fn validate_node_roster(
+        &self,
+        _request: &SubmitAttemptRequest,
+        _roster: &ExecutorNodeRoster,
+    ) -> Result<(), ExecutorRejection> {
+        Err(ExecutorRejection::Incompatible)
+    }
+
+    /// Authenticates a node roster before returning a retained legacy artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable completion failure when the immutable request basis
+    /// cannot bind this exact roster. The default refuses the new binding.
+    fn validate_retained_node_roster(
+        &self,
+        _lineage: CampaignLineageId,
+        _attempt: AttemptId,
+        _roster: &ExecutorNodeRoster,
+    ) -> Result<(), CompletionValidationFailure> {
+        Err(CompletionValidationFailure::Incompatible)
+    }
 
     /// Validates the request's operational execution scope.
     ///
@@ -756,6 +790,7 @@ impl ValidatedSubmitAdmission {
 pub struct LocalExecutorSupervisor<L, V> {
     ledger: L,
     validator: Arc<V>,
+    node_roster: Option<ExecutorNodeRoster>,
     daemon_epoch: DaemonEpoch,
     capacity: ExecutorCapacity,
     next_execution_ordinal: u64,
@@ -782,6 +817,7 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
         Self {
             ledger,
             validator: Arc::new(validator),
+            node_roster: None,
             daemon_epoch,
             capacity,
             next_execution_ordinal: 0,
@@ -791,6 +827,83 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
             pending_cancellations: BTreeMap::new(),
             used: UsedCapacity::default(),
         }
+    }
+
+    /// Creates a legacy executor explicitly guarded by a realized owner roster.
+    ///
+    /// The roster must already be authenticated against the admitted graph and
+    /// implementation profiles. Nonrepeatable worlds are refused by this
+    /// executor before assignment replay or completed-result reuse; they use
+    /// the separate observed-attempt execution protocol. Conditional transcript
+    /// claims alone do not authorize the legacy thin-replay worker.
+    #[must_use]
+    pub fn new_for_node_roster(
+        ledger: L,
+        validator: V,
+        daemon_epoch: DaemonEpoch,
+        capacity: ExecutorCapacity,
+        node_roster: ExecutorNodeRoster,
+    ) -> Self {
+        let mut supervisor = Self::new(ledger, validator, daemon_epoch, capacity);
+        supervisor.node_roster = Some(node_roster);
+        supervisor
+    }
+
+    /// Returns the explicit realized roster, when supplied by node admission.
+    ///
+    /// An absent roster selects the original authenticated legacy QEMU path;
+    /// it does not relabel legacy state with a new implementation identity.
+    #[must_use]
+    pub const fn node_roster(&self) -> Option<&ExecutorNodeRoster> {
+        self.node_roster.as_ref()
+    }
+
+    fn legacy_repeatable_execution(&self) -> Result<(), ExecutorRejection> {
+        if self
+            .node_roster
+            .as_ref()
+            .is_some_and(|roster| !roster.is_repeatable())
+        {
+            Err(ExecutorRejection::Incompatible)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_legacy_request_roster(
+        &self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<(), ExecutorRejection>
+    where
+        V: AttemptAdmissionValidator,
+    {
+        self.legacy_repeatable_execution()?;
+        if let Some(roster) = &self.node_roster {
+            self.validator.validate_node_roster(request, roster)?;
+        }
+        Ok(())
+    }
+
+    fn validate_legacy_retained_roster(
+        &self,
+        lineage: CampaignLineageId,
+        attempt: AttemptId,
+    ) -> Result<(), LocalExecutorError<L::Error>>
+    where
+        L: AssignmentLedger,
+        V: AttemptAdmissionValidator,
+    {
+        self.legacy_repeatable_execution().map_err(|_| {
+            LocalExecutorError::CompletionValidation {
+                reason: CompletionValidationFailure::Incompatible,
+            }
+        })?;
+        if let Some(roster) = &self.node_roster {
+            self.validator
+                .validate_retained_node_roster(lineage, attempt, roster)
+                .map_err(|reason| LocalExecutorError::CompletionValidation { reason })?;
+        }
+        Ok(())
     }
 
     /// Returns this process's daemon incarnation.
@@ -943,6 +1056,7 @@ where
         &mut self,
         request: &GetAttemptExecutionRequest,
     ) -> Result<GetAttemptExecutionResponse, Self::Error> {
+        self.validate_legacy_retained_roster(request.lineage(), request.attempt())?;
         let key = AttemptExecutionKey::new_scoped(
             request.lineage(),
             request.attempt(),
@@ -1034,6 +1148,7 @@ where
         &mut self,
         request: &CheckpointAttemptExecutionRequest,
     ) -> Result<CheckpointAttemptExecutionResponse, Self::Error> {
+        self.validate_legacy_retained_roster(request.lineage(), request.attempt())?;
         let key = AttemptExecutionKey::new_scoped(
             request.lineage(),
             request.attempt(),
@@ -1110,6 +1225,7 @@ where
         &mut self,
         request: &CancelAttemptExecutionRequest,
     ) -> Result<CancelAttemptExecutionResponse, Self::Error> {
+        self.validate_legacy_retained_roster(request.lineage(), request.attempt())?;
         let key = AttemptExecutionKey::new_scoped(
             request.lineage(),
             request.attempt(),

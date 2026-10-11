@@ -1,0 +1,265 @@
+/* Source-extracted PIC controls. Scheduling, PIT birth validation, architecture
+ * injection and the common stopped-cut peers are modeled; no guest is run. */
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <pthread.h>
+#include <errno.h>
+#include <limits.h>
+
+typedef uint8_t u8;
+typedef uint32_t u32;
+typedef uint64_t u64;
+typedef u64 gpa_t;
+#define pr_pic_unimpl(...) ((void)0)
+typedef pthread_mutex_t spinlock_t;
+#define PIC_NUM_PINS 16
+#define KVM_PIT_IRQ_SOURCE_ID 1
+#define KVM_IRQ_ROUTING_IRQCHIP 1
+#define KVM_IRQCHIP_PIC_MASTER 0
+#define KVM_CRUCIBLE_RUN_RETURN_RETURNED 1
+#define U32_MAX UINT32_MAX
+#define BIT(n) (1UL << (n))
+#define READ_ONCE(value) (value)
+#define EXPORT_SYMBOL_FOR_KVM_INTERNAL(name)
+#define lockdep_assert_held(lock) ((void)(lock))
+#define __acquires(lock)
+#define __releases(lock)
+#define kvm_for_each_vcpu(index, vcpu, kvm) \
+    for ((index) = 0; (index) < 1 && ((vcpu) = &(kvm)->target, true); (index)++)
+#define raw_spin_lock_irqsave(lock, flags) \
+    do { (flags) = 0; assert(!pthread_mutex_lock(lock)); } while (0)
+#define raw_spin_unlock_irqrestore(lock, flags) \
+    do { (void)(flags); assert(!pthread_mutex_unlock(lock)); } while (0)
+
+typedef int64_t ktime_t;
+struct task_struct { int identity; };
+struct kthread_worker { struct task_struct *task; };
+struct kthread_work { int identity; };
+struct kvm_pit;
+struct kvm;
+struct kvm_pic;
+struct kvm_vcpu {
+    struct kvm *kvm;
+    pthread_mutex_t mutex;
+    /* This peer contains only native-created nonnegative IDs. The actual
+     * source declaration stays int; no signed native refusal is rewritten. */
+    u32 vcpu_id;
+    void *crucible_timer_run_owner;
+    u64 crucible_timer_run_invocation;
+    struct {
+        bool outstanding;
+        struct { u64 invocation, generation_begin; u32 native_vcpu_id, flags; } original;
+    } crucible_run_return;
+    struct {
+        bool injection_active;
+        u64 injection_invocation;
+    } crucible_apic_target;
+    struct { struct { bool injected, soft; u8 nr; } interrupt; } arch;
+};
+
+struct kvm {
+    pthread_mutex_t crucible_gate_lock;
+    struct { struct kvm_pic *vpic; struct kvm_pit *vpit;
+        struct kvm_crucible_clock_domain { bool active; u64 window_generation; u32 timer_owners;
+            struct { bool uncertain; } continuation; } crucible_clock;
+    } arch;
+    struct { bool enabled, tainted; u32 owners; } crucible_irq_input;
+    int irq_srcu;
+    bool crucible_continuation_roster_frozen, crucible_memory_tainted;
+    u64 crucible_host_ceiling_ns;
+    u32 crucible_effect_owners;
+    int crucible_stopped;
+    struct kvm_vcpu target;
+};
+
+struct kvm_io_device { int unused; };
+struct kvm_kernel_irq_routing_entry {
+    u32 gsi, type;
+    struct { u32 irqchip, pin; } irqchip;
+    int (*set)(struct kvm_kernel_irq_routing_entry *, struct kvm *, int, int, bool);
+};
+
+@PIT_TYPES@
+static struct kvm vm;
+static struct kvm_pit pit;
+static struct kthread_worker worker;
+static struct kvm_pic pic;
+static struct kvm_kernel_irq_routing_entry route;
+static u64 host_now;
+static struct task_struct guest_task, worker_task, controller_task;
+static _Thread_local struct task_struct *current_owner;
+#define current current_owner
+#define KVM_MAX_VCPUS 1
+#define KVM_NR_IRQCHIPS 3
+/* The extracted birth comparisons use only actual-produced nonnegative
+ * nanosecond timestamps. This peer rejects values outside that tested subset
+ * before an unsigned projection; native ktime_t and all source bodies stay
+ * unchanged. It does not model arbitrary negative/forged kernel timestamps. */
+#define ktime_to_ns(value) (assert((value) >= 0), (u64)(value))
+
+static unsigned native_wakes, native_requests, native_eoi_tails, queued_work;
+static unsigned dead_calls, generic_notifiers, controller_field_writes;
+static bool accept_pic;
+static bool initialized, hold_guest_eoi_tail, guest_eoi_tail_waiting;
+static bool release_guest_eoi_tail, guest_tail_seen;
+static bool close_at_ack_queue, close_at_final_finish;
+static bool final_credit_observed, hold_final_tail, final_tail_waiting, release_final_tail;
+static bool change_geometry_at_final_finish;
+static pthread_mutex_t tail_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t tail_condition = PTHREAD_COND_INITIALIZER;
+
+static bool in_interrupt(void) { return false; }
+static u64 ktime_get_ns(void) { return host_now; }
+
+static bool kvm_crucible_clock_admission_live(bool active, u64 ceiling, u64 now)
+{
+    return active && now < ceiling;
+}
+
+static void kvm_arch_crucible_irq_taint_locked(struct kvm *kvm)
+{
+    kvm->crucible_irq_input.tainted = true;
+    kvm->arch.crucible_clock.continuation.uncertain = true;
+}
+
+static void kvm_vm_dead(struct kvm *kvm)
+{
+    assert(kvm == &vm);
+    dead_calls++;
+}
+
+static void spin_lock(spinlock_t *lock) { assert(!pthread_mutex_lock(lock)); }
+static void spin_unlock(spinlock_t *lock)
+{
+    bool original_tail = lock == &pic.lock && current_owner == &guest_task &&
+        pic.crucible_pit[0].phase == CRUCIBLE_PIC_PIT_EOI_PENDING &&
+        !pic.crucible_pit[0].eoi_native_known && !guest_tail_seen;
+
+    if (lock == &pic.lock && current_owner == &guest_task &&
+        (close_at_final_finish || hold_final_tail || change_geometry_at_final_finish) && pic.crucible_pit[0].phase == CRUCIBLE_PIC_PIT_ACKED &&
+        vm.crucible_effect_owners == 1) {
+        /* Inject the cut at the exact final release seam, after ACK effects.
+         * The original credit must still cover local row demotion. */
+        assert(vm.crucible_effect_owners == 1);
+        final_credit_observed = true;
+        if (close_at_final_finish)
+            host_now = vm.crucible_host_ceiling_ns;
+        if (change_geometry_at_final_finish) {
+            /* Counterfactual independent controller writer at the final gap.
+             * Actual programming admission is exercised separately below. */
+            pic.pics[0].irq_base++;
+        }
+    }
+    assert(!pthread_mutex_unlock(lock));
+    if (lock == &pic.lock && current_owner == &guest_task && hold_final_tail &&
+        final_credit_observed && !final_tail_waiting) {
+        assert(!pthread_mutex_lock(&tail_mutex));
+        final_tail_waiting = true;
+        assert(!pthread_cond_broadcast(&tail_condition));
+        while (!release_final_tail)
+            assert(!pthread_cond_wait(&tail_condition, &tail_mutex));
+        assert(!pthread_mutex_unlock(&tail_mutex));
+    }
+    if (original_tail) {
+        /* This peer pauses the actual source unlock boundary. No native wake
+         * or physical scheduling result is inferred from the held pthread. */
+        guest_tail_seen = true;
+        native_eoi_tails++;
+        assert(!pthread_mutex_lock(&tail_mutex));
+        if (hold_guest_eoi_tail) {
+            guest_eoi_tail_waiting = true;
+            assert(!pthread_cond_broadcast(&tail_condition));
+            while (!release_guest_eoi_tail)
+                assert(!pthread_cond_wait(&tail_condition, &tail_mutex));
+        }
+        assert(!pthread_mutex_unlock(&tail_mutex));
+    }
+}
+static void wake_up_all(int *wait)
+{
+    assert(wait == &vm.crucible_stopped);
+    if (close_at_final_finish) {
+        assert(final_credit_observed);
+        assert(pic.crucible_pit[0].phase == CRUCIBLE_PIC_PIT_UNKNOWN);
+        assert(!pic.crucible_pit[0].eoi_inflight && !vm.crucible_effect_owners);
+    }
+}
+
+static bool kvm_apic_accept_pic_intr(struct kvm_vcpu *vcpu)
+{
+    assert(vcpu == &vm.target);
+    return accept_pic;
+}
+
+static void kvm_make_request(int request, struct kvm_vcpu *vcpu)
+{
+    assert(request == 1 && vcpu == &vm.target);
+    native_requests++;
+}
+
+#define KVM_REQ_EVENT 1
+static void kvm_vcpu_kick(struct kvm_vcpu *vcpu)
+{
+    assert(vcpu == &vm.target);
+    native_wakes++;
+}
+
+static int __kvm_irq_line_state(unsigned long *state, int source, int level)
+{
+    if (level)
+        *state |= BIT(source);
+    else
+        *state &= ~BIT(source);
+    return !!*state;
+}
+
+static void trace_kvm_pic_set_irq(int chip, int pin, u8 elcr, u8 imr, bool coalesced)
+{
+    (void)elcr; (void)imr; (void)coalesced;
+    assert(chip == 0 && pin == 0);
+}
+
+
+static int srcu_read_lock(int *srcu) { assert(srcu == &vm.irq_srcu); return 0; }
+static void srcu_read_unlock(int *srcu, int index)
+{
+    assert(srcu == &vm.irq_srcu && index == 0);
+}
+static int kvm_irq_map_gsi(struct kvm *kvm,
+    struct kvm_kernel_irq_routing_entry *entries, int gsi)
+{
+    assert(kvm == &vm && !gsi);
+    entries[0] = route;
+    return 1;
+}
+static int atomic_read(int *value) { return *value; }
+static void kthread_queue_work(struct kthread_worker *worker, struct kthread_work *work)
+{
+    assert(worker->task == &worker_task && work == &pit.expired);
+    queued_work++;
+    if (close_at_ack_queue)
+        host_now = vm.crucible_host_ceiling_ns;
+}
+#define WARN_ON_ONCE(condition) (condition)
+
+/* Register-field effects are peers. The complete actual picdev_write admission
+ * wrapper is extracted, so refusal must precede these counters and fields. */
+static void pic_ioport_write(void *opaque, u32 addr, u32 val)
+{
+    struct kvm_kpic_state *state = opaque;
+
+    assert(addr == 0x21 && val == 1);
+    controller_field_writes++;
+    state->imr = val;
+}
+
+static void elcr_ioport_write(void *opaque, u32 val)
+{
+    struct kvm_kpic_state *state = opaque;
+
+    controller_field_writes++;
+    state->elcr = val & state->elcr_mask;
+}

@@ -1,0 +1,670 @@
+diff --git a/src/dev/virtio/VirtIONet.py b/src/dev/virtio/VirtIONet.py
+new file mode 100644
+--- /dev/null
++++ b/src/dev/virtio/VirtIONet.py
+@@ -0,0 +1,47 @@
++#  * SPDX-License-Identifier: MIT
++#  * Copyright (c) 2026 Andyl, Inc.
++#  *
++#  * Permission is hereby granted, free of charge, to any person obtaining a copy
++#  * of this software and associated documentation files (the "Software"), to deal
++#  * in the Software without restriction, including without limitation the rights
++#  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
++#  * of the Software, and to permit persons to whom the Software is furnished to do
++#  * so, subject to the following conditions:
++#  *
++#  * The above copyright notice and this permission notice shall be included in all
++#  * copies or substantial portions of the Software.
++#  *
++#  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++#  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++#  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++#  * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++#  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++#  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++#  * SOFTWARE.
++
++"""Provides a bounded Ethernet endpoint driven by the admitted controller."""
++
++from m5.SimObject import PyBindMethod
++from m5.objects.VirtIO import VirtIODeviceBase
++from m5.params import Param
++
++
++class VirtIONet(VirtIODeviceBase):
++    type = "VirtIONet"
++    cxx_header = "dev/virtio/net.hh"
++    cxx_class = "gem5::VirtIONet"
++    cxx_exports = [
++        PyBindMethod("stageRx"),
++        PyBindMethod("retireRx"),
++        PyBindMethod("pendingRxMetadata"),
++        PyBindMethod("pendingRxCompletionMetadata"),
++        PyBindMethod("pendingTxMetadata"),
++        PyBindMethod("pendingTxBytes"),
++        PyBindMethod("acknowledgeTx"),
++        PyBindMethod("setExecutionParent"),
++    ]
++
++    queue_size = Param.UInt16(256, "Maximum descriptors per split ring")
++    frame_capacity = Param.Unsigned(256, "Maximum retained frames per direction")
++    maximum_frame_bytes = Param.Unsigned(4096, "Maximum Ethernet frame bytes")
++    mac = Param.EthernetAddr("02:00:00:00:00:01", "Explicit immutable MAC address")
+diff --git a/src/dev/virtio/net.hh b/src/dev/virtio/net.hh
+new file mode 100644
+--- /dev/null
++++ b/src/dev/virtio/net.hh
+@@ -0,0 +1,131 @@
++/*
++ * SPDX-License-Identifier: MIT
++ * Copyright (c) 2026 Andyl, Inc.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
++ * of the Software, and to permit persons to whom the Software is furnished to do
++ * so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in all
++ * copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++ * SOFTWARE.
++ */
++
++#ifndef __DEV_VIRTIO_NET_HH__
++#define __DEV_VIRTIO_NET_HH__
++
++#include <array>
++#include <deque>
++#include <vector>
++
++#include "dev/virtio/base.hh"
++#include "sim/eventq.hh"
++
++namespace gem5
++{
++
++struct VirtIONetParams;
++
++/**
++ * Bounded VirtIO Ethernet endpoint with explicit native input/output custody.
++ *
++ * The controller stages complete timestamped frames while the owner is stopped.
++ * A native event delivers each sealed input cut to the guest. Guest TX retains
++ * immutable bytes until the host acknowledges publication of the original ID.
++ * No host socket, TAP, polling thread, or wall clock drives this device.
++ */
++class VirtIONet : public VirtIODeviceBase
++{
++  public:
++    explicit VirtIONet(const VirtIONetParams &params);
++    void readConfig(PacketPtr pkt, Addr cfgOffset) override;
++    void serialize(CheckpointOut &cp) const override;
++    void unserialize(CheckpointIn &cp) override;
++
++    /** Accepts an immutable consecutive input ID, without executing events. */
++    bool stageRx(uint64_t id, Tick tick, uint64_t causal_parent,
++                 const std::vector<uint8_t> &bytes);
++    /** Retires only the oldest actually delivered input after host custody ACK. */
++    bool retireRx(uint64_t id);
++    /** Returns all retained input identities/times/parents/consumption flags. */
++    std::vector<uint64_t> pendingRxMetadata() const;
++    /** Returns actual delivery birth and byte count without ACK authority. */
++    std::vector<uint64_t> pendingRxCompletionMetadata() const;
++    /** Returns the oldest unpublished TX identity/native tick/causal parent. */
++    std::vector<uint64_t> pendingTxMetadata() const;
++    std::vector<uint8_t> pendingTxBytes() const;
++    /** Idempotently acknowledges the oldest actual native output. */
++    bool acknowledgeTx(uint64_t id);
++    /** Binds subsequent native outputs to the controller's sealed execution. */
++    bool setExecutionParent(uint64_t parent);
++
++  private:
++    struct Frame : public Serializable
++    {
++        uint64_t id = 0;
++        Tick tick = 0;
++        uint64_t parent = 0;
++        bool consumed = false;
++        uint64_t eventOrdinal = 0;
++        uint64_t tickOrdinal = 0;
++        Tick consumedTick = 0;
++        uint64_t consumptionParent = 0;
++        std::vector<uint8_t> bytes;
++
++        void serialize(CheckpointOut &cp) const override;
++        void unserialize(CheckpointIn &cp) override;
++    };
++
++    class ReceiveQueue : public VirtQueue
++    {
++      public:
++        ReceiveQueue(PortProxy &proxy, uint16_t size, VirtIONet &parent);
++        void onNotify() override;
++      private:
++        VirtIONet &parent;
++    };
++
++    class TransmitQueue : public VirtQueue
++    {
++      public:
++        TransmitQueue(PortProxy &proxy, uint16_t size, VirtIONet &parent);
++        void onNotify() override;
++      private:
++        VirtIONet &parent;
++    };
++
++    void receiveDue();
++    void scheduleReceive();
++    void transmitAvailable();
++    unsigned headerSize() const;
++    void validateRestored() const;
++
++    const unsigned frameCapacity;
++    const unsigned maximumFrameBytes;
++    std::array<uint8_t, 6> mac;
++    ReceiveQueue receiveQueue;
++    TransmitQueue transmitQueue;
++    EventFunctionWrapper receiveEvent;
++    EventFunctionWrapper transmitCreditEvent;
++    std::deque<Frame> inputs;
++    std::deque<Frame> outputs;
++    uint64_t lastAcceptedRx = 0;
++    uint64_t retiredRx = 0;
++    uint64_t nextTx = 1;
++    uint64_t acknowledgedTx = 0;
++    uint64_t executionParent = 0;
++};
++
++} // namespace gem5
++
++#endif
+diff --git a/src/dev/virtio/net.cc b/src/dev/virtio/net.cc
+new file mode 100644
+--- /dev/null
++++ b/src/dev/virtio/net.cc
+@@ -0,0 +1,464 @@
++/*
++ * SPDX-License-Identifier: MIT
++ * Copyright (c) 2026 Andyl, Inc.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
++ * of the Software, and to permit persons to whom the Software is furnished to do
++ * so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in all
++ * copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++ * SOFTWARE.
++ */
++
++#include "dev/virtio/net.hh"
++
++#include <algorithm>
++#include <limits>
++#include <sstream>
++
++#include "base/logging.hh"
++#include "params/VirtIONet.hh"
++#include "sim/system.hh"
++#include "sim/crucible_output.hh"
++
++namespace gem5
++{
++
++VirtIONet::VirtIONet(const VirtIONetParams &params)
++    : VirtIODeviceBase(params, 1, 6, FeatureBits(1) << 5),
++      frameCapacity(params.frame_capacity),
++      maximumFrameBytes(params.maximum_frame_bytes),
++      receiveQueue(params.system->physProxy, params.queue_size, *this),
++      transmitQueue(params.system->physProxy, params.queue_size, *this),
++      receiveEvent([this] { receiveDue(); }, name() + ".sealed-rx"),
++      transmitCreditEvent([this] { transmitAvailable(); }, name() + ".tx-credit")
++{
++    fatal_if(!frameCapacity || frameCapacity > 4096 || maximumFrameBytes < 14 ||
++             maximumFrameBytes > 65536 || !params.queue_size ||
++             (params.queue_size & (params.queue_size - 1)),
++             "Invalid finite VirtIO-net resource limits");
++    fatal_if(byteOrder != ByteOrder::little,
++             "VirtIO-net requires little-endian ring structures");
++    std::copy_n(params.mac.bytes(), mac.size(), mac.begin());
++    registerQueue(receiveQueue);
++    registerQueue(transmitQueue);
++}
++
++VirtIONet::ReceiveQueue::ReceiveQueue(PortProxy &proxy, uint16_t size,
++                                     VirtIONet &parent)
++    : VirtQueue(proxy, ByteOrder::little, size), parent(parent)
++{
++}
++
++void
++VirtIONet::ReceiveQueue::onNotify()
++{
++    parent.receiveDue();
++}
++
++VirtIONet::TransmitQueue::TransmitQueue(PortProxy &proxy, uint16_t size,
++                                      VirtIONet &parent)
++    : VirtQueue(proxy, ByteOrder::little, size), parent(parent)
++{
++}
++
++void
++VirtIONet::TransmitQueue::onNotify()
++{
++    parent.transmitAvailable();
++}
++
++void
++VirtIONet::readConfig(PacketPtr pkt, Addr cfgOffset)
++{
++    readConfigBlob(pkt, cfgOffset, mac.data());
++}
++
++unsigned
++VirtIONet::headerSize() const
++{
++    // Modern drivers always use the 12-byte header, even without merge buffers.
++    return (guestFeatures & VERSION_1) ? 12 : 10;
++}
++
++bool
++VirtIONet::setExecutionParent(uint64_t parent)
++{
++    if (!parent)
++        return false;
++    executionParent = parent;
++    return true;
++}
++
++bool
++VirtIONet::stageRx(uint64_t id, Tick tick, uint64_t causal_parent,
++                 const std::vector<uint8_t> &bytes)
++{
++    const auto existing = std::find_if(inputs.begin(), inputs.end(),
++        [id](const Frame &frame) { return frame.id == id; });
++    if (existing != inputs.end())
++        return existing->tick == tick && existing->parent == causal_parent &&
++            existing->bytes == bytes;
++
++    if (!id || lastAcceptedRx == std::numeric_limits<uint64_t>::max() ||
++        id != lastAcceptedRx + 1 || !causal_parent || tick < curTick() ||
++        tick == MaxTick ||
++        inputs.size() >= frameCapacity || bytes.size() < 14 ||
++        bytes.size() > maximumFrameBytes)
++        return false;
++
++    Frame frame;
++    frame.id = id;
++    frame.tick = tick;
++    frame.parent = causal_parent;
++    frame.bytes = bytes;
++    inputs.push_back(std::move(frame));
++    lastAcceptedRx = id;
++    scheduleReceive();
++    if (tick == curTick()) {
++        if (receiveEvent.scheduled())
++            reschedule(receiveEvent, tick);
++        else
++            schedule(receiveEvent, tick);
++    }
++    return true;
++}
++
++void
++VirtIONet::scheduleReceive()
++{
++    Tick earliest = MaxTick;
++    for (const Frame &frame : inputs) {
++        if (!frame.consumed && frame.tick > curTick())
++            earliest = std::min(earliest, frame.tick);
++    }
++    // Due inputs wait for a guest buffer notification instead of scheduling a
++    // zero-time busy loop. A newly staged current-tick input gets one attempt.
++    if (earliest == MaxTick) {
++        if (receiveEvent.scheduled())
++            deschedule(receiveEvent);
++        return;
++    }
++    if (receiveEvent.scheduled()) {
++        if (receiveEvent.when() != earliest)
++            reschedule(receiveEvent, earliest);
++    } else {
++        schedule(receiveEvent, earliest);
++    }
++}
++
++void
++VirtIONet::receiveDue()
++{
++    if (!getDeviceStatus().driver_ok || !receiveQueue.ready()) {
++        scheduleReceive();
++        return;
++    }
++
++    while (true) {
++        auto next = inputs.end();
++        for (auto item = inputs.begin(); item != inputs.end(); ++item) {
++            if (item->consumed || item->tick > curTick())
++                continue;
++            if (next == inputs.end() || item->tick < next->tick ||
++                (item->tick == next->tick && item->id < next->id))
++                next = item;
++        }
++        if (next == inputs.end())
++            break;
++        VirtDescriptor *descriptor = receiveQueue.consumeDescriptor();
++        if (!descriptor)
++            break;
++
++        const unsigned header = headerSize();
++        panic_if(descriptor->chainSize() < header + next->bytes.size(),
++                 "VirtIO-net receive buffer cannot contain the sealed frame");
++        for (const VirtDescriptor *part = descriptor; part; part = part->next())
++            panic_if(part->size() && !part->isOutgoing(),
++                     "VirtIO-net receive chain contains a read-only buffer");
++        const auto consumption = crucibleNativeEventPosition();
++        panic_if(!consumption.active || !consumption.ordinal ||
++                 !consumption.tickOrdinal || !executionParent,
++                 "Native receive completion lacks actual event ownership");
++        std::array<uint8_t, 12> metadata{};
++        if (header == 12)
++            metadata[10] = 1;
++        descriptor->chainWrite(0, metadata.data(), header);
++        descriptor->chainWrite(header, next->bytes.data(), next->bytes.size());
++        receiveQueue.produceDescriptor(descriptor, header + next->bytes.size());
++        next->consumed = true;
++        next->eventOrdinal = consumption.ordinal;
++        next->tickOrdinal = consumption.tickOrdinal;
++        next->consumedTick = consumption.tick;
++        next->consumptionParent = executionParent;
++        kick();
++    }
++    scheduleReceive();
++}
++
++void
++VirtIONet::transmitAvailable()
++{
++    if (!getDeviceStatus().driver_ok || !transmitQueue.ready())
++        return;
++
++    while (outputs.size() < frameCapacity) {
++        VirtDescriptor *descriptor = transmitQueue.consumeDescriptor();
++        if (!descriptor)
++            break;
++        const unsigned header = headerSize();
++        const size_t total = descriptor->chainSize();
++        panic_if(total < header + 14 || total - header > maximumFrameBytes ||
++                 !executionParent || nextTx == std::numeric_limits<uint64_t>::max(),
++                 "Invalid or unowned VirtIO-net transmit frame");
++        for (const VirtDescriptor *part = descriptor; part; part = part->next())
++            panic_if(part->size() && !part->isIncoming(),
++                     "VirtIO-net transmit chain contains a writable buffer");
++        std::array<uint8_t, 12> metadata{};
++        descriptor->chainRead(0, metadata.data(), header);
++        panic_if(std::any_of(metadata.begin(), metadata.begin() + 10,
++                            [](uint8_t byte) { return byte != 0; }),
++                 "Guest used unnegotiated VirtIO-net checksum/GSO offload");
++
++        Frame frame;
++        const auto birth = crucibleNativeEventPosition();
++        panic_if(!birth.active || !birth.ordinal || !birth.tickOrdinal,
++                 "Native transmit lacks an actual publication event birth");
++        frame.id = nextTx++;
++        frame.tick = curTick();
++        frame.eventOrdinal = birth.ordinal;
++        frame.tickOrdinal = birth.tickOrdinal;
++        frame.parent = executionParent;
++        frame.bytes.resize(total - header);
++        descriptor->chainRead(header, frame.bytes.data(), frame.bytes.size());
++        outputs.push_back(std::move(frame));
++        transmitQueue.produceDescriptor(descriptor, 0);
++        kick();
++    }
++}
++
++bool
++VirtIONet::retireRx(uint64_t id)
++{
++    if (id && id <= retiredRx)
++        return true;
++    if (inputs.empty() || inputs.front().id != id || !inputs.front().consumed)
++        return false;
++    retiredRx = id;
++    inputs.pop_front();
++    return true;
++}
++
++std::vector<uint64_t>
++VirtIONet::pendingRxMetadata() const
++{
++    std::vector<uint64_t> result;
++    result.reserve(inputs.size() * 4);
++    for (const Frame &frame : inputs) {
++        result.push_back(frame.id);
++        result.push_back(frame.tick);
++        result.push_back(frame.parent);
++        result.push_back(frame.consumed);
++    }
++    return result;
++}
++
++std::vector<uint64_t>
++VirtIONet::pendingRxCompletionMetadata() const
++{
++    std::vector<uint64_t> result;
++    for (const Frame &frame : inputs) {
++        if (frame.consumed)
++            result.insert(result.end(), {frame.id, frame.consumedTick,
++                frame.eventOrdinal, frame.tickOrdinal, frame.consumptionParent,
++                frame.parent, frame.bytes.size()});
++    }
++    return result;
++}
++
++std::vector<uint64_t>
++VirtIONet::pendingTxMetadata() const
++{
++    if (outputs.empty())
++        return {};
++    return {outputs.front().id, outputs.front().tick, outputs.front().parent,
++            outputs.front().eventOrdinal, outputs.front().tickOrdinal};
++}
++
++std::vector<uint8_t>
++VirtIONet::pendingTxBytes() const
++{
++    return outputs.empty() ? std::vector<uint8_t>{} : outputs.front().bytes;
++}
++
++bool
++VirtIONet::acknowledgeTx(uint64_t id)
++{
++    if (id && id <= acknowledgedTx)
++        return true;
++    if (outputs.empty() || outputs.front().id != id)
++        return false;
++    acknowledgedTx = id;
++    outputs.pop_front();
++    // Newly freed credit is serviced as a native event, not during host ACK.
++    if (!transmitCreditEvent.scheduled())
++        schedule(transmitCreditEvent, curTick());
++    return true;
++}
++
++void
++VirtIONet::Frame::serialize(CheckpointOut &cp) const
++{
++    SERIALIZE_SCALAR(id);
++    SERIALIZE_SCALAR(tick);
++    SERIALIZE_SCALAR(parent);
++    SERIALIZE_SCALAR(consumed);
++    SERIALIZE_SCALAR(eventOrdinal);
++    SERIALIZE_SCALAR(tickOrdinal);
++    SERIALIZE_SCALAR(consumedTick);
++    SERIALIZE_SCALAR(consumptionParent);
++    SERIALIZE_CONTAINER(bytes);
++}
++
++void
++VirtIONet::Frame::unserialize(CheckpointIn &cp)
++{
++    UNSERIALIZE_SCALAR(id);
++    UNSERIALIZE_SCALAR(tick);
++    UNSERIALIZE_SCALAR(parent);
++    UNSERIALIZE_SCALAR(consumed);
++    UNSERIALIZE_SCALAR(eventOrdinal);
++    UNSERIALIZE_SCALAR(tickOrdinal);
++    UNSERIALIZE_SCALAR(consumedTick);
++    UNSERIALIZE_SCALAR(consumptionParent);
++    // The native checkpoint format is a space-separated octet vector. Bound
++    // its encoded representation before parsing tokens or growing the vector.
++    std::string encoded;
++    fatal_if(!cp.find(Serializable::currentSection(), "bytes", encoded) ||
++             encoded.size() > 65536 * 4,
++             "Restored native frame encoding exceeds the absolute limit");
++    std::istringstream parser(encoded);
++    std::string token;
++    bytes.clear();
++    while (parser >> token) {
++        uint8_t value;
++        fatal_if(token.size() > 3 || bytes.size() >= 65536 ||
++                 !ParseParam<uint8_t>::parse(token, value),
++                 "Restored native frame octets exceed the absolute limit");
++        bytes.push_back(value);
++    }
++    fatal_if(!parser.eof(), "Restored native frame encoding is malformed");
++}
++
++void
++VirtIONet::serialize(CheckpointOut &cp) const
++{
++    VirtIODeviceBase::serialize(cp);
++    SERIALIZE_SCALAR(lastAcceptedRx);
++    SERIALIZE_SCALAR(retiredRx);
++    SERIALIZE_SCALAR(nextTx);
++    SERIALIZE_SCALAR(acknowledgedTx);
++    SERIALIZE_SCALAR(executionParent);
++    const unsigned inputCount = inputs.size();
++    const unsigned outputCount = outputs.size();
++    SERIALIZE_SCALAR(inputCount);
++    SERIALIZE_SCALAR(outputCount);
++    for (unsigned index = 0; index < inputCount; ++index)
++        inputs[index].serializeSection(cp, csprintf("inputs.%u", index));
++    for (unsigned index = 0; index < outputCount; ++index)
++        outputs[index].serializeSection(cp, csprintf("outputs.%u", index));
++    const bool receiveScheduled = receiveEvent.scheduled();
++    const bool transmitScheduled = transmitCreditEvent.scheduled();
++    SERIALIZE_SCALAR(receiveScheduled);
++    SERIALIZE_SCALAR(transmitScheduled);
++    if (receiveScheduled)
++        paramOut(cp, "receiveTick", receiveEvent.when());
++    if (transmitScheduled)
++        paramOut(cp, "transmitTick", transmitCreditEvent.when());
++}
++
++void
++VirtIONet::unserialize(CheckpointIn &cp)
++{
++    VirtIODeviceBase::unserialize(cp);
++    UNSERIALIZE_SCALAR(lastAcceptedRx);
++    UNSERIALIZE_SCALAR(retiredRx);
++    UNSERIALIZE_SCALAR(nextTx);
++    UNSERIALIZE_SCALAR(acknowledgedTx);
++    UNSERIALIZE_SCALAR(executionParent);
++    unsigned inputCount;
++    unsigned outputCount;
++    UNSERIALIZE_SCALAR(inputCount);
++    UNSERIALIZE_SCALAR(outputCount);
++    fatal_if(inputCount > frameCapacity || outputCount > frameCapacity,
++             "Restored VirtIO-net queues exceed installed limits");
++    inputs.resize(inputCount);
++    outputs.resize(outputCount);
++    for (unsigned index = 0; index < inputCount; ++index)
++        inputs[index].unserializeSection(cp, csprintf("inputs.%u", index));
++    for (unsigned index = 0; index < outputCount; ++index)
++        outputs[index].unserializeSection(cp, csprintf("outputs.%u", index));
++    validateRestored();
++    bool receiveScheduled;
++    bool transmitScheduled;
++    UNSERIALIZE_SCALAR(receiveScheduled);
++    UNSERIALIZE_SCALAR(transmitScheduled);
++    if (receiveScheduled) {
++        Tick tick;
++        paramIn(cp, "receiveTick", tick);
++        fatal_if(tick < curTick(), "Restored native receive event is in the past");
++        schedule(receiveEvent, tick);
++    }
++    if (transmitScheduled) {
++        Tick tick;
++        paramIn(cp, "transmitTick", tick);
++        fatal_if(tick < curTick(), "Restored native transmit event is in the past");
++        schedule(transmitCreditEvent, tick);
++    }
++}
++
++void
++VirtIONet::validateRestored() const
++{
++    fatal_if(!nextTx || acknowledgedTx >= nextTx || retiredRx > lastAcceptedRx,
++             "Restored VirtIO-net custody watermarks are inconsistent");
++    uint64_t previous = retiredRx;
++    for (const Frame &frame : inputs) {
++        fatal_if(frame.consumed ? !frame.eventOrdinal || !frame.tickOrdinal ||
++            !frame.consumptionParent || frame.consumedTick < frame.tick :
++            frame.eventOrdinal || frame.tickOrdinal || frame.consumptionParent ||
++            frame.consumedTick,
++            "Restored input completion birth is inconsistent");
++        fatal_if(frame.id != previous + 1 || frame.id > lastAcceptedRx || !frame.parent ||
++                 frame.bytes.size() < 14 || frame.bytes.size() > maximumFrameBytes,
++                 "Restored native input custody differs from installed limits");
++        previous = frame.id;
++    }
++    fatal_if(previous != lastAcceptedRx,
++             "Restored native input lineage omits an unretired frame");
++    previous = acknowledgedTx;
++    for (const Frame &frame : outputs) {
++        fatal_if(!frame.eventOrdinal || !frame.tickOrdinal || frame.consumed ||
++                 frame.consumedTick || frame.consumptionParent,
++                 "Restored output publication birth is inconsistent");
++        fatal_if(frame.id != previous + 1 || frame.id >= nextTx || !frame.parent ||
++                 frame.bytes.size() < 14 || frame.bytes.size() > maximumFrameBytes,
++                 "Restored native output custody differs from original lineage");
++        previous = frame.id;
++    }
++    fatal_if(previous + 1 != nextTx,
++             "Restored native output lineage omits an unacknowledged frame");
++}
++
++} // namespace gem5
+diff --git a/src/dev/virtio/SConscript b/src/dev/virtio/SConscript
+--- a/src/dev/virtio/SConscript
++++ b/src/dev/virtio/SConscript
+@@ -52,6 +52,9 @@
+ Source('fs9p.cc')
+ Source('rng.cc')
+ 
++SimObject('VirtIONet.py', sim_objects=['VirtIONet'])
++Source('net.cc')
++
+ DebugFlag('VIO', 'VirtIO base functionality')
+ DebugFlag('VIORng', 'VirtIO entropy source device ')
+ DebugFlag('VIOIface', 'VirtIO transport')

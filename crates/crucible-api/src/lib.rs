@@ -32,6 +32,7 @@ mod debug_holders;
 pub mod debug_relay;
 pub mod event_log_stream;
 pub mod lifecycle;
+pub mod node_lifecycle;
 pub mod open_set;
 pub mod rpc_abi;
 pub mod server;

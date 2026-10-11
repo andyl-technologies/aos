@@ -1,0 +1,246 @@
+//! Portable native stop facts and original acknowledgement correlation.
+//!
+//! These scalar observations are not RFC-0025 complete stop receipts. They do
+//! not establish input custody, output bounds or complete native queue inventory.
+//! A provider must authenticate and preserve those independent records before
+//! qualifying the corresponding node profile.
+
+use crucible_node_contract::{Position, U64};
+
+use super::{ExecutionCommand, NativeCommandError, OwnerScope};
+
+/// Selects a closed native engine stop disposition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u16)]
+pub enum NativeStopKind {
+    /// Parks at the exclusive horizon without a transition there.
+    HorizonPark = 1,
+    /// Stops at an independently encountered native event boundary.
+    NativeBoundary = 2,
+    /// Refuses a timing or phase combination the native implementation lacks.
+    Unsupported = 3,
+    /// Contains malformed or conflicting native command material.
+    Invalid = 4,
+}
+
+/// Preserves original native observations without projecting intended progress.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeStopFacts {
+    /// Names the original retained positive command sequence.
+    pub sequence: U64,
+    /// Binds every immutable byte of its original command.
+    pub command_digest: [u8; 32],
+    /// Selects the native stop cause independently of complete source closure.
+    pub kind: NativeStopKind,
+    /// Locates actual observed native logical time and phase.
+    pub reached: Position,
+    /// Records actual native retirement independently of logical time.
+    pub retired_count: U64,
+    /// Reports known pending native classes, with all bits set meaning unknown.
+    ///
+    /// A zero value also does not establish a complete queue inventory.
+    pub pending_classes: u32,
+    /// Locates the next native alarm, or null when unavailable.
+    pub next_native_deadline_ps: Option<U64>,
+    /// Locates the anchored pending instruction service deadline, if available.
+    pub next_service_deadline_ps: Option<U64>,
+    /// Preserves partially supplied instruction service across horizon parks.
+    pub pending_service_credit_ps: U64,
+}
+
+impl NativeStopFacts {
+    pub(super) fn validate(&self) -> Result<(), NativeCommandError> {
+        if self.sequence.get() == 0 {
+            return Err(NativeCommandError::Invalid(
+                "native stop sequence must be positive",
+            ));
+        }
+        if self
+            .next_native_deadline_ps
+            .is_some_and(|deadline| deadline.get() == u64::MAX)
+            || self
+                .next_service_deadline_ps
+                .is_some_and(|deadline| deadline.get() == u64::MAX)
+        {
+            return Err(NativeCommandError::Invalid(
+                "native absent deadline sentinel must be null",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Correlates an authenticated host commitment with original native custody.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReceiptAcknowledgement {
+    /// Names the original positive command sequence.
+    pub sequence: U64,
+    /// Binds all immutable original command bytes.
+    pub command_digest: [u8; 32],
+    /// Retains the original complete native authorization commitment.
+    pub authorization_digest: [u8; 32],
+}
+
+/// Pins complete inactive native owner preparation before any execution command.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativePreparation {
+    /// Names the exact originally prepared immutable and live scope.
+    pub scope: OwnerScope,
+    /// Locates the unchanged original initial or restored native cut.
+    pub boundary: Position,
+    /// Bounds original commands and retained native facts for this incarnation.
+    pub maximum_commands: U64,
+}
+
+impl NativePreparation {
+    pub(super) fn validate(&self) -> Result<(), NativeCommandError> {
+        self.scope.validate()?;
+        if self.maximum_commands.get() == 0 || self.maximum_commands.get() > 65_536 {
+            return Err(NativeCommandError::ResourceLimit);
+        }
+        Ok(())
+    }
+}
+
+/// Selects a closed frame of the independently negotiated native channel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativeFrame {
+    /// Queries historical initial facts under an explicitly installed contract.
+    QueryPrefixPreparation {
+        /// Names the complete original scope.
+        scope: [u8; 32],
+        /// Names the complete independently retained prefix preparation.
+        prefix_preparation: [u8; 32],
+    },
+    /// Carries canonical initial facts requiring independent original correlation.
+    PrefixPreparationFacts(Box<super::NativePrefixPreparationFacts>),
+    /// Offers the original preparation ACK without claiming source consumption.
+    AcknowledgePrefixPreparation(super::NativePrefixPreparationAcknowledgement),
+    /// Carries the original preparation ACK recovered from native consumed history.
+    PrefixPreparationAcknowledged(super::NativePrefixPreparationAcknowledgement),
+    /// Pins complete unchanged ancestors and a distinct finite prefix preparation.
+    PreparePrefix(Box<super::NativePrefixPreparation>),
+    /// Offers correlation to an immutable source result, without an applied ACK claim.
+    AcknowledgePrefix(super::NativePrefixAcknowledgement),
+    /// Copies the exact acknowledgement consumed by the genuine native prefix journal.
+    PrefixAcknowledged(super::NativePrefixAcknowledgement),
+    /// Names the exact acknowledged cursor while preserving all original allowances.
+    ContinuePrefix(Box<super::NativePrefixContinuation>),
+    /// Preserves typed CPU and timer progress from the same original command.
+    PrefixProgress(Box<super::NativePrefixProgress>),
+    /// Pins the complete original effect preparation on an independently selected controller.
+    PrepareEffect(Box<super::NativeEffectPreparation>),
+    /// Retains an original compute command pending genuine native epoch and cut admission.
+    EffectCompute(Box<super::NativeEffectCompute>),
+    /// Preserves an immutable native original service prefix without re-execution.
+    EffectProgress(Box<super::NativeEffectProgress>),
+    /// Preserves every original root companion before native fixed-profile enrollment.
+    ///
+    /// This portable preparation grants no root closure, readiness or effect permission.
+    PrepareFixedMicrovm(Box<super::NativeFixedMicrovmPreparation>),
+    /// Pins the original reader role and complete preparation before enrollment.
+    PrepareAdministration(Box<super::NativeAdministrativePreparation>),
+    /// Recovers the same source-owned historical reader enrollment.
+    QueryAdministration {
+        /// Names the complete original native owner scope.
+        prepared_scope_hash: [u8; 32],
+        /// Names the complete original administrative preparation.
+        administration_commitment: [u8; 32],
+    },
+    /// Preserves observed endpoint/thread facts with other sources still unknown.
+    AdministrationFacts(Box<super::NativeAdministrativeFacts>),
+    /// Recovers a separately identified historical post-initialization object.
+    QueryPreparationSuccessor(super::NativePreparationSuccessorQuery),
+    /// Preserves bounded original source bytes without ACK or readiness claims.
+    PreparationSuccessorChunk(Box<super::NativePreparationSuccessorChunk>),
+    /// Pins the original fresh mapping policy on an explicitly prepared edition-three peer.
+    PreparePhase(Box<super::NativePhasePreparation>),
+    /// Selects retained original phase-timer bytes, without authorizing execution.
+    QueryPhaseTimers(super::NativePhaseTimerQuery),
+    /// Returns a bounded slice of the same raw source phase-timer observation.
+    PhaseTimerChunk(Box<super::NativePhaseTimerChunk>),
+    /// Pins original construction authorization before any native execution.
+    PrepareInitialization(Box<super::NativeInitializationPreparation>),
+    /// Selects the already retained original source construction cut.
+    QueryInitialization(super::NativeInitializationQuery),
+    /// Returns the same finite original native construction callback cut.
+    InitializationCut(Box<super::NativeInitializationCut>),
+    /// Supplies the bound original finite construction command.
+    Initialize(Box<super::NativeInitializationCommand>),
+    /// Preserves an administrative result, with no whole-owner readiness claim.
+    InitializationStopped(Box<super::NativeInitializationReceipt>),
+    /// Settles only the bound original construction journal.
+    AcknowledgeInitialization(super::NativeInitializationAcknowledgement),
+    /// Recovers original construction journal settlement, not native reclamation.
+    InitializationAcknowledged(super::NativeInitializationAcknowledgement),
+    /// Preserves the first native source diagnostic without certifying containment.
+    SourceFault(Box<super::SourceFaultFacts>),
+    /// Selects a retained original held-writer object on an edition-two endpoint.
+    QueryWriters(super::NativeWriterQuery),
+    /// Returns bounded bytes from the same retained original writer object.
+    WriterChunk(super::NativeWriterChunk),
+    /// Supplies the independently prepared complete nonexecuting owner scope.
+    Prepare(Box<NativePreparation>),
+    /// Supplies a complete original native command claim.
+    Command(Box<ExecutionCommand>),
+    /// Returns original native scalar facts without complete closure claims.
+    Stopped(NativeStopFacts),
+    /// Settles custody after matching authenticated canonical publication.
+    Acknowledge(ReceiptAcknowledgement),
+    /// Returns the provider journal's original custody acknowledgement.
+    ///
+    /// This confirms journal settlement only, not complete native resource cleanup.
+    Acknowledged(ReceiptAcknowledgement),
+    /// Returns original CPU-only facts, never all-owner readiness.
+    CpuPark(NativeCpuParkFacts),
+    /// Requests the same retained original CPU-only observation without execution.
+    QueryCpuPark([u8; 32]),
+    /// Requests a slice of the same retained original timer observation.
+    QueryTimers(super::NativeTimerQuery),
+    /// Returns bounded original canonical timer bytes without closure claims.
+    TimerChunk(super::NativeTimerChunk),
+}
+
+/// Preserves an original native CPU-only administrative park observation.
+///
+/// These facts authenticate no input closure, device queues, state inventory,
+/// current physical suspension, all-writer readiness or execution authority.
+/// A retained initial observation remains historical after a later command.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeCpuParkFacts {
+    /// Reports only CPU-park coverage; edition one requires exactly bit zero.
+    pub coverage: u32,
+    /// Counts the finalized fixed actual native CPU roster, at most 1024.
+    pub cpu_count: u32,
+    /// Records the original native logical clock without a superdense claim.
+    pub current_ps: U64,
+    /// Records actual original retirement independently of logical time.
+    pub retired_count: U64,
+    /// Preserves the original next service deadline, or null if unknown.
+    pub next_service_deadline_ps: Option<U64>,
+    /// Preserves original pending instruction service credit.
+    pub pending_service_credit_ps: U64,
+    /// Binds the complete immutable inactive prepared scope.
+    pub prepared_scope_hash: [u8; 32],
+    /// Binds the tagged ascending little-endian actual CPU indices with SHA-256.
+    pub roster_sha256: [u8; 32],
+}
+
+impl NativeCpuParkFacts {
+    pub(super) fn validate(&self) -> Result<(), NativeCommandError> {
+        if self.coverage != 1
+            || self.cpu_count == 0
+            || self.cpu_count > 1024
+            || self.prepared_scope_hash == [0; 32]
+            || self.roster_sha256 == [0; 32]
+            || self
+                .next_service_deadline_ps
+                .is_some_and(|deadline| deadline.get() == u64::MAX)
+        {
+            return Err(NativeCommandError::Invalid(
+                "invalid CPU-only native park facts",
+            ));
+        }
+        Ok(())
+    }
+}

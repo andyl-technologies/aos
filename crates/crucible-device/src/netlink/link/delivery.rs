@@ -3,6 +3,26 @@
 use super::*;
 
 impl NetLink {
+    /// Parks the exact native clock without consuming a ceiling event.
+    ///
+    /// The owning exact adapter must already have published every earlier
+    /// frame. Frames at the exclusive ceiling retain their original queue
+    /// custody; this operation does not drain or re-resolve any delivery.
+    ///
+    /// # Errors
+    /// Refuses clock regression or an unresolved frame before the ceiling.
+    pub fn park_exact(&mut self, limit: u64) -> Result<(), DeviceError> {
+        if let Some(time) = self.next_exact_local_event()
+            && time < limit
+        {
+            return Err(DeviceError::UnsettledExactLinkDelivery {
+                delivery_icount: time,
+                limit_icount: limit,
+            });
+        }
+        self.clock.advance_to(limit)
+    }
+
     /// Advances the clock to `limit` and returns every delivery due by then.
     ///
     /// Drains exactly the in-flight frames whose `delivery_icount <= limit`, in

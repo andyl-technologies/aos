@@ -1,6 +1,7 @@
 //! Concrete modeled driving and observation projection for campaign QEMU attempts.
 //!
-//! The shared semantic core advances only through [`QemuModeledAttemptLifecycle`],
+//! The shared semantic operations use [`ModeledAttemptLifecycle`]; native
+//! marker and selectable evidence use [`QemuModeledAttemptLifecycle`]. The driver
 //! stops on the attempt's exact semantic boundary or a modeled terminal verdict,
 //! and retains a bounded dense event log. Fresh and exact execution seal after
 //! runner-owned shutdown contributes its final observational suffix. Both paths
@@ -13,31 +14,43 @@ use std::sync::{Arc, Mutex};
 
 use crucible::model::MeasurementTerminalState;
 use crucible::{
-    AssertionPhase, Configuration, ContentHash, Decision, EngineError, EventLogCoverageObservation,
-    EventLogOffset, FailureClusterReportDivergence, FailureClusterReportFailure,
-    FailurePropertyViolationRecord, FailureTimeoutBudgetKind, FailureTimeoutRecord,
-    FingerprintSample, HostAssertionOutcomeKind, NetworkFaultPhase, NodeId, ObservableEventPayload,
-    OfflineAssertionCheckError, OfflineAssertionChecker, QuantumOutcome, QuantumRequest,
-    QuantumTerminalVerdict, SchedulerError, SchedulerEventLogEntry, SchedulerEventLogPayload,
+    Configuration, ContentHash, Decision, EngineError, EventLogCoverageObservation, EventLogOffset,
+    FailureClusterReportDivergence, FailureClusterReportFailure, FailurePropertyViolationRecord,
+    FailureTimeoutBudgetKind, FailureTimeoutRecord, FingerprintSample, HostAssertionOutcomeKind,
+    NetworkFaultPhase, NodeId, ObservableEventPayload, OfflineAssertionCheckError,
+    OfflineAssertionChecker, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict,
+    SchedulerError, SchedulerEventLogEntry, SchedulerEventLogPayload,
     SchedulerOperationalFailureClass, SchedulerQuiescence, SelectionDecision, VirtualTime,
     compare_event_log_determinism, coverage_fingerprint_from_event_log, try_step,
 };
 use crucible_campaign::{
-    AssertionViolationWitness, AttemptStartMode, BoundedStopProof, CampaignCodecError,
-    CampaignHash, ChoiceDiscovery, ChoiceDomainId, ChoiceOpportunityId, ConfigurationArtifact,
-    ConfigurationId, CoverageProjection, MAX_OBSERVATION_CHOICE_DISCOVERIES,
-    MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, Observation, ObservationCandidate,
-    ObservationCondition, ObservationEventLogProof, ObservationQuantumBoundary,
-    ObservationStopProof, ObservationStopSatisfaction, PolicyTimeoutKind, PropertyEvidence,
-    PropertyVerdict, PropertyVerdictSet, SelectableId, Selection, SelectionOrigin, StopCondition,
-    StopOutcome,
+    AttemptStartMode, BoundedStopProof, CampaignCodecError, CampaignHash, ChoiceDiscovery,
+    ChoiceOpportunityId, ConfigurationArtifact, ConfigurationId, CoverageProjection, Observation,
+    ObservationCandidate, ObservationCondition, ObservationStopSatisfaction, PolicyTimeoutKind,
+    PropertyEvidence, PropertyVerdict, PropertyVerdictSet, Selection, SelectionOrigin,
+    StopCondition, StopOutcome,
 };
 use crucible_cas::content_store::ContentId;
 use crucible_protocol::SelectionReply;
 use crucible_qemu::{QemuNodeSelectablePendingRequest, QemuParkedCampaignMarker};
 use thiserror::Error;
 
+#[cfg(test)]
+use crate::CrucibleObservationBoundaryEvidence;
+#[cfg(test)]
+use crucible_campaign::{
+    ObservationEventLogProof, ObservationQuantumBoundary, ObservationStopProof,
+};
+
 use crate::CrucibleResolvedAttemptStart;
+use crate::modeled_campaign_driver::stop_boundary::{
+    ModeledStop, QuantumStopEvidence, initial_requested_stop, primary_stop_at,
+};
+use crate::modeled_campaign_driver::{ModeledAttemptLifecycle, ModeledCampaignError};
+use crate::modeled_campaign_driver::{
+    savepoint_event_prefix_digest, savepoint_event_prefix_digest_iter,
+};
+
 use crate::guest_selectable::{
     GuestSelectableBoundaryDiagnosticStage, GuestSelectableError,
     record_guest_selectable_boundary_diagnostic, resolve_guest_selectable, selected_guest_reply,
@@ -49,11 +62,10 @@ use crate::qemu_campaign_lifecycle::{
 use crate::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure, CrucibleArtifactError,
     CrucibleAttemptExecution, CrucibleFindingReplayEvidence, CrucibleMeasurementError,
-    CrucibleMeasurementReplayEvidence, CrucibleObservationBoundaryEvidence,
-    PreparedSemanticAttemptResult, PreparedSemanticResultCodecError, QemuFreshAttemptDriver,
-    QemuFreshAttemptLifecycle, QemuFreshDriveOutcome, QemuFreshStartMaterialization,
-    encode_crucible_configuration_artifact, encode_crucible_scenario_artifact,
-    evaluate_crucible_measurement_publication,
+    CrucibleMeasurementReplayEvidence, PreparedSemanticAttemptResult,
+    PreparedSemanticResultCodecError, QemuFreshAttemptDriver, QemuFreshAttemptLifecycle,
+    QemuFreshDriveOutcome, QemuFreshStartMaterialization, encode_crucible_configuration_artifact,
+    encode_crucible_scenario_artifact, evaluate_crucible_measurement_publication,
     evaluate_crucible_observation_measurement_publication,
 };
 
@@ -79,16 +91,15 @@ use observation_candidate::{
 };
 use resume_progress::report_first_restored_guest_marker;
 use selection_projection::{
-    has_unselected_discovery, is_next_choice_stop, produced_selections_after_start,
-    validate_live_network_preselection,
+    is_next_choice_stop, produced_selections_after_start, validate_live_network_preselection,
 };
 use stop_boundary::{policy_timeout_at, reached_requested_stop, requested_attempt_stop_frontier};
 
 /// Maximum scheduler entries retained by one in-memory fresh-attempt projection.
-pub const MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES: usize = 1_000_000;
+pub use crate::attempt_evidence::MAX_ATTEMPT_EVENT_LOG_ENTRIES as MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES;
 
 /// Maximum aggregate canonical event material retained by one fresh attempt.
-pub const MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES: usize = 64 * 1024 * 1024;
+pub use crate::attempt_evidence::MAX_ATTEMPT_EVENT_LOG_BYTES as MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES;
 
 /// Maximum property-by-event evaluations admitted by one fresh-attempt seal.
 pub const MAX_QEMU_CAMPAIGN_ASSERTION_EVENT_VISITS: usize = 1_000_000;
@@ -834,32 +845,6 @@ impl QemuSavepointReplayReceipt {
     }
 }
 
-#[derive(Debug)]
-enum ModeledStop {
-    Reached(StopCondition),
-    BoundedPrimaryReached {
-        stop: StopCondition,
-        proof: BoundedStopProof,
-    },
-    BoundedPrimaryTimeout {
-        stop: StopCondition,
-        proof: BoundedStopProof,
-    },
-    PolicyTimeout {
-        stop: StopCondition,
-        kind: PolicyTimeoutKind,
-        proof: BoundedStopProof,
-    },
-    ObservationReached {
-        proof: Box<ObservationStopProof>,
-        evidence: CrucibleObservationBoundaryEvidence,
-    },
-    ModeledTimeout(String),
-    ReplayBoundary,
-    TerminalPassed,
-    TerminalFailed(Vec<String>),
-}
-
 /// Authenticated private target used only to verify a later own checkpoint.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuSelectedResumeBoundary {
@@ -941,92 +926,12 @@ impl QemuFreshModeledDriver {
     }
 }
 
-/// Scheduler progress needed by the materialization-independent modeled core.
+/// Adds QEMU-owned marker and selectable evidence to campaign scheduler semantics.
 ///
-/// Fresh execution and exact resume have different process and checkpoint
-/// owners, but they must interpret an admitted attempt and project its result
-/// identically. This narrow boundary keeps that semantic loop independent of
-/// how the live scheduler was materialized while exposing no shutdown,
-/// checkpoint-publication, or resource-release authority.
-/// Process-owner-neutral scheduler operations required by modeled campaign execution.
-///
-/// Implementations expose semantic progress, selectable delivery, quiescence,
-/// and network settlement without exposing process termination, resource
-/// release, VMState restore, or template recovery authority. Fresh, exact, and
-/// hot materialization must implement this same boundary before the common
-/// modeled driver can produce campaign evidence.
-pub trait QemuModeledAttemptLifecycle {
-    /// Installs the exact nonterminal scheduler frontier for this attempt.
-    ///
-    /// Passing `None` clears the prior attempt's frontier.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] when the lifecycle cannot install the
-    /// frontier without crossing its current scheduler boundary.
-    fn set_attempt_stop_frontier(
-        &mut self,
-        frontier: Option<VirtualTime>,
-    ) -> Result<(), SchedulerError>;
-
-    /// Enables a preselection pause for a choice-search attempt.
-    fn set_live_network_choice_pause(&mut self, _enabled: bool) {}
-
-    /// Uses concurrent RUNs only within a caller-proven choice-free boot epoch.
-    fn set_choice_free_parallel_boot(&mut self, _enabled: bool) {}
-
-    /// Returns the unresolved World-network choice at this boundary.
-    fn live_network_preselection(&self) -> Option<crucible::LiveNetworkPreselection> {
-        None
-    }
-
-    /// Settles a reserved choice through its default before a higher-priority stop.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] when there is no valid reservation.
-    fn settle_live_network_preselection(&mut self) -> Result<QuantumOutcome, SchedulerError> {
-        Err(SchedulerError::BoundaryViolation {
-            message: String::from("modeled lifecycle has no live-network preselection"),
-        })
-    }
-
-    /// Hands an exact unresolved choice to a NextChoice observation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] when the reservation does not match.
-    fn handoff_live_network_preselection(
-        &mut self,
-        _expected: &crucible::LiveNetworkPreselection,
-    ) -> Result<(), SchedulerError> {
-        Err(SchedulerError::BoundaryViolation {
-            message: String::from("modeled lifecycle has no live-network preselection"),
-        })
-    }
-
-    /// Advances exactly one scheduler quantum.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] when the guarded scheduler cannot complete
-    /// the requested quantum.
-    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError>;
-
-    /// Returns the absolute scheduler-quantum coordinate at the current boundary.
-    #[must_use]
-    fn completed_quanta(&self) -> u64;
-
-    /// Observes the current modeled terminal verdict, if any.
-    fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict>;
-
-    /// Returns whether every live node is at an exact checkpoint boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] when quiescence cannot be authenticated.
-    fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError>;
-
+/// This adapter authenticates native parked VM and guest-transport state. It does
+/// not grant launch, restore, shutdown, checkpoint publication or resource-release
+/// authority, and its proofs must not be synthesized by another implementation.
+pub trait QemuModeledAttemptLifecycle: ModeledAttemptLifecycle {
     /// Reads one live VM's exact marker park, if present.
     ///
     /// # Errors
@@ -1074,17 +979,6 @@ pub trait QemuModeledAttemptLifecycle {
         })
     }
 
-    /// Reports whether adapter-owned network queues are empty at activation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when their state cannot be authenticated.
-    fn campaign_network_queues_empty(&self) -> Result<bool, SchedulerError> {
-        Err(SchedulerError::BoundaryViolation {
-            message: String::from("campaign network queue proof is unavailable"),
-        })
-    }
-
     /// Drains node-qualified guest selectable requests at the paused boundary.
     ///
     /// # Errors
@@ -1129,21 +1023,9 @@ pub trait QemuModeledAttemptLifecycle {
         pending: &QemuNodeSelectablePendingRequest,
         reply: &SelectionReply,
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError>;
-
-    /// Returns the number of guest frames not yet globally committed.
-    #[must_use]
-    fn pending_network_output_count(&self) -> usize;
-
-    /// Samples one node's concrete execution fingerprint for diagnostics.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] when the stopped node's live state cannot be
-    /// read consistently.
-    fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError>;
 }
 
-impl QemuModeledAttemptLifecycle for QemuFreshAttemptLifecycle<'_> {
+impl ModeledAttemptLifecycle for QemuFreshAttemptLifecycle<'_> {
     fn set_attempt_stop_frontier(
         &mut self,
         frontier: Option<VirtualTime>,
@@ -1190,6 +1072,20 @@ impl QemuModeledAttemptLifecycle for QemuFreshAttemptLifecycle<'_> {
         QemuFreshAttemptLifecycle::exact_checkpoint_ready(self)
     }
 
+    fn campaign_network_queues_empty(&self) -> Result<bool, SchedulerError> {
+        QemuFreshAttemptLifecycle::campaign_network_queues_empty(self)
+    }
+
+    fn pending_network_output_count(&self) -> usize {
+        QemuFreshAttemptLifecycle::pending_network_output_count(self)
+    }
+
+    fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError> {
+        QemuFreshAttemptLifecycle::sample_fingerprint(self, node)
+    }
+}
+
+impl QemuModeledAttemptLifecycle for QemuFreshAttemptLifecycle<'_> {
     fn parked_campaign_marker(
         &mut self,
         node: &NodeId,
@@ -1213,10 +1109,6 @@ impl QemuModeledAttemptLifecycle for QemuFreshAttemptLifecycle<'_> {
         selected: ContentHash,
     ) -> Result<bool, SchedulerError> {
         QemuFreshAttemptLifecycle::campaign_marker_release_committed(self, node, marker, selected)
-    }
-
-    fn campaign_network_queues_empty(&self) -> Result<bool, SchedulerError> {
-        QemuFreshAttemptLifecycle::campaign_network_queues_empty(self)
     }
 
     fn drain_pending_selectable_requests(
@@ -1243,14 +1135,6 @@ impl QemuModeledAttemptLifecycle for QemuFreshAttemptLifecycle<'_> {
         QemuFreshAttemptLifecycle::apply_selectable_reply(
             self, parent, decision, selected, pending, reply,
         )
-    }
-
-    fn pending_network_output_count(&self) -> usize {
-        QemuFreshAttemptLifecycle::pending_network_output_count(self)
-    }
-
-    fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError> {
-        QemuFreshAttemptLifecycle::sample_fingerprint(self, node)
     }
 }
 
@@ -1447,24 +1331,6 @@ impl QemuFreshAttemptDriver for QemuSavepointReplayProbe {
     }
 }
 
-fn savepoint_event_prefix_digest(entries: &[SchedulerEventLogEntry]) -> [u8; 32] {
-    savepoint_event_prefix_digest_iter(entries.len(), entries.iter())
-}
-
-fn savepoint_event_prefix_digest_iter<'a>(
-    count: usize,
-    entries: impl Iterator<Item = &'a SchedulerEventLogEntry>,
-) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"crucible.savepoint-replay-event-prefix.v1\0");
-    hasher.update(&(count as u64).to_be_bytes());
-    for entry in entries {
-        hasher.update(&entry.sequence().to_be_bytes());
-        hasher.update(&entry.content_hash().bytes);
-    }
-    *hasher.finalize().as_bytes()
-}
-
 /// Drives one already-materialized attempt through its declared modeled stop.
 pub(crate) fn drive_modeled_attempt(
     lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
@@ -1557,7 +1423,7 @@ fn drive_modeled_attempt_inner(
                 stop,
                 event_log,
                 event_log_bytes,
-                discoveries: discoveries.discoveries,
+                discoveries: discoveries.into_discoveries(),
                 preselection: None,
                 terminal_quiescence,
                 terminal_at,
@@ -1593,7 +1459,7 @@ fn drive_modeled_attempt_inner(
                 stop: ModeledStop::ReplayBoundary,
                 event_log,
                 event_log_bytes,
-                discoveries: discoveries.discoveries,
+                discoveries: discoveries.into_discoveries(),
                 preselection: None,
                 terminal_quiescence,
                 terminal_at,
@@ -1623,7 +1489,7 @@ fn drive_modeled_attempt_inner(
                 stop: initial_stop,
                 event_log,
                 event_log_bytes,
-                discoveries: discoveries.discoveries,
+                discoveries: discoveries.into_discoveries(),
                 preselection: None,
                 terminal_quiescence,
                 terminal_at,
@@ -1634,7 +1500,7 @@ fn drive_modeled_attempt_inner(
     }
     if checkpoint_is_ready(lifecycle, context)? {
         return Ok(QemuFreshDriveOutcome::CheckpointRequested(
-            QemuCheckpointChoiceProvenance::new(configuration, discoveries.discoveries),
+            QemuCheckpointChoiceProvenance::new(configuration, discoveries.into_discoveries()),
         ));
     }
 
@@ -1662,7 +1528,7 @@ fn drive_modeled_attempt_inner(
                 stop: primary_stop_at(input.attempt().stop(), terminal_at, completed_quanta),
                 event_log,
                 event_log_bytes,
-                discoveries: discoveries.discoveries,
+                discoveries: discoveries.into_discoveries(),
                 preselection: None,
                 terminal_quiescence,
                 terminal_at,
@@ -1703,7 +1569,7 @@ fn drive_modeled_attempt_inner(
                 stop: ModeledStop::ReplayBoundary,
                 event_log,
                 event_log_bytes,
-                discoveries: discoveries.discoveries,
+                discoveries: discoveries.into_discoveries(),
                 preselection: None,
                 terminal_quiescence,
                 terminal_at,
@@ -1725,7 +1591,7 @@ fn drive_modeled_attempt_inner(
                 stop: primary_stop_at(input.attempt().stop(), terminal_at, completed_quanta),
                 event_log,
                 event_log_bytes,
-                discoveries: discoveries.discoveries,
+                discoveries: discoveries.into_discoveries(),
                 preselection: None,
                 terminal_quiescence,
                 terminal_at,
@@ -1754,7 +1620,7 @@ fn drive_modeled_attempt_inner(
                 stop: primary_stop_at(input.attempt().stop(), terminal_at, completed_quanta),
                 event_log,
                 event_log_bytes,
-                discoveries: discoveries.discoveries,
+                discoveries: discoveries.into_discoveries(),
                 preselection: None,
                 terminal_quiescence,
                 terminal_at,
@@ -1774,7 +1640,7 @@ fn drive_modeled_attempt_inner(
     loop {
         if check_operational_signals(lifecycle, context)? {
             return Ok(QemuFreshDriveOutcome::CheckpointRequested(
-                QemuCheckpointChoiceProvenance::new(configuration, discoveries.discoveries),
+                QemuCheckpointChoiceProvenance::new(configuration, discoveries.into_discoveries()),
             ));
         }
         context.charge_execution_quantum().map_err(|error| {
@@ -1900,7 +1766,7 @@ fn drive_modeled_attempt_inner(
                     stop: ModeledStop::ReplayBoundary,
                     event_log,
                     event_log_bytes,
-                    discoveries: discoveries.discoveries,
+                    discoveries: discoveries.into_discoveries(),
                     preselection: None,
                     terminal_quiescence,
                     terminal_at,
@@ -1998,7 +1864,7 @@ fn drive_modeled_attempt_inner(
                         stop: ModeledStop::ReplayBoundary,
                         event_log,
                         event_log_bytes,
-                        discoveries: discoveries.discoveries,
+                        discoveries: discoveries.into_discoveries(),
                         preselection: None,
                         terminal_quiescence,
                         terminal_at,
@@ -2021,7 +1887,10 @@ fn drive_modeled_attempt_inner(
         let Some(stop) = stop else {
             if checkpoint_is_ready(lifecycle, context)? {
                 return Ok(QemuFreshDriveOutcome::CheckpointRequested(
-                    QemuCheckpointChoiceProvenance::new(configuration, discoveries.discoveries),
+                    QemuCheckpointChoiceProvenance::new(
+                        configuration,
+                        discoveries.into_discoveries(),
+                    ),
                 ));
             }
             continue;
@@ -2047,7 +1916,7 @@ fn drive_modeled_attempt_inner(
                 stop,
                 event_log,
                 event_log_bytes,
-                discoveries: discoveries.discoveries,
+                discoveries: discoveries.into_discoveries(),
                 preselection: preselection_handoff,
                 terminal_quiescence,
                 terminal_at,
@@ -2059,7 +1928,7 @@ fn drive_modeled_attempt_inner(
 }
 
 fn modeled_stop_outcome(
-    lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
+    lifecycle: &mut (impl ModeledAttemptLifecycle + ?Sized),
     context: &AttemptExecutionContext,
     pending: QemuFreshPendingObservation,
 ) -> Result<
@@ -2207,7 +2076,7 @@ fn resolve_pending_guest_choices_at_configuration(
 }
 
 fn require_settled_network(
-    lifecycle: &(impl QemuModeledAttemptLifecycle + ?Sized),
+    lifecycle: &(impl ModeledAttemptLifecycle + ?Sized),
 ) -> Result<(), AttemptWorkerFailure<QemuFreshModeledDriverError>> {
     let pending = lifecycle.pending_network_output_count();
     if pending == 0 {
@@ -2220,7 +2089,7 @@ fn require_settled_network(
 }
 
 fn check_operational_signals(
-    lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
+    lifecycle: &mut (impl ModeledAttemptLifecycle + ?Sized),
     context: &AttemptExecutionContext,
 ) -> Result<bool, AttemptWorkerFailure<QemuFreshModeledDriverError>> {
     check_cancellation(context)?;
@@ -2239,7 +2108,7 @@ fn check_cancellation(
 }
 
 fn checkpoint_is_ready(
-    lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
+    lifecycle: &mut (impl ModeledAttemptLifecycle + ?Sized),
     context: &AttemptExecutionContext,
 ) -> Result<bool, AttemptWorkerFailure<QemuFreshModeledDriverError>> {
     if matches!(
@@ -2274,233 +2143,6 @@ fn classify_scheduler_error(
         Some(SchedulerOperationalFailureClass::Terminal) | None => {
             AttemptWorkerFailure::Terminal(error)
         }
-    }
-}
-
-struct QuantumStopEvidence<'a> {
-    properties: &'a crucible::Properties,
-    outcome: &'a QuantumOutcome,
-    observed_event_count: usize,
-    quantum_start_completed_quanta: u64,
-    completed_quanta: u64,
-    discoveries: &'a BTreeMap<ChoiceOpportunityId, ChoiceDiscovery>,
-    prior_entries: &'a [SchedulerEventLogEntry],
-}
-
-fn observation_stop_proof(
-    condition: &ObservationCondition,
-    properties: &crucible::Properties,
-    outcome: &QuantumOutcome,
-    quantum_start_completed_quanta: u64,
-    completed_quanta: u64,
-    prior_entries: &[SchedulerEventLogEntry],
-) -> Result<
-    Option<(ObservationStopProof, CrucibleObservationBoundaryEvidence)>,
-    QemuFreshModeledDriverError,
-> {
-    let (satisfaction, assertion_witness) = match condition {
-        ObservationCondition::SchedulerQuiescent => {
-            if !outcome
-                .scheduler_quiescence
-                .as_ref()
-                .is_some_and(SchedulerQuiescence::is_quiescent)
-            {
-                return Ok(None);
-            }
-            (ObservationStopSatisfaction::SchedulerQuiescent, None)
-        }
-        ObservationCondition::AssertionViolationTransition(assertion) => {
-            let Some(entry) = outcome.event_log_entries.iter().find(|entry| {
-                matches!(
-                    entry.payload(),
-                    SchedulerEventLogPayload::Observable(
-                        ObservableEventPayload::AssertionStateChanged { name, state }
-                    ) if name.name == *assertion
-                        && *state == AssertionPhase::Violated
-                        && assertion_is_declared(properties, &name.name)
-                )
-            }) else {
-                return Ok(None);
-            };
-            (
-                ObservationStopSatisfaction::AssertionViolationTransition,
-                Some(AssertionViolationWitness::new(
-                    assertion.clone(),
-                    entry.sequence(),
-                    CampaignHash::from_bytes(entry.content_hash().bytes),
-                )?),
-            )
-        }
-        ObservationCondition::AnyAssertionViolationTransition => {
-            let Some((entry, assertion)) = outcome.event_log_entries.iter().find_map(|entry| {
-                let SchedulerEventLogPayload::Observable(
-                    ObservableEventPayload::AssertionStateChanged { name, state },
-                ) = entry.payload()
-                else {
-                    return None;
-                };
-                (*state == AssertionPhase::Violated
-                    && assertion_is_declared(properties, &name.name))
-                .then_some((entry, name.name.as_str()))
-            }) else {
-                return Ok(None);
-            };
-            (
-                ObservationStopSatisfaction::AssertionViolationTransition,
-                Some(AssertionViolationWitness::new(
-                    assertion,
-                    entry.sequence(),
-                    CampaignHash::from_bytes(entry.content_hash().bytes),
-                )?),
-            )
-        }
-        ObservationCondition::SchedulerQuiescentOrExecutionQuanta { execution_quanta } => {
-            if outcome
-                .scheduler_quiescence
-                .as_ref()
-                .is_some_and(SchedulerQuiescence::is_quiescent)
-            {
-                (ObservationStopSatisfaction::SchedulerQuiescent, None)
-            } else if completed_quanta >= *execution_quanta {
-                (ObservationStopSatisfaction::ExecutionQuanta, None)
-            } else {
-                return Ok(None);
-            }
-        }
-    };
-    if completed_quanta <= quantum_start_completed_quanta {
-        return Err(QemuFreshModeledDriverError::QuantumCounterDidNotAdvance {
-            before: quantum_start_completed_quanta,
-            after: completed_quanta,
-        });
-    }
-    let event_count = prior_entries
-        .len()
-        .checked_add(outcome.event_log_entries.len())
-        .ok_or(QemuFreshModeledDriverError::LimitExceeded {
-            limit: "observation-stop-event-count",
-        })?;
-    let portable_event_count =
-        u64::try_from(event_count).map_err(|_| QemuFreshModeledDriverError::LimitExceeded {
-            limit: "observation-stop-event-count",
-        })?;
-    if outcome.event_log_offset.events != portable_event_count {
-        return Err(QemuFreshModeledDriverError::ObservationStopProof);
-    }
-    let offset = outcome.event_log_offset;
-    let event_log = ObservationEventLogProof::new(
-        CampaignHash::from_bytes(offset.prefix.bytes),
-        offset
-            .appended_segment
-            .map(|hash| CampaignHash::from_bytes(hash.bytes)),
-        offset.bytes,
-        offset.events,
-        CampaignHash::from_bytes(savepoint_event_prefix_digest_iter(
-            event_count,
-            prior_entries.iter().chain(&outcome.event_log_entries),
-        )),
-    );
-    let quantum_start_events = u64::try_from(prior_entries.len()).map_err(|_| {
-        QemuFreshModeledDriverError::LimitExceeded {
-            limit: "observation-stop-event-count",
-        }
-    })?;
-    let boundary = ObservationQuantumBoundary::new(
-        outcome.frontier.ticks,
-        quantum_start_completed_quanta,
-        completed_quanta,
-        quantum_start_events,
-    )?;
-    let retained_boundary = CrucibleObservationBoundaryEvidence::new(
-        outcome.frontier,
-        quantum_start_completed_quanta,
-        completed_quanta,
-        quantum_start_events,
-        outcome.event_log_offset,
-        outcome
-            .scheduler_quiescence
-            .as_ref()
-            .is_some_and(SchedulerQuiescence::is_quiescent),
-    )
-    .map_err(QemuFreshModeledDriverError::Measurements)?;
-    let proof = ObservationStopProof::new(
-        condition.clone(),
-        satisfaction,
-        ConfigurationId::from_hash(CampaignHash::from_bytes(outcome.configuration.id().bytes)),
-        boundary,
-        event_log,
-        assertion_witness,
-    )?;
-    Ok(Some((proof, retained_boundary)))
-}
-
-fn assertion_is_declared(properties: &crucible::Properties, assertion: &str) -> bool {
-    properties
-        .assertions()
-        .iter()
-        .any(|declaration| declaration.id.name == assertion)
-}
-
-fn initial_requested_stop(
-    requested: &StopCondition,
-    frontier: VirtualTime,
-    completed_quanta: u64,
-    observed_event_count: usize,
-) -> Option<ModeledStop> {
-    if let StopCondition::Bounded { primary, .. } = requested {
-        let proof = BoundedStopProof::new(frontier.ticks, completed_quanta);
-        if let Some(timeout) = policy_timeout_at(requested, frontier, completed_quanta) {
-            return Some(timeout);
-        }
-        return initial_requested_stop(primary, frontier, completed_quanta, observed_event_count)
-            .map(|stop| match stop {
-                ModeledStop::Reached(_) => ModeledStop::BoundedPrimaryReached {
-                    stop: requested.clone(),
-                    proof,
-                },
-                ModeledStop::ModeledTimeout(_) => ModeledStop::BoundedPrimaryTimeout {
-                    stop: requested.clone(),
-                    proof,
-                },
-                other => other,
-            });
-    }
-
-    let reached = match requested {
-        StopCondition::VirtualTimePicoseconds(deadline) => frontier.ticks >= *deadline,
-        StopCondition::ExecutionQuanta(bound) => completed_quanta >= *bound,
-        StopCondition::VirtualTimeOrExecutionQuanta {
-            virtual_time_picoseconds,
-            execution_quanta,
-        } => frontier.ticks >= *virtual_time_picoseconds || completed_quanta >= *execution_quanta,
-        StopCondition::EventCount(count) => {
-            u64::try_from(observed_event_count).is_ok_and(|observed| observed >= *count)
-        }
-        StopCondition::NextChoice
-        | StopCondition::NamedBoundary(_)
-        | StopCondition::Terminal
-        | StopCondition::Observation(_) => false,
-        StopCondition::NextChoiceOrExecutionQuanta { execution_quanta } => {
-            return (completed_quanta >= *execution_quanta)
-                .then(|| ModeledStop::ModeledTimeout(String::from("execution-quanta")));
-        }
-        StopCondition::Bounded { .. } => return None,
-    };
-    reached.then(|| ModeledStop::Reached(requested.clone()))
-}
-
-fn primary_stop_at(
-    requested: &StopCondition,
-    frontier: VirtualTime,
-    completed_quanta: u64,
-) -> ModeledStop {
-    if matches!(requested, StopCondition::Bounded { .. }) {
-        ModeledStop::BoundedPrimaryReached {
-            stop: requested.clone(),
-            proof: BoundedStopProof::new(frontier.ticks, completed_quanta),
-        }
-    } else {
-        ModeledStop::Reached(requested.clone())
     }
 }
 
@@ -2879,6 +2521,46 @@ fn coverage_projection(
 
 fn coverage_identity(observation: &EventLogCoverageObservation) -> CampaignHash {
     CampaignHash::from_bytes(observation.content_hash().bytes)
+}
+
+#[cfg(test)]
+fn observation_stop_proof(
+    condition: &ObservationCondition,
+    properties: &crucible::Properties,
+    outcome: &QuantumOutcome,
+    quantum_start_completed_quanta: u64,
+    completed_quanta: u64,
+    prior_entries: &[SchedulerEventLogEntry],
+) -> Result<
+    Option<(ObservationStopProof, CrucibleObservationBoundaryEvidence)>,
+    QemuFreshModeledDriverError,
+> {
+    crate::modeled_campaign_driver::stop_boundary::observation_stop_proof(
+        condition,
+        properties,
+        outcome,
+        quantum_start_completed_quanta,
+        completed_quanta,
+        prior_entries,
+    )
+    .map_err(Into::into)
+}
+
+impl From<ModeledCampaignError> for QemuFreshModeledDriverError {
+    fn from(error: ModeledCampaignError) -> Self {
+        match error {
+            ModeledCampaignError::Campaign(error) => Self::Campaign(error),
+            ModeledCampaignError::Measurements(error) => Self::Measurements(error),
+            ModeledCampaignError::ConflictingChoice(id) => Self::ConflictingChoice(id),
+            ModeledCampaignError::LimitExceeded { limit } => Self::LimitExceeded { limit },
+            ModeledCampaignError::QuantumCounterDidNotAdvance { before, after } => {
+                Self::QuantumCounterDidNotAdvance { before, after }
+            }
+            ModeledCampaignError::ObservationStopProof => Self::ObservationStopProof,
+            ModeledCampaignError::BoundedStopProof => Self::BoundedStopProof,
+            ModeledCampaignError::StartSchedulePrefixMismatch => Self::StartSchedulePrefixMismatch,
+        }
+    }
 }
 
 #[cfg(test)]

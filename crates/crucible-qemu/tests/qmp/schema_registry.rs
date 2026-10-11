@@ -252,13 +252,25 @@ fn patched_qapi_commands_have_schema_owners_or_qapi_only_contracts() {
         ),
     ];
 
-    // These additions have no independent schema-version field. QAPI owns
-    // their shape, and the pinned patched-QEMU release is their version.
+    // QAPI owns these shapes under the exact pinned patched-QEMU release.
+    // Native KVM entries classify component shapes, including source-owned
+    // controls without installed Rust execution adapters. The existing typed
+    // diagnostics validate their edition; none grant readiness or portable state.
     let qapi_only = [
         "crucible-complete-terminal-lifecycle",
         "query-crucible-selectable-reply-boundary",
         "crucible-complete-selectable-reply",
         "x-crucible-adopt-launch-fdsets",
+        "x-crucible-kvm-clock",
+        "x-crucible-kvm-clock-v3",
+        "x-crucible-kvm-userspace-exits",
+        "x-crucible-kvm-completion",
+        "x-crucible-kvm-response-service",
+        "x-crucible-kvm-original-window",
+        "x-crucible-kvm-original-return",
+        "x-crucible-kvm-original-returns",
+        "x-crucible-kvm-initial-response",
+        "x-crucible-kvm-response-bytes",
     ];
 
     let declared = patch

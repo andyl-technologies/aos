@@ -249,7 +249,7 @@ fn world_node_launch_inputs_are_portable_and_identity_bearing() {
         icount: Icount { retired: 77 },
     };
     let cmdline = "console=ttyS0 root=/dev/vda ro";
-    let base_node = WorldNode {
+    let base_node = ComputeNodeDef {
         id: node_id("vm"),
         arch: VmArchitecture::Aarch64,
         memory_mib: 2048,
@@ -266,7 +266,7 @@ fn world_node_launch_inputs_are_portable_and_identity_bearing() {
     let template_scenario = ScenarioBuilder::new()
         .node(
             "vm",
-            NodeTemplate::fixed_icount(Icount { retired: 77 })
+            ComputeNodeTemplate::fixed_icount(Icount { retired: 77 })
                 .arch(VmArchitecture::Aarch64)
                 .memory_mib(2048)
                 .cmdline(cmdline)
@@ -330,7 +330,7 @@ fn world_node_launch_inputs_are_portable_and_identity_bearing() {
     assert!(material.contains(&format!("cmdline_len={}", cmdline.len())));
     assert!(material.contains("cmdline=console=ttyS0 root=/dev/vda ro"));
 
-    let assert_identity_changes = |label: &str, node: WorldNode| {
+    let assert_identity_changes = |label: &str, node: ComputeNodeDef| {
         let changed_world = world_from_nodes(vec![node]);
         assert_ne!(base_world.id(), changed_world.id(), "{label}");
         assert_ne!(
@@ -341,56 +341,56 @@ fn world_node_launch_inputs_are_portable_and_identity_bearing() {
     };
     assert_identity_changes(
         "architecture must affect identity",
-        WorldNode {
+        ComputeNodeDef {
             arch: VmArchitecture::X86_64,
             ..base_node.clone()
         },
     );
     assert_identity_changes(
         "memory size must affect identity",
-        WorldNode {
+        ComputeNodeDef {
             memory_mib: 4096,
             ..base_node.clone()
         },
     );
     assert_identity_changes(
         "kernel command line must affect identity",
-        WorldNode {
+        ComputeNodeDef {
             cmdline: format!("{cmdline} quiet"),
             ..base_node.clone()
         },
     );
     assert_identity_changes(
         "kernel blob must affect identity",
-        WorldNode {
+        ComputeNodeDef {
             kernel: Some(blob_ref("kernel-v2")),
             ..base_node.clone()
         },
     );
     assert_identity_changes(
         "root image blob must affect identity",
-        WorldNode {
+        ComputeNodeDef {
             root_image: Some(blob_ref("root-image-v2")),
             ..base_node.clone()
         },
     );
     assert_identity_changes(
         "initrd blob must affect identity",
-        WorldNode {
+        ComputeNodeDef {
             initrd: Some(blob_ref("initrd-v2")),
             ..base_node.clone()
         },
     );
     assert_identity_changes(
         "fixed vCPU count must affect identity",
-        WorldNode {
+        ComputeNodeDef {
             smp_vcpus: 3,
             ..base_node.clone()
         },
     );
     assert_identity_changes(
         "ready point must affect identity",
-        WorldNode {
+        ComputeNodeDef {
             ready_point: ReadyPoint::ConsoleMarker {
                 marker: String::from("ready"),
             },
@@ -399,14 +399,14 @@ fn world_node_launch_inputs_are_portable_and_identity_bearing() {
     );
     assert_identity_changes(
         "white-box opt-in must affect identity",
-        WorldNode {
+        ComputeNodeDef {
             white_box: WhiteBoxPolicy::Disabled,
             ..base_node.clone()
         },
     );
 
     assert!(matches!(
-        World::from_nodes(vec![WorldNode {
+        World::from_nodes(vec![ComputeNodeDef {
             memory_mib: 0,
             ..base_node
         }]),
@@ -1117,16 +1117,16 @@ fn temporal_graph_replay_checkpoint_is_on_demand_replay_oracle() {
 #[test]
 fn temporal_graph_replay_checkpoint_rejects_materialized_payload_drift() {
     let node = node_id("node");
-    let world = world_from_nodes(vec![WorldNode {
+    let world = world_from_nodes(vec![ComputeNodeDef {
         id: node.clone(),
-        arch: NodeTemplate::DEFAULT_ARCH,
-        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        arch: ComputeNodeTemplate::DEFAULT_ARCH,
+        memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
         cmdline: String::new(),
         ready_point: ReadyPoint::FixedIcount {
             icount: Icount { retired: 10 },
         },
         white_box: WhiteBoxPolicy::Disabled,
-        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -1194,16 +1194,16 @@ fn temporal_graph_replay_checkpoint_rejects_materialized_payload_drift() {
 #[test]
 fn temporal_graph_replay_oracle_rejects_cached_snapshot_to_thin() {
     let node = node_id("node");
-    let world = world_from_nodes(vec![WorldNode {
+    let world = world_from_nodes(vec![ComputeNodeDef {
         id: node.clone(),
-        arch: NodeTemplate::DEFAULT_ARCH,
-        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        arch: ComputeNodeTemplate::DEFAULT_ARCH,
+        memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
         cmdline: String::new(),
         ready_point: ReadyPoint::FixedIcount {
             icount: Icount { retired: 12 },
         },
         white_box: WhiteBoxPolicy::Disabled,
-        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -1331,16 +1331,16 @@ fn temporal_graph_replay_oracle_rejects_cached_snapshot_to_thin() {
 #[test]
 fn temporal_graph_replay_oracle_admits_cached_ancestors_before_target() {
     let node = node_id("node");
-    let world = world_from_nodes(vec![WorldNode {
+    let world = world_from_nodes(vec![ComputeNodeDef {
         id: node.clone(),
-        arch: NodeTemplate::DEFAULT_ARCH,
-        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        arch: ComputeNodeTemplate::DEFAULT_ARCH,
+        memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
         cmdline: String::new(),
         ready_point: ReadyPoint::FixedIcount {
             icount: Icount { retired: 13 },
         },
         white_box: WhiteBoxPolicy::Disabled,
-        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -1616,14 +1616,14 @@ fn world_ready_point_policies_are_hashed_canonically() {
             marker: String::from("crucible-ready"),
         },
     );
-    let agent = WorldNode {
+    let agent = ComputeNodeDef {
         id: node_id("d"),
-        arch: NodeTemplate::DEFAULT_ARCH,
-        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        arch: ComputeNodeTemplate::DEFAULT_ARCH,
+        memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
         cmdline: String::new(),
         ready_point: ReadyPoint::AgentSignal,
         white_box: WhiteBoxPolicy::Enabled,
-        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
         kernel: None,
         root_image: None,
         initrd: None,

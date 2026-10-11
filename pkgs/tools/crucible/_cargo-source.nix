@@ -9,10 +9,13 @@ in
     filter = path: _type: let
       pathString = toString path;
       base = baseNameOf path;
+      nodeContract = "${repoRootString}/docs/rfcs/0025-crucible-node-contract";
     in
       base
       != ".git"
       && base != ".crucible"
+      # Local daemon journals must not perturb Cargo source identities.
+      && base != "run-state"
       && base != "target"
       && pathString != "${repoRootString}/result"
       && (
@@ -20,6 +23,9 @@ in
         == repoRootString
         || pathString == "${repoRootString}/crates"
         || lib.hasPrefix "${repoRootString}/crates" pathString
+        # The qualification catalogue embeds its normative RFC and wire vectors.
+        || pathString == nodeContract
+        || lib.hasPrefix "${nodeContract}/" pathString
         || builtins.elem pathString [
           "${repoRootString}/tests"
           "${repoRootString}/tests/crucible"

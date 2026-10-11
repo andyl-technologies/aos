@@ -1,0 +1,32 @@
+--- a/src/arch/x86/cpuid.cc
++++ b/src/arch/x86/cpuid.cc
+@@ -111,17 +111,22 @@
+         return false;
+     }
+ 
+-    int cap_offset = 0;
++    auto &cap_vec = capabilities[function];
++    size_t cap_offset = 0;
+ 
+-    // Ignore index values for functions that do not take index values.
++    // Leaf 0DH reports zero for an unavailable sub-leaf. Check the tuple
++    // count before multiplying guest-controlled ECX, including UINT32_MAX.
++    // Functions without a significant index continue to ignore ECX.
+     if (hasSignificantIndex(function)) {
+-        cap_offset = index * 4;
++        if (index >= cap_vec.size() / 4) {
++            result = CpuidResult(0, 0, 0, 0);
++            return true;
++        }
++        cap_offset = static_cast<size_t>(index) * 4;
+     }
+ 
+-    // Ensure we have the offset and 4 dwords after it.
+-    assert(capabilities[function].size() >= (cap_offset + 4));
+-
+-    auto &cap_vec = capabilities[function];
++    // Preserve the configuration invariant for ordinary non-indexed leaves.
++    assert(cap_offset <= cap_vec.size() && cap_vec.size() - cap_offset >= 4);
+     result = CpuidResult(cap_vec[cap_offset + 0], cap_vec[cap_offset + 1],
+                          cap_vec[cap_offset + 2], cap_vec[cap_offset + 3]);
+     DPRINTF(X86, "CPUID function %x returning (%x, %x, %x, %x)\n",

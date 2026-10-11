@@ -182,6 +182,42 @@ impl HotForkBlockBarrierAction {
 }
 
 pub(super) enum QmpCommand<'a> {
+    #[cfg(target_os = "linux")]
+    QueryKvm,
+    #[cfg(target_os = "linux")]
+    KvmClockComponent {
+        request: &'a QmpKvmClockRequest,
+    },
+    #[cfg(target_os = "linux")]
+    KvmClockComponentV3 {
+        request: &'a QmpKvmClockRequest,
+    },
+    #[cfg(target_os = "linux")]
+    KvmUserspaceExits,
+    #[cfg(target_os = "linux")]
+    KvmInitialResponse {
+        request: &'a QmpKvmInitialResponseRequest,
+    },
+    #[cfg(target_os = "linux")]
+    KvmResponseBytes {
+        request: &'a QmpKvmResponseBytesRequest,
+    },
+    #[cfg(target_os = "linux")]
+    KvmMoreResponse {
+        request: &'a QmpKvmMoreResponseRequest,
+    },
+    #[cfg(target_os = "linux")]
+    KvmOriginalWindow {
+        request: &'a QmpKvmOriginalWindowRequest,
+    },
+    #[cfg(target_os = "linux")]
+    KvmOriginalReturn {
+        request: &'a QmpKvmOriginalReturnRequest,
+    },
+    #[cfg(target_os = "linux")]
+    KvmOriginalReturns {
+        request: &'a QmpKvmOriginalReturnsRequest,
+    },
     Capabilities,
     SaveVm {
         tag: &'a QmpSnapshotTag,
@@ -311,6 +347,26 @@ pub(super) enum QmpCommand<'a> {
 impl QmpCommand<'_> {
     pub(super) const fn kind(&self) -> QmpCommandKind {
         match self {
+            #[cfg(target_os = "linux")]
+            Self::QueryKvm => QmpCommandKind::QueryKvm,
+            #[cfg(target_os = "linux")]
+            Self::KvmClockComponent { .. } => QmpCommandKind::KvmClockComponent,
+            #[cfg(target_os = "linux")]
+            Self::KvmClockComponentV3 { .. } => QmpCommandKind::KvmClockComponentV3,
+            #[cfg(target_os = "linux")]
+            Self::KvmUserspaceExits => QmpCommandKind::KvmUserspaceExits,
+            #[cfg(target_os = "linux")]
+            Self::KvmInitialResponse { .. } => QmpCommandKind::KvmInitialResponse,
+            #[cfg(target_os = "linux")]
+            Self::KvmResponseBytes { .. } => QmpCommandKind::KvmResponseBytes,
+            #[cfg(target_os = "linux")]
+            Self::KvmMoreResponse { .. } => QmpCommandKind::KvmMoreResponse,
+            #[cfg(target_os = "linux")]
+            Self::KvmOriginalWindow { .. } => QmpCommandKind::KvmOriginalWindow,
+            #[cfg(target_os = "linux")]
+            Self::KvmOriginalReturn { .. } => QmpCommandKind::KvmOriginalReturn,
+            #[cfg(target_os = "linux")]
+            Self::KvmOriginalReturns { .. } => QmpCommandKind::KvmOriginalReturns,
             Self::Capabilities => QmpCommandKind::Capabilities,
             Self::SaveVm { .. } => QmpCommandKind::SaveVm,
             Self::DeleteSnapshot { .. } => QmpCommandKind::DeleteSnapshot,
@@ -397,6 +453,47 @@ impl QmpCommand<'_> {
             }),
             Self::QueryFingerprintProjectionManifest => json!({
                 "execute": QMP_QUERY_FINGERPRINT_PROJECTION_MANIFEST_COMMAND,
+            }),
+            #[cfg(target_os = "linux")]
+            Self::QueryKvm => json!({ "execute": "query-kvm" }),
+            #[cfg(target_os = "linux")]
+            Self::KvmClockComponent { request } => json!({
+                "execute": "x-crucible-kvm-clock",
+                "arguments": request,
+            }),
+            #[cfg(target_os = "linux")]
+            Self::KvmClockComponentV3 { request } => json!({
+                "execute": "x-crucible-kvm-clock-v3",
+                "arguments": request,
+            }),
+            #[cfg(target_os = "linux")]
+            Self::KvmUserspaceExits => json!({"execute":"x-crucible-kvm-userspace-exits"}),
+            #[cfg(target_os = "linux")]
+            Self::KvmInitialResponse { request } => json!({
+                "execute": "x-crucible-kvm-initial-response",
+                "arguments": request,
+            }),
+            #[cfg(target_os = "linux")]
+            Self::KvmResponseBytes { request } => json!({
+                "execute": "x-crucible-kvm-response-bytes",
+                "arguments": request,
+            }),
+            #[cfg(target_os = "linux")]
+            Self::KvmMoreResponse { request } => json!({
+                "execute": "x-crucible-kvm-response-service",
+                "arguments": request,
+            }),
+            #[cfg(target_os = "linux")]
+            Self::KvmOriginalWindow { request } => json!({
+                "execute":"x-crucible-kvm-original-window", "arguments":request
+            }),
+            #[cfg(target_os = "linux")]
+            Self::KvmOriginalReturn { request } => json!({
+                "execute":"x-crucible-kvm-original-return", "arguments":request
+            }),
+            #[cfg(target_os = "linux")]
+            Self::KvmOriginalReturns { request } => json!({
+                "execute":"x-crucible-kvm-original-returns", "arguments":request
             }),
             Self::QueryJobs => json!({
                 "execute": QMP_QUERY_JOBS_COMMAND,

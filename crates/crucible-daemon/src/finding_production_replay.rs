@@ -35,9 +35,9 @@ use crucible_campaign::{FindingKind, FindingSignature, ReproductionArtifactId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::attempt_evidence::AttemptExecutionEvidenceSnapshot;
 use crate::qemu_campaign_lifecycle::{
     GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError,
-    QemuAttemptExecutionEvidenceSnapshot,
 };
 
 mod capture;
@@ -265,7 +265,7 @@ impl FindingProductionReplayExecutionSide {
     pub fn from_snapshot(
         outcome: FindingProductionReplayTerminalOutcome,
         event_log_prefix: &[SchedulerEventLogEntry],
-        snapshot: &QemuAttemptExecutionEvidenceSnapshot,
+        snapshot: &AttemptExecutionEvidenceSnapshot,
         limits: FindingProductionReplayCaptureLimits,
     ) -> Result<FindingProductionReplayCaptureOutcome<Self>, FindingProductionReplayCaptureError>
     {
@@ -281,7 +281,7 @@ impl FindingProductionReplayExecutionSide {
     pub(crate) fn from_snapshot_with_terminal_entry(
         outcome: FindingProductionReplayTerminalOutcome,
         event_log_prefix: &[SchedulerEventLogEntry],
-        snapshot: &QemuAttemptExecutionEvidenceSnapshot,
+        snapshot: &AttemptExecutionEvidenceSnapshot,
         terminal_entry: Option<&SchedulerEventLogEntry>,
         limits: FindingProductionReplayCaptureLimits,
     ) -> Result<FindingProductionReplayCaptureOutcome<Self>, FindingProductionReplayCaptureError>

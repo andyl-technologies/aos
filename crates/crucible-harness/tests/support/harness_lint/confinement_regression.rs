@@ -283,5 +283,115 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
         );
     }
 
+    let provider_dir = Path::new("crucible-node-provider");
+    let provider_negative_controls = [
+        (
+            "src/operational_time.rs",
+            "fn bad() { let n = std::time::Instant::now(); Position::new(n); }",
+            "portable time/state/codec",
+        ),
+        (
+            "src/operational_time.rs",
+            "fn bad() { let n = std::time::Instant::now(); State::new(n); }",
+            "reaching State",
+        ),
+        (
+            "src/operational_time.rs",
+            "#[derive(Serialize)] struct Bad(std::time::Instant);",
+            "portable time/state/codec",
+        ),
+        (
+            "src/operational_time.rs",
+            "impl serde::Serialize for Bad { fn serialize() { std::time::Instant::now(); } }",
+            "portable time/state/codec",
+        ),
+        (
+            "src/operational_time.rs",
+            "pub fn raw() -> std::time::Instant { std::time::Instant::now() }",
+            "public export",
+        ),
+        (
+            "src/client/deadline.rs",
+            "fn bad() { std::time::Instant::now(); }",
+            "outside supervision/diagnostics",
+        ),
+        (
+            "src/bodies.rs",
+            "use crate::operational_time::OperationalDeadline as Alias; fn encode() { Alias::after(budget); }",
+            "outside audited",
+        ),
+        (
+            "src/client/deadline.rs",
+            "use crate::operational_time::PhysicalMeasurement;",
+            "outside audited",
+        ),
+        (
+            "src/lib.rs",
+            "pub use operational_time::OperationalDeadline;",
+            "outside audited",
+        ),
+    ];
+    for (relative, content, expected) in provider_negative_controls {
+        let path = format!("crucible-node-provider/{relative}");
+        let findings = package_source_confinement_findings(
+            "crucible-node-provider",
+            provider_dir,
+            &source_pairs(&[(&path, content)]),
+        );
+        if !finding_contains(&findings, expected) {
+            failures.push(format!(
+                "provider confinement missed {relative}: {expected}"
+            ));
+        }
+    }
+    let private_registration = package_source_confinement_findings(
+        "crucible-node-provider",
+        provider_dir,
+        &source_pairs(&[(
+            "crucible-node-provider/src/lib.rs",
+            "pub(crate) mod operational_time;",
+        )]),
+    );
+    if !finding_contains(&private_registration, "outside audited") {
+        failures.push("provider confinement admitted a widened operational helper module".into());
+    }
+
+    let provider_allowed = source_pairs(&[
+        ("crucible-node-provider/src/lib.rs", "mod operational_time;"),
+        (
+            "crucible-node-provider/src/operational_time.rs",
+            "pub(super) struct OperationalDeadline(std::time::Instant); fn clock() -> std::time::Instant { std::time::Instant::now() }",
+        ),
+        (
+            "crucible-node-provider/src/client/deadline.rs",
+            "use crate::operational_time::OperationalDeadline; pub struct DeadlineStream { deadline: OperationalDeadline }",
+        ),
+        (
+            "crucible-node-provider/src/reference_device/process.rs",
+            "use crate::operational_time::PhysicalMeasurement; fn observe() { PhysicalMeasurement::begin().elapsed(); }",
+        ),
+    ]);
+    let findings = package_source_confinement_findings(
+        "crucible-node-provider",
+        provider_dir,
+        &provider_allowed,
+    );
+    if !findings.is_empty() {
+        failures.push(format!(
+            "provider confinement rejected private operational budgets: {findings:?}"
+        ));
+    }
+    let provider_engine: Value =
+        "[dependencies]\nengine = { package = \"crucible\", path = \"../crucible\" }".parse()?;
+    if boundary_manifest_findings(
+        "crucible-node-provider",
+        &provider_engine,
+        &toml::map::Map::new(),
+    )
+    .is_empty()
+    {
+        failures.push("provider confinement admitted direct engine dependency".into());
+    }
+
     Ok(failures)
 }

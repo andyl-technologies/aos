@@ -1,0 +1,58 @@
+//! Process-local node interfaces and exclusive execution-owner custody.
+//!
+//! [`NodeRuntime`] retains operations across cancellation and lost replies.
+//! [`WorldActivation`] is minted only after complete owner readiness and a
+//! trusted durable publication acknowledgement. Neither type is a wire format.
+//! Existing execution adapters remain separate until their node profiles qualify.
+
+mod activation;
+mod activation_preparation;
+mod condition_debug;
+mod conformance;
+mod fault;
+mod installed_provider;
+mod provider;
+mod provider_preparation;
+mod provider_revision;
+mod quarantine;
+mod retirement_data;
+mod retirement_release;
+mod runtime;
+mod terminal;
+mod traits;
+mod types;
+mod validation;
+
+pub use activation::*;
+pub use activation_preparation::*;
+pub use condition_debug::*;
+pub use conformance::*;
+pub use fault::*;
+pub use installed_provider::*;
+pub use provider::*;
+pub use provider_preparation::ProviderWorldPreparation;
+pub use provider_revision::*;
+pub use quarantine::*;
+pub(crate) use retirement_data::RetirementActivation;
+pub use retirement_release::GracefulRetirementQualification;
+pub use runtime::*;
+pub use terminal::*;
+pub use traits::*;
+pub use types::*;
+
+#[cfg(test)]
+pub(crate) fn test_original_admission(name: &str) -> OperationAdmission {
+    runtime::test_original_admission(name)
+}
+
+#[cfg(test)]
+pub(crate) fn test_nodes(
+    graph: &crate::node_admission::AdmittedGraph,
+) -> Vec<Box<dyn SimulationNode>> {
+    runtime::test_nodes(graph)
+}
+
+#[cfg(test)]
+pub(crate) fn test_custody_slot() -> Box<dyn RuntimeCustodySlot> {
+    runtime::test_custody_slot()
+}

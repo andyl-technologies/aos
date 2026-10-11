@@ -1,0 +1,680 @@
+--- a/arch/arm64/kvm/mmio.c
++++ b/arch/arm64/kvm/mmio.c
+@@ -125,7 +125,12 @@
+ 		struct kvm_run *run = vcpu->run;
+ 
+ 		len = kvm_vcpu_dabt_get_as(vcpu);
+-		data = kvm_mmio_read_buf(run->mmio.data, len);
++		const void *input;
++
++		input = kvm_crucible_response_bytes_input(vcpu, run->mmio.data, len);
++		if (!input)
++			return -EIO;
++		data = kvm_mmio_read_buf(input, len);
+ 
+ 		trace_kvm_mmio(KVM_TRACE_MMIO_READ, len, run->mmio.phys_addr,
+ 			       &data);
+@@ -166,7 +171,7 @@
+ bool kvm_arch_crucible_response_pending(struct kvm_vcpu *vcpu)
+ {
+ 	return !is_protected_kvm_enabled() && !vcpu_has_nv(vcpu) &&
+-		vcpu->run->exit_reason == KVM_EXIT_MMIO && vcpu->mmio_needed &&
++		kvm_crucible_response_bytes_reason(vcpu) == KVM_EXIT_MMIO && vcpu->mmio_needed &&
+ 		!kvm_pending_external_abort(vcpu) &&
+ 		!kvm_test_request(KVM_REQ_VCPU_RESET, vcpu);
+ }
+@@ -178,6 +183,7 @@
+ 	if (!kvm_arch_crucible_response_pending(vcpu))
+ 		return -EOPNOTSUPP;
+ 	/* The normal ARM path completes this same cached response before vcpu_load. */
++	kvm_crucible_response_bytes_consume_begin(vcpu);
+ 	result = kvm_handle_mmio_return(vcpu);
+ 	*more = vcpu->mmio_needed;
+ 	if (result >= 0 && *more)
+@@ -286,6 +292,8 @@
+ 		return 1;
+ 	}
+ 
++	kvm_crucible_response_bytes_produce(vcpu, KVM_EXIT_MMIO, fault_ipa, 0,
++		len, 0, 0, is_write, data_buf);
+ 	if (is_write)
+ 		memcpy(run->mmio.data, data_buf, len);
+ 	vcpu->stat.mmio_exit_user++;
+--- a/arch/x86/kvm/x86.c
++++ b/arch/x86/kvm/x86.c
+@@ -8517,6 +8517,9 @@
+ 	return 1;
+ 
+ userspace_io:
++	kvm_crucible_response_bytes_produce(vcpu, KVM_EXIT_IO, port,
++		KVM_PIO_PAGE_OFFSET * PAGE_SIZE, 0, count, size,
++		in ? KVM_EXIT_IO_IN : KVM_EXIT_IO_OUT, data);
+ 	vcpu->arch.pio.port = port;
+ 	vcpu->arch.pio.in = in;
+ 	vcpu->arch.pio.count = count;
+@@ -8546,13 +8549,19 @@
+ 	return r;
+ }
+ 
+-static void complete_emulator_pio_in(struct kvm_vcpu *vcpu, void *val)
++static int complete_emulator_pio_in(struct kvm_vcpu *vcpu, void *val)
+ {
+ 	int size = vcpu->arch.pio.size;
+ 	unsigned int count = vcpu->arch.pio.count;
+-	memcpy(val, vcpu->arch.pio_data, size * count);
+-	trace_kvm_pio(KVM_PIO_IN, vcpu->arch.pio.port, size, count, vcpu->arch.pio_data);
++	const void *input = kvm_crucible_response_bytes_input(vcpu,
++		vcpu->arch.pio_data, size * count);
++
++	if (!input)
++		return -EIO;
++	memcpy(val, input, size * count);
++	trace_kvm_pio(KVM_PIO_IN, vcpu->arch.pio.port, size, count, input);
+ 	vcpu->arch.pio.count = 0;
++	return 0;
+ }
+ 
+ static int emulator_pio_in_emulated(struct x86_emulate_ctxt *ctxt,
+@@ -8568,8 +8577,7 @@
+ 		 * shenanigans as KVM doesn't support modifying the rep count,
+ 		 * and the emulator ensures @count doesn't overflow the buffer.
+ 		 */
+-		complete_emulator_pio_in(vcpu, val);
+-		return 1;
++		return complete_emulator_pio_in(vcpu, val) ? -EIO : 1;
+ 	}
+ 
+ 	return emulator_pio_in(vcpu, size, port, val, count);
+@@ -9806,7 +9814,8 @@
+ 	/* For size less than 4 we merge, else we zero extend */
+ 	val = (vcpu->arch.pio.size < 4) ? kvm_rax_read_raw(vcpu) : 0;
+ 
+-	complete_emulator_pio_in(vcpu, &val);
++	if (complete_emulator_pio_in(vcpu, &val))
++		return -EIO;
+ 	kvm_rax_write_raw(vcpu, val);
+ 
+ 	return kvm_skip_emulated_instruction(vcpu);
+@@ -11984,8 +11993,13 @@
+ 	/* Complete previous fragment */
+ 	frag = &vcpu->mmio_fragments[vcpu->mmio_cur_fragment];
+ 	len = min(8u, frag->len);
+-	if (!vcpu->mmio_is_write)
+-		memcpy(frag->data, run->mmio.data, len);
++	if (!vcpu->mmio_is_write) {
++		const void *input = kvm_crucible_response_bytes_input(vcpu, run->mmio.data, len);
++
++		if (!input)
++			return -EIO;
++		memcpy(frag->data, input, len);
++	}
+ 
+ 	if (frag->len <= 8) {
+ 		/* Switch to the next fragment. */
+@@ -12223,9 +12237,9 @@
+ 
+ 	if (vcpu->arch.guest_state_protected || is_guest_mode(vcpu))
+ 		return false;
+-	if (vcpu->run->exit_reason == KVM_EXIT_MMIO)
++	if (kvm_crucible_response_bytes_reason(vcpu) == KVM_EXIT_MMIO)
+ 		return completion == complete_emulated_mmio && vcpu->mmio_needed;
+-	if (vcpu->run->exit_reason == KVM_EXIT_IO)
++	if (kvm_crucible_response_bytes_reason(vcpu) == KVM_EXIT_IO)
+ 		return completion == complete_emulated_pio ||
+ 			completion == complete_fast_pio_out_port_0x7e ||
+ 			completion == complete_fast_pio_out || completion == complete_fast_pio_in;
+@@ -12244,6 +12258,7 @@
+ 	kvm_load_guest_fpu(vcpu);
+ 	kvm_vcpu_srcu_read_lock(vcpu);
+ 	vcpu->arch.complete_userspace_io = NULL;
++	kvm_crucible_response_bytes_consume_begin(vcpu);
+ 	result = completion(vcpu);
+ 	*more = kvm_arch_crucible_response_pending(vcpu);
+ 	if (result == 0 && !*more)
+@@ -14626,7 +14641,8 @@
+ 	int size = vcpu->arch.pio.size;
+ 	int port = vcpu->arch.pio.port;
+ 
+-	complete_emulator_pio_in(vcpu, vcpu->arch.sev_pio_data);
++	if (complete_emulator_pio_in(vcpu, vcpu->arch.sev_pio_data))
++		return -EIO;
+ 	advance_sev_es_emulated_pio(vcpu, count, size);
+ 	if (vcpu->arch.sev_pio_count)
+ 		return kvm_sev_es_ins(vcpu, size, port);
+--- a/arch/x86/kvm/x86.h
++++ b/arch/x86/kvm/x86.h
+@@ -636,6 +636,8 @@
+ 
+ 	KVM_BUG_ON(len > 8, vcpu->kvm);
+ 
++	kvm_crucible_response_bytes_produce(vcpu, KVM_EXIT_MMIO, gpa, 0,
++		len, 0, 0, is_write, data);
+ 	run->mmio.len = len;
+ 	run->mmio.is_write = is_write;
+ 	run->exit_reason = KVM_EXIT_MMIO;
+--- a/include/linux/kvm_host.h
++++ b/include/linux/kvm_host.h
+@@ -327,6 +327,8 @@
+ 
+ struct kvm_vcpu {
+ 	struct kvm_crucible_response_state crucible_response;
++	/* Allocated before architecture creation only for immutable bytes opt-in. */
++	struct kvm_crucible_response_bytes_state *crucible_response_bytes;
+ 	struct kvm_crucible_run_return_state crucible_run_return;
+ 	struct {
+ 		u64 address, data_offset;
+@@ -788,6 +790,7 @@
+ 	bool crucible_controlled;
+ 	bool crucible_response_enabled;
+ 	bool crucible_run_return_enabled;
++	bool crucible_response_bytes_enabled;
+ 	u32 crucible_uncollected_returns;
+ 	bool crucible_active;
+ #ifdef KVM_HAVE_MMU_RWLOCK
+@@ -1694,6 +1697,18 @@
+ /* An admitted direct interrupt has retained ownership until its complete
+  * kernel operation returns. Freeze seals new admission before draining owners.
+  */
++int kvm_crucible_response_bytes_configure(struct kvm *kvm, const struct kvm_enable_cap *cap);
++int kvm_crucible_response_bytes_vcpu_init(struct kvm_vcpu *vcpu);
++void kvm_crucible_response_bytes_vcpu_destroy(struct kvm_vcpu *vcpu);
++int kvm_crucible_response_bytes_ioctl(struct kvm_vcpu *vcpu, void __user *argument);
++void kvm_crucible_response_bytes_run_reset(struct kvm_vcpu *vcpu);
++void kvm_crucible_response_bytes_produce(struct kvm_vcpu *vcpu, u32 reason,
++	u64 address, u64 data_offset, u32 length, u32 count, u32 size, u32 direction,
++	const void *data);
++void kvm_crucible_response_bytes_consume_begin(struct kvm_vcpu *vcpu);
++u32 kvm_crucible_response_bytes_reason(struct kvm_vcpu *vcpu);
++const void *kvm_crucible_response_bytes_input(struct kvm_vcpu *vcpu,
++	const void *legacy, unsigned int length);
+ int kvm_crucible_run_return_configure(struct kvm *kvm, const struct kvm_enable_cap *cap);
+ int kvm_crucible_run_return_admit(struct kvm_vcpu *vcpu);
+ void kvm_crucible_run_return_finish(struct kvm_vcpu *vcpu, int result);
+--- a/include/uapi/linux/kvm.h
++++ b/include/uapi/linux/kvm.h
+@@ -741,6 +741,42 @@
+ /* An original RUN return is retained before userspace delivery, not inferred
+  * from mapped exit_reason or a later observation of the clock.
+  */
++/* Bounded kernel-owned response bytes; separate opt-in, not a full-node ABI. */
++#define KVM_CAP_CRUCIBLE_RESPONSE_BYTES_V1 0xa02a
++#define KVM_CRUCIBLE_RESPONSE_BYTES_QUERY 1
++#define KVM_CRUCIBLE_RESPONSE_BYTES_STEP 2
++#define KVM_CRUCIBLE_RESPONSE_BYTES_MAX 4096
++
++struct kvm_crucible_response_bytes {
++	__u32 version;
++	__u32 operation;
++	__u64 operation_id;
++	__u64 expected_invocation;
++	__u64 expected_sequence;
++	__u64 expected_revision;
++	__u64 expected_generation;
++	__u64 invocation;
++	__u64 pending_sequence;
++	__u64 consumed_sequence;
++	__u64 revision;
++	__u64 address;
++	__u64 data_offset;
++	__s32 callback_result;
++	__u32 phase;
++	__u32 native_vcpu_id;
++	__u32 reason;
++	__u32 length;
++	__u32 count;
++	__u32 size;
++	__u32 direction;
++	__u32 data_length;
++	__u32 flags;
++	__u64 reserved[4];
++	__u8 data[KVM_CRUCIBLE_RESPONSE_BYTES_MAX];
++};
++
++#define KVM_CRUCIBLE_RESPONSE_BYTES _IOWR(KVMIO, 0xd8, struct kvm_crucible_response_bytes)
++
+ #define KVM_CAP_CRUCIBLE_RUN_RETURN_V1 0xa029
+ #define KVM_CRUCIBLE_RUN_RETURN_QUERY 1
+ #define KVM_CRUCIBLE_RUN_RETURN_ACK 2
+--- a/virt/kvm/Makefile.kvm
++++ b/virt/kvm/Makefile.kvm
+@@ -5,7 +5,7 @@
+ 
+ KVM ?= ../../../virt/kvm
+ 
+-kvm-y := $(KVM)/kvm_main.o $(KVM)/eventfd.o $(KVM)/binary_stats.o $(KVM)/crucible-completion.o
++kvm-y := $(KVM)/kvm_main.o $(KVM)/eventfd.o $(KVM)/binary_stats.o $(KVM)/crucible-completion.o $(KVM)/crucible-response-bytes.o
+ kvm-$(CONFIG_KVM_VFIO) += $(KVM)/vfio.o
+ kvm-$(CONFIG_KVM_MMIO) += $(KVM)/coalesced_mmio.o
+ kvm-$(CONFIG_KVM_ASYNC_PF) += $(KVM)/async_pf.o
+--- a/virt/kvm/crucible-completion.c
++++ b/virt/kvm/crucible-completion.c
+@@ -34,6 +34,7 @@
+ 	/* The next native exit needs its own original-sequence credit. */
+ 	if (state->sequence == U64_MAX || state->revision == U64_MAX)
+ 		return -EOVERFLOW;
++	kvm_crucible_response_bytes_run_reset(vcpu);
+ 	return 0;
+ }
+ 
+@@ -41,8 +42,10 @@
+ {
+ 	struct kvm_run *run = vcpu->run;
+ 	u64 address = 0, data_offset = 0;
+-	u32 reason = run->exit_reason, length = 0, count = 0, size = 0, direction = 0;
+-
++	u32 reason = kvm_crucible_response_bytes_reason(vcpu), length = 0, count = 0, size = 0, direction = 0;
++
++	if (READ_ONCE(vcpu->kvm->crucible_response_bytes_enabled))
++		return reason == KVM_EXIT_MMIO || reason == KVM_EXIT_IO;
+ 	if (reason == KVM_EXIT_MMIO) {
+ 		address = run->mmio.phys_addr;
+ 		length = run->mmio.len;
+@@ -96,7 +99,8 @@
+ 		}
+ 		return;
+ 	}
+-	if (vcpu->run->exit_reason != KVM_EXIT_IO && vcpu->run->exit_reason != KVM_EXIT_MMIO) {
++	if (kvm_crucible_response_bytes_reason(vcpu) != KVM_EXIT_IO &&
++	    kvm_crucible_response_bytes_reason(vcpu) != KVM_EXIT_MMIO) {
+ 		if (kvm_arch_crucible_response_pending(vcpu) ||
+ 		    vcpu->run->exit_reason == KVM_EXIT_HYPERCALL ||
+ 		    vcpu->run->exit_reason == KVM_EXIT_OSI ||
+@@ -136,6 +140,9 @@
+ 		return -EOPNOTSUPP;
+ 	if (copy_from_user(&request, argument, sizeof(request)))
+ 		return -EFAULT;
++	if (READ_ONCE(kvm->crucible_response_bytes_enabled) &&
++	    request.operation == KVM_CRUCIBLE_COMPLETION_STEP)
++		return -EOPNOTSUPP;
+ 	result = kvm_crucible_response_admit(state, &request);
+ 	if (result < 0)
+ 		return result;
+--- /dev/null
++++ b/virt/kvm/crucible-response-bytes.c
+@@ -0,0 +1,319 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Immutable original response bytes, never another guest entry. This component
++ * owns one bounded current fragment and one exact last-operation/result pair.
++ * It does not certify device effects, DMA, input ordering or full restoration.
++ */
++#include <linux/kvm_host.h>
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++
++struct kvm_crucible_response_fragment {
++	u64 invocation;
++	u64 address;
++	u64 data_offset;
++	u32 reason;
++	u32 length;
++	u32 count;
++	u32 size;
++	u32 direction;
++	u32 total;
++	bool valid;
++	u8 output[KVM_CRUCIBLE_RESPONSE_BYTES_MAX];
++};
++
++struct kvm_crucible_response_bytes_state {
++	struct kvm_crucible_response_fragment fragment;
++	struct kvm_crucible_response_bytes scratch;
++	struct kvm_crucible_response_bytes last_request;
++	struct kvm_crucible_response_bytes last_result;
++	bool active_input;
++	bool result_known;
++};
++
++int kvm_crucible_response_bytes_configure(struct kvm *kvm,
++	const struct kvm_enable_cap *cap)
++{
++	int result = 0;
++
++	if ((!IS_ENABLED(CONFIG_X86) && !IS_ENABLED(CONFIG_ARM64)) || cap->flags ||
++	    cap->args[0] || cap->args[1] || cap->args[2] || cap->args[3])
++		return -EINVAL;
++	mutex_lock(&kvm->lock);
++	mutex_lock(&kvm->crucible_configuration_lock);
++	if (!kvm->crucible_controlled || !kvm->crucible_response_enabled ||
++	    !kvm->crucible_run_return_enabled || kvm->crucible_active ||
++	    kvm->created_vcpus || kvm->crucible_effect_owners ||
++	    kvm->crucible_response_bytes_enabled)
++		result = -EBUSY;
++	else
++		WRITE_ONCE(kvm->crucible_response_bytes_enabled, true);
++	mutex_unlock(&kvm->crucible_configuration_lock);
++	mutex_unlock(&kvm->lock);
++	return result;
++}
++
++int kvm_crucible_response_bytes_vcpu_init(struct kvm_vcpu *vcpu)
++{
++	if (!READ_ONCE(vcpu->kvm->crucible_response_bytes_enabled))
++		return 0;
++	vcpu->crucible_response_bytes = kzalloc(sizeof(*vcpu->crucible_response_bytes),
++		GFP_KERNEL_ACCOUNT);
++	return vcpu->crucible_response_bytes ? 0 : -ENOMEM;
++}
++
++void kvm_crucible_response_bytes_vcpu_destroy(struct kvm_vcpu *vcpu)
++{
++	kfree(vcpu->crucible_response_bytes);
++}
++
++void kvm_crucible_response_bytes_run_reset(struct kvm_vcpu *vcpu)
++{
++	if (vcpu->crucible_response_bytes)
++		vcpu->crucible_response_bytes->fragment.valid = false;
++}
++
++/* These arguments come from the original native emulator before public mapping
++ * writes. A More producer may replace only the current fragment, never the
++ * retained original STEP input/result pair.
++ */
++void kvm_crucible_response_bytes_produce(struct kvm_vcpu *vcpu, u32 reason,
++	u64 address, u64 data_offset, u32 length, u32 count, u32 size, u32 direction,
++	const void *data)
++{
++	struct kvm_crucible_response_bytes_state *bytes = vcpu->crucible_response_bytes;
++	struct kvm_crucible_response_fragment *fragment;
++	u32 total;
++
++	if (!bytes)
++		return;
++	lockdep_assert_held(&vcpu->mutex);
++	fragment = &bytes->fragment;
++	if (reason == KVM_EXIT_MMIO) {
++		if (!length || length > 8 || count || size || data_offset || direction > 1)
++			goto unsupported;
++		total = length;
++	} else if (reason == KVM_EXIT_IO) {
++		if (length || !count || (size != 1 && size != 2 && size != 4) ||
++		    count > KVM_CRUCIBLE_RESPONSE_BYTES_MAX / size ||
++		    direction > KVM_EXIT_IO_OUT)
++			goto unsupported;
++		total = count * size;
++	} else {
++		goto unsupported;
++	}
++	if (!vcpu->crucible_run_return.original.invocation ||
++	    (fragment->valid && !bytes->active_input))
++		goto unsupported;
++
++	fragment->invocation = vcpu->crucible_run_return.original.invocation;
++	fragment->address = address;
++	fragment->data_offset = data_offset;
++	fragment->reason = reason;
++	fragment->length = length;
++	fragment->count = count;
++	fragment->size = size;
++	fragment->direction = direction;
++	fragment->total = total;
++	memset(fragment->output, 0, sizeof(fragment->output));
++	if (direction)
++		memcpy(fragment->output, data, total);
++	fragment->valid = true;
++	return;
++
++unsupported:
++	fragment->valid = false;
++	vcpu->crucible_response.phase = KVM_CRUCIBLE_COMPLETION_UNSUPPORTED;
++	vcpu->crucible_response.flags |= KVM_CRUCIBLE_COMPLETION_OPAQUE;
++}
++
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_response_bytes_produce);
++
++void kvm_crucible_response_bytes_consume_begin(struct kvm_vcpu *vcpu)
++{
++	if (vcpu->crucible_response_bytes && vcpu->crucible_response_bytes->active_input)
++		vcpu->crucible_response_bytes->fragment.valid = false;
++}
++
++u32 kvm_crucible_response_bytes_reason(struct kvm_vcpu *vcpu)
++{
++	struct kvm_crucible_response_bytes_state *bytes = vcpu->crucible_response_bytes;
++
++	if (!bytes)
++		return vcpu->run->exit_reason;
++	return bytes->fragment.valid ? bytes->fragment.reason : KVM_EXIT_UNKNOWN;
++}
++
++/* The actual callback reads a private input frozen before its effects. A native
++ * geometry discrepancy cannot fall back to externally mutable mapped bytes.
++ */
++const void *kvm_crucible_response_bytes_input(struct kvm_vcpu *vcpu,
++	const void *legacy, unsigned int length)
++{
++	struct kvm_crucible_response_bytes_state *bytes = vcpu->crucible_response_bytes;
++
++	if (!bytes || !bytes->active_input)
++		return legacy;
++	if (length != bytes->last_request.data_length) {
++		vcpu->crucible_response.phase = KVM_CRUCIBLE_COMPLETION_UNKNOWN;
++		vcpu->crucible_response.flags |= KVM_CRUCIBLE_COMPLETION_UNCERTAIN;
++		return NULL;
++	}
++	return bytes->last_request.data;
++}
++
++static bool response_bytes_zero_tail(const struct kvm_crucible_response_bytes *request)
++{
++	unsigned int index;
++
++	for (index = 0; index < ARRAY_SIZE(request->reserved); index++)
++		if (request->reserved[index])
++			return false;
++	if (request->data_length > KVM_CRUCIBLE_RESPONSE_BYTES_MAX)
++		return false;
++	for (index = request->data_length; index < KVM_CRUCIBLE_RESPONSE_BYTES_MAX; index++)
++		if (request->data[index])
++			return false;
++	return true;
++}
++
++static bool response_bytes_geometry(const struct kvm_crucible_response_fragment *fragment,
++	const struct kvm_crucible_response_bytes *request)
++{
++	return fragment->valid && request->address == fragment->address &&
++		request->data_offset == fragment->data_offset && request->reason == fragment->reason &&
++		request->length == fragment->length && request->count == fragment->count &&
++		request->size == fragment->size && request->direction == fragment->direction &&
++		request->data_length == (fragment->direction ? 0 : fragment->total);
++}
++
++static void response_bytes_fill(struct kvm_vcpu *vcpu,
++	struct kvm_crucible_response_bytes *result)
++{
++	struct kvm_crucible_response_fragment *fragment = &vcpu->crucible_response_bytes->fragment;
++	struct kvm_crucible_response_state *state = &vcpu->crucible_response;
++
++	result->invocation = vcpu->crucible_run_return.original.invocation;
++	result->pending_sequence = state->sequence;
++	result->consumed_sequence = state->consumed_sequence;
++	result->revision = state->revision;
++	result->phase = state->phase;
++	result->native_vcpu_id = vcpu->vcpu_id;
++	result->flags = state->flags;
++	result->callback_result = state->last_result.callback_result;
++	result->address = 0;
++	result->data_offset = 0;
++	result->reason = 0;
++	result->length = 0;
++	result->count = 0;
++	result->size = 0;
++	result->direction = 0;
++	result->data_length = 0;
++	memset(result->data, 0, sizeof(result->data));
++	if (!fragment->valid || !kvm_crucible_response_pending(state))
++		return;
++	result->address = fragment->address;
++	result->data_offset = fragment->data_offset;
++	result->reason = fragment->reason;
++	result->length = fragment->length;
++	result->count = fragment->count;
++	result->size = fragment->size;
++	result->direction = fragment->direction;
++	if (fragment->direction) {
++		result->data_length = fragment->total;
++		memcpy(result->data, fragment->output, fragment->total);
++	}
++}
++
++int kvm_crucible_response_bytes_ioctl(struct kvm_vcpu *vcpu, void __user *argument)
++{
++	struct kvm_crucible_response_bytes_state *bytes = vcpu->crucible_response_bytes;
++	struct kvm_crucible_response_state *state = &vcpu->crucible_response;
++	struct kvm *kvm = vcpu->kvm;
++	struct kvm_crucible_response_bytes *request;
++	struct kvm_crucible_completion completion;
++	struct kvm_crucible_run_return clock = {};
++	unsigned long flags;
++	bool more = false;
++	int result, callback_result;
++
++	BUILD_BUG_ON(sizeof(struct kvm_crucible_response_bytes) != 4264);
++	lockdep_assert_held(&vcpu->mutex);
++	if (!bytes)
++		return -EOPNOTSUPP;
++	request = &bytes->scratch;
++	if (copy_from_user(request, argument, sizeof(*request)))
++		return -EFAULT;
++	if (request->version != 1 || request->invocation || request->pending_sequence ||
++	    request->consumed_sequence || request->revision || request->callback_result ||
++	    request->phase || request->native_vcpu_id || request->flags ||
++	    !response_bytes_zero_tail(request))
++		return -EINVAL;
++	if (request->operation == KVM_CRUCIBLE_RESPONSE_BYTES_QUERY) {
++		if (request->operation_id || request->expected_sequence || request->expected_revision ||
++		    request->expected_generation || request->address || request->data_offset ||
++		    request->reason || request->length || request->count || request->size ||
++		    request->direction || request->data_length)
++			return -EINVAL;
++		if (request->expected_invocation != vcpu->crucible_run_return.original.invocation)
++			return -ESTALE;
++		response_bytes_fill(vcpu, request);
++		goto deliver;
++	}
++	if (request->operation != KVM_CRUCIBLE_RESPONSE_BYTES_STEP || !request->operation_id)
++		return -EINVAL;
++	if (bytes->result_known && request->operation_id == bytes->last_request.operation_id) {
++		if (memcmp(request, &bytes->last_request, sizeof(*request)))
++			return -ESTALE;
++		*request = bytes->last_result;
++		goto deliver;
++	}
++	if (request->expected_invocation != vcpu->crucible_run_return.original.invocation ||
++	    request->expected_invocation != bytes->fragment.invocation ||
++	    request->expected_revision != state->revision ||
++	    request->expected_generation != vcpu->crucible_run_return.original.generation_end ||
++	    !response_bytes_geometry(&bytes->fragment, request))
++		return -ESTALE;
++	completion = (struct kvm_crucible_completion) {
++		.version = 1, .operation = KVM_CRUCIBLE_COMPLETION_STEP,
++		.operation_id = request->operation_id, .expected_sequence = request->expected_sequence,
++	};
++	result = kvm_crucible_response_admit(state, &completion);
++	if (result < 0)
++		return result;
++	/* Only this new ABI can create an input-owning result in bytes mode. */
++	if (result || !kvm_arch_crucible_response_pending(vcpu))
++		return -ESTALE;
++
++	mutex_lock(&kvm->crucible_configuration_lock);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	kvm_arch_crucible_run_clock_snapshot(vcpu, &clock, true);
++	if (!kvm->crucible_controlled || kvm->crucible_active || kvm->crucible_effect_owners ||
++	    !kvm_arch_crucible_response_stopped(kvm) ||
++	    clock.generation_end != request->expected_generation) {
++		raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++		mutex_unlock(&kvm->crucible_configuration_lock);
++		return -EBUSY;
++	}
++	kvm->crucible_effect_owners++;
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++
++	/* Frozen exact bytes survive shared-map writes, failed delivery and More.
++	 * No memory allocation or additional guest entry occurs in this interval.
++	 */
++	bytes->last_request = *request;
++	bytes->result_known = false;
++	bytes->active_input = true;
++	callback_result = kvm_arch_crucible_response_complete(vcpu, &more);
++	bytes->active_input = false;
++	if (callback_result >= 0 && (state->flags || (more && !bytes->fragment.valid)))
++		callback_result = -EIO;
++	kvm_crucible_response_finish(state, &completion, callback_result, more, vcpu->vcpu_id);
++	response_bytes_fill(vcpu, request);
++	bytes->last_result = *request;
++	bytes->result_known = true;
++	kvm_crucible_effect_leave(kvm);
++	mutex_unlock(&kvm->crucible_configuration_lock);
++
++deliver:
++	return copy_to_user(argument, request, sizeof(*request)) ? -EFAULT : 0;
++}
+--- a/virt/kvm/kvm_main.c
++++ b/virt/kvm/kvm_main.c
+@@ -466,6 +466,7 @@
+ static void kvm_vcpu_destroy(struct kvm_vcpu *vcpu)
+ {
+ 	kvm_arch_vcpu_destroy(vcpu);
++	kvm_crucible_response_bytes_vcpu_destroy(vcpu);
+ 	kvm_dirty_ring_free(&vcpu->dirty_ring);
+ 
+ 	/*
+@@ -4201,9 +4202,13 @@
+ 
+ 	kvm_vcpu_init(vcpu, kvm, id);
+ 
++	r = kvm_crucible_response_bytes_vcpu_init(vcpu);
++	if (r)
++		goto vcpu_free_run_page;
++
+ 	r = kvm_arch_vcpu_create(vcpu);
+ 	if (r)
+-		goto vcpu_free_run_page;
++		goto vcpu_free_response_bytes;
+ 
+ 	if (kvm->dirty_ring_size) {
+ 		r = kvm_dirty_ring_alloc(kvm, &vcpu->dirty_ring,
+@@ -4261,6 +4266,8 @@
+ 	kvm_dirty_ring_free(&vcpu->dirty_ring);
+ arch_vcpu_destroy:
+ 	kvm_arch_vcpu_destroy(vcpu);
++vcpu_free_response_bytes:
++	kvm_crucible_response_bytes_vcpu_destroy(vcpu);
+ vcpu_free_run_page:
+ 	free_page((unsigned long)vcpu->run);
+ vcpu_free:
+@@ -4446,11 +4453,14 @@
+ 	if (READ_ONCE(vcpu->kvm->crucible_response_enabled) &&
+ 	    (kvm_crucible_response_pending(&vcpu->crucible_response) ||
+ 	     vcpu->crucible_response.flags) && ioctl != KVM_CRUCIBLE_COMPLETION &&
+-	    ioctl != KVM_CRUCIBLE_RUN_RETURN) {
++	    ioctl != KVM_CRUCIBLE_RUN_RETURN && ioctl != KVM_CRUCIBLE_RESPONSE_BYTES) {
+ 		r = -EBUSY;
+ 		goto out;
+ 	}
+ 	switch (ioctl) {
++	case KVM_CRUCIBLE_RESPONSE_BYTES:
++		r = kvm_crucible_response_bytes_ioctl(vcpu, argp);
++		break;
+ 	case KVM_CRUCIBLE_RUN_RETURN:
+ 		r = kvm_crucible_run_return_ioctl(vcpu, argp);
+ 		break;
+@@ -4893,6 +4903,7 @@
+ static int kvm_vm_ioctl_check_extension_generic(struct kvm *kvm, long arg)
+ {
+ 	switch (arg) {
++	case KVM_CAP_CRUCIBLE_RESPONSE_BYTES_V1:
+ 	case KVM_CAP_CRUCIBLE_RUN_RETURN_V1:
+ 	case KVM_CAP_CRUCIBLE_COMPLETION_V1:
+ 		return IS_ENABLED(CONFIG_X86) || IS_ENABLED(CONFIG_ARM64);
+@@ -5058,6 +5069,8 @@
+ 					   struct kvm_enable_cap *cap)
+ {
+ 	switch (cap->cap) {
++	case KVM_CAP_CRUCIBLE_RESPONSE_BYTES_V1:
++		return kvm_crucible_response_bytes_configure(kvm, cap);
+ 	case KVM_CAP_CRUCIBLE_RUN_RETURN_V1:
+ 		return kvm_crucible_run_return_configure(kvm, cap);
+ 	case KVM_CAP_CRUCIBLE_COMPLETION_V1:

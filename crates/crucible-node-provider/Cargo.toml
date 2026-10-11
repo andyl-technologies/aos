@@ -1,0 +1,75 @@
+[package]
+name = "crucible-node-provider"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+autobins = false
+
+[[bin]]
+name = "crucible-node-conformance"
+path = "src/bin/crucible-node-conformance.rs"
+
+[[bin]]
+name = "crucible-reference-device"
+path = "src/bin/crucible-reference-device.rs"
+
+[[bin]]
+name = "crucible-reference-manifest"
+path = "src/bin/crucible-reference-manifest.rs"
+
+[[bin]]
+name = "crucible-reference-provider"
+path = "src/bin/crucible-reference-provider.rs"
+
+[[bin]]
+name = "crucible-reference-progress-device"
+path = "src/bin/crucible-reference-progress-device.rs"
+
+[[bin]]
+name = "crucible-reference-progress-manifest"
+path = "src/bin/crucible-reference-progress-manifest.rs"
+
+[[bin]]
+name = "crucible-reference-progress-provider"
+path = "src/bin/crucible-reference-progress-provider.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+blake3 = { workspace = true }
+crucible-node-contract = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+rustix = { workspace = true, features = ["event", "net", "process"] }
+
+[[bin]]
+name = "crucible-reference-lineage-device"
+path = "src/bin/crucible-reference-lineage-device.rs"
+
+[[bin]]
+name = "crucible-reference-lineage-provider"
+path = "src/bin/crucible-reference-lineage-provider.rs"
+
+[[bin]]
+name = "crucible-reference-lineage-manifest"
+path = "src/bin/crucible-reference-lineage-manifest.rs"
+
+[[bin]]
+name = "crucible-reference-lineage-reader-provider"
+path = "src/bin/crucible-reference-lineage-reader-provider.rs"
+
+[[bin]]
+name = "crucible-reference-lineage-reader-manifest"
+path = "src/bin/crucible-reference-lineage-reader-manifest.rs"
+
+[[bin]]
+name = "crucible-reference-lineage-reader-typed-provider"
+path = "src/bin/crucible-reference-lineage-reader-typed-provider.rs"
+
+[[bin]]
+name = "crucible-reference-lineage-reader-typed-manifest"
+path = "src/bin/crucible-reference-lineage-reader-typed-manifest.rs"

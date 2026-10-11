@@ -54,6 +54,7 @@ use super::{
     worker_quiescence::LiveWorkerQuiescence,
 };
 
+pub(super) mod callback_roster;
 mod checkpoint_stop_witness;
 mod control_callback_stage;
 mod control_callback_witness;
@@ -65,11 +66,13 @@ mod logical_restore;
 mod network_inbound;
 mod network_output_stop;
 mod preemption;
+mod prefix_entry;
 pub use devices::LiveDeviceCallbackError;
 use devices::LiveDeviceCallbackState;
 pub use error::LiveVcpuTimeCallbackError;
 use fingerprint_worker::LiveFingerprintDigestWorker;
 use logical_restore::raw_icount_publication_is_superseded;
+pub(crate) use prefix_entry::reject_prefix_modeled_entry;
 #[cfg(test)]
 pub(crate) mod test_support;
 
@@ -478,6 +481,12 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
             vcpu_init_callback,
             callback_state.cast(),
         );
+        state
+            .as_ref()
+            .get_ref()
+            .callback_roster
+            .retain_live(vcpu_init_callback, callback_state.cast())
+            .map_err(live_callback_registration_error)?;
         Ok(mask)
     }
 }
@@ -1289,9 +1298,10 @@ impl LiveVcpuTimeCallbackState {
 
     /// Delivers the first shared shutdown proof without waiting on capacity.
     ///
-    /// The standard channel is unbounded, so `send` never waits for a receiver
-    /// to drain capacity. A disconnected worker is returned as a fatal callback
-    /// error rather than allowing QEMU to continue after shutdown was observed.
+    /// Legacy installation retains its unbounded sender. The finite selector
+    /// reserves trigger credit before publication and refuses contention or
+    /// exhaustion through supervised fail-stop, retaining the original proof.
+    /// A disconnected legacy worker is a fatal callback error.
     fn signal_shared_shutdown(&self) -> Result<(), LiveVcpuTimeCallbackError> {
         let proof = PluginShutdownRequested::from_region_header(self.header.get())
             .map_err(|_error| LiveVcpuTimeCallbackError::SharedShutdownProofUnavailable)?;
@@ -2202,6 +2212,11 @@ impl LiveVcpuTimeCallbackState {
     }
 
     fn on_block_wait(&self, _request_id: u32) -> Result<(), LiveVcpuTimeCallbackError> {
+        if crate::native_node_control::registered_owner().is_some() {
+            // Strict native device settlement remains unavailable. Preserve
+            // this parked waiter without granting a legacy queued time jump.
+            return Ok(());
+        }
         if self.idle_advance_is_pending() {
             return Ok(());
         }
@@ -2512,6 +2527,12 @@ impl LiveVcpuTimeCallbackState {
     }
 
     fn pump_fault_commands(&self, raw_icount: u64) -> Result<bool, LiveVcpuTimeCallbackError> {
+        if crate::native_node_control::registered_owner().is_some() {
+            // Legacy FIFO occupancy is not an authenticated staged input cut.
+            // Preserve its original bytes without applying faults during setup
+            // or native execution until typed native custody is implemented.
+            return Ok(false);
+        }
         if self
             .fault_command_pump_active
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -2667,6 +2688,13 @@ impl LiveVcpuTimeCallbackState {
     /// Processes setup-time capability admission before the ready ACK.
     pub(crate) fn admit_fault_capabilities(&self) -> Result<(), LiveVcpuTimeCallbackError> {
         self.initialize_fault_commands()?;
+        if crate::native_node_control::registered_owner()
+            .is_some_and(|owner| owner.prefix.is_some())
+        {
+            // The prefix profile retains the original capability manifest, but
+            // never admits old shared fault commands through setup or execution.
+            return Ok(());
+        }
         self.pump_fault_commands((self.icount_raw)()).map(|_| ())
     }
 
@@ -2708,6 +2736,9 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_vcpu_init_cb(
     vcpu_index: c_uint,
     userdata: *mut c_void,
 ) {
+    if prefix_entry::initialize_if_selected(vcpu_index, userdata) {
+        return;
+    }
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return;
@@ -2730,6 +2761,18 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_vcpu_idle_cb(
     raw_icount: u64,
     userdata: *mut c_void,
 ) {
+    if let Some(owner) = crate::native_node_control::registered_owner() {
+        if let Some(effect) = &owner.effect
+            && effect.observe_active_if_staged().is_err()
+        {
+            std::process::abort();
+        }
+        prefix_entry::observe_notification(owner);
+        // The independent native controller owns time and original command
+        // custody. Legacy scalar publication or idle/control work cannot grant
+        // a transition or reconstruct administrative park service credit.
+        return;
+    }
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return;
@@ -2744,6 +2787,18 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_vcpu_resume_cb(
     raw_icount: u64,
     userdata: *mut c_void,
 ) {
+    if let Some(owner) = crate::native_node_control::registered_owner() {
+        if let Some(effect) = &owner.effect
+            && effect.observe_active_if_staged().is_err()
+        {
+            std::process::abort();
+        }
+        prefix_entry::observe_notification(owner);
+        // The independent native controller owns time and original command
+        // custody. Legacy scalar publication or idle/control work cannot grant
+        // a transition or reconstruct administrative park service credit.
+        return;
+    }
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return;
@@ -2757,6 +2812,12 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_publish_icount_cb(
     current_icount: u64,
     userdata: *mut c_void,
 ) {
+    if crate::native_node_control::registered_owner().is_some() {
+        // The independent native controller owns time and original command
+        // custody. Legacy scalar publication or idle/control work cannot grant
+        // a transition or reconstruct administrative park service credit.
+        return;
+    }
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return;
@@ -2774,6 +2835,12 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_control_boundary_cb(
     raw_icount: u64,
     userdata: *mut c_void,
 ) {
+    if crate::native_node_control::registered_owner().is_some() {
+        // The independent native controller owns time and original command
+        // custody. Legacy scalar publication or idle/control work cannot grant
+        // a transition or reconstruct administrative park service credit.
+        return;
+    }
     let state = callback_userdata_or_abort(userdata);
     state.control_callback_with_witness(raw_icount);
 }
@@ -2781,6 +2848,7 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_control_boundary_cb(
 pub(crate) extern "C" fn crucible_qemu_plugin_live_max_advance_icount_cb(
     userdata: *mut c_void,
 ) -> u64 {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return state.last_icount.load(Ordering::SeqCst);
@@ -2794,6 +2862,7 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_max_advance_icount_cb(
 pub(crate) extern "C" fn crucible_qemu_plugin_live_logical_ceiling_cb(
     userdata: *mut c_void,
 ) -> u64 {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return 0;
@@ -2809,6 +2878,7 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_time_advance_completion_cb(
     target_tick: i64,
     userdata: *mut c_void,
 ) {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return;
@@ -2824,6 +2894,7 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_block_wait_cb(
     request_id: u32,
     userdata: *mut c_void,
 ) {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return;
@@ -2839,6 +2910,7 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_network_tx_cb(
     raw_emit_icount: u64,
     userdata: *mut c_void,
 ) -> std::os::raw::c_int {
+    crate::runtime::live_callbacks::reject_prefix_modeled_entry();
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return -1;

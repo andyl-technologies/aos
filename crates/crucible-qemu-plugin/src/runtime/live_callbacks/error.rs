@@ -279,6 +279,9 @@ pub enum LiveVcpuTimeCallbackError {
     /// Another live callback state pointer is already globally visible.
     #[error("live production callback state is already published")]
     CallbackStateAlreadyPublished,
+    /// A repeated callback observation changed its original function or userdata.
+    #[error("original live callback function or userdata changed")]
+    CallbackRosterChanged,
     /// The callback observed a shutdown action without a matching acquire proof.
     #[error("shared shutdown action could not be proven from the region header")]
     SharedShutdownProofUnavailable,

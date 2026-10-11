@@ -1,0 +1,793 @@
+//! Bounded immutable process images and private writable-resource reconstruction.
+//!
+//! Image authority is created only from an authenticated parked native owner.
+//! A content reference identifies bytes; it cannot construct this capture seal.
+
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::Read,
+    os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+    path::{Path, PathBuf},
+};
+
+use crucible_node_contract::{ContentRef, HashRef, Id, U64, Validate};
+
+use super::{Gem5Boundary, Gem5Completion, Gem5Launch, Gem5LaunchArtifact};
+use crate::ProviderError;
+
+#[path = "archive_import.rs"]
+mod archive_import;
+
+pub use archive_import::{Gem5ArchiveArtifact, Gem5ArchiveImport, Gem5ArchiveSourceVerifier};
+
+const MAX_FILES: usize = 4096;
+const MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
+/// Bounds each opaque image artifact under the installed native process profile.
+pub const GEM5_MAX_IMAGE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_TOTAL_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+/// Pins the actual process-image tools and private checkpoint resources.
+#[derive(Clone, Debug)]
+pub struct Gem5ProcessImageTools {
+    /// Measures the actual installed DMTCP launcher.
+    pub launcher: Gem5LaunchArtifact,
+    /// Measures the actual installed DMTCP restarter.
+    pub restarter: Gem5LaunchArtifact,
+    /// Measures the actual executable mapped by a fresh DMTCP reconstruction.
+    pub reconstruction_executable: Gem5LaunchArtifact,
+    /// Measures the native private-resource rebinding helper.
+    pub resource_helper: Gem5LaunchArtifact,
+    /// Names a private directory dedicated to this owner's image files.
+    pub image_root: PathBuf,
+    /// Names a private directory dedicated to operational DMTCP files.
+    pub temporary_root: PathBuf,
+}
+
+/// Selects fresh private reconstruction routes without changing captured state.
+#[derive(Clone, Debug)]
+pub struct Gem5RestoreTarget {
+    /// Names a fresh native incarnation distinct from the captured source.
+    pub incarnation: Id,
+    /// Fences the source generation with a strictly larger owner generation.
+    pub generation: U64,
+    /// Names an empty canonical private directory for restored writable files.
+    pub resource_root: PathBuf,
+    /// Names an empty private namespace for this incarnation's future captures.
+    ///
+    /// It remains separate from historical image storage and writable resources.
+    pub image_root: PathBuf,
+    /// Names a private directory for new operational restore diagnostics.
+    pub temporary_root: PathBuf,
+    /// Bounds fresh peer establishment using operational host time.
+    pub timeout: std::time::Duration,
+}
+
+#[derive(Clone, Debug)]
+struct CapturedFile {
+    relative: PathBuf,
+    artifact: Gem5LaunchArtifact,
+}
+
+/// Distinguishes native image files from privately reconstructed resource files.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Gem5CapturedArtifactRole {
+    /// Identifies the DMTCP primary image or an original supplementary saved file.
+    Image,
+    /// Identifies a private runtime resource copied into the fresh owner root.
+    Resource,
+}
+
+/// Views an original immutable artifact with its exact reconstruction role and name.
+#[derive(Clone, Copy, Debug)]
+pub struct Gem5CapturedArtifact<'a> {
+    /// Selects the original image or writable-resource reconstruction namespace.
+    pub role: Gem5CapturedArtifactRole,
+    /// Retains its checked path relative to that private namespace root.
+    pub relative: &'a Path,
+    /// Retains the independent preserved bytes and their measured content identity.
+    pub artifact: &'a Gem5LaunchArtifact,
+}
+
+/// Retains a genuine stopped owner image and its original private file contents.
+///
+/// This opaque seal is created by native capture, never from a portable claim.
+/// Partial diagnostic coverage grants no execution authority. A complete native
+/// closure audit and installed closed-profile policy remain separate obligations.
+#[derive(Clone, Debug)]
+pub struct Gem5CapturedModelImage<Source, Prefix> {
+    pub(crate) capture: Id,
+    pub(crate) source: Source,
+    pub(crate) boundary: Gem5Boundary,
+    pub(crate) completed: BTreeMap<Id, Prefix>,
+    pub(crate) pending: Option<Id>,
+    pub(crate) last_acknowledged: Option<Id>,
+    source_supplementary_files_root: PathBuf,
+    image_files: Vec<CapturedFile>,
+    resource_files: Vec<CapturedFile>,
+}
+
+/// Retains the existing SE process-image format and complete source identity.
+pub type Gem5CapturedImage = Gem5CapturedModelImage<Gem5Launch, Gem5Completion>;
+
+pub(crate) mod sealed {
+    pub trait ImageSource {}
+}
+
+/// Exposes private image routes from source-owned native model launch records.
+///
+/// The sealed trait conveys resource layout, not execution authority. Only
+/// authenticated native capture can construct a model image seal.
+pub trait Gem5ImageSource: sealed::ImageSource {
+    /// Returns the exact owned image machinery and current capture namespace.
+    fn image_tools(&self) -> Option<&Gem5ProcessImageTools>;
+
+    /// Returns the canonical private root containing modeled runtime resources.
+    fn managed_root(&self) -> &Path;
+}
+
+impl sealed::ImageSource for Gem5Launch {}
+
+impl Gem5ImageSource for Gem5Launch {
+    fn image_tools(&self) -> Option<&Gem5ProcessImageTools> {
+        self.process_images.as_ref()
+    }
+
+    fn managed_root(&self) -> &Path {
+        &self.resource_root
+    }
+}
+
+impl<Source: Gem5ImageSource, Prefix> Gem5CapturedModelImage<Source, Prefix> {
+    pub(crate) fn original_image_for_audit(&self) -> Result<PathBuf, ProviderError> {
+        let tools = self.source.image_tools().ok_or(ProviderError::Correlation(
+            "gem5 original image tools omitted",
+        ))?;
+        let current = inventory(&tools.image_root, true)?;
+        if current.len() != self.image_files.len()
+            || current.iter().zip(&self.image_files).any(|(live, saved)| {
+                live.relative != saved.relative || live.artifact.content != saved.artifact.content
+            })
+        {
+            return Err(ProviderError::Correlation(
+                "gem5 original image custody differs from independent capture seal",
+            ));
+        }
+        let name = self
+            .process_image()?
+            .file_name()
+            .ok_or(ProviderError::Frame("gem5 process image filename omitted"))?;
+        Ok(tools.image_root.join(name))
+    }
+
+    /// Iterates the exact bounded artifact roster with original reconstruction names.
+    ///
+    /// Portable archives must retain the role and relative name instead of
+    /// inferring them from operational parent directories. This view conveys
+    /// neither imported image provenance nor fresh live execution authority.
+    pub fn artifact_inventory(&self) -> impl Iterator<Item = Gem5CapturedArtifact<'_>> {
+        self.image_files
+            .iter()
+            .map(|file| Gem5CapturedArtifact {
+                role: Gem5CapturedArtifactRole::Image,
+                relative: &file.relative,
+                artifact: &file.artifact,
+            })
+            .chain(self.resource_files.iter().map(|file| Gem5CapturedArtifact {
+                role: Gem5CapturedArtifactRole::Resource,
+                relative: &file.relative,
+                artifact: &file.artifact,
+            }))
+    }
+
+    /// Iterates every bounded independently preserved image and resource artifact.
+    ///
+    /// These host-local paths identify immutable capture-owned bytes for archive
+    /// streaming. Their content references convey no restore or execution authority.
+    pub fn artifacts(&self) -> impl Iterator<Item = &Gem5LaunchArtifact> {
+        self.image_files
+            .iter()
+            .chain(&self.resource_files)
+            .map(|file| &file.artifact)
+    }
+
+    /// Iterates immutable original prefixes captured with native continuation state.
+    pub fn completed_prefixes(&self) -> impl ExactSizeIterator<Item = &Prefix> {
+        self.completed.values()
+    }
+
+    /// Returns the original captured output prefix awaiting custody acknowledgment.
+    pub fn pending_completion(&self) -> Option<&Prefix> {
+        self.pending
+            .as_ref()
+            .and_then(|operation| self.completed.get(operation))
+    }
+
+    /// Returns the original captured native ACK identity without releasing custody.
+    pub fn last_acknowledged(&self) -> Option<&Id> {
+        self.last_acknowledged.as_ref()
+    }
+
+    /// Returns the original capture operation identity.
+    pub fn capture_id(&self) -> &Id {
+        &self.capture
+    }
+
+    /// Returns the exact original native stopped event boundary.
+    pub fn boundary(&self) -> &Gem5Boundary {
+        &self.boundary
+    }
+
+    /// Returns the immutable original source realization scope.
+    pub fn source(&self) -> &Source {
+        &self.source
+    }
+
+    /// Returns the original native supplementary saved-file directory spelling.
+    ///
+    /// This is inert source lineage, not a path to open. It is retained from the
+    /// actual checkpoint roster so a restore can relocate DMTCP's saved-copy
+    /// references after the complete source namespace has been destroyed.
+    pub fn source_supplementary_files_root(&self) -> &Path {
+        &self.source_supplementary_files_root
+    }
+
+    /// Resolves the actual private supplementary directory in preserved image storage.
+    ///
+    /// The complete original role-qualified roster determines this directory.
+    /// It remains separate from the fresh incarnation's future checkpoint root.
+    ///
+    /// # Errors
+    /// Refuses ambiguous prefixes, changed image geometry, split namespaces or
+    /// a directory outside canonical owned private materialization.
+    pub fn materialized_supplementary_files_root(&self) -> Result<PathBuf, ProviderError> {
+        let prefix =
+            supplementary_prefix(self.image_files.iter().map(|file| file.relative.as_path()))?;
+        let mut namespace = None;
+        for file in &self.image_files {
+            if !file.artifact.path.ends_with(&file.relative) {
+                return Err(ProviderError::Correlation(
+                    "gem5 materialized image geometry differs",
+                ));
+            }
+            let root = file
+                .artifact
+                .path
+                .ancestors()
+                .nth(file.relative.components().count())
+                .ok_or(ProviderError::Frame(
+                    "gem5 materialized image namespace omitted",
+                ))?;
+            if namespace
+                .as_ref()
+                .is_some_and(|old: &PathBuf| old.as_path() != root)
+            {
+                return Err(ProviderError::Correlation(
+                    "gem5 materialized image namespace is split",
+                ));
+            }
+            namespace = Some(root.to_owned());
+        }
+        let root = namespace.ok_or(ProviderError::Frame(
+            "gem5 materialized image roster omitted",
+        ))?;
+        validate_private_directory(&root)?;
+        let target = root.join(prefix);
+        validate_private_directory(&target)?;
+        Ok(target)
+    }
+
+    /// Verifies every original image and writable-resource artifact before allocation.
+    ///
+    /// # Errors
+    /// Rejects omitted, replaced, linked, oversized, changing, or tampered files.
+    pub fn verify(&self) -> Result<(), ProviderError> {
+        let mut total = 0;
+        for (saved, limit) in self
+            .image_files
+            .iter()
+            .map(|file| (file, GEM5_MAX_IMAGE_BYTES))
+            .chain(
+                self.resource_files
+                    .iter()
+                    .map(|file| (file, MAX_FILE_BYTES)),
+            )
+        {
+            let measured = measure_file_with_limit(&saved.artifact.path, limit)?;
+            total = add_length(total, measured.length)?;
+            if measured != saved.artifact.content {
+                return Err(ProviderError::Correlation("gem5 captured artifact changed"));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn collect(
+        capture: Id,
+        source: Source,
+        boundary: Gem5Boundary,
+        preserved_root: &Path,
+        completed: BTreeMap<Id, Prefix>,
+        pending: Option<Id>,
+        last_acknowledged: Option<Id>,
+    ) -> Result<Self, ProviderError> {
+        let tools = source.image_tools().ok_or(ProviderError::Correlation(
+            "gem5 capture has no measured image tools",
+        ))?;
+        validate_private_directory(preserved_root)?;
+        let original_images = inventory(&tools.image_root, true)?;
+        if original_images
+            .iter()
+            .filter(|file| file.relative.extension().is_some_and(|ext| ext == "dmtcp"))
+            .count()
+            != 1
+        {
+            return Err(ProviderError::Correlation(
+                "gem5 capture requires one genuine owner process image",
+            ));
+        }
+        let supplementary =
+            supplementary_prefix(original_images.iter().map(|file| file.relative.as_path()))?;
+        let source_supplementary_files_root = tools.image_root.join(&supplementary);
+        validate_supplementary_source_root(
+            &source_supplementary_files_root,
+            original_images.iter().map(|file| file.relative.as_path()),
+        )?;
+        let original_resources = inventory(source.managed_root(), false)?;
+        if original_images
+            .len()
+            .checked_add(original_resources.len())
+            .is_none_or(|count| count > MAX_FILES)
+        {
+            return Err(ProviderError::ResourceExhausted(
+                "gem5 complete capture file inventory",
+            ));
+        }
+        // Reserve the complete aggregate extent before copying either namespace.
+        let mut total = 0;
+        for file in original_images.iter().chain(&original_resources) {
+            total = add_length(total, file.artifact.content.length)?;
+        }
+        // DMTCP may reuse its live filename on a later checkpoint. Each seal
+        // owns independent image bytes alongside its original resource bytes.
+        let image_root = preserved_root.join("image-files");
+        let resource_root = preserved_root.join("resource-files");
+        fs::create_dir(&image_root)?;
+        fs::create_dir(&resource_root)?;
+        fs::set_permissions(&image_root, fs::Permissions::from_mode(0o700))?;
+        fs::set_permissions(&resource_root, fs::Permissions::from_mode(0o700))?;
+        let supplementary_target = image_root.join(&supplementary);
+        fs::create_dir(&supplementary_target)?;
+        fs::set_permissions(&supplementary_target, fs::Permissions::from_mode(0o700))?;
+        let mut image_files = Vec::new();
+        for file in original_images {
+            let target = image_root.join(&file.relative);
+            if let Some(parent) = target.parent() {
+                private_directory_chain(&image_root, parent)?;
+            }
+            copy_verified(&file.artifact, &target, GEM5_MAX_IMAGE_BYTES)?;
+            image_files.push(CapturedFile {
+                relative: file.relative,
+                artifact: Gem5LaunchArtifact {
+                    path: target,
+                    content: file.artifact.content,
+                },
+            });
+        }
+        let mut resource_files = Vec::new();
+        for file in original_resources {
+            let target = resource_root.join(&file.relative);
+            if let Some(parent) = target.parent() {
+                private_directory_chain(&resource_root, parent)?;
+            }
+            copy_verified(&file.artifact, &target, MAX_FILE_BYTES)?;
+            resource_files.push(CapturedFile {
+                relative: file.relative,
+                artifact: Gem5LaunchArtifact {
+                    path: target,
+                    content: file.artifact.content,
+                },
+            });
+        }
+        let image = Self {
+            capture,
+            source,
+            boundary,
+            completed,
+            pending,
+            last_acknowledged,
+            source_supplementary_files_root,
+            image_files,
+            resource_files,
+        };
+        image.verify()?;
+        Ok(image)
+    }
+
+    pub(crate) fn prepare_resources(&self, root: &Path) -> Result<(), ProviderError> {
+        self.verify()?;
+        validate_private_directory(root)?;
+        if fs::read_dir(root)?.next().is_some() {
+            return Err(ProviderError::Correlation(
+                "gem5 restored resource root is occupied",
+            ));
+        }
+        for saved in &self.resource_files {
+            let target = root.join(&saved.relative);
+            if let Some(parent) = target.parent() {
+                private_directory_chain(root, parent)?;
+            }
+            copy_verified(&saved.artifact, &target, MAX_FILE_BYTES)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn process_image(&self) -> Result<&Path, ProviderError> {
+        self.image_files
+            .iter()
+            .find(|file| file.relative.extension().is_some_and(|ext| ext == "dmtcp"))
+            .map(|file| file.artifact.path.as_path())
+            .ok_or(ProviderError::Correlation(
+                "gem5 original process image omitted",
+            ))
+    }
+}
+
+fn supplementary_prefix<'a>(
+    paths: impl Iterator<Item = &'a Path>,
+) -> Result<PathBuf, ProviderError> {
+    let mut prefixes = std::collections::BTreeSet::new();
+    let mut primary = std::collections::BTreeSet::new();
+    for path in paths {
+        let mut parts = path.components();
+        let Some(std::path::Component::Normal(first)) = parts.next() else {
+            return Err(ProviderError::Frame(
+                "gem5 supplementary image name is invalid",
+            ));
+        };
+        if parts.next().is_none() {
+            // Top-level primary images and operational restart scripts do not
+            // determine supplementary saved-file relocation.
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "dmtcp")
+            {
+                let stem = path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .ok_or(ProviderError::Frame("gem5 primary image name is invalid"))?;
+                primary.insert(PathBuf::from(format!("{stem}_files")));
+            }
+            continue;
+        }
+        if !first.to_str().is_some_and(|name| name.ends_with("_files")) {
+            return Err(ProviderError::Frame(
+                "gem5 supplementary file prefix is invalid",
+            ));
+        }
+        prefixes.insert(PathBuf::from(first));
+    }
+    if prefixes.len() != 1 || primary != prefixes {
+        return Err(ProviderError::Correlation(
+            "gem5 supplementary file directory omitted or ambiguous",
+        ));
+    }
+    prefixes.into_iter().next().ok_or(ProviderError::Frame(
+        "gem5 supplementary file prefix omitted",
+    ))
+}
+
+fn validate_supplementary_source_root<'a>(
+    root: &Path,
+    paths: impl Iterator<Item = &'a Path>,
+) -> Result<(), ProviderError> {
+    let prefix = supplementary_prefix(paths)?;
+    let text = root.to_str().ok_or(ProviderError::Frame(
+        "gem5 supplementary source path is not UTF-8",
+    ))?;
+    if !root.is_absolute()
+        || root.as_os_str().len() > 4096
+        || text.contains('\0')
+        || text
+            .split('/')
+            .skip(1)
+            .any(|part| part.is_empty() || matches!(part, "." | ".."))
+        || root.components().any(|part| {
+            !matches!(
+                part,
+                std::path::Component::RootDir | std::path::Component::Normal(_)
+            )
+        })
+        || root.file_name() != prefix.file_name()
+    {
+        return Err(ProviderError::Correlation(
+            "gem5 original supplementary directory differs from captured roster",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_private_directory(root: &Path) -> Result<(), ProviderError> {
+    let metadata = fs::symlink_metadata(root)?;
+    if !metadata.is_dir()
+        || metadata.mode() & 0o077 != 0
+        || metadata.uid() != rustix::process::getuid().as_raw()
+        || fs::canonicalize(root)? != root
+    {
+        return Err(ProviderError::Correlation(
+            "gem5 directory is not canonically private",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn measure_file(path: &Path) -> Result<ContentRef, ProviderError> {
+    measure_file_with_limit(path, MAX_FILE_BYTES)
+}
+
+pub(crate) fn measure_image_file(path: &Path) -> Result<ContentRef, ProviderError> {
+    measure_file_with_limit(path, GEM5_MAX_IMAGE_BYTES)
+}
+
+fn measure_file_with_limit(path: &Path, limit: u64) -> Result<ContentRef, ProviderError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_file() || metadata.nlink() != 1 || metadata.len() > limit {
+        return Err(ProviderError::Correlation(
+            "gem5 artifact is not a bounded private regular file",
+        ));
+    }
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(
+            i32::try_from(rustix::fs::OFlags::NOFOLLOW.bits())
+                .map_err(|_| ProviderError::Frame("native nofollow open flag unrepresentable"))?,
+        )
+        .open(path)?;
+    let before = file.metadata()?;
+    if before.dev() != metadata.dev() || before.ino() != metadata.ino() {
+        return Err(ProviderError::Correlation(
+            "gem5 artifact replaced before measurement",
+        ));
+    }
+    let reference = hash_stream(&mut &file, before.len())?;
+    let after = file.metadata()?;
+    if before.len() != after.len()
+        || (
+            before.mtime(),
+            before.mtime_nsec(),
+            before.ctime(),
+            before.ctime_nsec(),
+        ) != (
+            after.mtime(),
+            after.mtime_nsec(),
+            after.ctime(),
+            after.ctime_nsec(),
+        )
+    {
+        return Err(ProviderError::Correlation(
+            "gem5 artifact changed during measurement",
+        ));
+    }
+    Ok(reference)
+}
+
+// Hashes the exact canonical framing while keeping host allocation independent
+// of checkpoint size. Both short and excess streams refuse unchanged identity.
+fn hash_stream(reader: &mut impl Read, length: u64) -> Result<ContentRef, ProviderError> {
+    if length > GEM5_MAX_IMAGE_BYTES {
+        return Err(ProviderError::ResourceExhausted(
+            "gem5 immutable artifact size",
+        ));
+    }
+    let domain = "cnp.blob.v1";
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"CNP/1\0");
+    hasher.update(&(domain.len() as u32).to_be_bytes());
+    hasher.update(domain.as_bytes());
+    hasher.update(&length.to_be_bytes());
+    let mut remaining = length;
+    let mut buffer = [0u8; 65536];
+    while remaining > 0 {
+        let available = usize::try_from(remaining.min(buffer.len() as u64))
+            .map_err(|_| ProviderError::ResourceExhausted("gem5 hash buffer extent"))?;
+        let count = reader.read(&mut buffer[..available])?;
+        if count == 0 {
+            return Err(ProviderError::Correlation(
+                "gem5 artifact stream was truncated",
+            ));
+        }
+        hasher.update(&buffer[..count]);
+        remaining -= count as u64;
+    }
+    if reader.read(&mut buffer[..1])? != 0 {
+        return Err(ProviderError::Correlation(
+            "gem5 artifact stream exceeds its original extent",
+        ));
+    }
+    let reference = ContentRef {
+        hash: HashRef {
+            algorithm: "blake3-256".to_owned(),
+            domain: domain.to_owned(),
+            digest: hasher.finalize().to_hex().to_string(),
+        },
+        length: U64::new(length),
+        media_type: "application/octet-stream".to_owned(),
+    };
+    reference.validate()?;
+    Ok(reference)
+}
+
+#[cfg(test)]
+#[path = "streaming_tests.rs"]
+mod streaming_tests;
+
+fn inventory(root: &Path, process_images: bool) -> Result<Vec<CapturedFile>, ProviderError> {
+    validate_private_directory(root)?;
+    let mut pending = vec![root.to_owned()];
+    let mut files = Vec::new();
+    let mut total = 0;
+    let mut directories = 1usize;
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let metadata = fs::symlink_metadata(entry.path())?;
+            if process_images
+                && entry.path() == root.join("dmtcp_restart_script.sh")
+                && metadata.file_type().is_symlink()
+            {
+                // DMTCP's latest-image convenience route is never executed or
+                // interpreted as image authority; the exact image is pinned.
+                continue;
+            }
+            if metadata.is_dir() {
+                directories =
+                    directories
+                        .checked_add(1)
+                        .ok_or(ProviderError::ResourceExhausted(
+                            "gem5 captured directory inventory",
+                        ))?;
+                if directories > MAX_FILES {
+                    return Err(ProviderError::ResourceExhausted(
+                        "gem5 captured directory inventory",
+                    ));
+                }
+                pending.push(entry.path());
+            } else if metadata.file_type().is_socket() && entry.path() == root.join("control.sock")
+            {
+                // Controller endpoints are operational routes, never image state.
+            } else {
+                if files.len() >= MAX_FILES {
+                    return Err(ProviderError::ResourceExhausted(
+                        "gem5 captured file inventory",
+                    ));
+                }
+                let content = if process_images {
+                    measure_image_file(&entry.path())?
+                } else {
+                    measure_file(&entry.path())?
+                };
+                total = add_length(total, content.length)?;
+                let relative = entry
+                    .path()
+                    .strip_prefix(root)
+                    .map_err(|_| ProviderError::Correlation("gem5 artifact escaped private root"))?
+                    .to_owned();
+                files.push(CapturedFile {
+                    relative,
+                    artifact: Gem5LaunchArtifact {
+                        path: entry.path(),
+                        content,
+                    },
+                });
+            }
+        }
+    }
+    files.sort_by(|a, b| a.relative.cmp(&b.relative));
+    Ok(files)
+}
+
+fn add_length(total: u64, length: U64) -> Result<u64, ProviderError> {
+    total
+        .checked_add(length.get())
+        .filter(|next| *next <= MAX_TOTAL_BYTES)
+        .ok_or(ProviderError::ResourceExhausted(
+            "gem5 captured artifact bytes",
+        ))
+}
+
+fn copy_verified(
+    artifact: &Gem5LaunchArtifact,
+    target: &Path,
+    limit: u64,
+) -> Result<(), ProviderError> {
+    if measure_file_with_limit(&artifact.path, limit)? != artifact.content {
+        return Err(ProviderError::Correlation(
+            "gem5 original file bytes changed",
+        ));
+    }
+    let source = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(
+            i32::try_from(rustix::fs::OFlags::NOFOLLOW.bits())
+                .map_err(|_| ProviderError::Frame("native nofollow open flag unrepresentable"))?,
+        )
+        .open(&artifact.path)?;
+    let mut file = fs::File::options()
+        .write(true)
+        .create_new(true)
+        .open(target)?;
+    let copied = std::io::copy(
+        &mut source.take(artifact.content.length.get() + 1),
+        &mut file,
+    )?;
+    if copied != artifact.content.length.get() {
+        return Err(ProviderError::Correlation(
+            "gem5 copied artifact extent changed",
+        ));
+    }
+    file.sync_all()?;
+    fs::set_permissions(target, fs::Permissions::from_mode(0o600))?;
+    if measure_file_with_limit(target, limit)? != artifact.content {
+        return Err(ProviderError::Correlation(
+            "gem5 copied artifact bytes changed",
+        ));
+    }
+    Ok(())
+}
+
+/// Creates each operational directory with private mode before copying a leaf.
+fn private_directory_chain(root: &Path, parent: &Path) -> Result<(), ProviderError> {
+    use std::os::unix::fs::DirBuilderExt;
+    validate_private_directory(root)?;
+    let relative = parent
+        .strip_prefix(root)
+        .map_err(|_| ProviderError::Correlation("gem5 managed parent escapes owned root"))?;
+    let mut current = root.to_owned();
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err(ProviderError::Frame(
+                "gem5 managed directory component differs",
+            ));
+        };
+        current.push(name);
+        match fs::DirBuilder::new().mode(0o700).create(&current) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+        validate_private_directory(&current)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+// crucible-lint: allow rust-allow -- private directory counterexamples must fail assertions.
+// crucible-lint: allow panic-shortcut -- fixture construction and assertions are test-only.
+#[allow(clippy::unwrap_used)]
+mod private_directories {
+    use super::*;
+
+    #[test]
+    fn nested_materialization_is_private_without_inherited_umask() {
+        let root = std::env::temp_dir().join(format!("gem5-private-chain-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let nested = root.join("native-diagnostics/child");
+        private_directory_chain(&root, &nested).unwrap();
+        assert_eq!(
+            fs::metadata(root.join("native-diagnostics"))
+                .unwrap()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(fs::metadata(&nested).unwrap().mode() & 0o777, 0o700);
+        assert!(private_directory_chain(&root, &root.join("../escape")).is_err());
+        fs::set_permissions(&nested, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(private_directory_chain(&root, &nested).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[path = "arm_root_archive.rs"]
+pub(crate) mod arm_root_archive;

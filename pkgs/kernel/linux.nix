@@ -25,6 +25,8 @@
   # Optional: extra kernel config fragment text to merge after the base
   # config fragments. Like NixOS structuredExtraConfig but as raw kconfig text.
   extraConfig ? "",
+  # Native controller kernels apply source patches independently of guest fixtures.
+  extraPatches ? [],
   # Fixture kernels may intentionally omit the general system runtime contract.
   enforceRequiredConfig ? true,
 }: let
@@ -193,7 +195,7 @@ in
         name = "patch";
         script = ''
           patch -p1 < ${./linux-gawk-array-argument.patch}
-        '';
+        '' + lib.concatMapStrings (sourcePatch: "patch -p1 < ${sourcePatch}\n") extraPatches;
       }
       {
         name = "configure";

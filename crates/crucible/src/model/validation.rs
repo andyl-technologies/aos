@@ -1,7 +1,7 @@
 //! World, plan, property, and random-fault validation/canonicalization.
 
 use super::*;
-pub(super) fn validate_world_nodes(nodes: &[WorldNode]) -> Result<(), EngineError> {
+pub(super) fn validate_world_nodes(nodes: &[ComputeNodeDef]) -> Result<(), EngineError> {
     let mut seen = BTreeSet::new();
     for node in nodes {
         if !seen.insert(node.id.clone()) {
@@ -54,7 +54,7 @@ pub(super) fn validate_world_nodes(nodes: &[WorldNode]) -> Result<(), EngineErro
     Ok(())
 }
 
-pub(super) fn validate_world_node_workload(node: &WorldNode) -> Result<(), EngineError> {
+pub(super) fn validate_world_node_workload(node: &ComputeNodeDef) -> Result<(), EngineError> {
     let mut selected = false;
     for token in node.cmdline.split_whitespace() {
         let Some(value) = token.strip_prefix(WORKLOAD_SCENARIO_PARAMETER_PREFIX) else {
@@ -76,7 +76,7 @@ pub(super) fn validate_world_node_workload(node: &WorldNode) -> Result<(), Engin
     Ok(())
 }
 
-pub(super) fn validate_world_node_workload_seed(node: &WorldNode) -> Result<(), EngineError> {
+pub(super) fn validate_world_node_workload_seed(node: &ComputeNodeDef) -> Result<(), EngineError> {
     let mut selected = false;
     for token in node.cmdline.split_whitespace() {
         let Some(value) = token.strip_prefix(WORKLOAD_SEED_SCENARIO_PARAMETER_PREFIX) else {
@@ -99,7 +99,7 @@ pub(super) fn validate_world_node_workload_seed(node: &WorldNode) -> Result<(), 
 }
 
 pub(super) fn validate_world_node_workload_scalar_parameters(
-    node: &WorldNode,
+    node: &ComputeNodeDef,
 ) -> Result<(), EngineError> {
     let mut selected = BTreeSet::new();
     for token in node.cmdline.split_whitespace() {
@@ -127,7 +127,7 @@ pub(super) fn validate_world_node_workload_scalar_parameters(
 }
 
 pub(super) fn validate_world_node_workload_config_tree(
-    node: &WorldNode,
+    node: &ComputeNodeDef,
 ) -> Result<(), EngineError> {
     let mut selected = false;
     for token in node.cmdline.split_whitespace() {
@@ -172,7 +172,9 @@ pub(super) fn validate_world_node_workload_config_tree(
     Ok(())
 }
 
-pub(super) fn validate_world_node_workload_pattern(node: &WorldNode) -> Result<(), EngineError> {
+pub(super) fn validate_world_node_workload_pattern(
+    node: &ComputeNodeDef,
+) -> Result<(), EngineError> {
     let mut selected = false;
     for token in node.cmdline.split_whitespace() {
         let Some(value) = token.strip_prefix(WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER_PREFIX)
@@ -195,7 +197,9 @@ pub(super) fn validate_world_node_workload_pattern(node: &WorldNode) -> Result<(
     Ok(())
 }
 
-pub(super) fn validate_world_node_workload_spike_mode(node: &WorldNode) -> Result<(), EngineError> {
+pub(super) fn validate_world_node_workload_spike_mode(
+    node: &ComputeNodeDef,
+) -> Result<(), EngineError> {
     let mut selected = false;
     for token in node.cmdline.split_whitespace() {
         let Some(value) = token.strip_prefix(WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER_PREFIX) else {
@@ -218,7 +222,7 @@ pub(super) fn validate_world_node_workload_spike_mode(node: &WorldNode) -> Resul
 }
 
 pub(super) fn validate_world_node_workload_pattern_consistency(
-    node: &WorldNode,
+    node: &ComputeNodeDef,
 ) -> Result<(), EngineError> {
     let pattern = GuestWorkloadPattern::from_cmdline(&node.cmdline);
     let spike_mode = GuestWorkloadSpikeMode::from_cmdline(&node.cmdline);
@@ -237,7 +241,7 @@ pub(super) fn validate_world_node_workload_pattern_consistency(
 }
 
 pub(super) fn validate_world_node_workload_time_source(
-    node: &WorldNode,
+    node: &ComputeNodeDef,
 ) -> Result<(), EngineError> {
     let mut selected = false;
     for token in node.cmdline.split_whitespace() {
@@ -261,7 +265,7 @@ pub(super) fn validate_world_node_workload_time_source(
 }
 
 pub(super) fn validate_world_node_workload_time_source_consistency(
-    node: &WorldNode,
+    node: &ComputeNodeDef,
 ) -> Result<(), EngineError> {
     let pattern = GuestWorkloadPattern::from_cmdline(&node.cmdline);
     let time_source = GuestWorkloadTimeSource::from_cmdline(&node.cmdline);

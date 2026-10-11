@@ -11,6 +11,7 @@ The atomic integration patch creates these QEMU source files:
 | Created file | License | Basis |
 | --- | --- | --- |
 | `accel/tcg/tcg-accel-ops-sim.c` | GPL-2.0-or-later | QEMU default |
+| `accel/tcg/crucible-node-preparation.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/system/crucible-plugin-wake.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `block/crucible-shmem.c` | GPL-2.0-or-later | Explicit file notice |
 | `block/crucible-hot-fork-source.c` | GPL-2.0-or-later | Explicit SPDX identifier |
@@ -26,6 +27,21 @@ The atomic integration patch creates these QEMU source files:
 | `include/system/crucible-hot-fork-plugin-child.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/qemu/crucible-hot-fork-async.h` | GPL-2.0-or-later | Explicit file notice |
 | `include/qemu/crucible-idle-wait.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-node-service.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `hw/core/crucible-device-roots.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/hw/core/crucible-device-roots.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-node-root.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-endpoint-roots.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-endpoint-roots.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `util/crucible-endpoint-roots.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-timer-selection.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `util/crucible-timer-selection.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `accel/kvm/crucible-clock.c` | GPL-2.0-only | Explicit SPDX identifier |
+| `include/system/crucible-kvm-clock.h` | GPL-2.0-only | Explicit SPDX identifier |
+| `accel/kvm/crucible-window.c` | GPL-2.0-only | Explicit SPDX identifier |
+| `include/system/crucible-kvm-window.h` | GPL-2.0-only | Explicit SPDX identifier |
+| `accel/kvm/crucible-response-bytes.c` | GPL-2.0-only | Explicit SPDX identifier |
+| `include/system/crucible-kvm-response-bytes.h` | GPL-2.0-only | Explicit SPDX identifier |
 | `plugins/crucible-fault.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-fault-memory.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-fault-node.c` | GPL-2.0-or-later | Explicit SPDX identifier |
@@ -50,6 +66,8 @@ The atomic integration patch creates these QEMU source files:
 | `tests/tcg/plugins/crucible-memory-dma.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/tcg/plugins/crucible-memory-service-restart-probe.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/tcg/plugins/crucible-idle-wait-liveness.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/tcg/plugins/crucible-node-control.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/qtest/crucible-node-control.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/qtest/crucible-idle-wait-liveness.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/qtest/crucible-exact-tb-exit.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-hot-fork-child.c` | GPL-2.0-or-later | Explicit SPDX identifier |
@@ -80,6 +98,7 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-template-control-drain.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-lifecycle-projection.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-icount-rate.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-node-service.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-vcpu-service-time.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-idle-wait.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-rr-halted-neighbor.py` | GPL-2.0-or-later | Explicit SPDX identifier |
@@ -150,6 +169,63 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-serial-kbd-timer-wide-clock.c` | MIT | Explicit SPDX identifier; literal UART and keyboard timer fixtures preserve their MIT scope |
 | `tests/unit/test-crucible-acpi-pm-wide-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-ich9-aux-wide-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `accel/tcg/crucible-effect-prefix.inc.c` | MIT | Explicit SPDX identifier |
+| `accel/tcg/crucible-prefix-cpu-rr.inc.c` | MIT | Explicit SPDX identifier |
+| `accel/tcg/crucible-prefix-policy.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `accel/tcg/crucible-prefix-preparation-rr.inc.c` | MIT | Explicit SPDX identifier |
+| `accel/tcg/crucible-prefix-quiet-rr.inc.c` | MIT | Explicit SPDX identifier |
+| `accel/tcg/crucible-prefix-request-rr.inc.c` | MIT | Explicit SPDX identifier |
+| `accel/tcg/crucible-prefix-request.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `accel/tcg/crucible-prefix-root-rr.inc.c` | MIT | Explicit SPDX identifier |
+| `accel/tcg/crucible-prefix-semantic.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `accel/tcg/crucible-prefix-sim-callbacks.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `accel/tcg/crucible-prefix-timer-rr.inc.c` | MIT | Explicit SPDX identifier |
+| `accel/tcg/crucible-prefix-writer-rr.inc.c` | MIT | Explicit SPDX identifier |
+| `block/crucible-prefix-block-callbacks.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `hw/9pfs/crucible-prefix-ninep-callbacks.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `hw/virtio/crucible-prefix-accelerator-callbacks.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-effect-prefix.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-prefix-active.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-prefix-callback-roots.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-prefix-cpu-ingress.h` | MIT | Explicit SPDX identifier |
+| `include/qemu/crucible-prefix-plugin-core.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-prefix-policy.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-prefix-preparation.h` | MIT | Explicit SPDX identifier |
+| `include/qemu/crucible-prefix-quiet.h` | MIT | Explicit SPDX identifier |
+| `include/qemu/crucible-prefix-request.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-prefix-semantic.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-prefix-timer.h` | MIT | Explicit SPDX identifier |
+| `include/qemu/crucible-prefix-writer.h` | MIT | Explicit SPDX identifier |
+| `include/qemu/crucible-utility-census-internal.h` | MIT | Explicit SPDX identifier |
+| `net/crucible-prefix-net-callbacks.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-prefix-callback-roots.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-prefix-plugin-core.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-prefix-coordinator.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `util/crucible-prefix-timer.inc.c` | MIT | Explicit SPDX identifier |
+| `util/crucible-utility-construction.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+
+| `accel/tcg/crucible-effect-root-rr.inc.c` | MIT | Explicit SPDX identifier |
+| `accel/tcg/crucible-node-effect.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `accel/tcg/crucible-semantic-input-owner.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-active-effect.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-installed-endpoint-owner.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-memory-payload-roots.h` | MIT | Explicit SPDX identifier |
+| `include/qemu/crucible-memory-roots.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-node-effect.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-semantic-input-owner.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-service-finite.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-timer-finite.h` | MIT | Explicit SPDX identifier |
+| `include/qom/crucible-constructor-retirement.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qom/crucible-property-roots.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `qom/crucible-constructor-retirement.inc` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `qom/crucible-property-link-roots.inc` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `qom/crucible-property-roots.inc` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-constructor-retirement.inc` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-installed-endpoint-owner.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-memory-dispatch-roots.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-memory-payload-roots.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-memory-roots.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `util/crucible-timer-finite.inc.c` | MIT | Explicit SPDX identifier |
 
 The separately built Rust `crucible-qemu-plugin` and C
 `crucible-qemu-trace-plugin` carry explicit GPL-2.0-only notices. The generated

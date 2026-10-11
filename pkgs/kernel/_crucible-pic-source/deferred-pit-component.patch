@@ -1,0 +1,336 @@
+--- a/arch/x86/kvm/crucible-pic-eoi.inc.c
++++ b/arch/x86/kvm/crucible-pic-eoi.inc.c
+@@ -85,6 +85,11 @@
+ 	/* The row cannot be reused by a next HIGH until this exact original
+ 	 * release has reconciled it under the same native gate. */
+ 	row->eoi_inflight = false;
++	if (valid && !kvm_crucible_pit_pic_release_locked(kvm, row->eoi_sequence)) {
++		valid = false;
++		row->phase = CRUCIBLE_PIC_PIT_UNKNOWN;
++		kvm_arch_crucible_irq_taint_locked(kvm);
++	}
+ 	if (lease->entered) {
+ 		lease->entered = false;
+ 		kvm->crucible_effect_owners--;
+--- a/arch/x86/kvm/crucible-pit-ancestry.inc.c
++++ b/arch/x86/kvm/crucible-pit-ancestry.inc.c
+@@ -154,16 +154,107 @@
+ 	return true;
+ }
+ 
++/* Gate->worker is nonblocking: kthread_worker_fn releases worker->lock
++ * before entering the callback, and cancellation releases it before waiting.
++ * Every caller retains its original callback/control/PIO owner through this
++ * queue publication and the physical-ceiling check. No stopped cut can occur
++ * between the known queue tail and release of that original credit. */
+ static bool pit_native_schedule_locked(struct kvm_pit *pit)
+ {
++	struct kvm *kvm = pit->kvm;
+ 	struct kvm_crucible_pit_journal *journal = &pit->pit_state.crucible;
+-
+-	if (!journal->count || journal->work_scheduled ||
+-	    journal->awaiting_ack || journal->worker_active || !pit_native_live_locked(pit->kvm))
+-		return false;
++	struct kvm_crucible_pit_expiry *next;
++	struct kvm_pic *pic = kvm->arch.vpic;
++	bool queued;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	if (!journal->count || journal->work_scheduled || journal->awaiting_ack ||
++	    journal->worker_active || !pit_native_live_locked(kvm))
++		return false;
++	next = &journal->pending[journal->head];
++	if (!pit_native_birth_locked(pit, next->generation, next->invocation,
++		 next->sequence, next->native_vcpu_id) ||
++	    (pic && pic->crucible_pit[0].eoi_inflight &&
++	     (!pic->crucible_pit[0].eoi_sequence ||
++	      pic->crucible_pit[0].original.generation != next->generation))) {
++		kvm_arch_crucible_irq_taint_locked(kvm);
++		return false;
++	}
++	if (pic && pic->crucible_pit[0].eoi_inflight) {
++		if (journal->deferred_eoi_sequence &&
++		    (journal->deferred_eoi_sequence != pic->crucible_pit[0].eoi_sequence ||
++		     journal->deferred_generation != next->generation ||
++		     journal->deferred_head_sequence != next->sequence ||
++		     journal->deferred_head_invocation != next->invocation)) {
++			kvm_arch_crucible_irq_taint_locked(kvm);
++			return false;
++		}
++		journal->deferred_eoi_sequence = pic->crucible_pit[0].eoi_sequence;
++		journal->deferred_generation = next->generation;
++		journal->deferred_head_sequence = next->sequence;
++		journal->deferred_head_invocation = next->invocation;
++		return false;
++	}
++	if (!pit->worker || !pit->worker->task ||
++	    journal->queue_issued >= KVM_CRUCIBLE_PIT_ISSUED ||
++	    !pit_native_birth_locked(pit, next->generation, next->invocation,
++		 next->sequence, next->native_vcpu_id) ||
++	    (journal->deferred_eoi_sequence &&
++	     (!pic || pic->crucible_pit[0].phase != CRUCIBLE_PIC_PIT_ACKED ||
++	      journal->deferred_eoi_sequence != pic->crucible_pit[0].eoi_sequence ||
++	      journal->deferred_generation != next->generation ||
++	      journal->deferred_head_sequence != next->sequence ||
++	      journal->deferred_head_invocation != next->invocation))) {
++		kvm_arch_crucible_irq_taint_locked(kvm);
++		return false;
++	}
++	journal->queue_issued++;
++	journal->queue_generation = next->generation;
++	journal->queue_head_sequence = next->sequence;
++	journal->queue_head_invocation = next->invocation;
++	journal->queue_host_ns = ktime_get_ns();
++	journal->queue_known = false;
+ 	journal->work_scheduled = true;
++	queued = kthread_queue_work(pit->worker, &pit->expired);
++	if (!queued || !pit_native_live_locked(kvm)) {
++		/* The queue call may already have changed native state. Preserve the
++		 * scheduled/deferred identities and sticky uncertainty, never rewind. */
++		kvm_arch_crucible_irq_taint_locked(kvm);
++		return false;
++	}
++	journal->queue_known = true;
++	journal->deferred_eoi_sequence = 0;
++	journal->deferred_generation = 0;
++	journal->deferred_head_sequence = 0;
++	journal->deferred_head_invocation = 0;
+ 	return true;
+ }
++
++/* Called under PIC->gate before the exact original EOI credit is released.
++ * A later LOW worker still owns its own timer/source credit and enters the
++ * same scheduler when no guest EOI release remains in flight. */
++bool kvm_crucible_pit_pic_release_locked(struct kvm *kvm, u64 eoi_sequence)
++{
++	struct kvm_pit *pit = kvm->arch.vpit;
++	struct kvm_pic *pic = kvm->arch.vpic;
++	struct kvm_crucible_pit_journal *journal;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	if (!pit || !pic || pit->kvm != kvm || pic->kvm != kvm ||
++	    !pit_native_selected(pit) || !kvm->crucible_effect_owners ||
++	    !eoi_sequence || pic->crucible_pit[0].eoi_sequence != eoi_sequence ||
++	    pic->crucible_pit[0].eoi_inflight || !pit_native_live_locked(kvm))
++		return false;
++	journal = &pit->pit_state.crucible;
++	if (journal->deferred_eoi_sequence &&
++	    journal->deferred_eoi_sequence != eoi_sequence) {
++		kvm_arch_crucible_irq_taint_locked(kvm);
++		return false;
++	}
++	(void)pit_native_schedule_locked(pit);
++	return pit_native_live_locked(kvm);
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_pit_pic_release_locked);
+ 
+ static enum hrtimer_restart pit_native_expire(struct kvm_pit *pit)
+ {
+@@ -174,7 +265,7 @@
+ 	struct kvm_crucible_pit_expiry *row;
+ 	unsigned long flags;
+ 	ktime_t next = 0, host;
+-	bool valid, closed, schedule = false, periodic = false;
++	bool valid, closed, periodic = false;
+ 	enum hrtimer_restart result = HRTIMER_NORESTART;
+ 
+ 	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
+@@ -219,7 +310,7 @@
+ 		} else {
+ 			journal->valid = false;
+ 		}
+-		schedule = pit_native_schedule_locked(pit);
++		(void)pit_native_schedule_locked(pit);
+ 	}
+ 	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
+ 	if (!valid) {
+@@ -227,8 +318,6 @@
+ 			pit_native_fault(pit);
+ 		return HRTIMER_NORESTART;
+ 	}
+-	if (schedule)
+-		kthread_queue_work(pit->worker, &pit->expired);
+ 	if (periodic && kvm_crucible_clock_host_expiration(kvm, next, &host)) {
+ 		raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
+ 		if (pit_native_live_locked(kvm) && journal->generation == clock->window_generation &&
+@@ -419,12 +508,16 @@
+ 	struct kvm_vcpu *vcpu;
+ 	struct kvm_crucible_pit_irq_birth birth;
+ 	unsigned long flags, index;
+-	bool valid, schedule;
++	bool valid;
+ 	int native_result;
+ 
+ 	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
+ 	valid = kvm->arch.vpit == pit && pit->worker && pit->worker->task == current &&
+-		!in_interrupt() && journal->work_scheduled && !journal->worker_active;
++		!in_interrupt() && journal->work_scheduled && !journal->worker_active &&
++		journal->queue_known && journal->queue_generation == clock->window_generation &&
++		journal->queue_host_ns < kvm->crucible_host_ceiling_ns &&
++		journal->queue_head_sequence == journal->pending[journal->head].sequence &&
++		journal->queue_head_invocation == journal->pending[journal->head].invocation;
+ 	if (valid)
+ 		journal->work_scheduled = false;
+ 	if (valid && (!pit_native_live_locked(kvm) || journal->awaiting_ack || !journal->count)) {
+@@ -515,13 +608,14 @@
+ 	journal->head = (journal->head + 1) % KVM_CRUCIBLE_PIT_PENDING;
+ 	journal->count--;
+ 	journal->worker_active = false;
+-	schedule = pit_native_schedule_locked(pit);
++	(void)pit_native_schedule_locked(pit);
++	valid = pit_native_live_locked(kvm);
+ 	journal->worker_owner = NULL;
+ 	clock->timer_owners--;
+ 	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
+-	if (schedule)
+-		kthread_queue_work(pit->worker, &pit->expired);
+ 	wake_up_all(&kvm->crucible_stopped);
++	if (!valid)
++		kvm_vm_dead(kvm);
+ 	return;
+ 
+ fault:
+@@ -549,7 +643,7 @@
+ 	struct kvm_crucible_pit_journal *journal;
+ 	struct kvm_crucible_apic_vector *target;
+ 	unsigned long flags;
+-	bool valid, schedule = false;
++	bool valid;
+ 
+ 	lockdep_assert_held(&vcpu->mutex);
+ 	if (!READ_ONCE(kvm->crucible_irq_input.enabled) ||
+@@ -592,16 +686,15 @@
+ 		journal->last_ack_consume_invocation = target->consume_invocation;
+ 		journal->last_ack_writer_invocation = vcpu->crucible_timer_run_invocation;
+ 		journal->awaiting_ack = false;
+-		schedule = pit_native_schedule_locked(pit);
++		(void)pit_native_schedule_locked(pit);
+ 	} else {
+ 		kvm_arch_crucible_irq_taint_locked(kvm);
+ 	}
++	valid = valid && pit_native_live_locked(kvm);
+ 	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
+ 
+ 	if (!valid)
+ 		kvm_vm_dead(kvm);
+-	else if (schedule)
+-		kthread_queue_work(pit->worker, &pit->expired);
+ 	return valid;
+ }
+ EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_pit_ioapic_ack);
+@@ -615,7 +708,7 @@
+ 	struct kvm *kvm = pit->kvm;
+ 	struct kvm_vcpu *vcpu;
+ 	unsigned long flags, index;
+-	bool valid = false, schedule = false;
++	bool valid = false;
+ 
+ 	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
+ 	kvm_for_each_vcpu(index, vcpu, kvm) {
+@@ -625,12 +718,11 @@
+ 		}
+ 	}
+ 	if (valid)
+-		schedule = pit_native_schedule_locked(pit);
+-	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
+-	if (!valid)
+-		pit_native_fault(pit);
+-	else if (schedule)
+-		kthread_queue_work(pit->worker, &pit->expired);
++		(void)pit_native_schedule_locked(pit);
++	valid = valid && pit_native_live_locked(kvm);
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (!valid)
++		pit_native_fault(pit);
+ }
+ 
+ /* Native CPU relocation keeps the same original arm, logical deadline and
+@@ -721,7 +813,7 @@
+ 	struct kvm_crucible_pit_journal *journal;
+ 	unsigned long flags;
+ 	ktime_t host;
+-	bool valid, queue = false, schedule = false;
++	bool valid, queue = false;
+ 	u32 offset;
+ 	u64 generation;
+ 
+@@ -749,7 +841,7 @@
+ 			journal->host = host;
+ 			journal->queued = true;
+ 		}
+-		schedule = pit_native_schedule_locked(pit);
++		(void)pit_native_schedule_locked(pit);
+ 	}
+ 	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
+ 	if (valid && queue)
+@@ -759,8 +851,6 @@
+ 		pit_native_fault(pit);
+ 		return;
+ 	}
+-	if (schedule)
+-		kthread_queue_work(pit->worker, &pit->expired);
+ 
+ 	/* Queue calls may race a ceiling/Close. Their original lease prevents a
+ 	 * stopped cut until return; a late effect stays Unknown, never success. */
+--- a/arch/x86/kvm/crucible-pit-pic-ack.inc.c
++++ b/arch/x86/kvm/crucible-pit-pic-ack.inc.c
+@@ -12,7 +12,7 @@
+ 	struct kvm_crucible_pic_pit_line *original;
+ 	struct kvm_vcpu *vcpu;
+ 	unsigned long flags, index;
+-	bool valid, writer = false, schedule = false;
++	bool valid, writer = false;
+ 
+ 	if (!pit || !pic || pit->kvm != kvm || pic->kvm != kvm ||
+ 	    !pit_native_selected(pit))
+@@ -72,16 +72,15 @@
+ 		journal->last_ack_consume_invocation = original->consume_invocation;
+ 		journal->last_ack_writer_invocation = original->ack_invocation;
+ 		journal->awaiting_ack = false;
+-		schedule = pit_native_schedule_locked(pit);
++		(void)pit_native_schedule_locked(pit);
+ 	} else {
+ 		kvm_arch_crucible_irq_taint_locked(kvm);
+ 	}
++	valid = valid && pit_native_live_locked(kvm);
+ 	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
+ 
+-	/* The caller still holds its original effect lease and PIC lock. It
+-	 * reconciles this actual queue return against the same live clock cut. */
+-	if (valid && schedule)
+-		kthread_queue_work(pit->worker, &pit->expired);
++	/* The original scheduler publishes under the gate, or retains the next
++	 * head while this EOI still owns its final release credit. */
+ 	return valid;
+ }
+ EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_pit_pic_ack);
+--- a/arch/x86/kvm/i8254.h
++++ b/arch/x86/kvm/i8254.h
+@@ -58,6 +58,18 @@
+ 	bool callback_active;
+ 	bool worker_active;
+ 	bool work_scheduled;
++	/* Queue admission retains the next original head while an earlier EOI
++	 * still owns its release credit. No IRQ callback is dropped or replayed. */
++	u64 queue_issued;
++	u64 queue_generation;
++	u64 queue_head_sequence;
++	u64 queue_head_invocation;
++	u64 queue_host_ns;
++	bool queue_known;
++	u64 deferred_eoi_sequence;
++	u64 deferred_generation;
++	u64 deferred_head_sequence;
++	u64 deferred_head_invocation;
+ 	bool irq_claimed;
+ 	bool nmi_claimed;
+ 	bool access_active;
+@@ -125,6 +137,8 @@
+ bool kvm_crucible_pit_pic_ack(struct kvm *kvm,
+ 	const struct kvm_crucible_pit_irq_birth *low);
+ 
++bool kvm_crucible_pit_pic_release_locked(struct kvm *kvm, u64 eoi_sequence);
++
+ struct kvm_pit *kvm_create_pit(struct kvm *kvm, u32 flags);
+ void kvm_free_pit(struct kvm *kvm);
+ void kvm_crucible_pit_freeze(struct kvm *kvm);

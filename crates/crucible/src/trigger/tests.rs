@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use super::*;
-use crate::model::{NodeTemplate, RngDecision, VmArchitecture, WorldNode};
+use crate::model::{ComputeNodeDef, ComputeNodeTemplate, RngDecision, VmArchitecture};
 use crate::scheduler::EventDiagnosticPayload;
 
 #[test]
@@ -86,16 +86,16 @@ fn polled_guest_marker_after_a_later_boundary_reaches_assertion_and_graph() {
         name: String::from("vm-a"),
     };
     let marker = MarkerId::from_name("selected-fast-q7");
-    let world = World::from_nodes(vec![WorldNode {
+    let world = World::from_nodes(vec![ComputeNodeDef {
         id: node.clone(),
         arch: VmArchitecture::X86_64,
-        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
         cmdline: String::new(),
         ready_point: ReadyPoint::FixedIcount {
             icount: Icount { retired: 1 },
         },
         white_box: WhiteBoxPolicy::Enabled,
-        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
         kernel: None,
         root_image: None,
         initrd: None,

@@ -1,0 +1,11 @@
+--- a/src/python/pybind11/event.cc
++++ b/src/python/pybind11/event.cc
+@@ -171,6 +171,8 @@
+             auto native = SimObject::find(object.first.c_str());
+             if (!native)
+                 throw std::runtime_error("modeled object disappeared");
++            item["object_alias"] = identities.reference(
++                static_cast<const SimObject *>(native), "sim-object");
+             item["modeled_fields"] = native->crucibleModeledFields();
+             objects.append(item);
+         }

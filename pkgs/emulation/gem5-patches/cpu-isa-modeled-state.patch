@@ -1,0 +1,435 @@
+--- a/src/arch/arm/decoder.cc
++++ b/src/arch/arm/decoder.cc
+@@ -76,6 +76,28 @@
+             "modelled as loads. This will tamper the effective "
+             "number of loads stat\n");
+     }
++}
++
++std::map<std::string, std::string>
++Decoder::crucibleModeledFields() const
++{
++    CrucibleStateWriter writer;
++    crucibleBaseFields(writer, "decoder");
++    writer.set(std::string("arm") + ".dvmEnabled", dvmEnabled);
++    writer.set(std::string("arm") + ".data", data);
++    writer.set(std::string("arm") + ".bigThumb", bigThumb);
++    writer.set(std::string("arm") + ".offset", offset);
++    writer.set(std::string("arm") + ".foundIt", foundIt);
++    writer.set(std::string("arm") + ".fpscrLen", fpscrLen);
++    writer.set(std::string("arm") + ".fpscrStride", fpscrStride);
++    writer.set(std::string("arm") + ".sveLen", sveLen);
++    writer.set(std::string("arm") + ".smeLen", smeLen);
++    writer.set(std::string("arm") + ".decoderFlavor", decoderFlavor);
++    writer.set("emi", static_cast<uint64_t>(emi));
++    if (foundIt)
++        writer.set("it_bits", static_cast<uint8_t>(itBits));
++    writer.string("coverage.unsupported", "decoded-static-instruction-cache-and-generated-instruction-payloads");
++    return std::move(writer.fields);
+ }
+ 
+ void
+--- a/src/arch/arm/decoder.hh
++++ b/src/arch/arm/decoder.hh
+@@ -41,6 +41,7 @@
+ #ifndef __ARCH_ARM_DECODER_HH__
+ #define __ARCH_ARM_DECODER_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <cassert>
+ 
+ #include "arch/arm/regs/misc.hh"
+@@ -144,6 +145,8 @@
+     }
+ 
+   public: // Decoder API
++    std::map<std::string, std::string> crucibleModeledFields() const override;
++
+     Decoder(const ArmDecoderParams &params);
+ 
+     /** Reset the decoders internal state. */
+--- a/src/arch/arm/isa.cc
++++ b/src/arch/arm/isa.cc
+@@ -133,6 +133,37 @@
+     preUnflattenMiscReg();
+ 
+     clear();
++}
++
++std::map<std::string, std::string>
++ISA::crucibleModeledFields() const
++{
++    CrucibleStateWriter writer;
++    crucibleBaseFields(writer, "isa");
++    writer.string("system", system ? system->name() : "");
++    writer.set("decoder_flavor", _decoderFlavor);
++    writer.set("highest_el_is_64", highestELIs64);
++    writer.set("highest_el", highestEL);
++    writer.set("large_asid", haveLargeAsid64);
++    writer.set("physical_address_bits", physAddrRange);
++    writer.set("sve_quadwords", sveVL);
++    writer.set("sme_quadwords", smeVL);
++    writer.set("implementation_defined_as_nop", impdefAsNop);
++    writer.reference("pmu", pmu, "isa-device");
++    writer.reference("generic_timer", timer.get(), "isa-device");
++    writer.reference("gic_cpu_interface", gicv3CpuInterface.get(), "isa-device");
++    writer.reference("self_debug", selfDebug, "arm-self-debug");
++    writer.set("misc_registers.count", NUM_MISCREGS);
++    for (size_t index = 0; index < NUM_MISCREGS; ++index)
++        writer.set("misc_registers[" + std::to_string(index) + "]", miscRegs[index]);
++    writer.set("integer_map.count", int_reg::NumArchRegs);
++    for (size_t index = 0; index < int_reg::NumArchRegs; ++index) {
++        const auto key = "integer_map[" + std::to_string(index) + "]";
++        writer.set(key + ".class", intRegMap[index].classValue());
++        writer.set(key + ".index", intRegMap[index].index());
++    }
++    writer.string("coverage.unsupported", "arm-isa-device-private-state;self-debug-breakpoint-state;release-extension-contract;thread-context-transfer;probes");
++    return std::move(writer.fields);
+ }
+ 
+ void
+--- a/src/arch/arm/isa.hh
++++ b/src/arch/arm/isa.hh
+@@ -41,6 +41,7 @@
+ #ifndef __ARCH_ARM_ISA_HH__
+ #define __ARCH_ARM_ISA_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include "arch/arm/isa_device.hh"
+ #include "arch/arm/mmu.hh"
+ #include "arch/arm/pcstate.hh"
+@@ -134,6 +135,7 @@
+     }
+ 
+   public:
++    std::map<std::string, std::string> crucibleModeledFields() const override;
+     void clear() override;
+ 
+   protected:
+--- a/src/arch/generic/decoder.hh
++++ b/src/arch/generic/decoder.hh
+@@ -28,6 +28,7 @@
+ #ifndef __ARCH_GENERIC_DECODER_HH__
+ #define __ARCH_GENERIC_DECODER_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include "arch/generic/pcstate.hh"
+ #include "base/bitfield.hh"
+ #include "base/intmath.hh"
+@@ -56,6 +57,15 @@
+         _moreBytesSize(sizeof(MoreBytesType)),
+         _pcMask(~mask(floorLog2(_moreBytesSize)))
+     {}
++
++    /** Reads control state without consuming bytes or consulting a decode cache. */
++    void crucibleBaseFields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        writer.set(prefix + ".more_bytes_size", _moreBytesSize);
++        writer.set(prefix + ".pc_mask", _pcMask);
++        writer.set(prefix + ".instruction_done", instDone);
++        writer.set(prefix + ".out_of_bytes", outOfBytes);
++    }
+ 
+     virtual StaticInstPtr fetchRomMicroop(
+             MicroPC micropc, StaticInstPtr curMacroop);
+--- a/src/arch/generic/isa.hh
++++ b/src/arch/generic/isa.hh
+@@ -40,6 +40,7 @@
+ #ifndef __ARCH_GENERIC_ISA_HH__
+ #define __ARCH_GENERIC_ISA_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <vector>
+ 
+ #include "arch/generic/pcstate.hh"
+@@ -72,6 +73,24 @@
+     std::string isaName;
+ 
+   public:
++    /** Reads base ISA ownership and register-class geometry without register effects. */
++    void crucibleBaseFields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        writer.string(prefix + ".name", isaName);
++        writer.set(prefix + ".thread_context_present", tc != nullptr);
++        writer.set(prefix + ".register_classes.count", _regClasses.size());
++        for (size_t index = 0; index < _regClasses.size(); ++index) {
++            const auto key = prefix + ".register_classes[" + std::to_string(index) + "]";
++            const auto *reg = _regClasses[index];
++            writer.set(key + ".present", reg != nullptr);
++            if (reg) {
++                writer.string(key + ".name", reg->name());
++                writer.set(key + ".register_count", reg->numRegs());
++                writer.set(key + ".register_bytes", reg->regBytes());
++            }
++        }
++    }
++
+     virtual PCStateBase *newPCState(Addr new_inst_addr=0) const = 0;
+     virtual void clear() {}
+ 
+--- a/src/arch/x86/cpuid.hh
++++ b/src/arch/x86/cpuid.hh
+@@ -29,6 +29,7 @@
+ #ifndef __ARCH_X86_CPUID_HH__
+ #define __ARCH_X86_CPUID_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <unordered_map>
+ 
+ #include "base/types.hh"
+@@ -98,6 +99,23 @@
+     void addStandardFunc(uint32_t func, std::vector<uint32_t> values);
+     void addExtendedFunc(uint32_t func, std::vector<uint32_t> values);
+ 
++    /** Reads configured leaf results without executing a CPUID query. */
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        writer.string(prefix + ".vendor", vendorString);
++        writer.string(prefix + ".name", nameString);
++        writer.set(prefix + ".function_count", capabilities.size());
++        std::map<uint32_t, const std::vector<uint32_t> *> ordered;
++        for (const auto &[function, values] : capabilities)
++            ordered.emplace(function, &values);
++        for (const auto &[function, values] : ordered) {
++            const auto key = prefix + ".function[" + std::to_string(function) + "]";
++            writer.set(key + ".word_count", values->size());
++            for (size_t index = 0; index < values->size(); ++index)
++                writer.set(key + ".word[" + std::to_string(index) + "]", (*values)[index]);
++        }
++    }
++
+     bool doCpuid(ThreadContext * tc, uint32_t function,
+                  uint32_t index, CpuidResult &result);
+     bool hasSignificantIndex(uint32_t function);
+--- a/src/arch/x86/decoder.cc
++++ b/src/arch/x86/decoder.cc
+@@ -41,6 +41,64 @@
+ namespace X86ISA
+ {
+ 
++std::map<std::string, std::string>
++Decoder::crucibleModeledFields() const
++{
++    CrucibleStateWriter writer;
++    crucibleBaseFields(writer, "decoder");
++    writer.set(std::string("x86") + ".basePC", basePC);
++    writer.set(std::string("x86") + ".origPC", origPC);
++    writer.set(std::string("x86") + ".offset", offset);
++    writer.set(std::string("x86") + ".mode", mode);
++    writer.set(std::string("x86") + ".submode", submode);
++    writer.set(std::string("x86") + ".altOp", altOp);
++    writer.set(std::string("x86") + ".defOp", defOp);
++    writer.set(std::string("x86") + ".altAddr", altAddr);
++    writer.set(std::string("x86") + ".defAddr", defAddr);
++    writer.set(std::string("x86") + ".stack", stack);
++    writer.set(std::string("x86") + ".cpl", cpl);
++    writer.set(std::string("x86") + ".state", state);
++    writer.set("partial_instruction.last_offset", instBytes.lastOffset);
++    writer.set("partial_instruction.chunks.count", instBytes.chunks.size());
++    for (size_t index = 0; index < instBytes.chunks.size(); ++index)
++        writer.set("partial_instruction.chunk[" + std::to_string(index) + "]", instBytes.chunks[index]);
++    writer.set("partial_instruction.masks.count", instBytes.masks.size());
++    for (size_t index = 0; index < instBytes.masks.size(); ++index)
++        writer.set("partial_instruction.mask[" + std::to_string(index) + "]", instBytes.masks[index]);
++    writer.reference("partial_instruction.static_instruction", instBytes.si.get(), "static-instruction");
++    writer.set("fetch_chunk_initialized", !instBytes.chunks.empty());
++    if (!instBytes.chunks.empty())
++        writer.set("fetch_chunk", fetchChunk);
++    if (state != ResetState) {
++        writer.set("chunk_index", chunkIdx);
++        writer.set("immediate_collected", immediateCollected);
++    }
++    if (state == ImmediateState)
++        writer.set("immediate_size", immediateSize);
++    if (state == DisplacementState)
++        writer.set("displacement_size", displacementSize);
++    writer.set("emi.legacy", static_cast<uint8_t>(emi.legacy));
++    writer.set("emi.rex", static_cast<uint8_t>(emi.rex));
++    writer.set("emi.vex", static_cast<uint8_t>(emi.vex));
++    writer.set("emi.opcode.type", emi.opcode.type);
++    writer.set("emi.opcode.byte", static_cast<uint8_t>(emi.opcode.op));
++    writer.set("emi.mod_rm", static_cast<uint8_t>(emi.modRM));
++    writer.set("emi.sib", static_cast<uint8_t>(emi.sib));
++    writer.set("emi.immediate", emi.immediate);
++    writer.set("emi.displacement", emi.displacement);
++    writer.set("emi.operand_size", emi.opSize);
++    writer.set("emi.address_size", emi.addrSize);
++    writer.set("emi.stack_size", emi.stackSize);
++    writer.set("emi.displacement_size", emi.dispSize);
++    writer.set("emi.mode", static_cast<uint8_t>(emi.mode));
++    writer.reference("decode_cache.selected", instMap, "decode-cache");
++    writer.set("decode_cache.count", instCacheMap.size());
++    for (const auto &[mode, cache] : instCacheMap)
++        writer.reference("decode_cache.mode[" + std::to_string(mode) + "]", cache, "decode-cache");
++    writer.string("coverage.unsupported", "decoded-static-instruction-and-microcode-rom-payloads;decode-cache-address-pages;reset-state-scratch-storage");
++    return std::move(writer.fields);
++}
++
+ Decoder::State
+ Decoder::doResetState()
+ {
+--- a/src/arch/x86/decoder.hh
++++ b/src/arch/x86/decoder.hh
+@@ -29,6 +29,7 @@
+ #ifndef __ARCH_X86_DECODER_HH__
+ #define __ARCH_X86_DECODER_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <cassert>
+ #include <unordered_map>
+ #include <vector>
+@@ -257,6 +258,8 @@
+     void process();
+ 
+   public:
++    std::map<std::string, std::string> crucibleModeledFields() const override;
++
+     Decoder(const X86DecoderParams &p) : InstDecoder(p, &fetchChunk)
+     {
+         emi.reset();
+--- a/src/arch/x86/isa.cc
++++ b/src/arch/x86/isa.cc
+@@ -109,6 +109,22 @@
+         tc->getDecoderPtr()->as<Decoder>().setM5Reg(m5reg);
+ }
+ 
++std::map<std::string, std::string>
++ISA::crucibleModeledFields() const
++{
++    CrucibleStateWriter writer;
++    crucibleBaseFields(writer, "isa");
++    writer.set("misc_registers.count", misc_reg::NumRegs);
++    for (size_t index = 0; index < misc_reg::NumRegs; ++index)
++        writer.set("misc_registers[" + std::to_string(index) + "]", regVal[index]);
++    writer.set("cpuid.present", cpuid != nullptr);
++    if (cpuid)
++        cpuid->crucibleFields(writer, "cpuid");
++    writer.string("vendor_cache", vendorString);
++    writer.string("coverage.unsupported", "thread-context-transfer-and-register-class-polymorphism;probes");
++    return std::move(writer.fields);
++}
++
+ void
+ ISA::clear()
+ {
+--- a/src/arch/x86/isa.hh
++++ b/src/arch/x86/isa.hh
+@@ -29,6 +29,7 @@
+ #ifndef __ARCH_X86_ISA_HH__
+ #define __ARCH_X86_ISA_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <iostream>
+ #include <string>
+ 
+@@ -61,6 +62,7 @@
+     std::string vendorString;
+ 
+   public:
++    std::map<std::string, std::string> crucibleModeledFields() const override;
+     void clear() override;
+ 
+     PCStateBase *
+--- a/src/cpu/o3/cpu.cc
++++ b/src/cpu/o3/cpu.cc
+@@ -275,6 +275,9 @@
+         renameMap[tid].crucibleState(writer, prefix + ".speculative_rename");
+         commitRenameMap[tid].crucibleState(writer, prefix + ".committed_rename");
+         writer.string(prefix + ".isa", isa[tid] ? isa[tid]->name() : "");
++        writer.set(prefix + ".native_thread_present", thread[tid] != nullptr);
++        if (thread[tid])
++            thread[tid]->crucibleFields(writer, prefix + ".native_state");
+         const auto exiting = exitingThreads.find(tid);
+         writer.set(prefix + ".exiting_present", exiting != exitingThreads.end());
+         if (exiting != exitingThreads.end())
+--- a/src/cpu/o3/thread_state.cc
++++ b/src/cpu/o3/thread_state.cc
+@@ -54,6 +54,34 @@
+ {}
+ 
+ void
++ThreadState::crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const
++{
++    crucibleBaseFields(writer, prefix);
++    writer.set(prefix + ".no_squash_from_context", noSquashFromTC);
++    writer.set(prefix + ".trap_pending", trapPending);
++    writer.reference(prefix + ".htm_checkpoint", htmCheckpoint.get(), "htm-checkpoint");
++    // The instruction event queue's thresholds are committed counts, not ticks.
++    const auto events = const_cast<EventQueue &>(comInstEventQueue).crucibleEventInventory();
++    writer.set(prefix + ".committed_events.count", events.size());
++    for (size_t index = 0; index < events.size(); ++index) {
++        const auto key = prefix + ".committed_event[" + std::to_string(index) + "]";
++        const auto &event = events[index];
++        writer.string(key + ".alias", event.alias);
++        writer.string(key + ".native_identity", event.identity);
++        writer.set(key + ".threshold", event.when);
++        writer.set(key + ".priority", event.priority);
++        writer.set(key + ".flags", event.flags);
++        writer.string(key + ".type", event.type);
++        writer.string(key + ".description", event.description);
++        for (const auto &[field, value] : event.fields)
++            writer.string(key + ".payload." + field, value);
++        if (event.fields.empty())
++            writer.string(key + ".coverage.unsupported", "unknown-committed-instruction-event-payload");
++    }
++    writer.string(prefix + ".coverage.unsupported", "pc-event-queue;htm-checkpoint-private-state;process-thread-context-transfer");
++}
++
++void
+ ThreadState::serialize(CheckpointOut &cp) const
+ {
+     gem5::ThreadState::serialize(cp);
+--- a/src/cpu/o3/thread_state.hh
++++ b/src/cpu/o3/thread_state.hh
+@@ -41,6 +41,7 @@
+ #ifndef __CPU_O3_THREAD_STATE_HH__
+ #define __CPU_O3_THREAD_STATE_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <memory>
+ 
+ #include "cpu/thread_context.hh"
+@@ -91,6 +92,9 @@
+     /** Pointer to the hardware transactional memory checkpoint. */
+     std::unique_ptr<BaseHTMCheckpoint> htmCheckpoint;
+ 
++    /** Reads retained per-thread control and committed-instruction event custody. */
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const;
++
+     ThreadState(CPU *_cpu, int _thread_num, Process *_process);
+ 
+     void serialize(CheckpointOut &cp) const override;
+--- a/src/cpu/thread_state.hh
++++ b/src/cpu/thread_state.hh
+@@ -29,6 +29,7 @@
+ #ifndef __CPU_THREAD_STATE_HH__
+ #define __CPU_THREAD_STATE_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include "cpu/base.hh"
+ #include "cpu/thread_context.hh"
+ #include "sim/process.hh"
+@@ -55,6 +56,23 @@
+     void serialize(CheckpointOut &cp) const override;
+ 
+     void unserialize(CheckpointIn &cp) override;
++
++    /** Reads persistent thread counters and ownership without activating a context. */
++    void crucibleBaseFields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        writer.set(prefix + ".numInst", numInst);
++        writer.set(prefix + ".numOp", numOp);
++        writer.set(prefix + ".numLoad", numLoad);
++        writer.set(prefix + ".startNumLoad", startNumLoad);
++        writer.set(prefix + "._status", _status);
++        writer.set(prefix + "._contextId", _contextId);
++        writer.set(prefix + "._threadId", _threadId);
++        writer.set(prefix + ".lastActivate", lastActivate);
++        writer.set(prefix + ".lastSuspend", lastSuspend);
++        writer.set(prefix + ".storeCondFailures", storeCondFailures);
++        writer.string(prefix + ".cpu", baseCpu ? baseCpu->name() : "");
++        writer.reference(prefix + ".process", process, "process");
++    }
+ 
+     int cpuId() const { return baseCpu->cpuId(); }
+ 

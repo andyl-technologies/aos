@@ -1,0 +1,466 @@
+--- a/src/arch/x86/pcstate.hh
++++ b/src/arch/x86/pcstate.hh
+@@ -53,7 +53,7 @@
+   protected:
+     using Base = GenericISA::UPCState<8>;
+ 
+-    uint8_t _size;
++    uint8_t _size = 0;
+ 
+   public:
+     void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override
+--- a/src/base/circular_queue.hh
++++ b/src/base/circular_queue.hh
+@@ -415,6 +415,7 @@
+     void crucibleState(CrucibleStateWriter &writer, const std::string &prefix,
+                        Visitor visitor) const
+     {
++        writer.reference(prefix + ".identity", this, "circular-queue");
+         writer.set(prefix + ".capacity", _capacity);
+         writer.set(prefix + ".size", _size);
+         writer.set(prefix + ".head", _head);
+--- a/src/cpu/inst_res.hh
++++ b/src/cpu/inst_res.hh
+@@ -38,6 +38,7 @@
+ #ifndef __CPU_INST_RES_HH__
+ #define __CPU_INST_RES_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <cstdint>
+ #include <cstring>
+ #include <memory>
+@@ -88,6 +89,25 @@
+     }
+ 
+   public:
++    /** Reads the selected variant and exact valid register bytes without copying a result. */
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        writer.set(prefix + ".valid", valid());
++        writer.set(prefix + ".blob_variant", blob());
++        if (!valid())
++            return;
++        writer.string(prefix + ".register_class", _regClass->name());
++        writer.set(prefix + ".register_bytes", _regClass->regBytes());
++        if (blob()) {
++            const auto *storage = static_cast<const uint8_t *>(getBlob());
++            writer.set(prefix + ".storage_present", storage != nullptr);
++            if (storage)
++                writer.bytes(prefix + ".value", storage, _regClass->regBytes());
++        } else {
++            writer.set(prefix + ".value", getRegVal());
++        }
++    }
++
+     /** Default constructor creates an invalid result. */
+     InstResult() {}
+     InstResult(const InstResult &other) : _regClass(other._regClass)
+--- a/src/cpu/o3/dyn_inst.hh
++++ b/src/cpu/o3/dyn_inst.hh
+@@ -204,7 +204,18 @@
+     /** The result of the instruction; assumes an instruction can have many
+      *  destination registers.
+      */
+-    std::queue<InstResult> instResult;
++    /** Retains the ordinary FIFO API while permitting a const, non-copying view. */
++    class ResultQueue : public std::queue<InstResult>
++    {
++      public:
++        void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const
++        {
++            size_t index = 0;
++            for (const auto &result : this->c)
++                result.crucibleFields(writer, prefix + "[" + std::to_string(index++) + "]");
++        }
++    };
++    ResultQueue instResult;
+ 
+     /** PC state for this instruction. */
+     std::unique_ptr<PCStateBase> pc;
+@@ -261,6 +272,11 @@
+             predPC->crucibleFields(writer, prefix + ".predicted_pc_semantic_state");
+         }
+         writer.set(prefix + ".fault_present", fault != NoFault);
++        if (fault != NoFault)
++            fault->crucibleFields(writer, prefix + ".fault_state");
++        writer.set(prefix + ".static_instruction_present", static_cast<bool>(staticInst));
++        if (staticInst)
++            staticInst->crucibleFields(writer, prefix + ".static_instruction");
+         writer.set(prefix + ".source_count", _numSrcs);
+         writer.set(prefix + ".destination_count", _numDests);
+         const auto physical = [&](const std::string &key, const PhysRegId *id) {
+@@ -299,9 +315,28 @@
+             writer.set(prefix + ".memory_request_flags", memReqFlags);
+         }
+         writer.set(prefix + ".load_queue_index", lqIdx);
++        writer.reference(prefix + ".load_queue_alias", lqIt._cq, "circular-queue");
++        writer.set(prefix + ".load_queue_cursor", lqIt._idx);
++        writer.reference(prefix + ".store_queue_alias", sqIt._cq, "circular-queue");
++        writer.set(prefix + ".store_queue_cursor", sqIt._idx);
++        writer.set(prefix + ".transaction_id", htmUid);
++        writer.set(prefix + ".transaction_depth", htmDepth);
++        if (effAddrValid())
++            writer.set(prefix + ".effective_size", effSize);
++        if (translationStarted()) {
++            const auto *sender = savedRequest ?
++                static_cast<const Packet::SenderState *>(savedRequest) : nullptr;
++            writer.reference(prefix + ".saved_request", sender, "sender-state");
++            if (savedRequest)
++                savedRequest->crucibleState(writer, prefix + ".saved_request_state");
++        }
++        writer.reference(prefix + ".checker_request", reqToVerify.get(), "request");
++        if (reqToVerify)
++            reqToVerify->crucibleFields(writer, prefix + ".checker_request_state");
+         writer.set(prefix + ".store_queue_index", sqIdx);
+         writer.set(prefix + ".ready_registers", readyRegs);
+         writer.set(prefix + ".result_count", instResult.size());
++        instResult.crucibleFields(writer, prefix + ".result");
+     }
+ 
+     size_t numSrcs() const { return _numSrcs; }
+--- a/src/cpu/o3/fetch.cc
++++ b/src/cpu/o3/fetch.cc
+@@ -146,8 +146,12 @@
+         writer.set(key + ".stall.decode", stalls[tid].decode);
+         writer.set(key + ".stall.drain", stalls[tid].drain);
+         writer.reference(key + ".request", memReq[tid].get(), "request");
++        if (memReq[tid])
++            memReq[tid]->crucibleFields(writer, key + ".request_state");
+         cruciblePCReference(writer, key + ".pc", pc[tid].get());
+         writer.set(key + ".macroop_present", static_cast<bool>(macroop[tid]));
++        if (macroop[tid])
++            macroop[tid]->crucibleFields(writer, key + ".macroop_state");
+         if (fetchBufferValid[tid])
+             writer.bytes(key + ".buffer", fetchBuffer[tid], fetchBufferSize);
+         writer.set(key + ".queue.count", fetchQueue[tid].size());
+@@ -335,7 +339,11 @@
+     CrucibleStateWriter writer;
+     writer.string("fetch_owner", fetch->name());
+     writer.set("fault_present", fault != NoFault);
++    if (fault != NoFault)
++        fault->crucibleFields(writer, "fault_state");
+     writer.reference("request", req.get(), "request");
++    if (req)
++        req->crucibleFields(writer, "request_state");
+     writer.string("callback", "Fetch::finishTranslation");
+     writer.string("coverage.unsupported", "request-private-payload;polymorphic-fault-payload");
+     return std::move(writer.fields);
+--- a/src/cpu/o3/lsq.cc
++++ b/src/cpu/o3/lsq.cc
+@@ -1114,6 +1114,12 @@
+                                const std::string &prefix) const
+ {
+     writer.string(prefix + ".native_type", typeid(*this).name());
++    if (typeid(*this) != typeid(SingleDataRequest) &&
++        typeid(*this) != typeid(SplitDataRequest) &&
++        typeid(*this) != typeid(UnsquashableDirectRequest)) {
++        writer.string(prefix + ".coverage.unsupported", "unknown-lsq-request-constructor-and-private-fields");
++        return;
++    }
+     writer.string(prefix + ".unit", _port.name());
+     crucibleInstructionReference(writer, prefix + ".instruction", _inst);
+     writer.set(prefix + ".state", _state);
+@@ -1132,16 +1138,24 @@
+     writer.set(prefix + ".result_storage_present", _res != nullptr);
+     writer.set(prefix + ".atomic_operation_present", _amo_op != nullptr);
+     writer.set(prefix + ".fragment_count", _reqs.size());
+-    for (size_t index = 0; index < _reqs.size(); ++index)
+-        writer.reference(prefix + ".request[" + std::to_string(index) + "]", _reqs[index].get(), "request");
++    for (size_t index = 0; index < _reqs.size(); ++index) {
++        const auto key = prefix + ".request[" + std::to_string(index) + "]";
++        writer.reference(key, _reqs[index].get(), "request");
++        if (_reqs[index])
++            _reqs[index]->crucibleFields(writer, key + ".state");
++    }
+     for (size_t index = 0; index < _packets.size(); ++index) {
+         const auto key = prefix + ".packet[" + std::to_string(index) + "]";
+         writer.reference(key, _packets[index], "packet");
+         if (_packets[index])
+             _packets[index]->crucibleFields(writer, key + ".state");
+     }
+-    for (size_t index = 0; index < _fault.size(); ++index)
+-        writer.set(prefix + ".fragment_fault[" + std::to_string(index) + "].present", _fault[index] != NoFault);
++    for (size_t index = 0; index < _fault.size(); ++index) {
++        const auto key = prefix + ".fragment_fault[" + std::to_string(index) + "]";
++        writer.set(key + ".present", _fault[index] != NoFault);
++        if (_fault[index] != NoFault)
++            _fault[index]->crucibleFields(writer, key + ".state");
++    }
+     for (size_t index = 0; index < _byteEnable.size(); ++index)
+         writer.set(prefix + ".byte_enable[" + std::to_string(index) + "]", static_cast<bool>(_byteEnable[index]));
+     writer.string(prefix + ".coverage.unsupported",
+@@ -1157,6 +1171,8 @@
+     writer.set(prefix + ".split.fragment_count", numFragments);
+     writer.set(prefix + ".split.received_packets", numReceivedPackets);
+     writer.reference(prefix + ".split.main_request", _mainReq.get(), "request");
++    if (_mainReq)
++        _mainReq->crucibleFields(writer, prefix + ".split.main_request_state");
+     writer.reference(prefix + ".split.main_packet", _mainPacket, "packet");
+     if (_mainPacket)
+         _mainPacket->crucibleFields(writer, prefix + ".split.main_packet_state");
+--- a/src/cpu/o3/thread_state.cc
++++ b/src/cpu/o3/thread_state.cc
+@@ -78,7 +78,8 @@
+         if (event.fields.empty())
+             writer.string(key + ".coverage.unsupported", "unknown-committed-instruction-event-payload");
+     }
+-    writer.string(prefix + ".coverage.unsupported", "pc-event-queue;htm-checkpoint-private-state;process-thread-context-transfer");
++    pcEventQueue.crucibleFields(writer, prefix + ".pc_events");
++    writer.string(prefix + ".coverage.unsupported", "htm-checkpoint-private-state;process-thread-context-transfer");
+ }
+ 
+ void
+--- a/src/cpu/pc_event.hh
++++ b/src/cpu/pc_event.hh
+@@ -29,6 +29,7 @@
+ #ifndef __PC_EVENT_HH__
+ #define __PC_EVENT_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <vector>
+ 
+ #include "base/logging.hh"
+@@ -61,6 +62,21 @@
+     Addr pc() const { return evpc; }
+ 
+     bool remove();
++    void crucibleBaseFields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        writer.reference(prefix + ".identity", this, "pc-event");
++        writer.reference(prefix + ".scope", scope, "pc-event-scope");
++        writer.string(prefix + ".native_type", typeid(*this).name());
++        writer.string(prefix + ".description", description);
++        writer.set(prefix + ".pc", evpc);
++    }
++
++    virtual void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        crucibleBaseFields(writer, prefix);
++        writer.string(prefix + ".coverage.unsupported", "unknown-pc-event-private-payload");
++    }
++
+     virtual void process(ThreadContext *tc) = 0;
+ };
+ 
+@@ -110,6 +126,19 @@
+     bool doService(Addr pc, ThreadContext *tc);
+ 
+   public:
++    /** Reads stable PC tie order without servicing callbacks. */
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        writer.reference(prefix + ".identity", static_cast<const PCEventScope *>(this), "pc-event-scope");
++        writer.set(prefix + ".count", pcMap.size());
++        for (size_t index = 0; index < pcMap.size(); ++index) {
++            const auto key = prefix + ".event[" + std::to_string(index) + "]";
++            writer.set(key + ".present", pcMap[index] != nullptr);
++            if (pcMap[index])
++                pcMap[index]->crucibleFields(writer, key);
++        }
++    }
++
+     PCEventQueue();
+     ~PCEventQueue();
+ 
+@@ -152,6 +181,14 @@
+     bool remove;
+ 
+   public:
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override
++    {
++        crucibleBaseFields(writer, prefix);
++        writer.set(prefix + ".remove_after_trigger", remove);
++        if (typeid(*this) != typeid(BreakPCEvent))
++            writer.string(prefix + ".coverage.unsupported", "unknown-pc-event-subclass-private-fields");
++    }
++
+     BreakPCEvent(PCEventScope *s, const std::string &desc, Addr addr,
+                  bool del = false);
+     virtual void process(ThreadContext *tc);
+@@ -160,6 +197,13 @@
+ class PanicPCEvent : public PCEvent
+ {
+   public:
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override
++    {
++        crucibleBaseFields(writer, prefix);
++        if (typeid(*this) != typeid(PanicPCEvent))
++            writer.string(prefix + ".coverage.unsupported", "unknown-pc-event-subclass-private-fields");
++    }
++
+     PanicPCEvent(PCEventScope *s, const std::string &desc, Addr pc);
+     virtual void process(ThreadContext *tc);
+ };
+--- a/src/cpu/pred/bpred_unit.hh
++++ b/src/cpu/pred/bpred_unit.hh
+@@ -99,6 +99,9 @@
+             for (const auto *history : predHist[tid]) {
+                 const auto key = base + "[" + std::to_string(ordinal++) + "]";
+                 writer.set(key + ".sequence", history->seqNum);
++                writer.set(key + ".static_instruction_present", static_cast<bool>(history->inst));
++                if (history->inst)
++                    history->inst->crucibleFields(writer, key + ".static_instruction");
+                 writer.set(key + ".thread", history->tid);
+                 writer.set(key + ".pc", history->pc);
+                 writer.set(key + ".type", history->type);
+--- a/src/cpu/pred/tournament.hh
++++ b/src/cpu/pred/tournament.hh
+@@ -108,6 +108,10 @@
+         if (!raw)
+             return;
+         // This object allocated BPHistory; another predictor never supplies its payload.
++        if (typeid(*this) != typeid(TournamentBP)) {
++            writer.string(prefix + ".coverage.unsupported", "unknown-conditional-predictor-history-layout");
++            return;
++        }
+         const auto &history = *static_cast<const BPHistory *>(raw);
+         writer.set(prefix + ".global_history", history.globalHistory);
+         writer.set(prefix + ".local_history_index", history.localHistoryIdx);
+--- a/src/cpu/static_inst.hh
++++ b/src/cpu/static_inst.hh
+@@ -43,6 +43,7 @@
+ #ifndef __CPU_STATIC_INST_HH__
+ #define __CPU_STATIC_INST_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <array>
+ #include <bitset>
+ #include <cstdint>
+@@ -114,6 +115,45 @@
+     std::array<uint8_t, MiscRegClass + 1> _numTypedDestRegs = {};
+ 
+   public:
++
++    /** Reads common generated-instruction metadata without executing or decoding. */
++    void crucibleBaseFields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        writer.reference(prefix + ".identity", this, "static-instruction");
++        writer.string(prefix + ".native_type", typeid(*this).name());
++        writer.string(prefix + ".flags", flags.to_string());
++        writer.set(prefix + ".operation_class", _opClass);
++        writer.set(prefix + ".source_count", _numSrcRegs);
++        writer.set(prefix + ".destination_count", _numDestRegs);
++        writer.set(prefix + ".instruction_bytes", _size);
++        writer.string(prefix + ".mnemonic", mnemonic ? mnemonic : "");
++        writer.set(prefix + ".cached_disassembly_present", cachedDisassembly != nullptr);
++        if (cachedDisassembly)
++            writer.string(prefix + ".cached_disassembly", *cachedDisassembly);
++        for (size_t type = 0; type < _numTypedDestRegs.size(); ++type)
++            writer.set(prefix + ".typed_destination[" + std::to_string(type) + "]", _numTypedDestRegs[type]);
++        const auto reg = [&](const std::string &key, const RegId &id) {
++            writer.set(key + ".class", id.classValue());
++            writer.set(key + ".index", id.index());
++            writer.set(key + ".pinned_writes", id.getNumPinnedWrites());
++        };
++        fatal_if((_numSrcRegs && !_srcRegIdxPtr) || (_numDestRegs && !_destRegIdxPtr),
++                 "Instruction metadata has missing operand arrays");
++        for (size_t index = 0; index < _numSrcRegs; ++index)
++            reg(prefix + ".source[" + std::to_string(index) + "]", srcRegIdx(index));
++        for (size_t index = 0; index < _numDestRegs; ++index)
++            reg(prefix + ".destination[" + std::to_string(index) + "]", destRegIdx(index));
++    }
++
++    virtual void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        if (!writer.beginBody(this, "static-instruction")) {
++            writer.reference(prefix + ".identity", this, "static-instruction");
++            return;
++        }
++        crucibleBaseFields(writer, prefix);
++        writer.string(prefix + ".coverage.unsupported", "generated-instruction-private-fields-and-microops");
++    }
+ 
+     /// @name Register information.
+     /// The sum of the different numDestRegs([type])-s equals numDestRegs().
+--- a/src/sim/faults.hh
++++ b/src/sim/faults.hh
+@@ -41,6 +41,7 @@
+ #ifndef __FAULTS_HH__
+ #define __FAULTS_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include "base/types.hh"
+ #include "cpu/null_static_inst.hh"
+ #include "cpu/static_inst_fwd.hh"
+@@ -58,6 +59,20 @@
+ class FaultBase
+ {
+   public:
++    /** Reads known fault payloads without invoking trap or retry handling. */
++    void crucibleBaseFields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        writer.reference(prefix + ".identity", this, "fault");
++        writer.string(prefix + ".native_type", typeid(*this).name());
++        writer.string(prefix + ".name", name());
++    }
++
++    virtual void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        crucibleBaseFields(writer, prefix);
++        writer.string(prefix + ".coverage.unsupported", "unknown-polymorphic-fault-payload");
++    }
++
+     virtual FaultName name() const = 0;
+     virtual void invoke(ThreadContext * tc, const StaticInstPtr &inst=
+                         nullStaticInstPtr);
+@@ -69,6 +84,14 @@
+   private:
+     std::string panicStr;
+   public:
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override
++    {
++        crucibleBaseFields(writer, prefix);
++        writer.string(prefix + ".panic", panicStr);
++        if (typeid(*this) != typeid(UnimpFault))
++            writer.string(prefix + ".coverage.unsupported", "unknown-fault-subclass-private-fields");
++    }
++
+     UnimpFault(std::string _str) : panicStr(_str) {}
+ 
+     FaultName
+@@ -119,6 +142,14 @@
+     Addr vaddr;
+   public:
+     FaultName name() const override { return "Generic page table fault"; }
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override
++    {
++        crucibleBaseFields(writer, prefix);
++        writer.set(prefix + ".virtual_address", vaddr);
++        if (typeid(*this) != typeid(GenericPageTableFault))
++            writer.string(prefix + ".coverage.unsupported", "unknown-fault-subclass-private-fields");
++    }
++
+     GenericPageTableFault(Addr va) : vaddr(va) {}
+     void invoke(ThreadContext *tc, const StaticInstPtr &inst=
+                 nullStaticInstPtr) override;
+@@ -131,6 +162,14 @@
+     Addr vaddr;
+   public:
+     FaultName name() const override { return "Generic alignment fault"; }
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override
++    {
++        crucibleBaseFields(writer, prefix);
++        writer.set(prefix + ".virtual_address", vaddr);
++        if (typeid(*this) != typeid(GenericAlignmentFault))
++            writer.string(prefix + ".coverage.unsupported", "unknown-fault-subclass-private-fields");
++    }
++
+     GenericAlignmentFault(Addr va) : vaddr(va) {}
+     void invoke(ThreadContext *tc, const StaticInstPtr &inst=
+                 nullStaticInstPtr) override;
+@@ -144,6 +183,15 @@
+     HtmFailureFaultCause cause;
+ 
+   public:
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override
++    {
++        crucibleBaseFields(writer, prefix);
++        writer.set(prefix + ".transaction", htmUid);
++        writer.set(prefix + ".cause", cause);
++        if (typeid(*this) != typeid(GenericHtmFailureFault))
++            writer.string(prefix + ".coverage.unsupported", "unknown-fault-subclass-private-fields");
++    }
++
+     GenericHtmFailureFault(uint64_t htm_uid, HtmFailureFaultCause _cause)
+       : htmUid(htm_uid), cause(_cause)
+     {}

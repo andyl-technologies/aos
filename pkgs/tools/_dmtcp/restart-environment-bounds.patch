@@ -1,0 +1,84 @@
+--- a/src/dmtcpplugin.cpp
++++ b/src/dmtcpplugin.cpp
+@@ -345,6 +345,11 @@
+     return RESTART_ENV_NULL_PTR;
+   }
+ 
++  if (maxvaluelen == 0) {
++    close(env_fd);
++    return RESTART_ENV_TOOLONG;
++  }
++
+   struct stat statbuf;
+   size_t size = RESTART_ENV_MAXSIZE;
+ 
+@@ -362,13 +367,11 @@
+ 
+   int namelen = strlen(name);
+   *value = '\0'; // Default is null string
+-  char *pos = NULL;
+-
+   while (rc == RESTART_ENV_NOTFOUND) {
+     memset(env_buf, 0, size);
+ 
+     // read a flattened name-value pairs list
+-    int count = Util::readLine(env_fd, env_buf, size);
++    ssize_t count = Util::readAll(env_fd, env_buf, size - 1);
+     if (count == 0) {
+       break;
+     } else if (count == -1) {
+@@ -378,24 +381,29 @@
+     } else {
+       char *start_ptr = env_buf;
+ 
+-      // iterate over the flattened list of name-value pairs
+-      while (start_ptr - env_buf < (int)sizeof(env_buf)) {
+-        pos = NULL;
+-        if (strncmp(start_ptr, name, namelen) == 0) {
+-          if ((pos = strchr(start_ptr, '='))) {
+-            strncpy(value, pos + 1, maxvaluelen);
+-            if (strlen(pos + 1) >= maxvaluelen) {
+-              rc = RESTART_ENV_TOOLONG; // value does not fit in the
+-                                        // user-provided value buffer
+-              break;
+-            }
+-          }
+-          rc = RESTART_ENV_SUCCESS;
++      // The environment is NUL-delimited; pointer size is not the buffer
++      // bound, and newlines can be part of values. Match complete names.
++      while (static_cast<size_t>(start_ptr - env_buf) <
++             static_cast<size_t>(count) && *start_ptr) {
++        size_t remaining = count - (start_ptr - env_buf);
++        size_t entry_length = strnlen(start_ptr, remaining);
++        if (entry_length == remaining) {
++          rc = RESTART_ENV_INTERNAL_ERROR;
+           break;
+         }
+-
+-        // skip over a name-value pair
+-        start_ptr += strlen(start_ptr) + 1;
++        if (entry_length > static_cast<size_t>(namelen) &&
++            memcmp(start_ptr, name, namelen) == 0 &&
++            start_ptr[namelen] == '=') {
++          size_t value_length = entry_length - namelen - 1;
++          if (value_length >= maxvaluelen) {
++            rc = RESTART_ENV_TOOLONG;
++          } else {
++            memcpy(value, start_ptr + namelen + 1, value_length + 1);
++            rc = RESTART_ENV_SUCCESS;
++          }
++          break;
++        }
++        start_ptr += entry_length + 1;
+       }
+     }
+   }
+@@ -405,7 +413,7 @@
+   } // Else env_buf was allocated on the stack as env_buf_small.
+   close(env_fd);
+   JWARNING(rc != RESTART_ENV_DMTCP_BUF_TOO_SMALL)
+-    (name) (sizeof(env_buf)).Text("Resize env_buf[]");
++    (name) (size).Text("Resize env_buf[]");
+   return rc;
+ }
+ 

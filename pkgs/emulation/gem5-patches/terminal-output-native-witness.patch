@@ -1,0 +1,138 @@
+--- a/src/dev/serial/SConscript
++++ b/src/dev/serial/SConscript
+@@ -46,6 +46,8 @@
+ 
+ Source('serial.cc')
+ Source('simple.cc')
++SimObject('CrucibleTerminalWitness.py', sim_objects=['CrucibleTerminalWitness'])
++Source('crucible_terminal_witness.cc')
+ Source('terminal.cc')
+ Source('uart.cc')
+ Source('uart8250.cc')
+--- /dev/null
++++ b/src/dev/serial/CrucibleTerminalWitness.py
+@@ -0,0 +1,15 @@
++# SPDX-License-Identifier: MIT
++# Copyright (c) 2026 Andyl, Inc.
++
++from m5.params import Param
++from m5.SimObject import SimObject
++from m5.util.pybind import PyBindMethod
++
++
++class CrucibleTerminalWitness(SimObject):
++    """Schedules native output callbacks; this fixture carries no admission."""
++    type = "CrucibleTerminalWitness"
++    cxx_header = "dev/serial/crucible_terminal_witness.hh"
++    cxx_class = "gem5::CrucibleTerminalWitness"
++    cxx_exports = [PyBindMethod("scheduleWrites")]
++    terminal = Param.Terminal("Actual terminal under native event custody")
+--- /dev/null
++++ b/src/dev/serial/crucible_terminal_witness.hh
+@@ -0,0 +1,50 @@
++/*
++ * SPDX-License-Identifier: MIT
++ * Copyright (c) 2026 Andyl, Inc.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
++ * of the Software, and to permit persons to whom the Software is furnished to do
++ * so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in all
++ * copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++ * SOFTWARE.
++ */
++
++
++#ifndef __DEV_CRUCIBLE_TERMINAL_WITNESS_HH__
++#define __DEV_CRUCIBLE_TERMINAL_WITNESS_HH__
++
++#include "dev/serial/terminal.hh"
++#include "sim/eventq.hh"
++#include "sim/sim_object.hh"
++
++namespace gem5
++{
++
++struct CrucibleTerminalWitnessParams;
++
++class CrucibleTerminalWitness : public SimObject
++{
++  public:
++    explicit CrucibleTerminalWitness(const CrucibleTerminalWitnessParams &params);
++    bool scheduleWrites(Tick tick);
++
++  private:
++    Terminal &terminal;
++    EventFunctionWrapper publicationEvent;
++};
++
++} // namespace gem5
++
++#endif
+--- /dev/null
++++ b/src/dev/serial/crucible_terminal_witness.cc
+@@ -0,0 +1,53 @@
++/*
++ * SPDX-License-Identifier: MIT
++ * Copyright (c) 2026 Andyl, Inc.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
++ * of the Software, and to permit persons to whom the Software is furnished to do
++ * so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in all
++ * copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++ * SOFTWARE.
++ */
++
++
++#include "dev/serial/crucible_terminal_witness.hh"
++
++#include "params/CrucibleTerminalWitness.hh"
++#include "sim/simulate.hh"
++
++namespace gem5
++{
++
++CrucibleTerminalWitness::CrucibleTerminalWitness(
++    const CrucibleTerminalWitnessParams &params)
++    : SimObject(params), terminal(*params.terminal),
++      publicationEvent([this] {
++          terminal.writeData('A');
++          terminal.writeData(0);
++          terminal.writeData('B');
++      }, name() + ".publication")
++{
++}
++
++bool
++CrucibleTerminalWitness::scheduleWrites(Tick tick)
++{
++    if (crucibleModelIsExecuting() || publicationEvent.scheduled() || tick <= curTick())
++        return false;
++    schedule(publicationEvent, tick);
++    return true;
++}
++
++} // namespace gem5

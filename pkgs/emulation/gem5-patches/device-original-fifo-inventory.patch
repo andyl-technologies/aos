@@ -1,0 +1,130 @@
+--- a/src/dev/virtio/VirtIONet.py
++++ b/src/dev/virtio/VirtIONet.py
+@@ -37,6 +37,8 @@
+         PyBindMethod("pendingRxCompletionMetadata"),
+         PyBindMethod("pendingTxMetadata"),
+         PyBindMethod("pendingTxBytes"),
++        PyBindMethod("crucibleTxPublicationInventory"),
++        PyBindMethod("crucibleTxPublicationBytes"),
+         PyBindMethod("acknowledgeTx"),
+         PyBindMethod("setExecutionParent"),
+     ]
+--- a/src/dev/virtio/net.hh
++++ b/src/dev/virtio/net.hh
+@@ -64,6 +64,10 @@
+     /** Returns the oldest unpublished TX identity/native tick/causal parent. */
+     std::vector<uint64_t> pendingTxMetadata() const;
+     std::vector<uint8_t> pendingTxBytes() const;
++    /** Reads every original unpublished FIFO body without consuming an entry. */
++    std::vector<std::vector<uint64_t>> crucibleTxPublicationInventory() const;
++    /** Reads the bytes of one actual retained identity; missing IDs throw. */
++    std::vector<uint8_t> crucibleTxPublicationBytes(uint64_t id) const;
+     /** Idempotently acknowledges the oldest actual native output. */
+     bool acknowledgeTx(uint64_t id);
+     /** Binds subsequent native outputs to the controller's sealed execution. */
+--- a/src/dev/virtio/net.cc
++++ b/src/dev/virtio/net.cc
+@@ -23,6 +23,8 @@
+ 
+ #include "dev/virtio/net.hh"
+ 
++#include <stdexcept>
++
+ #include <algorithm>
+ #include <limits>
+ #include <sstream>
+@@ -300,6 +302,27 @@
+ VirtIONet::pendingTxBytes() const
+ {
+     return outputs.empty() ? std::vector<uint8_t>{} : outputs.front().bytes;
++}
++
++
++std::vector<std::vector<uint64_t>>
++VirtIONet::crucibleTxPublicationInventory() const
++{
++    std::vector<std::vector<uint64_t>> result;
++    for (const auto &frame : outputs) {
++        result.push_back({frame.id, frame.tick, frame.parent, frame.eventOrdinal, frame.tickOrdinal});
++    }
++    return result;
++}
++
++std::vector<uint8_t>
++VirtIONet::crucibleTxPublicationBytes(uint64_t id) const
++{
++    for (const auto &frame : outputs) {
++        if (frame.id == id)
++            return frame.bytes;
++    }
++    throw std::invalid_argument("publication bytes require an original retained identity");
+ }
+ 
+ bool
+--- a/src/dev/virtio/VirtIOHostRequest.py
++++ b/src/dev/virtio/VirtIOHostRequest.py
+@@ -33,6 +33,8 @@
+         PyBindMethod("setExecutionParent"),
+         PyBindMethod("pendingRequestMetadata"),
+         PyBindMethod("pendingRequestBytes"),
++        PyBindMethod("crucibleRequestPublicationInventory"),
++        PyBindMethod("crucibleRequestPublicationBytes"),
+         PyBindMethod("pendingCompletionMetadata"),
+         PyBindMethod("acknowledgeRequest"),
+         PyBindMethod("stageReply"),
+--- a/src/dev/virtio/host_request.hh
++++ b/src/dev/virtio/host_request.hh
+@@ -48,6 +48,10 @@
+     bool setExecutionParent(uint64_t parent);
+     std::vector<uint64_t> pendingRequestMetadata() const;
+     std::vector<uint8_t> pendingRequestBytes() const;
++    /** Reads every original unpublished FIFO body without consuming an entry. */
++    std::vector<std::vector<uint64_t>> crucibleRequestPublicationInventory() const;
++    /** Reads the bytes of one actual retained identity; missing IDs throw. */
++    std::vector<uint8_t> crucibleRequestPublicationBytes(uint64_t id) const;
+     /** Returns actual completed DMA birth and bytes without custody authority. */
+     std::vector<uint64_t> pendingCompletionMetadata() const;
+     bool acknowledgeRequest(uint64_t id);
+--- a/src/dev/virtio/host_request.cc
++++ b/src/dev/virtio/host_request.cc
+@@ -22,6 +22,8 @@
+  */
+ 
+ #include "dev/virtio/host_request.hh"
++
++#include <stdexcept>
+ 
+ #include <algorithm>
+ #include <cstring>
+@@ -267,6 +269,31 @@
+     return {};
+ }
+ 
++
++std::vector<std::vector<uint64_t>>
++VirtIOHostRequest::crucibleRequestPublicationInventory() const
++{
++    std::vector<std::vector<uint64_t>> result;
++    for (const auto &request : requests) {
++        if (request.acknowledged)
++            continue;
++        result.push_back({request.id, request.birthTick, request.parent, request.opcode, request.sector, request.tag, request.payloadBytes, request.birthOrdinal, request.birthTickOrdinal});
++    }
++    return result;
++}
++
++std::vector<uint8_t>
++VirtIOHostRequest::crucibleRequestPublicationBytes(uint64_t id) const
++{
++    for (const auto &request : requests) {
++        if (request.acknowledged)
++            continue;
++        if (request.id == id)
++            return request.bytes;
++    }
++    throw std::invalid_argument("publication bytes require an original retained identity");
++}
++
+ bool
+ VirtIOHostRequest::acknowledgeRequest(uint64_t id)
+ {

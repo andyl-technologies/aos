@@ -7,6 +7,8 @@
   "crucible-assert"
   "crucible-shmem"
   "crucible-protocol"
+  "crucible-node-contract"
+  "crucible-node-provider"
   "crucible-device"
   "crucible-debug-gateway"
   "crucible-qemu"

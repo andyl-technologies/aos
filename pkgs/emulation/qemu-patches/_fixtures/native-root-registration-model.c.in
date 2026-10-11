@@ -1,0 +1,113 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Actual registration body with explicitly synthetic source-root predicates. */
+#include "qemu/osdep.h"
+#include "qemu/main-loop.h"
+#include "qemu/crucible-node-root.h"
+#include "plugins/qemu-plugin.h"
+
+static CrucibleNodeRootPolicy node_root_policy;
+static bool node_root_launch_pinned;
+static bool node_root_registered;
+static uint64_t node_root_launch_process;
+static bool model_bql, model_pins, model_sim, model_icount, model_prepared;
+static uint64_t model_raw;
+
+bool bql_locked(void)
+{
+    return model_bql;
+}
+
+bool crucible_node_root_original_pins_match(void)
+{
+    return model_pins;
+}
+
+static bool current_accel_is_sim(void)
+{
+    return model_sim;
+}
+
+static bool icount_crucible_sim_configuration_valid(void)
+{
+    return model_icount;
+}
+
+uint64_t qemu_plugin_icount_raw(void)
+{
+    return model_raw;
+}
+
+static bool crucible_node_control_prepared_scope_matches(const uint8_t *scope)
+{
+    return model_prepared;
+}
+
+@NATIVE_REGISTRATION@
+
+static void original_scope(void)
+{
+    uint8_t *bytes = (uint8_t *)&node_root_policy;
+
+    memset(&node_root_policy, 0, sizeof(node_root_policy));
+    for (size_t index = 8; index < sizeof(node_root_policy); index++) {
+        bytes[index] = (index % 251) + 1;
+    }
+    node_root_policy.version = CRUCIBLE_NODE_ROOT_POLICY_VERSION;
+    node_root_policy.size = sizeof(node_root_policy);
+    node_root_policy.initial_firmware_length = 65536;
+    node_root_policy.ram_length = 32 * 1024 * 1024;
+    node_root_policy.deterministic_seed = 8254;
+    node_root_policy.maximum_microsteps = 64;
+    node_root_policy.maximum_service_span = 1000;
+    node_root_policy.mapping_id = CRUCIBLE_NODE_ROOT_MAPPING_CPU_THEN_TIMERS;
+    node_root_policy.controller_edition = CRUCIBLE_NODE_ROOT_CONTROLLER_EDITION;
+    node_root_policy.root_profile = CRUCIBLE_NODE_ROOT_PROFILE_MICROVM;
+    node_root_policy.digest_algorithm = CRUCIBLE_NODE_ROOT_DIGEST_SHA256;
+    node_root_policy.maximum_callbacks = 64;
+    node_root_policy.reserved = 0;
+    node_root_launch_process = getpid();
+    node_root_launch_pinned = model_bql = model_pins = model_sim = model_icount = true;
+    model_prepared = node_root_registered = false;
+    model_raw = 0;
+}
+
+int main(void)
+{
+    CrucibleNodeRootPolicy request;
+
+    original_scope();
+    assert(qemu_plugin_register_crucible_node_root_policy(NULL) == -EINVAL);
+    for (size_t index = 0; index < sizeof(request); index++) {
+        request = node_root_policy;
+        ((uint8_t *)&request)[index] ^= 1;
+        assert(qemu_plugin_register_crucible_node_root_policy(&request) == -EINVAL);
+        assert(!node_root_registered);
+    }
+    request = node_root_policy;
+
+    model_bql = false;
+    assert(qemu_plugin_register_crucible_node_root_policy(&request) == -EINVAL);
+    model_bql = true;
+    model_pins = false;
+    assert(qemu_plugin_register_crucible_node_root_policy(&request) == -EINVAL);
+    model_pins = true;
+    node_root_launch_process++;
+    assert(qemu_plugin_register_crucible_node_root_policy(&request) == -EINVAL);
+    node_root_launch_process = getpid();
+    model_raw = 1;
+    assert(qemu_plugin_register_crucible_node_root_policy(&request) == -ESTALE);
+    model_raw = 0;
+    model_prepared = true;
+    assert(qemu_plugin_register_crucible_node_root_policy(&request) == -ESTALE);
+    model_prepared = false;
+
+    assert(qemu_plugin_register_crucible_node_root_policy(&request) == 0);
+    assert(node_root_registered);
+    /* Registration retry is historical exact-policy recovery, not new work. */
+    model_raw = 19;
+    assert(qemu_plugin_register_crucible_node_root_policy(&request) == 0);
+    request.root_preparation_commitment[0] ^= 1;
+    assert(qemu_plugin_register_crucible_node_root_policy(&request) == -EINVAL);
+    puts("PASS actual Root328 body: original328, foreign bytes/source/epoch, historical retry; synthetic predicates, no Ready");
+    return 0;
+}

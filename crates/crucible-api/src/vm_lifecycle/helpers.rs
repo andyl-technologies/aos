@@ -1,6 +1,8 @@
 //! Private construction and event-log helpers for production VM lifecycles.
 
 use super::*;
+#[cfg(test)]
+use crate::node_lifecycle::collect_terminal_actions;
 use std::fmt::Write as _;
 use std::io::Read;
 
@@ -427,10 +429,6 @@ pub(super) fn live_unix_gdbstub_endpoint(path: &Path) -> Result<String, Lifecycl
     Ok(format!("unix:{file_name},server=on,wait=off"))
 }
 
-pub(super) fn no_named_trigger_leaf(_leaf: ConditionLeaf<'_>) -> bool {
-    false
-}
-
 pub(super) fn merge_event_log_append(
     outcome: &mut QuantumOutcome,
     append: SchedulerEventLogAppend,
@@ -459,50 +457,6 @@ pub(super) fn prepend_event_log_appends(
         outcome.event_log_segment_text = append.segment_text.clone();
         outcome.event_log_segment_hash = append.segment_hash;
         outcome.event_log_offset = append.offset;
-    }
-}
-
-pub(super) fn merge_terminal_verdict(
-    terminal_verdict: &mut Option<QuantumTerminalVerdict>,
-    firings: &EventFirings,
-) {
-    let mut passed = false;
-    let mut violations = Vec::new();
-    for firing in firings.iter() {
-        collect_terminal_actions(firing.action(), &mut passed, &mut violations);
-    }
-    match (passed, violations.is_empty()) {
-        (_, false) => match terminal_verdict {
-            Some(QuantumTerminalVerdict::Failed(existing)) => existing.extend(violations),
-            _ => *terminal_verdict = Some(QuantumTerminalVerdict::Failed(violations)),
-        },
-        (true, true) if terminal_verdict.is_none() => {
-            *terminal_verdict = Some(QuantumTerminalVerdict::Passed);
-        }
-        _ => {}
-    }
-}
-
-pub(super) fn collect_terminal_actions(
-    action: &Action,
-    passed: &mut bool,
-    violations: &mut Vec<String>,
-) {
-    match action {
-        Action::Pass => *passed = true,
-        Action::Fail { reason } => violations.push(reason.clone()),
-        Action::Group(actions) => {
-            for action in actions {
-                collect_terminal_actions(action, passed, violations);
-            }
-        }
-        Action::ArmTimer { .. }
-        | Action::CancelTimer { .. }
-        | Action::StartNode { .. }
-        | Action::StopNode { .. }
-        | Action::CreateSavepoint { .. }
-        | Action::Fork { .. }
-        | Action::Log { .. } => {}
     }
 }
 

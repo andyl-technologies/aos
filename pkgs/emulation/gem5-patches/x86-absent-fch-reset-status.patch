@@ -1,0 +1,249 @@
+diff --git a/src/dev/SConscript b/src/dev/SConscript
+--- a/src/dev/SConscript
++++ b/src/dev/SConscript
+@@ -32,6 +32,10 @@
+     'PioDevice', 'BasicPioDevice', 'DmaDevice', 'DmaVirtDevice', 'IsaFake'])
+ Source('io_device.cc')
+ Source('isa_fake.cc')
++
++SimObject('AbsentFchResetStatus.py', sim_objects=[
++    'AbsentFchResetStatus', 'AbsentFchResetStatusWitness'])
++Source('absent_fch_reset_status.cc')
+ Source('dma_device.cc')
+ Source('dma_virt_device.cc')
+ 
+diff --git a/src/dev/AbsentFchResetStatus.py b/src/dev/AbsentFchResetStatus.py
+new file mode 100644
+--- /dev/null
++++ b/src/dev/AbsentFchResetStatus.py
+@@ -0,0 +1,28 @@
++# SPDX-License-Identifier: MIT
++# Copyright (c) 2026 Andyl, Inc.
++
++from m5.objects.Device import BasicPioDevice
++from m5.SimObject import SimObject
++from m5.params import Param
++from m5.util.pybind import PyBindMethod
++
++
++class AbsentFchResetStatus(BasicPioDevice):
++    """Declares an absent optional AMD FCH reset-status register.
++
++    A board without FCH returns the explicitly recognized error response.
++    No reset reason, write behavior or other chipset register is fabricated.
++    """
++    type = "AbsentFchResetStatus"
++    cxx_header = "dev/absent_fch_reset_status.hh"
++    cxx_class = "gem5::AbsentFchResetStatus"
++    pio_addr = 0xFED803C0
++
++
++class AbsentFchResetStatusWitness(SimObject):
++    """Exercises real native request/response bounds without guest admission."""
++    type = "AbsentFchResetStatusWitness"
++    cxx_header = "dev/absent_fch_reset_status.hh"
++    cxx_class = "gem5::AbsentFchResetStatusWitness"
++    cxx_exports = [PyBindMethod("run")]
++    device = Param.AbsentFchResetStatus("Actual native absent-register model")
+diff --git a/src/dev/absent_fch_reset_status.hh b/src/dev/absent_fch_reset_status.hh
+new file mode 100644
+--- /dev/null
++++ b/src/dev/absent_fch_reset_status.hh
+@@ -0,0 +1,62 @@
++/*
++ * SPDX-License-Identifier: MIT
++ * Copyright (c) 2026 Andyl, Inc.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
++ * of the Software, and to permit persons to whom the Software is furnished to do
++ * so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in all
++ * copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++ * SOFTWARE.
++ */
++
++#ifndef __DEV_ABSENT_FCH_RESET_STATUS_HH__
++#define __DEV_ABSENT_FCH_RESET_STATUS_HH__
++
++#include "dev/io_device.hh"
++#include "sim/sim_object.hh"
++
++namespace gem5
++{
++
++struct AbsentFchResetStatusParams;
++struct AbsentFchResetStatusWitnessParams;
++
++/** Explicit absence response, not an implementation of AMD FCH hardware. */
++class AbsentFchResetStatus : public BasicPioDevice
++{
++  public:
++    static constexpr Addr RegisterAddress = 0xfed803c0;
++    static constexpr unsigned RegisterBytes = 4;
++
++    explicit AbsentFchResetStatus(const AbsentFchResetStatusParams &params);
++    Tick read(PacketPtr packet) override;
++    Tick write(PacketPtr packet) override;
++};
++
++/** Native Packet mechanism witness; it carries no capture authority. */
++class AbsentFchResetStatusWitness : public SimObject
++{
++  public:
++    explicit AbsentFchResetStatusWitness(
++        const AbsentFchResetStatusWitnessParams &params);
++    unsigned run();
++
++  private:
++    AbsentFchResetStatus &device;
++};
++
++} // namespace gem5
++
++#endif
+diff --git a/src/dev/absent_fch_reset_status.cc b/src/dev/absent_fch_reset_status.cc
+new file mode 100644
+--- /dev/null
++++ b/src/dev/absent_fch_reset_status.cc
+@@ -0,0 +1,130 @@
++/*
++ * SPDX-License-Identifier: MIT
++ * Copyright (c) 2026 Andyl, Inc.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
++ * of the Software, and to permit persons to whom the Software is furnished to do
++ * so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in all
++ * copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++ * SOFTWARE.
++ */
++
++#include "dev/absent_fch_reset_status.hh"
++
++#include <algorithm>
++#include <array>
++#include <limits>
++#include <memory>
++
++#include "base/logging.hh"
++#include "mem/packet.hh"
++#include "mem/packet_access.hh"
++#include "params/AbsentFchResetStatus.hh"
++#include "params/AbsentFchResetStatusWitness.hh"
++
++namespace gem5
++{
++
++AbsentFchResetStatus::AbsentFchResetStatus(
++    const AbsentFchResetStatusParams &params)
++    : BasicPioDevice(params, RegisterBytes)
++{
++    fatal_if(params.pio_addr != RegisterAddress,
++        "Optional absent FCH reset-status model has an immutable address");
++}
++
++Tick
++AbsentFchResetStatus::read(PacketPtr packet)
++{
++    const bool admitted = packet->isRead() &&
++        packet->getAddr() == RegisterAddress &&
++        packet->getSize() == RegisterBytes;
++    packet->makeAtomicResponse();
++    if (!admitted) {
++        packet->setBadAddress();
++        return pioDelay;
++    }
++
++    // Linux's AMD reset-status probe explicitly treats all bits set as the
++    // error response. This board has no FCH and therefore no reset state.
++    packet->setLE<uint32_t>(std::numeric_limits<uint32_t>::max());
++    return pioDelay;
++}
++
++Tick
++AbsentFchResetStatus::write(PacketPtr packet)
++{
++    // Absence cannot gain mutable reset-reason state through guest writes.
++    packet->makeAtomicResponse();
++    packet->setBadAddress();
++    return pioDelay;
++}
++
++AbsentFchResetStatusWitness::AbsentFchResetStatusWitness(
++    const AbsentFchResetStatusWitnessParams &params)
++    : SimObject(params), device(*params.device)
++{
++}
++
++unsigned
++AbsentFchResetStatusWitness::run()
++{
++    struct Case
++    {
++        Addr address;
++        unsigned size;
++        bool write;
++        bool accepted;
++    };
++    const std::array<Case, 10> cases{{
++        {AbsentFchResetStatus::RegisterAddress, 4, false, true},
++        {AbsentFchResetStatus::RegisterAddress, 1, false, false},
++        {AbsentFchResetStatus::RegisterAddress, 2, false, false},
++        {AbsentFchResetStatus::RegisterAddress, 8, false, false},
++        {AbsentFchResetStatus::RegisterAddress - 1, 4, false, false},
++        {AbsentFchResetStatus::RegisterAddress + 1, 4, false, false},
++        {std::numeric_limits<Addr>::max(), 4, false, false},
++        {AbsentFchResetStatus::RegisterAddress, 4, true, false},
++        {AbsentFchResetStatus::RegisterAddress, 1, true, false},
++        {AbsentFchResetStatus::RegisterAddress, 4, false, true},
++    }};
++
++    for (const Case &test : cases) {
++        auto request = std::make_shared<Request>(
++            test.address, test.size, Request::Flags(0), Request::funcRequestorId);
++        Packet packet(request, test.write ? MemCmd::WriteReq : MemCmd::ReadReq);
++        packet.allocate();
++        std::fill_n(packet.getPtr<uint8_t>(), test.size, uint8_t(0x55));
++        if (test.write)
++            device.write(&packet);
++        else
++            device.read(&packet);
++        panic_if(!packet.isResponse() || packet.isError() == test.accepted,
++            "Absent-register witness observed the wrong native response");
++        if (test.accepted) {
++            panic_if(packet.getLE<uint32_t>() != 0xffffffff,
++                "Absent-register witness fabricated a reset status");
++        } else {
++            panic_if(packet.cmd != MemCmd::BadAddressError,
++                "Absent-register witness accepted an invalid address/width/write");
++            for (unsigned index = 0; index < test.size; ++index)
++                panic_if(packet.getPtr<uint8_t>()[index] != 0x55,
++                    "Invalid optional-register request changed payload bytes");
++        }
++    }
++    return cases.size();
++}
++
++} // namespace gem5

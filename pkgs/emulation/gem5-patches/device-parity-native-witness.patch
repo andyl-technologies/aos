@@ -1,0 +1,248 @@
+diff --git a/src/dev/virtio/VirtIOQueueWitness.py b/src/dev/virtio/VirtIOQueueWitness.py
+new file mode 100644
+--- /dev/null
++++ b/src/dev/virtio/VirtIOQueueWitness.py
+@@ -0,0 +1,34 @@
++#  * SPDX-License-Identifier: MIT
++#  * Copyright (c) 2026 Andyl, Inc.
++#  *
++#  * Permission is hereby granted, free of charge, to any person obtaining a copy
++#  * of this software and associated documentation files (the "Software"), to deal
++#  * in the Software without restriction, including without limitation the rights
++#  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
++#  * of the Software, and to permit persons to whom the Software is furnished to do
++#  * so, subject to the following conditions:
++#  *
++#  * The above copyright notice and this permission notice shall be included in all
++#  * copies or substantial portions of the Software.
++#  *
++#  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++#  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++#  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++#  * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++#  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++#  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++#  * SOFTWARE.
++
++"""Exercises actual split-ring descriptor processing without a guest CPU."""
++
++from m5.SimObject import SimObject, PyBindMethod
++from m5.params import Param
++from m5.proxy import Parent
++
++
++class VirtIOQueueWitness(SimObject):
++    type = "VirtIOQueueWitness"
++    cxx_header = "dev/virtio/queue_witness.hh"
++    cxx_class = "gem5::VirtIOQueueWitness"
++    cxx_exports = [PyBindMethod("run")]
++    system = Param.System(Parent.any, "Actual physical memory used by the probe")
+diff --git a/src/dev/virtio/queue_witness.hh b/src/dev/virtio/queue_witness.hh
+new file mode 100644
+--- /dev/null
++++ b/src/dev/virtio/queue_witness.hh
+@@ -0,0 +1,51 @@
++/*
++ * SPDX-License-Identifier: MIT
++ * Copyright (c) 2026 Andyl, Inc.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
++ * of the Software, and to permit persons to whom the Software is furnished to do
++ * so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in all
++ * copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++ * SOFTWARE.
++ */
++
++#ifndef __DEV_VIRTIO_QUEUE_WITNESS_HH__
++#define __DEV_VIRTIO_QUEUE_WITNESS_HH__
++
++#include <string>
++#include <vector>
++
++#include "sim/sim_object.hh"
++
++namespace gem5
++{
++
++struct VirtIOQueueWitnessParams;
++class System;
++
++/** Native mechanism probe; it makes no provider qualification claim. */
++class VirtIOQueueWitness : public SimObject
++{
++  public:
++    explicit VirtIOQueueWitness(const VirtIOQueueWitnessParams &params);
++    std::vector<uint64_t> run(const std::string &test);
++
++  private:
++    System &system;
++};
++
++} // namespace gem5
++
++#endif
+diff --git a/src/dev/virtio/queue_witness.cc b/src/dev/virtio/queue_witness.cc
+new file mode 100644
+--- /dev/null
++++ b/src/dev/virtio/queue_witness.cc
+@@ -0,0 +1,135 @@
++/*
++ * SPDX-License-Identifier: MIT
++ * Copyright (c) 2026 Andyl, Inc.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
++ * of the Software, and to permit persons to whom the Software is furnished to do
++ * so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in all
++ * copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++ * SOFTWARE.
++ */
++
++#include "dev/virtio/queue_witness.hh"
++
++#include <array>
++
++#include "base/logging.hh"
++#include "dev/virtio/base.hh"
++#include "params/VirtIOQueueWitness.hh"
++#include "sim/system.hh"
++
++namespace gem5
++{
++
++VirtIOQueueWitness::VirtIOQueueWitness(const VirtIOQueueWitnessParams &params)
++    : SimObject(params), system(*params.system)
++{
++}
++
++std::vector<uint64_t>
++VirtIOQueueWitness::run(const std::string &test)
++{
++    class Queue : public VirtQueue
++    {
++      public:
++        explicit Queue(PortProxy &proxy)
++            : VirtQueue(proxy, ByteOrder::little, 8), checksum(0) {}
++
++        void onNotifyDescriptor(VirtDescriptor *desc) override
++        {
++            std::array<uint8_t, 4> payload{};
++            desc->chainRead(0, payload.data(), payload.size());
++            for (uint8_t value : payload)
++                checksum += value;
++            produceDescriptor(desc, 0);
++        }
++
++        uint64_t checksum;
++    } queue(system.physProxy);
++
++    if (test == "invalid-size") {
++        queue.setSize(3);
++        panic("Invalid queue size was accepted");
++    }
++    if (test == "oversized-queue") {
++        queue.setSize(16);
++        panic("Oversized queue was accepted");
++    }
++
++    if (test == "legacy-wrap") {
++        queue.setAddress(0xfffffffffffff000ULL);
++        panic("Wrapped legacy ring was accepted");
++    }
++
++    const bool legacy = test == "legacy";
++    if (legacy) {
++        queue.setAddress(0x1000);
++    } else {
++        queue.setSize(2);
++        queue.setModernAddress(0, test == "unaligned" ? 0x1001 : test == "ring-wrap" ? 0xfffffffffffffff0ULL : 0x1000);
++        queue.setModernAddress(1, 0x3000);
++        queue.setModernAddress(2, 0x7000);
++        // An unpublished queue must not even read a guest ring.
++        panic_if(queue.consumeDescriptor(), "Disabled queue consumed a chain");
++        queue.setReady(true);
++    }
++    if (test == "live-reprogram") {
++        queue.setModernAddress(0, 0x2000);
++        panic("Ready queue was reprogrammed");
++    }
++
++    const std::array<uint8_t, 4> payload{1, 3, 7, 11};
++    system.physProxy.writeBlob(0x9000, payload.data(), payload.size());
++    vring_desc descriptor{};
++    descriptor.addr = htole(uint64_t(0x9000));
++    descriptor.len = htole(uint32_t(payload.size()));
++    if (test == "buffer-wrap")
++        descriptor.addr = htole(uint64_t(0xfffffffffffffffeULL));
++    if (test == "cycle") {
++        descriptor.flags = htole(uint16_t(VRING_DESC_F_NEXT));
++        descriptor.next = htole(uint16_t(1));
++    }
++    if (test == "indirect")
++        descriptor.flags = htole(uint16_t(VRING_DESC_F_INDIRECT));
++    system.physProxy.writeBlob(queue.getAddress() + sizeof(vring_desc),
++                               &descriptor, sizeof(descriptor));
++
++    // Avail and used rings deliberately reside in noncontiguous memory.
++    const uint16_t flags = 0;
++    const uint16_t available = htole(uint16_t(test == "overrun" ? 9 : 1));
++    const uint16_t head = htole(uint16_t(test == "invalid-index" ? 8 : 1));
++    system.physProxy.writeBlob(queue.driverAddress(), &flags, sizeof(flags));
++    system.physProxy.writeBlob(queue.driverAddress() + 2, &available,
++                               sizeof(available));
++    system.physProxy.writeBlob(queue.driverAddress() + 4, &head, sizeof(head));
++    const std::array<uint8_t, 16> zero{};
++    system.physProxy.writeBlob(queue.deviceAddress(), zero.data(), zero.size());
++    if (test == "guest-used-index") {
++        const uint16_t forgedIndex = htole(uint16_t(7));
++        system.physProxy.writeBlob(queue.deviceAddress() + 2, &forgedIndex,
++                                   sizeof(forgedIndex));
++    }
++    queue.onNotify();
++
++    uint16_t usedIndex;
++    vring_used_elem used{};
++    system.physProxy.readBlob(queue.deviceAddress() + 2, &usedIndex,
++                              sizeof(usedIndex));
++    system.physProxy.readBlob(queue.deviceAddress() + 4, &used, sizeof(used));
++    return {queue.checksum, letoh(usedIndex), letoh(used.id), letoh(used.len),
++            queue.getSize(), queue.consumeDescriptor() == nullptr};
++}
++
++} // namespace gem5
+diff --git a/src/dev/virtio/SConscript b/src/dev/virtio/SConscript
+--- a/src/dev/virtio/SConscript
++++ b/src/dev/virtio/SConscript
+@@ -45,6 +45,9 @@
+ SimObject('VirtIO9P.py', sim_objects=[
+     'VirtIO9PBase', 'VirtIO9PProxy', 'VirtIO9PDiod', 'VirtIO9PSocket'])
+ 
++SimObject('VirtIOQueueWitness.py', sim_objects=['VirtIOQueueWitness'])
++Source('queue_witness.cc')
++
+ Source('base.cc')
+ Source('pci.cc')
+ Source('console.cc')

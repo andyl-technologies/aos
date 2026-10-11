@@ -15,6 +15,13 @@
   crucible-qemu-plugin,
   linux-crucible,
   crucible-fixtures,
+  gem5-closed-profile,
+  gem5-arm-model-profile,
+  gem5-arm-root-model-profile,
+  crucible-reference-implementation,
+  crucible-reference-lineage-implementation,
+  crucible-reference-lineage-reader-typed-implementation,
+  crucible-reference-progress-implementation,
   bash,
   coreutils,
   grep,
@@ -29,8 +36,19 @@
 }: let
   version = "0.1.0";
   platformSupport = {
-    build = [{abi = ["gnu"]; os = ["linux"];}];
-    host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+    build = [
+      {
+        abi = ["gnu"];
+        os = ["linux"];
+      }
+    ];
+    host = [
+      {
+        abi = ["gnu"];
+        cpu = ["x86_64" "aarch64"];
+        os = ["linux"];
+      }
+    ];
     target = [];
     role = "public-package";
   };
@@ -127,18 +145,56 @@
   rpcProtocolMinor = sourceConst "RPC ABI minor version" "pub const RPC_PROTOCOL_MINOR: u16 = " apiRpcAbi;
   rpcProtocolPatch = sourceConst "RPC ABI patch version" "pub const RPC_PROTOCOL_PATCH: u16 = " apiRpcAbi;
   rpcProtocolBuild = sourceStringConst "RPC ABI build tag" "pub const RPC_PROTOCOL_BUILD: &str = \"" apiRpcAbi;
-  controllerCargoEnv = {
-    OPENSSL_DIR = "${openssl}";
-    OPENSSL_LIB_DIR = "${openssl}/lib";
-    OPENSSL_INCLUDE_DIR = "${openssl}/include";
-    OPENSSL_NO_VENDOR = "1";
-    OPENSSL_STATIC = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    PROTOC = "${buildProtobuf}/bin/protoc";
-  };
+  referenceQualificationInputs = lib.optionals (!stdenv.isCross) [crucible-reference-implementation];
+  # This distinct installation pins ordered-consumption source identity only;
+  # its native association/source-class qualification remains independently gated.
+  referenceLineageMechanismInputs = lib.optionals (!stdenv.isCross) [crucible-reference-lineage-implementation];
+  # Typed peer selection remains a distinct source installation; retaining its
+  # recipe, binaries and source closure grants no native reader qualification.
+  referenceTypedLineageInputs = lib.optionals (!stdenv.isCross) [crucible-reference-lineage-reader-typed-implementation];
+  # This distinct source package proves an original native prefix before response
+  # loss; its candidate remains Unknown and cannot establish class acceptance.
+  referenceProgressMechanismInputs = lib.optionals (!stdenv.isCross) [crucible-reference-progress-implementation];
+  # These fixed source-owned bundles remain separate from the SE profile.
+  # Root bytes support the native mechanism API; the older model is fixture-only.
+  armRootMechanismInputs = [gem5-arm-root-model-profile];
+  armModelFixtureInputs = [gem5-arm-model-profile];
+  controllerCargoEnv =
+    {
+      OPENSSL_DIR = "${openssl}";
+      OPENSSL_LIB_DIR = "${openssl}/lib";
+      OPENSSL_INCLUDE_DIR = "${openssl}/include";
+      OPENSSL_NO_VENDOR = "1";
+      OPENSSL_STATIC = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      PROTOC = "${buildProtobuf}/bin/protoc";
+      # Native gem5 qualification comes from the source-owned package whose real
+      # continuation witnesses passed during its build, never a runtime override.
+      CRUCIBLE_GEM5_CLOSED_PROFILE_MANIFEST = "${gem5-closed-profile}/share/crucible/gem5/closed-profile.json";
+      # Distinct compiled bindings cannot turn fixed ARM mechanism evidence
+      # into an ordinary execution selector or substitute the old model profile.
+      CRUCIBLE_GEM5_ARM_ROOT_MODEL_MANIFEST = "${gem5-arm-root-model-profile}/share/crucible/gem5/arm-model-profile.json";
+      CRUCIBLE_GEM5_ARM_MODEL_MANIFEST = "${gem5-arm-model-profile}/share/crucible/gem5/arm-model-profile.json";
+    }
+    // lib.optionalAttrs (!stdenv.isCross) {
+      # This descriptor supplies source identity only. Actual native qualification
+      # retains its original complete population and cannot infer passing review.
+      CRUCIBLE_REFERENCE_IMPLEMENTATION_MANIFEST = "${crucible-reference-implementation}/share/crucible/reference/implementation.json";
+      CRUCIBLE_REFERENCE_LINEAGE_IMPLEMENTATION_MANIFEST = "${crucible-reference-lineage-implementation}/share/crucible/reference-lineage/implementation.json";
+      CRUCIBLE_REFERENCE_LINEAGE_READER_TYPED_IMPLEMENTATION_MANIFEST = "${crucible-reference-lineage-reader-typed-implementation}/share/crucible/reference-lineage-reader-typed/implementation.json";
+      CRUCIBLE_REFERENCE_PROGRESS_IMPLEMENTATION_MANIFEST = "${crucible-reference-progress-implementation}/share/crucible/reference-progress/implementation.json";
+    };
   controllerArtifactContract = {
     family = "crucible-apache-host-release-and-test";
-    nativeInputs = map toString [buildRustDev buildPkgConfig openssl sqlite buildProtobuf];
+    nativeInputs = map toString (
+      [buildRustDev buildPkgConfig openssl sqlite buildProtobuf gem5-closed-profile]
+      ++ referenceQualificationInputs
+      ++ referenceLineageMechanismInputs
+      ++ referenceTypedLineageInputs
+      ++ referenceProgressMechanismInputs
+      ++ armRootMechanismInputs
+      ++ armModelFixtureInputs
+    );
     licenseScope = "Apache-2.0";
   };
   controllerArtifacts = mkCargoArtifacts {
@@ -154,9 +210,15 @@
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${workspaceCargoFlags} --features crucible-cli/test-double"
     ];
     buildDeps =
-      [buildRustDev buildPkgConfig openssl sqlite buildProtobuf]
+      [buildRustDev buildPkgConfig openssl sqlite buildProtobuf gem5-closed-profile]
+      ++ referenceQualificationInputs
+      ++ referenceLineageMechanismInputs
+      ++ referenceTypedLineageInputs
+      ++ referenceProgressMechanismInputs
+      ++ armRootMechanismInputs
+      ++ armModelFixtureInputs
       ++ lib.optionals stdenv.isCross [buildPackages.crucible-controller];
-    runtimeDeps = [openssl sqlite];
+    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs ++ referenceLineageMechanismInputs ++ referenceTypedLineageInputs ++ referenceProgressMechanismInputs ++ armRootMechanismInputs;
   };
   debugGatewayArtifactContract = {
     family = "crucible-gpl-debug-gateway-release-and-test";
@@ -263,8 +325,17 @@
     cargoFlags = packageFlags;
     cargoTestFlags = "${packageFlags} --features crucible-cli/test-double";
     doCheck = true;
-    buildDeps = [buildRustDev buildPkgConfig openssl sqlite buildProtobuf];
-    runtimeDeps = [openssl sqlite];
+    buildDeps =
+      [buildRustDev buildPkgConfig openssl sqlite buildProtobuf gem5-closed-profile]
+      # Runtime-only test binding: never a compiled or controller output reference.
+      ++ lib.optionals (!stdenv.isCross) [qemu-crucible]
+      ++ referenceQualificationInputs
+      ++ referenceLineageMechanismInputs
+      ++ referenceTypedLineageInputs
+      ++ referenceProgressMechanismInputs
+      ++ armRootMechanismInputs
+      ++ armModelFixtureInputs;
+    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs ++ referenceLineageMechanismInputs ++ referenceTypedLineageInputs ++ referenceProgressMechanismInputs ++ armRootMechanismInputs;
     # The controller is the Apache side of a process boundary. Fail the build
     # if any QEMU-side implementation, guest kernel, or fixture enters either
     # its direct references or its runtime closure.
@@ -297,6 +368,84 @@
             ${workspaceCargoFlags}
         ''
         else ''
+          # Admission tests measure the original source-owned device. Keep its
+          # runtime-only binding out of controller compilation and outputs.
+          export CRUCIBLE_REFERENCE_DEVICE="${crucible-reference-implementation.passthru.binaries}/bin/crucible-reference-device"
+          test -x "$CRUCIBLE_REFERENCE_DEVICE"
+          # Native process-custody tests require the current source-built QEMU.
+          # This shell binding survives into check; Cargo never embeds its path.
+          export CRUCIBLE_NATIVE_PROBE_QEMU="${nativeQemuPath}"
+          test -x "$CRUCIBLE_NATIVE_PROBE_QEMU"
+          # The reference-only package has no ARM profile binding. Require this
+          # installed mechanism check in its native, source-bound controller.
+          cargo test \
+            --frozen \
+            --offline \
+            -j$NIX_BUILD_CORES \
+            -p crucible-node-provider \
+            --test gem5_arm_root_installed \
+            -- \
+            --ignored \
+            --exact actual_source_owned_root_bundle_is_distinct_and_inert
+          cargo test \
+            --frozen \
+            --offline \
+            -j$NIX_BUILD_CORES \
+            -p crucible-node-provider \
+            --test gem5_model \
+            -- \
+            --ignored \
+            --exact actual_source_installed_arm_bundle_remeasures_and_never_grants_admission
+          # The implementation depends on provider binaries, so its installed
+          # guard cohort runs only here, after that package is fully built.
+          # Missing runtime binding must fail this selected test before Child.
+          export CRUCIBLE_REFERENCE_LINEAGE_IMPLEMENTATION_MANIFEST="${crucible-reference-lineage-implementation}/share/crucible/reference-lineage/implementation.json"
+          cargo test \
+            --frozen \
+            --offline \
+            -j$NIX_BUILD_CORES \
+            -p crucible-node-provider \
+            --test lineage_guarded \
+            -- \
+            --ignored \
+            --list > lineage-installed-tests.txt
+          ${grep}/bin/grep -Fxq \
+            'borrowed_installed_callback_unwind_keeps_original_window_and_both_groups: test' \
+            lineage-installed-tests.txt
+          cargo test \
+            --frozen \
+            --offline \
+            -j$NIX_BUILD_CORES \
+            -p crucible-node-provider \
+            --test lineage_guarded \
+            -- \
+            --ignored \
+            --exact borrowed_installed_callback_unwind_keeps_original_window_and_both_groups
+          # The helper package has no executor authority. Its source-owned
+          # original-response-loss cohort runs after this exact package is built,
+          # with a mandatory compiled binding and exact test-population check.
+          export CRUCIBLE_REFERENCE_PROGRESS_IMPLEMENTATION_MANIFEST="${crucible-reference-progress-implementation}/share/crucible/reference-progress/implementation.json"
+          cargo test \
+            --frozen \
+            --offline \
+            -j$NIX_BUILD_CORES \
+            -p crucible-daemon \
+            --lib \
+            -- \
+            --ignored \
+            --list > progress-installed-tests.txt
+          ${grep}/bin/grep -Fxq \
+            'node_observed_executor::factory::reference_public::harness::completed_lifecycle_resend_native_test::actual_native_positive_prefix_precedes_original_missing_response_loss: test' \
+            progress-installed-tests.txt
+          cargo test \
+            --frozen \
+            --offline \
+            -j$NIX_BUILD_CORES \
+            -p crucible-daemon \
+            --lib \
+            -- \
+            --ignored \
+            --exact node_observed_executor::factory::reference_public::harness::completed_lifecycle_resend_native_test::actual_native_positive_prefix_precedes_original_missing_response_loss
           cargo test \
             --frozen \
             --offline \
@@ -383,6 +532,9 @@
 
     postInstall = ''
       test -x "$out/bin/crucible"
+      test -x "$out/bin/crucible-node-conformance"
+      test -x "$out/bin/crucible-reference-device"
+      test -x "$out/bin/crucible-reference-provider"
       install_example() {
         name="$1"
         messages="$2"

@@ -28,8 +28,32 @@ impl StoreObjectProfiler for CampaignObjectProfiler {
     ) -> Result<ObjectProfile, StoreError> {
         if is_campaign_envelope_kind(id.kind()) {
             let bytes = source.read_all(MAX_CAMPAIGN_ENVELOPE_BYTES)?;
-            let envelope = ObjectEnvelope::from_canonical_bytes_for_profile(&bytes)
-                .map_err(|_| StoreError::Corrupt { id })?;
+            let envelope = match ObjectEnvelope::from_canonical_bytes_for_profile(&bytes) {
+                Ok(envelope) => envelope,
+                Err(_) => {
+                    let envelope =
+                        crucible_cas::content_envelope::ContentEnvelope::from_canonical_bytes(
+                            &bytes,
+                        )
+                        .map_err(|_| StoreError::Corrupt { id })?;
+                    let record =
+                        crate::observed_node_attempt::ObservedEnvelopeRecord::decode(id, &envelope)
+                            .map_err(|_| StoreError::Corrupt { id })?
+                            .ok_or(StoreError::Corrupt { id })?;
+                    let (sensitivity, retention) = if record.is_evidence() {
+                        (SensitivityClass::Evidence, RetentionRole::Evidence)
+                    } else {
+                        (SensitivityClass::Metadata, RetentionRole::CampaignMetadata)
+                    };
+                    return Ok(ObjectProfile::new(
+                        id.kind(),
+                        source.logical_length(),
+                        sensitivity,
+                        Reconstructibility::Canonical,
+                        retention,
+                    ));
+                }
+            };
             if envelope.content_id() != id {
                 return Err(StoreError::Incompatible);
             }

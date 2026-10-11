@@ -5,8 +5,8 @@
 
 use super::*;
 use crate::{
-    ContentAddressedBlobRef, NodeTemplate, ReadyPoint, VmArchitecture, WhiteBoxPolicy,
-    WorldBlockLatency, WorldIoCoreConfig, WorldIoNode, WorldNode, WorldNodeDef,
+    ComputeNodeDef, ComputeNodeTemplate, ContentAddressedBlobRef, ReadyPoint, VmArchitecture,
+    WhiteBoxPolicy, WorldBlockLatency, WorldIoCoreConfig, WorldIoNode, WorldNodeDef,
 };
 use crucible_device::{
     AffineLatency, ComputedResponse, DeviceError, IoCore, IoSubNode, Request, Response,
@@ -70,10 +70,10 @@ fn fixture_at(
     let image = ok(store.put(&bytes));
     let world = ok(World::from_node_defs_and_links(
         vec![
-            WorldNodeDef::Vm(WorldNode {
+            WorldNodeDef::Vm(ComputeNodeDef {
                 id: id("a"),
                 arch: VmArchitecture::X86_64,
-                memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
                 cmdline: String::new(),
                 ready_point: ReadyPoint::FixedIcount {
                     icount: Icount { retired: ready },
