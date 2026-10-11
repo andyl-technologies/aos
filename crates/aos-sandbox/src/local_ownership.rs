@@ -449,7 +449,6 @@ fn read_protected_regular_at(
     Ok(bytes)
 }
 
-
 fn fixed_bootstrap_error() -> ProtectedLeaseAuthorityErrorV1 {
     ProtectedLeaseAuthorityErrorV1::Authority(DurableOwnershipAuthorityError::CorruptState)
 }

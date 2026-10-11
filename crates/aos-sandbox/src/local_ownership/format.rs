@@ -40,8 +40,7 @@ pub(super) fn decode_bootstrap(
         return Err(fixed_bootstrap_error());
     }
     let mut reader = BoundedReader::new(&payload[8..], |_| fixed_bootstrap_error());
-    let policy_length =
-        usize::try_from(reader.u32()?).map_err(|_| fixed_bootstrap_error())?;
+    let policy_length = usize::try_from(reader.u32()?).map_err(|_| fixed_bootstrap_error())?;
     if policy_length == 0 || policy_length > 64 * 1024 {
         return Err(fixed_bootstrap_error());
     }
@@ -100,8 +99,8 @@ fn read_artifact<'a>(
     reader: &mut BoundedReader<'a, OwnershipAuthorityError>,
     maximum: usize,
 ) -> Result<&'a [u8], OwnershipAuthorityError> {
-    let length = usize::try_from(reader.u32()?)
-        .map_err(|_| OwnershipAuthorityError::Unavailable)?;
+    let length =
+        usize::try_from(reader.u32()?).map_err(|_| OwnershipAuthorityError::Unavailable)?;
     if length == 0 || length > maximum {
         return Err(OwnershipAuthorityError::Unavailable);
     }

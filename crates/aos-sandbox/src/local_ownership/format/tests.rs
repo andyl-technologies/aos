@@ -1,8 +1,8 @@
 //! Structural local ownership format tests without trusted-file or live authority claims.
 
 use aos_sandbox_core::{
-    AssignmentEpoch, DesiredGeneration, IncarnationId, LeaseAssignment, NodeId,
-    ObjectDigest, SandboxId,
+    AssignmentEpoch, DesiredGeneration, IncarnationId, LeaseAssignment, NodeId, ObjectDigest,
+    SandboxId,
 };
 
 use super::*;
@@ -19,15 +19,20 @@ fn claim() -> OwnershipClaimV1 {
             IncarnationId::from_bytes([3; 16]),
             AssignmentEpoch::new(4),
             ObjectDigest::from_bytes([5; 32]),
-        ).unwrap(),
+        )
+        .unwrap(),
         DesiredGeneration::new(6),
         NodeId::from_bytes([7; 16]),
         100,
-    ).unwrap()
+    )
+    .unwrap()
 }
 
 fn seal(domain: &[u8], mut payload: Vec<u8>) -> Vec<u8> {
-    let checksum = Sha256::new().chain_update(domain).chain_update(&payload).finalize();
+    let checksum = Sha256::new()
+        .chain_update(domain)
+        .chain_update(&payload)
+        .finalize();
     payload.extend_from_slice(&checksum);
     payload
 }
@@ -74,7 +79,9 @@ fn bootstrap_returns_exact_raw_fields_at_the_policy_limit() {
 #[test]
 fn bootstrap_rejects_resealed_short_prefixes_lengths_and_trailing_bytes() {
     let payload = bootstrap_payload(&[11; 3], [12; 32]);
-    let mut malformed = (0..payload.len()).map(|length| payload[..length].to_vec()).collect::<Vec<_>>();
+    let mut malformed = (0..payload.len())
+        .map(|length| payload[..length].to_vec())
+        .collect::<Vec<_>>();
     for length in [0, 64 * 1024 + 1, u32::MAX] {
         let mut changed = payload.clone();
         changed[8..12].copy_from_slice(&length.to_be_bytes());
@@ -89,12 +96,19 @@ fn bootstrap_rejects_resealed_short_prefixes_lengths_and_trailing_bytes() {
 
     let mut bad_checksum = seal(BOOTSTRAP_DOMAIN, bootstrap_payload(&[11; 3], [12; 32]));
     *bad_checksum.last_mut().unwrap() ^= 1;
-    assert!(matches!(decode_bootstrap(&bad_checksum), Err(ProtectedLeaseAuthorityErrorV1::Authority(super::super::DurableOwnershipAuthorityError::CorruptState))));
+    assert!(matches!(
+        decode_bootstrap(&bad_checksum),
+        Err(ProtectedLeaseAuthorityErrorV1::Authority(
+            super::super::DurableOwnershipAuthorityError::CorruptState
+        ))
+    ));
 
     for payload in malformed {
         assert!(matches!(
             decode_bootstrap(&seal(BOOTSTRAP_DOMAIN, payload)),
-            Err(ProtectedLeaseAuthorityErrorV1::Authority(super::super::DurableOwnershipAuthorityError::CorruptState))
+            Err(ProtectedLeaseAuthorityErrorV1::Authority(
+                super::super::DurableOwnershipAuthorityError::CorruptState
+            ))
         ));
     }
 }
@@ -107,9 +121,18 @@ fn response_preserves_all_four_exact_artifacts_at_each_field_limit() {
         fields[index] = vec![13; limit];
         let (payload, _) = response_payload(&claim, &fields);
 
-        let response = decode_fixed_issuer_response(&seal(RESPONSE_DOMAIN, payload), &claim).unwrap();
+        let response =
+            decode_fixed_issuer_response(&seal(RESPONSE_DOMAIN, payload), &claim).unwrap();
 
-        assert_eq!([response.lease(), response.signature(), response.receipt(), response.receipt_signature()], fields.each_ref().map(Vec::as_slice));
+        assert_eq!(
+            [
+                response.lease(),
+                response.signature(),
+                response.receipt(),
+                response.receipt_signature()
+            ],
+            fields.each_ref().map(Vec::as_slice)
+        );
     }
 }
 
@@ -117,7 +140,9 @@ fn response_preserves_all_four_exact_artifacts_at_each_field_limit() {
 fn response_rejects_resealed_short_prefixes_lengths_and_trailing_bytes() {
     let claim = claim();
     let (payload, offsets) = response_payload(&claim, &artifacts());
-    let mut malformed = (0..payload.len()).map(|length| payload[..length].to_vec()).collect::<Vec<_>>();
+    let mut malformed = (0..payload.len())
+        .map(|length| payload[..length].to_vec())
+        .collect::<Vec<_>>();
     for (index, limit) in ARTIFACT_LIMITS.into_iter().enumerate() {
         for length in [0, u32::try_from(limit + 1).unwrap(), u32::MAX] {
             let mut changed = payload.clone();
@@ -130,7 +155,10 @@ fn response_rejects_resealed_short_prefixes_lengths_and_trailing_bytes() {
     malformed.push(trailing);
 
     for payload in malformed {
-        assert_eq!(decode_fixed_issuer_response(&seal(RESPONSE_DOMAIN, payload), &claim).unwrap_err(), OwnershipAuthorityError::Unavailable);
+        assert_eq!(
+            decode_fixed_issuer_response(&seal(RESPONSE_DOMAIN, payload), &claim).unwrap_err(),
+            OwnershipAuthorityError::Unavailable
+        );
     }
 }
 
@@ -146,7 +174,13 @@ fn response_checks_checksum_then_context_before_artifact_lengths() {
         let mut bad_checksum = valid_checksum.clone();
         *bad_checksum.last_mut().unwrap() ^= 1;
 
-        assert_eq!(decode_fixed_issuer_response(&bad_checksum, &claim).unwrap_err(), OwnershipAuthorityError::Unavailable);
-        assert_eq!(decode_fixed_issuer_response(&valid_checksum, &claim).unwrap_err(), OwnershipAuthorityError::IdempotencyConflict);
+        assert_eq!(
+            decode_fixed_issuer_response(&bad_checksum, &claim).unwrap_err(),
+            OwnershipAuthorityError::Unavailable
+        );
+        assert_eq!(
+            decode_fixed_issuer_response(&valid_checksum, &claim).unwrap_err(),
+            OwnershipAuthorityError::IdempotencyConflict
+        );
     }
 }
