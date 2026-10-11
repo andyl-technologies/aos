@@ -143,3 +143,12 @@ impl Memo {
 
 #[cfg(test)]
 mod record_tests;
+
+/// Applies advisory lookup, fresh replay and explicit divergent rebuild.
+pub mod cache;
+
+/// Replays supported immutable recipes with independently supplied context.
+pub mod evaluation;
+
+#[cfg(test)]
+mod evaluation_tests;

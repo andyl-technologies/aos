@@ -6,6 +6,9 @@
 use super::*;
 use alloc::{string::ToString, vec};
 
+mod format_properties;
+mod legacy_vectors;
+
 fn hex(value: &str) -> Vec<u8> {
     value
         .as_bytes()
