@@ -61,11 +61,20 @@ async fn positive(residue: Residue, unavailable_foreign_original: bool) {
     let before_state = {
         let holder = SingleHeld::acquire(fixture.guard().store()).await.unwrap();
         let held = holder.destination();
-        held.observe_publication_unrepaired()
-            .await
-            .unwrap()
-            .state()
-            .clone()
+        let observed = held.observe_publication_unrepaired().await.unwrap();
+        if matches!(residue, Residue::AbsentWithoutExclusion) {
+            let capabilities =
+                BucketCapabilities::decode(observed.logical()["CAPABILITIES"].as_deref().unwrap())
+                    .unwrap();
+            let key = format!(
+                "objects/index/{}/MANIFEST",
+                capabilities.generation.unwrap()
+            );
+            let manifest =
+                GenerationManifest::decode(observed.logical()[&key].as_deref().unwrap()).unwrap();
+            assert!(manifest.exclusions.as_ref().unwrap().is_empty());
+        }
+        observed.state().clone()
     };
     let paths = [
         fixture.pack.pack_key(),
@@ -188,6 +197,54 @@ async fn gc_copied_retirement_native_trash_only_selects_new_destination_owner() 
 #[tokio::test]
 async fn gc_copied_retirement_native_all_absent_selects_new_destination_owner() {
     positive(Residue::Absent, false).await;
+}
+
+#[tokio::test]
+async fn gc_copied_retirement_native_absent_source_exclusion_selects_new_destination_owner() {
+    positive(Residue::AbsentWithoutExclusion, false).await;
+}
+
+#[tokio::test]
+async fn gc_copied_retirement_native_new_exclusion_preserves_unrelated_binding() {
+    let (fixture, unrelated) =
+        CopiedFixture::new_with_unrelated_retirement(Residue::AbsentWithoutExclusion).await;
+    let operation = fixture.own().await;
+    let PermanentDeleteAuthorization::Copied(authorization) = &operation.authorization else {
+        panic!("actual copied authorization expected");
+    };
+    assert!(authorization.deletion_elapsed_nanos >= 60_000_000_000);
+    assert!(authorization.grace_elapsed_nanos >= 60_000_000_000);
+    assert_ne!(authorization.exclusion.cycle, 7);
+
+    let holder = SingleHeld::acquire(fixture.guard().store()).await.unwrap();
+    let held = holder.destination();
+    let observed = held.observe_publication_unrepaired().await.unwrap();
+    let capabilities =
+        BucketCapabilities::decode(observed.logical()["CAPABILITIES"].as_deref().unwrap()).unwrap();
+    let key = format!(
+        "objects/index/{}/MANIFEST",
+        capabilities.generation.unwrap()
+    );
+    let manifest =
+        GenerationManifest::decode(observed.logical()[&key].as_deref().unwrap()).unwrap();
+    let exclusions = manifest.exclusions.as_ref().unwrap();
+    assert_eq!(exclusions.len(), 2);
+    assert!(
+        exclusions
+            .windows(2)
+            .all(|rows| rows[0].pack_id < rows[1].pack_id)
+    );
+    assert!(exclusions.contains(&unrelated));
+    let position = exclusions
+        .binary_search_by_key(fixture.pack.as_bytes(), |row| row.pack_id)
+        .unwrap();
+    assert_eq!(exclusions[position].cycle, authorization.exclusion.cycle);
+    assert_eq!(exclusions[position].epoch, authorization.exclusion.epoch);
+
+    drop(observed);
+    drop(held);
+    drop(holder);
+    fixture.cleanup();
 }
 
 #[tokio::test]

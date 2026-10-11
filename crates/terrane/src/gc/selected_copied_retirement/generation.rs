@@ -31,7 +31,7 @@ fn refusal() -> StoreFailure {
 /// Observes and proposes the one fresh destination catalog generation.
 ///
 /// # Errors
-/// Refuses inconsistent current inventory/shards, an absent copied exclusion,
+/// Refuses inconsistent current inventory/shards, unknown exclusion completeness,
 /// occupied successor names, changed DATA/current controls or expired leases.
 pub(super) async fn propose<F, B, V>(
     data: &CheckedDataPlacement<'_, '_>,
@@ -57,14 +57,18 @@ where
         return Err(refusal());
     }
     let exclusions = manifest.exclusions.as_mut().ok_or_else(refusal)?;
-    let position = exclusions
-        .binary_search_by_key(&data.pack(), |row| row.pack_id)
-        .map_err(|_| refusal())?;
-    exclusions[position] = PackExclusion {
+    let exclusion = PackExclusion {
         pack_id: data.pack(),
         cycle,
         epoch: data.session().lease().epoch,
     };
+    // Permanent source recovery may already have cleared its active binding.
+    // Copied burn visibility still requires a genuine NEW destination barrier;
+    // an old source binding is neither a prerequisite nor destination evidence.
+    match exclusions.binary_search_by_key(&data.pack(), |row| row.pack_id) {
+        Ok(position) => exclusions[position] = exclusion,
+        Err(position) => exclusions.insert(position, exclusion),
+    }
 
     let mut reads = Vec::new();
     let mut changes = Vec::new();

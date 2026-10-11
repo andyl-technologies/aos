@@ -48,6 +48,8 @@ pub(crate) enum Residue {
     Trash,
     /// No copied old-family artifact is present.
     Absent,
+    /// No old-family artifact or active source exclusion binding is present.
+    AbsentWithoutExclusion,
 }
 
 /// Owns a real destination and retains independently signed source evidence.
@@ -299,11 +301,15 @@ impl CopiedFixture {
         }
         inventory_rows.sort_by_key(|row| row.pack_id);
         manifest.burns = Some(vec![*old.as_bytes()]);
-        manifest.exclusions = Some(vec![PackExclusion {
-            pack_id: *old.as_bytes(),
-            cycle: 7,
-            epoch: 3,
-        }]);
+        manifest.exclusions = Some(if matches!(residue, Residue::AbsentWithoutExclusion) {
+            Vec::new()
+        } else {
+            vec![PackExclusion {
+                pack_id: *old.as_bytes(),
+                cycle: 7,
+                epoch: 3,
+            }]
+        });
         if let Some((_, exclusion)) = &extra {
             let burns = manifest.burns.as_mut().unwrap();
             burns.push(exclusion.pack_id);
@@ -348,7 +354,7 @@ impl CopiedFixture {
                     .await
                     .unwrap();
             }
-            Residue::Absent => {}
+            Residue::Absent | Residue::AbsentWithoutExclusion => {}
         }
         copy_checkpoint(&config.root, &logical, &source.fs).await;
         let bucket = FileBucket::initialize_portable_copy(
