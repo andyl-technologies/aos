@@ -702,7 +702,7 @@
         || publicList.text.includes('"objectKey"')
         || !publicList.text.includes('"cacheUrls":["http://127.0.0.1:8799/flat-cache"]')
         || !publicList.text.includes('"releaseVerification":"verified"')
-        || !publicList.text.includes('"bootVerification":"signed-unverified"')
+        || !publicList.text.includes('"bootVerification":"provider-contract:aos.hub-test.image-artifacts/v2"')
         || !publicList.text.includes(rawSha256)) {
       throw new Error(`public image list: ''${publicList.response.status} ''${publicList.text}`);
     }
