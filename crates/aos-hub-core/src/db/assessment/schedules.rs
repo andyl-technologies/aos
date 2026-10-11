@@ -955,3 +955,7 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "schedule_stabilization_tests.rs"]
+pub(super) mod stabilization_tests;

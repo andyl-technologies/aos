@@ -321,3 +321,16 @@ async fn retained_status_heads_and_capture_bounds_on_postgresql() -> Result<()> 
     super::status_snapshot_tests::storage_bounds(Database::with_backend(Box::new(backend)).await?)
         .await
 }
+#[tokio::test]
+#[ignore = "Requires AOS_ASSESSMENT_PG_URL_FILE pointing to a disposable PostgreSQL database"]
+async fn retained_candidate_stabilization_is_exact_on_postgresql() -> Result<()> {
+    let path = std::env::var_os("AOS_ASSESSMENT_PG_URL_FILE")
+        .context("disposable PostgreSQL URL file required")?;
+    let url = std::fs::read_to_string(path)?;
+    let backend = SqlxBackend::connect_postgres(url.trim()).await?;
+    let db = Database::with_backend(Box::new(backend)).await?;
+    super::schedules::stabilization_tests::qualify_stabilization(db).await?;
+    let backend = SqlxBackend::connect_postgres(url.trim()).await?;
+    let db = Database::with_backend(Box::new(backend)).await?;
+    super::schedules::stabilization_tests::qualify_epoch_catchup(db).await.map(|_| ())
+}

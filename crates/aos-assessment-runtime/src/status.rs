@@ -4,8 +4,9 @@
 //! lifetime by both the pinned decision policy and retained observation expiry.
 //! Missing or partial coverage never becomes fresh merely because a scan ran.
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 use aos_assessment::input::{EvaluationData, Profile, ScanInputV1};
+use aos_assessment::inventory::{Classification, ReleaseStrategy};
 use aos_assessment::result::ProfileCoverage;
 use aos_assessment::security::CoverageState;
 use aos_assessment::time::Timestamp;
@@ -15,7 +16,9 @@ use aos_assessment::time::Timestamp;
 /// Incomplete coverage has no freshness deadline for a clean/current conclusion.
 /// All supplied profile observations constrain the deadline, so unrelated old
 /// evidence may shorten freshness but can never extend it. The function does
-/// not grant custody, source or publication authority.
+/// not grant custody, source or publication authority. Update results also expire
+/// at an earlier retained candidate stabilization boundary, so a current decision
+/// cannot remain effectively fresh after its eligibility policy changes with time.
 ///
 /// # Errors
 /// Returns an error for an unrequested profile, invalid policy, timestamp
@@ -51,6 +54,17 @@ pub fn profile_freshness_deadline(
         .ok_or_else(|| anyhow::anyhow!("profile freshness timestamp overflows"))?;
     match profile {
         Profile::Updates => {
+            let definitions = data
+                .definitions
+                .iter()
+                .map(|definition| Ok((definition.digest()?, definition)))
+                .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
+            let components = data
+                .inventory
+                .components
+                .iter()
+                .map(|component| (component.component_ref.as_str(), component))
+                .collect::<std::collections::BTreeMap<_, _>>();
             for binding in &data.upstream {
                 deadline =
                     deadline.min(binding.validated_at_unix().checked_add(age).ok_or_else(
@@ -58,6 +72,36 @@ pub fn profile_freshness_deadline(
                     )?);
                 if let Some(expires) = binding.expires_at_unix() {
                     deadline = deadline.min(expires);
+                }
+                let component = components
+                    .get(binding.component_ref.as_str())
+                    .context("stabilization binding lacks its admitted component")?;
+                let definition = definitions
+                    .get(&component.scan_definition_digest)
+                    .context("stabilization component lacks its admitted definition")?;
+                if matches!(
+                    definition.classification,
+                    Classification::Manual | Classification::Frozen
+                ) {
+                    continue;
+                }
+                let declared = definition
+                    .components
+                    .iter()
+                    .find(|declared| declared.component_id == component.component_id)
+                    .context("stabilization component is absent from its definition")?;
+                if declared.release_policy.strategy == ReleaseStrategy::LatestInSeries
+                    && let Some(eligible_at) =
+                        aos_assessment::discovery::next_stabilization_deadline(
+                            &declared.release_policy,
+                            &component.current,
+                            &binding.observation,
+                            binding.validated_at_unix(),
+                            input.evaluated_at.unix_seconds(),
+                            age,
+                        )?
+                {
+                    deadline = deadline.min(eligible_at);
                 }
             }
         }

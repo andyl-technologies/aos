@@ -24,9 +24,13 @@ pub(super) fn input_basis(resource: &AssessmentResource) -> Result<Sha256Digest>
         .resource_version
         .checked_sub(resource.next_generation)
         .context("assessment generation exceeds its resource revision")?;
+    // A lifetime-projection epoch causes one bounded catch-up admission for
+    // retained reviews from an earlier producer. It changes no public selector,
+    // principal authority, source history or scan-generation allocation.
     Sha256Digest::of_canonical(
-        "aos.assessment-recurring-input/v1",
+        "aos.assessment-recurring-input/v2",
         &(
+            "aos.assessment-head-lifetime/stabilization-v1",
             &resource.partition,
             resource.inventory_digest,
             resource.inventory_revision,

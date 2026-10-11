@@ -652,6 +652,65 @@ pub fn version_is_newer_in_stream(
     Ok(candidate.cmp(&current) == Ordering::Greater)
 }
 
+/// Returns the earliest future eligibility boundary of a retained newer candidate.
+///
+/// The existing selector owns completeness, freshness, withdrawal, prerelease
+/// and maintained-stream decisions. This projection only observes its currently
+/// stabilizing newer candidates. Publication time takes precedence over retained
+/// first-observation time, exactly as it does during selection. The deadline
+/// requests reassessment; it grants neither source freshness nor update authority.
+///
+/// # Errors
+/// Returns an error for invalid observations, unsupported current versions or
+/// timestamp overflow. Unorderable candidates cannot establish an eligible update.
+pub fn next_stabilization_deadline(
+    policy: &ReleasePolicy,
+    current: &ComponentVersion,
+    observation: &UpstreamObservationV1,
+    validated_at_unix: u64,
+    now_unix: u64,
+    observation_max_age_seconds: u64,
+) -> Result<Option<u64>> {
+    let selected = select_component_validated_policy(
+        "stabilization",
+        current,
+        policy,
+        observation,
+        validated_at_unix,
+        now_unix,
+        observation_max_age_seconds,
+    )?;
+    let stabilizing = selected
+        .rejected
+        .iter()
+        .filter(|rejected| rejected.reason == "stabilizing")
+        .map(|rejected| rejected.raw_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let minimum_age = u64::from(policy.minimum_age_days) * 86_400;
+    let mut deadline = None;
+    for candidate in &observation.candidates {
+        if !stabilizing.contains(candidate.raw_id.as_str())
+            || !version_is_newer_in_stream(
+                policy,
+                &current.comparison_version,
+                &candidate.raw_version,
+            )
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let eligible_at = candidate
+            .published_at_unix
+            .unwrap_or(candidate.first_observed_at_unix)
+            .checked_add(minimum_age)
+            .ok_or_else(|| anyhow::anyhow!("candidate eligibility time overflows"))?;
+        if eligible_at > now_unix {
+            deadline = Some(deadline.map_or(eligible_at, |old: u64| old.min(eligible_at)));
+        }
+    }
+    Ok(deadline)
+}
+
 fn numeric_cmp(left: &[u64], right: &[u64]) -> Ordering {
     let length = left.len().max(right.len());
     (0..length)

@@ -16,6 +16,8 @@
   scheduleQueueSelector = "db::assessment::schedules::queue_tests::revoked_reviews_rotate_without_advancing_due_slots_or_granting_authority";
   continuousSelector = "db::assessment::schedules::trigger_tests::input_changes_coalesce_without_scan_feedback_or_same_second_slot_collisions";
   deadlineSelector = "db::assessment::schedules::deadline_tests::selected_expiry_coalesces_without_refresh_feedback_and_survives_reopen";
+  stabilizationSelector = "db::assessment::schedules::stabilization_tests::retained_candidate_maturation_wakes_once_without_provider_work_or_history_reset";
+  stabilizationEpochSelector = "db::assessment::schedules::stabilization_tests::older_projection_reviews_catch_up_once_without_generation_feedback";
   advisorySelector = "db::assessment::advisory_snapshot::tests::retained_advisory_pages_survive_new_revisions_and_database_reopen";
   advisoryCliSelector = "db::assessment::advisory_snapshot::tests::actual_cli_retains_advisory_revisions_across_database_reopen";
   statusSelector = "db::assessment::status_snapshot_tests::status_capture_retains_real_heads_across_cancellation_and_reopen";
@@ -78,6 +80,10 @@ in
         grep -Fx '${continuousSelector}: test' "$out/nix-support/continuous-test-registration.txt"
         "$out/bin/aos-assessment-retained-pages-fixture" --list --exact '${deadlineSelector}' > "$out/nix-support/deadline-test-registration.txt"
         grep -Fx '${deadlineSelector}: test' "$out/nix-support/deadline-test-registration.txt"
+        "$out/bin/aos-assessment-retained-pages-fixture" --list --exact '${stabilizationSelector}' > "$out/nix-support/stabilization-test-registration.txt"
+        grep -Fx '${stabilizationSelector}: test' "$out/nix-support/stabilization-test-registration.txt"
+        "$out/bin/aos-assessment-retained-pages-fixture" --list --exact '${stabilizationEpochSelector}' > "$out/nix-support/stabilization-epoch-test-registration.txt"
+        grep -Fx '${stabilizationEpochSelector}: test' "$out/nix-support/stabilization-epoch-test-registration.txt"
         "$out/bin/aos-assessment-retained-pages-fixture" --list --exact '${advisorySelector}' > "$out/nix-support/advisory-test-registration.txt"
         grep -Fx '${advisorySelector}: test' "$out/nix-support/advisory-test-registration.txt"
         "$out/bin/aos-assessment-retained-pages-fixture" --list --ignored --exact '${advisoryCliSelector}' > "$out/nix-support/advisory-cli-test-registration.txt"
@@ -102,6 +108,8 @@ in
       passthru.scheduleQueueTestSelector = scheduleQueueSelector;
       passthru.continuousTestSelector = continuousSelector;
       passthru.deadlineTestSelector = deadlineSelector;
+      passthru.stabilizationTestSelector = stabilizationSelector;
+      passthru.stabilizationEpochTestSelector = stabilizationEpochSelector;
       passthru.advisoryTestSelector = advisorySelector;
       passthru.advisoryCliTestSelector = advisoryCliSelector;
       passthru.statusTestSelector = statusSelector;

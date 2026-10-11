@@ -15,6 +15,19 @@ use crate::db::assessment::{AssessmentObjectKind, AssessmentScanRecord};
 use crate::db::Database;
 
 async fn complete_updates(db: &Database, registry: i64, scan: &AssessmentScanRecord) -> Result<()> {
+    complete_updates_with_publication(db, registry, scan, Some(1_700_000_000)).await
+}
+
+/// Commits genuine complete candidate evidence with an explicit publication time.
+///
+/// # Errors
+/// Returns an error for unavailable fixture claims, invalid evidence or persistence.
+pub(super) async fn complete_updates_with_publication(
+    db: &Database,
+    registry: i64,
+    scan: &AssessmentScanRecord,
+    published_at_unix: Option<u64>,
+) -> Result<()> {
     let claim = db
         .claim_assessment_scan(registry, &scan.scan_id, 900)
         .await?;
@@ -61,7 +74,7 @@ async fn complete_updates(db: &Database, registry: i64, scan: &AssessmentScanRec
             candidates: vec![aos_assessment::discovery::ObservationCandidate {
                 raw_id: "v1.3.0".into(),
                 raw_version: "1.3.0".into(),
-                published_at_unix: Some(1_700_000_000),
+                published_at_unix,
                 first_observed_at_unix: first_observed.unix_seconds(),
                 prerelease: false,
                 yanked: false,

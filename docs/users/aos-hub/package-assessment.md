@@ -577,7 +577,21 @@ Deploy deadline-watermark readers before updated coordinators write those
 private cells. Existing continuous reviews without an expiry clock receive one
 bounded catch-up observation. Acquisition retains the review's explicit intent;
 choose `refresh-stale` when elapsed coverage should acquire fresh source evidence.
-Provider-wide feed refresh and stabilization deadlines require further integration.
+Complete update heads now also end their effective decision lifetime at an
+earlier retained candidate stabilization boundary. The shared version selector
+supplies that boundary from package minimum age and publication time, or the
+original first-observation time. Source freshness can shorten the lifetime further.
+When the boundary elapses, a continuous review can reassess those same retained
+bytes under its original intent; old results and first-observation history stay
+unchanged. Manual/frozen policies and incomplete coverage do not gain update
+eligibility from this projection. A private lifetime-projection epoch gives older continuous reviews one bounded
+catch-up admission under their existing authority, then stops generating work
+once the new watermark is acknowledged. Cadence-only reviews stay unchanged.
+Replace all old coordinator producers before running the new continuous observer;
+mixed producers would disagree about that private watermark. Older heads retain
+their indexed lifetime until catch-up commits, so finish bounded catch-up before
+claiming stabilization coverage for them.
+Provider-wide feed refresh still requires further integration.
 
 To review recurring execution independently of that session, put the exact
 existing service-account credential UUID in `serviceCredentialId` at the top

@@ -201,15 +201,42 @@ or cached review to network refresh. All readers MUST support the private expiry
 clock before updated coordinators write it. Earlier continuous reviews without
 that clock receive bounded catch-up; cadence-only reviews remain unchanged.
 
+Complete update heads MUST conservatively end their effective decision lifetime
+at an earlier supported newer-candidate stabilization boundary. The shared
+selector determines which retained candidates are still stabilizing and belong
+to the maintained stream. Their publication time, or retained first-observation
+time when publication time is absent, plus package minimum age determines the
+exclusive boundary. Source validation/expiry still bounds that lifetime and MUST
+NOT be extended by candidate maturation. Manual/frozen policies do not acquire
+eligibility work from this projection. Unknown or partial coverage has no complete
+head deadline.
+
+The coordinator writes this conservative deadline when committing a new head;
+existing bounded expiry observation can then coalesce maturation with other due
+work without reading provider bodies. Reassessment MAY reuse the exact retained
+observations and history under the reviewed acquisition intent. It freezes a new
+evaluation time and result; it MUST NOT mutate an earlier assessment or reset
+first observation. The private recurring-input v2 commitment binds a lifetime-projection epoch;
+an earlier v1 continuous-review watermark differs even when inventory and policy
+are unchanged. Existing bounded future-review rotation MUST request one catch-up
+admission under the original reviewed authority, then acknowledge v2 atomically
+with the due cursor. Scan allocation MUST NOT change that epoch or self-trigger.
+The epoch grants no authority and adds no public field or larger private cell.
+Cadence-only reviews remain unchanged. Old heads retain their original indexed
+lifetime until such an authorized assessment commits. Deployments MUST replace
+all old coordinator producers before running v2 continuous observers, and MUST
+complete bounded catch-up before claiming stabilization-trigger coverage for
+retained older heads. Mixed v1/v2 coordinator producers are unsupported because
+they would disagree about the private input watermark.
+
 Only admission against the current input may acknowledge a watermark. The
 watermark and due cursor MUST persist atomically under current resource and
 review fences, without extending credential or review deadlines. Neither
 observation nor a watermark grants execution authority. Every admission and
 subsequent effect MUST still check the existing current principal, credential,
-configuration, inventory, policy, cancellation and quota guards. This inventory
-and policy observation does not itself establish advisory-feed, evidence-expiry
-or disposition-trigger integration; those triggers require their own retained
-input identities and deadline work.
+configuration, inventory, policy, cancellation and quota guards. This bounded input/deadline
+observation does not itself establish advisory-feed or disposition-trigger
+integration; those triggers require their own retained input identities.
 
 The scheduler uses deterministic jitter derived from schedule identity and
 time window. It persists the next due time and coalesces missed executions
