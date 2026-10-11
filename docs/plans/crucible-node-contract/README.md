@@ -19,6 +19,7 @@ identifiers refer to RFC-0025; the RFC controls if these plans disagree with it.
 | [Phased implementation](phased-implementation.md) | Dependency-ordered tasks, deliverables, exit criteria, risks, and rollback points |
 | [Qualification plan](qualification-plan.md) | Existing regression coverage, new behavioral qualification, performance methodology, and requirement traceability |
 | [Implementation status](implementation-status.md) | Tested implementation stages, active integration work, and native qualification gaps |
+| [CNP construction and preparation custody](cnp-owned-preparation.md) | Original controller slots, partial provider ownership and current component qualification |
 
 ## Scope and engineering posture
 
