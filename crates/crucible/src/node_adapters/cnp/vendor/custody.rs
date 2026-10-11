@@ -92,9 +92,11 @@ impl VendorCnpCustodyQueue {
 
     /// Polls each complete original under independent whole-group reclamation.
     ///
-    /// Actual child wait alone grants no group release. Every original owner
-    /// requires its installed semantic receipt and validator. A callback error or
-    /// unwind stores the same original before returning the diagnostic.
+    /// Actual child wait alone grants no group release. Every original requires
+    /// independent native birth, group and resource release authentication. An
+    /// adopted node additionally requires every original owner's codec receipt
+    /// and validator; a rejected unadopted launch has no codec obligation. A
+    /// callback error or unwind stores the same original before returning the diagnostic.
     ///
     /// # Errors
     /// Returns unresolved native cleanup or a caught callback failure, keeping

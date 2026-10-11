@@ -57,11 +57,14 @@ impl InstalledNodeCatalog {
     /// # Errors
     /// Refuses absent installation, unsupported profile/configuration, changed
     /// source plan, behavioral qualification, resource credit or graph admission.
-    /// Every native preparation remains beneath its original reserved world slot.
+    /// Providers must retain partial native preparation beneath the original
+    /// reserved world slot before returning or invoking another callback.
     ///
     /// # Panics
-    /// Installed provider or policy callbacks may unwind. The original native
-    /// capsule remains beneath the same preowned whole-world supervision slot.
+    /// Installed provider or policy callbacks may unwind. Complete returned
+    /// preparation transfers through its preowned whole-world supervision slot.
+    /// Before return, partial birth or negotiation requires the provider's own
+    /// guarded preparation; the catalog cannot retain provider-local resources.
     pub fn prepare_vendor_world(
         &mut self,
         provider: &Id,

@@ -284,17 +284,19 @@ impl InstalledProviderRegistry {
 
     /// Prepares one exact original selection after both preallocation authorities.
     ///
-    /// Actual handles enter their owning `PreparedRealization` before any source
-    /// inspector callback. Errors and unwinds retain the original whole-world
-    /// slot through that capsule's existing supervised drop path.
+    /// A complete returned `PreparedRealization` owns its handles before source
+    /// validation. Errors and unwinds after that return retain its whole-world
+    /// slot through supervised Drop. Before returning, the provider must retain
+    /// partial allocation and negotiation in its own preowned guard or builder.
     ///
     /// # Errors
     /// Refuses absent/stale registration, changed plans, unaccepted behavioral
     /// claims, unavailable credits or actual native preparation/authentication.
     ///
     /// # Panics
-    /// An installed provider or authenticator may unwind. Any created original
-    /// capsule remains under its reserved supervised custody during unwinding.
+    /// An installed provider or authenticator may unwind. Complete returned
+    /// preparation uses supervised Drop; partial birth before return requires
+    /// the provider's own guard or builder, as its preparation contract requires.
     pub fn prepare_original(
         &mut self,
         provider: &Id,
@@ -327,8 +329,9 @@ impl InstalledProviderRegistry {
     /// Retains the same original preparation on failure and refuses late revocation.
     ///
     /// # Panics
-    /// An installed provider or authenticator may unwind. Any created original
-    /// capsule remains under its reserved supervised custody during unwinding.
+    /// An installed provider or authenticator may unwind. Complete returned
+    /// preparation uses supervised Drop; partial birth before return requires
+    /// the provider's own guard or builder, as its preparation contract requires.
     pub fn prepare_original_with_admission(
         &mut self,
         provider: &Id,
