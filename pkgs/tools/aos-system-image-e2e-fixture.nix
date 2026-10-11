@@ -330,11 +330,12 @@ in
           cat > "$out/bin/aos-system-image-e2e-fixture" <<'EOF'
           #!${bash}/bin/bash
           set -euo pipefail
-          if [ "$#" -ne 1 ]; then
-            echo "usage: aos-system-image-e2e-fixture OUTPUT-DIRECTORY" >&2
+          if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+            echo "usage: aos-system-image-e2e-fixture OUTPUT-DIRECTORY [CACHE-URL]" >&2
             exit 2
           fi
           destination="$1"
+          cache_url="''${2:-http://127.0.0.1:8799/flat-cache}"
           mkdir -p "$destination/home" "$destination/surface"
           export HOME="$destination/home"
           export USER=aos-image-producer
@@ -387,7 +388,7 @@ in
             --channel stable \
             --init-channel \
             --key-id initial \
-            --cache-url http://127.0.0.1:8799/flat-cache \
+            --cache-url "$cache_url" \
             --upload-url "file://$destination/surface"
           printf '%s\n' "$public_key" > "$destination/trust-key"
           printf '%s\n' '${rawImage}/aos-e2e.img.zst' > "$destination/raw-path"

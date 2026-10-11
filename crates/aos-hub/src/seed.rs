@@ -359,15 +359,40 @@ pub async fn seed_dev_with_snapshots(
             .await?;
         publication::record(db, placement_id, surface_root, &image_snapshots, &prepared).await?;
     }
-    anyhow::ensure!(
-        db.list_system_image_root_keys(registry_id).await?.len() == 4
-            && db
-                .list_system_image_root_keys(private_registry_id)
-                .await?
-                .len()
-                == 4,
-        "seeded image publication did not become exact release GC roots"
-    );
+    for seeded_registry_id in [registry_id, private_registry_id] {
+        let images = db.list_system_images(seeded_registry_id).await?;
+        anyhow::ensure!(
+            images.len() == 2
+                && images.iter().any(|image| image.format == "raw")
+                && images.iter().any(|image| image.format == "qcow2"),
+            "seeded image publication did not expose both signed encodings"
+        );
+
+        // Store-backed images retain their signed NAR closure through normal
+        // registry roots; only legacy direct objects use image-specific roots.
+        let expected_roots: std::collections::BTreeSet<&str> = images
+            .iter()
+            .filter(|image| !image.delivery.is_store_backed())
+            .flat_map(|image| {
+                [
+                    image.delivery.object_key.as_str(),
+                    image
+                        .delivery
+                        .artifact_contract
+                        .document
+                        .object_key
+                        .as_str(),
+                ]
+            })
+            .collect();
+        let root_keys = db.list_system_image_root_keys(seeded_registry_id).await?;
+        let observed_roots: std::collections::BTreeSet<&str> =
+            root_keys.iter().map(String::as_str).collect();
+        anyhow::ensure!(
+            expected_roots == observed_roots,
+            "seeded image publication did not become exact release GC roots"
+        );
+    }
 
     // Mint one org-scoped token so the fixture can prove both anonymous public
     // access and authenticated private access through the same consumer CLI.
