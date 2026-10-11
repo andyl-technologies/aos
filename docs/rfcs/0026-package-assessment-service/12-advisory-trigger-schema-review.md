@@ -46,6 +46,20 @@ A refused admission rolls back custody publication, the input mutation and
 semantic row together. Replaying an admitted attempt or re-encoding unchanged
 meaning causes no additional input mutation.
 
+First-admission serialization requires the exact resource lock before evaluating
+whether a semantic row is absent. A conditional counter update followed by a
+conflict-safe insert alone is insufficient proof of concurrency safety on every
+backend. The checked transaction must retain the lock through the row's
+admission and roll back the increment when its exact admission guard fails.
+
+Schedule advancement must acknowledge the input basis captured for the original
+slot, including after coordinator interruption. It must not acknowledge a newer
+feed revision that arrived after the slot froze its evaluation. Any additional
+private slot commitment needed for this fence must preserve existing review
+identity, credential expiry and restart compatibility. A later revision remains
+pending until another bounded slot assesses it; neither recovery nor a completed
+older scan can erase that obligation.
+
 This first integration conservatively wakes continuous reviews in the affected
 resource incarnation. It does not create a tenant-wide feed subscription,
 automatically enroll an unreviewed resource, extend source freshness or change
@@ -96,6 +110,8 @@ not authorize destroying or resetting any existing database.
   continuous-review coalescing on SQLite, real PostgreSQL and the MySQL backend.
 - Preserve original source custody across equivalent response re-encoding and
   include changed severity, withdrawal and native modification revisions.
+- Verify feed arrival after evaluation freeze and before interrupted-slot
+  advancement, including restart: the newer revision must remain pending.
 - Verify file reopen, unchanged credential expiry, scoped current authority,
   bounded schedule fairness and absence of refresh feedback.
 - Check Worker/Console WASM, production Native/Worker/Console builds, all

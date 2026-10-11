@@ -71,6 +71,8 @@ also satisfy the stated limits, ordering, coverage, and authorization rules.
 
 A separate [advisory-trigger schema transition review](12-advisory-trigger-schema-review.md) describes the proposed durable input projection and its reset-only serving compatibility requirements. It installs no migration or database transition.
 
+The [assessment permission policy review](13-assessment-permission-review.md) records the exact proposed permission definitions and default role matrix. It installs no permission or role grant.
+
 ## Core requirements
 
 1. Packages describe their components and how to observe them in versioned,
