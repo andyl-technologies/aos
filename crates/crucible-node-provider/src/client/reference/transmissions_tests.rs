@@ -100,7 +100,10 @@ fn privacy_failure_retains_attempt_without_exporting_actual_private_response() {
         assert!(snapshot.incomplete);
         assert!(snapshot.rows[0].write_completed);
         assert!(snapshot.rows[0].received.is_none());
-        assert_eq!(snapshot.bytes.as_slice().len(), snapshot.rows[0].request_length);
+        assert_eq!(
+            snapshot.bytes.as_slice().len(),
+            snapshot.rows[0].request_length
+        );
     }
 }
 
@@ -134,5 +137,9 @@ fn unwind_keeps_the_exact_attempt_and_sticky_incompleteness() {
     assert_eq!(after.bytes, before);
     assert!(after.rows[0].write_completed);
     assert!(!after.rows[0].semantic_response_verified);
-    assert!(handle.snapshot(before.as_slice().len().saturating_sub(1)).is_err());
+    assert!(
+        handle
+            .snapshot(before.as_slice().len().saturating_sub(1))
+            .is_err()
+    );
 }
