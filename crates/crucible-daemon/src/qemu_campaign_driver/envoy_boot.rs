@@ -23,12 +23,31 @@ const BOOT_CONSOLE_TAIL_BYTES: usize = 160;
 
 /// Reports whether an attempt carries the audited five-node boot capability.
 pub(super) fn envoy_choice_free_boot_eligible(input: &CrucibleAttemptExecution) -> bool {
+    input.attempt().stop().accepts_next_choice()
+        && input.signal_fault_replay().network_branches().is_empty()
+        && audited_envoy_boot_graph(input)
+}
+
+/// Reports whether start replay must reproduce the concurrent Envoy boot prefix.
+///
+/// Every original attempt on this boot graph ran the prefix with concurrent
+/// RUNs: a fresh choice search under the audited capability, and any other
+/// attempt without a choice pause. Replay reaches the same decisions one RUN
+/// at a time only over more quanta, so its retained event log would outgrow
+/// the parent it reconstructs. Replay ignores its own attempt's stop and
+/// network branches because neither existed when the prefix was first run.
+pub(crate) fn envoy_choice_free_boot_replay_eligible(
+    input: &CrucibleAttemptExecution,
+    retained_entries: &[SchedulerEventLogEntry],
+) -> bool {
+    audited_envoy_boot_graph(input) && !west_convergence_marker_seen(retained_entries)
+}
+
+/// Matches the exact authored five-node World, seed and selectable catalog.
+fn audited_envoy_boot_graph(input: &CrucibleAttemptExecution) -> bool {
     // The fixture-authored cmdline token opts this exact boot graph into the
     // choice-free prefix proven by west convergence and positive link latency.
-    if !input.attempt().stop().accepts_next_choice()
-        || !input.signal_fault_replay().network_branches().is_empty()
-        || input.scenario().seed() != Seed::from_u64(ENVOY_FIXTURE_SEED)
-    {
+    if input.scenario().seed() != Seed::from_u64(ENVOY_FIXTURE_SEED) {
         return false;
     }
 
@@ -101,7 +120,7 @@ pub(super) fn envoy_choice_free_boot_eligible(input: &CrucibleAttemptExecution) 
 }
 
 /// Finds west's authenticated convergence marker in scheduler-owned evidence.
-pub(super) fn west_convergence_marker_seen(entries: &[SchedulerEventLogEntry]) -> bool {
+pub(crate) fn west_convergence_marker_seen(entries: &[SchedulerEventLogEntry]) -> bool {
     entries.iter().any(|entry| {
         matches!(
             entry.payload(),

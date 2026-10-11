@@ -2471,6 +2471,13 @@ pub(crate) fn materialize_start_from<F, D>(
     lifecycle.set_live_network_choice_pause(target.schedule.decision_history().iter().any(|decision| {
         matches!(decision, Decision::Selection(selection) if selection.is_campaign_branch())
     }));
+    // The parent ran the audited Envoy boot prefix with concurrent RUNs; replay
+    // must group them the same way to retain the parent's event log.
+    let mut parallel_boot = crate::qemu_campaign_driver::envoy_choice_free_boot_replay_eligible(
+        input,
+        &replay.event_log,
+    );
+    lifecycle.set_choice_free_parallel_boot(parallel_boot);
 
     // A guest selectable can already be pending at lifecycle admission. Replay
     // it at the current boundary before charging a quantum so a saved choice at
@@ -2520,6 +2527,9 @@ pub(crate) fn materialize_start_from<F, D>(
                 control: Vec::new(),
             })
             .map_err(map_start_replay_scheduler_failure)?;
+        if parallel_boot {
+            parallel_boot = observe_replayed_choice_free_boot(lifecycle, &outcome, prior_len)?;
+        }
         park_replayed_network_fault_markers(lifecycle, input, &mut outcome)?;
         if lifecycle.live_network_preselection().is_some_and(|choice| {
             !reserved_live_network_choice_matches(
@@ -2667,6 +2677,46 @@ pub(crate) fn materialize_start_from<F, D>(
             ));
         }
     }
+}
+
+/// Ends the replayed concurrent Envoy boot prefix at west's convergence marker.
+///
+/// Returns whether the prefix remains armed. The parent attempt refused any
+/// choice inside this prefix, so one here means replay left the parent's path.
+///
+/// # Errors
+///
+/// Returns a terminal divergence when the quantum discovered or committed a
+/// choice before west converged.
+fn observe_replayed_choice_free_boot<F, D>(
+    lifecycle: &mut dyn QemuFreshAttemptLifecycleOwner,
+    outcome: &QuantumOutcome,
+    index: usize,
+) -> Result<bool, AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>> {
+    let selections = outcome
+        .decisions
+        .iter()
+        .filter(|decision| matches!(decision, Decision::Selection(_) | Decision::Override(_)))
+        .count();
+    if selections > 0 || !outcome.discovered_choices.is_empty() {
+        return Err(AttemptWorkerFailure::Terminal(
+            QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::DivergedAt {
+                reason: "choice-free boot prefix",
+                index,
+                expected: String::from("no choice before west convergence"),
+                observed: format!(
+                    "{selections} selections and {} discovered choices",
+                    outcome.discovered_choices.len()
+                ),
+            }),
+        ));
+    }
+
+    if crate::qemu_campaign_driver::west_convergence_marker_seen(&outcome.event_log_entries) {
+        lifecycle.set_choice_free_parallel_boot(false);
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 /// Parks VMs held at network fault phase markers during start replay.

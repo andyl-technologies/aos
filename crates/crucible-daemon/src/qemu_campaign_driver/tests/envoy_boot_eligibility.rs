@@ -4,7 +4,9 @@
 //! CLI contract regenerates the complete eligibility input, avoiding a second
 //! topology author in these driver tests.
 
-use super::super::envoy_boot::envoy_choice_free_boot_eligible;
+use super::super::envoy_boot::{
+    envoy_choice_free_boot_eligible, envoy_choice_free_boot_replay_eligible,
+};
 use super::*;
 use crucible::{LinkDef, LinkLossProbability, SimDuration, VmArchitecture};
 
@@ -131,4 +133,53 @@ fn generated_quiet_envoy_fixture_requires_choice_seed_catalog_and_transport() {
         replace_world(&scenario, &world),
         StopCondition::NextChoice,
     )));
+}
+
+fn west_convergence_entry() -> SchedulerEventLogEntry {
+    SchedulerEventLogEntry::guest_semantic_marker_observation(
+        0,
+        Icount { retired: 41 },
+        node("traffic-west"),
+        String::from("network.converged"),
+        String::from("instance-1"),
+        Vec::new(),
+    )
+}
+
+#[test]
+fn start_replay_reproduces_the_concurrent_boot_prefix_for_any_stop() {
+    let scenario = authored_fixture();
+
+    // The replayed prefix belongs to the parent, so the replaying attempt's
+    // own stop does not decide how its boot RUNs are grouped.
+    for stop in [StopCondition::NextChoice, StopCondition::Terminal] {
+        assert!(envoy_choice_free_boot_replay_eligible(
+            &input_for_scenario(scenario.clone(), stop),
+            &[],
+        ));
+    }
+}
+
+#[test]
+fn start_replay_keeps_serial_runs_after_west_converged_or_off_fixture() {
+    let scenario = authored_fixture();
+    let input = input_for_scenario(scenario.clone(), StopCondition::NextChoice);
+    assert!(!envoy_choice_free_boot_replay_eligible(
+        &input,
+        &[west_convergence_entry()],
+    ));
+
+    let different_seed = ScenarioDefForm::from_components(
+        scenario.world(),
+        scenario.plan(),
+        scenario.properties(),
+        Seed::from_u64(1),
+    )
+    .expect("valid different seed")
+    .with_selectables(scenario.selectables().clone())
+    .expect("valid catalog");
+    assert!(!envoy_choice_free_boot_replay_eligible(
+        &input_for_scenario(different_seed, StopCondition::NextChoice),
+        &[],
+    ));
 }

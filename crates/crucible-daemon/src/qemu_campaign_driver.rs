@@ -67,6 +67,7 @@ mod selection_projection;
 mod stop_boundary;
 
 use envoy_boot::EnvoyParallelBoot;
+pub(crate) use envoy_boot::{envoy_choice_free_boot_replay_eligible, west_convergence_marker_seen};
 use event_log_retention::{RetainedChoiceDiscoveries, append_event_entries, append_quantum};
 
 #[cfg(test)]
