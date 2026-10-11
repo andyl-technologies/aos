@@ -132,6 +132,9 @@ where
         .map_err(crate::guard::retention_failure)?;
     concrete.check_time(started)?;
 
+    #[cfg(all(test, feature = "tokio"))]
+    test_pause::after_baseline(concrete.store().root()).await?;
+
     let holder = HeldBuckets::acquire(source.store(), concrete.store()).await?;
     let source_clock = retained_clock(source.clock())?;
     let destination_clock = retained_clock(concrete.guard().clock())?;
@@ -802,4 +805,62 @@ fn same_heads(
 
 fn hex(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(all(test, feature = "tokio"))]
+pub(super) mod test_pause {
+    use std::{
+        collections::BTreeMap,
+        path::{Path, PathBuf},
+        sync::{Mutex, OnceLock},
+    };
+    use tokio::sync::oneshot;
+
+    use super::{StoreFailure, invalid};
+
+    struct Pause {
+        entered: oneshot::Sender<()>,
+        resume: oneshot::Receiver<()>,
+    }
+
+    static PAUSES: OnceLock<Mutex<BTreeMap<PathBuf, Pause>>> = OnceLock::new();
+
+    /// Arms one exact native destination after baseline retention and before pair acquisition.
+    ///
+    /// # Errors
+    /// Rejects poisoned synchronization or an already armed physical destination.
+    pub(crate) fn pause_next_after_baseline(
+        root: &Path,
+    ) -> Result<(oneshot::Receiver<()>, oneshot::Sender<()>), StoreFailure> {
+        let (entered, observed) = oneshot::channel();
+        let (resume, resumed) = oneshot::channel();
+        let mut pauses = PAUSES
+            .get_or_init(|| Mutex::new(BTreeMap::new()))
+            .lock()
+            .map_err(|_| invalid())?;
+        if pauses.contains_key(root) {
+            return Err(invalid());
+        }
+        pauses.insert(
+            root.to_owned(),
+            Pause {
+                entered,
+                resume: resumed,
+            },
+        );
+        Ok((observed, resume))
+    }
+
+    pub(super) async fn after_baseline(root: &Path) -> Result<(), StoreFailure> {
+        let pause = PAUSES
+            .get_or_init(|| Mutex::new(BTreeMap::new()))
+            .lock()
+            .map_err(|_| invalid())?
+            .remove(root);
+        if let Some(pause) = pause {
+            pause.entered.send(()).map_err(|_| invalid())?;
+            pause.resume.await.map_err(|_| invalid())?;
+        }
+        Ok(())
+    }
 }

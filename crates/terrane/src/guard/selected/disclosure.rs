@@ -15,6 +15,9 @@ mod publication;
 pub(crate) use publication::publish;
 
 #[cfg(all(test, feature = "tokio"))]
+pub(crate) use publication::test_pause::pause_next_after_baseline;
+
+#[cfg(all(test, feature = "tokio"))]
 #[path = "disclosure/mutations.rs"]
 mod mutations;
 #[cfg(all(test, feature = "tokio"))]
