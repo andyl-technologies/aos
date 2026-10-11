@@ -850,6 +850,16 @@ retirement of event/delivery history and slow-consumer streaming controls remain
 separate implementation work. Existing delivery references must be preserved
 when introducing retention; event deletion currently cascades to its outbox.
 
+Event watch consumers also bind each response to the exact requested replay
+position. The shared validator requires consecutive events within a page, the
+immediate successor of a nonzero reconnect position, the requested record limit
+and original resource scope. An empty heartbeat must preserve the requested
+position. A zero request may start at the first retained event following prefix
+retirement. CLI and Console apply this check before displaying events or adopting
+the next position; malformed successful responses stop watch without publishing
+an unearned cursor. This validation does not establish independent source trust
+or replace the service's current authorization checks.
+
 ### SQL backend qualification
 
 Assessment fixtures can run against disposable native SQL databases using

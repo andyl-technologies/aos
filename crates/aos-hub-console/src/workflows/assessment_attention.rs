@@ -7,7 +7,7 @@ use aos_assessment_runtime::attention_control::{
 use aos_assessment_runtime::events::AssessmentEventPayload;
 use leptos::prelude::*;
 
-use super::assessments::{AssessmentReadGuard, start_status_poll};
+use super::assessments::{start_status_poll, AssessmentReadGuard};
 use crate::components::InlineError;
 use crate::mutation::{idempotency_key, scoped_workflow_tasks};
 use crate::transport::ApiClient;
@@ -171,15 +171,9 @@ pub(super) fn RegistryAssessmentAttention(client: ApiClient, slug: String) -> im
                     .map_err(|error| error.to_string())?;
                 let events = EventPageV1::from_slice(&response.document_json)
                     .map_err(|error| error.to_string())?;
-                if events.resource_scope != alerts.resource_scope
-                    || events.next_sequence < sequence
-                    || events
-                        .events
-                        .first()
-                        .is_some_and(|event| event.sequence <= sequence)
-                {
-                    return Err("Assessment event replay changed resource or regressed".to_owned());
-                }
+                events
+                    .validate_for_query(&query)
+                    .map_err(|error| error.to_string())?;
                 resource_scope.set(Some(alerts.resource_scope.clone()));
                 after_sequence.set(events.next_sequence);
                 recent_events.update(|recent| {

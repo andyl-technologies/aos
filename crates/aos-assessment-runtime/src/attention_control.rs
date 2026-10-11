@@ -80,17 +80,21 @@ impl EventQueryV1 {
     /// Returns an error for ambiguous schemas, exhausted sequences or unbound replay.
     pub fn from_slice(bytes: &[u8]) -> Result<Self> {
         let query: Self = decode(bytes, "assessment event query")?;
-        if query.schema != "aos.assessment-event-query/v1"
-            || query.after_sequence > 9_007_199_254_740_991
+        query.validate()?;
+        Ok(query)
+    }
+
+    /// Validates the exact requested scope, page size and exclusive sequence.
+    ///
+    /// # Errors
+    /// Returns an error for unsupported schemas, invalid limits or unbound replay.
+    pub fn validate(&self) -> Result<()> {
+        if self.schema != "aos.assessment-event-query/v1"
+            || self.after_sequence > 9_007_199_254_740_991
         {
             bail!("invalid assessment event query schema or sequence");
         }
-        validate_query(
-            query.limit,
-            query.after_sequence != 0,
-            &query.resource_scope,
-        )?;
-        Ok(query)
+        validate_query(self.limit, self.after_sequence != 0, &self.resource_scope)
     }
 }
 
@@ -241,6 +245,40 @@ impl EventPageV1 {
         Ok(page)
     }
 
+    /// Checks that this replay response preserves the caller's exact position.
+    ///
+    /// A nonzero reconnect position requires its immediate successor. An empty
+    /// heartbeat preserves the requested position. A zero request may start at
+    /// the first retained event after prefix retirement. V1 has no event filter;
+    /// omitted successors cannot be interpreted as filtered records.
+    ///
+    /// Callers check this before publishing events or adopting `next_sequence`.
+    /// The check grants no access or independent journal custody authority.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid query/page, changed scope, excess records,
+    /// an omitted successor or a heartbeat that advances/regresses the position.
+    pub fn validate_for_query(&self, query: &EventQueryV1) -> Result<()> {
+        query.validate()?;
+        self.validate()?;
+        if self.events.len() > query.limit as usize
+            || query
+                .resource_scope
+                .as_ref()
+                .is_some_and(|scope| scope != &self.resource_scope)
+            || match self.events.first() {
+                Some(event) if query.after_sequence > 0 => {
+                    query.after_sequence.checked_add(1) != Some(event.sequence)
+                }
+                Some(_) => false,
+                None => self.next_sequence != query.after_sequence,
+            }
+        {
+            bail!("assessment event replay does not match its requested cursor");
+        }
+        Ok(())
+    }
+
     fn validate(&self) -> Result<()> {
         if self.schema != "aos.assessment-event-page/v1"
             || self.events.len() > 10
@@ -248,7 +286,7 @@ impl EventPageV1 {
             || self
                 .events
                 .windows(2)
-                .any(|pair| pair[0].sequence >= pair[1].sequence)
+                .any(|pair| pair[0].sequence.checked_add(1) != Some(pair[1].sequence))
             || self
                 .events
                 .last()

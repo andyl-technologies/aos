@@ -187,6 +187,16 @@ async fn an_interior_gap_is_not_filtered_event_replay() -> Result<()> {
 #[tokio::test]
 #[ignore = "Requires AOS_ASSESSMENT_CLI pointing to the packaged aos binary"]
 async fn actual_cli_watch_refuses_lost_successor_without_false_heartbeat() -> Result<()> {
+    qualify_cli_watch(false).await
+}
+
+#[tokio::test]
+#[ignore = "Requires AOS_ASSESSMENT_CLI pointing to the packaged aos binary"]
+async fn actual_cli_watch_refuses_unearned_heartbeat_position() -> Result<()> {
+    qualify_cli_watch(true).await
+}
+
+async fn qualify_cli_watch(forge_heartbeat: bool) -> Result<()> {
     use aos_assessment_runtime::attention_control::EventQueryV1;
     use aos_proto_types as pb;
     use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
@@ -197,6 +207,7 @@ async fn actual_cli_watch_refuses_lost_successor_without_false_heartbeat() -> Re
         db: Arc<Database>,
         registry: i64,
         scope: String,
+        forge_heartbeat: bool,
     }
 
     async fn read(
@@ -217,12 +228,18 @@ async fn actual_cli_watch_refuses_lost_successor_without_false_heartbeat() -> Re
                     query.resource_scope.as_deref() == Some(fixture.scope.as_str()),
                     "watch scope changed"
                 );
-                fixture.db.backend.execute(
-                    "DELETE FROM assessment_events WHERE registry_id = ?1 AND event_sequence = 3",
-                    &vals![@slice fixture.registry],
-                ).await?;
+                if !fixture.forge_heartbeat {
+                    fixture
+                        .db
+                        .backend
+                        .execute(
+                            "DELETE FROM assessment_events WHERE registry_id = ?1 AND event_sequence = 3",
+                            &vals![@slice fixture.registry],
+                        )
+                        .await?;
+                }
             }
-            let page = fixture
+            let mut page = fixture
                 .db
                 .assessment_event_replay_page(
                     fixture.registry,
@@ -231,6 +248,11 @@ async fn actual_cli_watch_refuses_lost_successor_without_false_heartbeat() -> Re
                     query.limit,
                 )
                 .await?;
+            if fixture.forge_heartbeat && query.after_sequence == 2 {
+                // Keep the real journal intact. Simulate a faulty adapter that
+                // supplies an empty successful response at an unearned position.
+                page.events.clear();
+            }
             Ok::<_, anyhow::Error>(Json(pb::AssessmentDocumentResponse {
                 document_json: page.to_bytes()?,
             }))
@@ -255,6 +277,7 @@ async fn actual_cli_watch_refuses_lost_successor_without_false_heartbeat() -> Re
         db: Arc::new(Database::open(&path).await?),
         registry,
         scope: request.resource_scope,
+        forge_heartbeat,
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let hub = format!("http://{}", listener.local_addr()?);
@@ -283,9 +306,13 @@ async fn actual_cli_watch_refuses_lost_successor_without_false_heartbeat() -> Re
             tokio::time::timeout(std::time::Duration::from_secs(30), command.output()).await??;
         assert!(!output.status.success());
         let stdout = String::from_utf8(output.stdout)?;
+        let expected = if forge_heartbeat {
+            "event replay"
+        } else {
+            "cursor-expired"
+        };
         assert!(
-            stdout.contains("cursor-expired")
-                || String::from_utf8_lossy(&output.stderr).contains("cursor-expired")
+            stdout.contains(expected) || String::from_utf8_lossy(&output.stderr).contains(expected)
         );
         let mut pages = Vec::new();
         for line in stdout.lines() {
@@ -300,7 +327,11 @@ async fn actual_cli_watch_refuses_lost_successor_without_false_heartbeat() -> Re
         assert_eq!(pages.len(), 1);
         assert_eq!(pages[0].events.len(), 2);
         assert_eq!(pages[0].next_sequence, 2);
-        println!("PASS: actual CLI watch refuses lost successor without a false heartbeat");
+        if forge_heartbeat {
+            println!("PASS: actual CLI watch refuses an unearned heartbeat position");
+        } else {
+            println!("PASS: actual CLI watch refuses lost successor without a false heartbeat");
+        }
         Ok(())
     }
     .await;

@@ -171,5 +171,11 @@ in {
         timeout=240,
     )
     assert "PASS: actual CLI watch refuses lost successor without a false heartbeat" in output, output
+    output = hub.succeed(
+        "AOS_ASSESSMENT_CLI=${pkgs.aos}/bin/aos TOKIO_WORKER_THREADS=2 ${fixture}/bin/aos-assessment-retained-pages-fixture "
+        "--ignored --exact ${fixture.passthru.eventHeartbeatTestSelector} --nocapture --test-threads=1",
+        timeout=240,
+    )
+    assert "PASS: actual CLI watch refuses an unearned heartbeat position" in output, output
   '';
 }

@@ -67,3 +67,84 @@ fn idle_replay_preserves_the_reconnect_cursor_and_explicit_database_time() -> Re
     assert!(alerts.to_bytes().is_err());
     Ok(())
 }
+
+fn event_page(sequences: &[u64], next: u64) -> Result<EventPageV1> {
+    use aos_assessment_runtime::events::{AssessmentEventPayload, AssessmentEventV1};
+    let now = Timestamp::parse("2026-10-09T00:00:00Z")?;
+    Ok(EventPageV1 {
+        schema: "aos.assessment-event-page/v1".into(),
+        resource_scope: "registry:fixture-incarnation".into(),
+        as_of: now.clone(),
+        events: sequences
+            .iter()
+            .map(|sequence| AssessmentEventV1 {
+                schema: "aos.assessment-event/v1".into(),
+                event_id: format!("event-{sequence}"),
+                sequence: *sequence,
+                occurred_at: now.clone(),
+                payload: AssessmentEventPayload::ScheduleChanged {
+                    schedule_id: "fixture".into(),
+                    revision: 1,
+                    enabled: false,
+                },
+            })
+            .collect(),
+        next_sequence: next,
+    })
+}
+
+#[test]
+fn replay_consumers_refuse_unearned_positions_and_preserve_retained_prefix_restarts() -> Result<()>
+{
+    let mut query = EventQueryV1 {
+        schema: "aos.assessment-event-query/v1".into(),
+        limit: 2,
+        after_sequence: 12,
+        resource_scope: Some("registry:fixture-incarnation".into()),
+    };
+    event_page(&[13, 14], 14)?.validate_for_query(&query)?;
+    event_page(&[], 12)?.validate_for_query(&query)?;
+
+    for page in [
+        event_page(&[14], 14)?,
+        event_page(&[12], 12)?,
+        event_page(&[], 13)?,
+        event_page(&[], 11)?,
+        event_page(&[13, 14, 15], 15)?,
+    ] {
+        assert!(page.validate_for_query(&query).is_err());
+    }
+    let mut foreign = event_page(&[13], 13)?;
+    foreign.resource_scope = "registry:replacement".into();
+    assert!(foreign.validate_for_query(&query).is_err());
+
+    query.after_sequence = 0;
+    query.resource_scope = None;
+    event_page(&[90, 91], 91)?.validate_for_query(&query)?;
+    event_page(&[], 0)?.validate_for_query(&query)?;
+    assert!(event_page(&[], 91)?.validate_for_query(&query).is_err());
+    query.limit = 0;
+    assert!(event_page(&[90], 90)?.validate_for_query(&query).is_err());
+    Ok(())
+}
+
+#[test]
+fn unfiltered_replay_refuses_interior_gaps_before_consumer_publication() -> Result<()> {
+    let page = event_page(&[13, 15], 15)?;
+    assert!(page.to_bytes().is_err());
+    assert!(EventPageV1::from_slice(&serde_json::to_vec(&page)?).is_err());
+    let maximum = 9_007_199_254_740_991;
+    let query = EventQueryV1 {
+        schema: "aos.assessment-event-query/v1".into(),
+        limit: 1,
+        after_sequence: maximum,
+        resource_scope: Some("registry:fixture-incarnation".into()),
+    };
+    event_page(&[], maximum)?.validate_for_query(&query)?;
+    assert!(
+        event_page(&[maximum], maximum)?
+            .validate_for_query(&query)
+            .is_err()
+    );
+    Ok(())
+}

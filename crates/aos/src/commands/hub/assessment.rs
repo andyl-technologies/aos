@@ -204,20 +204,7 @@ pub(super) async fn run(printer: &Printer, command: &HubAssessmentCmd) -> Result
                     )
                     .await?;
                 let page = EventPageV1::from_slice(&response.document_json)?;
-                if query
-                    .resource_scope
-                    .as_ref()
-                    .is_some_and(|scope| scope != &page.resource_scope)
-                    || page.next_sequence < query.after_sequence
-                    || page
-                        .events
-                        .first()
-                        .is_some_and(|event| event.sequence <= query.after_sequence)
-                {
-                    anyhow::bail!(
-                        "assessment event replay changed resource or regressed its cursor"
-                    );
-                }
+                page.validate_for_query(&query)?;
                 if printer.mode() == OutputMode::Json {
                     printer.json(&serde_json::json!({"schema_version":"aos.hub.cli/v1", "kind":"assessment-events", "data":page}));
                 } else {

@@ -29,6 +29,7 @@
   eventReopenSelector = "db::assessment::event_replay::tests::replay_position_and_expired_custody_survive_database_reopen";
   eventGapSelector = "db::assessment::event_replay::tests::an_interior_gap_is_not_filtered_event_replay";
   eventCliSelector = "db::assessment::event_replay::tests::actual_cli_watch_refuses_lost_successor_without_false_heartbeat";
+  eventHeartbeatSelector = "db::assessment::event_replay::tests::actual_cli_watch_refuses_unearned_heartbeat_position";
 in
   assert builtins.pathExists (source + "/crates/aos-hub-worker/src/oci_manifest_ingress.rs");
     pkgs.mkCargoPackage {
@@ -111,7 +112,10 @@ in
         grep -Fx '${eventGapSelector}: test' "$out/nix-support/eventGap-test-registration.txt"
         "$out/bin/aos-assessment-retained-pages-fixture" --list --ignored --exact '${eventCliSelector}' > "$out/nix-support/eventCli-test-registration.txt"
         grep -Fx '${eventCliSelector}: test' "$out/nix-support/eventCli-test-registration.txt"
+        "$out/bin/aos-assessment-retained-pages-fixture" --list --ignored --exact '${eventHeartbeatSelector}' > "$out/nix-support/eventHeartbeat-test-registration.txt"
+        grep -Fx '${eventHeartbeatSelector}: test' "$out/nix-support/eventHeartbeat-test-registration.txt"
       '';
+      passthru.eventHeartbeatTestSelector = eventHeartbeatSelector;
       passthru.testSelector = selector;
       passthru.subscriptionTestSelector = subscriptionSelector;
       passthru.alertTestSelector = alertSelector;

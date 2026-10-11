@@ -72,6 +72,8 @@ impl RpcService {
             )
             .await
             .map_err(super::assessment_notifications::retained_page_error)?;
+        page.validate_for_query(&query)
+            .map_err(RpcError::internal)?;
         let document_json = page.to_bytes().map_err(RpcError::internal)?;
         self.recheck_assessment(&claims, &registry, "assessment.read")
             .await?;
