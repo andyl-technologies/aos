@@ -2,9 +2,11 @@
 
 The additive Linux 7.2.3 stage-three patch implements an experimental ARM
 counter/timer component. It does not enable a runnable qualified Crucible KVM
-node. Native AArch64 execution has not run on this x86 machine, and `/dev/kvm`
-is unavailable. Neither cross-compilation nor portable policy tests replace
-native counter, stopping, capture or continuation campaigns.
+node. Native AArch64 execution has not run on this x86 machine. Later access
+to standard x86 KVM, recorded in the
+[availability update](kvm-feasibility.md#1-current-implementation-and-local-evidence),
+does not supply ARM execution evidence. Neither cross-compilation nor portable
+policy tests replace native counter, stopping, capture or continuation campaigns.
 
 ## Realization and architectural paths
 

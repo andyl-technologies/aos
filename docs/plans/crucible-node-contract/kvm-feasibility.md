@@ -24,6 +24,15 @@ native guest boot, timer experiment, stop-latency measurement or capture/restore
 test was possible. Module presence and CPU flags do not prove API availability.
 The machine cannot supply native AArch64 KVM qualification either.
 
+On 2026-10-10, a fresh host-side inspection found `/dev/kvm` as character
+device `10:232`, while the ordinary tool sandbox still omitted it. A separate
+diagnostic VM completed through standard KVM, and the private-store sandbox
+probe reported API version 12. Earlier device-unavailability results describe
+their original execution namespace and remain unchanged. Standard KVM access
+allows host-side smoke tests; it does not establish support for the private
+Crucible controller capability, clock containment, exact capture or a qualified
+node profile. No modified host kernel was installed.
+
 The audit uses the public Linux v6.18 sources and QEMU source revision
 `f9587d4045c67cd0d8d8bdcd5d0bb5b6b395b63c`. These are reference implementations,
 not a claim that the installed kernel or packaged patched QEMU has identical

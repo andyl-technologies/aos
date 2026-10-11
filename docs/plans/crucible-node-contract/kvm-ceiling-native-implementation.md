@@ -2,8 +2,11 @@
 
 The Linux 7.2.3 stage-four patch adds autonomous native admission closure to the
 experimental x86 and ARM components. It remains separate from complete node
-qualification. This machine cannot execute KVM: `/dev/kvm` is absent. ARM checks
-are cross-compilation, not native AArch64 execution evidence.
+qualification. The original checks lacked `/dev/kvm` in their execution
+namespace; later standard-KVM access is recorded in the
+[availability update](kvm-feasibility.md#1-current-implementation-and-local-evidence).
+The patched controller has not been exercised on the host. ARM checks are
+cross-compilation, not native AArch64 execution evidence.
 
 ## Ceiling request and ownership
 

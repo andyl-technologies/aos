@@ -38,10 +38,12 @@ execution profile.
   claims or incompatible restoration. Reference verification and native state
   collection/restoration remain separate required work.
 
-The current machine has no `/dev/kvm`. Operational unavailability must remain
-separate from native qualification. Unit tests cover arithmetic, schema and
-refusal behavior. They do not count as hardware clock, stopping or architectural
-continuation tests.
+The original checks lacked `/dev/kvm` in their execution namespace. A later
+host-side check and standard-KVM diagnostic succeeded, as recorded in the
+[availability update](kvm-feasibility.md#1-current-implementation-and-local-evidence).
+Operational access remains separate from native controller qualification.
+Unit tests cover arithmetic, schema and refusal behavior. They do not count
+as hardware clock, stopping or architectural continuation tests.
 
 ## Native ABI and ownership
 
