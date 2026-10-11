@@ -1479,13 +1479,28 @@
       export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
       export NIX_REMOTE="" NIX_CONF_DIR="$HOME/.config/nix"
       registry="$HOME/.local/share/apm/registries/containers"
-      {APR} release 1.0.0 --registry containers --from-stage hybrid-container \\
-        --stage-revision 1 --upload-url https://aos.fleet.test/fleet/containers \\
-        --token {shlex.quote(publisher_token)}
-      # The next release has no container; remove its predecessor's sidecar
-      # through a real commit rather than carrying a mismatched identity.
-      git -C "$registry" rm containers/v1/index.json
-      git -C "$registry" commit -m 'Remove the previous release container sidecar'
+      release_started=$(${pkgs.coreutils}/bin/date +%s)
+      while true; do
+        {APR} --json release 1.0.0 --registry containers --from-stage hybrid-container \\
+          --stage-revision 1 --upload-url https://aos.fleet.test/fleet/containers \\
+          --token {shlex.quote(publisher_token)} > /var/lib/hybrid-container-released.json
+        release_state=$(${pkgs.jq}/bin/jq -er '.state' /var/lib/hybrid-container-released.json)
+        case "$release_state" in
+          released) break ;;
+          releasing) ;;
+          *) exit 1 ;;
+        esac
+        test "$(${pkgs.coreutils}/bin/date +%s)" -lt "$((release_started + 420))"
+        ${pkgs.coreutils}/bin/sleep 2
+      done
+      # Staged publication imports the immutable release tag while preserving
+      # the authoring branch. Its container belongs to that signed tag, not to
+      # the worktree used to author the following release without a container.
+      git -C "$registry" show refs/tags/1.0.0:containers/v1/index.json \\
+        | ${pkgs.jq}/bin/jq -e --arg expected {shlex.quote(finalized_container['index_digest'])} \\
+          '.oci.index.digest == $expected' > /dev/null
+      test "$(git -C "$registry" symbolic-ref --short HEAD)" = qualification/hybrid-container
+      test ! -e "$registry/containers/v1/index.json"
       (cd ${nextPublication.project}
         {APR} publish ${fixture.helperV2} --registry containers --previous 1.0.0 --key-id initial)
       {APR} release 2.0.0 --registry containers \\

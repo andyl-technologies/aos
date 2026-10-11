@@ -182,6 +182,7 @@ impl ExternalObjectRequest {
             matches!(
                 self.plan.operation,
                 StorageWorkOperation::PutMetadata { .. }
+                    | StorageWorkOperation::PutPreparedControl { .. }
                     | StorageWorkOperation::PutProbe { .. }
                     | StorageWorkOperation::Head { .. }
                     | StorageWorkOperation::DeleteIfMatches { .. }

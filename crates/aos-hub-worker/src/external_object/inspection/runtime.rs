@@ -6,12 +6,13 @@
 //! producer closure; versioned reads require actual version/ETag/size discovery
 //! and exact conditional responses. Both emit bounded storage-local parser DTOs.
 
-use anyhow::{Context as _, Result, ensure};
+use anyhow::{ensure, Context as _, Result};
 use aos_hub_core::{
     fetch::{StreamedRead, SurfaceFetch},
     storage_work::{
-        StorageBindingPublication, StorageObjectIdentity, StorageWorkOperation, StorageWorkOutcome,
-        StorageWorkPlan, StorageWorkResult, protected_inspection::ProtectedInspectionSource,
+        protected_inspection::ProtectedInspectionSource, StorageBindingPublication,
+        StorageObjectIdentity, StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan,
+        StorageWorkResult,
     },
 };
 use base64::Engine as _;
@@ -19,7 +20,7 @@ use sha2::{Digest as _, Sha256};
 use worker::{Env, ResponseBody};
 
 use super::super::{
-    config::{Config, configured},
+    config::{configured, Config},
     copy::{
         self,
         config::Domain,
@@ -68,6 +69,32 @@ pub(crate) async fn execute(
     publication: &StorageBindingPublication,
     signal: &worker::web_sys::AbortSignal,
 ) -> Result<Option<StorageWorkResult>> {
+    execute_with_control(env, plan, publication, signal, None).await
+}
+
+/// Parses an attached registry control while companion reads retain their gate.
+///
+/// # Errors
+/// Refuses mismatched bytes, changed sources, stale permission, cancellation,
+/// missing installed cohorts or an unacknowledged coordinated control write.
+pub(crate) async fn execute_prepared(
+    env: &Env,
+    plan: &StorageWorkPlan,
+    publication: &StorageBindingPublication,
+    signal: &worker::web_sys::AbortSignal,
+    control: &[u8],
+) -> Result<Option<StorageWorkResult>> {
+    aos_hub_core::storage_work::prepared_control::validate_body(&plan.operation, control)?;
+    execute_with_control(env, plan, publication, signal, Some(control)).await
+}
+
+async fn execute_with_control(
+    env: &Env,
+    plan: &StorageWorkPlan,
+    publication: &StorageBindingPublication,
+    signal: &worker::web_sys::AbortSignal,
+    control: Option<&[u8]>,
+) -> Result<Option<StorageWorkResult>> {
     if !supported(&plan.operation) {
         return Ok(None);
     }
@@ -115,6 +142,16 @@ pub(crate) async fn execute(
 
     use StorageWorkOperation as Op;
     let (outcome, source_bytes) = match &plan.operation {
+        Op::VerifyPreparedGitIndex { .. } | Op::PutPreparedControl { .. } => {
+            let control = control.context("prepared inspection has no attached control")?;
+            let result =
+                crate::surface::prepared_control::validate_control(&reader, plan, control).await?;
+            reader.current()?;
+            if matches!(plan.operation, Op::PutPreparedControl { .. }) {
+                super::super::put_prepared_control(env, plan, publication, control, signal).await?;
+            }
+            result
+        }
         Op::Head { path } => {
             let (metadata, _, _, scope) = reader.lookup(path).await?;
             if let Some(identity) = metadata.versioned_source {
@@ -342,6 +379,8 @@ fn supported(operation: &StorageWorkOperation) -> bool {
     matches!(
         operation,
         StorageWorkOperation::Head { .. }
+            | StorageWorkOperation::VerifyPreparedGitIndex { .. }
+            | StorageWorkOperation::PutPreparedControl { .. }
             | StorageWorkOperation::HashOciRange { .. }
             | StorageWorkOperation::InspectMetadata { .. }
             | StorageWorkOperation::InspectMetadataObjects { .. }

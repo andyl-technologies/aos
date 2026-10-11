@@ -7,8 +7,8 @@
 //! A selector cannot expand the signed operation's path or format bound. The
 //! documentation NAR is further pinned by its signed complete content hash.
 
-use anyhow::{Result, ensure};
-use aos_hub_core::storage_work::{MAX_METADATA_BYTES, StorageWorkOperation, StorageWorkPlan};
+use anyhow::{ensure, Result};
+use aos_hub_core::storage_work::{StorageWorkOperation, StorageWorkPlan, MAX_METADATA_BYTES};
 use aos_registry_surface::{object, object_bundle};
 use serde::{Deserialize, Serialize};
 
@@ -129,6 +129,32 @@ impl Selection {
                 (
                     aos_hub_core::storage_work::MAX_VERIFY_SOURCE_BYTES,
                     Some(hash.into()),
+                )
+            }
+            StorageWorkOperation::VerifyPreparedGitIndex {
+                path: index,
+                companion_sha256,
+                ..
+            } => {
+                ensure!(
+                    aos_registry_surface::pack_index::companion_pack_path(index).as_deref()
+                        == Some(path),
+                    "prepared index selected another companion"
+                );
+                (
+                    aos_registry_surface::pack_index::MAX_PUBLISHED_PACK_BYTES,
+                    companion_sha256.clone(),
+                )
+            }
+            StorageWorkOperation::PutPreparedControl { path: index, .. } => {
+                ensure!(
+                    aos_registry_surface::pack_index::companion_pack_path(index).as_deref()
+                        == Some(path),
+                    "prepared control selected another source"
+                );
+                (
+                    aos_registry_surface::pack_index::MAX_PUBLISHED_PACK_BYTES,
+                    None,
                 )
             }
             StorageWorkOperation::InspectStoredGitPack { index_path, .. } => {

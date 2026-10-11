@@ -59,6 +59,11 @@ pub(crate) use stage::lease_scale::fetch as fetch_lease_scale;
 pub(crate) use copy::conformance_fetch as copy_conformance_fetch;
 
 #[cfg(target_arch = "wasm32")]
+mod prepared_control;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use prepared_control::put as put_prepared_control;
+
+#[cfg(target_arch = "wasm32")]
 mod executor;
 #[cfg(target_arch = "wasm32")]
 mod frozen;
@@ -125,3 +130,5 @@ pub(crate) use stage::observation::Attempt as VerificationFaultAttempt;
 /// Executes existing typed parsers under current closed source ownership.
 #[cfg(target_arch = "wasm32")]
 pub(crate) use inspection::execute as execute_inspection;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use inspection::execute_prepared as inspect_prepared_control;

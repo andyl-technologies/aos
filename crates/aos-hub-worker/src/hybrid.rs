@@ -1687,7 +1687,8 @@ async fn execute_storage_work(
         None
     };
     let execution = if let Some(control) = control {
-        crate::surface::prepared_control::execute(env, &plan, control).await
+        crate::surface::prepared_control::execute(env, &plan, control, &request.inner().signal())
+            .await
     } else if let Some(result) = guarded_pack {
         Ok(result)
     } else if matches!(

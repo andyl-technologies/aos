@@ -895,7 +895,8 @@ pub(in crate::external_object) async fn verify_observable_destination(
                     && matches!(
                         (&receipt.turn.intent.effect, &receipt.outcome),
                         (
-                            super::super::protocol::Effect::Put { .. },
+                            super::super::protocol::Effect::Put { .. }
+                                | super::super::protocol::Effect::PutPreparedControl { .. },
                             super::super::protocol::Outcome::PutAcknowledged
                         )
                     ),

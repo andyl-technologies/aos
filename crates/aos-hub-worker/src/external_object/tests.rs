@@ -242,7 +242,7 @@ pub(super) async fn pending(config: &Config, index: usize) -> (Head, Intent) {
 pub(super) fn receipt(head: &Head) -> Receipt {
     let turn = head.pending.clone().unwrap();
     let outcome = match turn.intent.effect {
-        Effect::Put { .. } => Outcome::PutAcknowledged,
+        Effect::Put { .. } | Effect::PutPreparedControl { .. } => Outcome::PutAcknowledged,
         Effect::Head => Outcome::HistoricalHead { object: None },
         Effect::Delete { ref expected } => Outcome::DeleteAcknowledged {
             provider_version: expected.provider_version.clone(),
@@ -857,13 +857,7 @@ async fn copy_and_oci_owners_exclude_each_other_and_generic_dispatch() {
         head.validate(&config, &intent.scope).unwrap();
         assert!(head.require_cleanup_ready().is_err());
         assert!(head
-            .begin(
-                &config,
-                intent.clone(),
-                &signed,
-                "f".repeat(64),
-                clock(101),
-            )
+            .begin(&config, intent.clone(), &signed, "f".repeat(64), clock(101),)
             .is_err());
         assert!(head.pending.is_none());
 
@@ -872,4 +866,147 @@ async fn copy_and_oci_owners_exclude_each_other_and_generic_dispatch() {
         assert!(head.validate(&config, &intent.scope).is_err());
         assert!(head.copy.is_some() && head.oci.is_some());
     }
+}
+
+/// Builds a closed-control turn inside the same actual signed writer cohort.
+fn prepared_control_intent(config: &Config, path: &str, bytes: u32) -> Intent {
+    let mut value = intent(config, 0, "retained-prepared-control");
+    value.scope = config
+        .scope(
+            &config.cohorts[0],
+            format!("managed/binding/objects/{path}"),
+        )
+        .unwrap();
+    value.effect = Effect::PutPreparedControl {
+        path: path.into(),
+        sha256: "a".repeat(64),
+        bytes,
+    };
+    value
+}
+
+#[test]
+fn prepared_control_scope_keeps_generic_put_and_artifact_limits_closed() {
+    let config = config();
+    let bundle = prepared_control_intent(&config, "objects/aos-index-v1/all", 1024 * 1024);
+    bundle.validate().unwrap();
+
+    let mut generic = intent(&config, 0, "oversized-generic-put");
+    generic.effect = Effect::Put {
+        sha256: "a".repeat(64),
+        bytes: 1024 * 1024,
+    };
+    assert!(generic.validate().is_err());
+    assert!(prepared_control_intent(&config, "nar/archive.nar", 1)
+        .validate()
+        .is_err());
+    assert!(prepared_control_intent(&config, "HEAD", 128 * 1024 + 1)
+        .validate()
+        .is_err());
+
+    let mut changed = bundle.clone();
+    changed.scope.full_key = "managed/binding/objects/another-key".into();
+    assert!(changed.validate().is_err());
+    if let Effect::PutPreparedControl { path, .. } = &mut changed.effect {
+        *path = "objects/aos-index-v1/../../another-key".into();
+    }
+    assert!(changed.validate().is_err());
+}
+
+#[tokio::test]
+async fn prepared_control_unknown_write_and_receipt_keep_the_original_turn() {
+    let config = config();
+    let original = prepared_control_intent(&config, "HEAD", 3);
+    let initial = Head::initialize(&config, &original, clock(100)).unwrap();
+    let (pending, reply) = initial
+        .begin(
+            &config,
+            original.clone(),
+            &token(&config, 0, 0).await,
+            "b".repeat(64),
+            clock(101),
+        )
+        .unwrap();
+    assert!(matches!(reply, GuardReply::Dispatch { .. }));
+
+    let mut replacement = original.clone();
+    replacement.operation_id = "fresh-id-for-unknown-write".into();
+    assert!(pending
+        .begin(
+            &config,
+            replacement,
+            &token(&config, 0, 1).await,
+            "c".repeat(64),
+            clock(102),
+        )
+        .is_err());
+
+    let receipt = receipt(&pending);
+    let terminal = pending.terminal(&receipt).unwrap();
+    assert!(terminal.pending.is_none());
+    assert_eq!(terminal.incarnation.get(), 1);
+    assert_eq!(
+        terminal.visible_receipt.as_ref().unwrap().receipt_digest,
+        protocol::digest(&receipt).unwrap()
+    );
+    assert!(matches!(
+        terminal.replay(&original, &receipt).unwrap().1,
+        GuardReply::Terminal { .. }
+    ));
+
+    let mut altered = original.clone();
+    if let Effect::PutPreparedControl { sha256, .. } = &mut altered.effect {
+        *sha256 = "d".repeat(64);
+    }
+    assert!(terminal.replay(&altered, &receipt).is_err());
+}
+
+#[test]
+fn prepared_index_selection_cannot_expand_companion_paths_or_hashes() {
+    use super::inspection::selection::Selection;
+
+    let mut plan = application().plan;
+    let index = format!("objects/pack/pack-{}.idx", "a".repeat(64));
+    let pack = aos_registry_surface::pack_index::companion_pack_path(&index).unwrap();
+    let expected_hash = "c".repeat(64);
+    plan.operation = StorageWorkOperation::VerifyPreparedGitIndex {
+        path: index.clone(),
+        sha256: "d".repeat(64),
+        size: 1024,
+        companion_sha256: Some(expected_hash.clone()),
+    };
+
+    let selected = Selection::from_plan(&plan, &pack).unwrap();
+    assert_eq!(
+        selected.expected_sha256.as_deref(),
+        Some(expected_hash.as_str())
+    );
+    assert_eq!(
+        selected.maximum_bytes,
+        aos_registry_surface::pack_index::MAX_PUBLISHED_PACK_BYTES
+    );
+    assert!(Selection::from_plan(&plan, &index).is_err());
+    assert!(Selection::from_plan(&plan, "objects/pack/other.pack").is_err());
+    let mut changed = selected.clone();
+    changed.maximum_bytes += 1;
+    assert!(changed.validate(&plan).is_err());
+    let mut changed = selected;
+    changed.expected_sha256 = None;
+    assert!(changed.validate(&plan).is_err());
+
+    plan.operation = StorageWorkOperation::PutPreparedControl {
+        path: index,
+        sha256: "d".repeat(64),
+        size: 1024,
+    };
+    assert!(Selection::from_plan(&plan, &pack)
+        .unwrap()
+        .expected_sha256
+        .is_none());
+    plan.operation = StorageWorkOperation::PutPreparedControl {
+        path: "HEAD".into(),
+        sha256: "d".repeat(64),
+        size: 3,
+    };
+    assert!(Selection::from_plan(&plan, &pack).is_err());
 }

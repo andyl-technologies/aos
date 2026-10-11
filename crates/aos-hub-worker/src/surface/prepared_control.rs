@@ -2,7 +2,8 @@
 //!
 //! The signed plan binds the attached control's hash and size. The Worker reads
 //! and verifies companion packs locally, then writes through the existing object
-//! coordinator. Protected external bindings keep their existing legacy refusal.
+//! coordinator. Protected external bindings use their existing leased reader
+//! and permanent per-key write coordinator, including unknown-effect retention.
 
 use super::*;
 
@@ -10,6 +11,7 @@ pub(crate) async fn execute(
     env: &Env,
     plan: &StorageWorkPlan,
     control: &[u8],
+    signal: &worker::web_sys::AbortSignal,
 ) -> Result<StorageWorkResult> {
     aos_hub_core::storage_work::prepared_control::validate_body(&plan.operation, control)?;
     let deployment_id = env.var("HUB_DEPLOYMENT_ID")?.to_string();
@@ -38,6 +40,18 @@ pub(crate) async fn execute(
         (outcome, source_bytes)
     } else {
         let publication = crate::hybrid_binding::resolve_for_plan(env, plan).await?;
+        let mode = crate::external_object::installed_inventory_mode(env, &publication.snapshot)?;
+        if mode != crate::external_object::InventoryDomainMode::Unconfigured {
+            return crate::external_object::inspect_prepared_control(
+                env,
+                plan,
+                &publication,
+                signal,
+                control,
+            )
+            .await?
+            .context("prepared control requires its installed protected executor");
+        }
         crate::external_object::deny_legacy(env, &publication.snapshot)?;
         let now = aos_hub_core::clock::now_unix_secs();
         publication.snapshot.authorizes(plan, &deployment_id, now)?;
@@ -117,7 +131,7 @@ fn external_surface(
     )
 }
 
-async fn validate_control(
+pub(crate) async fn validate_control(
     fetcher: &dyn SurfaceFetch,
     plan: &StorageWorkPlan,
     control: &[u8],

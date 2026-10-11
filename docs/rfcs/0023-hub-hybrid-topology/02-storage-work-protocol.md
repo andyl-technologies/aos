@@ -134,6 +134,16 @@ SQL commits; Workers validate companion packs and perform the storage writes.
 Only a digest and compact verification result return to Native. Mutations are
 not automatically retried after a transport failure.
 
+For installed external bindings, prepared control writes use the same per-key
+coordinator as other provider writes. The retained intent binds the closed
+control path, body hash and size; an uncertain PUT stays unresolved and cannot
+be replaced by a fresh operation. A positive provider acknowledgement creates
+the next visible incarnation. Companion pack reads use the installed read
+lease and protected or immutable-version source checks through EOF. These
+operations accept only registry controls and do not widen generic metadata PUT
+limits or permit artifact bodies to pass through Native. Native rechecks the
+placement, binding and current write revision before and after the operation.
+
 The placement and binding fields carry the [RFC-0012](../0012-hub-surface-topology/01-domain-model.md)
 resource fences. A binding snapshot is a signed, revisioned, nonsecret
 description of provider kind, endpoint, bucket, prefix, capabilities, and the

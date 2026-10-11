@@ -318,7 +318,7 @@ impl Head {
         self.validate(config, &intent.scope)?;
         intent.validate()?;
         ensure!(
-            !matches!(intent.effect, super::protocol::Effect::Put { .. })
+            !intent.effect.is_put()
                 || self
                     .visible_receipt
                     .as_ref()
@@ -332,7 +332,7 @@ impl Head {
             "ordinary metadata PUT cannot replace a retained OCI incarnation"
         );
         ensure!(
-            !matches!(intent.effect, super::protocol::Effect::Put { .. })
+            !intent.effect.is_put()
                 || self.incarnation.get() < super::stage::state::MAX_INCARNATION,
             "object incarnation capacity exhausted"
         );
@@ -397,10 +397,7 @@ impl Head {
             "object receipt capacity exhausted"
         );
         next.pending = None;
-        if matches!(
-            receipt.turn.intent.effect,
-            super::protocol::Effect::Put { .. }
-        ) {
+        if receipt.turn.intent.effect.is_put() {
             next.incarnation = aos_hub_core::direct_upload::WireInteger::new(
                 self.incarnation
                     .get()

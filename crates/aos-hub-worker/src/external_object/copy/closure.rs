@@ -12,7 +12,7 @@ use worker::{Env, Storage};
 
 use super::super::{
     config::Config,
-    protocol::{digest, Effect, Outcome},
+    protocol::{digest, Outcome},
     state::{Head, VisibleKind},
 };
 
@@ -55,7 +55,7 @@ pub(in crate::external_object) async fn current(
                     && matches!(receipt.outcome, Outcome::PutAcknowledged),
                 "protected metadata receipt changed"
             );
-            let Effect::Put { sha256, bytes } = &receipt.turn.intent.effect else {
+            let Some((sha256, bytes)) = receipt.turn.intent.effect.put_commitment() else {
                 anyhow::bail!("protected metadata receipt is not a positive PUT");
             };
             CopySourceClosure {
@@ -64,8 +64,8 @@ pub(in crate::external_object) async fn current(
                     incarnation: GuardIncarnation::parse(head.incarnation.get().to_string())?,
                 },
                 receipt_digest: visible.receipt_digest.clone(),
-                sha256: sha256.clone(),
-                bytes: LeaseInteger::new(i64::from(*bytes))?,
+                sha256: sha256.to_owned(),
+                bytes: LeaseInteger::new(i64::from(bytes))?,
                 etag: None,
             }
         }

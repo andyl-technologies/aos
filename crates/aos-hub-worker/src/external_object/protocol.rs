@@ -44,6 +44,12 @@ pub(super) enum Effect {
         sha256: String,
         bytes: u32,
     },
+    /// Commits one closed registry control without expanding generic PUT.
+    PutPreparedControl {
+        path: String,
+        sha256: String,
+        bytes: u32,
+    },
     Head,
     ProbeHash {
         maximum_bytes: u32,
@@ -55,9 +61,24 @@ pub(super) enum Effect {
 }
 
 impl Effect {
+    /// Selects effects that create a new visible object incarnation.
+    pub(super) fn is_put(&self) -> bool {
+        matches!(self, Self::Put { .. } | Self::PutPreparedControl { .. })
+    }
+
+    /// Borrows the exact body commitment retained by a positive PUT receipt.
+    pub(super) fn put_commitment(&self) -> Option<(&str, u32)> {
+        match self {
+            Self::Put { sha256, bytes } | Self::PutPreparedControl { sha256, bytes, .. } => {
+                Some((sha256, *bytes))
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn lease_effect(&self) -> LeaseEffect {
         match self {
-            Self::Put { .. } => LeaseEffect::Put,
+            Self::Put { .. } | Self::PutPreparedControl { .. } => LeaseEffect::Put,
             Self::Head => LeaseEffect::Head,
             Self::ProbeHash { .. } => LeaseEffect::Read,
             Self::Delete { .. } => LeaseEffect::ConditionalDelete,
@@ -79,6 +100,24 @@ impl Intent {
                 digest_string(sha256)
                     && *bytes as usize <= aos_hub_core::storage_work::MAX_METADATA_BYTES,
                 "invalid metadata commitment"
+            );
+        }
+        if let Effect::PutPreparedControl {
+            path,
+            sha256,
+            bytes,
+        } = &self.effect
+        {
+            let control = aos_hub_core::storage_work::prepared_control::admitted_path(path);
+            let exact_key =
+                self.scope.full_key == *path || self.scope.full_key.ends_with(&format!("/{path}"));
+            ensure!(
+                control
+                    && exact_key
+                    && digest_string(sha256)
+                    && *bytes as usize
+                        <= aos_hub_core::storage_work::prepared_control::maximum_body_bytes(path),
+                "invalid prepared registry control commitment"
             );
         }
         if let Effect::Delete { expected } = &self.effect {
@@ -121,7 +160,7 @@ impl Receipt {
             "invalid dispatch nonce"
         );
         match (&self.turn.intent.effect, &self.outcome) {
-            (Effect::Put { .. }, Outcome::PutAcknowledged) => {}
+            (Effect::Put { .. } | Effect::PutPreparedControl { .. }, Outcome::PutAcknowledged) => {}
             (Effect::Head, Outcome::HistoricalHead { object }) => {
                 if let Some(value) = object {
                     ensure!(
@@ -157,7 +196,10 @@ impl Receipt {
                     digest_string(sha256)
                         && object.bytes.parse::<u32>()?.to_string() == object.bytes
                         && object.bytes.parse::<u32>()? <= *maximum_bytes
-                        && object.provider_version.as_deref().is_none_or(aos_hub_core::storage_work::valid_provider_version),
+                        && object
+                            .provider_version
+                            .as_deref()
+                            .is_none_or(aos_hub_core::storage_work::valid_provider_version),
                     "reserved probe snapshot identity invalid"
                 );
                 aos_hub_core::surface_write::strong_if_match_etag(&object.etag)?;

@@ -4,6 +4,8 @@
 //! Ambiguous provider failure leaves the retained turn untouched. Successful
 //! terminal replay returns historical acknowledgement without provider access.
 
+use std::borrow::Cow;
+
 use anyhow::{ensure, Result};
 use aos_hub_core::s3surface::{Method as S3Method, S3Surface};
 use aos_hub_core::storage_authority::{
@@ -87,7 +89,16 @@ async fn execute(request: &mut Request, env: &Env) -> Result<ExternalObjectResul
     publication
         .snapshot
         .authorizes(&work.plan, &deployment, config.clock().observed_at)?;
-    execute_authorized(env, config, work, &publication, deployment, Some(request.inner().signal())).await
+    execute_authorized(
+        env,
+        config,
+        work,
+        &publication,
+        deployment,
+        Some(request.inner().signal()),
+        None,
+    )
+    .await
 }
 
 /// Executes a Native-signed conditional delete through the configured issuer.
@@ -143,7 +154,16 @@ pub(crate) async fn execute_delete_plan(
     publication
         .snapshot
         .authorizes(plan, &deployment, config.clock().observed_at)?;
-    let result = execute_authorized(env, config, work, publication, deployment, client_signal).await?;
+    let result = execute_authorized(
+        env,
+        config,
+        work,
+        publication,
+        deployment,
+        client_signal,
+        None,
+    )
+    .await?;
     let outcome = match result.outcome {
         Outcome::DeleteAcknowledged { etag, .. } => StorageWorkOutcome::ObjectDeleted { etag },
         Outcome::DeleteAbsent => StorageWorkOutcome::NotFound,
@@ -333,7 +353,16 @@ pub(crate) async fn execute_probe_plan(
     publication
         .snapshot
         .authorizes(plan, &deployment, config.clock().observed_at)?;
-    let result = execute_authorized(env, config, work, publication, deployment, client_signal).await?;
+    let result = execute_authorized(
+        env,
+        config,
+        work,
+        publication,
+        deployment,
+        client_signal,
+        None,
+    )
+    .await?;
     let (outcome, source_bytes) = match result.outcome {
         Outcome::PutAcknowledged => (StorageWorkOutcome::ProbeAcknowledged, 0),
         Outcome::HistoricalHead { object: None } => (StorageWorkOutcome::NotFound, 0),
@@ -382,14 +411,22 @@ pub(crate) async fn execute_probe_plan(
     )))
 }
 
-async fn execute_authorized(
+pub(super) async fn execute_authorized(
     env: &Env,
     config: Config,
     mut work: ExternalObjectRequest,
     publication: &StorageBindingPublication,
     deployment: String,
     client_signal: Option<worker::web_sys::AbortSignal>,
+    control: Option<&[u8]>,
 ) -> Result<ExternalObjectResult> {
+    ensure!(
+        matches!(
+            work.plan.operation,
+            StorageWorkOperation::PutPreparedControl { .. }
+        ) == control.is_some(),
+        "prepared control body does not match the external operation"
+    );
     let (path, effect, bytes, purpose) = match &work.plan.operation {
         StorageWorkOperation::PutMetadata {
             path,
@@ -408,7 +445,24 @@ async fn execute_authorized(
                     sha256: sha256.clone(),
                     bytes: u32::try_from(bytes.len())?,
                 },
-                Some(bytes),
+                Some(Cow::Owned(bytes)),
+                "write",
+            )
+        }
+        StorageWorkOperation::PutPreparedControl { path, sha256, size } => {
+            let bytes = control.ok_or_else(|| anyhow::anyhow!("prepared control absent"))?;
+            aos_hub_core::storage_work::prepared_control::validate_body(
+                &work.plan.operation,
+                bytes,
+            )?;
+            (
+                path,
+                Effect::PutPreparedControl {
+                    path: path.clone(),
+                    sha256: sha256.clone(),
+                    bytes: u32::try_from(*size)?,
+                },
+                Some(Cow::Borrowed(bytes)),
                 "write",
             )
         }
@@ -443,7 +497,7 @@ async fn execute_authorized(
                     sha256: hex::encode(Sha256::digest(&bytes)),
                     bytes: u32::try_from(bytes.len())?,
                 },
-                Some(bytes),
+                Some(Cow::Owned(bytes)),
                 "write",
             )
         }
@@ -572,7 +626,7 @@ async fn execute_authorized(
         .await?
     } else {
         let method = match intent.effect {
-            Effect::Put { .. } => S3Method::Put,
+            Effect::Put { .. } | Effect::PutPreparedControl { .. } => S3Method::Put,
             Effect::Head => S3Method::Head,
             Effect::ProbeHash { .. } => S3Method::Get,
             Effect::Delete { .. } => anyhow::bail!("delete bypassed its versioned dispatcher"),
@@ -581,14 +635,14 @@ async fn execute_authorized(
         aos_hub_core::url_guard::is_safe_remote_url(&url)?;
         let mut init = RequestInit::new();
         init.with_method(match intent.effect {
-            Effect::Put { .. } => Method::Put,
+            Effect::Put { .. } | Effect::PutPreparedControl { .. } => Method::Put,
             Effect::Head => Method::Head,
             Effect::ProbeHash { .. } => Method::Get,
             Effect::Delete { .. } => anyhow::bail!("conditional delete bypassed its dispatcher"),
         })
         .with_redirect(RequestRedirect::Manual);
         if let Some(bytes) = bytes.as_ref() {
-            init.with_body(Some(js_sys::Uint8Array::from(bytes.as_slice()).into()));
+            init.with_body(Some(js_sys::Uint8Array::from(bytes.as_ref()).into()));
         }
         let provider = Request::new_with_init(&url, &init)?;
 
@@ -606,19 +660,36 @@ async fn execute_authorized(
         work.check_dispatch_time(&publication.snapshot, &validated, &floor, config.clock())?;
         let fresh = || {
             let validated = config.verifier()?.validate_lease(
-                work.lease.as_bytes(), cohort, &config.timing_profile,
-                &floor, &scope.full_key, intent.effect.lease_effect(), config.clock(),
+                work.lease.as_bytes(),
+                cohort,
+                &config.timing_profile,
+                &floor,
+                &scope.full_key,
+                intent.effect.lease_effect(),
+                config.clock(),
             )?;
             work.check_dispatch_time(&publication.snapshot, &validated, &floor, config.clock())?;
             Ok(())
         };
         let mut response = super::request_capacity::send(
-            env, provider, work.plan.expires_at, config.clock_uncertainty,
-            client_signal, crate::direct_upload::provider_capacity::Class::Metadata,
+            env,
+            provider,
+            work.plan.expires_at,
+            config.clock_uncertainty,
+            client_signal,
+            if bytes
+                .as_ref()
+                .is_some_and(|body| body.len() > aos_hub_core::storage_work::MAX_METADATA_BYTES)
+            {
+                crate::direct_upload::provider_capacity::Class::Bulk
+            } else {
+                crate::direct_upload::provider_capacity::Class::Metadata
+            },
             &fresh,
-        ).await?;
+        )
+        .await?;
         let outcome = match &intent.effect {
-            Effect::Put { .. } => {
+            Effect::Put { .. } | Effect::PutPreparedControl { .. } => {
                 ensure!(
                     response.status_code() == 200,
                     "provider PUT lacks exact S3 completion acknowledgement"

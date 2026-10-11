@@ -609,3 +609,48 @@ async fn bounded_versioned_content_must_match_its_completed_read_digest() {
     evidence.metadata_only = true;
     assert!(validate_versioned_content(&source, &encoded, &[evidence]).is_err());
 }
+
+#[tokio::test]
+async fn prepared_index_result_requires_the_exact_complete_companion() {
+    let (_, binding, _, accepted) = fixture().await;
+    let DirectProtectedProfile::External { profile, .. } = &accepted else {
+        panic!("External");
+    };
+    let mut plan = plan(&binding);
+    let index = format!("objects/pack/pack-{}.idx", "a".repeat(64));
+    let path = aos_registry_surface::pack_index::companion_pack_path(&index).unwrap();
+    let (mut identity, guarded) = source(&plan, profile, &path);
+    identity.provider_version = Some("actual-version".into());
+    let expected_hash = "d".repeat(64);
+    let evidence = aos_hub_core::storage_work::protected_inspection::VersionedInspectionSource {
+        version: 1,
+        producer_profile_digest: accepted.digest().unwrap(),
+        configured_domain_digest: "c".repeat(64),
+        scope: guarded.scope,
+        source: identity,
+        range: None,
+        metadata_only: false,
+        sha256: expected_hash.clone(),
+    };
+    plan.operation = StorageWorkOperation::VerifyPreparedGitIndex {
+        path: index,
+        sha256: "b".repeat(64),
+        size: 1024,
+        companion_sha256: Some(expected_hash),
+    };
+
+    validate_versioned_selection(&plan, &path, &evidence).unwrap();
+    assert!(validate_versioned_selection(&plan, "objects/pack/other.pack", &evidence).is_err());
+    let mut changed = evidence.clone();
+    changed.sha256 = "e".repeat(64);
+    assert!(validate_versioned_selection(&plan, &path, &changed).is_err());
+    let mut changed = evidence.clone();
+    changed.source.size = aos_registry_surface::pack_index::MAX_PUBLISHED_PACK_BYTES + 1;
+    assert!(validate_versioned_selection(&plan, &path, &changed).is_err());
+    let mut changed = evidence.clone();
+    changed.range = Some((0, 1));
+    assert!(validate_versioned_selection(&plan, &path, &changed).is_err());
+    let mut changed = evidence;
+    changed.metadata_only = true;
+    assert!(validate_versioned_selection(&plan, &path, &changed).is_err());
+}

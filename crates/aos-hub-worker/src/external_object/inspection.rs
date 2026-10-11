@@ -9,7 +9,7 @@ mod runtime;
 pub(super) mod selection;
 pub(super) mod versioned;
 #[cfg(target_arch = "wasm32")]
-pub(crate) use runtime::{execute, installed_inventory_mode};
+pub(crate) use runtime::{execute, execute_prepared, installed_inventory_mode};
 #[cfg(target_arch = "wasm32")]
 pub(super) mod absence;
 
@@ -79,6 +79,8 @@ pub(super) fn needs_graph_buffer(
     matches!(
         operation,
         Op::InspectMetadataObjects { .. }
+            | Op::VerifyPreparedGitIndex { .. }
+            | Op::PutPreparedControl { .. }
             | Op::InspectGitObject { .. }
             | Op::InspectGitObjects { .. }
             | Op::FilterGitTreeEntries { .. }

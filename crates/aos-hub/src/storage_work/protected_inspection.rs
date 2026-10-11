@@ -7,15 +7,16 @@
 //! a bare provider version never substitutes for that evidence, and a guard
 //! incarnation is never converted into a provider version.
 
-use anyhow::{Context as _, Result, ensure};
+use anyhow::{ensure, Context as _, Result};
 use aos_hub_core::{
     db::BindingRecord,
     direct_upload::{DirectExternalStorageCapabilities, DirectProtectedProfile},
     mirror_inspection::{MirrorPackProjection, MirrorPackTreeProjection, MirrorPackTreeQuery},
     storage_authority::lease::{LeaseCohort, LeaseEffect, LeasePurpose},
     storage_work::{
-        StorageBindingSnapshot, StorageObjectIdentity, StorageWorkOperation, StorageWorkOutcome,
-        StorageWorkPlan, StorageWorkResult, protected_inspection::ProtectedInspectionSource,
+        protected_inspection::ProtectedInspectionSource, StorageBindingSnapshot,
+        StorageObjectIdentity, StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan,
+        StorageWorkResult,
     },
 };
 use base64::Engine as _;
@@ -420,6 +421,8 @@ pub(super) async fn validate_current(
     if !matches!(
         plan.operation,
         StorageWorkOperation::InspectMetadata { .. }
+            | StorageWorkOperation::VerifyPreparedGitIndex { .. }
+            | StorageWorkOperation::PutPreparedControl { .. }
             | StorageWorkOperation::InspectMetadataObjects { .. }
             | StorageWorkOperation::InspectGitObject { .. }
             | StorageWorkOperation::InspectGitObjects { .. }
@@ -483,6 +486,16 @@ pub(super) async fn validate_current(
         }
     }
     match (&plan.operation, &result.outcome) {
+        (
+            StorageWorkOperation::VerifyPreparedGitIndex { .. },
+            StorageWorkOutcome::PreparedGitIndexVerified { .. },
+        )
+        | (StorageWorkOperation::PutPreparedControl { .. }, StorageWorkOutcome::MetadataWritten) => {
+            // These are semantic verification/write acknowledgements, not new
+            // source identities. The Worker retains the installed source gate
+            // through companion EOF; any versioned read evidence above must
+            // match the exact selected companion and current Read profile.
+        }
         (
             StorageWorkOperation::Head { path },
             StorageWorkOutcome::Head {
@@ -770,6 +783,27 @@ fn validate_versioned_selection(
                 "versioned OCI result interval differs"
             );
             selected == path
+        }
+        Op::VerifyPreparedGitIndex {
+            path: index,
+            companion_sha256,
+            ..
+        } => {
+            ensure!(
+                evidence.source.size <= aos_registry_surface::pack_index::MAX_PUBLISHED_PACK_BYTES
+                    && companion_sha256
+                        .as_ref()
+                        .is_none_or(|expected| expected == &evidence.sha256),
+                "prepared index companion changed its signed bound or hash"
+            );
+            aos_registry_surface::pack_index::companion_pack_path(index).as_deref() == Some(path)
+        }
+        Op::PutPreparedControl { path: index, .. } => {
+            ensure!(
+                evidence.source.size <= aos_registry_surface::pack_index::MAX_PUBLISHED_PACK_BYTES,
+                "prepared control companion exceeds its format bound"
+            );
+            aos_registry_surface::pack_index::companion_pack_path(index).as_deref() == Some(path)
         }
         Op::InspectStoredGitPack { index_path, .. } => {
             path == index_path

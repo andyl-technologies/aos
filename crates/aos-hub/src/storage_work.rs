@@ -55,6 +55,7 @@ mod external_delete;
 mod external_oci;
 pub use external_oci::ExternalOciRuntime;
 mod execute_observation;
+mod external_control;
 mod external_copy;
 mod external_observation;
 mod fetch;
@@ -2197,7 +2198,18 @@ impl HybridSurfaceFetch {
     }
 
     async fn execute(&self, plan: &StorageWorkPlan) -> Result<StorageWorkResult> {
-        let (result, observation) = self.work.execute_observed(plan).await?;
+        self.execute_with_control(plan, None).await
+    }
+
+    async fn execute_with_control(
+        &self,
+        plan: &StorageWorkPlan,
+        control: Option<&[u8]>,
+    ) -> Result<StorageWorkResult> {
+        let (result, observation) = self
+            .work
+            .execute_observed_with_control(plan, control)
+            .await?;
         let placement = self
             .db
             .surface_placement(self.placement.id)
@@ -2534,7 +2546,7 @@ impl SurfaceFetch for HybridSurfaceFetch {
             },
             aos_hub_core::clock::now_unix_secs(),
         )?;
-        self.work.execute_prepared_control(&plan, index).await?;
+        self.execute_with_control(&plan, Some(index)).await?;
         Ok(())
     }
 
@@ -3300,6 +3312,17 @@ impl SurfaceWriteProvider for HybridSurfaceWrites {
             .binding(placement.binding_id)
             .await?
             .context("hybrid multipart binding is missing")?;
+        if matches!(binding.kind.as_str(), "s3" | "r2") && !binding.is_instance_default {
+            return Ok(Box::new(
+                external_control::ExternalRegistryControlWriter::open(
+                    Arc::clone(&self.db),
+                    Arc::clone(&self.work),
+                    placement,
+                    &binding,
+                )
+                .await?,
+            ));
+        }
         anyhow::ensure!(
             binding.kind == "deployment_r2" && binding.is_instance_default,
             "hybrid multipart requires deployment R2"
