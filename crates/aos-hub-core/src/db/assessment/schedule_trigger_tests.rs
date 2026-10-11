@@ -8,7 +8,11 @@ use crate::backend::CheckedStatement;
 use crate::db::assessment::{AssessmentInventoryAdmission, AssessmentScanRecord};
 use crate::db::Database;
 
-async fn admit(
+/// Admits a retained due review through existing read-guarded fixture fences.
+///
+/// # Errors
+/// Returns an error for stale review, resource or fixture authority.
+pub(super) async fn admit(
     db: &Database,
     registry: i64,
     scope: &str,

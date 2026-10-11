@@ -57,12 +57,11 @@ The API accepts `aos.assessment-advisory-query/v2` and returns
 `aos.assessment-advisory-page/v2`. Its `page` contains the existing v1 semantic
 payload, while `expiresAt` and `nextCursor` describe the retained capture.
 The complete capture is bounded to 128 revisions and eight MiB; at most sixteen
-captures per registry can be retained. Oversized histories fail explicitly
-before record bodies are read; use an exact assessment selection to narrow
+captures per registry can be retained. Revision and indexed object-byte limits
+are checked before record bodies are read; use an exact assessment selection to narrow
 history. Install Native/Worker v2 readers before upgrading the web client or
 using `--retained`. Legacy API/CLI v1 record positions preserve their behavior
 and cannot be combined with opaque cursors.
-
 
 `aos hub maintain advisory CVE-2026-12345 --registry REGISTRY` reads admitted
 normalized advisory revisions. `cve` is an alias for `advisory`; exact source
@@ -531,21 +530,31 @@ original due slot, scan retry key, configuration revision and authority deadline
 It neither creates a scan under revoked authority nor enables a disabled review.
 
 Set `configuration.continuous` to `true` in an explicitly reviewed schedule to
-also assess admitted inventory and policy changes. The console exposes the same
-choice. Absence or `false` preserves cadence-only execution. The coordinator
+also assess admitted inventory/policy changes and elapsed freshness deadlines
+for the reviewed package/profile selection. The console exposes the same choice.
+Absence or `false` preserves cadence-only execution. The coordinator
 examines up to ten future reviews per pass, coalesces pending changes, and keeps
 a private admission watermark across restarts. Ordinary scan generations do not
 create another trigger; policy reactivation and inventory changes remain visible.
 Reactive slots have distinct retry identities even in the same UTC second.
+A private monotonic admission clock coalesces every already-elapsed deadline.
+Renewing or removing an old profile head does not create another trigger. Only
+complete profile heads carry indexed freshness deadlines; missing coverage does
+not acquire a deadline or become fresh. Deadline observation reads at most one
+scalar per sixty package coordinates, with at most 67 parameters per query;
+it never acquires provider bodies or changes an immutable assessment.
 Each admission and later effect still requires current execution authority,
 review revision, inventory, policy, publication and quota fences. Observation
 alone does not dispatch source work or extend any review deadline.
 
 Upgrade Native/Worker Hub readers and clients before enabling continuous
 reviews. Legacy configuration bytes omit the new false flag. Continuous
-inventory and policy admission complements the requested source-refresh cadence;
-provider-wide feed refresh and deadline triggers require their own admission
-integration.
+input and freshness admission complements the requested source-refresh cadence.
+Deploy deadline-watermark readers before updated coordinators write those
+private cells. Existing continuous reviews without an expiry clock receive one
+bounded catch-up observation. Acquisition retains the review's explicit intent;
+choose `refresh-stale` when elapsed coverage should acquire fresh source evidence.
+Provider-wide feed refresh and stabilization deadlines require further integration.
 
 To review recurring execution independently of that session, put the exact
 existing service-account credential UUID in `serviceCredentialId` at the top

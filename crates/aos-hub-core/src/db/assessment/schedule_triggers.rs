@@ -1,4 +1,4 @@
-//! Bounded inventory and policy wakeups under an explicitly reviewed selection.
+//! Bounded input and freshness wakeups under an explicitly reviewed selection.
 //!
 //! A retained input watermark acknowledges admission, never grants execution.
 //! Future reviews rotate through bounded observations; due-slot retry keys remain
@@ -38,7 +38,7 @@ pub(super) fn input_basis(resource: &AssessmentResource) -> Result<Sha256Digest>
 }
 
 impl Database {
-    /// Wakes a finite set of explicitly continuous reviews for changed admitted input.
+    /// Wakes bounded continuous reviews for changed input or expired selected heads.
     ///
     /// Observations rotate through future reviews. They preserve due slots once
     /// due, configuration revisions, credential deadlines and current execution
@@ -104,14 +104,38 @@ impl Database {
             } else {
                 None
             };
-            let wake = basis.is_some() && record.review.observed_input != basis;
+            let expiry = if basis.is_some() {
+                self.expired_assessment_schedule_deadline(
+                    &resource,
+                    &record.review.configuration,
+                    &now,
+                )
+                .await?
+            } else {
+                None
+            };
+            let expiry_changed = expiry.as_ref().is_some_and(|expiry| {
+                record
+                    .review
+                    .observed_expiry
+                    .as_ref()
+                    .is_none_or(|observed| observed < expiry)
+            });
+            let wake = basis.is_some() && (record.review.observed_input != basis || expiry_changed);
             let due = if wake {
                 now.unix_seconds().min(next_due)
             } else {
                 next_due
             };
             let reviewed = if wake {
-                record.review.pending_input = basis;
+                record.review.pending_input = if expiry_changed {
+                    Some(Sha256Digest::of_canonical(
+                        "aos.assessment-recurring-deadline/v1",
+                        &(basis.context("deadline trigger lacks its input")?, &expiry),
+                    )?)
+                } else {
+                    basis
+                };
                 canonical::to_vec(&record.review)?
             } else {
                 original.clone()

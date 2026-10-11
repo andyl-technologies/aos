@@ -39,6 +39,9 @@ struct PrivateReview {
     observed_input: Option<Sha256Digest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pending_input: Option<Sha256Digest>,
+    // Admission time covering elapsed deadlines of this exact reviewed selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    observed_expiry: Option<Timestamp>,
 }
 
 struct Record {
@@ -215,6 +218,7 @@ impl Database {
             authority_expires_at: authority_expires_at.clone(),
             observed_input: None,
             pending_input: None,
+            observed_expiry: None,
         })?;
         LIMITS.decode::<PrivateReview>(&bytes, "private schedule review")?;
         ensure!(
@@ -574,6 +578,10 @@ impl Database {
             && scan.request.policy_digest == resource.policy_digest
         {
             record.review.observed_input = Some(triggers::input_basis(&resource)?);
+            // Cover all elapsed deadlines with this explicit admission time.
+            // Renewed or removed heads cannot lower the horizon and self-trigger.
+            record.review.observed_expiry =
+                record.review.observed_expiry.clone().max(Some(now.clone()));
         }
         record.review.pending_input = None;
         let review_bytes = canonical::to_vec(&record.review)?;
@@ -714,7 +722,9 @@ fn decode_record(row: &crate::value::Row) -> Result<Record> {
     review.configuration.validate()?;
     ensure!(
         review.configuration.continuous
-            || (review.observed_input.is_none() && review.pending_input.is_none()),
+            || (review.observed_input.is_none()
+                && review.pending_input.is_none()
+                && review.observed_expiry.is_none()),
         "cadence-only review carries unreviewed continuous state"
     );
     if let Some(authority) = &review.service_authority {
@@ -788,12 +798,19 @@ pub(super) mod service_tests;
 #[path = "schedule_queue_tests.rs"]
 pub(super) mod queue_tests;
 
+#[path = "schedule_deadlines.rs"]
+mod deadlines;
+
 #[path = "schedule_triggers.rs"]
 mod triggers;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "schedule_trigger_tests.rs"]
 pub(super) mod trigger_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "schedule_deadline_tests.rs"]
+pub(super) mod deadline_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {

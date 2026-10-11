@@ -15,6 +15,7 @@
   notificationServiceSelector = "db::assessment::notifications::service_tests::service_delivery_survives_reviewer_revocation_and_refuses_revoked_service_receipts";
   scheduleQueueSelector = "db::assessment::schedules::queue_tests::revoked_reviews_rotate_without_advancing_due_slots_or_granting_authority";
   continuousSelector = "db::assessment::schedules::trigger_tests::input_changes_coalesce_without_scan_feedback_or_same_second_slot_collisions";
+  deadlineSelector = "db::assessment::schedules::deadline_tests::selected_expiry_coalesces_without_refresh_feedback_and_survives_reopen";
   advisorySelector = "db::assessment::advisory_snapshot::tests::retained_advisory_pages_survive_new_revisions_and_database_reopen";
   advisoryCliSelector = "db::assessment::advisory_snapshot::tests::actual_cli_retains_advisory_revisions_across_database_reopen";
 in
@@ -71,6 +72,8 @@ in
         grep -Fx '${scheduleQueueSelector}: test' "$out/nix-support/schedule-queue-test-registration.txt"
         "$out/bin/aos-assessment-retained-pages-fixture" --list --exact '${continuousSelector}' > "$out/nix-support/continuous-test-registration.txt"
         grep -Fx '${continuousSelector}: test' "$out/nix-support/continuous-test-registration.txt"
+        "$out/bin/aos-assessment-retained-pages-fixture" --list --exact '${deadlineSelector}' > "$out/nix-support/deadline-test-registration.txt"
+        grep -Fx '${deadlineSelector}: test' "$out/nix-support/deadline-test-registration.txt"
         "$out/bin/aos-assessment-retained-pages-fixture" --list --exact '${advisorySelector}' > "$out/nix-support/advisory-test-registration.txt"
         grep -Fx '${advisorySelector}: test' "$out/nix-support/advisory-test-registration.txt"
         "$out/bin/aos-assessment-retained-pages-fixture" --list --ignored --exact '${advisoryCliSelector}' > "$out/nix-support/advisory-cli-test-registration.txt"
@@ -86,6 +89,7 @@ in
       passthru.notificationServiceTestSelector = notificationServiceSelector;
       passthru.scheduleQueueTestSelector = scheduleQueueSelector;
       passthru.continuousTestSelector = continuousSelector;
+      passthru.deadlineTestSelector = deadlineSelector;
       passthru.advisoryTestSelector = advisorySelector;
       passthru.advisoryCliTestSelector = advisoryCliSelector;
       meta.description = "Retained assessment list database and CLI acceptance fixture";

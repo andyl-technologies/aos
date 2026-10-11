@@ -171,9 +171,10 @@ limits. Tenants MAY choose only within their granted quota and policy bounds.
 
 The `aos.assessment-schedule-configuration/v1` field `continuous` is an optional
 boolean, defaulting to `false` and omitted when false. An explicit `true`
-reviews the existing bounded selection for admitted inventory and policy
-changes in addition to its cadence. Absence MUST preserve prior serialized
-configuration bytes and cadence-only behavior. All readers MUST support the
+reviews the existing bounded selection for admitted inventory/policy changes
+and elapsed complete-profile freshness deadlines in addition to its cadence.
+Absence MUST preserve prior serialized configuration bytes and cadence-only
+behavior. All readers MUST support the
 field before writers enable it; deployments MUST NOT downgrade readers while
 such reviews exist.
 
@@ -186,6 +187,19 @@ already due MUST coalesce without replacing its admitted retry identity. A
 reactive retry identity MUST use a domain distinct from cadence slots and bind
 the captured input watermark, configuration revision and due time, including
 multiple wakeups in one UTC second.
+
+Elapsed freshness observation MUST select the exact reviewed package coordinates
+and profiles under the current inventory and policy. It reads indexed deadline
+metadata, never provider bodies or an unbounded evidence closure. A private
+monotonic admission clock covers all deadlines elapsed at the last matching
+admission. Renewing or removing a head MUST NOT lower that clock or self-trigger
+a scan. A newer elapsed deadline contributes to the exact reactive retry identity.
+Heads without complete source coverage have no indexed freshness deadline and
+MUST NOT acquire fresh coverage from scheduling. The original reviewed acquisition
+intent remains authoritative; deadline wakeups do not silently upgrade an offline
+or cached review to network refresh. All readers MUST support the private expiry
+clock before updated coordinators write it. Earlier continuous reviews without
+that clock receive bounded catch-up; cadence-only reviews remain unchanged.
 
 Only admission against the current input may acknowledge a watermark. The
 watermark and due cursor MUST persist atomically under current resource and

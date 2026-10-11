@@ -26,7 +26,7 @@ pub struct ScheduleConfigurationV1 {
     pub freshness: FreshnessMode,
     /// Requested interval, from one minute through thirty days.
     pub cadence_seconds: u32,
-    /// Wakes the reviewed selection when admitted inventory or policy changes.
+    /// Wakes on admitted input changes and expired selected profile coverage.
     #[serde(default, skip_serializing_if = "is_false")]
     pub continuous: bool,
     /// Exclusive review deadline, bounded by the selected execution credential.
