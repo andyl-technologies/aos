@@ -21,6 +21,9 @@ pub mod lookup;
 /// Maintains ordinary immutable index data through explicit measured operations.
 pub mod maintenance;
 
+/// Discovers immutable changed inputs without maintaining or authorizing indexes.
+pub mod incremental;
+
 mod key;
 mod recipe;
 mod roots;
@@ -70,6 +73,9 @@ impl core::error::Error for Error {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 #[cfg(test)]
 mod carrier_tests;
