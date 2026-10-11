@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 
 use terrane_core::identity::Digest;
+use terrane_core::properties::selected::Selection;
 use terrane_core::properties::{CommitContext, Domain, EffectiveProperties, Error};
 use terrane_core::tree_format::{Entry, EntryKind, Property};
 
@@ -14,6 +15,8 @@ pub(crate) struct AdmissionContext<'a> {
     pub(crate) storage_domain: &'a str,
     pub(crate) grafts: Vec<(Digest, Option<Vec<Property<'a>>>, EffectiveProperties<'a>)>,
     pub(crate) administrator: bool,
+    /// Borrows the candidate's exact interpretation used for policy resolution.
+    pub(crate) property_selection: &'a Selection,
 }
 
 impl CommitContext for AdmissionContext<'_> {
@@ -52,5 +55,9 @@ impl CommitContext for AdmissionContext<'_> {
 
     fn ancestor_admin(&self, _parent: &EffectiveProperties<'_>) -> bool {
         self.administrator
+    }
+
+    fn property_selection(&self) -> Option<&Selection> {
+        Some(self.property_selection)
     }
 }

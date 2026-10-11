@@ -14,6 +14,22 @@ pub(crate) struct ImmutableEffectContext<'operation, 'held> {
 }
 
 impl<'operation, 'held> ImmutableEffectContext<'operation, 'held> {
+    /// Binds a genuine current caller context to actual paired staging observations.
+    ///
+    /// Only native producers can construct the opaque effect context. Copying
+    /// the observed state imposes continuity checks and grants no authority.
+    pub(super) fn current_operation(
+        effect: GuardEffectContext,
+        destination: &SelectedObservation<'_>,
+        sources: Vec<&'operation SelectedObservation<'held>>,
+    ) -> Self {
+        Self {
+            effect,
+            sources,
+            selected: destination.state().clone(),
+        }
+    }
+
     /// Borrows the genuine selected/control evidence retained by this producer.
     pub(crate) fn effect_context(&self) -> &GuardEffectContext {
         &self.effect
@@ -28,6 +44,7 @@ impl<'operation, 'held> ImmutableEffectContext<'operation, 'held> {
     /// # Errors
     /// Refuses another control owner, a paired source context, missing earlier
     /// records, changed physical preimages, stale requests or unavailable reads.
+    #[cfg(all(feature = "tokio", unix))]
     pub(super) async fn extend_history_controls<F: LocalFs + BucketBinding>(
         &mut self,
         early: &mut EarlyControlInputs<'_, F>,
@@ -208,6 +225,14 @@ where
         selected_reads,
     } = candidate;
 
+    #[cfg(test)]
+    let mut trace = crate::ref_advance::PhaseTrace::new(
+        coordinator.guard().clock(),
+        publication_reference,
+        Some(admitted.commit.identity()),
+        Some(started),
+        "early-controls-entry",
+    );
     coordinator
         .guard()
         .revalidate_original_context(original, history)
@@ -216,13 +241,26 @@ where
         .guard()
         .revalidate_admission_observed(admitted, history)
         .await?;
+
+    // A signed losing proposal is a parent without a selected head. Capture
+    // its genuine Original before early retention closes the readable controls;
+    // full candidate history still completes after durable staging.
+    for parent in &admitted.commit.commit().parents {
+        coordinator.check_time(started)?;
+        let parent_original = coordinator.guard().original_commit(parent)?;
+        coordinator
+            .guard()
+            .revalidate_original_context(&parent_original, history)
+            .await?;
+    }
+
+    #[cfg(test)]
+    trace.mark("early-candidate-evidence-entry");
     history
-        .record_candidate(
-            coordinator.store(),
-            admitted,
-            coordinator.guard().config().min_chunk_size,
-        )
+        .record_candidate(coordinator.guard(), admitted)
         .await?;
+    #[cfg(test)]
+    trace.mark("early-candidate-evidence-complete");
     let mut requests = coordinator
         .guard()
         .capture_admission_authorizations_observed(admitted, history)
@@ -245,16 +283,39 @@ where
             )
             .await?,
     );
+    #[cfg(unix)]
+    let existing_requests = match &admitted.existing_owner_references {
+        Some(references) => {
+            references
+                .revalidate(coordinator.guard(), admitted, observed, history)
+                .await?
+        }
+        None => Vec::new(),
+    };
+    #[cfg(unix)]
+    requests.extend(existing_requests);
+    #[cfg(unix)]
+    let existing_reads = admitted
+        .existing_owner_references
+        .as_ref()
+        .map(|references| references.reads().cloned().collect())
+        .unwrap_or_default();
+    #[cfg(not(unix))]
+    let existing_reads = Vec::new();
     for request in &requests {
         consumed.operation(request)?;
     }
-    // Candidate consumption remains Pending here: only actual control pins,
-    // configured snapshot and independently verified current requests are
-    // retained. The post-upload signed-history Finish owns completed views.
+    // Capture only actual pins, configured snapshot and verified requests.
+    // The private producer keeps its independent post-upload full signed-history
+    // completion and final trace checks; this snapshot creates no lineage.
     observed.revalidate().await?;
+    #[cfg(test)]
+    trace.mark("early-requests-captured-control-hold-entry");
     let mut exclusion = concrete
         .hold_original_registration(authority, observed.identity())
         .await?;
+    #[cfg(test)]
+    trace.mark("early-original-control-held");
     let snapshot = consumed.snapshot_bytes()?;
     if coordinator
         .store()
@@ -269,6 +330,15 @@ where
         })
         .into());
     }
+    #[cfg(unix)]
+    concrete
+        .check_retained_trust_controls(
+            authority,
+            &mut exclusion,
+            &terrane_core::gc::publication::evidence::GuardSnapshot::decode(&snapshot)
+                .map_err(|_| invalid())?,
+        )
+        .await?;
     let pins = consumed.control_pins()?;
     let registration = crate::guard::consumed_registration(authority);
     for pin in &pins {
@@ -282,6 +352,7 @@ where
     observed.revalidate().await?;
     let retained = exclusion.retain_used(&pins).await?;
     let local = EarlyControlInputs { exclusion };
+    #[cfg(unix)]
     coordinator.guard().retain_original_controls(&retained)?;
     let final_check = retain_final_check(coordinator.guard(), &requests, started, timing)?;
     let controls = vec![retained];
@@ -290,7 +361,7 @@ where
     let state = observed.state();
     let context = ImmutableEffectContext {
         effect: GuardEffectContext {
-            existing_reads: Vec::new(),
+            existing_reads,
             final_check,
             controls,
             selected_reads: reads,

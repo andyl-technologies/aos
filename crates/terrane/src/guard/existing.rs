@@ -6,7 +6,7 @@ use terrane_core::auth::Verb;
 use terrane_core::identity::{Digest, IdentityKind, TERRANE_V1};
 use terrane_core::tree_format::{ContentRef, EntryKind};
 
-use super::admission::{CandidateRequest, CandidateValidation};
+use super::admission::{CandidateInterpretation, CandidateRequest, CandidateValidation};
 use super::{AdmittedCommit, Guard, TreeEvidence, denied, invalid};
 use crate::domain::DomainRecord;
 use crate::store::{Clock, Store, StoreFailure};
@@ -59,18 +59,53 @@ impl<S: Store, C: Clock> Guard<S, C> {
             surface,
             reference_records: &records,
         };
+        let previous_interpretation = self.select_view(
+            expected.commit,
+            previous.root,
+            super::HistoryObservation::default(),
+        )?;
+        let admission_interpretation = self.select_view(
+            selected.commit.identity(),
+            selected.evidence.root,
+            super::HistoryObservation::default(),
+        )?;
+        let admission_profile = super::history::completion::profile_inputs(
+            self,
+            &selected.commit,
+            &admission_interpretation,
+        )?;
         let CandidateValidation {
             requirements,
             admin_checks,
         } = self
-            .validate_candidate(reference, request, &selected.evidence, Some(&previous))
+            .validate_candidate(
+                reference,
+                request,
+                &selected.evidence,
+                CandidateInterpretation::Existing {
+                    selected: &admission_interpretation,
+                    profile: &admission_profile,
+                },
+                Some((&previous, &previous_interpretation)),
+            )
             .await?;
         let timestamp = self.now(reference, Verb::Commit)?;
         Ok(AdmittedCommit {
+            tree_usage: terrane_core::tree_format::TreeUse::Ordinary,
+            overlay_sources: Vec::new(),
             #[cfg(unix)]
             cold_fork: None,
-            completion_inputs: self.completion_inputs()?,
+            completion_inputs: self.completion_inputs_for(
+                admission_interpretation.selection(),
+                admission_profile.attribute_revision,
+            )?,
+            existing_owner_references: None,
+            index_work: super::admission::IndexPublicationWork::default(),
             commit: selected.commit,
+            #[cfg(feature = "std")]
+            admission_interpretation,
+            #[cfg(feature = "std")]
+            admission_profile,
             requirements,
             admin_checks,
             publication_reference: reference.to_owned(),
@@ -119,11 +154,32 @@ impl<S: Store, C: Clock> Guard<S, C> {
             }
             policy.conflicted = selected.commit.commit().profile_pair.conflicted;
         }
+        let admission_interpretation = self.select_view(
+            selected.commit.identity(),
+            selected.evidence.root,
+            super::HistoryObservation::default(),
+        )?;
+        let admission_profile = super::history::completion::profile_inputs(
+            self,
+            &selected.commit,
+            &admission_interpretation,
+        )?;
         Ok(AdmittedCommit {
+            tree_usage: terrane_core::tree_format::TreeUse::Ordinary,
+            overlay_sources: Vec::new(),
             #[cfg(unix)]
             cold_fork: None,
-            completion_inputs: self.completion_inputs()?,
+            completion_inputs: self.completion_inputs_for(
+                admission_interpretation.selection(),
+                admission_profile.attribute_revision,
+            )?,
+            existing_owner_references: None,
+            index_work: super::admission::IndexPublicationWork::default(),
             commit: selected.commit,
+            #[cfg(feature = "std")]
+            admission_interpretation,
+            #[cfg(feature = "std")]
+            admission_profile,
             requirements: Vec::new(),
             admin_checks: Vec::new(),
             publication_reference: reference.to_owned(),

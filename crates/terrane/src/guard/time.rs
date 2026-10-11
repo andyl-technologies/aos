@@ -143,20 +143,38 @@ impl RetainedRequests {
     /// and mismatched scope, surface, locality or epoch caveats. Clock rollback
     /// cannot make an ambiguous formerly retired issuer row acceptable.
     pub(crate) fn recheck(&self) -> Result<(), StoreFailure> {
-        self.check_deadline()?;
+        self.check_deadline().inspect_err(|_| {
+            #[cfg(test)]
+            trace_retained_refusal("retained-deadline-before-requests");
+        })?;
         for request in &self.requests {
             let authorized = &request.authorized;
-            let now = request_time(&self.clock, authorized)?;
-            let key = matching_issuer(&self.keys, &request.token, authorized, now)?;
+            let now = request_time(&self.clock, authorized).inspect_err(|_| {
+                #[cfg(test)]
+                trace_retained_refusal("retained-request-time");
+            })?;
+            let key =
+                matching_issuer(&self.keys, &request.token, authorized, now).inspect_err(|_| {
+                    #[cfg(test)]
+                    trace_retained_refusal("retained-matching-issuer");
+                })?;
             if key.public_key != request.issuer_public_key {
+                #[cfg(test)]
+                trace_retained_refusal("retained-issuer-key-changed");
                 return Err(denied(&authorized.reference, authorized.verb));
             }
-            authorize_retained(&request.token, authorized, &self.home, now)?;
+            authorize_retained(&request.token, authorized, &self.home, now).inspect_err(|_| {
+                #[cfg(test)]
+                trace_retained_refusal("retained-authorize-request");
+            })?;
         }
 
         // Fresh authorization itself can consume the remaining budget. Keep the
         // unchanged operation bound on both sides of every retained refresh.
-        self.check_deadline()
+        self.check_deadline().inspect_err(|_| {
+            #[cfg(test)]
+            trace_retained_refusal("retained-deadline-after-requests");
+        })
     }
 
     fn check_deadline(&self) -> Result<(), StoreFailure> {
@@ -239,6 +257,16 @@ fn check_deadline(
     let elapsed = clock.monotonic().checked_sub(started);
     if elapsed.is_none_or(|elapsed| elapsed > maximum) {
         #[cfg(test)]
+        if std::env::var_os("TERRANE_REF_PHASE_TRACE").is_some() {
+            use std::io::Write;
+            // Report the rejecting predicate's existing sample, never resample
+            // the injected clock or expose the retained request/error contents.
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "retained-refusal stage=deadline outcome=Expired elapsed={elapsed:?} maximum={maximum:?}",
+            );
+        }
+        #[cfg(test)]
         if std::env::var("TERRANE_TEST_DENIAL_CALLSITE")
             .ok()
             .as_deref()
@@ -259,6 +287,16 @@ fn check_deadline(
         ));
     }
     Ok(())
+}
+
+/// Observes an original retained-request refusal without revealing authority data.
+#[cfg(all(test, feature = "std"))]
+fn trace_retained_refusal(stage: &str) {
+    if std::env::var_os("TERRANE_REF_PHASE_TRACE").is_none() {
+        return;
+    }
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr().lock(), "retained-refusal stage={stage}");
 }
 
 #[cfg(all(test, feature = "tokio", unix))]
