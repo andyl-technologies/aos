@@ -429,6 +429,37 @@ impl<V: TrustedHandshakeVerifier> LaunchedTypedReaderSession<V> {
 }
 
 impl<V: TrustedHandshakeVerifier> TypedReaderSessionFailure<V> {
+    pub(super) fn retire_original(&mut self) -> Result<(), ProviderError> {
+        match self {
+            Self::Hello { original, .. } => {
+                original.provider.guard.retire_original()?;
+                original.provider.runtime.release_unused()
+            }
+            Self::Controller { provider, .. } => {
+                provider.guard.retire_original()?;
+                provider.runtime.release_unused()
+            }
+            Self::Adoption(original) => match original.as_mut() {
+                TypedReaderAdoptionFailure::Original { provider, .. } => {
+                    provider.guard.retire_original()?;
+                    provider.runtime.release_unused()
+                }
+                TypedReaderAdoptionFailure::Preparation(original) => {
+                    original.guard.retire_original()?;
+                    original.slot.release_unused()
+                }
+                TypedReaderAdoptionFailure::Attachment { .. } => {
+                    // Consuming rejected controller/registrar containment is
+                    // not a borrowed proof. Preserve this entire attachment
+                    // and remain Unknown until an authentic handoff exists.
+                    Err(ProviderError::Correlation(
+                        "borrowed rejected attachment retirement unavailable",
+                    ))
+                }
+            },
+        }
+    }
+
     /// Services original pre-realization cleanup while retaining all failed state.
     ///
     /// Hello/controller failures retain the same private request, registrar and

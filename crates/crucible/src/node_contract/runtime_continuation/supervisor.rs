@@ -193,6 +193,43 @@ struct QueueSlot {
 }
 
 impl RuntimeCustodySlot for QueueSlot {
+    fn original_transferred(&self) -> bool {
+        self.transferred
+    }
+
+    fn retain_borrowed(
+        &mut self,
+        original: &mut Option<WholeRuntimeCustody>,
+    ) -> Result<(), RuntimeError> {
+        if self.transferred {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        let custody = original
+            .as_ref()
+            .ok_or(RuntimeError::OutstandingObligations)?;
+        self.validate_world(custody.activation(), custody.limits())?;
+        let mut mailbox = self
+            .mailbox
+            .custody
+            .try_borrow_mut()
+            .map_err(|_| RuntimeError::OutstandingObligations)?;
+        if mailbox.is_some() {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        let original = original
+            .take()
+            .ok_or(RuntimeError::OutstandingObligations)?;
+        *mailbox = Some(original);
+        self.transferred = true;
+        drop(mailbox);
+        // Wake is after complete custody; unwind cannot lose the native world.
+        let waker = self.inner.waker.borrow_mut().take();
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+        Ok(())
+    }
+
     fn validate_world(
         &self,
         activation: &ActivationRecord,
@@ -205,6 +242,11 @@ impl RuntimeCustodySlot for QueueSlot {
     }
 
     fn retain(mut self: Box<Self>, custody: WholeRuntimeCustody) {
+        if self.transferred {
+            // The borrowed handoff already retained the same complete world.
+            // Dropping its inactive shell must not replace that original.
+            return;
+        }
         // A mailbox has exactly one non-cloneable reserved slot, consumed once.
         // It cannot contain another capsule while this slot remains outstanding.
         *self.mailbox.custody.borrow_mut() = Some(custody);

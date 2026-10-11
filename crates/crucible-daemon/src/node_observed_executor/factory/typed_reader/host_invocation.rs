@@ -284,6 +284,7 @@ impl InstalledTypedReaderHostInvocation {
             results,
             maximum: self.maximum_snapshot_bytes,
             failure: Box::new(None),
+            start_ready: None,
         })
     }
 
@@ -305,6 +306,7 @@ pub struct PreparedTypedReaderHostInvocation<'a> {
     results: StoredTypedReaderResultPublisher,
     maximum: usize,
     failure: Box<Option<OriginalStartFailure<'a>>>,
+    start_ready: Option<bool>,
 }
 
 type OriginalStartFailure<'a> = TypedReaderHostStartFailure<
@@ -329,6 +331,11 @@ impl<'a> TypedReaderHostInvocationFailure<'a> {
         self.original.as_ref().as_ref()
     }
 
+    /// Borrows the same complete original failure for retirement and servicing.
+    pub fn original_mut(&mut self) -> Option<&mut OriginalStartFailure<'a>> {
+        self.original.as_mut().as_mut()
+    }
+
     /// Transfers the exact original failure for existing containment handling.
     ///
     /// Returned start failures always contain the original owner.
@@ -338,6 +345,43 @@ impl<'a> TypedReaderHostInvocationFailure<'a> {
 }
 
 impl<'a> PreparedTypedReaderHostInvocation<'a> {
+    /// Attempts original launch while borrowing this complete owning invocation.
+    ///
+    /// The enclosing caller keeps profile/session/graph requests and publishers
+    /// outside every native callback. The attempt is sticky; a second call
+    /// returns the same disposition without redispatching the original launch.
+    ///
+    /// # Errors
+    /// Retains the whole original on launch refusal or callback unwind.
+    pub fn instantiate_original(&mut self) -> Result<(), NodeObservedError> {
+        if self.start_ready.is_none() {
+            let attempted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if self.original.instantiate_original().is_err() {
+                    return false;
+                }
+                self.original.release_unused_adoption();
+                true
+            }));
+            if attempted.is_err() {
+                self.original.record_start_unwind();
+            }
+            self.start_ready = Some(matches!(attempted, Ok(true)));
+        }
+        if self.start_ready == Some(true) {
+            Ok(())
+        } else {
+            Err(refused("original typed instantiation remains refused"))
+        }
+    }
+
+    /// Transfers native obligations while retaining all original invocation fields.
+    ///
+    /// # Errors
+    /// Leaves the complete original unresolved when a borrowed handoff refuses.
+    pub fn retire_original(&mut self) -> Result<(), crucible_node_provider::ProviderError> {
+        self.original.retire_original()
+    }
+
     /// Borrows the authentic prior supervisor before any participant is spawned.
     ///
     /// The caller must retain a clone through cancellation or uncertain failure
@@ -366,7 +410,9 @@ impl<'a> PreparedTypedReaderHostInvocation<'a> {
         >,
         TypedReaderHostInvocationFailure<'a>,
     > {
-        let result = if self.original.instantiate_original().is_err() {
+        // Cached successful preparation has no remaining installed/native
+        // callbacks: adoption and native construction were borrowed above.
+        let result = if self.instantiate_original().is_err() {
             Err(TypedReaderHostStartFailure {
                 original: self.original,
                 activation_publisher: self.activation,

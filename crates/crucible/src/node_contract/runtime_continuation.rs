@@ -468,6 +468,25 @@ pub trait RuntimeCustodySlot {
     /// may not drop the capsule, release only native handles, or manufacture a
     /// replacement world. Capacity is reserved before runtime construction.
     fn retain(self: Box<Self>, custody: WholeRuntimeCustody);
+
+    /// Reports this exact slot's completed original borrowed handoff.
+    ///
+    /// Defaults to false. This retained slot state is independent of mailbox
+    /// emptiness and grants no native cleanup or replacement permission.
+    fn original_transferred(&self) -> bool {
+        false
+    }
+
+    /// Retains a borrowed owner's exact capsule before any wake or native callback.
+    ///
+    /// # Errors
+    /// Defaults to refusal. A failed handoff leaves the original option unchanged.
+    fn retain_borrowed(
+        &mut self,
+        _original: &mut Option<WholeRuntimeCustody>,
+    ) -> Result<(), RuntimeError> {
+        Err(RuntimeError::OutstandingObligations)
+    }
 }
 
 /// Reserves authentic supervisory custody before a native runtime can exist.
@@ -524,6 +543,8 @@ pub struct WholeRuntimeCustody {
     world_preparation: Option<Rc<crate::node_contract::PreparedWorldPublication>>,
     limits: RuntimeLimits,
     reclamation_cursor: Option<Id>,
+    pending_retirement: bool,
+    borrowed_retirement: bool,
 }
 
 impl WholeRuntimeCustody {
@@ -553,6 +574,8 @@ impl WholeRuntimeCustody {
             world_preparation: None,
             limits,
             reclamation_cursor: None,
+            pending_retirement: false,
+            borrowed_retirement: false,
         }
     }
 
@@ -677,6 +700,29 @@ impl WholeRuntimeCustody {
         &mut self,
         context: &mut Context<'_>,
     ) -> Poll<Result<(), super::RuntimePollFailure>> {
+        if self.pending_retirement {
+            // The queue's PollingCustody already owns this complete capsule.
+            // Any native/getter unwind therefore restores the same original.
+            for node in self.nodes.values_mut() {
+                node.quarantine_resources();
+            }
+            for node in &mut self.rejected_nodes {
+                node.quarantine_resources();
+            }
+            self.rejected_reclamation = self
+                .rejected_nodes
+                .iter()
+                .enumerate()
+                .flat_map(|(index, node)| {
+                    node.route()
+                        .owners
+                        .iter()
+                        .cloned()
+                        .map(move |owner| (index, owner))
+                })
+                .collect();
+            self.pending_retirement = false;
+        }
         if let Some(prepared) = &mut self.prepared {
             return prepared
                 .poll_reclamation(context)
@@ -692,7 +738,15 @@ impl WholeRuntimeCustody {
                     RuntimeError::InvalidRoute,
                 )));
             }
-            let Some((index, identity)) = self.rejected_reclamation.pop_front() else {
+            // Collecting retirement retains its front obligation through every
+            // native/getter/receipt callback. A callback unwind cannot erase
+            // the last owner and make an empty queue look like reclamation.
+            let next = if self.borrowed_retirement {
+                self.rejected_reclamation.front().cloned()
+            } else {
+                self.rejected_reclamation.pop_front()
+            };
+            let Some((index, identity)) = next else {
                 return if self
                     .rejected_nodes
                     .iter()
@@ -706,13 +760,17 @@ impl WholeRuntimeCustody {
                 };
             };
             let Some(node) = self.rejected_nodes.get_mut(index) else {
-                self.rejected_reclamation.push_front((index, identity));
+                if !self.borrowed_retirement {
+                    self.rejected_reclamation.push_front((index, identity));
+                }
                 return Poll::Ready(Err(super::RuntimePollFailure::Admission(
                     RuntimeError::InvalidRoute,
                 )));
             };
             if !node.thread_affinity().permits_current_thread() {
-                self.rejected_reclamation.push_front((index, identity));
+                if !self.borrowed_retirement {
+                    self.rejected_reclamation.push_front((index, identity));
+                }
                 return Poll::Ready(Err(super::RuntimePollFailure::Admission(
                     RuntimeError::ThreadAffinity,
                 )));
@@ -722,6 +780,9 @@ impl WholeRuntimeCustody {
                 Poll::Ready(Ok(receipt))
                     if receipt.owner == identity && node.validate_reclamation(&receipt).is_ok() =>
                 {
+                    if self.borrowed_retirement {
+                        self.rejected_reclamation.pop_front();
+                    }
                     if self.rejected_reclamation.is_empty() {
                         return Poll::Ready(Ok(()));
                     }
@@ -729,6 +790,9 @@ impl WholeRuntimeCustody {
                     return Poll::Pending;
                 }
                 other => {
+                    if self.borrowed_retirement {
+                        self.rejected_reclamation.pop_front();
+                    }
                     self.rejected_reclamation.push_back((index, identity));
                     return match other {
                         Poll::Pending => Poll::Pending,
@@ -858,6 +922,8 @@ impl WholeRuntimeCustody {
             world_preparation: None,
             limits,
             reclamation_cursor: None,
+            pending_retirement: false,
+            borrowed_retirement: false,
         }
     }
 }
@@ -905,6 +971,8 @@ impl NodeRuntime {
             world_preparation: self.barrier.retained_preparation(),
             limits: self.limits,
             reclamation_cursor: None,
+            pending_retirement: false,
+            borrowed_retirement: false,
         };
         slot.retain(custody);
     }
@@ -969,3 +1037,6 @@ where
 {
     Option::<T>::deserialize(deserializer)
 }
+
+#[path = "runtime_continuation/borrowed_retirement.rs"]
+mod borrowed_retirement;

@@ -42,6 +42,31 @@ pub trait LineageSourceCustodySlot {
 
     /// Takes complete native handles and original controller custody once.
     fn retain(self: Box<Self>, custody: LineageSourceCustody);
+
+    /// Transfers the same original while retaining its inactive guard shell.
+    ///
+    /// # Errors
+    /// Defaults to refusal. A reserved implementation must move the original
+    /// into its mailbox before any callback and leave it untouched on refusal.
+    fn retain_borrowed(
+        &mut self,
+        _original: &mut Option<Box<LineageSourceCustody>>,
+    ) -> Result<(), ProviderError> {
+        Err(ProviderError::Correlation(
+            "borrowed source retirement unavailable",
+        ))
+    }
+
+    /// Releases only this still-owned, never-consumed pre-spawn reservation.
+    ///
+    /// # Errors
+    /// Defaults to refusal. Original slot ownership, rather than an empty
+    /// mailbox or absent process, must prove that no source used this slot.
+    fn release_unused(&mut self) -> Result<(), ProviderError> {
+        Err(ProviderError::Correlation(
+            "unused source reservation unavailable",
+        ))
+    }
 }
 
 /// Owns original provider and companion identities alongside their raw journals.
@@ -655,6 +680,27 @@ impl LineageSourceGuard {
     /// revive an original handle. The complete native capsule remains owned.
     pub fn revoke_read_handles(&self) {
         self.read_owner.revoke();
+    }
+
+    /// Transfers original native custody while retaining this inactive wrapper.
+    ///
+    /// Read handles are permanently revoked. The same pre-spawn slot receives
+    /// the full Child/controller/registrar/journals before cleanup callbacks.
+    /// This transfer does not establish reclamation or permit another command.
+    ///
+    /// # Errors
+    /// Retains original custody on unavailable borrowed supervision or refusal.
+    pub fn retire_original(&mut self) -> Result<(), ProviderError> {
+        self.read_owner.revoke();
+        if self.custody.is_none() {
+            return Ok(());
+        }
+        self.slot
+            .as_mut()
+            .ok_or(ProviderError::Correlation(
+                "original source retirement slot unavailable",
+            ))?
+            .retain_borrowed(&mut self.custody)
     }
 
     /// Returns the original reserved capsule identity without servicing native work.

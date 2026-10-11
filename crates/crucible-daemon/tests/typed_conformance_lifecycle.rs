@@ -12,7 +12,7 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     sync::Arc,
-    task::{Context, Poll, Wake, Waker},
+    task::{Wake, Waker},
     thread::{self, Thread},
     time::Duration,
 };
@@ -21,9 +21,7 @@ use crucible::{node_admission::AdmissionLimits, node_contract::RuntimeLimits};
 use crucible_daemon::{
     node_observed_executor::{
         InstalledTypedReaderHostInvocation, SelectedTypedReaderHostSource,
-        TypedReaderCustodySupervisor, TypedReaderHostInvocationFailure,
-        TypedReaderHostInvocationRequest, TypedReaderHostSourceFailure, TypedReaderLaunchError,
-        TypedReaderSessionFailure, TypedReaderWindowDisposition,
+        TypedReaderHostInvocationRequest, TypedReaderWindowDisposition,
     },
     node_qualification::{
         CaseVerdict, QualificationClaim, QualificationLimits, RequirementDisposition,
@@ -33,6 +31,9 @@ use crucible_daemon::{
 use crucible_node_contract::{ResourceLimits, U64};
 use crucible_node_provider::{client::ExchangeDeadline, handshake::Limits};
 use serde::Serialize;
+
+#[path = "typed_conformance_lifecycle/keeper.rs"]
+mod keeper;
 
 const MIB: usize = 1024 * 1024;
 const SERVICE_CADENCE: Duration = Duration::from_millis(1);
@@ -116,139 +117,93 @@ fn actual_source_installed_typed_lifecycle_retains_nine_windows() -> Result<(), 
     // This separate physical wait handle never attaches to a source transport
     // or changes an original session/controller deadline. Reserve it before Child.
     let cadence = ExchangeDeadline::start(SERVICE_CADENCE)?;
-    let supervisor = prepared.supervisor().clone();
     let waker = Waker::from(Arc::new(OriginalWake(thread::current())));
-    let mut context = Context::from_waker(&waker);
-    let mut execution = match prepared.start() {
-        Ok(original) => original,
-        Err(original) => {
-            reclaim_start_failure(original, &supervisor, &mut context, &cadence)?;
-            write_bytes(
-                &public.join("lifecycle-disposition.txt"),
-                b"start_refused\n",
-            )?;
-            return Err(public_error("original start refused; authentic cleanup completed").into());
-        }
-    };
-    let reclaimed = loop {
-        match execution.poll(&mut context) {
-            Poll::Ready(original) => break original,
-            Poll::Pending => service_pending(&cadence),
-        }
-    };
-    let collection = &reclaimed.collection;
-    let reports = &collection.report.collection;
+    let mut original = keeper::WholeOriginal::new(prepared, waker, cadence);
+    if original.start().is_err() {
+        // Cleanup borrows the same invocation/failure throughout both callback
+        // families. A callback unwind or Unknown cannot release this keeper.
+        original.reclaim();
+        write_bytes(
+            &public.join("lifecycle-disposition.txt"),
+            b"start_refused\n",
+        )?;
+        return Err(public_error("original start refused; authentic cleanup completed").into());
+    }
+    original.drive();
+    // Storage, decoding and assertions borrow the retained reclaimed original
+    // inside a catch. They cannot unwind away its full owner or publishers.
+    original.with_reclaimed(|reclaimed| {
+        let collection = &reclaimed.collection;
+        let reports = &collection.report.collection;
 
-    // Export only public original report bodies after authentic reclamation.
-    // Raw incidents, private launch capsules and Hello values stay in original.
-    write_json(
-        &public.join("quantized-original-observations.json"),
-        &reports.quantized_observations,
-    )?;
-    match &reports.issued {
-        Ok(original) => {
-            write_bytes(
-                &public.join("collected-refused-claim.json"),
-                original.bytes(),
-            )?;
-            write_json(
-                &public.join("original-claim-reference.json"),
-                original.reference(),
-            )?;
-            for (index, (reference, body)) in original.objects().iter().enumerate() {
-                write_json(
-                    &public.join(format!("original-object-{index}.reference.json")),
-                    reference,
-                )?;
+        // Export only public original report bodies after authentic reclamation.
+        // Raw incidents, private launch capsules and Hello values stay in original.
+        write_json(
+            &public.join("quantized-original-observations.json"),
+            &reports.quantized_observations,
+        )?;
+        match &reports.issued {
+            Ok(original) => {
                 write_bytes(
-                    &public.join(format!("original-object-{index}.body")),
-                    body.as_slice(),
+                    &public.join("collected-refused-claim.json"),
+                    original.bytes(),
                 )?;
+                write_json(
+                    &public.join("original-claim-reference.json"),
+                    original.reference(),
+                )?;
+                for (index, (reference, body)) in original.objects().iter().enumerate() {
+                    write_json(
+                        &public.join(format!("original-object-{index}.reference.json")),
+                        reference,
+                    )?;
+                    write_bytes(
+                        &public.join(format!("original-object-{index}.body")),
+                        body.as_slice(),
+                    )?;
+                }
+            }
+            Err(_) => {
+                write_bytes(
+                    &public.join("lifecycle-disposition.txt"),
+                    b"issuance_refused\n",
+                )?;
+                return Err(
+                    public_error("original collection issuance refused after cleanup").into(),
+                );
             }
         }
-        Err(_) => {
-            write_bytes(
-                &public.join("lifecycle-disposition.txt"),
-                b"issuance_refused\n",
-            )?;
-            return Err(public_error("original collection issuance refused after cleanup").into());
-        }
-    }
-    assert!(!collection.callback_unwound);
-    assert!(collection.driving_refusal.is_none());
-    assert!(collection.reclamation_refusal.is_none());
-    assert!(
-        collection
-            .report
-            .windows
-            .iter()
-            .all(|state| { *state == TypedReaderWindowDisposition::Authenticated })
-    );
-    assert_eq!(reports.quantized_observations.len(), 9);
-    assert_eq!(reports.attempts.attempted_cases().len(), 9);
-    assert_eq!(reports.attempts.authenticated_cases().len(), 9);
-    let issued = reports
-        .issued
-        .as_ref()
-        .map_err(|_| public_error("issuance absent"))?;
-    let claim: QualificationClaim = serde_json::from_slice(issued.bytes())?;
-    assert_eq!(claim.requirements.len(), 382);
-    assert!(claim.requirements.iter().all(|row| {
-        row.disposition == RequirementDisposition::NotExecuted
-            && row.cases.iter().any(|case| {
-                case.case.starts_with("unexecuted/") && case.verdict == CaseVerdict::NotExecuted
-            })
-    }));
-    write_bytes(
+        assert!(!collection.callback_unwound);
+        assert!(collection.driving_refusal.is_none());
+        assert!(collection.reclamation_refusal.is_none());
+        assert!(
+            collection
+                .report
+                .windows
+                .iter()
+                .all(|state| { *state == TypedReaderWindowDisposition::Authenticated })
+        );
+        assert_eq!(reports.quantized_observations.len(), 9);
+        assert_eq!(reports.attempts.attempted_cases().len(), 9);
+        assert_eq!(reports.attempts.authenticated_cases().len(), 9);
+        let issued = reports
+            .issued
+            .as_ref()
+            .map_err(|_| public_error("issuance absent"))?;
+        let claim: QualificationClaim = serde_json::from_slice(issued.bytes())?;
+        assert_eq!(claim.requirements.len(), 382);
+        assert!(claim.requirements.iter().all(|row| {
+            row.disposition == RequirementDisposition::NotExecuted
+                && row.cases.iter().any(|case| {
+                    case.case.starts_with("unexecuted/") && case.verdict == CaseVerdict::NotExecuted
+                })
+        }));
+        write_bytes(
         &public.join("lifecycle-disposition.txt"),
         b"finite_nine_windows_collected;382_normative_obligations_not_executed;no_accepted_class\n",
     )?;
-    Ok(())
-}
-
-fn reclaim_start_failure(
-    original: TypedReaderHostInvocationFailure<'_>,
-    supervisor: &TypedReaderCustodySupervisor,
-    context: &mut Context<'_>,
-    cadence: &ExchangeDeadline,
-) -> io::Result<()> {
-    let Some(mut original) = original.into_original() else {
-        return Err(public_error("original failed custody holder unavailable"));
-    };
-    {
-        let preparation = match original.original.failure() {
-            Some(TypedReaderHostSourceFailure::Launch(original)) => matches!(
-                &original.launch,
-                TypedReaderLaunchError::Original(original) if original.guard.is_some()
-            ),
-            Some(TypedReaderHostSourceFailure::Realize(original)) => matches!(
-                original.as_ref(),
-                TypedReaderSessionFailure::Hello { .. }
-                    | TypedReaderSessionFailure::Controller { .. }
-            ),
-            _ => false,
-        };
-        if preparation {
-            loop {
-                match original.original.poll_failed_preparation() {
-                    Ok(true) => break,
-                    Ok(false) | Err(_) => service_pending(cadence),
-                }
-            }
-        }
-        // Failed Adoption goes into its reserved supervisor journal mailbox;
-        // other originals use their existing source/runtime Drop custody. All
-        // original publishers and private services remain owned until transfer.
-        drop(original);
-    }
-    loop {
-        match supervisor.poll_reclamation(context) {
-            Poll::Ready(Ok(())) => break,
-            Poll::Ready(Err(_)) => service_pending(cadence),
-            Poll::Pending => service_pending(cadence),
-        }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 // Actual typed polling has no readiness registration for the OS cleanup wait.

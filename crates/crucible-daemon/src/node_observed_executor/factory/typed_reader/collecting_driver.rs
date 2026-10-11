@@ -75,6 +75,10 @@ pub struct TypedReaderCollectingDriver {
 }
 
 impl TypedReaderCollectingDriver {
+    pub(super) fn retire_original(&mut self) -> Result<(), RuntimeError> {
+        self.runtime.retire_original()
+    }
+
     /// Retains an already owned collection-only runtime and independent source oracle.
     ///
     /// The runtime constructor must already have consumed the original graph,

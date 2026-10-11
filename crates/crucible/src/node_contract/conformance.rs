@@ -27,6 +27,20 @@ pub struct ConformanceRuntimeFailure {
 }
 
 impl ConformanceRuntimeFailure {
+    /// Transfers original failed native owners while retaining all preparation metadata.
+    ///
+    /// # Errors
+    /// Refuses unsupported borrowed custody without dropping the failure.
+    pub fn retire_original(&mut self) -> Result<(), RuntimeError> {
+        if let Some(original) = self._retained.as_mut() {
+            original.retire_original()?;
+        }
+        if let Some(original) = self._preparation.as_mut() {
+            original.retire_original()?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn retained(reason: impl Into<String>, retained: PreparedRealization) -> Self {
         Self {
             reason: reason.into(),
@@ -69,6 +83,18 @@ pub struct ConformanceRuntime {
 }
 
 impl ConformanceRuntime {
+    /// Transfers the exact collecting world before any operational cleanup callback.
+    ///
+    /// The private runtime shell remains owned; no ordinary runtime or graph is
+    /// exposed. Only authentic supervisor completion can discharge its custody.
+    ///
+    /// # Errors
+    /// Retains original state on unsupported handoff or unresolved supervision.
+    pub fn retire_original(&mut self) -> Result<(), RuntimeError> {
+        self.activation = None;
+        self.runtime.retire_collecting_original()
+    }
+
     /// Admits actual inactive collection nodes beneath their original graph/plan.
     ///
     /// # Errors

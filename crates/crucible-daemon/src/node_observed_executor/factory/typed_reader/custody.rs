@@ -130,11 +130,13 @@ impl TypedReaderCustodySupervisor {
                     inner: Rc::clone(&inner),
                     mailbox: Rc::clone(mailbox),
                     identity: U64::new(index as u64 + 1),
+                    released: false,
                 }),
                 runtime: Box::new(ReaderSlot {
                     inner: Rc::clone(&inner),
                     mailbox: Rc::clone(mailbox),
                     identity: U64::new(index as u64 + 4),
+                    released: false,
                 }),
             });
         }
@@ -344,15 +346,60 @@ struct SourceSlot {
     inner: Rc<Inner>,
     mailbox: Rc<Mailbox>,
     identity: U64,
+    released: bool,
 }
 
 struct ReaderSlot {
     inner: Rc<Inner>,
     mailbox: Rc<Mailbox>,
     identity: U64,
+    released: bool,
 }
 
 impl LineageSourceCustodySlot for SourceSlot {
+    fn retain_borrowed(
+        &mut self,
+        original: &mut Option<Box<LineageSourceCustody>>,
+    ) -> Result<(), crucible_node_provider::ProviderError> {
+        if self.released {
+            return Err(crucible_node_provider::ProviderError::Correlation(
+                "typed original reservation already released",
+            ));
+        }
+        let mut mailbox = self.mailbox.source.try_borrow_mut().map_err(|_| {
+            crucible_node_provider::ProviderError::Correlation("typed retirement mailbox borrowed")
+        })?;
+        if mailbox.is_some() || self.mailbox.polling.get() {
+            return Err(crucible_node_provider::ProviderError::Correlation(
+                "typed original retirement mailbox unavailable",
+            ));
+        }
+        let original =
+            original
+                .take()
+                .ok_or(crucible_node_provider::ProviderError::Correlation(
+                    "typed original retirement omitted",
+                ))?;
+        *mailbox = Some(*original);
+        self.released = true;
+        self.mailbox.source_outstanding.set(false);
+        drop(mailbox);
+        // The complete original is already held if this wake callback unwinds.
+        wake(&self.inner);
+        Ok(())
+    }
+
+    fn release_unused(&mut self) -> Result<(), crucible_node_provider::ProviderError> {
+        // This exact non-cloneable slot is still owned by the pre-birth caller;
+        // constructing a native capsule consumes it. Mailbox emptiness alone
+        // is never the proof of an unused reservation.
+        if !self.released {
+            self.released = true;
+            self.mailbox.source_outstanding.set(false);
+        }
+        Ok(())
+    }
+
     fn identity(&self) -> U64 {
         self.identity
     }
@@ -366,6 +413,49 @@ impl LineageSourceCustodySlot for SourceSlot {
 }
 
 impl LineageRuntimeCustodySlot for ReaderSlot {
+    fn retain_borrowed(
+        &mut self,
+        original: &mut Option<LineageRuntimeCustody>,
+    ) -> Result<(), crucible_node_provider::ProviderError> {
+        if self.released {
+            return Err(crucible_node_provider::ProviderError::Correlation(
+                "typed original reservation already released",
+            ));
+        }
+        let mut mailbox = self.mailbox.runtime.try_borrow_mut().map_err(|_| {
+            crucible_node_provider::ProviderError::Correlation("typed retirement mailbox borrowed")
+        })?;
+        if mailbox.is_some() || self.mailbox.polling.get() {
+            return Err(crucible_node_provider::ProviderError::Correlation(
+                "typed original retirement mailbox unavailable",
+            ));
+        }
+        let original =
+            original
+                .take()
+                .ok_or(crucible_node_provider::ProviderError::Correlation(
+                    "typed original retirement omitted",
+                ))?;
+        *mailbox = Some(original);
+        self.released = true;
+        self.mailbox.runtime_outstanding.set(false);
+        drop(mailbox);
+        // The complete original is already held if this wake callback unwinds.
+        wake(&self.inner);
+        Ok(())
+    }
+
+    fn release_unused(&mut self) -> Result<(), crucible_node_provider::ProviderError> {
+        // This exact non-cloneable slot is still owned by the pre-birth caller;
+        // constructing a native capsule consumes it. Mailbox emptiness alone
+        // is never the proof of an unused reservation.
+        if !self.released {
+            self.released = true;
+            self.mailbox.runtime_outstanding.set(false);
+        }
+        Ok(())
+    }
+
     fn identity(&self) -> U64 {
         self.identity
     }

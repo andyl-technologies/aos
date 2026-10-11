@@ -53,6 +53,7 @@ pub struct PreparedTypedReaderCohort {
     supervisor: TypedReaderCustodySupervisor,
     world: Option<Box<dyn RuntimeCustodySlot>>,
     pub(super) pending: VecDeque<Pending>,
+    retiring: bool,
 }
 
 /// Owns the actual launched provider and original reader preparation unchanged.
@@ -178,12 +179,27 @@ impl PreparedTypedReaderCohort {
             supervisor,
             world: Some(reservation.world),
             pending,
+            retiring: false,
         })
     }
 
     /// Borrows the actual owning cleanup actor across success, refusal and unwind.
     pub fn supervisor(&self) -> &TypedReaderCustodySupervisor {
         &self.supervisor
+    }
+
+    pub(super) fn retire_unused(&mut self) -> Result<(), ProviderError> {
+        self.retiring = true;
+        for original in &mut self.pending {
+            // A pending source/reader slot has never left this pre-birth pair.
+            // Keep original parts and slots; release only their unused claims.
+            original.slots.source.release_unused()?;
+            original.slots.runtime.release_unused()?;
+        }
+        // The world slot is still present only before any runtime constructor
+        // consumes it. Its ordinary unused-slot Drop releases that reservation.
+        drop(self.world.take());
+        Ok(())
     }
 
     /// Transfers the original whole-world slot once for actual runtime construction.
@@ -222,6 +238,11 @@ impl PreparedTypedReaderCohort {
         launch: &ReferenceNegotiatedLineageReaderLaunchBootstrap,
         transport: Option<(UnixStream, UnixStream, ExchangeDeadline)>,
     ) -> Result<LaunchedTypedReaderProvider, TypedReaderLaunchError> {
+        if self.retiring {
+            return Err(TypedReaderLaunchError::NoRemainingReservation(refused(
+                "retired typed cohort cannot launch another original",
+            )));
+        }
         // The closed fixed cohort cannot allocate a fourth provider obligation.
         let Some(pending) = self.pending.pop_front() else {
             // No owning resource was consumed. Callers inspect remaining count

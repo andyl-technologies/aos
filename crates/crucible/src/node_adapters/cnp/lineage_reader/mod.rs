@@ -157,6 +157,30 @@ pub trait LineageRuntimeCustodySlot {
 
     /// Takes the complete original host/native capsule exactly once.
     fn retain(self: Box<Self>, custody: LineageRuntimeCustody);
+
+    /// Moves the exact original into prior supervision before any callback.
+    ///
+    /// # Errors
+    /// Defaults to refusal; refusal must leave the supplied owner untouched.
+    fn retain_borrowed(
+        &mut self,
+        _original: &mut Option<LineageRuntimeCustody>,
+    ) -> Result<(), ProviderError> {
+        Err(ProviderError::Correlation(
+            "borrowed reader retirement unavailable",
+        ))
+    }
+
+    /// Releases the original still-owned reservation before reader construction.
+    ///
+    /// # Errors
+    /// Defaults to refusal. The unconsumed slot proves that no ReaderState
+    /// acquired it; native groups remain separately supervised by their source.
+    fn release_unused(&mut self) -> Result<(), ProviderError> {
+        Err(ProviderError::Correlation(
+            "unused reader reservation unavailable",
+        ))
+    }
 }
 
 /// Owns both groups and all original input, operation and proof custody.
@@ -183,6 +207,7 @@ impl LineageRuntimeCustody {
 /// construct this control. Drop transfers its already allocated complete state.
 pub struct LineageControlledReference {
     state: Option<Box<ReaderState>>,
+    retiring: Option<LineageRuntimeCustody>,
     slot: Option<Box<dyn LineageRuntimeCustodySlot>>,
     owner: Id,
     incarnation: Id,
@@ -338,6 +363,7 @@ impl LineageControlledReference {
                 transport,
                 collection: None,
             })),
+            retiring: None,
             slot: Some(slot),
             owner,
             incarnation,
@@ -369,6 +395,30 @@ impl LineageControlledReference {
         )
     }
 
+    /// Retains complete original reader custody before operational cleanup.
+    ///
+    /// The native state remains in this wrapper on refusal or enters its exact
+    /// prior mailbox before callbacks. This inactive shell retains owner identity;
+    /// it grants no execution or reclamation permission.
+    ///
+    /// # Errors
+    /// Refuses unavailable borrowed supervision without dropping original state.
+    pub fn retire_original(&mut self) -> Result<(), ProviderError> {
+        if let Some(state) = self.state.take() {
+            state.guard.revoke_read_handles();
+            self.retiring = Some(LineageRuntimeCustody { state });
+        }
+        if self.retiring.is_none() {
+            return Ok(());
+        }
+        self.slot
+            .as_mut()
+            .ok_or(ProviderError::Correlation(
+                "original reader retirement slot unavailable",
+            ))?
+            .retain_borrowed(&mut self.retiring)
+    }
+
     fn state(&self) -> Result<&ReaderState, ProviderError> {
         self.state.as_deref().ok_or(ProviderError::Correlation(
             "original selected state transferred",
@@ -384,7 +434,11 @@ impl LineageControlledReference {
 
 impl Drop for LineageControlledReference {
     fn drop(&mut self) {
-        if let (Some(state), Some(slot)) = (self.state.take(), self.slot.take()) {
+        if let Some(original) = self.retiring.take() {
+            if let Some(slot) = self.slot.take() {
+                slot.retain(original);
+            }
+        } else if let (Some(state), Some(slot)) = (self.state.take(), self.slot.take()) {
             state.guard.revoke_read_handles();
             slot.retain(LineageRuntimeCustody { state });
         }

@@ -156,6 +156,7 @@ pub struct ReclaimedTypedReaderHostCollection<A, R> {
     pub reclamation_refusal: Option<NodeObservedError>,
     /// Records a callback unwind without inferring rollback or absent effects.
     pub callback_unwound: bool,
+    _retired_driver: Option<TypedReaderCollectingDriver>,
 }
 
 impl<A: ActivationPublisher, R: ConformanceResultPublisher> TypedReaderHostExecution<'_, A, R> {
@@ -248,7 +249,7 @@ impl<A: ActivationPublisher, R: ConformanceResultPublisher> TypedReaderHostExecu
         }
     }
 
-    fn retire_original(&mut self) {
+    pub(super) fn retire_original(&mut self) {
         // Finish calls only fixed closed-record validation/serialization, not
         // an installed/native callback. Retain these journals before runtime
         // Drop transfers custody through its actual prior typed world slot.
@@ -256,18 +257,25 @@ impl<A: ActivationPublisher, R: ConformanceResultPublisher> TypedReaderHostExecu
             self.report = Some(collection.finish());
         }
         self.phase = HostPhase::Reclaim;
-        let original = self.driver.take();
-        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(original))).is_err() {
-            // The actual typed slot owns cleanup; catch alone cannot establish
-            // native containment or resurrect resources from a foreign slot.
-            self.callback_unwound = true;
-        }
     }
 
     fn poll_reclamation(
         &mut self,
         context: &mut Context<'_>,
     ) -> Poll<ReclaimedTypedReaderHostCollection<A, R>> {
+        // Keep the original driver outside the catch. Its borrowed handoff
+        // stores complete native custody before any cleanup callback runs.
+        let retired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            match self.driver.as_mut() {
+                Some(original) => original.retire_original(),
+                None => Err(crucible::node_contract::RuntimeError::OutstandingObligations),
+            }
+        }));
+        if !matches!(retired, Ok(Ok(()))) {
+            self.callback_unwound |= retired.is_err();
+            context.waker().wake_by_ref();
+            return Poll::Pending;
+        }
         let original = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.supervisor.poll_reclamation(context)
         }));
@@ -304,6 +312,7 @@ impl<A: ActivationPublisher, R: ConformanceResultPublisher> TypedReaderHostExecu
                     driving_refusal: self.driving_refusal.take(),
                     reclamation_refusal: self.reclamation_refusal.take(),
                     callback_unwound: self.callback_unwound,
+                    _retired_driver: self.driver.take(),
                 })
             }
         }

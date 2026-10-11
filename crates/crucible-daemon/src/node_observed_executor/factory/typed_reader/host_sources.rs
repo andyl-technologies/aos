@@ -139,6 +139,8 @@ pub struct PreparedTypedReaderHostSources<'a> {
     failure: Option<TypedReaderHostSourceFailure>,
     refusal: Option<NodeObservedError>,
     attempted: bool,
+    retiring: bool,
+    retired_nodes: Option<PreparedRealization>,
 }
 
 impl<'a> PreparedTypedReaderHostSources<'a> {
@@ -340,6 +342,8 @@ impl<'a> PreparedTypedReaderHostSources<'a> {
             failure: None,
             refusal: None,
             attempted: false,
+            retiring: false,
+            retired_nodes: None,
         }))
     }
 
@@ -356,6 +360,81 @@ impl<'a> PreparedTypedReaderHostSources<'a> {
     /// Borrows the original private failed capsule without fabricating reclamation.
     pub fn failure(&self) -> Option<&TypedReaderHostSourceFailure> {
         self.failure.as_ref()
+    }
+
+    pub(super) fn release_unused_adoption(&mut self) {
+        // Successful construction has no failed attachment and consumes no
+        // adoption reservation. Release this exact unused slot while the full
+        // upper owner is still borrowed outside the start callback boundary.
+        drop(self.adoption.take());
+    }
+
+    pub(super) fn record_start_unwind(&mut self) {
+        if self.refusal.is_none() {
+            self.refusal = Some(refused("original typed instantiation callback unwound"));
+        }
+    }
+
+    /// Retires original native obligations while retaining this complete upper owner.
+    ///
+    /// Original profile/session/graph requests, services and publishers stay in
+    /// their enclosing holder. Native wrappers transfer only into their exact
+    /// prior slots. Unsupported handoff keeps the whole owner unresolved.
+    ///
+    /// # Errors
+    /// Preserves all remaining originals on unavailable handoff or uncertainty.
+    /// Success transfers custody; it does not prove whole-cohort reclamation.
+    pub fn retire_original(&mut self) -> Result<(), ProviderError> {
+        self.retiring = true;
+        for original in self.originals.iter_mut().flatten() {
+            original.retire_original()?;
+        }
+        match self.failure.as_mut() {
+            Some(TypedReaderHostSourceFailure::Launch(original)) => {
+                if let super::TypedReaderLaunchError::Original(original) = &mut original.launch {
+                    if let Some(guard) = &mut original.guard {
+                        guard.retire_original()?;
+                    }
+                    if let Some(slot) = &mut original.unstarted_source {
+                        slot.release_unused()?;
+                    }
+                    original.runtime.release_unused()?;
+                }
+            }
+            Some(TypedReaderHostSourceFailure::Realize(original)) => {
+                original.retire_original()?;
+            }
+            Some(TypedReaderHostSourceFailure::Runtime(original)) => {
+                original.retire_original().map_err(|_| {
+                    ProviderError::Correlation("original failed world handoff unresolved")
+                })?;
+            }
+            Some(TypedReaderHostSourceFailure::Node(_)) | None => {}
+        }
+        if let Some(original) = &mut self.runtime {
+            original.retire_original().map_err(|_| {
+                ProviderError::Correlation("original collecting world handoff unresolved")
+            })?;
+        }
+        if !self.nodes.is_empty() && self.retired_nodes.is_none() {
+            let slot = self.cohort.take_world_slot().map_err(|_| {
+                ProviderError::Correlation("original inactive world slot unavailable")
+            })?;
+            self.retired_nodes = Some(PreparedRealization::new(
+                std::mem::take(&mut self.nodes),
+                self.target.clone(),
+                self.runtime_limits,
+                slot,
+            ));
+        }
+        if let Some(original) = &mut self.retired_nodes {
+            original.retire_original().map_err(|_| {
+                ProviderError::Correlation("original inactive world handoff unresolved")
+            })?;
+        }
+        self.cohort.retire_unused()?;
+        drop(self.adoption.take());
+        Ok(())
     }
 
     /// Services the actual pre-realization failure without removing its journals.
@@ -451,7 +530,10 @@ impl<'a> PreparedTypedReaderHostSources<'a> {
     /// Refuses repetition or changed current scope and retains actual launch,
     /// Hello, registrar, realization, graph or runtime preparation uncertainty.
     pub fn instantiate_original(&mut self) -> Result<(), &NodeObservedError> {
-        if !self.attempted {
+        if self.retiring {
+            self.refusal
+                .get_or_insert_with(|| refused("retired typed original cannot instantiate"));
+        } else if !self.attempted {
             self.attempted = true;
             if let Err(original) = self.instantiate() {
                 self.refusal = Some(original);
@@ -597,6 +679,14 @@ impl<'a, A: ActivationPublisher, R: ConformanceResultPublisher>
     /// Borrows the same custody actor for cancellation and outstanding cleanup.
     pub fn supervisor(&self) -> &TypedReaderCustodySupervisor {
         self.execution.supervisor()
+    }
+
+    /// Stops further windows without dropping the complete enclosing owner.
+    ///
+    /// Actual handoff and supervisor callbacks are serviced by subsequent polls;
+    /// this transition alone proves neither containment nor reclamation.
+    pub fn retire_original(&mut self) {
+        self.execution.retire_original();
     }
 
     /// Advances the actual actor and retains private services through reclamation.
