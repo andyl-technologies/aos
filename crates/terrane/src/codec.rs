@@ -45,7 +45,7 @@ pub enum FrameError {
     PlaintextLengthMismatch,
     /// A non-final chunk is shorter than the profile minimum.
     NonfinalChunkTooShort,
-    /// A non-final chunk does not end at its first profile boundary.
+    /// An object chunk does not end at its first profile boundary.
     BoundaryMismatch,
     /// Some chunks in a candidate pass-through stream use another codec.
     MixedCodecs,
@@ -73,9 +73,7 @@ impl fmt::Display for FrameError {
             Self::NonfinalChunkTooShort => {
                 f.write_str("non-final chunk is shorter than the profile minimum")
             }
-            Self::BoundaryMismatch => {
-                f.write_str("non-final chunk ends at a noncanonical boundary")
-            }
+            Self::BoundaryMismatch => f.write_str("object chunk ends at a noncanonical boundary"),
             Self::MixedCodecs => f.write_str("chunks cannot be passed through as one zstd stream"),
         }
     }
@@ -292,6 +290,42 @@ pub fn decode_verified<'a>(
     })
 }
 
+/// Decodes and verifies a chunk referenced by an object's canonical chunk list.
+///
+/// Every object chunk, including the final chunk, must end at its first
+/// profile boundary. The final chunk may end at EOF before a natural cut.
+/// Standalone dictionary chunks use [`decode_verified`] instead because their
+/// admission does not establish an object's chunk list.
+///
+/// # Errors
+///
+/// Returns every error from [`decode_verified`], or [`FrameError::BoundaryMismatch`]
+/// when an earlier profile boundary occurs within the decoded chunk.
+pub fn decode_object_chunk_verified<'a>(
+    encoded: &'a [u8],
+    declared_plaintext_len: usize,
+    profile: &ChunkProfile,
+    final_chunk: bool,
+    expected_identity: &Identity,
+    dictionary: Option<&[u8]>,
+) -> Result<VerifiedChunk<'a>, FrameError> {
+    let chunk = decode_verified(
+        encoded,
+        declared_plaintext_len,
+        profile,
+        final_chunk,
+        expected_identity,
+        dictionary,
+    )?;
+    // The delegated decoder already proves the first boundary for non-final
+    // chunks. Object context adds the same proof for the EOF chunk only.
+    if final_chunk && profile.first_boundary(chunk.plaintext()) != chunk.plaintext().len() {
+        return Err(FrameError::BoundaryMismatch);
+    }
+
+    Ok(chunk)
+}
+
 /// Returns stored frames in manifest order for compressed pass-through.
 ///
 /// Input chunks must already have passed [`decode_verified`].
@@ -341,9 +375,11 @@ fn decompress_bounded(
     }
     .map_err(FrameError::Zstd)?;
 
-    let mut plaintext = Vec::with_capacity(declared_plaintext_len);
+    // A slice bounds zstd's writes by the declaration even if the allocator
+    // gives the vector more capacity than requested.
+    let mut plaintext = vec![0; declared_plaintext_len];
     let actual = decompressor
-        .decompress_to_buffer(chunk.body, &mut plaintext)
+        .decompress_to_buffer(chunk.body, plaintext.as_mut_slice())
         .map_err(FrameError::Zstd)?;
     if actual != declared_plaintext_len {
         return Err(FrameError::PlaintextLengthMismatch);
@@ -358,8 +394,8 @@ mod tests {
     use std::io::{Read, Write};
 
     use super::{
-        FrameError, decode_verified, decompress_bounded, encode_chunk, frames_for_passthrough,
-        inspect_chunk,
+        FrameError, decode_object_chunk_verified, decode_verified, decompress_bounded,
+        encode_chunk, frames_for_passthrough, inspect_chunk,
     };
     use terrane_core::{
         chunking::ChunkProfile,
@@ -486,6 +522,57 @@ mod tests {
         assert!(
             decode_verified(&encoded, 256, &profile, true, &identity(&[0; 256]), None,).is_err()
         );
+    }
+
+    #[test]
+    fn public_decoder_rejects_false_content_sizes_for_both_compressed_codecs() {
+        let profile = ChunkProfile::cdc_1m([0; 32]);
+        let plaintext = vec![b'a'; 513];
+        let expected = identity(&plaintext);
+        let dictionary = b"recurring content-class vocabulary";
+
+        for dictionary in [None, Some(dictionary.as_slice())] {
+            let encoded = encode_chunk(&plaintext, MAX, 3, dictionary).expect("encoded chunk");
+            let parsed = inspect_chunk(&encoded, plaintext.len(), MAX).expect("sized frame");
+            assert!(matches!(
+                parsed.codec,
+                Codec::Zstd | Codec::ZstdDictionary(_)
+            ));
+            assert_eq!(
+                decode_verified(
+                    &encoded,
+                    plaintext.len(),
+                    &profile,
+                    true,
+                    &expected,
+                    dictionary,
+                )
+                .expect("honest frame")
+                .plaintext(),
+                plaintext,
+            );
+
+            // Single-segment frames with this size use a two-byte content
+            // size, biased by 256. Alter only that field, retaining the
+            // compressed blocks that actually produce 513 bytes.
+            assert_eq!(parsed.body[4], 0x60);
+            let frame_start = encoded.len() - parsed.body.len();
+            for declared in [512_usize, 514] {
+                let mut forged = encoded.clone();
+                let size = u16::try_from(declared - 256).expect("fixture size");
+                forged[frame_start + 5..frame_start + 7].copy_from_slice(&size.to_le_bytes());
+
+                inspect_chunk(&forged, declared, MAX).expect("forged header matches declaration");
+                assert!(
+                    matches!(
+                        decode_verified(&forged, declared, &profile, true, &expected, dictionary),
+                        Err(FrameError::Zstd(_) | FrameError::PlaintextLengthMismatch)
+                    ),
+                    "codec {:?} with declared length {declared} exposed plaintext",
+                    parsed.codec,
+                );
+            }
+        }
     }
 
     #[test]
@@ -621,6 +708,42 @@ mod tests {
                 Some(b"wrong dictionary")
             ),
             Err(FrameError::WrongDictionary)
+        ));
+    }
+
+    #[test]
+    fn object_final_chunks_require_the_first_boundary_while_dictionaries_remain_standalone() {
+        let profile = ChunkProfile::cdc_1m([0; 32]);
+        let mut bytes = vec![0; profile.maximum()];
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"terrane-cdc-boundaries-v1\0");
+        hasher.finalize_xof().fill(&mut bytes);
+        let first = profile.first_boundary(&bytes);
+        assert!(first > profile.minimum() && first < bytes.len());
+
+        for plaintext in [&[][..], &bytes[..profile.minimum()], &bytes[..first]] {
+            let encoded = encode_chunk(plaintext, profile.maximum(), 3, None).expect("encoding");
+            let verified = decode_object_chunk_verified(
+                &encoded,
+                plaintext.len(),
+                &profile,
+                true,
+                &identity(plaintext),
+                None,
+            )
+            .expect("canonical final boundary");
+            assert_eq!(verified.plaintext(), plaintext);
+        }
+
+        let encoded = encode_chunk(&bytes, profile.maximum(), 3, None).expect("encoding");
+        let expected = identity(&bytes);
+        assert!(
+            decode_verified(&encoded, bytes.len(), &profile, true, &expected, None).is_ok(),
+            "standalone dictionary admission does not validate an object's chunk list",
+        );
+        assert!(matches!(
+            decode_object_chunk_verified(&encoded, bytes.len(), &profile, true, &expected, None),
+            Err(FrameError::BoundaryMismatch)
         ));
     }
 
