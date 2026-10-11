@@ -236,7 +236,13 @@ fn child_scope_request(
     let graft = |key: &[u8], root| LeafItem {
         key: key.to_vec(),
         entry: Entry {
-            kind: EntryKind::Tree { root, props: None },
+            kind: EntryKind::Tree {
+                root,
+                props: Some(vec![Property {
+                    name: "store",
+                    value: b"\x65local",
+                }]),
+            },
             attrs: vec![Attribute {
                 name: "note",
                 value: descriptor,

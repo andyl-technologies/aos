@@ -66,6 +66,7 @@ pub(super) struct CandidateValidation {
 pub(super) struct CandidatePrevious<'a> {
     pub(super) evidence: &'a TreeEvidence,
     pub(super) interpretation: &'a super::SelectedReadInterpretation,
+    /// Absent only for a copied bootstrap baseline, which grants no current authority.
     pub(super) commit: Option<&'a VerifiedCommit>,
 }
 
@@ -1227,12 +1228,15 @@ impl<S: Store, C: Clock> Guard<S, C> {
                 (Some(previous), Some(old)) => Some(previous.evidence.tree(old.root, minimum)?),
                 _ => None,
             };
-            let changed = tree
+            let changed_items = tree
                 .iter()
                 .filter(|item| {
                     changed_domain
                         || old_tree.as_ref().and_then(|old| old.get(&item.key)) != Some(&item.entry)
                 })
+                .collect::<Vec<_>>();
+            let changed = changed_items
+                .iter()
                 .map(|item| (&item.entry, &effective))
                 .collect::<Vec<_>>();
             if matches!(interpretation, CandidateInterpretation::Authoring)
@@ -1295,14 +1299,85 @@ impl<S: Store, C: Clock> Guard<S, C> {
                 administrator,
                 property_selection: &property_selection,
             };
-            properties::validate_commit_with_context(&changed, &derived, &mut context)
+            let mut introduced = Vec::new();
+            for item in &changed_items {
+                let retained = if !initial_view
+                    && previous.is_some_and(|prior| prior.commit.is_some())
+                    && old_effective
+                        .as_ref()
+                        .is_some_and(|old| same_boundary_policy(old, &effective))
+                {
+                    let boundary = retained_graft_descriptor(
+                        &occurrence.path,
+                        &item.key,
+                        &item.entry,
+                        old_tree.as_ref().and_then(|tree| tree.get(&item.key)),
+                    )
+                    .and_then(|(path, new_root, old_root)| {
+                        let current = occurrences
+                            .iter()
+                            .find(|root| root.path == path && root.root == new_root)?;
+                        let prior = old_occurrences
+                            .iter()
+                            .find(|root| root.path == path && root.root == old_root)?;
+                        Some((current, prior))
+                    });
+                    match boundary {
+                        Some((current, old)) => {
+                            let current_layers = current
+                                .layers
+                                .iter()
+                                .map(|(properties, overrides)| RootLayer {
+                                    properties,
+                                    overrides,
+                                })
+                                .collect::<Vec<_>>();
+                            let old_layers = old
+                                .layers
+                                .iter()
+                                .map(|(properties, overrides)| RootLayer {
+                                    properties,
+                                    overrides,
+                                })
+                                .collect::<Vec<_>>();
+                            let prior = previous.ok_or_else(super::invalid)?;
+                            let current_policy = property_selection
+                                .resolve(&current_layers, self.defaults_for(candidate))
+                                .map_err(|_| denied(reference, Verb::Commit))?;
+                            let old_policy = prior
+                                .interpretation
+                                .resolve(&old_layers, self.defaults_for(prior.evidence))
+                                .map_err(|_| denied(reference, Verb::Commit))?;
+                            if same_boundary_policy(&old_policy, &current_policy) {
+                                Some(current_policy)
+                            } else {
+                                None
+                            }
+                        }
+                        None => None,
+                    }
+                } else {
+                    None
+                };
+                if let Some(target) = retained {
+                    // The genuine prior history authenticated this unchanged
+                    // delegation. Recheck raw metadata and actual references
+                    // without treating a propagated child hash as a new grant.
+                    context
+                        .validate_retained_graft(&item.entry, &effective, &target)
+                        .map_err(|_| denied(reference, Verb::Commit))?;
+                } else {
+                    introduced.push((&item.entry, &effective));
+                }
+            }
+            properties::validate_commit_with_context(&introduced, &derived, &mut context)
                 .map_err(|_| denied(reference, Verb::Commit))?;
             if administrator {
                 // Retain Admin only when this admission actually depended on
                 // it. Ordinary content edits must remain Commit-only.
                 context.administrator = false;
                 admin_required |=
-                    properties::validate_commit_with_context(&changed, &derived, &mut context)
+                    properties::validate_commit_with_context(&introduced, &derived, &mut context)
                         .is_err();
             }
             if admin_required {
@@ -1399,4 +1474,44 @@ impl<S: Store, C: Clock> Guard<S, C> {
             root_claims: root_claims.into_iter().collect(),
         })
     }
+}
+
+/// Recognizes an unchanged descriptor independently of its child target digest.
+fn retained_graft_descriptor(
+    parent: &[u8],
+    key: &[u8],
+    candidate: &terrane_core::tree_format::Entry<'_>,
+    previous: Option<&terrane_core::tree_format::Entry<'_>>,
+) -> Option<(Vec<u8>, Digest, Digest)> {
+    use terrane_core::tree_format::EntryKind;
+
+    let previous = previous?;
+    let (EntryKind::Tree { root: new_root, .. }, EntryKind::Tree { root: old_root, .. }) =
+        (&candidate.kind, &previous.kind)
+    else {
+        return None;
+    };
+    let mut normalized = candidate.clone();
+    if let EntryKind::Tree { root, .. } = &mut normalized.kind {
+        *root = *old_root;
+    }
+    if normalized != *previous {
+        return None;
+    }
+    let mut path = parent.to_vec();
+    if path != b"/" {
+        path.push(b'/');
+    }
+    path.extend_from_slice(key);
+    Some((path, *new_root, *old_root))
+}
+
+/// Separates unchanged delegation from separately governed child content policy.
+fn same_boundary_policy(
+    left: &properties::EffectiveProperties<'_>,
+    right: &properties::EffectiveProperties<'_>,
+) -> bool {
+    [PropertyName::Acl, PropertyName::Domain]
+        .into_iter()
+        .all(|name| left.get(name) == right.get(name))
 }
