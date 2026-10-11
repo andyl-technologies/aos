@@ -16,7 +16,7 @@ implementation headers and one writer-account implementation; no file is removed
 | `capture-file-mapping-ledger.patch` | `src/plugin/ipc/file/fileconnlist.cpp`; declarations in `include/dmtcp.h` | LGPL-3.0-or-later implementation; public-domain interface header |
 | `restore-saved-file-relocation.patch` | `src/plugin/ipc/file/fileconnection.cpp`; declaration in `include/dmtcp.h` | LGPL-3.0-or-later implementation; public-domain interface header |
 | `restore-file-mode-preservation.patch` | `src/plugin/ipc/file/fileconnection.cpp` | Original LGPL-3.0-or-later notice and copyright holders retained |
-| Hermetic loader/path substitutions in `dmtcp.nix` | `configure`, `configure.ac`, `src/util_exec.cpp`, `src/restartscript.cpp`, `src/glibcsystem.cpp`, `src/popen.cpp`, `src/plugin/ipc/ssh/ssh.cpp`, shell and Python entry-point shebangs | Each file's unchanged upstream notice; implementation files retain LGPL-3.0-or-later |
+| Hermetic loader/path substitutions in `dmtcp-selected-writer-park.nix` | `configure`, `configure.ac`, `src/util_exec.cpp`, `src/restartscript.cpp`, `src/glibcsystem.cpp`, `src/popen.cpp`, `src/plugin/ipc/ssh/ssh.cpp`, shell and Python entry-point shebangs | Each file's unchanged upstream notice; implementation files retain LGPL-3.0-or-later |
 
 The package installs `COPYING` and `COPYING.LESSER`. Distribution of modified
 DMTCP binaries must satisfy the upstream LGPL's applicable source and relinking
@@ -35,7 +35,7 @@ installed as a toolkit implementation. The pinned public `include/dmtcp.h`
 header is explicitly dedicated to the public domain, while the implementation
 and dynamically loaded libraries remain LGPL-3.0-or-later.
 
-The distinct `selected-writer-cohort.patch` retains the following source roles.
+The cumulative `selected-writer-terminal-park.patch` retains the following 27 source roles.
 
 | Native source role | License and custody |
 | --- | --- |
@@ -65,7 +65,6 @@ The distinct `selected-writer-cohort.patch` retains the following source roles.
 | `src/crucible_control_frame.h` | Original LGPL-3.0-or-later implementation scope and notices; selected additions remain in the native process |
 | `jalib/crucible_log_writer.h` | Original LGPL-3.0-or-later implementation scope and notices; selected additions remain in the native process |
 | `src/crucible_restart_writer.h` | Original LGPL-3.0-or-later implementation scope and notices; selected additions remain in the native process |
-
 | `src/dmtcpnohijackstubs.cpp` | Preserved upstream LGPL-3.0-or-later notices; nonworker utilities explicitly refuse worker account finalization without effects |
 
 Configured TU and inert control results do not authorize capture, restored account adoption, publication, or a source-qualified installed importer. The default no-Child and early-restart refusals remain. The separate Apache host consumes versioned byte bodies and does not link these native files.
