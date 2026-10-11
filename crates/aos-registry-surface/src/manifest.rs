@@ -107,6 +107,36 @@ pub struct VersionEntry {
     pub platforms: BTreeMap<String, PlatformEntry>,
 }
 
+impl PlatformEntry {
+    /// Decodes the scan declaration and verifies its enclosing catalog coordinate.
+    ///
+    /// Publication signature and store-graph checks remain the caller's
+    /// responsibility. A parsed declaration alone cannot activate a Hub inventory.
+    ///
+    /// # Errors
+    /// Returns an error for malformed or oversized declarations, unavailable
+    /// owner definitions, or a package/version/platform scope mismatch.
+    pub fn scan_declaration(
+        &self,
+        package_name: &str,
+        version: &str,
+        platform: &str,
+    ) -> Result<Option<aos_assessment::metadata::PackageScanPublicationV1>> {
+        let Some(scan) = &self.scan else {
+            return Ok(None);
+        };
+        let declaration =
+            aos_assessment::metadata::PackageScanPublicationV1::from_slice(scan.as_bytes())?;
+        if declaration.package_name != package_name
+            || declaration.version != version
+            || declaration.platform != platform
+        {
+            bail!("package scan declaration differs from its signed catalog coordinate");
+        }
+        Ok(Some(declaration))
+    }
+}
+
 /// Authenticates one explicitly selectable named package output.
 ///
 /// NAR identity and dependency edges remain authoritative in the signed store graph.
@@ -127,6 +157,13 @@ pub struct OutputMeta {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlatformEntry {
+    /// Closed JSON scan declaration for this exact package version and platform.
+    ///
+    /// JSON preserves the portable definition's closed schema and enum encoding.
+    /// The signed catalog authenticates these bytes; they contain no scan
+    /// results, credentials or evidence-import authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan: Option<String>,
     /// Absolute store path of the installable `out` output.
     pub store_path: String,
     /// Available derivation outputs, keyed by Nix output name.
@@ -1510,6 +1547,7 @@ pub fn parse_package_file(content: &str) -> Result<PackageToml> {
     validate_package_name(&toml.package.name)?;
     for version in &toml.versions {
         for (platform, entry) in &version.platforms {
+            entry.scan_declaration(&toml.package.name, &version.version, platform)?;
             crate::native_dependencies::check_version_requirement(
                 &version.version,
                 entry.version_requirement.as_deref(),

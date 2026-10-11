@@ -374,6 +374,66 @@ service PackageService {
   rpc GetPackage(GetPackageRequest) returns (GetPackageResponse);
 }
 
+// Package assessment reads consume admitted database evidence. They never
+// acquire provider data implicitly; ScanService owns explicit acquisition.
+service AssessmentService {
+  rpc GetPublicationStatus(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+  rpc GetStatus(AssessmentStatusRequest) returns (AssessmentDocumentResponse);
+  rpc GetAssessment(AssessmentObjectRequest) returns (AssessmentDocumentResponse);
+  rpc ListAlerts(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+  rpc AcknowledgeAlert(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+  rpc ListEvents(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+  rpc ListSchedules(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+  rpc PlanWriteSchedule(PlanAssessmentReviewRequest) returns (TopologyPlanResponse);
+  rpc WriteSchedule(ApplyRegistryMutationRequest) returns (AssessmentDocumentResponse);
+  rpc ListSubscriptions(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+  rpc ListNotificationDeliveries(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+  rpc GetAdvisory(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+  rpc PlanWriteSubscription(PlanAssessmentReviewRequest) returns (TopologyPlanResponse);
+  rpc WriteSubscription(ApplyRegistryMutationRequest) returns (AssessmentDocumentResponse);
+  rpc ReviewNotificationDestination(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+}
+
+// Durable scan admission and lifecycle. Provider acquisition belongs to the
+// execution service, never to an implicit read or the admission HTTP request.
+service ScanService {
+  rpc RequestScan(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+  rpc GetScan(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+  rpc ListScans(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+  rpc CancelScan(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+  rpc RetryScan(AssessmentControlRequest) returns (AssessmentDocumentResponse);
+}
+
+message AssessmentControlRequest {
+  string registry_slug = 1;
+  bytes document_json = 2;
+}
+
+// Plans one closed configuration review against its exact declared revision.
+// Apply accepts only the retained plan identity and confirmation commitment.
+message PlanAssessmentReviewRequest {
+  string registry_slug = 1;
+  bytes document_json = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+
+// Canonical domain documents pass the same bounded, closed parsers as local
+// maintenance. Protobuf JSON coercions cannot alter their inner semantics.
+message AssessmentStatusRequest {
+  string registry_slug = 1;
+  bytes query_json = 2;
+}
+
+message AssessmentObjectRequest {
+  string registry_slug = 1;
+  string assessment_digest = 2;
+}
+
+message AssessmentDocumentResponse {
+  bytes document_json = 1;
+}
+
 // Authenticated native package references and typed option tooling. Document
 // bytes retain their exact signed options.json identity; search rows are disposable
 // projections generated from native declarations during release indexing.

@@ -158,6 +158,10 @@ dependencies = [
  "aos-ability-model",
  "aos-ability-plan",
  "aos-ability-runtime",
+ "aos-assessment",
+ "aos-assessment-http",
+ "aos-assessment-providers",
+ "aos-assessment-runtime",
  "aos-cache",
  "aos-contract",
  "aos-core",
@@ -271,6 +275,74 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-assessment"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-contract",
+ "base64 0.22.1",
+ "humantime",
+ "packageurl",
+ "semver",
+ "serde",
+ "serde_json",
+ "url",
+]
+
+[[package]]
+name = "aos-assessment-http"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-assessment",
+ "aos-assessment-providers",
+ "aos-assessment-runtime",
+ "aos-contract",
+ "async-trait",
+ "libc",
+ "rcgen",
+ "reqwest",
+ "rustls",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "zeroize",
+]
+
+[[package]]
+name = "aos-assessment-providers"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-assessment",
+ "aos-contract",
+ "humantime",
+ "serde",
+ "serde_json",
+ "url",
+]
+
+[[package]]
+name = "aos-assessment-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-assessment",
+ "aos-assessment-providers",
+ "aos-contract",
+ "async-trait",
+ "hex",
+ "hmac 0.12.1",
+ "httpdate",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "url",
+ "zeroize",
 ]
 
 [[package]]
@@ -470,7 +542,11 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "aos-assessment",
+ "aos-assessment-http",
+ "aos-assessment-runtime",
  "aos-cache",
+ "aos-contract",
  "aos-core",
  "aos-doc-model",
  "aos-hub-core",
@@ -531,6 +607,9 @@ dependencies = [
 name = "aos-hub-console"
 version = "0.1.0"
 dependencies = [
+ "aos-assessment",
+ "aos-assessment-runtime",
+ "aos-contract",
  "aos-doc-model",
  "aos-hub-console-contract",
  "aos-proto-types",
@@ -567,6 +646,9 @@ dependencies = [
  "aes-gcm",
  "anyhow",
  "aos-ability-model",
+ "aos-assessment",
+ "aos-assessment-providers",
+ "aos-assessment-runtime",
  "aos-contract",
  "aos-doc-model",
  "aos-hub-console-contract",
@@ -621,6 +703,10 @@ name = "aos-hub-worker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-assessment",
+ "aos-assessment-providers",
+ "aos-assessment-runtime",
+ "aos-contract",
  "aos-doc-model",
  "aos-hub",
  "aos-hub-core",
@@ -705,6 +791,7 @@ name = "aos-maintain"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-assessment",
  "aos-contract",
  "semver",
  "serde",
@@ -858,6 +945,7 @@ dependencies = [
  "aos-ability-model",
  "aos-ability-plan",
  "aos-ability-runtime",
+ "aos-assessment",
  "aos-boot-identity",
  "aos-cache",
  "aos-contract",
@@ -981,6 +1069,7 @@ name = "aos-registry-surface"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-assessment",
  "aos-oci-types",
  "base64 0.22.1",
  "crc32fast",
@@ -1001,6 +1090,7 @@ dependencies = [
  "anyhow",
  "aos-ability-model",
  "aos-ability-plan",
+ "aos-assessment",
  "aos-contract",
  "aos-registry-surface",
  "base64 0.22.1",
@@ -4907,6 +4997,16 @@ dependencies = [
  "primeorder",
  "rand_core 0.6.4",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "packageurl"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35da99768af1ae8830ccf30d295db0e09c24bcfda5a67515191dd4b773f6d82a"
+dependencies = [
+ "percent-encoding",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

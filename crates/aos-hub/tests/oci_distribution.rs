@@ -818,6 +818,7 @@ async fn spawn_registry_with_options(
         route_reservation_keyring: None,
         container_rollout,
         release_evidence: None,
+        assessment_notification_authority: Default::default(),
     });
     let mut app = router(state).await;
     app = app.layer(axum::middleware::from_fn(

@@ -55,10 +55,24 @@ const GENERATION8_CONTRACT: &str = include_str!("schema-v8.tsv");
 const GENERATION12_CONTRACT: &str = include_str!("schema-v12.tsv");
 static GENERATION13_CONTRACT: LazyLock<String> =
     LazyLock::new(|| [GENERATION12_CONTRACT, include_str!("schema-v13-delta.tsv")].concat());
-static CONTRACT: LazyLock<String> = LazyLock::new(|| {
+static GENERATION16_CONTRACT: LazyLock<String> = LazyLock::new(|| {
     [
         GENERATION13_CONTRACT.as_str(),
         include_str!("schema-v16-delta.tsv"),
+    ]
+    .concat()
+});
+static GENERATION17_CONTRACT: LazyLock<String> = LazyLock::new(|| {
+    [
+        GENERATION16_CONTRACT.as_str(),
+        include_str!("schema-v17-delta.tsv"),
+    ]
+    .concat()
+});
+static CONTRACT: LazyLock<String> = LazyLock::new(|| {
+    [
+        GENERATION17_CONTRACT.as_str(),
+        include_str!("schema-v18-delta.tsv"),
     ]
     .concat()
 });
@@ -129,11 +143,21 @@ static GENERATION13_MIGRATION_DIGESTS: LazyLock<Vec<&'static str>> = LazyLock::n
     digests
 });
 
-static CONTRACT_MIGRATION_DIGESTS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+static GENERATION16_MIGRATION_DIGESTS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     let mut digests = GENERATION13_MIGRATION_DIGESTS.clone();
     digests.push("15df8cc9b1ea3e4546c9c69c9f5f3d030af2adb925af1edba2cfebe86268783a");
     digests.push("c8685bb51efd8d56adedd391e802495da07c8402410137f791262c5611ee4727");
     digests.push("adbdf1c0eae8e3749ff314f1ebb7e5103e90e12a8e7e8814d6bc38ceb3eed66a");
+    digests
+});
+static GENERATION17_MIGRATION_DIGESTS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    let mut digests = GENERATION16_MIGRATION_DIGESTS.clone();
+    digests.push(include_str!("schema-v17-migration.sha256").trim());
+    digests
+});
+static CONTRACT_MIGRATION_DIGESTS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    let mut digests = GENERATION17_MIGRATION_DIGESTS.clone();
+    digests.push(include_str!("schema-v18-migration.sha256").trim());
     digests
 });
 
@@ -506,7 +530,15 @@ fn generation_contract(version: usize) -> Result<(&'static str, &'static [&'stat
             GENERATION13_CONTRACT.as_str(),
             GENERATION13_MIGRATION_DIGESTS.as_slice(),
         )),
-        16 => Ok((CONTRACT.as_str(), CONTRACT_MIGRATION_DIGESTS.as_slice())),
+        16 => Ok((
+            GENERATION16_CONTRACT.as_str(),
+            GENERATION16_MIGRATION_DIGESTS.as_slice(),
+        )),
+        17 => Ok((
+            GENERATION17_CONTRACT.as_str(),
+            GENERATION17_MIGRATION_DIGESTS.as_slice(),
+        )),
+        18 => Ok((CONTRACT.as_str(), CONTRACT_MIGRATION_DIGESTS.as_slice())),
         _ => anyhow::bail!("snapshot generation is unsupported"),
     }
 }

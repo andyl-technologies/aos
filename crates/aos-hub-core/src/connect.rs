@@ -2943,6 +2943,37 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         "/aos.hub.v1.TopologyService/DeletePlacementEquivalence",
         delete_placement_equivalence
     );
+    // AssessmentService
+    r = rpc_route!(r, "/aos.hub.v1.AssessmentService/GetPublicationStatus", get_assessment_publication_status);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.AssessmentService/GetStatus",
+        get_assessment_status
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.AssessmentService/GetAssessment",
+        get_package_assessment
+    );
+    r = rpc_route!(r, "/aos.hub.v1.AssessmentService/ListAlerts", list_assessment_alerts);
+    r = rpc_route!(r, "/aos.hub.v1.AssessmentService/AcknowledgeAlert", acknowledge_package_alert);
+    r = rpc_route!(r, "/aos.hub.v1.AssessmentService/ListEvents", list_assessment_events);
+    r = rpc_route!(r, "/aos.hub.v1.AssessmentService/ListSchedules", list_assessment_schedules);
+    r = rpc_route!(r, "/aos.hub.v1.AssessmentService/WriteSchedule", write_assessment_schedule);
+    r = rpc_route!(r, "/aos.hub.v1.AssessmentService/PlanWriteSchedule", plan_write_assessment_schedule);
+    r = rpc_route!(r, "/aos.hub.v1.AssessmentService/ListSubscriptions", list_assessment_subscriptions);
+    r = rpc_route!(r, "/aos.hub.v1.AssessmentService/ListNotificationDeliveries", list_assessment_notification_deliveries);
+    r = rpc_route!(r, "/aos.hub.v1.AssessmentService/GetAdvisory", get_assessment_advisory);
+    r = rpc_route!(r, "/aos.hub.v1.AssessmentService/WriteSubscription", write_assessment_subscription);
+    r = rpc_route!(r, "/aos.hub.v1.AssessmentService/PlanWriteSubscription", plan_write_assessment_subscription);
+    r = rpc_route!(r, "/aos.hub.v1.AssessmentService/ReviewNotificationDestination", review_assessment_notification_destination);
+    // ScanService
+    r = rpc_route!(r, "/aos.hub.v1.ScanService/RequestScan", request_package_scan);
+    r = rpc_route!(r, "/aos.hub.v1.ScanService/GetScan", get_package_scan);
+    r = rpc_route!(r, "/aos.hub.v1.ScanService/ListScans", list_package_scans);
+    r = rpc_route!(r, "/aos.hub.v1.ScanService/CancelScan", cancel_package_scan);
+    r = rpc_route!(r, "/aos.hub.v1.ScanService/RetryScan", retry_package_scan);
+
     // PackageService
     r = rpc_route!(r, "/aos.hub.v1.PackageService/ListPackages", list_packages);
     r = rpc_route!(r, "/aos.hub.v1.PackageService/GetPackage", get_package);

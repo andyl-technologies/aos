@@ -1306,7 +1306,7 @@ impl CheckFailure {
         if let Some(error) = lines().find(|line| line.starts_with("error:")) {
             return error.to_owned();
         }
-        if let Some(last) = lines().last() {
+        if let Some(last) = lines().next_back() {
             return last.to_owned();
         }
         match self.exit_code {

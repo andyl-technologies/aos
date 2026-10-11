@@ -24,8 +24,11 @@
 //!   stdin.
 
 mod artifact_consumption_fixture;
+mod exported_artifact_fixture;
+mod assessment_handoff_fixture;
 mod initrd_contract_fixture;
 mod native_deployment_fixture;
+mod package_assessment_fixture;
 
 use std::env;
 use std::fs::{self, File};
@@ -118,6 +121,7 @@ async fn main() -> Result<()> {
         Some("artifact-consumption-evidence") => {
             artifact_consumption_fixture::generate(&arguments[1..])
         }
+        Some("resolve-exported-artifact") => exported_artifact_fixture::resolve(&arguments[1..]),
         Some("initrd-contract") => initrd_contract_fixture::verify(&arguments[1..]),
         Some("image-assembly-contract") => {
             initrd_contract_fixture::verify_assembly(&arguments[1..])
@@ -131,6 +135,16 @@ async fn main() -> Result<()> {
         Some("review") => review(&arguments[1..]),
         Some("fitness") => fitness(&arguments[1..]),
         Some("maintainer-upstream-proxy") => maintainer_upstream_proxy(&arguments[1..]).await,
+        Some("assessment-input") => package_assessment_fixture::input(&arguments[1..]),
+        Some("assessment-handoff-inventory") => {
+            assessment_handoff_fixture::inventory(&arguments[1..])
+        }
+        Some("assessment-handoff-input") => assessment_handoff_fixture::input(&arguments[1..]),
+        Some("assessment-handoff-discovery") => {
+            assessment_handoff_fixture::discovery(&arguments[1..])
+        }
+        Some("assessment-verify") => package_assessment_fixture::verify(&arguments[1..]),
+        Some("assessment-lane-lock") => package_assessment_fixture::hold_lane(&arguments[1..]),
         None => qualification_executor().await,
         Some(command) => bail!("unknown release fleet fixture command: {command}"),
     }
@@ -636,6 +650,7 @@ fn release_plan(
             contributor_authorization_digest: digest("fleet-contributor-authorization"),
         },
         packages: vec![PackagePlan {
+            scan_declarations: Default::default(),
             platform_versions: Default::default(),
             name: "fleet-package".into(),
             publication: Some(PackagePublicationMetadata {

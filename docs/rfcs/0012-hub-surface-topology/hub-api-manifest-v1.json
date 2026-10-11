@@ -18,7 +18,8 @@
       "route",
       "operation",
       "image",
-      "container"
+      "container",
+      "assessment"
    ],
    "cli_nested_families" : {
       "org" : [ "audit", "domain", "identity", "identity-provider", "invitation", "member", "project", "service-account", "webhook" ],
@@ -3207,6 +3208,146 @@
          "request" : "DirectAbortBatch",
          "response" : "DirectUploadResponse",
          "service" : "DirectUploadService"
+      },
+      {
+         "method" : "GetPublicationStatus",
+         "path" : "aos.hub.v1.AssessmentService/GetPublicationStatus",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
+         "method" : "GetStatus",
+         "path" : "aos.hub.v1.AssessmentService/GetStatus",
+         "request" : "AssessmentStatusRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
+         "method" : "GetAssessment",
+         "path" : "aos.hub.v1.AssessmentService/GetAssessment",
+         "request" : "AssessmentObjectRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
+         "method" : "GetAdvisory",
+         "path" : "aos.hub.v1.AssessmentService/GetAdvisory",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
+         "method" : "ListAlerts",
+         "path" : "aos.hub.v1.AssessmentService/ListAlerts",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
+         "method" : "AcknowledgeAlert",
+         "path" : "aos.hub.v1.AssessmentService/AcknowledgeAlert",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
+         "method" : "ListEvents",
+         "path" : "aos.hub.v1.AssessmentService/ListEvents",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
+         "method" : "ListSchedules",
+         "path" : "aos.hub.v1.AssessmentService/ListSchedules",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
+         "method" : "PlanWriteSchedule",
+         "path" : "aos.hub.v1.AssessmentService/PlanWriteSchedule",
+         "request" : "PlanAssessmentReviewRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "AssessmentService"
+      },
+      {
+         "method" : "WriteSchedule",
+         "path" : "aos.hub.v1.AssessmentService/WriteSchedule",
+         "request" : "ApplyRegistryMutationRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
+         "method" : "ListSubscriptions",
+         "path" : "aos.hub.v1.AssessmentService/ListSubscriptions",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
+         "method" : "ListNotificationDeliveries",
+         "path" : "aos.hub.v1.AssessmentService/ListNotificationDeliveries",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
+         "method" : "PlanWriteSubscription",
+         "path" : "aos.hub.v1.AssessmentService/PlanWriteSubscription",
+         "request" : "PlanAssessmentReviewRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "AssessmentService"
+      },
+      {
+         "method" : "WriteSubscription",
+         "path" : "aos.hub.v1.AssessmentService/WriteSubscription",
+         "request" : "ApplyRegistryMutationRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
+         "method" : "ReviewNotificationDestination",
+         "path" : "aos.hub.v1.AssessmentService/ReviewNotificationDestination",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "AssessmentService"
+      },
+      {
+         "method" : "RequestScan",
+         "path" : "aos.hub.v1.ScanService/RequestScan",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "ScanService"
+      },
+      {
+         "method" : "GetScan",
+         "path" : "aos.hub.v1.ScanService/GetScan",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "ScanService"
+      },
+      {
+         "method" : "ListScans",
+         "path" : "aos.hub.v1.ScanService/ListScans",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "ScanService"
+      },
+      {
+         "method" : "CancelScan",
+         "path" : "aos.hub.v1.ScanService/CancelScan",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "ScanService"
+      },
+      {
+         "method" : "RetryScan",
+         "path" : "aos.hub.v1.ScanService/RetryScan",
+         "request" : "AssessmentControlRequest",
+         "response" : "AssessmentDocumentResponse",
+         "service" : "ScanService"
       }
    ],
    "mutation_protocol" : {
@@ -3230,7 +3371,7 @@
    },
    "protobuf_package" : "aos.hub.v1",
    "protobuf_source" : "crates/aos-proto/src/proto/aos/hub/v1/hub.proto",
-   "rpc_count" : 454,
+   "rpc_count" : 473,
    "services" : [
       "RegistryService",
       "OrganizationService",
@@ -3265,6 +3406,9 @@
       "RouteControllerService",
       "TopologyControllerService",
       "BinaryCacheUploadControllerService",
-      "DirectUploadService"
+      "DirectUploadService",
+      "AssessmentService",
+      "ScanService",
+      "StorageAuthorityService"
    ]
 }

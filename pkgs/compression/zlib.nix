@@ -24,6 +24,25 @@
     };
 
     components.main = {
+      security = {
+        # NVD's reviewed product is zlib:zlib; the older gnu:zlib CPE is deprecated.
+        # https://nvd.nist.gov/products/cpe/detail/c630f077-4afd-461c-a632-d1eb36f1b91e
+        identities = [
+          {
+            kind = "cpe";
+            part = "a";
+            vendor = "zlib";
+            product = "zlib";
+          }
+        ];
+        advisorySources = [{provider = "nvd";}];
+        versionScheme = "dotted-numeric";
+        dependencyCoverage = {
+          state = "unknown";
+          basis = "Source metadata does not establish the built runtime dependency closure.";
+        };
+      };
+
       current = {
         upstreamId = "v1.3.2";
         comparisonVersion = "1.3.2";
@@ -80,8 +99,24 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };

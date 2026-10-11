@@ -13,6 +13,55 @@ mod mirror;
 mod privacy;
 
 #[test]
+fn assessment_generation_preserves_sixteen_and_classifies_all_new_state() -> anyhow::Result<()> {
+    let historical = SnapshotClassifier::for_supported_generation(16)?;
+    let current = SnapshotClassifier::for_supported_generation(17)?;
+    assert_eq!(
+        historical.manifest().identity,
+        "aos-hub/canonical-serving/16"
+    );
+    assert_eq!(historical.manifest().migration_digests, digests()[..16]);
+    assert_eq!(
+        historical.manifest().classification_digest,
+        hex::encode(Sha256::digest(GENERATION16_CONTRACT.as_str()))
+    );
+    assert!(!historical.tables.contains_key("assessment_scans"));
+    assert_eq!(current.tables.len(), historical.tables.len() + 24);
+    assert_eq!(current.manifest().migration_digests, digests()[..17]);
+    let jobs = SnapshotClassifier::for_supported_generation(18)?;
+    assert_eq!(jobs.tables.len(), current.tables.len() + 1);
+    assert_eq!(jobs.manifest().migration_digests, digests());
+    assert_eq!(
+        jobs.tables["assessment_scan_authorities"]
+            .columns
+            .iter()
+            .find(|column| column.name == "authority_json")
+            .ok_or_else(|| anyhow::anyhow!("job provenance classification absent"))?
+            .rule,
+        "private_cell"
+    );
+    assert_eq!(
+        current.tables["assessment_scans"]
+            .columns
+            .iter()
+            .find(|column| column.name == "claim_token")
+            .ok_or_else(|| anyhow::anyhow!("claim-token classification absent"))?
+            .rule,
+        "secret"
+    );
+    assert_eq!(
+        current.tables["assessment_object_shards"]
+            .columns
+            .iter()
+            .find(|column| column.name == "canonical_bytes")
+            .ok_or_else(|| anyhow::anyhow!("object-shard classification absent"))?
+            .rule,
+        "private_cell"
+    );
+    Ok(())
+}
+
+#[test]
 fn historical_contract_keeps_exact_digests_and_refuses_mixed_generations() {
     let historical = SnapshotClassifier::for_supported_generation(3).unwrap();
     let generation4 = SnapshotClassifier::for_supported_generation(4).unwrap();
@@ -210,13 +259,13 @@ async fn contract_covers_the_actual_production_initializer() {
     let tables = sqlx::query("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .fetch_all(&pool).await.unwrap();
     let contracts = contract().unwrap();
-    assert_eq!(contracts.len(), 291);
+    assert_eq!(contracts.len(), 316);
     assert_eq!(
         contracts
             .values()
             .map(|table| table.columns.len())
             .sum::<usize>(),
-        2836
+        3068
     );
     assert_eq!(tables.len(), contracts.len());
 

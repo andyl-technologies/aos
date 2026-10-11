@@ -35,6 +35,40 @@ pub async fn aos_main() {
         color,
     );
     if let Commands::Maintain(args) = &cli.command {
+        if let Some(MaintainCommand::Report(command)) = &args.command
+            && command.assessment_digest.is_some()
+        {
+            let result = commands::maintain::run_assessment_report(&cli, args, command, &printer);
+            exit_with_result(result, &printer);
+        }
+        if let Some(MaintainCommand::Evidence(evidence)) = &args.command
+            && let Some(command) = &evidence.command
+        {
+            let result =
+                commands::maintain::run_local_assessment_evidence(&cli, args, command, &printer);
+            exit_with_result(result, &printer);
+        }
+        if let Some(MaintainCommand::Status(command)) = &args.command
+            && !command.profiles.is_empty()
+        {
+            let result = commands::maintain::run_local_status(&cli, args, command, &printer);
+            exit_with_result(result, &printer);
+        }
+        if let Some(MaintainCommand::Scans { command }) = &args.command {
+            let result = commands::maintain::run_local_scans(&cli, args, command, &printer).await;
+            exit_with_result(result, &printer);
+        }
+        if let Some(MaintainCommand::Advisory(command)) = &args.command {
+            let result = commands::maintain::run_advisory(&cli, args, command, &printer);
+            exit_with_result(result, &printer);
+        }
+        if let Some(MaintainCommand::Scan(command)) = &args.command {
+            if !command.profiles.is_empty() {
+                let result =
+                    commands::maintain::run_assessment(&cli, args, command, &printer).await;
+                exit_with_result(result, &printer);
+            }
+        }
         if let Some(MaintainCommand::Release { command }) = &args.command {
             let result = tokio::select! {
                 result = run_release(&cli, command, &printer) => result,
@@ -519,6 +553,12 @@ fn validate_runtime(command: &Commands, runtime: Option<&OsStr>) -> Result<()> {
 /// Maps an `anyhow::Error` to an appropriate exit code while printing a
 /// user-facing message.
 fn handle_error(printer: &Printer, err: anyhow::Error) -> i32 {
+    if err
+        .downcast_ref::<commands::assessment_policy::AssessmentPolicyFailure>()
+        .is_some()
+    {
+        return 20;
+    }
     // The compatibility report already contains the failure diagnostics. Keep
     // JSON stdout as one checked report instead of appending a second object.
     if err
@@ -543,6 +583,13 @@ fn handle_error(printer: &Printer, err: anyhow::Error) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assessment_policy_failure_has_a_distinct_exit_without_another_report() {
+        let printer = Printer::new(0, false, true);
+        let error = commands::assessment_policy::AssessmentPolicyFailure.into();
+        assert_eq!(handle_error(&printer, error), 20);
+    }
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("test command line should parse")

@@ -35,6 +35,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     inherit mkUpstream;
   };
   mkManualUpstream = import ./build-support/_manual-upstream.nix {
+    inherit lib;
     platform = stdenv.hostPlatform.system;
   };
   declarationPackages =
@@ -1370,7 +1371,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     src = aosWorkspaceVendorSource;
     name = "aos-workspace-vendor";
     sourceRoot = "source";
-    hash = "sha256-JQPO1UGGq7iPRxYNg2oGK2F7ZUbPEF7QYHuW6cEWjEs=";
+    hash = "sha256-9JQwL7mLDA2xp/0rQkbQ7XvLBrLAElmwBvo9regxc6A=";
   };
 
   # Auto-discover packages from subdirectories.
@@ -1807,6 +1808,55 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     units = builtins.sort (left: right: left.unitId < right.unitId) maintenanceUnits;
   };
 
+  assessmentSecurity = import ./build-support/_assessment-security.nix {inherit lib;};
+  declaredAssessmentUnits = builtins.filter (value: value != null) (builtins.map (
+      name: let
+        package = self.${name};
+      in
+        if builtins.isAttrs package && package ? passthru.aos.assessment
+        then package.passthru.aos.assessment
+        else null
+    )
+    packageNames);
+  assessmentUnitIndex =
+    builtins.foldl' (
+      units: declaration: let
+        unit = maintenanceUnitIndex.${declaration.unitId} or (throw "assessment declaration references an unknown maintenance unit");
+        existing = units.${declaration.unitId} or null;
+        componentNames = builtins.attrNames unit.components;
+        declaredNames = builtins.attrNames declaration.components;
+        normalized = builtins.mapAttrs (_: assessmentSecurity.normalize) declaration.components;
+      in
+        if
+          builtins.attrNames declaration
+          != ["components" "schema" "unitId"]
+          || declaration.schema != "aos.package-assessment-metadata/v1"
+          || componentNames != declaredNames
+        then throw "assessment declaration differs from its maintenance unit/component scope"
+        else if existing != null && existing != normalized
+        then throw "assessment unit '${declaration.unitId}' has conflicting member security declarations"
+        else units // {${declaration.unitId} = normalized;}
+    ) {}
+    declaredAssessmentUnits;
+  assessmentInventory = {
+    schema = "aos.package-assessment-inventory/v1";
+    inherit maintenanceInventory;
+    securityDeclarations =
+      builtins.map (unit: {
+        schema = "aos.package-assessment-metadata/v1";
+        inherit (unit) unitId;
+        components = assessmentUnitIndex.${unit.unitId} or (builtins.mapAttrs (_: _: assessmentSecurity.default) unit.components);
+      })
+      maintenanceInventory.units;
+  };
+  assessmentSourceBindings =
+    builtins.map (member: {
+      inherit member;
+      version = self.${member}.version;
+      platform = stdenv.hostPlatform.system;
+    })
+    packageNames;
+
   # All Linux QEMU variants enable compressed disk-image support when bzip2
   # is found. Retain that target library through runtime-reference scrubbing.
   mkQemuPackage = args: let
@@ -1820,7 +1870,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     {
       # --- Plumbing ---
       inherit mkDerivation fetchurl mkUpstream mkGithubUpstream mkManualUpstream lib packageNames allPackageNames;
-      inherit maintenanceInventory;
+      inherit maintenanceInventory assessmentInventory assessmentSourceBindings;
       inherit platformSupport targetPackageNamesFor targetPackagesFor;
       inherit mkAccacheEnvironment;
       inherit mkCargoPackage mkAosCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;

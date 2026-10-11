@@ -2,10 +2,18 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
-use aos_contract::{Sha256Digest, canonical};
+use aos_assessment_providers::upstream;
+use aos_assessment_providers::upstream::validate_github_repository;
+#[cfg(test)]
+use aos_assessment_providers::upstream::{
+    github_release_timestamp, github_release_url, normalized_github_tag,
+    repology_version_is_relevant,
+};
+use aos_contract::Sha256Digest;
+
 use aos_maintain::DISCOVERY_SNAPSHOT_V1;
 use aos_maintain::discovery::{
     AdvisoryFinding, AdvisoryKind, DiscoverySnapshotV1, ObservationCandidate, ObservationCoverage,
@@ -15,12 +23,11 @@ use aos_maintain::envelope::InventoryEnvelopeV1;
 use aos_maintain::inventory::{Component, DiscoveryProvider, VersionScheme};
 use futures_util::StreamExt as _;
 use reqwest::header::{ACCEPT, LINK, USER_AGENT};
-use serde_json::Value;
 use url::Url;
 
 use super::state::StateStore;
 
-const ADAPTER_VERSION: &str = "aos-maintain-providers/v1";
+const ADAPTER_VERSION: &str = aos_assessment_providers::UPSTREAM_ADAPTER_VERSION;
 const OBSERVATION_MAX_AGE_SECONDS: u64 = 24 * 60 * 60;
 const MAX_GITHUB_PAGES: u32 = 10;
 const MAX_REPOLOGY_FALLBACK_REQUESTS: usize = 1_000;
@@ -595,37 +602,7 @@ async fn github_releases(
         }
         let bytes = bounded_body(response).await?;
         append_page(&mut response_bytes, &bytes)?;
-        let value = canonical::parse_json(&bytes, "GitHub releases response")?;
-        let entries = value
-            .as_array()
-            .ok_or_else(|| anyhow::anyhow!("GitHub releases response is not an array"))?;
-        for entry in entries {
-            let raw_id = required_string(entry, "tag_name", "GitHub release")?;
-            if raw_id.len() > 512 {
-                bail!("GitHub release identity is oversized");
-            }
-            let Some(raw_version) = normalized_github_tag(&raw_id, tag_prefix) else {
-                continue;
-            };
-            candidates.push(ObservationCandidate {
-                raw_id: raw_id.clone(),
-                raw_version: raw_version.to_string(),
-                published_at_unix: github_release_timestamp(entry)?,
-                first_observed_at_unix: retrieved_at,
-                prerelease: entry
-                    .get("prerelease")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-                yanked: entry.get("draft").and_then(Value::as_bool).unwrap_or(false),
-                release_url: entry
-                    .get("html_url")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                status: None,
-                vulnerable: None,
-                licenses: Vec::new(),
-            });
-        }
+        candidates.extend(upstream::github_releases(&bytes, tag_prefix, retrieved_at)?);
         if candidates
             .iter()
             .any(|candidate| candidate.raw_id == current_identity)
@@ -689,55 +666,7 @@ async fn go_releases(
     }
 
     let bytes = bounded_body(response).await?;
-    let value = canonical::parse_json(&bytes, "Go release feed")?;
-    let entries = value
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("Go release feed is not an array"))?;
-    let mut candidates = Vec::new();
-    for entry in entries {
-        if !entry
-            .get("stable")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            continue;
-        }
-        let raw_id = required_string(entry, "version", "Go release")?;
-        let raw_version = raw_id
-            .strip_prefix("go")
-            .filter(|version| !version.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("Go release has an invalid version identity"))?;
-        if raw_id.len() > 512 || raw_version.len() > 256 {
-            bail!("Go release identity is oversized");
-        }
-        let source_filename = format!("{raw_id}.src.tar.gz");
-        let has_source = entry
-            .get("files")
-            .and_then(Value::as_array)
-            .is_some_and(|files| {
-                files.iter().any(|file| {
-                    file.get("kind").and_then(Value::as_str) == Some("source")
-                        && file.get("filename").and_then(Value::as_str)
-                            == Some(source_filename.as_str())
-                })
-            });
-        if !has_source {
-            continue;
-        }
-
-        candidates.push(ObservationCandidate {
-            raw_id: raw_id.clone(),
-            raw_version: raw_version.to_string(),
-            published_at_unix: None,
-            first_observed_at_unix: retrieved_at,
-            prerelease: false,
-            yanked: false,
-            release_url: Some(format!("https://go.dev/dl/#{raw_id}")),
-            status: None,
-            vulnerable: None,
-            licenses: Vec::new(),
-        });
-    }
+    let mut candidates = upstream::go_releases(&bytes, retrieved_at)?;
     record_provider_first_observed(store, "go-releases", "go", &mut candidates, retrieved_at)?;
     candidates.sort_by(|left, right| left.raw_id.cmp(&right.raw_id));
     if candidates
@@ -771,19 +700,6 @@ async fn go_releases(
     };
     observation.validate()?;
     Ok(observation)
-}
-
-fn github_release_timestamp(entry: &Value) -> Result<Option<u64>> {
-    let Some(timestamp) = entry.get("published_at").and_then(Value::as_str) else {
-        return Ok(None);
-    };
-    let system_time =
-        humantime::parse_rfc3339(timestamp).context("parsing GitHub release publication time")?;
-    let seconds = system_time
-        .duration_since(UNIX_EPOCH)
-        .context("GitHub release publication time predates the Unix epoch")?
-        .as_secs();
-    Ok(Some(seconds))
 }
 
 async fn github_tags(
@@ -831,31 +747,12 @@ async fn github_tags(
         }
         let bytes = bounded_body(response).await?;
         append_page(&mut response_bytes, &bytes)?;
-        let value = canonical::parse_json(&bytes, "GitHub tags response")?;
-        let entries = value
-            .as_array()
-            .ok_or_else(|| anyhow::anyhow!("GitHub tags response is not an array"))?;
-        for entry in entries {
-            let raw_id = required_string(entry, "name", "GitHub tag")?;
-            if raw_id.len() > 512 {
-                bail!("GitHub tag identity is oversized");
-            }
-            let Some(raw_version) = normalized_github_tag(&raw_id, tag_prefix) else {
-                continue;
-            };
-            candidates.push(ObservationCandidate {
-                raw_id: raw_id.clone(),
-                raw_version: raw_version.to_string(),
-                published_at_unix: None,
-                first_observed_at_unix: retrieved_at,
-                prerelease: false,
-                yanked: false,
-                release_url: github_release_url(repository, &raw_id).ok(),
-                status: None,
-                vulnerable: None,
-                licenses: Vec::new(),
-            });
-        }
+        candidates.extend(upstream::github_tags(
+            &bytes,
+            repository,
+            tag_prefix,
+            retrieved_at,
+        )?);
         if candidates
             .iter()
             .any(|candidate| candidate.raw_id == current_identity)
@@ -951,15 +848,6 @@ fn parse_github_api_base_url(configured: &str) -> Result<Url> {
     Ok(url)
 }
 
-fn normalized_github_tag<'a>(tag: &'a str, prefix: &str) -> Option<&'a str> {
-    if prefix.is_empty() {
-        Some(tag)
-    } else {
-        tag.strip_prefix(prefix)
-            .filter(|version| !version.is_empty())
-    }
-}
-
 fn read_optional_token(variable: &str) -> Result<Option<String>> {
     if variable.is_empty()
         || variable.len() > 128
@@ -1010,64 +898,7 @@ async fn repology(
         bail!("Repology returned HTTP {status}");
     }
     let bytes = bounded_body(response).await?;
-    let value = canonical::parse_json(&bytes, "Repology response")?;
-    let entries = value
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("Repology response is not an array"))?;
-    struct ParsedCandidate {
-        raw_id: String,
-        raw_version: String,
-        first_key: String,
-        yanked: bool,
-        status: Option<String>,
-        vulnerable: Option<bool>,
-        licenses: Vec<String>,
-    }
-
-    let mut parsed = Vec::new();
-    for (index, entry) in entries.iter().enumerate() {
-        let Some(version) = entry.get("version").and_then(Value::as_str) else {
-            continue;
-        };
-        let status = entry.get("status").and_then(Value::as_str);
-        if !repology_version_is_relevant(version, status, relevant_versions) {
-            continue;
-        }
-        let repository = entry
-            .get("repo")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        let original_version = entry
-            .get("origversion")
-            .and_then(Value::as_str)
-            .unwrap_or(version);
-        let raw_id = format!("{repository}:{original_version}:{index}");
-        let first_key = format!(
-            "repology:{}:{project}:{}:{repository}:{}:{original_version}",
-            project.len(),
-            repository.len(),
-            original_version.len()
-        );
-        let mut licenses = entry
-            .get("licenses")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        licenses.sort();
-        licenses.dedup();
-        parsed.push(ParsedCandidate {
-            raw_id,
-            raw_version: version.to_string(),
-            first_key,
-            yanked: matches!(status, Some("ignored" | "incorrect" | "untrusted")),
-            status: status.map(str::to_string),
-            vulnerable: entry.get("vulnerable").and_then(Value::as_bool),
-            licenses,
-        });
-    }
+    let parsed = upstream::repology(&bytes, project, relevant_versions)?;
     let first_keys = parsed
         .iter()
         .map(|candidate| candidate.first_key.clone())
@@ -1112,14 +943,6 @@ async fn repology(
     Ok(observation)
 }
 
-fn repology_version_is_relevant(
-    version: &str,
-    status: Option<&str>,
-    relevant_versions: &BTreeSet<String>,
-) -> bool {
-    status == Some("newest") || relevant_versions.contains(version)
-}
-
 async fn bounded_body(response: reqwest::Response) -> Result<Vec<u8>> {
     if response
         .content_length()
@@ -1148,43 +971,6 @@ fn append_page(output: &mut Vec<u8>, bytes: &[u8]) -> Result<()> {
     let length = u64::try_from(bytes.len()).context("provider page length does not fit u64")?;
     append_response(output, &length.to_be_bytes())?;
     append_response(output, bytes)
-}
-
-fn required_string(value: &Value, field: &str, label: &str) -> Result<String> {
-    value
-        .get(field)
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .ok_or_else(|| anyhow::anyhow!("{label} lacks string field {field}"))
-}
-
-fn validate_github_repository(repository: &str) -> Result<()> {
-    let mut parts = repository.split('/');
-    let owner = parts.next();
-    let name = parts.next();
-    if owner.is_none_or(|part| part.is_empty() || matches!(part, "." | ".."))
-        || name.is_none_or(|part| part.is_empty() || matches!(part, "." | ".."))
-        || parts.next().is_some()
-        || repository.bytes().any(|byte| {
-            !(byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/'))
-        })
-    {
-        bail!("GitHub repository must use safe owner/name syntax");
-    }
-    Ok(())
-}
-
-fn github_release_url(repository: &str, tag: &str) -> Result<String> {
-    let mut url = Url::parse("https://github.com/")?;
-    let mut path = url
-        .path_segments_mut()
-        .map_err(|()| anyhow::anyhow!("GitHub URL cannot accept path segments"))?;
-    for part in repository.split('/') {
-        path.push(part);
-    }
-    path.push("releases").push("tag").push(tag);
-    drop(path);
-    Ok(url.to_string())
 }
 
 fn observation_key(unit: &str, component: &str, role: &str) -> String {

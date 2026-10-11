@@ -1,0 +1,620 @@
+//! Shared source execution tests with exact byte custody and captured requests.
+
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::Mutex;
+
+use anyhow::{Context as _, Result};
+use aos_assessment::observation::{HttpValidators, ProviderCoverage};
+use aos_assessment::time::Timestamp;
+use aos_assessment_runtime::ports::{Clock, EvidenceStore};
+use aos_assessment_runtime::provider::*;
+use aos_contract::Sha256Digest;
+use serde_json::json;
+
+struct FixedClock;
+
+impl Clock for FixedClock {
+    fn now(&self) -> Result<Timestamp> {
+        super::now()
+    }
+}
+
+#[derive(Default)]
+struct Custody(Mutex<BTreeMap<(String, Sha256Digest), Vec<u8>>>);
+
+#[async_trait::async_trait]
+impl EvidenceStore for Custody {
+    async fn retain(&self, partition: &str, bytes: &[u8]) -> Result<Sha256Digest> {
+        let digest = Sha256Digest::of_bytes(bytes);
+        self.0
+            .lock()
+            .map_err(|_| anyhow::anyhow!("fixture custody lock"))?
+            .insert((partition.into(), digest), bytes.to_vec());
+        Ok(digest)
+    }
+
+    async fn read(&self, partition: &str, digest: Sha256Digest, max_bytes: u64) -> Result<Vec<u8>> {
+        let bytes = self
+            .0
+            .lock()
+            .map_err(|_| anyhow::anyhow!("fixture custody lock"))?
+            .get(&(partition.into(), digest))
+            .context("fixture evidence is unavailable")?
+            .clone();
+        anyhow::ensure!(bytes.len() as u64 <= max_bytes, "fixture custody size");
+        Ok(bytes)
+    }
+}
+
+struct Source {
+    responses: Mutex<VecDeque<SourceResponse>>,
+    requests: Mutex<Vec<SourceRequest>>,
+}
+
+struct RemainingBudgetSource {
+    first: Vec<u8>,
+    ceilings: Mutex<Vec<u64>>,
+}
+
+#[async_trait::async_trait]
+impl SourceTransport for RemainingBudgetSource {
+    async fn fetch(&self, plan: &ProviderWorkPlanV1, _: &SourceRequest) -> Result<SourceResponse> {
+        let mut ceilings = self
+            .ceilings
+            .lock()
+            .map_err(|_| anyhow::anyhow!("fixture ceiling lock"))?;
+        ceilings.push(plan.limits.response_bytes);
+        if ceilings.len() != 1 {
+            anyhow::bail!("fixture source became unavailable");
+        }
+        Ok(SourceResponse {
+            status: 200,
+            body: self.first.clone(),
+            transferred_bytes: self.first.len() as u64,
+            validators: None,
+            throttle: Default::default(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn source_reads_are_tightened_to_the_remaining_aggregate_budget_before_dispatch() -> Result<()>
+{
+    let mut plan = super::plan()?;
+    plan.operation = ProviderOperation::RetrieveAdvisories {
+        project: "fixture-query".into(),
+        ids: vec!["OSV-2026-1".into(), "OSV-2026-2".into()],
+    };
+    plan.adapter_version = plan.operation.adapter_version().into();
+    plan.budget_reservation.requests = 2;
+    plan.limits.requests = 2;
+    plan.limits.concurrency = 1;
+    let raw = br#"{"schema_version":"1.9.1","id":"OSV-2026-1","modified":"2026-10-09T01:00:00Z","affected":[{"package":{"ecosystem":"crates.io","name":"fixture"},"versions":["1.2.0"]}]}"#.to_vec();
+    let size = raw.len() as u64;
+    plan.limits.source_bytes = size + 8;
+    plan.limits.response_bytes = size + 8;
+    let source = RemainingBudgetSource {
+        first: raw,
+        ceilings: Mutex::new(vec![]),
+    };
+    let result = execute_source(
+        &source,
+        &Custody::default(),
+        &FixedClock,
+        &plan,
+        "fixture-build",
+        3600,
+    )
+    .await?;
+    assert_eq!(
+        *source
+            .ceilings
+            .lock()
+            .map_err(|_| anyhow::anyhow!("fixture ceiling lock"))?,
+        vec![size + 8, 8]
+    );
+    assert_eq!(result.outcome, WorkOutcome::Partial);
+    assert_eq!(result.usage.requests, 2);
+    assert_eq!(result.usage.decompressed_bytes, size);
+    assert_eq!(result.diagnostics, vec!["source-request-incomplete"]);
+    assert!(result.normalized_objects.iter().any(|projection| matches!(&projection.object, NormalizedObject::Advisory(record) if record.id == "OSV-2026-1")));
+    result.validate_for(&plan, &FixedClock.now()?)?;
+
+    assert_eq!(
+        aos_assessment_runtime::events::SourceFailureV1::from_result(&plan, &result)?
+            .context("partial source outage")?
+            .code,
+        aos_assessment_runtime::events::SourceFailureCode::SourceUnavailable
+    );
+    Ok(())
+}
+
+impl Source {
+    fn new(status: u16, body: Vec<u8>) -> Self {
+        Self {
+            responses: Mutex::new(VecDeque::from([SourceResponse {
+                status,
+                transferred_bytes: body.len() as u64,
+                body,
+                validators: None,
+                throttle: Default::default(),
+            }])),
+            requests: Mutex::new(vec![]),
+        }
+    }
+}
+
+#[tokio::test]
+async fn throttled_batches_stop_and_bind_cooldown_to_the_exact_failed_observation() -> Result<()> {
+    let mut plan = super::plan()?;
+    plan.operation = ProviderOperation::RetrieveAdvisories {
+        project: "fixture-query".into(),
+        ids: vec!["OSV-2026-1".into(), "OSV-2026-2".into()],
+    };
+    plan.adapter_version = plan.operation.adapter_version().into();
+    plan.budget_reservation.requests = 2;
+    plan.limits.requests = 2;
+    plan.limits.concurrency = 1;
+    let source = Source::new(429, b"rate limited".to_vec());
+    source.responses.lock().expect("fixture queue")[0]
+        .throttle
+        .retry_after = Some("7200".into());
+    let result = execute_source(
+        &source,
+        &Custody::default(),
+        &FixedClock,
+        &plan,
+        "fixture-build",
+        3600,
+    )
+    .await?;
+
+    assert_eq!(source.requests.lock().expect("fixture requests").len(), 1);
+    assert_eq!(result.usage.requests, 1);
+    assert_eq!(result.outcome, WorkOutcome::Failed);
+    let retry = result.retry.as_ref().expect("source cooldown");
+    assert_eq!(retry.status, 429);
+    assert_eq!(retry.source_digest, Sha256Digest::of_bytes("rate limited"));
+    assert_eq!(retry.not_before.elapsed_since(&retry.observed_at)?, 7200);
+    result.validate_for(&plan, &FixedClock.now()?)?;
+
+    let failure = aos_assessment_runtime::events::SourceFailureV1::from_result(&plan, &result)?
+        .context("rate limited source event facts")?;
+    assert_eq!(
+        failure.code,
+        aos_assessment_runtime::events::SourceFailureCode::RateLimited
+    );
+    assert_eq!(failure.status, Some(429));
+    assert_eq!(failure.retry_at.as_ref(), Some(&retry.not_before));
+    assert_eq!(
+        failure.receipt_digest,
+        Some(Sha256Digest::of_canonical(
+            "aos.provider-work-result/v1",
+            &result
+        )?)
+    );
+
+    let mut changed = result.clone();
+    changed
+        .retry
+        .as_mut()
+        .expect("source cooldown")
+        .source_digest = Sha256Digest::of_bytes("substituted response");
+    assert!(changed.validate_for(&plan, &FixedClock.now()?).is_err());
+    changed = result.clone();
+    changed.retry.as_mut().expect("source cooldown").status = 503;
+    assert!(changed.validate_for(&plan, &FixedClock.now()?).is_err());
+    changed = result.clone();
+    changed.normalized_objects.clear();
+    changed.observation_refs.clear();
+    assert!(changed.validate_for(&plan, &FixedClock.now()?).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn ordinary_denials_have_no_cooldown_and_explicit_github_throttling_does() -> Result<()> {
+    let mut plan = super::plan()?;
+    plan.operation = ProviderOperation::ObserveTags {
+        repository: "example/fixture".into(),
+        tag_prefix: "v".into(),
+        page: 1,
+    };
+    plan.adapter_version = plan.operation.adapter_version().into();
+    let source = Source::new(403, b"forbidden".to_vec());
+    let denied = execute_source(
+        &source,
+        &Custody::default(),
+        &FixedClock,
+        &plan,
+        "fixture-build",
+        3600,
+    )
+    .await?;
+    assert!(denied.retry.is_none());
+    assert_eq!(denied.diagnostics, ["source-http-403"]);
+    assert!(
+        aos_assessment_runtime::events::SourceFailureV1::from_result(&plan, &denied)?.is_none()
+    );
+
+    let source = Source::new(403, b"rate limited".to_vec());
+    source.responses.lock().expect("fixture queue")[0].throttle = SourceThrottleHeaders {
+        rate_limit_remaining: Some("0".into()),
+        rate_limit_reset: Some((FixedClock.now()?.unix_seconds() + 3600).to_string()),
+        ..Default::default()
+    };
+    let throttled = execute_source(
+        &source,
+        &Custody::default(),
+        &FixedClock,
+        &plan,
+        "fixture-build",
+        3600,
+    )
+    .await?;
+    assert_eq!(
+        throttled.diagnostics,
+        ["provider-rate-limited", "source-http-403"]
+    );
+    assert_eq!(
+        throttled
+            .retry
+            .as_ref()
+            .expect("explicit rate limit")
+            .not_before
+            .elapsed_since(&FixedClock.now()?)?,
+        3600
+    );
+    throttled.validate_for(&plan, &FixedClock.now()?)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn outage_after_a_valid_record_preserves_positive_evidence_and_stops_the_batch() -> Result<()>
+{
+    let mut plan = super::plan()?;
+    plan.operation = ProviderOperation::RetrieveAdvisories {
+        project: "fixture-query".into(),
+        ids: vec![
+            "OSV-2026-1".into(),
+            "OSV-2026-2".into(),
+            "OSV-2026-3".into(),
+        ],
+    };
+    plan.adapter_version = plan.operation.adapter_version().into();
+    plan.budget_reservation.requests = 3;
+    plan.limits.requests = 3;
+    plan.limits.concurrency = 1;
+    let source = Source::new(503, b"unavailable".to_vec());
+    let body = br#"{"schema_version":"1.9.1","id":"OSV-2026-1","modified":"2026-10-09T01:00:00Z","affected":[{"package":{"ecosystem":"crates.io","name":"fixture"},"versions":["1.2.0"]}]}"#.to_vec();
+    source
+        .responses
+        .lock()
+        .expect("fixture queue")
+        .push_front(SourceResponse {
+            status: 200,
+            transferred_bytes: body.len() as u64,
+            body,
+            validators: None,
+            throttle: Default::default(),
+        });
+
+    let result = execute_source(
+        &source,
+        &Custody::default(),
+        &FixedClock,
+        &plan,
+        "fixture-build",
+        3600,
+    )
+    .await?;
+    assert_eq!(source.requests.lock().expect("fixture requests").len(), 2);
+    assert_eq!(result.usage.requests, 2);
+    assert_eq!(result.outcome, WorkOutcome::Partial);
+    assert!(!result.coverage.is_complete());
+    assert_eq!(result.diagnostics, ["source-http-503"]);
+    assert!(result.normalized_objects.iter().any(|projection| matches!(
+        &projection.object, NormalizedObject::Advisory(record) if record.id == "OSV-2026-1"
+    )));
+    result.validate_for(&plan, &FixedClock.now()?)?;
+    let failure = aos_assessment_runtime::events::SourceFailureV1::from_result(&plan, &result)?
+        .context("partial source outage facts")?;
+    assert_eq!(
+        failure.code,
+        aos_assessment_runtime::events::SourceFailureCode::SourceUnavailable
+    );
+    assert!(failure.status.is_none() && failure.retry_at.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn source_retry_event_projects_only_validated_response_hints() -> Result<()> {
+    let plan = super::plan()?;
+    let source = Source::new(503, b"private source diagnostic".to_vec());
+    source.responses.lock().expect("fixture queue")[0]
+        .throttle
+        .retry_after = Some("120".into());
+    let result = execute_source(
+        &source,
+        &Custody::default(),
+        &FixedClock,
+        &plan,
+        "fixture-build",
+        3600,
+    )
+    .await?;
+    let failure = aos_assessment_runtime::events::SourceFailureV1::from_result(&plan, &result)?
+        .context("validated source retry facts")?;
+    assert_eq!(
+        failure.code,
+        aos_assessment_runtime::events::SourceFailureCode::RetryableResponse
+    );
+    assert_eq!(failure.status, Some(503));
+    assert_eq!(
+        failure
+            .retry_at
+            .as_ref()
+            .context("retry boundary")?
+            .elapsed_since(&FixedClock.now()?)?,
+        120
+    );
+    assert!(!serde_json::to_string(&failure)?.contains("private source diagnostic"));
+    Ok(())
+}
+
+#[async_trait::async_trait]
+impl SourceTransport for Source {
+    async fn fetch(
+        &self,
+        plan: &ProviderWorkPlanV1,
+        request: &SourceRequest,
+    ) -> Result<SourceResponse> {
+        assert!(plan.operation.source_requests()?.contains(request));
+        self.requests
+            .lock()
+            .map_err(|_| anyhow::anyhow!("fixture request lock"))?
+            .push(request.clone());
+        self.responses
+            .lock()
+            .map_err(|_| anyhow::anyhow!("fixture response lock"))?
+            .pop_front()
+            .context("unexpected fixture request")
+    }
+}
+
+#[tokio::test]
+async fn osv_ids_never_become_full_record_or_clean_coverage() -> Result<()> {
+    let plan = super::plan()?;
+    let raw =
+        br#"{"results":[{"vulns":[{"id":"CVE-2026-10001","modified":"2026-10-09T01:00:00Z"}]}]}"#
+            .to_vec();
+    let custody = Custody::default();
+    let result = execute_source(
+        &Source::new(200, raw.clone()),
+        &custody,
+        &FixedClock,
+        &plan,
+        "fixture-build",
+        3600,
+    )
+    .await?;
+    assert_eq!(result.outcome, WorkOutcome::Partial);
+    assert!(
+        matches!(result.coverage, ProviderCoverage::Partial { ref reason, continuation: None } if reason == "osv-full-records-required")
+    );
+    assert!(
+        !result
+            .normalized_objects
+            .iter()
+            .any(|object| matches!(object.object, NormalizedObject::Advisory(_)))
+    );
+    let page = result
+        .normalized_objects
+        .iter()
+        .find_map(|object| match &object.object {
+            NormalizedObject::Page(page) => Some(page),
+            _ => None,
+        })
+        .context("query page")?;
+    assert_eq!(page.records[0].id, "CVE-2026-10001");
+    assert_eq!(page.source_digest, Sha256Digest::of_bytes(&raw));
+    assert_eq!(
+        custody
+            .read(&plan.authorization_partition, page.source_digest, 1024)
+            .await?,
+        raw
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn github_prefix_filtering_cannot_hide_remaining_pages() -> Result<()> {
+    let mut plan = super::plan()?;
+    plan.operation = ProviderOperation::ObserveTags {
+        repository: "example/fixture".into(),
+        tag_prefix: "component-".into(),
+        page: 1,
+    };
+    plan.adapter_version = plan.operation.adapter_version().into();
+    let raw = serde_json::to_vec(
+        &(0..20)
+            .map(|index| json!({"name":format!("unrelated-{index}")}))
+            .collect::<Vec<_>>(),
+    )?;
+    let result = execute_source(
+        &Source::new(200, raw),
+        &Custody::default(),
+        &FixedClock,
+        &plan,
+        "fixture-build",
+        3600,
+    )
+    .await?;
+    assert_eq!(result.outcome, WorkOutcome::Partial);
+    let anchor = result.continuation.context("retained continuation")?;
+    let page = result
+        .normalized_objects
+        .iter()
+        .find_map(|object| match &object.object {
+            NormalizedObject::Page(page) if object.digest == anchor => Some(page),
+            _ => None,
+        })
+        .context("continuation page")?;
+    assert!(matches!(
+        page.next,
+        Some(ProviderOperation::ObserveTags { page: 2, .. })
+    ));
+    assert!(result.normalized_objects.iter().any(|object| matches!(&object.object, NormalizedObject::Upstream(upstream) if upstream.candidates.is_empty())));
+    Ok(())
+}
+
+#[tokio::test]
+async fn source_failure_is_unknown_with_sanitized_diagnostics_and_retained_custody() -> Result<()> {
+    let plan = super::plan()?;
+    let raw = b"private diagnostic body never becomes output".to_vec();
+    let custody = Custody::default();
+    let result = execute_source(
+        &Source::new(429, raw.clone()),
+        &custody,
+        &FixedClock,
+        &plan,
+        "fixture-build",
+        3600,
+    )
+    .await?;
+    assert_eq!(result.outcome, WorkOutcome::Failed);
+    assert_eq!(result.diagnostics, ["source-http-429"]);
+    assert!(matches!(result.coverage, ProviderCoverage::Unknown { .. }));
+    assert!(!String::from_utf8(serde_json::to_vec(&result)?)?.contains("private diagnostic"));
+    assert_eq!(
+        custody
+            .read(
+                &plan.authorization_partition,
+                Sha256Digest::of_bytes(&raw),
+                1024
+            )
+            .await?,
+        raw
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn per_response_overflow_is_rejected_before_retaining_bytes() -> Result<()> {
+    let mut plan = super::plan()?;
+    plan.limits.response_bytes = 8;
+    let custody = Custody::default();
+    assert!(
+        execute_source(
+            &Source::new(200, vec![0; 9]),
+            &custody,
+            &FixedClock,
+            &plan,
+            "fixture-build",
+            3600
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        custody
+            .0
+            .lock()
+            .map_err(|_| anyhow::anyhow!("fixture custody lock"))?
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn conditional_upstream_revalidation_reparses_original_bytes_and_preserves_original_time()
+-> Result<()> {
+    let mut plan = super::plan()?;
+    plan.operation = ProviderOperation::ObserveTags {
+        repository: "example/fixture".into(),
+        tag_prefix: "v".into(),
+        page: 1,
+    };
+    plan.adapter_version = plan.operation.adapter_version().into();
+    let raw = br#"[{"name":"v1.3.0"}]"#.to_vec();
+    let custody = Custody::default();
+    let first = execute_source(
+        &Source::new(200, raw),
+        &custody,
+        &FixedClock,
+        &plan,
+        "fixture-build",
+        3600,
+    )
+    .await?;
+    let mut observation = first
+        .normalized_objects
+        .iter()
+        .find_map(|object| match &object.object {
+            NormalizedObject::Observation(observation) => Some(observation.clone()),
+            _ => None,
+        })
+        .context("prior observation")?;
+    observation.retrieved_at = Timestamp::from_unix_seconds(super::now()?.unix_seconds() - 120)?;
+    observation.validated_at = Timestamp::from_unix_seconds(super::now()?.unix_seconds() - 60)?;
+    let validators = HttpValidators {
+        etag: Some("fixture-exact-etag".into()),
+        last_modified: None,
+    };
+    observation.validators = Some(validators.clone());
+    plan.cache_ref = Some(CachedResponse {
+        evidence: observation.source_refs[0].clone(),
+        validators,
+        observation_digest: observation.digest()?,
+        observation: observation.clone(),
+    });
+    let result = execute_source(
+        &Source::new(304, vec![]),
+        &custody,
+        &FixedClock,
+        &plan,
+        "fixture-build",
+        3600,
+    )
+    .await?;
+    assert_eq!(result.outcome, WorkOutcome::NotModified);
+    assert!(result.normalized_objects.iter().any(|object| matches!(&object.object, NormalizedObject::Upstream(upstream) if upstream.retrieved_at_unix == observation.retrieved_at.unix_seconds() && upstream.response_digest == observation.response_digest)));
+    assert!(
+        execute_source(
+            &Source::new(304, vec![]),
+            &Custody::default(),
+            &FixedClock,
+            &plan,
+            "fixture-build",
+            3600
+        )
+        .await
+        .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn full_osv_retrieval_cannot_substitute_another_admitted_batch_id() -> Result<()> {
+    let mut plan = super::plan()?;
+    plan.operation = ProviderOperation::RetrieveAdvisories {
+        project: "fixture-query".into(),
+        ids: vec!["CVE-2026-10001".into(), "CVE-2026-10002".into()],
+    };
+    plan.adapter_version = plan.operation.adapter_version().into();
+    let raw = serde_json::to_vec(
+        &json!({"id":"CVE-2026-10002", "modified":"2026-10-09T01:00:00Z", "affected":[]}),
+    )?;
+    assert!(
+        execute_source(
+            &Source::new(200, raw),
+            &Custody::default(),
+            &FixedClock,
+            &plan,
+            "fixture-build",
+            3600
+        )
+        .await
+        .is_err()
+    );
+    Ok(())
+}

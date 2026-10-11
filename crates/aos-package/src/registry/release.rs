@@ -243,6 +243,9 @@ const DIGEST_DOMAIN: &[u8] = b"aos.registry-release-surface/v1\0";
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegistryReleaseEntry {
+    /// Exact frozen scan declaration for the primary published output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan: Option<aos_assessment::metadata::PackageScanPublicationV1>,
     /// Stable entry id from the enclosing release plan.
     pub id: String,
     /// Registry package name.
@@ -487,7 +490,11 @@ impl RegistryEntryAuthor for CanonicalRegistryEntryAuthor<'_> {
             &self.store,
             self.printer,
         )
-        .await
+        .await?;
+        if let Some(declaration) = &entry.scan {
+            crate::registry_ops::publish_scan_declaration(isolated_registry, declaration)?;
+        }
+        Ok(())
     }
 }
 
@@ -1261,6 +1268,16 @@ fn validate_release_identity_and_entries(
     let mut primary_outputs = BTreeMap::new();
     let mut previous_id: Option<&str> = None;
     for entry in entries {
+        if let Some(declaration) = &entry.scan {
+            declaration.to_json()?;
+            if entry.output != "out"
+                || declaration.package_name != entry.name
+                || declaration.version != entry.version
+                || declaration.platform != entry.platform
+            {
+                bail!("registry release scan declaration differs from its exact primary output");
+            }
+        }
         if entry.id.is_empty() || !entry.id.bytes().all(is_identifier_byte) {
             bail!("invalid registry release entry id '{}'", entry.id);
         }
@@ -1825,6 +1842,15 @@ fn validate_materialized_entries(directory: &Path, entries: &[RegistryReleaseEnt
             .platforms
             .get(&entry.platform)
             .with_context(|| format!("prepared registry is missing exact entry '{}'", entry.id))?;
+        if let Some(expected) = &entry.scan {
+            let actual = platform.scan_declaration(&entry.name, &entry.version, &entry.platform)?;
+            if actual.as_ref() != Some(expected) {
+                bail!(
+                    "prepared registry scan policy differs from frozen entry '{}'",
+                    entry.id
+                );
+            }
+        }
         let actual = if entry.output == "out" {
             Some(&platform.store_path)
         } else {
@@ -2254,6 +2280,7 @@ mod tests {
 
     fn transaction(base_commit: String) -> RegistryReleaseTransaction {
         let entry = |id: &str, name: &str| RegistryReleaseEntry {
+            scan: None,
             id: id.to_string(),
             name: name.to_string(),
             version: "1.0.0".to_string(),
@@ -2293,6 +2320,7 @@ mod tests {
             plan_digest: empty_digest.clone(),
             entries: vec![
                 RegistryReleaseEntry {
+                    scan: None,
                     id: "alpha-0-out@x86_64-linux".to_string(),
                     name: "alpha".to_string(),
                     version: "1.0.0".to_string(),
@@ -2302,6 +2330,7 @@ mod tests {
                         .to_string(),
                 },
                 RegistryReleaseEntry {
+                    scan: None,
                     id: "alpha-1-debug@x86_64-linux".to_string(),
                     name: "alpha".to_string(),
                     version: "1.0.0".to_string(),
@@ -2708,6 +2737,7 @@ mod tests {
         let mut transaction = transaction(base.clone());
         transaction.entries = vec![
             RegistryReleaseEntry {
+                scan: None,
                 id: "package/alpha/x86_64-linux/dev".to_string(),
                 name: "alpha".to_string(),
                 version: "1.0.0".to_string(),
@@ -2717,6 +2747,7 @@ mod tests {
                     .to_string(),
             },
             RegistryReleaseEntry {
+                scan: None,
                 id: "package/alpha/x86_64-linux/out".to_string(),
                 name: "alpha".to_string(),
                 version: "1.0.0".to_string(),

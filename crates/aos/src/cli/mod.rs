@@ -15,6 +15,8 @@
 //! same names.
 
 mod ability;
+mod assessment;
+mod assessment_selection;
 mod build;
 mod cache;
 mod container;
@@ -33,6 +35,8 @@ mod test;
 mod vm;
 
 pub use ability::*;
+pub use assessment::*;
+pub use assessment_selection::*;
 pub use cache::*;
 pub use container::*;
 pub use hub::*;

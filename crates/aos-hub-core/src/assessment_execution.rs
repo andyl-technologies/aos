@@ -1,0 +1,601 @@
+//! Database-backed execution of shared package assessment acquisition and evaluation.
+//!
+//! Native and Worker hosts supply current authority, scoped evidence custody and
+//! provider transport. Hybrid supplies a Worker transport while keeping this
+//! coordinator and the durable journal on Native. Placement never substitutes a
+//! different parser or matching engine, and no raw source body enters SQL.
+
+use anyhow::{bail, Context as _, Result};
+use aos_assessment::input::{FreshnessMode, ScanInputV1};
+use aos_assessment::result::PackageAssessmentV1;
+use aos_assessment_runtime::acquisition::{
+    acquire, acquire_stale, AcquisitionPaused, AcquisitionPort,
+};
+use aos_assessment_runtime::ports::{EvidenceStore, ProviderTransport, RuntimeBounds};
+use aos_assessment_runtime::provider::{
+    CapabilityChallenge, ProviderLimits, ProviderOperation, ProviderPageV1, ProviderWorkPlanV1,
+    ProviderWorkResultV1, PROVIDER_WORK_PLAN_V1,
+};
+use aos_assessment_runtime::scan::TaskClaim;
+
+use crate::db::{AssessmentProviderWork, AssessmentScanRecord, Database};
+
+mod authority;
+mod controller;
+mod custody;
+mod notifications;
+mod routes;
+
+pub use authority::DatabaseAssessmentAuthority;
+pub use controller::{
+    run_assessment_controller_pass, AssessmentControllerPass, AssessmentControllerPorts,
+};
+pub use custody::CoordinatorEvidenceStore;
+pub use notifications::{
+    confirm_assessment_notification_effect, run_assessment_notification_pass,
+    AssessmentNotificationExecutor, AssessmentNotificationPass,
+};
+pub use routes::InstalledAssessmentRoutes;
+
+/// Rechecks a durable operation's current actor and authorization generation.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+pub trait AssessmentAuthority: RuntimeBounds {
+    /// Returns the exclusive independently admitted execution-authority deadline.
+    ///
+    /// # Errors
+    /// Returns an error for absent, expired or conflicting job provenance.
+    async fn source_deadline(
+        &self,
+        scan: &AssessmentScanRecord,
+    ) -> Result<aos_assessment::time::Timestamp>;
+
+    /// Prepares current authority guards for atomic quota and evidence effects.
+    ///
+    /// Production hosts include current IAM and exact private job provenance.
+    /// The returned guards are rechecked by SQL in the effect transaction.
+    ///
+    /// # Errors
+    /// Returns an error for revoked authority or an excessive lock scope.
+    async fn current_fences(
+        &self,
+        scan: &AssessmentScanRecord,
+    ) -> Result<Vec<crate::backend::CheckedStatement>>;
+
+    /// Holds current authority through a full physical invocation deadline.
+    ///
+    /// Production adapters atomically require enough remaining source authority
+    /// for the reservation. Pure trusted test adapters may reuse their fences.
+    ///
+    /// # Errors
+    /// Returns an error for current authority failure or insufficient deadline.
+    async fn source_fences(
+        &self,
+        scan: &AssessmentScanRecord,
+        _deadline: &aos_assessment::time::Timestamp,
+    ) -> Result<Vec<crate::backend::CheckedStatement>> {
+        self.current_fences(scan).await
+    }
+
+    /// Requires the current principal, delegated scan scope and resource revision.
+    ///
+    /// Hosts recheck current membership, token/job delegation and the exact
+    /// registry incarnation. Final admission additionally holds the current
+    /// granting authority in the same checked transaction as profile heads.
+    ///
+    /// # Errors
+    /// Returns an error for revoked or unavailable authority or a changed scope.
+    async fn require_current(&self, scan: &AssessmentScanRecord) -> Result<()>;
+
+    /// Commits only while current granting authority remains transactionally held.
+    ///
+    /// Production hosts include current principal, credential and membership
+    /// locks and eligibility checks in `commit_assessment_evaluation_fenced`.
+    /// A prior asynchronous permission check alone cannot authorize this effect.
+    ///
+    /// # Errors
+    /// Returns an error for revoked authority, a lost operation fence or failed
+    /// deterministic result admission.
+    async fn commit_current(
+        &self,
+        db: &Database,
+        scan: &AssessmentScanRecord,
+        claim: &TaskClaim,
+        assessment: &PackageAssessmentV1,
+    ) -> Result<()>;
+}
+
+/// Supplies an installed provider route under independent current source authority.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+pub trait AssessmentSourceRoutes: RuntimeBounds {
+    /// Resolves the exact installed executor, credential version and global quota.
+    ///
+    /// Package metadata cannot choose a URL, executor, secret or quota key.
+    /// Hybrid implementations return their paired Worker and never fall back
+    /// to direct Native acquisition when that executor is unavailable.
+    ///
+    /// # Errors
+    /// Returns an error for missing/revoked routes or source credential authority.
+    async fn route(
+        &self,
+        scan: &AssessmentScanRecord,
+        operation: &ProviderOperation,
+    ) -> Result<AssessmentSourceRoute>;
+}
+
+/// Binds one installed source to its coordinator/executor authentication domain.
+#[derive(Clone, Debug)]
+pub struct AssessmentSourceRoute {
+    /// Installed deployment incarnation.
+    pub deployment_id: String,
+    /// Installed coordinator service identity.
+    pub issuer: String,
+    /// Independently paired provider executor identity.
+    pub audience: String,
+    /// Installed global provider/account budget key.
+    pub budget_key: String,
+    /// Optional immutable scoped secret version reference, never secret bytes.
+    pub credential_ref: Option<String>,
+    /// Exclusive installed source authority deadline, including credential grants.
+    pub expires_at: aos_assessment::time::Timestamp,
+    /// Effective provider effect ceilings, tightened by deployment policy.
+    pub limits: ProviderLimits,
+}
+
+/// Claims and executes an admitted request through the shared acquisition engine.
+///
+/// Reads without refresh intent perform no network acquisition. Every physical
+/// task consumes SQL quota before dispatch; failed attempts settle without a
+/// refund. The evaluator freezes one exact closure and commits through the
+/// inventory, policy, authorization, generation, attempt and cancellation fences.
+///
+/// # Errors
+/// Returns an error for unavailable/revoked authority, stale claims, provider
+/// admission failure, custody gaps or failed deterministic/final admission checks.
+pub async fn run_scan<A, T, E, R>(
+    db: &Database,
+    registry_id: i64,
+    scan_id: &str,
+    authority: &A,
+    transport: &T,
+    evidence: &E,
+    routes: &R,
+) -> Result<PackageAssessmentV1>
+where
+    A: AssessmentAuthority,
+    T: ProviderTransport,
+    E: EvidenceStore,
+    R: AssessmentSourceRoutes,
+{
+    let scan = db
+        .assessment_scan(registry_id, scan_id)
+        .await?
+        .context("assessment scan is absent")?;
+    authority.require_current(&scan).await?;
+    let claim = db.claim_assessment_scan(registry_id, scan_id, 900).await?;
+    if let Some((input, data)) = db
+        .assessment_evaluation_checkpoint(registry_id, &claim)
+        .await?
+    {
+        authority.require_current(&scan).await?;
+        let result = aos_assessment::evaluator::evaluate(&input, &data)?;
+        authority.require_current(&scan).await?;
+        authority.commit_current(db, &scan, &claim, &result).await?;
+        return Ok(result);
+    }
+    let port = DatabaseAcquisition {
+        db,
+        scan: &scan,
+        claim: std::sync::Mutex::new(claim.clone()),
+        quantum: std::sync::Mutex::new((0, None)),
+        authority,
+        transport,
+        routes,
+    };
+    let mut data = db.assessment_evaluation_base(registry_id, &claim).await?;
+    if matches!(
+        scan.request.freshness,
+        FreshnessMode::Refresh | FreshnessMode::RefreshStale
+    ) {
+        // Each selected source question is independently admitted. Host caches
+        // may provide conditional custody through their issued route/profile;
+        // an explicit refresh never bypasses source or operation allowance.
+        let acquisition = if scan.request.freshness == FreshnessMode::RefreshStale {
+            acquire_stale(
+                &port,
+                evidence,
+                &scan.request.authorization_partition,
+                &mut data,
+                &scan.request.subjects,
+                &scan.request.profiles,
+                &db.assessment_database_time().await?,
+            )
+            .await
+        } else {
+            acquire(
+                &port,
+                evidence,
+                &scan.request.authorization_partition,
+                &mut data,
+                &scan.request.subjects,
+                &scan.request.profiles,
+            )
+            .await
+        };
+        if let Err(error) = acquisition {
+            if error.is::<AcquisitionPaused>() {
+                db.pause_assessment_scan_fenced(
+                    registry_id,
+                    &port.current_claim()?,
+                    &authority.current_fences(&scan).await?,
+                )
+                .await?;
+            }
+            return Err(error);
+        }
+    }
+    restore_candidate_history(db, &scan, &mut data).await?;
+    let claim = port.current_claim()?;
+    authority.require_current(&scan).await?;
+    let input = db
+        .freeze_assessment_evaluation(registry_id, &claim, &data)
+        .await?;
+    let result = aos_assessment::evaluator::evaluate(&input, &data)?;
+    authority.require_current(&scan).await?;
+    authority.commit_current(db, &scan, &claim, &result).await?;
+    Ok(result)
+}
+
+async fn restore_candidate_history(
+    db: &Database,
+    scan: &AssessmentScanRecord,
+    data: &mut aos_assessment::input::EvaluationData,
+) -> Result<()> {
+    let mut history = data
+        .history
+        .iter()
+        .map(|entry| {
+            (
+                (
+                    entry.provider.clone(),
+                    entry.project.clone(),
+                    entry.raw_id.clone(),
+                ),
+                entry.first_observed_at.clone(),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for binding in &mut data.upstream {
+        let observation = &mut binding.observation;
+        let ids = observation
+            .candidates
+            .iter()
+            .map(|candidate| candidate.raw_id.clone())
+            .collect::<Vec<_>>();
+        for entry in db
+            .assessment_candidate_history(
+                &scan.request.authorization_partition,
+                &observation.provider,
+                &observation.project,
+                &ids,
+            )
+            .await?
+        {
+            history.insert(
+                (entry.provider, entry.project, entry.raw_id),
+                entry.first_observed_at,
+            );
+        }
+        for candidate in &mut observation.candidates {
+            if let Some(first) = history.get(&(
+                observation.provider.clone(),
+                observation.project.clone(),
+                candidate.raw_id.clone(),
+            )) {
+                candidate.first_observed_at_unix = first.unix_seconds();
+            }
+        }
+    }
+    data.history = history
+        .into_iter()
+        .map(|((provider, project, raw_id), first_observed_at)| {
+            aos_assessment::input::CandidateHistory {
+                provider,
+                project,
+                raw_id,
+                first_observed_at,
+            }
+        })
+        .collect();
+    Ok(())
+}
+
+struct DatabaseAcquisition<'a, A, T, R> {
+    db: &'a Database,
+    scan: &'a AssessmentScanRecord,
+    claim: std::sync::Mutex<TaskClaim>,
+    // Cached replay does not consume a physical quantum. Start its deadline
+    // at the frontier so a growing retained prefix cannot starve new work.
+    quantum: std::sync::Mutex<(u32, Option<u64>)>,
+    authority: &'a A,
+    transport: &'a T,
+    routes: &'a R,
+}
+
+impl<A, T, R> DatabaseAcquisition<'_, A, T, R> {
+    fn current_claim(&self) -> Result<TaskClaim> {
+        self.claim
+            .lock()
+            .map(|claim| claim.clone())
+            .map_err(|_| anyhow::anyhow!("assessment claim lock is poisoned"))
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl<A: AssessmentAuthority, T: ProviderTransport, R: AssessmentSourceRoutes> AcquisitionPort
+    for DatabaseAcquisition<'_, A, T, R>
+{
+    async fn acquisition_checkpoint(
+        &self,
+    ) -> Result<Option<aos_assessment_runtime::acquisition::AcquisitionCheckpointV1>> {
+        self.authority.require_current(self.scan).await?;
+        self.db
+            .assessment_acquisition_checkpoint(self.scan.registry_id, &self.current_claim()?)
+            .await
+    }
+
+    async fn save_acquisition_checkpoint(
+        &self,
+        checkpoint: &aos_assessment_runtime::acquisition::AcquisitionCheckpointV1,
+    ) -> Result<()> {
+        self.db
+            .save_assessment_acquisition_checkpoint_fenced(
+                self.scan.registry_id,
+                &self.current_claim()?,
+                checkpoint,
+                &self.authority.current_fences(self.scan).await?,
+            )
+            .await
+    }
+
+    async fn invoke(
+        &self,
+        operation: &ProviderOperation,
+        previous: Option<&ProviderPageV1>,
+    ) -> Result<ProviderWorkResultV1> {
+        let outcome = self.invoke_question(operation, previous).await;
+        if outcome
+            .as_ref()
+            .is_err_and(|error| !error.is::<AcquisitionPaused>())
+        {
+            self.db
+                .refuse_assessment_provider_question_fenced(
+                    self.scan.registry_id,
+                    &self.current_claim()?,
+                    operation,
+                    &self.authority.current_fences(self.scan).await?,
+                )
+                .await?;
+        }
+        outcome
+    }
+}
+
+impl<A: AssessmentAuthority, T: ProviderTransport, R: AssessmentSourceRoutes>
+    DatabaseAcquisition<'_, A, T, R>
+{
+    async fn invoke_question(
+        &self,
+        operation: &ProviderOperation,
+        previous: Option<&ProviderPageV1>,
+    ) -> Result<ProviderWorkResultV1> {
+        self.authority.require_current(self.scan).await?;
+        let mut claim = self.current_claim()?;
+        self.db
+            .check_assessment_scan_claim(self.scan.registry_id, &claim)
+            .await?;
+        let now = self.db.assessment_database_time().await?;
+        let source_deadline = self.authority.source_deadline(self.scan).await?;
+        if claim
+            .expires_at
+            .unix_seconds()
+            .saturating_sub(now.unix_seconds())
+            < 120
+        {
+            claim = self
+                .db
+                .renew_assessment_scan_fenced(
+                    self.scan.registry_id,
+                    &claim,
+                    900,
+                    &source_deadline,
+                    &self.authority.current_fences(self.scan).await?,
+                )
+                .await?;
+            *self
+                .claim
+                .lock()
+                .map_err(|_| anyhow::anyhow!("assessment claim lock is poisoned"))? = claim.clone();
+        }
+        if let Some(replay) = self
+            .db
+            .assessment_provider_replay(self.scan.registry_id, &claim, operation, previous)
+            .await?
+        {
+            return match replay {
+                crate::db::AssessmentProviderReplay::Admitted(result) => Ok(*result),
+                crate::db::AssessmentProviderReplay::Failed => {
+                    bail!("source question previously settled without complete evidence")
+                }
+            };
+        }
+        {
+            let mut quantum = self
+                .quantum
+                .lock()
+                .map_err(|_| anyhow::anyhow!("assessment quantum lock is poisoned"))?;
+            if quantum.0 >= 16
+                || quantum
+                    .1
+                    .is_some_and(|started| now.unix_seconds().saturating_sub(started) >= 20)
+            {
+                return Err(AcquisitionPaused.into());
+            }
+            quantum.0 += 1;
+            quantum.1.get_or_insert(now.unix_seconds());
+        }
+        if now
+            .unix_seconds()
+            .checked_add(60)
+            .is_none_or(|deadline| deadline > source_deadline.unix_seconds())
+        {
+            bail!("assessment source authority cannot cover another physical invocation");
+        }
+        if now.elapsed_since(&self.scan.created_at)?
+            >= u64::from(self.scan.request.limits.wall_seconds)
+        {
+            bail!("assessment operation wall time is exhausted");
+        }
+        let route = self.routes.route(self.scan, operation).await?;
+        let source_deadline = source_deadline.min(route.expires_at.clone());
+        let requests = operation.source_requests()?.len() as u32;
+        if requests > route.limits.requests {
+            bail!("provider operation exceeds the installed route request allowance");
+        }
+        let challenge = CapabilityChallenge {
+            schema: "aos.provider-capability-challenge/v1".into(),
+            deployment_id: route.deployment_id.clone(),
+            issuer: route.issuer.clone(),
+            audience: route.audience.clone(),
+            nonce: uuid::Uuid::new_v4().simple().to_string(),
+            issued_at: now.clone(),
+            expires_at: aos_assessment::time::Timestamp::from_unix_seconds(
+                now.unix_seconds() + 60,
+            )?,
+        };
+        let capabilities = self.transport.capabilities(&challenge).await?;
+        capabilities.validate_for(&challenge, &self.db.assessment_database_time().await?)?;
+        capabilities.require(operation)?;
+        let now = self.db.assessment_database_time().await?;
+        if now.unix_seconds().checked_add(60).is_none_or(|deadline| {
+            deadline > source_deadline.unix_seconds() || deadline > route.expires_at.unix_seconds()
+        }) {
+            bail!("source authority cannot cover the physical work deadline");
+        }
+        let limits = ProviderLimits {
+            requests,
+            concurrency: route.limits.concurrency.min(requests),
+            ..route.limits
+        };
+        limits.require_within(&capabilities.limits)?;
+        let cache_ref = self
+            .db
+            .assessment_conditional_response(
+                &self.scan.request.authorization_partition,
+                operation,
+                &now,
+                limits.response_bytes,
+            )
+            .await?;
+        self.authority.require_current(self.scan).await?;
+        let reservation = self
+            .db
+            .reserve_assessment_provider_work_fenced(
+                self.scan.registry_id,
+                &claim,
+                &AssessmentProviderWork {
+                    task_id: operation.digest()?.hex(),
+                    operation_digest: operation.digest()?,
+                    budget_key: route.budget_key,
+                    requests,
+                    deadline_seconds: 60,
+                },
+                &self
+                    .authority
+                    .source_fences(self.scan, &source_deadline)
+                    .await?,
+            )
+            .await?;
+        let plan = ProviderWorkPlanV1 {
+            schema: PROVIDER_WORK_PLAN_V1.into(),
+            deployment_id: route.deployment_id,
+            issuer: route.issuer,
+            audience: route.audience,
+            plan_id: uuid::Uuid::new_v4().simple().to_string(),
+            claim: reservation.claim,
+            issued_at: self.db.assessment_database_time().await?,
+            expires_at: reservation.budget.deadline.clone(),
+            nonce: uuid::Uuid::new_v4().simple().to_string(),
+            inventory_digest: self.scan.request.inventory_digest,
+            policy_digest: self.scan.request.policy_digest,
+            authorization_partition: self.scan.request.authorization_partition.clone(),
+            credential_ref: route.credential_ref,
+            budget_reservation: reservation.budget,
+            cache_ref,
+            continuation: previous.map(ProviderPageV1::digest).transpose()?,
+            continuation_ref: previous.cloned(),
+            operation: operation.clone(),
+            adapter_version: operation.adapter_version().into(),
+            limits,
+        };
+        self.db
+            .admit_assessment_provider_plan_fenced(
+                self.scan.registry_id,
+                &plan,
+                &self
+                    .authority
+                    .source_fences(self.scan, &source_deadline)
+                    .await?,
+            )
+            .await?;
+        let physical = self.transport.execute(&plan).await;
+        self.authority.require_current(self.scan).await?;
+        let result = match physical {
+            Ok(result) => result,
+            Err(error) => {
+                self.db
+                    .fail_assessment_provider_work_fenced(
+                        self.scan.registry_id,
+                        &plan.claim,
+                        "source-transport-failed",
+                        &self.authority.current_fences(self.scan).await?,
+                    )
+                    .await?;
+                return Err(error);
+            }
+        };
+        if let Err(error) = result.validate_for(&plan, &self.db.assessment_database_time().await?) {
+            self.db
+                .fail_assessment_provider_work_fenced(
+                    self.scan.registry_id,
+                    &plan.claim,
+                    "source-result-refused",
+                    &self.authority.current_fences(self.scan).await?,
+                )
+                .await?;
+            return Err(error);
+        }
+        self.db
+            .admit_assessment_provider_result_fenced(
+                self.scan.registry_id,
+                &plan,
+                &result,
+                &self.authority.current_fences(self.scan).await?,
+            )
+            .await?;
+        Ok(result)
+    }
+}
+
+/// Reads the exact admitted replay closure independently from physical execution.
+///
+/// # Errors
+/// Returns an error for missing normalized custody or an unpinned operation.
+pub async fn frozen_input(db: &Database, registry_id: i64, scan_id: &str) -> Result<ScanInputV1> {
+    Ok(db
+        .assessment_frozen_evaluation(registry_id, scan_id)
+        .await?
+        .0)
+}

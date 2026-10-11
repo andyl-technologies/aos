@@ -1,5 +1,8 @@
 ##! Closed metadata constructor for complex or human-led upstream units.
-{platform}: {
+{
+  platform,
+  lib,
+}: {
   unitId,
   family,
   stream,
@@ -13,7 +16,10 @@
   lifecycle ? "supported",
   successorUnit ? null,
   reviewAfter ? null,
+  security ? null,
 }: let
+  assessmentSecurity = import ./_assessment-security.nix {inherit lib;};
+
   requireString = label: value:
     if builtins.isString value && value != ""
     then value
@@ -78,6 +84,15 @@
     );
 in {
   inherit version;
+  assessment = {
+    schema = "aos.package-assessment-metadata/v1";
+    unitId = checkedUnit;
+    components.main = assessmentSecurity.normalize (
+      if security == null
+      then assessmentSecurity.default
+      else security
+    );
+  };
   update = metadata;
   updateFor = selectedMember:
     metadata

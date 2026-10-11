@@ -229,7 +229,7 @@ pub(super) fn run(args: &ReleaseAssembleArgs, nix: &NixRunner, printer: &Printer
     let sbom_bytes = read_canonical(&args.sbom, "release SBOM")?;
     let sbom: SpdxDocument = canonical::from_slice(&sbom_bytes, "release SBOM")?;
     sbom.validate()?;
-    if sbom != SpdxDocument::from_build(&report) {
+    if sbom != SpdxDocument::from_plan_and_build(&plan, &report)? {
         bail!("release SBOM differs from the validated build report");
     }
 

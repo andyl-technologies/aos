@@ -15,9 +15,9 @@ use clap::{Args, Subcommand};
 use std::path::PathBuf;
 
 use super::{
-    HubAccessTokenCmd, HubContainerCmd, HubIdentityProviderCmd, HubInstanceSettingsSectionCmd,
-    HubInvitationCmd, HubOrgMemberCmd, HubOrganizationDomainCmd, HubServiceAccountCmd,
-    HubSigningKeyCmd,
+    AssessmentProfileArg, HubAccessTokenCmd, HubContainerCmd, HubIdentityProviderCmd,
+    HubInstanceSettingsSectionCmd, HubInvitationCmd, HubOrgMemberCmd, HubOrganizationDomainCmd,
+    HubServiceAccountCmd, HubSigningKeyCmd,
 };
 
 #[derive(Args, Debug, Clone)]
@@ -137,6 +137,12 @@ pub struct HubAccessPolicyArgs {
 
 #[derive(Subcommand)]
 pub enum HubCmd {
+    /// Inspect package update and vulnerability assessments
+    #[command(alias = "maintain")]
+    Assessment {
+        #[command(subcommand)]
+        command: HubAssessmentCmd,
+    },
     /// Set up, verify, and activate a delivery destination.
     Delivery {
         #[command(subcommand)]
@@ -259,6 +265,396 @@ pub enum HubCmd {
     Operation {
         #[command(subcommand)]
         command: HubOperationCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HubAssessmentCmd {
+    /// Read publication availability and exact outputs lacking scan declarations
+    Publication {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Select the registry whose publication is inspected
+        #[arg(long)]
+        registry: String,
+        /// Bound the number of complete unsupported outputs in this page
+        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..=100))]
+        limit: u32,
+        /// Continue after an exact output commitment from the preceding page
+        #[arg(long, requires_all = ["publication_digest", "resource_scope"])]
+        after_output: Option<String>,
+        /// Pin the publication commitment from the preceding page
+        #[arg(long)]
+        publication_digest: Option<String>,
+        /// Pin the resource incarnation from the preceding page
+        #[arg(long)]
+        resource_scope: Option<String>,
+    },
+
+    /// Read retained advisory revisions and optional historical finding links
+    #[command(visible_alias = "cve")]
+    Advisory {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Select the registry that admits the evidence
+        #[arg(long)]
+        registry: String,
+        /// Select an exact CVE or provider-native advisory identifier
+        advisory_id: String,
+        /// Limit revisions and findings to this admitted assessment snapshot
+        #[arg(long)]
+        assessment_digest: Option<String>,
+        /// Limit finding links to this subject in the selected assessment
+        #[arg(long, requires = "assessment_digest")]
+        subject_ref: Option<String>,
+        /// Continue after the exact last record from the preceding legacy page
+        #[arg(long, requires = "resource_scope", conflicts_with_all = ["retained", "cursor"])]
+        after_record: Option<String>,
+        /// Capture immutable advisory pages with opaque continuations
+        #[arg(long)]
+        retained: bool,
+        /// Continue the original retained advisory capture
+        #[arg(long, requires = "resource_scope")]
+        cursor: Option<String>,
+        /// Pin the registry incarnation from the preceding page
+        #[arg(long)]
+        resource_scope: Option<String>,
+        /// Bound the number of returned revisions
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=10))]
+        limit: u32,
+    },
+    /// Read notification delivery status without claiming or retrying callbacks
+    Deliveries {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Select the registry whose delivery status is read
+        #[arg(long)]
+        registry: String,
+        /// Filter by a public notification subscription identity
+        #[arg(long)]
+        subscription_id: Option<String>,
+        /// Continue with the opaque nextDelivery token from the preceding page
+        #[arg(long, requires = "resource_scope")]
+        after_delivery: Option<String>,
+        /// Pin the registry incarnation from the preceding page
+        #[arg(long)]
+        resource_scope: Option<String>,
+        /// Bound the number of delivery status projections
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=10))]
+        limit: u32,
+    },
+    /// Read one retained notification delivery and its physical batch linkage
+    Delivery {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Select the registry that owns the delivery
+        #[arg(long)]
+        registry: String,
+        /// Select the exact public event-intent identity
+        #[arg(long)]
+        delivery_id: String,
+        /// Pin an expected registry incarnation
+        #[arg(long)]
+        resource_scope: Option<String>,
+    },
+    /// Read reviewed notification subscriptions without dispatching callbacks
+    Subscriptions {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Select the registry whose notification reviews are read
+        #[arg(long)]
+        registry: String,
+        /// Select one exact subscription
+        #[arg(long, conflicts_with = "after_subscription")]
+        subscription_id: Option<String>,
+        /// Continue with the opaque subscription handle from the preceding page
+        #[arg(long, requires = "resource_scope")]
+        after_subscription: Option<String>,
+        /// Pin the non-reusable registry scope from the preceding page
+        #[arg(long)]
+        resource_scope: Option<String>,
+        /// Bound the number of public subscription projections
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=10))]
+        limit: u32,
+    },
+    /// Plan an exact notification subscription review without changing configuration
+    Subscription {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Select the registry whose notification review is changed
+        #[arg(long)]
+        registry: String,
+        /// Read a closed aos.assessment-subscription-write/v1 document
+        #[arg(long)]
+        request: PathBuf,
+        /// Bind planning to one exact actor-scoped request identity
+        #[arg(long)]
+        idempotency_key: String,
+    },
+    /// Apply an exact retained subscription plan after reviewing its effects
+    ApplySubscription {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Select the exact retained plan
+        #[arg(long)]
+        plan_id: String,
+        /// Preserve this identity through apply retries
+        #[arg(long)]
+        idempotency_key: String,
+        /// Confirm the commitment from the reviewed plan
+        #[arg(long)]
+        confirmation_hash: String,
+    },
+    /// Review the exact registered webhook commitment before subscribing
+    NotificationDestination {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Select the registry whose organization owns the destination
+        #[arg(long)]
+        registry: String,
+        /// Read a closed aos.assessment-notification-destination-query/v1 document
+        #[arg(long)]
+        request: PathBuf,
+    },
+    /// Read reviewed recurring scans without triggering execution
+    Schedules {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry whose schedule reviews are selected
+        #[arg(long)]
+        registry: String,
+        /// Select one exact schedule
+        #[arg(long, conflicts_with = "after_schedule")]
+        schedule_id: Option<String>,
+        /// Continue with the opaque nextSchedule handle from the preceding page
+        #[arg(long, requires = "resource_scope")]
+        after_schedule: Option<String>,
+        /// Pin the non-reusable registry scope from the preceding page
+        #[arg(long)]
+        resource_scope: Option<String>,
+        /// Bound the number of public schedule projections
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=10))]
+        limit: u32,
+    },
+    /// Plan an exact recurring scan review without changing configuration
+    Schedule {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry whose schedule review is changed
+        #[arg(long)]
+        registry: String,
+        /// Read a closed aos.assessment-schedule-write/v1 document
+        #[arg(long)]
+        request: PathBuf,
+        /// Bind planning to one exact actor-scoped request identity
+        #[arg(long)]
+        idempotency_key: String,
+    },
+    /// Apply an exact retained recurring scan plan after reviewing its effects
+    ApplySchedule {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Select the exact retained plan
+        #[arg(long)]
+        plan_id: String,
+        /// Preserve this identity through apply retries
+        #[arg(long)]
+        idempotency_key: String,
+        /// Confirm the commitment from the reviewed plan
+        #[arg(long)]
+        confirmation_hash: String,
+    },
+    /// Read alert episodes including acknowledgement and resolution history
+    Alerts {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry whose attention state is selected
+        #[arg(long)]
+        registry: String,
+        /// Bound the number of complete alerts in this page
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=10))]
+        limit: u32,
+        /// Use the opaque alert continuation from the preceding page
+        #[arg(long, requires = "resource_scope")]
+        after_issue: Option<String>,
+        /// Pin the non-reusable resource scope returned by the preceding page
+        #[arg(long)]
+        resource_scope: Option<String>,
+    },
+    /// Acknowledge an exact alert episode without resolving the finding
+    Acknowledge {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry containing the exact alert
+        #[arg(long)]
+        registry: String,
+        /// Read a closed aos.assessment-alert-acknowledgement/v1 document
+        #[arg(long)]
+        request: PathBuf,
+    },
+    /// Replay committed events from a resource-bound reconnect position
+    Events {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry whose committed events are selected
+        #[arg(long)]
+        registry: String,
+        /// Bound the number of complete events in each replay page
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=10))]
+        limit: u32,
+        /// Resume after this exclusive committed event sequence
+        #[arg(long, requires = "resource_scope")]
+        after_sequence: Option<u64>,
+        /// Pin the non-reusable resource scope returned by the preceding page
+        #[arg(long)]
+        resource_scope: Option<String>,
+        /// Poll for committed events until interrupted
+        #[arg(long)]
+        watch: bool,
+    },
+    /// Request a scan of an exact pinned inventory selection
+    Scan {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry whose admitted inventory is selected
+        #[arg(long)]
+        registry: String,
+        /// Read a closed aos.assessment-scan-submission/v1 document
+        #[arg(long, conflicts_with_all = ["profiles", "packages", "freshness", "idempotency_key"])]
+        request: Option<PathBuf>,
+        #[command(flatten)]
+        selection: super::HubAssessmentScanSelectionArgs,
+        /// Wait for the admitted operation to reach a terminal state
+        #[arg(long)]
+        wait: bool,
+        /// Return exit code 20 when selected report conditions match
+        #[arg(long, value_enum, value_delimiter = ',', requires = "wait")]
+        fail_on: Vec<super::AssessmentFailureArg>,
+        /// Bound waiting without cancelling the durable Hub operation
+        #[arg(long, requires = "wait", default_value_t = 3600, value_parser = clap::value_parser!(u32).range(1..=3600))]
+        wait_seconds: u32,
+    },
+    /// Manage durable Hub scan operations
+    Scans {
+        #[command(subcommand)]
+        command: HubAssessmentScansCmd,
+    },
+    /// Read current assessment freshness and pending generations
+    Status {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry whose admitted package inventory is selected
+        #[arg(long)]
+        registry: String,
+        /// Select independent assessment profiles
+        #[arg(
+            long = "profile",
+            value_enum,
+            value_delimiter = ',',
+            default_value = "updates,vulnerabilities"
+        )]
+        profiles: Vec<AssessmentProfileArg>,
+        /// Bound the number of packages in this page
+        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..=100))]
+        limit: u32,
+        /// Capture immutable status pages with opaque continuation handles
+        #[arg(long, conflicts_with = "after_subject")]
+        retained: bool,
+        /// Continue an original retained status capture
+        #[arg(long, requires = "resource_scope", conflicts_with = "after_subject")]
+        cursor: Option<String>,
+        /// Bind retained reads to the original registry incarnation
+        #[arg(long, conflicts_with = "after_subject")]
+        resource_scope: Option<String>,
+        /// Continue after this exact subject in a pinned inventory and policy
+        #[arg(long, requires_all = ["inventory_digest", "policy_digest"], conflicts_with_all = ["retained", "cursor", "resource_scope"])]
+        after_subject: Option<String>,
+        /// Pin the inventory returned by the preceding page
+        #[arg(long)]
+        inventory_digest: Option<String>,
+        /// Pin the decision policy returned by the preceding page
+        #[arg(long)]
+        policy_digest: Option<String>,
+    },
+    /// Read one canonical result admitted by a successful Hub scan
+    Get {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry containing the admitted result
+        #[arg(long)]
+        registry: String,
+        /// Exact immutable assessment digest
+        digest: String,
+        /// Return exit code 20 when selected report conditions match
+        #[arg(long, value_enum, value_delimiter = ',')]
+        fail_on: Vec<super::AssessmentFailureArg>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HubAssessmentScansCmd {
+    /// List bounded scan summaries
+    List {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry containing the operations
+        #[arg(long)]
+        registry: String,
+        /// Maximum operations in this page
+        #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u32).range(1..=100))]
+        limit: u32,
+        /// Continue after this operation identity
+        #[arg(long)]
+        after_scan: Option<String>,
+    },
+    /// Inspect an operation's exact request and current state
+    Inspect {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry containing the operation
+        #[arg(long)]
+        registry: String,
+        /// Durable operation identity
+        scan_id: String,
+    },
+    /// Wait for an existing operation without changing it
+    Wait {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry containing the operation
+        #[arg(long)]
+        registry: String,
+        /// Durable operation identity
+        scan_id: String,
+        /// Bound waiting, including the initial lookup, in seconds
+        #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u32).range(1..=3600))]
+        timeout: u32,
+    },
+    /// Cancel one exact operation revision
+    Cancel {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry containing the operation
+        #[arg(long)]
+        registry: String,
+        /// Durable operation identity
+        scan_id: String,
+        /// Pin the revision returned by inspect
+        #[arg(long)]
+        expected_revision: u64,
+    },
+    /// Retry a terminal operation with its exact original selection
+    Retry {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry containing the original operation
+        #[arg(long)]
+        registry: String,
+        /// Original terminal operation identity
+        scan_id: String,
+        /// Scope an idempotent retry within this original operation
+        #[arg(long)]
+        idempotency_key: String,
     },
 }
 

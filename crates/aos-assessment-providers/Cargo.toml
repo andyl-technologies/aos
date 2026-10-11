@@ -1,0 +1,18 @@
+[package]
+name = "aos-assessment-providers"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Runtime-independent bounded upstream and advisory provider adapters"
+
+[dependencies]
+anyhow = { workspace = true }
+aos-assessment = { workspace = true }
+aos-contract = { workspace = true }
+humantime = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+
+[lints]
+workspace = true

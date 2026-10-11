@@ -34,6 +34,116 @@ fn cli_command() -> Command {
         .expect("CLI contract command thread must complete")
 }
 
+#[test]
+fn local_assessment_status_uses_explicit_profiles_and_bound_continuations() {
+    let parsed = parse_cli(["aos", "maintain", "status", "--profiles", "all"]).unwrap();
+    let cli::Commands::Maintain(args) = parsed.command else {
+        panic!("maintenance command");
+    };
+    let Some(cli::MaintainCommand::Status(status)) = args.command else {
+        panic!("status command");
+    };
+    assert_eq!(cli::assessment_profiles(&status.profiles).len(), 3);
+    for extra in [
+        vec!["--active"],
+        vec!["some-run"],
+        vec!["--after-subject", "subject"],
+        vec!["--limit", "101"],
+    ] {
+        let mut arguments = vec!["aos", "maintain", "status", "--profiles", "all"];
+        arguments.extend(extra);
+        assert!(parse_cli(arguments).is_err());
+    }
+    assert!(parse_cli(["aos", "maintain", "status", "--limit", "10"]).is_err());
+    assert!(
+        parse_cli([
+            "aos",
+            "maintain",
+            "status",
+            "--profiles",
+            "all",
+            "--after-subject",
+            "subject",
+            "--inventory-digest",
+            "sha256:inventory",
+            "--policy-digest",
+            "sha256:policy"
+        ])
+        .is_ok()
+    );
+    assert!(parse_cli(["aos", "maintain", "status", "--active"]).is_ok());
+}
+
+
+#[test]
+fn local_and_hub_scans_expand_all_and_accept_the_same_freshness_modes() {
+    use aos_assessment::input::{FreshnessMode, Profile};
+
+    for (flag, expected) in [
+        ("cached", FreshnessMode::Cached),
+        ("refresh-stale", FreshnessMode::RefreshStale),
+        ("refresh", FreshnessMode::Refresh),
+        ("offline", FreshnessMode::Offline),
+    ] {
+        let local = [
+            "aos",
+            "maintain",
+            "scan",
+            "--profile",
+            "all,updates",
+            "--freshness",
+            flag,
+        ];
+        let cli::Commands::Maintain(args) = parse_cli(local).unwrap().command else {
+            panic!("local maintenance command expected");
+        };
+        let Some(cli::MaintainCommand::Scan(scan)) = args.command else {
+            panic!("local scan expected");
+        };
+        assert_eq!(FreshnessMode::from(scan.freshness.unwrap()), expected);
+        assert_eq!(
+            cli::assessment_profiles(&scan.profiles),
+            [
+                Profile::LicenseSignals,
+                Profile::Updates,
+                Profile::Vulnerabilities
+            ]
+        );
+        assert!(parse_cli(local.into_iter().chain(["--offline"])).is_err());
+
+        let hub = [
+            "aos",
+            "hub",
+            "maintain",
+            "scan",
+            "--registry",
+            "fixture",
+            "--profile",
+            "all,updates",
+            "--freshness",
+            flag,
+            "--package",
+            "fixture/example",
+            "--idempotency-key",
+            "fixture-request",
+        ];
+        assert!(parse_cli(hub).is_ok());
+        assert!(parse_cli(hub.into_iter().chain(["--request", "submission.json"])).is_err());
+    }
+    assert!(parse_cli(["aos", "maintain", "scan", "--freshness", "cached"]).is_err());
+    assert!(parse_cli([
+        "aos",
+        "hub",
+        "maintain",
+        "scan",
+        "--registry",
+        "fixture",
+        "--profile",
+        "all"
+    ])
+    .is_err());
+}
+
 const REVIEWED_ACTION_PATHS: &[&[&str]] = &[
     &["hub", "instance", "identity", "update"],
     &["hub", "instance", "resource-defaults", "update"],
@@ -241,4 +351,171 @@ fn signing_usage_combines_exact_read_with_reviewed_mutation() {
         .map(Command::get_name)
         .collect::<Vec<_>>();
     assert_eq!(names, ["show", "plan", "apply"]);
+}
+
+#[test]
+fn hub_assessment_wait_is_optional_bounded_and_available_through_the_maintain_alias() {
+    for family in ["assessment", "maintain"] {
+        let base = [
+            "aos",
+            "hub",
+            family,
+            "scan",
+            "--registry",
+            "fixture",
+            "--request",
+            "submission.json",
+        ];
+        let cli::Commands::Hub {
+            command:
+                cli::HubCmd::Assessment {
+                    command:
+                        cli::HubAssessmentCmd::Scan {
+                            wait, wait_seconds, ..
+                        },
+                },
+        } = parse_cli(base).unwrap().command
+        else {
+            panic!("assessment scan command expected");
+        };
+        assert!(!wait);
+        assert_eq!(wait_seconds, 3600);
+        let argv = base.into_iter().chain(["--wait", "--wait-seconds", "600"]);
+        let cli::Commands::Hub {
+            command:
+                cli::HubCmd::Assessment {
+                    command:
+                        cli::HubAssessmentCmd::Scan {
+                            wait, wait_seconds, ..
+                        },
+                },
+        } = parse_cli(argv).unwrap().command
+        else {
+            panic!("assessment scan command expected");
+        };
+        assert!(wait);
+        assert_eq!(wait_seconds, 600);
+        assert!(parse_cli(base.into_iter().chain(["--wait-seconds", "600"])).is_err());
+        for seconds in ["0", "3601"] {
+            assert!(
+                parse_cli(
+                    base.into_iter()
+                        .chain(["--wait", "--wait-seconds", seconds])
+                )
+                .is_err()
+            );
+        }
+    }
+}
+
+#[test]
+fn assessment_configuration_plans_and_applies_require_distinct_exact_inputs() {
+    for family in ["assessment", "maintain"] {
+        for resource in ["schedule", "subscription"] {
+            let base = [
+                "aos",
+                "hub",
+                family,
+                resource,
+                "--registry",
+                "fixture",
+                "--request",
+                "review.json",
+            ];
+            assert!(
+                parse_cli(base).is_err(),
+                "planning must require a stable identity"
+            );
+            assert!(parse_cli(base.into_iter().chain(["--idempotency-key", "exact-plan"])).is_ok());
+
+            let action = format!("apply-{resource}");
+            let apply = [
+                "aos",
+                "hub",
+                family,
+                action.as_str(),
+                "--plan-id",
+                "exact-retained-plan",
+                "--idempotency-key",
+                "exact-apply",
+            ];
+            assert!(
+                parse_cli(apply).is_err(),
+                "applying must require explicit confirmation"
+            );
+            let confirmed = apply
+                .into_iter()
+                .chain(["--confirmation-hash", "exact-reviewed-commitment"]);
+            assert!(parse_cli(confirmed.clone()).is_ok());
+            assert!(
+                parse_cli(
+                    confirmed
+                        .clone()
+                        .chain(["--request", "changed-review.json"])
+                )
+                .is_err()
+            );
+            assert!(parse_cli(confirmed.chain(["--registry", "changed-resource"])).is_err());
+        }
+    }
+}
+
+#[test]
+fn named_hub_scan_wait_matches_local_timeout_bounds_without_mutation_arguments() {
+    let base = [
+        "aos",
+        "hub",
+        "maintain",
+        "scans",
+        "wait",
+        "exact-scan",
+        "--registry",
+        "fixture",
+    ];
+    let parsed = parse_cli(base).unwrap();
+    let cli::Commands::Hub {
+        command: hub_command,
+    } = parsed.command
+    else {
+        panic!("Hub command expected")
+    };
+    let cli::HubCmd::Assessment {
+        command: cli::HubAssessmentCmd::Scans { command },
+    } = hub_command
+    else {
+        panic!("Hub scans expected")
+    };
+    let cli::HubAssessmentScansCmd::Wait {
+        scan_id, timeout, ..
+    } = command
+    else {
+        panic!("named wait expected")
+    };
+    assert_eq!(scan_id, "exact-scan");
+    assert_eq!(timeout, 300);
+    for timeout in ["1", "3600"] {
+        assert!(parse_cli(base.into_iter().chain(["--timeout", timeout])).is_ok());
+        assert!(
+            parse_cli([
+                "aos",
+                "maintain",
+                "scans",
+                "wait",
+                "exact-scan",
+                "--timeout",
+                timeout
+            ])
+            .is_ok()
+        );
+    }
+    for extra in [
+        vec!["--timeout", "0"],
+        vec!["--timeout", "3601"],
+        vec!["--idempotency-key", "retry"],
+        vec!["--expected-revision", "1"],
+        vec!["--wait"],
+        vec!["--profile", "updates"],
+    ] {
+        assert!(parse_cli(base.into_iter().chain(extra)).is_err());
+    }
 }

@@ -64,7 +64,6 @@
     buildTools = {
       inherit
         (pkgs.buildPackages)
-        aos-ability-contract-validator
         coreutils
         findutils
         gzip

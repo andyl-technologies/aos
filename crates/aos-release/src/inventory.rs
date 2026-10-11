@@ -491,6 +491,7 @@ impl PackageInventoryV1 {
                 });
             }
             plans.push(PackagePlan {
+                scan_declarations: Default::default(),
                 name: package.name.clone(),
                 publication: publication.cloned(),
                 platform_versions,

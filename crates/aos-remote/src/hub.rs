@@ -81,6 +81,32 @@ pub struct HubClient {
 /// CLI to exchange the generated request and response messages directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HubTopologyMethod {
+    /// Reads current inventory-bound package assessment status.
+    GetAssessmentStatus,
+    /// Reads authenticated publication availability and exact unsupported outputs.
+    GetAssessmentPublicationStatus,
+    /// Reads one canonical successfully admitted package assessment.
+    GetPackageAssessment,
+    RequestPackageScan,
+    GetPackageScan,
+    ListPackageScans,
+    CancelPackageScan,
+    RetryPackageScan,
+    ListAssessmentAlerts,
+    AcknowledgePackageAlert,
+    ListAssessmentEvents,
+    ListAssessmentSchedules,
+    WriteAssessmentSchedule,
+    /// Plans an exact recurring assessment configuration without enabling it.
+    PlanWriteAssessmentSchedule,
+    ListAssessmentSubscriptions,
+    ListAssessmentNotificationDeliveries,
+    /// Selects exact cached advisory revisions under current assessment read authority.
+    GetAssessmentAdvisory,
+    WriteAssessmentSubscription,
+    /// Plans an exact notification subscription without enqueueing callbacks.
+    PlanWriteAssessmentSubscription,
+    ReviewAssessmentNotificationDestination,
     /// Selects authenticated direct-upload capability discovery.
     DirectUploadGetCapabilities,
     /// Selects bounded immutable direct-session admission.
@@ -1205,6 +1231,30 @@ impl HubTopologyMethod {
             PlanCreateRegistry => "aos.hub.v1.RegistryService/PlanCreateRegistry",
             CreateRegistry => "aos.hub.v1.RegistryService/CreateRegistry",
             GetRegistryMetadata => "aos.hub.v1.RegistryService/GetRegistryMetadata",
+            GetAssessmentStatus => "aos.hub.v1.AssessmentService/GetStatus",
+            GetAssessmentPublicationStatus => "aos.hub.v1.AssessmentService/GetPublicationStatus",
+            GetPackageAssessment => "aos.hub.v1.AssessmentService/GetAssessment",
+            GetAssessmentAdvisory => "aos.hub.v1.AssessmentService/GetAdvisory",
+            RequestPackageScan => "aos.hub.v1.ScanService/RequestScan",
+            GetPackageScan => "aos.hub.v1.ScanService/GetScan",
+            ListPackageScans => "aos.hub.v1.ScanService/ListScans",
+            CancelPackageScan => "aos.hub.v1.ScanService/CancelScan",
+            RetryPackageScan => "aos.hub.v1.ScanService/RetryScan",
+            ListAssessmentAlerts => "aos.hub.v1.AssessmentService/ListAlerts",
+            AcknowledgePackageAlert => "aos.hub.v1.AssessmentService/AcknowledgeAlert",
+            ListAssessmentEvents => "aos.hub.v1.AssessmentService/ListEvents",
+            ListAssessmentSchedules => "aos.hub.v1.AssessmentService/ListSchedules",
+            WriteAssessmentSchedule => "aos.hub.v1.AssessmentService/WriteSchedule",
+            PlanWriteAssessmentSchedule => "aos.hub.v1.AssessmentService/PlanWriteSchedule",
+            ListAssessmentSubscriptions => "aos.hub.v1.AssessmentService/ListSubscriptions",
+            ListAssessmentNotificationDeliveries => {
+                "aos.hub.v1.AssessmentService/ListNotificationDeliveries"
+            }
+            WriteAssessmentSubscription => "aos.hub.v1.AssessmentService/WriteSubscription",
+            PlanWriteAssessmentSubscription => "aos.hub.v1.AssessmentService/PlanWriteSubscription",
+            ReviewAssessmentNotificationDestination => {
+                "aos.hub.v1.AssessmentService/ReviewNotificationDestination"
+            }
             PlanUpdateRegistryMetadata => "aos.hub.v1.RegistryService/PlanUpdateRegistryMetadata",
             UpdateRegistryMetadata => "aos.hub.v1.RegistryService/UpdateRegistryMetadata",
             PlanUpdateRegistry => "aos.hub.v1.RegistryService/PlanUpdateRegistry",
@@ -1761,6 +1811,26 @@ pub mod hub_rpc {
         PlanCreateRegistry: PlanCreateRegistryRequest => TopologyPlanResponse;
         CreateRegistry: ApplyRegistryMutationRequest => RegistryResponse;
         GetRegistryMetadata: GetRegistryRequest => RegistryMetadataResponse;
+        GetAssessmentStatus: AssessmentStatusRequest => AssessmentDocumentResponse;
+        GetAssessmentPublicationStatus: AssessmentControlRequest => AssessmentDocumentResponse;
+        GetPackageAssessment: AssessmentObjectRequest => AssessmentDocumentResponse;
+        RequestPackageScan: AssessmentControlRequest => AssessmentDocumentResponse;
+        GetPackageScan: AssessmentControlRequest => AssessmentDocumentResponse;
+        ListPackageScans: AssessmentControlRequest => AssessmentDocumentResponse;
+        CancelPackageScan: AssessmentControlRequest => AssessmentDocumentResponse;
+        RetryPackageScan: AssessmentControlRequest => AssessmentDocumentResponse;
+        ListAssessmentAlerts: AssessmentControlRequest => AssessmentDocumentResponse;
+        AcknowledgePackageAlert: AssessmentControlRequest => AssessmentDocumentResponse;
+        ListAssessmentEvents: AssessmentControlRequest => AssessmentDocumentResponse;
+        ListAssessmentSchedules: AssessmentControlRequest => AssessmentDocumentResponse;
+        PlanWriteAssessmentSchedule: PlanAssessmentReviewRequest => TopologyPlanResponse;
+        WriteAssessmentSchedule: ApplyRegistryMutationRequest => AssessmentDocumentResponse;
+        ListAssessmentSubscriptions: AssessmentControlRequest => AssessmentDocumentResponse;
+        ListAssessmentNotificationDeliveries: AssessmentControlRequest => AssessmentDocumentResponse;
+        GetAssessmentAdvisory: AssessmentControlRequest => AssessmentDocumentResponse;
+        PlanWriteAssessmentSubscription: PlanAssessmentReviewRequest => TopologyPlanResponse;
+        WriteAssessmentSubscription: ApplyRegistryMutationRequest => AssessmentDocumentResponse;
+        ReviewAssessmentNotificationDestination: AssessmentControlRequest => AssessmentDocumentResponse;
         PlanUpdateRegistryMetadata: PlanUpdateRegistryMetadataRequest => TopologyPlanResponse;
         UpdateRegistryMetadata: ApplyRegistryMutationRequest => RegistryMetadataChangeResponse;
         PlanUpdateRegistry: PlanUpdateRegistryRequest => TopologyPlanResponse;

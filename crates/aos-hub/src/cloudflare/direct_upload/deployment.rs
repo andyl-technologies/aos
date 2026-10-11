@@ -18,6 +18,14 @@ use crate::cloudflare::{Assets, DeployMode, HybridDeployConfig};
 /// all selected bindings and never prints or invents provider credentials.
 #[derive(Clone, Debug, Default)]
 pub struct HybridDeploySecretFiles {
+    /// Separate Native-matched assessment provider authentication key.
+    pub assessment_work_key_file: Option<PathBuf>,
+    /// Private selected assessment source binding-to-secret-file manifest.
+    pub assessment_source_secrets_file: Option<PathBuf>,
+    /// Independent Native-matched callback work authentication key.
+    pub assessment_notification_work_key_file: Option<PathBuf>,
+    /// Private callback and gateway binding-to-secret-file manifest.
+    pub assessment_notification_secrets_file: Option<PathBuf>,
     /// Existing Native-matched `HUB_HYBRID_INGRESS_KEY` material.
     pub hybrid_ingress_key_file: Option<PathBuf>,
     /// Existing Native-matched `HUB_STORAGE_WORK_KEY` material.
@@ -195,6 +203,26 @@ pub async fn deploy_hybrid(
 ) -> Result<()> {
     let source = crate::cloudflare::render_hybrid_wrangler_toml(cfg)?;
     let secrets = ProtectedSecrets::read(files, cfg)?;
+    let assessment = crate::cloudflare::AssessmentDeploymentSecrets::from_files(
+        cfg.assessment.as_ref(),
+        files.assessment_work_key_file.as_deref(),
+        files.assessment_source_secrets_file.as_deref(),
+    )?
+    .with_notifications(
+        cfg.assessment.as_ref(),
+        files.assessment_notification_work_key_file.as_deref(),
+        files.assessment_notification_secrets_file.as_deref(),
+    )?;
+    assessment.require_separate(
+        &secrets
+            .entries
+            .iter()
+            .map(|(_, value)| value.as_str())
+            .collect::<Vec<_>>(),
+    )?;
+    assessment
+        .confirm_notification_gateway(cfg.assessment.as_ref())
+        .await?;
     if mode == DeployMode::Install {
         secrets.require_bindings(cfg, &[])?;
     }
@@ -217,6 +245,15 @@ pub async fn deploy_hybrid(
         Vec::new()
     };
     secrets.require_bindings(cfg, &existing)?;
+    assessment.require_bindings(cfg.assessment.as_ref(), &existing)?;
+    if let Some(profile) = &cfg.assessment {
+        crate::cloudflare::run_wrangler_tolerant(
+            assets,
+            &crate::cloudflare::r2_create_args(&profile.evidence_bucket),
+            "assessment evidence bucket create",
+        )
+        .await;
+    }
 
     crate::cloudflare::run_wrangler_tolerant(
         assets,
@@ -260,6 +297,7 @@ pub async fn deploy_hybrid(
         )
         .await?;
     }
+    assessment.apply(assets, &config).await?;
     for (name, value) in &secrets.entries {
         // Provider tools may echo rejected input in diagnostics. Discard all
         // captured output on this protected path, including nested error text.

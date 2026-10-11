@@ -24,6 +24,9 @@ pub struct MaintainArgs {
 
 #[derive(Subcommand)]
 pub enum MaintainCommand {
+    /// Inspect exact CVE or advisory evidence in a verified local bundle
+    #[command(visible_alias = "cve")]
+    Advisory(MaintainAdvisoryArgs),
     /// Plan, build, verify, and publish canonical AOS releases
     Release {
         #[command(subcommand)]
@@ -33,6 +36,11 @@ pub enum MaintainCommand {
     Inventory(MaintainInventoryArgs),
     /// Refresh bounded direct-upstream and advisory evidence
     Scan(MaintainScanArgs),
+    /// Inspect and manage durable local package assessment scans
+    Scans {
+        #[command(subcommand)]
+        command: MaintainScansCommand,
+    },
     /// Report cached package-update discovery as a maintainer inbox
     Report(MaintainReportArgs),
     /// Show concise cached maintenance and active-run state
@@ -63,8 +71,8 @@ pub enum MaintainCommand {
     Test(MaintainTestArgs),
     /// Run or accept one bounded local repair-agent proposal
     Repair(MaintainRepairArgs),
-    /// Generate and verify the complete local candidate evidence dossier
-    Evidence(MaintainRunIdentityArgs),
+    /// Generate a run dossier or import and export assessment evidence
+    Evidence(MaintainEvidenceArgs),
     /// Render reviewed pull-request title, body, and publication inputs offline
     PreparePr(MaintainRunIdentityArgs),
     /// Publish only the exact final-gated branch and matching pull request
@@ -73,6 +81,32 @@ pub enum MaintainCommand {
     ObservePr(MaintainObservePrArgs),
     /// Record the observed protected merge as ready for release consumption
     Handoff(MaintainHandoffArgs),
+}
+
+#[derive(Args)]
+pub struct MaintainAdvisoryArgs {
+    /// Select an exact CVE or provider-native advisory identifier
+    pub advisory_id: String,
+
+    /// Read a bounded local assessment evidence bundle
+    #[arg(long, value_name = "PATH")]
+    pub evidence_input: PathBuf,
+
+    /// Limit finding links to one subject in the bundle's assessment
+    #[arg(long)]
+    pub subject_ref: Option<String>,
+
+    /// Continue after the last exact record from the preceding page
+    #[arg(long, requires = "resource_scope")]
+    pub after_record: Option<String>,
+
+    /// Pin the local bundle scope from the preceding page
+    #[arg(long)]
+    pub resource_scope: Option<String>,
+
+    /// Bound the number of returned revisions
+    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=10))]
+    pub limit: u32,
 }
 
 #[derive(Args)]
@@ -88,6 +122,50 @@ pub struct MaintainInventoryArgs {
 
 #[derive(Args)]
 pub struct MaintainScanArgs {
+    /// Return exit code 20 when selected report conditions match
+    #[arg(long, value_enum, value_delimiter = ',', requires = "profiles")]
+    pub fail_on: Vec<super::AssessmentFailureArg>,
+
+    /// Reuse an exact frozen local assessment request without another scan
+    #[arg(long, requires = "profiles")]
+    pub idempotency_key: Option<String>,
+    /// Run the shared package assessment profiles
+    #[arg(long = "profile", value_delimiter = ',', conflicts_with_all = ["repology_fallback", "repology_limit"])]
+    pub profiles: Vec<super::AssessmentProfileArg>,
+
+    /// Select source acquisition intent for the admitted scan
+    #[arg(long, value_enum, requires = "profiles", conflicts_with = "offline")]
+    pub freshness: Option<super::AssessmentFreshnessArg>,
+
+    /// Read a portable assessment closure instead of evaluating this checkout
+    #[arg(
+        long,
+        value_name = "PATH",
+        requires = "profiles",
+        conflicts_with = "target"
+    )]
+    pub assessment_input: Option<PathBuf>,
+
+    /// Assess only these exact package coordinates
+    #[arg(long = "package", value_name = "COORDINATE", requires = "profiles")]
+    pub packages: Vec<String>,
+
+    /// Write a portable reference evidence bundle
+    #[arg(long, value_name = "PATH", requires = "profiles")]
+    pub evidence_output: Option<PathBuf>,
+
+    /// Write an exact actionable source-unit recommendation
+    #[arg(long, value_name = "PATH", requires_all = ["profiles", "update_intent_subject", "evidence_output"])]
+    pub update_intent_output: Option<PathBuf>,
+
+    /// Select the exact source subject for the update recommendation
+    #[arg(long, requires = "update_intent_output")]
+    pub update_intent_subject: Option<String>,
+
+    /// Environment variable holding an optional NVD read key
+    #[arg(long, default_value = "AOS_NVD_READ_KEY", value_name = "NAME")]
+    pub nvd_key_env: String,
+
     /// Use only sufficiently fresh cached observations
     #[arg(long)]
     pub offline: bool,
@@ -114,8 +192,51 @@ pub struct MaintainScanArgs {
     pub repology_limit: usize,
 }
 
+#[derive(Subcommand)]
+pub enum MaintainScansCommand {
+    /// List retained assessment operations
+    List {
+        /// Bound the returned operation count
+        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..=100))]
+        limit: u32,
+        /// Continue after the last exact operation identity
+        #[arg(long)]
+        after_scan: Option<String>,
+    },
+    /// Inspect one exact operation and its frozen request
+    Inspect { scan_id: String },
+    /// Cancel one exact current operation revision
+    Cancel {
+        scan_id: String,
+        /// Require the current operation revision
+        #[arg(long)]
+        expected_revision: u64,
+    },
+    /// Wait for one operation to reach a terminal state
+    Wait {
+        scan_id: String,
+        /// Bound the wait duration in seconds
+        #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u32).range(1..=3600))]
+        timeout: u32,
+    },
+    /// Finalize interrupted operations whose process leases are released
+    Recover {
+        /// Bound the inspected nonterminal operation count
+        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..=100))]
+        limit: u32,
+    },
+}
+
 #[derive(Args)]
 pub struct MaintainReportArgs {
+    /// Read one exact retained shared assessment instead of the legacy report
+    #[arg(long, conflicts_with_all = ["outdated", "unknown", "advisory", "vulnerable", "license_change", "family"])]
+    pub assessment_digest: Option<String>,
+
+    /// Return exit code 20 when selected report conditions match
+    #[arg(long, value_enum, value_delimiter = ',', requires = "assessment_digest")]
+    pub fail_on: Vec<super::AssessmentFailureArg>,
+
     /// Show only units with a selectable newer release
     #[arg(long, conflicts_with_all = ["unknown", "advisory", "vulnerable", "license_change"])]
     pub outdated: bool,
@@ -149,6 +270,26 @@ pub struct MaintainStatusArgs {
     /// Show only nonterminal runs
     #[arg(long)]
     pub active: bool,
+
+    /// Inspect shared assessment profile status instead of maintenance runs
+    #[arg(long, value_enum, value_delimiter = ',', conflicts_with_all = ["run", "active"])]
+    pub profiles: Vec<super::AssessmentProfileArg>,
+
+    /// Limit the assessment page to one through one hundred subjects
+    #[arg(long, requires = "profiles", value_parser = clap::value_parser!(u32).range(1..=100))]
+    pub limit: Option<u32>,
+
+    /// Continue after an exact subject in the pinned inventory and policy
+    #[arg(long, requires_all = ["profiles", "inventory_digest", "policy_digest"])]
+    pub after_subject: Option<String>,
+
+    /// Pin the exact inventory digest for assessment status
+    #[arg(long, requires = "profiles")]
+    pub inventory_digest: Option<String>,
+
+    /// Pin the exact policy digest for assessment status
+    #[arg(long, requires = "profiles")]
+    pub policy_digest: Option<String>,
 }
 
 #[derive(Args)]
@@ -184,6 +325,14 @@ pub struct MaintainPlanArgs {
         requires = "unit"
     )]
     pub component: Vec<String>,
+
+    /// Select the complete candidate vector from a reproduced assessment intent
+    #[arg(long, value_name = "PATH", requires_all = ["unit", "assessment_evidence"], conflicts_with_all = ["target", "component", "campaign"])]
+    pub assessment_intent: Option<PathBuf>,
+
+    /// Verify the exact evidence bundle referenced by the assessment intent
+    #[arg(long, value_name = "PATH", requires = "assessment_intent")]
+    pub assessment_evidence: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -290,6 +439,38 @@ pub struct MaintainDiffArgs {
 pub struct MaintainRunIdentityArgs {
     /// Exact or unambiguous local run identity
     pub run: String,
+}
+
+#[derive(Args)]
+#[command(
+    args_conflicts_with_subcommands = true,
+    subcommand_precedence_over_arg = true,
+    arg_required_else_help = true
+)]
+pub struct MaintainEvidenceArgs {
+    /// Generate the dossier for this exact or unambiguous local run identity
+    pub run: Option<String>,
+
+    #[command(subcommand)]
+    pub command: Option<MaintainAssessmentEvidenceCommand>,
+}
+
+#[derive(Subcommand)]
+pub enum MaintainAssessmentEvidenceCommand {
+    /// Export the exact locally committed assessment as a reference bundle
+    Export {
+        /// Select an exact retained assessment digest
+        assessment_digest: String,
+
+        /// Create a new protected bundle file
+        #[arg(long, value_name = "PATH")]
+        output: PathBuf,
+    },
+    /// Reproduce and retain a bundle without advancing assessment heads
+    Import {
+        /// Read a bounded regular bundle file without following symlinks
+        input: PathBuf,
+    },
 }
 
 #[derive(Args)]
@@ -419,6 +600,43 @@ mod tests {
 
     use super::*;
     use crate::cli::{Cli, Commands};
+
+    #[test]
+    fn evidence_subcommands_preserve_the_legacy_run_dossier_interface() {
+        assert!(Cli::try_parse_from(["aos", "maintain", "evidence", "run-fixture"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["aos", "maintain", "evidence", "import", "bundle.json"]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "maintain",
+                "evidence",
+                "export",
+                "sha256:fixture",
+                "--output",
+                "bundle.json"
+            ])
+            .is_ok()
+        );
+        assert!(Cli::try_parse_from(["aos", "maintain", "evidence"]).is_err());
+        assert!(Cli::try_parse_from(["aos", "maintain", "evidence", "import"]).is_err());
+        assert!(
+            Cli::try_parse_from(["aos", "maintain", "evidence", "export", "sha256:fixture"])
+                .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "maintain",
+                "evidence",
+                "run-fixture",
+                "import",
+                "bundle.json"
+            ])
+            .is_err()
+        );
+    }
 
     #[test]
     fn parses_inventory_check_with_an_explicit_target() {
@@ -630,5 +848,78 @@ mod tests {
             ])
             .is_ok()
         );
+    }
+
+    #[test]
+    fn assessment_handoffs_require_exact_subject_evidence_and_exclusive_plan_selection() {
+        let export = [
+            "aos",
+            "maintain",
+            "scan",
+            "--profile",
+            "updates",
+            "--update-intent-subject",
+            "source-subject",
+            "--update-intent-output",
+            "intent.json",
+            "--evidence-output",
+            "bundle.json",
+        ];
+        assert!(Cli::try_parse_from(export).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "maintain",
+                "scan",
+                "--profile",
+                "updates",
+                "--update-intent-output",
+                "intent.json"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "maintain",
+                "scan",
+                "--update-intent-subject",
+                "source-subject",
+                "--update-intent-output",
+                "intent.json"
+            ])
+            .is_err()
+        );
+        let plan = [
+            "aos",
+            "maintain",
+            "plan",
+            "fixture-1",
+            "--assessment-intent",
+            "intent.json",
+            "--assessment-evidence",
+            "bundle.json",
+        ];
+        assert!(Cli::try_parse_from(plan).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "maintain",
+                "plan",
+                "fixture-1",
+                "--assessment-intent",
+                "intent.json"
+            ])
+            .is_err()
+        );
+        for conflicting in [
+            vec!["--target", "1.3.0"],
+            vec!["--component", "main=v1.3.0"],
+            vec!["--campaign", "fixture"],
+        ] {
+            let mut args = plan.to_vec();
+            args.extend(conflicting);
+            assert!(Cli::try_parse_from(args).is_err());
+        }
     }
 }

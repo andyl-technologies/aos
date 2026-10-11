@@ -394,6 +394,7 @@ impl ProviderTransport {
         Ok(DirectManifestPart { part, etag })
     }
 
+    #[allow(clippy::disallowed_methods, reason = "Physical provider dispatch checks signed grant expiry against real UTC; this is outside Crucible state.")]
     fn check_grant(
         &self,
         context: &ProviderContext,
