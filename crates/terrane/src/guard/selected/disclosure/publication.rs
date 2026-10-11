@@ -58,11 +58,13 @@ where
     )
     .await?;
     let mut markers = Vec::new();
+    let authoring = concrete.guard().completion_inputs()?.selection;
     for selection in &preloaded {
         let (root, path, domain) = locate(
             concrete.guard(),
             &evidence,
             &selection.selector.destination_path,
+            &authoring,
         )?;
         markers.push(projection::MarkerOccurrence {
             root,
@@ -178,6 +180,7 @@ where
             &source_guard,
             &snapshot.evidence,
             &selected.selector.source_path,
+            &snapshot.interpretation.selection(),
         )?;
         if location.root != selected.root
             || location.path != selected.path
@@ -260,6 +263,7 @@ where
             destination.guard(),
             &evidence,
             &selection.selector.destination_path,
+            &admitted.admission_interpretation.selection(),
         )?;
         let source_entry = EntrySource {
             commit: source_location.commit,
@@ -314,7 +318,11 @@ where
     }
     #[cfg(all(test, feature = "tokio"))]
     super::mutations::apply_before_sign(concrete.store().root(), &mut record)?;
-    let mut prototype_history = VerifiedHistory::new(destination.guard().config().min_chunk_size);
+    let destination_interpretation = admitted.admission_interpretation.selection();
+    let mut prototype_history = VerifiedHistory::new_selected(
+        destination.guard().config().min_chunk_size,
+        destination_interpretation.clone(),
+    );
     for snapshot in &checked.snapshots {
         prototype_history
             .append_verified(&snapshot.history)
@@ -334,7 +342,7 @@ where
     };
     let prototype = resign(destination.guard(), record, &secret, session.epoch())?;
     prototype_history
-        .insert_commit(prototype.clone())
+        .insert_commit_selected(prototype.clone(), destination_interpretation.clone())
         .map_err(|_| invalid())?;
     let nodes = evidence
         .nodes
@@ -364,6 +372,7 @@ where
             destination.guard(),
             &evidence,
             &selection.selector.destination_path,
+            &admitted.admission_interpretation.selection(),
         )?;
         finalized
             .profile_pair
@@ -380,7 +389,7 @@ where
     super::mutations::apply(concrete.store().root(), &mut finalized)?;
     admitted.commit = resign(destination.guard(), finalized, &secret, session.epoch())?;
     prototype_history
-        .insert_commit(admitted.commit.clone())
+        .insert_commit_selected(admitted.commit.clone(), destination_interpretation)
         .map_err(|_| invalid())?;
     let baseline = destination
         .guard()
@@ -574,6 +583,7 @@ fn locate<S: crate::store::Store, C: Clock>(
     guard: &Guard<S, C>,
     evidence: &TreeEvidence,
     absolute: &[u8],
+    interpretation: &terrane_core::properties::selected::Selection,
 ) -> Result<(Digest, Vec<u8>, String), StoreFailure> {
     relative(absolute)?;
     let mut result = None;
@@ -598,9 +608,9 @@ fn locate<S: crate::store::Store, C: Clock>(
                     },
                 )
                 .collect::<Vec<_>>();
-            let effective =
-                terrane_core::properties::resolve(&layers, guard.defaults_for(evidence))
-                    .map_err(|_| invalid())?;
+            let effective = interpretation
+                .resolve(&layers, guard.defaults_for(evidence))
+                .map_err(|_| invalid())?;
             if result.is_some() {
                 return Err(invalid());
             }
