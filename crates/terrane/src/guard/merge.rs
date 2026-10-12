@@ -4,13 +4,76 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use terrane_core::algebra::{self, OperationDomains, Roots};
 use terrane_core::identity::{Digest, IdentityKind};
-use terrane_core::properties::RootLayer;
-use terrane_core::provenance::{Preset, Selector, TrustContext, VerifiedHistory};
+use terrane_core::properties::{Defaults, RootLayer};
+use terrane_core::provenance::{Preset, Selector, VerifiedHistory};
 use terrane_core::refs::{Commit, MergePolicy, RefRecord};
 use terrane_core::tree_builder::Tree;
 
+use super::history::VerifiedTree;
+#[cfg(test)]
+use super::recorded_properties::ReadInterpretations;
+use super::recorded_properties::SelectedReadInterpretation;
 use super::{AdmittedCommit, CommitRequest, Guard, StagedUpload, TreeEvidence, invalid};
 use crate::store::{Clock, Store, StoreFailure};
+
+// Pairing checks ordinary input consistency only. Production supplies these
+// pairs from VerifiedTrees; neither selection nor matching digests verifies them.
+#[cfg(test)]
+fn select_inputs(
+    interpretations: &ReadInterpretations,
+    pairs: [(Digest, Digest, &TreeEvidence); 3],
+    parents: [Digest; 2],
+) -> Result<[SelectedReadInterpretation; 3], StoreFailure> {
+    select_input_pairs(pairs, parents, |view, root| {
+        interpretations.select(view, root)
+    })
+}
+
+// The owning Guard supplies its actual installed or completed view meaning.
+// Exact input pairing remains independent of that ordinary selection.
+fn select_input_pairs(
+    pairs: [(Digest, Digest, &TreeEvidence); 3],
+    parents: [Digest; 2],
+    mut select: impl FnMut(Digest, Digest) -> Result<SelectedReadInterpretation, StoreFailure>,
+) -> Result<[SelectedReadInterpretation; 3], StoreFailure> {
+    if parents != [pairs[1].0, pairs[2].0]
+        || pairs
+            .iter()
+            .any(|(_, root, evidence)| *root != evidence.root)
+    {
+        return Err(invalid());
+    }
+
+    Ok([
+        select(pairs[0].0, pairs[0].1)?,
+        select(pairs[1].0, pairs[1].1)?,
+        select(pairs[2].0, pairs[2].1)?,
+    ])
+}
+
+fn bind_occurrence_domains(
+    domains: &mut OperationDomains,
+    input: &TreeEvidence,
+    selected: &SelectedReadInterpretation,
+    defaults: Defaults<'_>,
+    minimum: u64,
+) -> Result<(), StoreFailure> {
+    for occurrence in input.occurrences(minimum)? {
+        let layers = occurrence
+            .layers
+            .iter()
+            .map(|(properties, overrides)| RootLayer {
+                properties,
+                overrides,
+            })
+            .collect::<Vec<_>>();
+        let effective = selected.resolve(&layers, defaults)?;
+        domains
+            .bind_resolved(occurrence.root, &effective)
+            .map_err(|_| invalid())?;
+    }
+    Ok(())
+}
 
 pub(crate) struct RebaseRequest {
     pub(crate) base: Digest,
@@ -76,7 +139,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
         #[cfg(test)]
         trace.mark("admit-rebase-theirs-history-verified");
         let prepared = self.recompute_merge(
-            [&base.evidence, &ours.evidence, &theirs.evidence],
+            [&base, &ours, &theirs],
             [&ours_history, &theirs_history],
             [rebase.ours.commit, rebase.theirs],
             policies,
@@ -122,9 +185,16 @@ impl<S: Store, C: Clock> Guard<S, C> {
     }
 
     /// Keeps every Rc-backed tree and trust evaluator inside a synchronous phase.
+    ///
+    /// All three checked original views select interpretation before occurrence
+    /// resolution. Fold preprocessing retains the incoming original association.
+    ///
+    /// # Errors
+    /// Rejects inconsistent input pairs, missing configured interpretations,
+    /// invalid occurrence policy, ambiguous ownership or failed algebra replay.
     pub(super) fn recompute_merge(
         &self,
-        evidence: [&TreeEvidence; 3],
+        inputs: [&VerifiedTree; 3],
         histories: [&VerifiedHistory; 2],
         parents: [Digest; 2],
         policies: &[MergePolicy],
@@ -144,25 +214,26 @@ impl<S: Store, C: Clock> Guard<S, C> {
             "recompute-entry",
         );
         let minimum = self.config().min_chunk_size;
+        let pairs = inputs.map(|input| {
+            (
+                input.commit.identity(),
+                input.commit.commit().tree,
+                &input.evidence,
+            )
+        });
+        let selected = select_input_pairs(pairs, parents, |view, root| {
+            self.select_view(view, root, super::HistoryObservation::default())
+        })?;
+        let evidence = inputs.map(|input| &input.evidence);
         let mut domains = OperationDomains::new();
-        for input in evidence {
-            for occurrence in input.occurrences(minimum)? {
-                let layers = occurrence
-                    .layers
-                    .iter()
-                    .map(|(properties, overrides)| RootLayer {
-                        properties,
-                        overrides,
-                    })
-                    .collect::<Vec<_>>();
-                let effective = self
-                    .semantic_selection()
-                    .resolve(&layers, self.defaults_for(input))
-                    .map_err(|_| invalid())?;
-                domains
-                    .bind_resolved(occurrence.root, &effective)
-                    .map_err(|_| invalid())?;
-            }
+        for (input, interpretation) in evidence.iter().zip(&selected) {
+            bind_occurrence_domains(
+                &mut domains,
+                input,
+                interpretation,
+                self.defaults_for(input),
+                minimum,
+            )?;
         }
         #[cfg(test)]
         trace.mark("recompute-domains-resolved");
@@ -175,22 +246,20 @@ impl<S: Store, C: Clock> Guard<S, C> {
         #[cfg(test)]
         trace.mark("recompute-forest-built");
         let trusted = algebra::TrustContext::from_verified(vec![
-            TrustContext::new(
+            selected[1].evaluator(
                 histories[0],
-                parents[0],
+                (pairs[1].0, pairs[1].1),
                 Selector::preset(Preset::Any),
                 &self.config().storage_domain,
                 None,
-            )
-            .map_err(|_| invalid())?,
-            TrustContext::new(
+            )?,
+            selected[2].evaluator(
                 histories[1],
-                parents[1],
+                (pairs[2].0, pairs[2].1),
                 Selector::preset(Preset::Any),
                 &self.config().storage_domain,
                 None,
-            )
-            .map_err(|_| invalid())?,
+            )?,
         ])
         .map_err(|_| invalid())?;
         #[cfg(test)]
@@ -261,3 +330,12 @@ impl<S: Store, C: Clock> Guard<S, C> {
         })
     }
 }
+
+#[cfg(all(test, feature = "tokio", unix))]
+#[path = "merge/recorded_tests.rs"]
+mod recorded_tests;
+
+// Preserve the pure contract selectors in profiles without native Tokio support.
+#[cfg(all(test, not(all(feature = "tokio", unix))))]
+#[path = "merge/recorded_tests/ordinary_contracts.rs"]
+mod recorded_tests;

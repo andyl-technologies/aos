@@ -8,8 +8,11 @@ use terrane_core::provenance::VerifiedHistory;
 use terrane_core::refs::{CommitGraph, CommitParents, GraphError, MergePolicy};
 
 use super::merge::MergeOperation;
-use super::{AdmittedCommit, CommitRequest, Guard, denied, invalid};
+use super::{AdmittedCommit, CommitRequest, Guard, HistoryObservation, denied, invalid};
 use crate::store::{Clock, InvalidReason, Store, StoreErrorKind, StoreFailure};
+
+#[cfg(all(test, feature = "tokio", unix))]
+mod tests;
 
 #[derive(Clone, Copy)]
 pub(crate) enum JoinKind {
@@ -76,10 +79,17 @@ impl<S: Store, C: Clock> Guard<S, C> {
             .ok_or_else(|| denied(source, verb))?;
         #[cfg(test)]
         trace.mark("admit-join-source-authorized");
-        let ours_history = self.verified_history(current.commit).await?;
+        // These exact immutable witnesses belong to this invocation. Retaining
+        // trees with their histories avoids repeating complete traversal for
+        // algebra while leaving all current authority decisions independent.
+        let (ours, ours_history) = self
+            .verified_tree_history_observed(current.commit, HistoryObservation::default())
+            .await?;
         #[cfg(test)]
         trace.mark("admit-join-ours-history-verified");
-        let theirs_history = self.verified_history(incoming.commit).await?;
+        let (theirs, theirs_history) = self
+            .verified_tree_history_observed(incoming.commit, HistoryObservation::default())
+            .await?;
         #[cfg(test)]
         trace.mark("admit-join-theirs-history-verified");
         let graph = ancestry(
@@ -106,12 +116,6 @@ impl<S: Store, C: Clock> Guard<S, C> {
         let base = self.verified_tree(base).await?;
         #[cfg(test)]
         trace.mark("admit-join-base-tree-verified");
-        let ours = self.verified_tree(current.commit).await?;
-        #[cfg(test)]
-        trace.mark("admit-join-ours-tree-verified");
-        let theirs = self.verified_tree(incoming.commit).await?;
-        #[cfg(test)]
-        trace.mark("admit-join-theirs-tree-verified");
         let paths = theirs
             .evidence
             .occurrences(self.config().min_chunk_size)?
@@ -173,7 +177,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
             JoinKind::Fold => MergeOperation::Fold(&authorized),
         };
         let prepared = self.recompute_merge(
-            [&base.evidence, &ours.evidence, &theirs.evidence],
+            [&base, &ours, &theirs],
             [&ours_history, &theirs_history],
             [current.commit, incoming.commit],
             policies,
@@ -220,6 +224,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
             verb,
             paths,
             record: incoming,
+            cold_route_lifetime: None,
         });
         Ok((admitted, prepared.excluded))
     }
