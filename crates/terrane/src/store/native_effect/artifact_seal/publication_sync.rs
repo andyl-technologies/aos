@@ -1,9 +1,7 @@
-//! Synchronizes retained publication metadata on its original nofollow descriptor.
+//! Defines actual native publication synchronization boundaries.
 //!
-//! Callers are closed native workers. This helper neither creates an acknowledgment
-//! nor accepts a permission callback. Each boundary comes from the actual selected
-//! namespace or its independently configured controls. System ancestors are checked
-//! by the Frame but are never synchronized as publication directories.
+//! The outputs child synchronizes exact producer writes and consumed Original
+//! controls while preserving complete Frame checks at each effect boundary.
 
 #[path = "publication_sync/outputs.rs"]
 pub(super) mod outputs;

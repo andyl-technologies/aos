@@ -514,13 +514,22 @@ impl LocalFs for FaultFs {
                 crate::store::EffectFaultProbe::DirectorySync(_) => "directory sync",
                 crate::store::EffectFaultProbe::RenameNoReplace(_) => "create-once rename",
                 crate::store::EffectFaultProbe::Rename(_) => "replacing rename",
-                crate::store::EffectFaultProbe::SealRawPublication(_) => "raw publication",
+                crate::store::EffectFaultProbe::SealRetirementBarrier(_) => "retirement-barrier",
+                crate::store::EffectFaultProbe::ObserveCurrentPair(_) => {
+                    "current container pair observation"
+                }
+
                 crate::store::EffectFaultProbe::SealMutationPublication(_) => {
                     "checked mutation publication"
                 }
+                crate::store::EffectFaultProbe::SealRawPublication(_) => "raw publication",
                 crate::store::EffectFaultProbe::SealLeasePublication(path) => {
                     eprintln!("lease publication slot {}", path.display());
                     "lease publication"
+                }
+                crate::store::EffectFaultProbe::ObserveLocalTriple(_) => "local triple observation",
+                crate::store::EffectFaultProbe::LocalFirstOwnership(_, _) => {
+                    "local first ownership"
                 }
                 crate::store::EffectFaultProbe::CopiedPreparation(_) => "copied preparation",
                 crate::store::EffectFaultProbe::CopiedBarrier(_) => "copied barrier",
@@ -530,7 +539,8 @@ impl LocalFs for FaultFs {
                 }
                 crate::store::EffectFaultProbe::PermanentLocalReclaim(_) => "permanent reclaim",
                 crate::store::EffectFaultProbe::PermanentLocalProgress(_) => "permanent progress",
-                crate::store::EffectFaultProbe::Other => "other effect",
+                crate::store::EffectFaultProbe::LocalDeletion(_, _)
+                | crate::store::EffectFaultProbe::Other => "other effect",
             };
             eprintln!(
                 "actual preparation {:?}: effect {count} ({phase}), {} metadata paths in {} ordered batches, {} protected reads",
@@ -702,6 +712,16 @@ impl LocalFs for FaultFs {
         TokioLocalFs.lock_existing_exclusive(path).await
     }
 
+    async fn try_lock_existing_shared(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        self.lock_calls.fetch_add(1, Ordering::SeqCst);
+        TokioLocalFs.try_lock_existing_shared(path).await
+    }
+
+    async fn try_lock_existing_exclusive(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        self.lock_calls.fetch_add(1, Ordering::SeqCst);
+        TokioLocalFs.try_lock_existing_exclusive(path).await
+    }
+
     async fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         self.before_authoritative_read(path)?;
         let bytes = TokioLocalFs.read(path).await?;
@@ -719,6 +739,31 @@ impl LocalFs for FaultFs {
         let bytes = TokioLocalFs.read_nofollow(path).await?;
         self.after_read(path).await?;
         Ok(bytes)
+    }
+
+    #[cfg(unix)]
+    async fn read_payload_ranges(
+        &self,
+        read: crate::store::NativePayloadRangeRead,
+    ) -> std::io::Result<Option<crate::store::NativePayloadRangeRecord>> {
+        // Current history must retain its original descriptors and consumed
+        // ranges before the fixture's later publication fault can be reached.
+        TokioLocalFs.read_payload_ranges(read).await
+    }
+
+    #[cfg(unix)]
+    async fn read_ordinary_record(
+        &self,
+        read: crate::store::NativeOrdinaryRead,
+    ) -> std::io::Result<Option<crate::store::NativeOrdinaryRecord>> {
+        // Keep ordinary leaves on their scalar fault-intercepted read path.
+        // Held-history closing observations use the genuine native worker and
+        // cannot acknowledge a submitted publication effect.
+        if read.path_for_test().is_some() {
+            return Ok(None);
+        }
+
+        TokioLocalFs.read_ordinary_record(read).await
     }
 
     async fn write_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {

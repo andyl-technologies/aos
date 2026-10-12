@@ -17,6 +17,16 @@ pub(crate) struct ContentObservation {
     commit_gets: AtomicUsize,
     commit_puts: AtomicUsize,
     node_decodes: AtomicUsize,
+    get_close_pause: std::sync::Mutex<Option<std::sync::Arc<GetClosePause>>>,
+}
+
+/// Pauses an actual verified get before its first fresh closing observation.
+#[derive(Default)]
+pub(crate) struct GetClosePause {
+    /// Signals that the real get has consumed and verified its payload inputs.
+    pub(crate) arrived: tokio::sync::Notify,
+    /// Lets that same request begin its unchanged closing validation.
+    pub(crate) release: tokio::sync::Notify,
 }
 
 /// Captures the counters at a quiescent native fixture boundary.
@@ -37,6 +47,36 @@ pub(crate) struct ContentCounts {
 }
 
 impl ContentObservation {
+    /// Installs one pause in the next real native request, without changing data.
+    ///
+    /// # Panics
+    /// Panics if the isolated fixture's observation mutex is poisoned.
+    pub(crate) fn pause_next_get(&self) -> std::sync::Arc<GetClosePause> {
+        let pause = std::sync::Arc::new(GetClosePause::default());
+        *self
+            .get_close_pause
+            .lock()
+            .unwrap_or_else(|_| panic!("native content observation pause mutex poisoned")) =
+            Some(std::sync::Arc::clone(&pause));
+        pause
+    }
+
+    /// Hands an armed fixture the genuine pre-closing boundary once.
+    ///
+    /// # Panics
+    /// Panics if the isolated fixture's observation mutex is poisoned.
+    pub(super) async fn before_get_close(&self) {
+        let pause = self
+            .get_close_pause
+            .lock()
+            .unwrap_or_else(|_| panic!("native content observation pause mutex poisoned"))
+            .take();
+        if let Some(pause) = pause {
+            pause.arrived.notify_one();
+            pause.release.notified().await;
+        }
+    }
+
     /// Reads each counter without claiming an atomic cross-counter snapshot.
     pub(crate) fn snapshot(&self) -> ContentCounts {
         ContentCounts {

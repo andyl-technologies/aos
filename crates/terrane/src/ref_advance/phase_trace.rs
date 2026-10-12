@@ -73,3 +73,73 @@ impl<C: Clock> Drop for PhaseTrace<'_, C> {
         self.mark("scope-exit");
     }
 }
+
+/// Reports test-only native boundaries using a separate process monotonic clock.
+///
+/// This clock never supplies deadline input. Scope exit describes the observed
+/// object lifetime, not release of all duplicated native exclusion descriptors.
+pub(crate) struct NativeTrace {
+    started: Option<std::time::Instant>,
+    scope: u64,
+    path: std::path::PathBuf,
+    role: &'static str,
+    owner_task: String,
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Opt-in test diagnostic timestamps only report observations; they never enter request deadlines, injected-clock state, publication evidence or identity."
+)]
+impl NativeTrace {
+    /// Opens an opt-in observation without acquiring a filesystem capability.
+    ///
+    /// # Panics
+    /// Panics if enabled diagnostics cannot write to standard error.
+    pub(crate) fn new(path: &std::path::Path, role: &'static str) -> Self {
+        static NEXT_SCOPE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let enabled = std::env::var_os("TERRANE_REF_PHASE_TRACE").is_some();
+        #[cfg(feature = "tokio")]
+        let owner_task = format!("{:?}", tokio::task::try_id());
+        #[cfg(not(feature = "tokio"))]
+        let owner_task = "unavailable".to_owned();
+        let trace = Self {
+            owner_task,
+            started: enabled.then(std::time::Instant::now),
+            scope: NEXT_SCOPE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            path: path.to_path_buf(),
+            role,
+        };
+        trace.mark("entry");
+        trace
+    }
+
+    /// Reports a boundary without consulting or changing the injected clock.
+    ///
+    /// # Panics
+    /// Panics if enabled diagnostics cannot write to standard error.
+    pub(crate) fn mark(&self, phase: &str) {
+        let Some(started) = self.started else {
+            return;
+        };
+        #[cfg(feature = "tokio")]
+        let task = tokio::task::try_id();
+        #[cfg(not(feature = "tokio"))]
+        let task: Option<()> = None;
+        eprintln!(
+            "native-phase scope={} role={} path={:?} owner_task={} current_task={task:?} thread={:?} process_at={:?} elapsed={:?} phase={phase}",
+            self.scope,
+            self.role,
+            self.path,
+            self.owner_task,
+            std::thread::current().id(),
+            std::time::Instant::now(),
+            started.elapsed(),
+        );
+    }
+}
+
+impl Drop for NativeTrace {
+    fn drop(&mut self) {
+        self.mark("object-scope-exit");
+    }
+}

@@ -1,4 +1,4 @@
-//! Seals actual synchronized container descriptors before journal commitment.
+//! Seals actual synchronized container and canonical Trash descriptors before commitment.
 //!
 //! A seal originates only inside the native worker after the same nofollow
 //! descriptor has supplied the verified bytes and durable synchronization. Its
@@ -16,6 +16,29 @@
 #[cfg(test)]
 #[path = "artifact_seal/diagnostic.rs"]
 mod diagnostic;
+
+/// Owns closed native pack/index observations with retained descriptor checks.
+#[path = "artifact_seal/current_pair.rs"]
+pub(super) mod current_pair;
+
+/// Retains actual local triples and publishes first ownership without unlinking.
+#[path = "artifact_seal/local_ownership.rs"]
+pub(super) mod local_ownership;
+
+/// Observes and advances exact ordinary local deletion with closed native results.
+#[path = "artifact_seal/local_deletion.rs"]
+pub(super) mod local_deletion;
+
+/// Owns closed acknowledgment of an actual selected initial retirement barrier.
+#[path = "artifact_seal/retirement_barrier.rs"]
+pub(super) mod retirement_barrier;
+
+/// Retains actual maintenance descriptors without creator or physical-age permission.
+#[path = "artifact_seal/restore_pair.rs"]
+pub(super) mod restore_pair;
+/// Closes native durability acknowledgment for privately qualified restoration.
+#[path = "artifact_seal/restore_publication.rs"]
+pub(super) mod restore_publication;
 
 /// Synchronizes genuine publication metadata without creating result channels.
 #[path = "artifact_seal/publication_sync.rs"]
@@ -77,7 +100,7 @@ pub(super) struct SealRequest {
 
 impl SealRequest {
     /// Borrows the exact artifact name for test phase selection.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "tokio"))]
     pub(super) fn path(&self) -> &Path {
         &self.path
     }
@@ -161,7 +184,7 @@ impl CommitRequest {
     }
 
     /// Borrows the exact registered journal destination for test phase selection.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "tokio"))]
     pub(super) fn journal_path(&self) -> &Path {
         &self.journal
     }
@@ -170,7 +193,7 @@ impl CommitRequest {
 /// Constructs an empty result channel and the closed descriptor-seal request.
 ///
 /// # Errors
-/// Rejects a noncanonical container key from the genuine Pending receipt. Only
+/// Rejects a noncanonical container or Trash key from the genuine Pending receipt. Only
 /// native execution can fill the newly constructed artifact result channel.
 pub(super) fn seal_plan(
     pending: PendingReceipt,
@@ -247,13 +270,16 @@ fn container_key(key: &str) -> io::Result<()> {
         state: JournalState::Pending,
     };
     proposal.encode().map_err(io::Error::other)?;
-    if !key.starts_with("objects/pack/") {
-        return Err(io::Error::other("creation seal requires a container key"));
+    if !key.starts_with("objects/pack/") && !key.starts_with("trash/") {
+        return Err(io::Error::other(
+            "creation seal requires a canonical container or Trash key",
+        ));
     }
     Ok(())
 }
 
-fn journal_path(control: &Path, key: &str) -> PathBuf {
+/// Derives the fixed protected journal name without granting artifact authority.
+pub(super) fn journal_path(control: &Path, key: &str) -> PathBuf {
     let suffix: String = blake3::hash(key.as_bytes())
         .as_bytes()
         .iter()
@@ -263,6 +289,19 @@ fn journal_path(control: &Path, key: &str) -> PathBuf {
 }
 
 fn verify_binding(key: &str, binding: &ArtifactBinding, bytes: &[u8]) -> io::Result<()> {
+    if let ArtifactBinding::Trash(expected) = binding {
+        let tombstone = terrane_core::gc::Tombstone::decode(bytes).map_err(io::Error::other)?;
+        let id = crate::pack::PackId::from_random_bytes(tombstone.pack);
+        if expected != bytes
+            || tombstone.encode() != bytes
+            || key != format!("trash/{}/{id}", tombstone.cycle)
+        {
+            return Err(io::Error::other(
+                "creation Trash body or association differs",
+            ));
+        }
+        return Ok(());
+    }
     let (kind, digest, size) = match binding {
         ArtifactBinding::Pack { digest, size } if key.ends_with(".pack") => {
             (IdentityKind::Pack, digest, size)
@@ -295,28 +334,66 @@ struct Projection {
     preimages: Vec<ExactRead>,
     final_check: Option<OwnedFinalCheck>,
     directories: Option<Arc<[NativeOpenedDirectory]>>,
+    pairs: Vec<Arc<current_pair::PairHold>>,
 }
 
 impl Projection {
     fn refresh(&self, changed: &[&Path]) -> Result<(), NativeEffectFailure> {
         if let Some(directories) = &self.directories {
             for directory in directories.iter() {
-                directory.check()?;
+                directory.check().inspect_err(|_| {
+                    #[cfg(test)]
+                    diagnostic::refusal(
+                        "projection-retained-directory",
+                        Some(&directory.path),
+                        None,
+                    );
+                })?;
             }
         }
+        // This scratch holds lexical bytes only. Every row still observes its
+        // complete original ancestry freshly, including both name passes.
+        let mut parent_prefix = PathBuf::new();
         for name in &self.names {
-            name.check(&self.exclusions)?;
+            name.check_with_parent_scratch(&self.exclusions, &mut parent_prefix)
+                .inspect_err(|_| {
+                    #[cfg(test)]
+                    diagnostic::refusal("projection-name", Some(&name.path), None);
+                })?;
         }
+        for pair in &self.pairs {
+            pair.recheck().inspect_err(|_| {
+                #[cfg(test)]
+                diagnostic::refusal("projection-pair", None, None);
+            })?;
+        }
+        let mut scratch = Vec::new();
         for preimage in &self.preimages {
             if !changed.contains(&preimage.path.as_path()) {
-                preimage.check()?;
+                preimage
+                    .check_with_parent_scratch(&mut scratch, &mut parent_prefix)
+                    .inspect_err(|_| {
+                        #[cfg(test)]
+                        diagnostic::refusal(
+                            "projection-exact-preimage",
+                            Some(&preimage.path),
+                            None,
+                        );
+                    })?;
             }
         }
         for name in &self.names {
-            name.check(&self.exclusions)?;
+            name.check_with_parent_scratch(&self.exclusions, &mut parent_prefix)
+                .inspect_err(|_| {
+                    #[cfg(test)]
+                    diagnostic::refusal("projection-name-after-preimages", Some(&name.path), None);
+                })?;
         }
         if let Some(final_check) = &self.final_check {
-            final_check.recheck()?;
+            final_check.recheck().inspect_err(|_| {
+                #[cfg(test)]
+                diagnostic::refusal("projection-final-current", None, None);
+            })?;
         }
         Ok(())
     }
@@ -375,7 +452,10 @@ impl Worker {
                 return Err(io::Error::other("injected creation exact read failure").into());
             }
         }
-        self.projection.refresh(changed)
+        self.projection.refresh(changed).inspect_err(|_| {
+            #[cfg(test)]
+            diagnostic::refusal("worker-projection-refresh", None, None);
+        })
     }
 
     fn file_sync(&mut self, file: &File, changed: &[&Path]) -> Result<(), NativeEffectFailure> {
@@ -383,11 +463,20 @@ impl Worker {
         if self.faults.contains(&EffectFault::BeforeFileSync) {
             return Err(io::Error::other("injected creation file sync failure").into());
         }
-        self.refresh(changed)?;
-        file.sync_all()?;
+        self.refresh(changed).inspect_err(|_| {
+            #[cfg(test)]
+            diagnostic::refusal("worker-file-before-refresh", None, None);
+        })?;
+        file.sync_all().inspect_err(|_| {
+            #[cfg(test)]
+            diagnostic::refusal("worker-file-sync-syscall", None, None);
+        })?;
         #[cfg(all(test, feature = "tokio"))]
         wait_test_gate(&mut self.gates, TestGatePhase::AfterSourceSync)?;
-        self.refresh(changed)?;
+        self.refresh(changed).inspect_err(|_| {
+            #[cfg(test)]
+            diagnostic::refusal("worker-file-after-refresh", None, None);
+        })?;
         #[cfg(test)]
         if self.faults.contains(&EffectFault::AfterFileSync) {
             return Err(io::Error::other("injected creation failure after file sync").into());
@@ -403,7 +492,10 @@ impl Worker {
     ) -> Result<(), NativeEffectFailure> {
         #[cfg(not(test))]
         let _ = committed;
-        directory.check()?;
+        directory.check().inspect_err(|_| {
+            #[cfg(test)]
+            diagnostic::refusal("worker-directory-initial-check", None, None);
+        })?;
         #[cfg(all(test, feature = "tokio"))]
         wait_test_gate(&mut self.gates, TestGatePhase::BeforeDirectorySync)?;
         #[cfg(test)]
@@ -423,10 +515,22 @@ impl Worker {
         // A physical worker can queue at the native handoff. Recheck the
         // complete genuine Frame after release, before performing this syscall.
         // Only this operation's already verified changed leaves are exempted.
-        self.refresh(changed)?;
-        directory.check()?;
-        directory.file.sync_all()?;
-        directory.check()?;
+        self.refresh(changed).inspect_err(|_| {
+            #[cfg(test)]
+            diagnostic::refusal("worker-directory-before-refresh", None, None);
+        })?;
+        directory.check().inspect_err(|_| {
+            #[cfg(test)]
+            diagnostic::refusal("worker-directory-before-sync-check", None, None);
+        })?;
+        directory.file.sync_all().inspect_err(|_| {
+            #[cfg(test)]
+            diagnostic::refusal("worker-directory-sync-syscall", None, None);
+        })?;
+        directory.check().inspect_err(|_| {
+            #[cfg(test)]
+            diagnostic::refusal("worker-directory-after-sync-check", None, None);
+        })?;
         #[cfg(all(test, feature = "tokio"))]
         wait_test_gate(&mut self.gates, TestGatePhase::AfterDirectorySync)?;
         #[cfg(test)]
@@ -442,17 +546,31 @@ impl Worker {
         {
             return Err(io::Error::other("injected creation failure after directory sync").into());
         }
-        self.refresh(changed)?;
-        directory.check()?;
+        self.refresh(changed).inspect_err(|_| {
+            #[cfg(test)]
+            diagnostic::refusal("worker-directory-after-refresh", None, None);
+        })?;
+        directory.check().inspect_err(|_| {
+            #[cfg(test)]
+            diagnostic::refusal("worker-directory-final-check", None, None);
+        })?;
         Ok(())
     }
 }
 
-/// Identifies closed creation and lease operations, including their retention wrapper.
+/// Identifies closed creation, observation and barrier operations with their retention wrapper.
 pub(super) fn owns(plan: &Plan) -> bool {
     match plan {
         Plan::SealMutationPublication(_)
         | Plan::SealRawPublication(_)
+        | Plan::SealRestorePublication(_)
+        | Plan::SealRetirementBarrier(_)
+        | Plan::ObserveCurrentPair(_)
+        | Plan::ObserveLocalTriple(_)
+        | Plan::AcknowledgeLocalOwnership(_)
+        | Plan::ObserveLocalDeletion(_)
+        | Plan::AdvanceLocalDeletion(_)
+        | Plan::ObserveRestorePair(_)
         | Plan::SealLeasePublication(_)
         | Plan::SealCopiedPreparation(_)
         | Plan::ObserveCopiedBarrier(_)
@@ -468,6 +586,14 @@ pub(super) fn owns(plan: &Plan) -> bool {
                 operation.as_ref(),
                 Plan::SealMutationPublication(_)
                     | Plan::SealRawPublication(_)
+                    | Plan::SealRestorePublication(_)
+                    | Plan::SealRetirementBarrier(_)
+                    | Plan::ObserveCurrentPair(_)
+                    | Plan::ObserveLocalTriple(_)
+                    | Plan::AcknowledgeLocalOwnership(_)
+                    | Plan::ObserveLocalDeletion(_)
+                    | Plan::AdvanceLocalDeletion(_)
+                    | Plan::ObserveRestorePair(_)
                     | Plan::SealLeasePublication(_)
                     | Plan::SealCopiedPreparation(_)
                     | Plan::ObserveCopiedBarrier(_)
@@ -495,6 +621,7 @@ pub(super) fn execute(effect: NativeFsEffect) -> Result<(), NativeEffectFailure>
         names,
         preimages,
         final_check,
+        pairs,
         plan,
         #[cfg(test)]
         faults,
@@ -515,6 +642,7 @@ pub(super) fn execute(effect: NativeFsEffect) -> Result<(), NativeEffectFailure>
             preimages,
             final_check,
             directories,
+            pairs,
         },
         #[cfg(test)]
         faults,
@@ -527,6 +655,19 @@ pub(super) fn execute(effect: NativeFsEffect) -> Result<(), NativeEffectFailure>
     wait_test_gate(&mut worker.gates, TestGatePhase::BeforeChecks)?;
     worker.refresh(&[])?;
     match plan {
+        Plan::SealRetirementBarrier(request) => retirement_barrier::execute(*request, worker),
+        Plan::ObserveCurrentPair(request) => current_pair::execute(*request, worker),
+        Plan::ObserveLocalTriple(request) => local_ownership::execute(*request, worker),
+        Plan::AcknowledgeLocalOwnership(request) => {
+            local_ownership::ownership::execute(*request, worker)
+        }
+        Plan::ObserveLocalDeletion(request) => {
+            local_deletion::observation::execute(*request, worker)
+        }
+        Plan::AdvanceLocalDeletion(request) => local_deletion::effects::execute(*request, worker),
+        Plan::ObserveRestorePair(request) => restore_pair::execute(*request, worker),
+        Plan::SealRestorePublication(request) => restore_publication::execute(*request, worker),
+
         Plan::SealMutationPublication(request) => mutation_publication::execute(*request, worker),
         Plan::SealRawPublication(request) => raw_publication::execute(*request, worker),
         Plan::SealLeasePublication(request) => lease_publication::execute(*request, worker),
@@ -872,6 +1013,15 @@ fn commit(mut request: CommitRequest, mut worker: Worker) -> Result<(), NativeEf
             &request.seal.bytes,
             owner,
         )?;
+    }
+    for pair in &worker.projection.pairs {
+        pair.recheck()?;
+    }
+    if let Some(check) = &worker.projection.final_check {
+        check.recheck()?;
+    }
+    if let Some(check) = &request.seal.projection.final_check {
+        check.recheck()?;
     }
     let _ = request.result.send(CommittedReceipt);
     Ok(())
