@@ -106,14 +106,10 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         &self,
         name: &str,
         selected: &RefRecord,
-        retain_original: bool,
+        retention: super::publication::PayloadRetention,
     ) -> Result<(RefLogRecord, super::publication::receipts::RecordRead), StoreFailure> {
         let key = log_key(name, selected, self.inner.access.version())?;
-        let read = if retain_original {
-            self.read_optional_retained(&key).await?
-        } else {
-            self.read_optional_observed(&key).await?
-        };
+        let read = retention.read(self, &key).await?;
         let bytes = read.bytes().ok_or_else(|| corrupt(name))?;
         let log = RefLogRecord::decode(bytes).map_err(|_| corrupt(name))?;
         if &log.record != selected {
@@ -152,8 +148,13 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         selected: RefRecord,
         reads: &mut Vec<super::publication::receipts::RecordRead>,
     ) -> Result<Vec<RefLogRecord>, StoreFailure> {
-        self.committed_logs_observed_mode(name, selected, reads, false)
-            .await
+        self.committed_logs_observed_mode(
+            name,
+            selected,
+            reads,
+            super::publication::PayloadRetention::Observed,
+        )
+        .await
     }
 
     /// Preserves original physical recipes for every consumed committed log.
@@ -166,32 +167,35 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         selected: RefRecord,
         reads: &mut Vec<super::publication::receipts::RecordRead>,
     ) -> Result<Vec<RefLogRecord>, StoreFailure> {
-        self.committed_logs_observed_mode(name, selected, reads, true)
-            .await
+        self.committed_logs_observed_mode(
+            name,
+            selected,
+            reads,
+            super::publication::PayloadRetention::Strict,
+        )
+        .await
     }
 
-    async fn committed_logs_observed_mode(
+    /// Traverses the same exact history under an operation's payload read policy.
+    ///
+    /// # Errors
+    /// Rejects missing or incompatible history and preserves actual read failures.
+    pub(super) async fn committed_logs_observed_mode(
         &self,
         name: &str,
         mut selected: RefRecord,
         reads: &mut Vec<super::publication::receipts::RecordRead>,
-        retain_original: bool,
+        retention: super::publication::PayloadRetention,
     ) -> Result<Vec<RefLogRecord>, StoreFailure> {
         let mut records = Vec::new();
         loop {
-            let (log, read) = self
-                .read_log_observed(name, &selected, retain_original)
-                .await?;
+            let (log, read) = self.read_log_observed(name, &selected, retention).await?;
             reads.push(read);
             let previous = if selected.candidate_id.is_some() {
                 log.selected_previous().map_err(|_| corrupt(name))?.cloned()
             } else if selected.seq > 1 {
                 let key = BucketKey::reflog(name, selected.seq - 1).map_err(|_| corrupt(name))?;
-                let read = if retain_original {
-                    self.read_optional_retained(&key).await?
-                } else {
-                    self.read_optional_observed(&key).await?
-                };
+                let read = retention.read(self, &key).await?;
                 let bytes = read.bytes().ok_or_else(|| corrupt(name))?;
                 let previous = RefLogRecord::decode(bytes)
                     .map_err(|_| corrupt(name))?

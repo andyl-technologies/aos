@@ -5,9 +5,237 @@ use super::{
     Mutability, Path, Plan, PortableCurrent, StoreErrorKind, StoreFailure, corrupt, io_failure,
     unsupported,
 };
+use std::collections::BTreeSet;
 use terrane_core::bucket::BucketKey;
 
+// Bound the additional future staging/target preimages in each complete native
+// check. Earlier acknowledged targets retain complete physical predicates.
+const MAX_IMMUTABLE_INSTALLS_PER_COHORT: usize = 8;
+
+/// Aggregates one bounded batch's attempted work using process time only.
+#[cfg(test)]
+struct BatchTimings {
+    trace: crate::ref_advance::NativeTrace,
+    started: Option<std::time::Instant>,
+    phase: usize,
+    durations: [std::time::Duration; 3],
+    rows: usize,
+    installs: usize,
+    recaptures: usize,
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Opt-in test-only process timing never enters authority or publication evidence."
+)]
+impl BatchTimings {
+    fn new(root: &Path, rows: usize) -> Self {
+        Self {
+            trace: crate::ref_advance::NativeTrace::new(root, "raw-immutable-batch-aggregate"),
+            started: std::env::var_os("TERRANE_REF_PHASE_TRACE")
+                .is_some()
+                .then(std::time::Instant::now),
+            phase: 0,
+            durations: [std::time::Duration::ZERO; 3],
+            rows,
+            installs: 0,
+            recaptures: 0,
+        }
+    }
+
+    fn phase(&mut self, next: usize) {
+        if let Some(started) = self.started {
+            self.durations[self.phase] += started.elapsed();
+            self.started = Some(std::time::Instant::now());
+        }
+        self.phase = next;
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Opt-in test-only process timing never enters authority or publication evidence."
+)]
+impl Drop for BatchTimings {
+    fn drop(&mut self) {
+        let Some(started) = self.started else {
+            return;
+        };
+        self.durations[self.phase] += started.elapsed();
+        self.trace.mark(&format!(
+            "aggregate preparation={:?} ack-await={:?} recapture={:?} rows={} prepared-installs={} recapture-attempts={}",
+            self.durations[0], self.durations[1], self.durations[2],
+            self.rows, self.installs, self.recaptures,
+        ));
+    }
+}
+
 impl Frame {
+    /// Completely verifies durable staged payloads before selecting a commit slot.
+    ///
+    /// # Errors
+    /// Rejects any changed input/output body, physical predicate or current
+    /// authority, and refuses failed actual directory synchronization.
+    pub(super) async fn verify_staged_payloads<F: LocalFs + BucketBinding>(
+        &self,
+        fs: &F,
+        root: &Path,
+    ) -> Result<(), StoreFailure> {
+        self.execute(
+            fs,
+            Plan::SyncDirectory {
+                path: root.to_owned(),
+            },
+        )
+        .await
+    }
+
+    /// Reports actual newly created targets after every cohort and recapture.
+    ///
+    /// This result is ordinary provenance data, never permission or durability
+    /// authority. Equal preexisting bodies contribute no created target.
+    ///
+    /// # Errors
+    /// Preserves every install failure and returns no successful partial set.
+    pub(super) async fn install_immutable_cohort_tracked<F: LocalFs + BucketBinding>(
+        &mut self,
+        fs: &F,
+        root: &Path,
+        rows: &[(&str, &[u8])],
+        candidates: Option<super::super::immutable_cohort::scope::Candidates>,
+    ) -> Result<BTreeSet<std::path::PathBuf>, StoreFailure> {
+        let mut staging_names = BTreeSet::new();
+        let mut created = BTreeSet::new();
+        for batch in rows.chunks(MAX_IMMUTABLE_INSTALLS_PER_COHORT) {
+            created.extend(
+                self.install_immutable_batch(
+                    fs,
+                    root,
+                    batch,
+                    &mut staging_names,
+                    candidates
+                        .as_ref()
+                        .map(|candidates| candidates.cohort(&created)),
+                )
+                .await?,
+            );
+        }
+        Ok(created)
+    }
+
+    /// Acknowledges and actually recaptures one fixed batch before the next.
+    async fn install_immutable_batch<F: LocalFs + BucketBinding>(
+        &mut self,
+        fs: &F,
+        root: &Path,
+        rows: &[(&str, &[u8])],
+        staging_names: &mut BTreeSet<std::path::PathBuf>,
+        scope: Option<super::super::immutable_cohort::scope::Scope>,
+    ) -> Result<BTreeSet<std::path::PathBuf>, StoreFailure> {
+        use super::super::immutable_cohort;
+
+        #[cfg(test)]
+        let mut timings = BatchTimings::new(root, rows.len());
+        let policy = FencePolicy::Payload { owner: self.owner };
+        let mut installs = Vec::new();
+        let mut completed = Vec::new();
+        let mut created = BTreeSet::new();
+        for &(key, bytes) in rows {
+            let parsed = BucketKey::parse(key).map_err(|_| corrupt())?;
+            if parsed.mutability() != Mutability::Immutable {
+                return Err(corrupt());
+            }
+            let mut parent = root.to_owned();
+            for part in Path::new(key).parent().ok_or_else(corrupt)?.components() {
+                if !matches!(part, std::path::Component::Normal(_)) {
+                    return Err(corrupt());
+                }
+                parent.push(part);
+                self.directory(
+                    fs,
+                    &parent,
+                    FencePolicy::NamespaceDirectory { owner: self.owner },
+                )
+                .await?;
+            }
+            let target = root.join(key);
+            let existing = self.actual_read(fs, &target, policy).await?;
+            if existing.as_deref() == Some(bytes) {
+                continue;
+            }
+            if existing.is_some() {
+                return Err(corrupt());
+            }
+
+            let entropy = fs.random_bytes(16).await.map_err(io_failure)?;
+            if entropy.len() != 16 {
+                return Err(unsupported());
+            }
+            let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
+            let temporary = parent.join(format!(".terrane-tmp:{suffix}"));
+            // This set records only uniqueness, never successful absence or
+            // physical authority. Every new staging path is freshly observed.
+            if !staging_names.insert(temporary.clone())
+                || self.actual_read(fs, &temporary, policy).await?.is_some()
+            {
+                return Err(corrupt());
+            }
+            completed.push((temporary.clone(), target.clone(), bytes));
+            installs.push(immutable_cohort::Install {
+                temporary,
+                target,
+                bytes: bytes.to_vec(),
+                policy,
+            });
+        }
+        if installs.is_empty() {
+            return Ok(created);
+        }
+
+        #[cfg(test)]
+        {
+            timings.installs = installs.len();
+        }
+        let (plan, receipt) = match scope {
+            Some(scope) => immutable_cohort::request_scoped(installs, Some(scope)),
+            None => immutable_cohort::request(installs),
+        };
+        #[cfg(test)]
+        timings.phase(1);
+        self.execute(fs, plan).await?;
+        receipt.take().map_err(super::native_failure)?;
+        #[cfg(test)]
+        timings.phase(2);
+        for (temporary, target, bytes) in completed {
+            // Only returned native ACK permits rebinding the caller's frame.
+            // Independently read every final target; never assume successful
+            // installation from an adapter's callback or worker plan alone.
+            self.reads
+                .retain(|read| read.path != temporary && read.path != target);
+            #[cfg(test)]
+            {
+                timings.recaptures += 1;
+            }
+            if self.actual_read(fs, &target, policy).await?.as_deref() != Some(bytes) {
+                return Err(corrupt());
+            }
+            if let Some(writes) = &mut self.writes {
+                writes.records.insert(
+                    target.clone(),
+                    CompletedWrite {
+                        root: root.to_owned(),
+                        policy,
+                        expected: Some(bytes.to_vec()),
+                    },
+                );
+            }
+            created.insert(target);
+        }
+        Ok(created)
+    }
+
     /// Checks or privately creates a fixed staging or projection directory.
     ///
     /// # Errors

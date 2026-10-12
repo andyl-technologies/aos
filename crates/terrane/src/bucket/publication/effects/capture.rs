@@ -276,7 +276,7 @@ impl Frame {
     /// # Errors
     /// Rejects unsafe or changed nodes and ancestors and unavailable reads.
     /// An exact missing leaf or parent returns explicit absence.
-    pub(super) async fn actual_read<F: LocalFs + BucketBinding>(
+    pub(in crate::store::native_effect) async fn actual_read<F: LocalFs + BucketBinding>(
         &mut self,
         fs: &F,
         path: &Path,
@@ -455,6 +455,7 @@ impl Frame {
             names,
             preimages,
             final_check: self.final_check.clone(),
+            pairs: self.pairs.iter().map(Arc::clone).collect(),
             plan,
             #[cfg(test)]
             faults: Vec::new(),
@@ -471,6 +472,11 @@ impl Frame {
     pub(super) fn read_projection(
         &self,
     ) -> Result<crate::store::native_effect::NativeReadProjection, StoreFailure> {
+        // This fixed read recipe owns named and whole-value inputs only.
+        // Collector pair observations keep their separate genuine worker lane.
+        if !self.pairs.is_empty() {
+            return Err(unsupported());
+        }
         let (names, preimages) = self.physical_inputs()?;
         Ok(crate::store::native_effect::NativeReadProjection::new(
             Arc::clone(&self.exclusions),
@@ -509,7 +515,7 @@ impl Frame {
     /// # Errors
     /// Preserves genuine current-check rejection and unsupported or failed
     /// native effects. Failures after submission can be indeterminate.
-    pub(super) async fn execute<F: LocalFs + BucketBinding>(
+    pub(in crate::store::native_effect) async fn execute<F: LocalFs + BucketBinding>(
         &self,
         fs: &F,
         plan: Plan,

@@ -98,7 +98,7 @@ fn selected_active_namespace_rejects_gap_and_inherited_or_malformed_pointer() {
         (
             "index-roots",
             &[0xff],
-            Error::Cbor(crate::cbor::Error::Unsupported),
+            Error::Cbor(crate::cbor::Error::Malformed),
         ),
     ] {
         let properties = vec![Property { name, value }];

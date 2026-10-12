@@ -64,8 +64,8 @@ impl DomainAdmission {
     ///
     /// # Errors
     ///
-    /// Returns `Invalid(Upload)` for a forbidden transition or reference, or
-    /// DOM-3 when a more-closed transition reuses an old-domain record.
+    /// Returns `Invalid(Upload)` for an invalid domain, forbidden transition or
+    /// reference, or DOM-3 when a more-closed transition reuses an old-domain record.
     pub fn from_records(
         previous: Option<Domain<'_>>,
         effective: Domain<'_>,
@@ -100,13 +100,24 @@ impl DomainAdmission {
     ///
     /// # Errors
     ///
-    /// Returns `Invalid(Upload)` naming DOM-2 for an incomparable or widening
-    /// transition, or DOM-5 for a reference to a more-closed storage scope.
+    /// Returns `Invalid(Upload)` naming DOM-1 for an invalid domain label,
+    /// DOM-2 for an incomparable or widening transition, or DOM-5 for a
+    /// reference to a more-closed storage scope.
     pub fn new(
         previous: Option<Domain<'_>>,
         effective: Domain<'_>,
         references: &[DomainReference<'_>],
     ) -> Result<Self, StoreFailure> {
+        // Domain's public variants can be constructed without its label parser.
+        // Admission must establish valid scopes before comparing their order.
+        validate_domain(effective)?;
+        if let Some(previous) = previous {
+            validate_domain(previous)?;
+        }
+        for reference in references {
+            validate_domain(reference.domain)?;
+        }
+
         if previous.is_some_and(|old| !effective.permits_reference(old)) {
             return Err(invalid("DOM-2"));
         }
@@ -134,6 +145,12 @@ impl DomainAdmission {
     pub fn requires_readmission(&self) -> bool {
         self.readmission
     }
+}
+
+fn validate_domain(domain: Domain<'_>) -> Result<(), StoreFailure> {
+    Domain::parse(&super::label(domain))
+        .map(|_| ())
+        .map_err(|_| invalid("DOM-1"))
 }
 
 fn invalid(rule_id: &'static str) -> StoreFailure {

@@ -344,3 +344,54 @@ fn resolve<'query, 'value>(
         }
     }
 }
+
+#[cfg(test)]
+pub(super) fn assert_independent_active_limits(candidate: &Candidate<'_, '_, '_>) {
+    let mut walker = Walker {
+        candidate,
+        output: Occurrences {
+            rows: Vec::new(),
+            work: Work::default(),
+        },
+        hops: Vec::new(),
+        active: alloc::vec![candidate.prepared.owner()],
+        stop_after_first: false,
+    };
+    assert_eq!(
+        walker.route(candidate.prepared.owner(), candidate.route),
+        Err(Error::Limit)
+    );
+    walker.active = alloc::vec![[0xff; 32]; MAX_GRAFT_DEPTH + 1];
+    assert_eq!(
+        walker.route(candidate.prepared.owner(), candidate.route),
+        Err(Error::Limit)
+    );
+    walker.active.clear();
+    let tree = candidate
+        .prepared
+        .trees
+        .iter()
+        .find(|(root, _)| *root == candidate.prepared.owner())
+        .map(|(_, tree)| *tree);
+    let Some(tree) = tree else {
+        panic!("checked owner")
+    };
+    assert_eq!(
+        walker.node(
+            candidate.prepared.owner(),
+            tree,
+            candidate.route,
+            &mut alloc::vec![candidate.route]
+        ),
+        Err(Error::Limit)
+    );
+    assert_eq!(
+        walker.node(
+            candidate.prepared.owner(),
+            tree,
+            candidate.route,
+            &mut alloc::vec![[0xff; 32]; usize::from(MAX_TREE_LEVEL) + 1]
+        ),
+        Err(Error::Limit)
+    );
+}

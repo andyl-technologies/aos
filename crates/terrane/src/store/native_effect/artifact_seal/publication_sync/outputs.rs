@@ -1,16 +1,23 @@
 //! Synchronizes closed publication output inventories with complete current refresh.
 //!
 //! Inventories select durability work only. The actual Worker retains all
-//! original inputs, controls, descriptors and operation checks.
+//! original inputs, controls, descriptors, pairs and operation checks.
 
 use super::super::super::{NativeOpenedDirectory, ParentFence};
 use super::super::{
     FencePolicy, MetadataStamp, NativeEffectFailure, Worker, checked_body, checked_protected,
     directories_below, open_native,
 };
+#[path = "durability.rs"]
+mod durability;
+#[cfg(test)]
+#[path = "raw_timings.rs"]
+mod raw_timings;
+
 use super::SyncScope;
+use durability::SyncWorker;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::File,
     io,
     path::{Path, PathBuf},
@@ -147,13 +154,13 @@ fn insert_directory(
 }
 
 fn original_directory(
-    worker: &Worker,
+    worker: &SyncWorker<'_>,
     path: &Path,
     owner: u32,
 ) -> io::Result<NativeOpenedDirectory> {
-    worker.projection.root(path, owner, true)?;
+    worker.projection().root(path, owner, true)?;
     let name = worker
-        .projection
+        .projection()
         .names
         .iter()
         .find(|name| name.path == path)
@@ -199,12 +206,61 @@ pub(in super::super) fn synchronize(
     inventory: Inventory<'_>,
     worker: &mut Worker,
 ) -> Result<(), NativeEffectFailure> {
+    synchronize_inner(inventory, &mut SyncWorker::ordinary(worker))
+}
+
+/// Synchronizes Raw outputs with a closed, producer-derived immutable scope.
+///
+/// # Errors
+/// Refuses mismatched scope receipts and every ordinary durability failure.
+pub(in super::super) fn synchronize_raw(
+    inventory: Inventory<'_>,
+    worker: &mut Worker,
+    fresh_immutable_outputs: &BTreeSet<PathBuf>,
+) -> Result<(), NativeEffectFailure> {
+    let mut worker = SyncWorker::raw(fresh_immutable_outputs, &inventory.targets, worker)?;
+    synchronize_inner(inventory, &mut worker)
+}
+
+fn synchronize_inner(
+    inventory: Inventory<'_>,
+    worker: &mut SyncWorker<'_>,
+) -> Result<(), NativeEffectFailure> {
+    #[cfg(test)]
+    let timings = worker
+        .is_raw()
+        .then(|| inventory.scopes.first())
+        .flatten()
+        .map(|scope| raw_timings::RawTimings::new(&scope.path));
+    #[cfg(test)]
+    if let Some(timings) = &timings {
+        timings.count("inventory-targets", inventory.targets.len());
+        timings.count("retained-names", worker.projection().names.len());
+        timings.count("retained-preimages", worker.projection().preimages.len());
+    }
+    #[cfg(test)]
+    let initial_span = timings
+        .as_ref()
+        .map(|timings| timings.span("initial-root-and-full-refresh"));
     for scope in inventory.scopes {
         worker
-            .projection
-            .root(&scope.path, scope.owner, scope.protected)?;
+            .projection()
+            .root(&scope.path, scope.owner, scope.protected)
+            .inspect_err(|_| {
+                #[cfg(test)]
+                super::super::diagnostic::refusal("outputs-scope-root", Some(&scope.path), None);
+            })?;
     }
-    worker.refresh(&[])?;
+    worker.full_refresh(&[]).inspect_err(|_| {
+        #[cfg(test)]
+        super::super::diagnostic::refusal("outputs-initial-refresh", None, None);
+    })?;
+    #[cfg(test)]
+    drop(initial_span);
+    #[cfg(test)]
+    let inventory_span = timings
+        .as_ref()
+        .map(|timings| timings.span("inventory-construction"));
     let mut records = Vec::new();
     let mut directories = BTreeMap::new();
     for (path, target) in inventory.targets {
@@ -223,7 +279,13 @@ pub(in super::super) fn synchronize(
             )
             .into());
         }
-        let read = worker.projection.exact(&path, target.expected.as_deref())?;
+        let read = worker
+            .projection()
+            .exact(&path, target.expected.as_deref())
+            .inspect_err(|_| {
+                #[cfg(test)]
+                super::super::diagnostic::refusal("outputs-exact-target", Some(&path), None);
+            })?;
         let policy_matches = match read.policy {
             FencePolicy::Payload { owner } => !target.protected && owner == target.owner,
             FencePolicy::ProtectedRecord { owner } => target.protected && owner == target.owner,
@@ -232,8 +294,20 @@ pub(in super::super) fn synchronize(
         if !policy_matches {
             return Err(io::Error::other("mutation durability target policy differs").into());
         }
-        for directory in directories_below(read, &target.root, target.owner, target.protected)? {
-            insert_directory(&mut directories, directory)?;
+        for directory in directories_below(read, &target.root, target.owner, target.protected)
+            .inspect_err(|_| {
+                #[cfg(test)]
+                super::super::diagnostic::refusal("outputs-target-ancestors", Some(&path), None);
+            })?
+        {
+            insert_directory(&mut directories, directory).inspect_err(|_| {
+                #[cfg(test)]
+                super::super::diagnostic::refusal(
+                    "outputs-target-directory-receipt",
+                    Some(&path),
+                    None,
+                );
+            })?;
         }
         if let Some(bytes) = target.expected {
             let stamp = read
@@ -243,7 +317,10 @@ pub(in super::super) fn synchronize(
                 return Err(io::Error::other("mutation output identity differs").into());
             }
             records.push(OpenedRecord {
-                file: open_native(&path, false)?,
+                file: open_native(&path, false).inspect_err(|_| {
+                    #[cfg(test)]
+                    super::super::diagnostic::refusal("outputs-open-target", Some(&path), None);
+                })?,
                 path,
                 bytes,
                 stamp,
@@ -255,20 +332,112 @@ pub(in super::super) fn synchronize(
         }
     }
     for (path, owner) in inventory.original_directories {
-        insert_directory(&mut directories, original_directory(worker, path, *owner)?)?;
+        insert_directory(
+            &mut directories,
+            original_directory(worker, path, *owner).inspect_err(|_| {
+                #[cfg(test)]
+                super::super::diagnostic::refusal("outputs-original-directory", Some(path), None);
+            })?,
+        )
+        .inspect_err(|_| {
+            #[cfg(test)]
+            super::super::diagnostic::refusal(
+                "outputs-original-directory-receipt",
+                Some(path),
+                None,
+            );
+        })?;
     }
 
+    #[cfg(test)]
+    drop(inventory_span);
+    #[cfg(test)]
+    if let Some(timings) = &timings {
+        timings.count("inventory-records", records.len());
+        timings.count(
+            "inventory-body-bytes",
+            records.iter().map(|record| record.bytes.len()).sum(),
+        );
+        timings.count("inventory-directories", directories.len());
+    }
     for record in &mut records {
-        worker.refresh(&[])?;
-        record.check()?;
-        worker.file_sync(&record.file, &[])?;
-        record.check()?;
-        worker.refresh(&[])?;
+        #[cfg(test)]
+        let file_span = timings.as_ref().map(|timings| timings.span("file-total"));
+        // Raw preparation has no effect; its inner refresh checks authority
+        // after this body read and immediately before the actual sync. Ordinary
+        // callers retain their earlier refresh and sampling schedule.
+        if !worker.is_raw() {
+            worker
+                .refresh(
+                    #[cfg(test)]
+                    timings.as_ref(),
+                )
+                .inspect_err(|_| {
+                    #[cfg(test)]
+                    super::super::diagnostic::refusal(
+                        "outputs-file-before-refresh",
+                        Some(&record.path),
+                        None,
+                    );
+                })?;
+        }
+        #[cfg(test)]
+        let body_span = timings
+            .as_ref()
+            .map(|timings| timings.span("record-body-before"));
+        record.check().inspect_err(|_| {
+            #[cfg(test)]
+            super::super::diagnostic::refusal("outputs-body-before-sync", Some(&record.path), None);
+        })?;
+        #[cfg(test)]
+        drop(body_span);
+        worker
+            .file_sync(
+                &record.file,
+                &record.path,
+                #[cfg(test)]
+                timings.as_ref(),
+            )
+            .inspect_err(|_| {
+                #[cfg(test)]
+                super::super::diagnostic::refusal("outputs-file-sync", Some(&record.path), None);
+            })?;
+        #[cfg(test)]
+        let body_span = timings
+            .as_ref()
+            .map(|timings| timings.span("record-body-after"));
+        record.check().inspect_err(|_| {
+            #[cfg(test)]
+            super::super::diagnostic::refusal("outputs-body-after-sync", Some(&record.path), None);
+        })?;
+        #[cfg(test)]
+        drop(body_span);
+        #[cfg(all(test, feature = "tokio"))]
+        worker.wait_gate(super::super::super::TestGatePhase::AfterRawSyncBody)?;
+        worker
+            .refresh(
+                #[cfg(test)]
+                timings.as_ref(),
+            )
+            .inspect_err(|_| {
+                #[cfg(test)]
+                super::super::diagnostic::refusal(
+                    "outputs-file-after-refresh",
+                    Some(&record.path),
+                    None,
+                );
+            })?;
         #[cfg(all(test, feature = "tokio"))]
         if let Some(sender) = inventory.completed_syncs {
             let _ = sender.send(SyncEvent::File(record.path.clone()));
         }
+        #[cfg(test)]
+        drop(file_span);
     }
+    #[cfg(test)]
+    let directories_span = timings
+        .as_ref()
+        .map(|timings| timings.span("directories-total"));
     let mut directories: Vec<_> = directories.into_values().collect();
     directories.sort_by(|left, right| {
         right
@@ -279,16 +448,51 @@ pub(in super::super) fn synchronize(
             .then_with(|| left.path.cmp(&right.path))
     });
     for directory in &directories {
-        worker.directory_sync(directory, false, &[])?;
+        worker
+            .directory_sync(
+                directory,
+                #[cfg(test)]
+                timings.as_ref(),
+            )
+            .inspect_err(|_| {
+                #[cfg(test)]
+                super::super::diagnostic::refusal(
+                    "outputs-directory-sync",
+                    Some(&directory.path),
+                    None,
+                );
+            })?;
         #[cfg(all(test, feature = "tokio"))]
         if let Some(sender) = inventory.completed_syncs {
             let _ = sender.send(SyncEvent::Directory(directory.path.clone()));
         }
     }
+    #[cfg(test)]
+    drop(directories_span);
+    #[cfg(test)]
+    let final_body_span = timings
+        .as_ref()
+        .map(|timings| timings.span("final-record-bodies"));
     // Recheck the very same retained file descriptors after all directory
     // durability, then sample current operation checks after the final body read.
     for record in &mut records {
-        record.check()?;
+        #[cfg(test)]
+        if let Some(timings) = &timings {
+            timings.count("final-record-body-attempts", 1);
+        }
+        record.check().inspect_err(|_| {
+            #[cfg(test)]
+            super::super::diagnostic::refusal("outputs-final-body", Some(&record.path), None);
+        })?;
     }
-    worker.refresh(&[])
+    #[cfg(test)]
+    drop(final_body_span);
+    #[cfg(test)]
+    let _final_refresh_span = timings
+        .as_ref()
+        .map(|timings| timings.span("final-full-refresh"));
+    worker.full_refresh(&[]).inspect_err(|_| {
+        #[cfg(test)]
+        super::super::diagnostic::refusal("outputs-final-refresh", None, None);
+    })
 }

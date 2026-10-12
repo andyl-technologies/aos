@@ -226,6 +226,8 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         Ok(())
     }
 
+    // This route consumes only the separately closed ordinary full producer.
+    // Fixed source/log equality cannot initialize completion or current rights.
     async fn verify_source_requalification(
         &self,
         checked: &CheckedMutation<'_, '_>,
@@ -391,6 +393,7 @@ pub(super) fn verify_advisory_change(
 fn receipt(selected: Selected) -> SelectedReceipt {
     SelectedReceipt {
         stamp: (selected.state.revision, selected.digest),
+        #[cfg(all(test, feature = "tokio", unix))]
         state: selected.state,
     }
 }

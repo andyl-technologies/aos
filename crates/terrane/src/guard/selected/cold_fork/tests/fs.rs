@@ -215,6 +215,21 @@ impl LocalFs for ProbeFs {
             }
             EffectFaultProbe::Rename(path) => ("Rename", Some(path.to_owned()), false, false),
             EffectFaultProbe::FileSync => ("FileSync", None, false, false),
+            EffectFaultProbe::SealRetirementBarrier(path) => {
+                ("SealRetirementBarrier", Some(path.to_owned()), false, false)
+            }
+            EffectFaultProbe::ObserveCurrentPair(path) => {
+                ("ObserveCurrentPair", Some(path.to_owned()), false, false)
+            }
+            EffectFaultProbe::ObserveLocalTriple(path) => {
+                ("ObserveLocalTriple", Some(path.to_owned()), false, false)
+            }
+            EffectFaultProbe::LocalFirstOwnership(path, _) => {
+                ("LocalFirstOwnership", Some(path.to_owned()), false, false)
+            }
+            EffectFaultProbe::LocalDeletion(path, _) => {
+                ("LocalDeletion", Some(path.to_owned()), false, false)
+            }
             EffectFaultProbe::CopiedPreparation(path) => {
                 ("CopiedPreparation", Some(path.to_owned()), false, false)
             }
@@ -315,8 +330,39 @@ impl LocalFs for ProbeFs {
         TokioLocalFs.read_nofollow(path).await
     }
 
+    async fn read_ordinary_record(
+        &self,
+        read: crate::store::NativeOrdinaryRead,
+    ) -> io::Result<Option<crate::store::NativeOrdinaryRecord>> {
+        // Keep ordinary leaves on their existing scalar read path. Held history
+        // requires the unchanged native closing recipe before admission can
+        // complete; that read-only observation supplies no mutation ACK.
+        if read.path_for_test().is_some() {
+            return Ok(None);
+        }
+
+        TokioLocalFs.read_ordinary_record(read).await
+    }
+
+    async fn read_payload_ranges(
+        &self,
+        read: crate::store::NativePayloadRangeRead,
+    ) -> io::Result<Option<crate::store::NativePayloadRangeRecord>> {
+        // Execute unchanged sealed data reads and closing checks. These
+        // read-only observations cannot acknowledge a mutation effect.
+        TokioLocalFs.read_payload_ranges(read).await
+    }
+
     async fn lock_existing_exclusive(&self, path: &Path) -> io::Result<Self::Lock> {
         TokioLocalFs.lock_existing_exclusive(path).await
+    }
+
+    async fn try_lock_existing_shared(&self, path: &Path) -> io::Result<Self::Lock> {
+        TokioLocalFs.try_lock_existing_shared(path).await
+    }
+
+    async fn try_lock_existing_exclusive(&self, path: &Path) -> io::Result<Self::Lock> {
+        TokioLocalFs.try_lock_existing_exclusive(path).await
     }
 
     async fn lock_exclusive(&self, path: &Path) -> io::Result<Self::Lock> {
