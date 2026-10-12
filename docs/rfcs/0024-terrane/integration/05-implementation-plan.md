@@ -7003,6 +7003,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 - [ ] **T-GC-1** Mark-and-sweep collector: roots, mark, grace, two-phase
   sweep, singleton lease, resumability, retention values `gc`, `lease`,
   `ttl`, `forever`, and ordinary reflog duration/count selection.
+  Source review identifies a GC-6/GC-7 gap: a broader parent cutoff for the
+  same fully expanded commit and proof occurrence repeats its own metadata
+  expansion. Only newly eligible parent edges require another traversal.
+  The owning mark gate now requires a genuine native broader-cutoff regression
+  before the isolated fix. Witness-to-full promotion, distinct proof contexts,
+  checkpoint verification and current held authority remain mandatory. This
+  source finding does not explain the two overlay timeouts; their original
+  120-second bounds and separate runtime obligations remain unchanged.
   Parent-owned registrations and a nineteen-case auxiliary check now prepare
   isolated implementation of genuine local copied-destination first ownership.
   D-113 clarifies truthful conservative DATA roots/state at the existing
