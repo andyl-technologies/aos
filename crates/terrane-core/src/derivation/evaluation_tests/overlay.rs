@@ -158,8 +158,8 @@ fn fixture() -> Fixture {
         symlink(b"top", b"visible")
     ]);
     let bottom = namespace(alloc::vec![
-        item(b"g", overridden_graft(lower_child.root_identity())),
-        symlink(b"bottom", b"visible")
+        symlink(b"bottom", b"visible"),
+        item(b"g", overridden_graft(lower_child.root_identity()))
     ]);
     let mut recipe = Vec::new();
     // Frame the expected original recipe directly; no evaluator codec supplies it.
