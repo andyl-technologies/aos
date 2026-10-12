@@ -10,7 +10,7 @@ mod tests;
 
 use super::NativePublicationInitialization;
 use crate::bucket::BucketBinding;
-use crate::store::{LocalFs, NativeExclusion, StoreErrorKind, StoreFailure};
+use crate::store::{LocalFs, NativeExclusion, StoreFailure};
 
 #[cfg(unix)]
 use super::super::super::{FencePolicy, MetadataStamp};
@@ -48,7 +48,7 @@ pub(crate) async fn activate_existing<F: LocalFs + BucketBinding>(
         #[cfg(feature = "tokio")]
         let (request, directories, binding) = {
             let runtime = tokio::runtime::Handle::try_current()
-                .map_err(|_| StoreFailure::new(StoreErrorKind::Unsupported))?;
+                .map_err(|_| StoreFailure::new(crate::store::StoreErrorKind::Unsupported))?;
             runtime
                 .spawn_blocking(move || capture(request, &owned))
                 .await
@@ -107,46 +107,90 @@ pub(crate) async fn activate_existing<F: LocalFs + BucketBinding>(
         let payload = FencePolicy::Payload {
             owner: request.operator_uid,
         };
-        let pointer = frame
-            .actual_read(fs, &request.root.join("publication/PORTABLE"), payload)
-            .await?
-            .ok_or_else(corrupt)?;
-        let pointer = PortableCurrent::decode(&pointer).map_err(|_| corrupt())?;
-        if !pointer.key.starts_with("publication/snapshots/0:") {
-            return Err(corrupt());
-        }
-        let snapshot_bytes = frame
-            .actual_read(fs, &request.root.join(&pointer.key), payload)
-            .await?
-            .ok_or_else(corrupt)?;
-        pointer
-            .check_snapshot(&snapshot_bytes)
-            .map_err(|_| corrupt())?;
-        let (_, operation) = pointer.key.rsplit_once(':').ok_or_else(corrupt)?;
-        let bytes = frame
-            .actual_read(
-                fs,
-                &request
-                    .control
-                    .join(format!("publication/transactions/{operation}")),
-                protected,
-            )
-            .await?
-            .ok_or_else(corrupt)?;
-        let transaction = PublicationTransaction::decode(&bytes).map_err(|_| corrupt())?;
-        transaction
-            .check_key(&format!("publication/transactions/{operation}"))
-            .map_err(|_| corrupt())?;
-        let staged = NativeGenesisStage {
-            snapshot_bytes,
-            transaction,
+        let staged = if registration.genesis.is_some() {
+            if request.copy.is_none() {
+                return Err(corrupt());
+            }
+            super::fresh::copy::capture_payload(fs, &request, &mut frame).await?;
+            let activation = frame
+                .actual_read(
+                    fs,
+                    &request.control.join("publication/ACTIVATION"),
+                    protected,
+                )
+                .await?
+                .ok_or_else(corrupt)?;
+            if registration.genesis != Some(super::digest(&activation)) {
+                return Err(corrupt());
+            }
+            let commit = terrane_core::gc::publication::PublicationCommit::decode(&activation)
+                .map_err(|_| corrupt())?;
+            let bytes = frame
+                .actual_read(
+                    fs,
+                    &request.control.join(&commit.transaction_key),
+                    protected,
+                )
+                .await?
+                .ok_or_else(corrupt)?;
+            commit
+                .check_transaction("publication/commits/0", &bytes)
+                .map_err(|_| corrupt())?;
+            let transaction = PublicationTransaction::decode(&bytes).map_err(|_| corrupt())?;
+            let snapshot_bytes = frame
+                .actual_read(fs, &request.root.join(&transaction.snapshot.key), payload)
+                .await?
+                .ok_or_else(corrupt)?;
+            NativeGenesisStage {
+                snapshot_bytes,
+                transaction,
+            }
+        } else {
+            if request.copy.is_some() {
+                return Err(corrupt());
+            }
+            let pointer = frame
+                .actual_read(fs, &request.root.join("publication/PORTABLE"), payload)
+                .await?
+                .ok_or_else(corrupt)?;
+            let pointer = PortableCurrent::decode(&pointer).map_err(|_| corrupt())?;
+            if !pointer.key.starts_with("publication/snapshots/0:") {
+                return Err(corrupt());
+            }
+            let snapshot_bytes = frame
+                .actual_read(fs, &request.root.join(&pointer.key), payload)
+                .await?
+                .ok_or_else(corrupt)?;
+            pointer
+                .check_snapshot(&snapshot_bytes)
+                .map_err(|_| corrupt())?;
+            let (_, operation) = pointer.key.rsplit_once(':').ok_or_else(corrupt)?;
+            let bytes = frame
+                .actual_read(
+                    fs,
+                    &request
+                        .control
+                        .join(format!("publication/transactions/{operation}")),
+                    protected,
+                )
+                .await?
+                .ok_or_else(corrupt)?;
+            let transaction = PublicationTransaction::decode(&bytes).map_err(|_| corrupt())?;
+            transaction
+                .check_key(&format!("publication/transactions/{operation}"))
+                .map_err(|_| corrupt())?;
+            NativeGenesisStage {
+                snapshot_bytes,
+                transaction,
+            }
         };
         bootstrap::validate_stage(&request, &binding, &staged)?;
         for row in &staged.transaction.changes {
-            if BucketKey::parse(&row.key)
-                .map_err(|_| corrupt())?
-                .mutability()
-                == terrane_core::bucket::Mutability::Immutable
+            if request.copy.is_none()
+                && BucketKey::parse(&row.key)
+                    .map_err(|_| corrupt())?
+                    .mutability()
+                    == terrane_core::bucket::Mutability::Immutable
                 && frame
                     .actual_read(fs, &request.root.join(&row.key), payload)
                     .await?
@@ -170,7 +214,7 @@ pub(crate) async fn activate_existing<F: LocalFs + BucketBinding>(
     #[cfg(not(unix))]
     {
         let _ = (fs, request, retained);
-        Err(StoreFailure::new(StoreErrorKind::Unsupported))
+        Err(StoreFailure::new(crate::store::StoreErrorKind::Unsupported))
     }
 }
 

@@ -8,10 +8,17 @@ use super::{
     statement::{disclosure_target_binding, original, preimage},
     witness::{self, Witness},
 };
+use crate::properties::semantics::associations::RecordedAssociations;
 use crate::{identity::Digest, properties::Defaults, refs::EntryOrigin};
 use alloc::{collections::BTreeSet, string::ToString, vec::Vec};
 use core::cell::RefCell;
 use ed25519_dalek::{Signature, VerifyingKey};
+
+mod mixed;
+mod recorded;
+
+/// Shares the candidate's retained interpretation with its private witness traversal.
+pub(super) use recorded::Interpretation;
 
 /// Owns provisional evidence with no history, evaluator or boundary accessor.
 ///
@@ -26,6 +33,7 @@ pub struct DisclosureCandidate<'a> {
     batch: VerifiedDisclosureBatch,
     retention_cache: RefCell<BTreeSet<(Digest, alloc::string::String)>>,
     bootstrap: Option<(&'a str, OriginalBootstrapPolicy<'a>)>,
+    interpretation: Interpretation,
 }
 
 impl<'a> DisclosureCandidate<'a> {
@@ -50,6 +58,47 @@ impl<'a> DisclosureCandidate<'a> {
         authorities: &[DisclosureAuthority<'_>],
         defaults: Defaults<'a>,
     ) -> Result<Self, Rejected> {
+        Self::stage(
+            history,
+            view,
+            authorities,
+            defaults,
+            Interpretation::Current,
+        )
+    }
+
+    /// Authenticates certificates under independently justified recorded properties.
+    ///
+    /// The table is copied and remains immutable throughout validation. Each
+    /// actually retained view must have its own exact checked view/original-root
+    /// association; one interpretation applies across all of that view's graft
+    /// prefixes. Copying this ordinary configuration authenticates no registration
+    /// or history. Missing mappings never select current or legacy semantics.
+    /// Independently supplied physical defaults and original bootstrap evidence
+    /// remain necessary. Certified private audit identities need no invented view.
+    ///
+    /// # Errors
+    /// Rejects absent configuration, missing or mismatched view/root associations,
+    /// conflicting retained interpretations and every certificate, canonical
+    /// witness or origin failure of [`Self::new`].
+    pub fn new_with_recorded_properties(
+        history: &VerifiedHistory,
+        view: Digest,
+        authorities: &[DisclosureAuthority<'_>],
+        defaults: Defaults<'a>,
+        associations: Option<&RecordedAssociations>,
+    ) -> Result<Self, Rejected> {
+        let interpretation = Interpretation::Recorded(associations.ok_or(Rejected)?.clone());
+        Self::stage(history, view, authorities, defaults, interpretation)
+    }
+
+    fn stage(
+        history: &VerifiedHistory,
+        view: Digest,
+        authorities: &[DisclosureAuthority<'_>],
+        defaults: Defaults<'a>,
+        interpretation: Interpretation,
+    ) -> Result<Self, Rejected> {
         // A bare key/domain pair must never pick among physical repositories.
         for (position, authority) in authorities.iter().enumerate() {
             if authorities[..position].iter().any(|previous| {
@@ -60,7 +109,8 @@ impl<'a> DisclosureCandidate<'a> {
                 return Err(Rejected);
             }
         }
-        let witness = witness::enumerate(history, view, defaults)?;
+        interpretation.check_existing_scope(history, view)?;
+        let witness = witness::enumerate(history, view, defaults, &interpretation)?;
         let record = history.commit(&view).ok_or(Rejected)?.commit();
         let receipts = record
             .profile_pair
@@ -244,6 +294,7 @@ impl<'a> DisclosureCandidate<'a> {
             },
             retention_cache: RefCell::new(BTreeSet::new()),
             bootstrap: None,
+            interpretation,
         };
         candidate.check_explicit_origins()?;
         Ok(candidate)
@@ -272,6 +323,37 @@ impl<'a> DisclosureCandidate<'a> {
             expected_original_authority,
         )?;
         let mut candidate = Self::new(history, view, authorities, defaults)?;
+        candidate.bootstrap = Some((expected_original_authority, policy));
+        Ok(candidate)
+    }
+
+    /// Stages recorded validation with separately trusted original bootstrap evidence.
+    ///
+    /// The immutable associations have the same caller-justification contract as
+    /// [`Self::new_with_recorded_properties`]. The authority and bootstrap policy
+    /// belong to the original authoring context; neither table entries nor current
+    /// operation credentials supply them. No result exposes checked history until
+    /// [`Self::finish`] succeeds.
+    ///
+    /// # Errors
+    /// Rejects missing or inconsistent recorded configuration, invalid original
+    /// authority/ref/epoch bootstrap input, and every failure of
+    /// [`Self::new_with_recorded_properties`].
+    pub fn new_with_recorded_properties_and_bootstrap(
+        history: &VerifiedHistory,
+        view: Digest,
+        authorities: &[DisclosureAuthority<'_>],
+        defaults: Defaults<'a>,
+        associations: Option<&RecordedAssociations>,
+        expected_original_authority: &'a str,
+        policy: OriginalBootstrapPolicy<'a>,
+    ) -> Result<Self, Rejected> {
+        policy.check(
+            history.commit(&view).ok_or(Rejected)?,
+            expected_original_authority,
+        )?;
+        let mut candidate =
+            Self::new_with_recorded_properties(history, view, authorities, defaults, associations)?;
         candidate.bootstrap = Some((expected_original_authority, policy));
         Ok(candidate)
     }
@@ -316,7 +398,8 @@ impl<'a> DisclosureCandidate<'a> {
         if view == self.view {
             return Err(Rejected);
         }
-        super::super::verify_root_context(&mut self.history, view, self.defaults)?;
+        self.interpretation
+            .verify(&mut self.history, view, self.defaults, None)?;
         Ok(())
     }
 
@@ -337,12 +420,11 @@ impl<'a> DisclosureCandidate<'a> {
         if view == self.view {
             return Err(Rejected);
         }
-        super::super::verify_root_context_with_bootstrap(
+        self.interpretation.verify(
             &mut self.history,
             view,
             self.defaults,
-            expected_original_authority,
-            policy,
+            Some((expected_original_authority, policy)),
         )?;
         Ok(())
     }
@@ -388,7 +470,14 @@ impl<'a> DisclosureCandidate<'a> {
     pub fn finish(mut self) -> Result<(VerifiedHistory, VerifiedDisclosureBatch), Rejected> {
         for dependency in &self.batch.dependencies {
             let commit = self.history.commit(dependency).ok_or(Rejected)?;
-            witness::enumerate(&self.history, commit.identity(), self.defaults)?;
+            self.interpretation
+                .check_scope(&self.history, commit.identity())?;
+            witness::enumerate(
+                &self.history,
+                commit.identity(),
+                self.defaults,
+                &self.interpretation,
+            )?;
         }
         let record = self.history.commit(&self.view).ok_or(Rejected)?.commit();
         let view_domain = self
@@ -438,20 +527,8 @@ impl<'a> DisclosureCandidate<'a> {
         // All retained public ancestry must itself be available; a missing
         // unrelated parent is not hidden by one certified source edge.
         self.history.public_ancestor(self.view, self.view)?;
-        match self.bootstrap {
-            Some((authority, policy)) => {
-                super::super::verify_root_context_with_bootstrap(
-                    &mut self.history,
-                    self.view,
-                    self.defaults,
-                    authority,
-                    policy,
-                )?;
-            }
-            None => {
-                super::super::verify_root_context(&mut self.history, self.view, self.defaults)?;
-            }
-        }
+        self.interpretation
+            .verify(&mut self.history, self.view, self.defaults, self.bootstrap)?;
         self.history.provisional_scopes.remove(&self.view);
         Ok((self.history, self.batch))
     }
@@ -474,7 +551,13 @@ impl<'a> DisclosureCandidate<'a> {
         if self.retention_cache.borrow().contains(&key) {
             return Ok(());
         }
-        let checked = witness::retention_closure(&self.history, view, domain, self.defaults)?;
+        let checked = witness::retention_closure(
+            &self.history,
+            view,
+            domain,
+            self.defaults,
+            &self.interpretation,
+        )?;
         self.retention_cache
             .borrow_mut()
             .extend(checked.into_iter().map(|view| (view, domain.to_string())));

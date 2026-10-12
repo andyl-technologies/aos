@@ -2,30 +2,31 @@
 
 use terrane_core::properties::{Defaults, PropertyName, RootLayer, Value};
 use terrane_core::provenance::VerifiedCommit;
+use terrane_core::tree_builder::Tree;
 use terrane_core::{cbor, properties};
 
-use crate::guard::{TreeEvidence, invalid};
+use crate::guard::invalid;
 use crate::store::{InvalidReason, StoreErrorKind, StoreFailure};
 
 /// Checks all four signed requirement fields against the original namespace root.
 ///
 /// # Errors
 /// Refuses missing snapshots, malformed root policies, or any differing signed
-/// projection. An empty Index alone never establishes this agreement.
-pub(super) fn check(
+/// projection. An empty Index alone never establishes this agreement. The
+/// constructor runs only after the required signed snapshot is present.
+pub(super) fn check<'a>(
     commit: &VerifiedCommit,
-    evidence: &TreeEvidence,
     defaults: Defaults<'_>,
-    minimum: u64,
     selection: properties::selected::Selection,
-) -> Result<(), StoreFailure> {
+    construct: impl FnOnce() -> Result<Tree<'a>, StoreFailure>,
+) -> Result<Tree<'a>, StoreFailure> {
     let signed = commit
         .commit()
         .profile_pair
         .required_properties
         .as_deref()
         .ok_or_else(|| StoreFailure::new(StoreErrorKind::Unsupported))?;
-    let tree = evidence.tree(evidence.root, minimum)?;
+    let tree = construct()?;
     let resolved = selection
         .resolve(
             &[RootLayer {
@@ -66,5 +67,5 @@ pub(super) fn check(
         return Err(invalid());
     }
 
-    Ok(())
+    Ok(tree)
 }

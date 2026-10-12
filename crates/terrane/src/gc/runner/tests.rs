@@ -11,7 +11,14 @@ use terrane_core::bucket::BucketKey;
 use terrane_core::gc::{GcMark, Phase, RootReason};
 use terrane_core::identity::{IdentityKind, TERRANE_V1};
 
+mod current_pair;
+mod current_roots;
+mod inspection;
+mod local_deletion;
+mod local_ownership;
 mod notes;
+mod restore;
+mod retirement;
 mod source_carry;
 
 fn windows() -> Windows {

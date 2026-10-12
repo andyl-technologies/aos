@@ -406,6 +406,21 @@ impl LocalFs for ProbeFs {
         }
         TokioLocalFs.lock_existing_exclusive(path).await
     }
+
+    async fn try_lock_existing_shared(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        if let Some(signal) = self.0.lock_attempt.lock().unwrap().take() {
+            signal.send(()).unwrap();
+        }
+        TokioLocalFs.try_lock_existing_shared(path).await
+    }
+
+    async fn try_lock_existing_exclusive(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        if let Some(signal) = self.0.lock_attempt.lock().unwrap().take() {
+            signal.send(()).unwrap();
+        }
+        TokioLocalFs.try_lock_existing_exclusive(path).await
+    }
+
     async fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         TokioLocalFs.read(path).await
     }

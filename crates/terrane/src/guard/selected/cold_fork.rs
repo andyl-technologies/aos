@@ -4,6 +4,8 @@
 
 #[path = "cold_fork/derivation.rs"]
 mod derivation;
+#[path = "cold_fork/imported.rs"]
+mod imported;
 #[path = "cold_fork/publication.rs"]
 mod publication;
 pub(crate) use publication::publish;
@@ -26,7 +28,7 @@ use crate::bucket::{BucketBinding, FileBucket};
 use crate::guard::cold_fork::occurrence_domain;
 use crate::guard::{
     AuthorizedRef, ConsumedResolver, ControlExclusion, Guard, OriginalAuthority, RetainedControls,
-    consumed_registration, invalid,
+    SelectedReadInterpretation, consumed_registration, invalid,
 };
 use crate::ref_advance::{AdvanceError, CommitTiming};
 use crate::store::{
@@ -56,6 +58,9 @@ pub(crate) struct QualifiedPolicies {
     snapshot: Vec<u8>,
     authority: OriginalAuthority,
     source_view_index: usize,
+    // Operation-local ordinary projections, never an authoritative installation.
+    // check_guard independently reselects each exact view from the Native table.
+    interpretations: BTreeMap<[u8; 32], SelectedReadInterpretation>,
 }
 
 impl QualifiedPolicies {
@@ -112,6 +117,17 @@ impl QualifiedPolicies {
         &self.lineage.used.configuration
     }
 
+    /// Borrows the independently selected interpretation of a checked view.
+    ///
+    /// # Errors
+    /// Rejects a view outside this qualification's exhaustively checked inputs.
+    pub(crate) fn interpretation(
+        &self,
+        view: &ConsumedViewPolicy,
+    ) -> Result<&SelectedReadInterpretation, StoreFailure> {
+        self.interpretations.get(&view.view).ok_or_else(invalid)
+    }
+
     /// Refuses another concrete interpretation of the checked selected policies.
     ///
     /// # Errors
@@ -124,6 +140,8 @@ impl QualifiedPolicies {
             return Err(invalid());
         }
         for view in &self.lineage.used.views {
+            let selected = self.interpretation(view)?;
+            guard.check_cold_fork_interpretation(view, selected)?;
             compare_view_inputs(guard, &self.lineage, view)?;
         }
         Ok(())
@@ -156,6 +174,7 @@ pub(crate) struct QualifiedSource<'operation, 'held, F: LocalFs> {
     authorization: AuthorizedRef,
     controls: ControlExclusion<'operation, F>,
     retained_controls: RetainedControls,
+    imported: Option<imported::QualifiedImportedOriginals>,
     guard_read: RecordRead,
     lineage_read: RecordRead,
     observed: &'operation SelectedObservation<'held>,
@@ -225,6 +244,16 @@ impl<F: LocalFs + BucketBinding> QualifiedSource<'_, '_, F> {
             .await?;
         check_controls(&self.retained_controls, &current_controls)?;
         self.controls.revalidate().await?;
+        if let Some(imported) = &self.imported {
+            imported
+                .revalidate(
+                    guard,
+                    self.observed,
+                    &self.policies.lineage,
+                    &current_controls,
+                )
+                .await?;
+        }
         guard.refresh_authorized_time(&self.authorization)?;
         self.observed.revalidate().await?;
         check_time(guard.clock(), self.started, self.timing)
@@ -299,7 +328,13 @@ fn check_time(
     Ok(())
 }
 
-/// Qualifies current selected source lineage under actual fresh exclusions.
+/// Qualifies selected local lineage using protected evidence and signed Commit metadata.
+///
+/// The actual backend selection establishes which protected evidence is eligible;
+/// exact current Guard inputs and protected original records are independently
+/// checked before its policy occurrences can authorize the live Fork request.
+/// Imported used views retain genuine destination-owned controls and metadata-only
+/// signed contexts. Foreign control owners still fail closed here.
 ///
 /// # Errors
 /// Preserves missing/malformed context, changed selection, profiles, Original,
@@ -446,48 +481,64 @@ where
         compare_view_inputs(concrete, &lineage, view)?;
         compare_view_inputs(guard, &lineage, view)?;
     }
-    // U3's actual owning completion currently supports only typed empty Index.
-    // This refuses required indexes; it never turns loader data into completion.
-    for view in &lineage.used.views {
-        for root in &view.roots {
-            crate::guard::cold_fork::with_occurrence_policy(
-                guard,
-                root,
-                view,
-                &lineage.used.configuration,
-                |policy| match policy.get(terrane_core::properties::PropertyName::Index) {
-                    Some(terrane_core::properties::Value::Names(names)) if names.is_empty() => {
-                        Ok(())
-                    }
-                    Some(terrane_core::properties::Value::Names(_)) => {
-                        Err(StoreFailure::new(StoreErrorKind::Unsupported))
-                    }
-                    _ => Err(invalid()),
-                },
-            )?;
-        }
-    }
-    let retained_controls = controls.retain_used(&lineage.controls).await?;
-    let originals = concrete
-        .bind_cold_originals(
+    // The selected protected producer retained exhaustive owning completion.
+    // Required relationships were checked by that actual history owner; decoded
+    // bindings never redo or manufacture completion in this zero-Tree interval.
+    let interpretations = lineage
+        .used
+        .views
+        .iter()
+        .map(|view| {
+            compare_view_inputs(concrete, &lineage, view)?;
+            compare_view_inputs(guard, &lineage, view)?;
+            let selected = concrete.cold_fork_interpretation(view)?;
+            guard.check_cold_fork_interpretation(view, &selected)?;
+            Ok((view.view, selected))
+        })
+        .collect::<Result<BTreeMap<_, _>, StoreFailure>>()?;
+    let (association, imported) = if lineage.controls.iter().any(|pin| {
+        matches!(
+            pin.kind,
+            ControlKind::Import | ControlKind::ImportBinding | ControlKind::ImportTrust
+        )
+    }) {
+        let retained = controls.retain_used(&lineage.controls).await?;
+        let (association, imported) = imported::qualify(
+            guard,
             authority,
-            observed.identity(),
-            &retained_controls,
+            observed,
             &lineage,
-            &records,
+            &interpretations,
+            retained,
         )
         .await?;
-    let original = originals
-        .iter()
-        .find(|context| context.commit() == &lineage.commit_id)
-        .ok_or_else(invalid)?;
-    let association = check_originals(&lineage, &records, &registration)?;
-    if original.baseline().reference() != association.ref_name
-        || original.baseline().epoch() != association.epoch
-        || original.baseline().authority() != authority
-    {
-        return Err(invalid().into());
-    }
+        (association, Some(imported))
+    } else {
+        // The local binder rejects imported controls; imported dependencies use
+        // their complete actual Original qualification above instead.
+        let retained_controls = controls.retain_used(&lineage.controls).await?;
+        let originals = concrete
+            .bind_cold_originals(
+                authority,
+                observed.identity(),
+                &retained_controls,
+                &lineage,
+                &records,
+            )
+            .await?;
+        let original = originals
+            .iter()
+            .find(|context| context.commit() == &lineage.commit_id)
+            .ok_or_else(invalid)?;
+        let association = check_originals(&lineage, &records, &registration)?;
+        if original.baseline().reference() != association.ref_name
+            || original.baseline().epoch() != association.epoch
+            || original.baseline().authority() != authority
+        {
+            return Err(invalid().into());
+        }
+        (association, None)
+    };
     let context = commit
         .profile_pair
         .commit_context
@@ -509,8 +560,14 @@ where
         for view in std::iter::once(candidate).chain(previous) {
             for root in &view.roots {
                 if root.path == claim.path()
-                    && occurrence_domain(guard, root, view, &lineage.used.configuration)?
-                        == claim.domain()
+                    && occurrence_domain(
+                        root,
+                        view,
+                        &lineage.used.configuration,
+                        interpretations
+                            .get(&lineage.commit_id)
+                            .ok_or_else(invalid)?,
+                    )? == claim.domain()
                 {
                     witnessed = true;
                 }
@@ -544,6 +601,7 @@ where
         snapshot,
         authority: authority.clone(),
         source_view_index,
+        interpretations,
     };
     let authorization = guard
         .authorize_cold_fork_source(&policies, request.token, request.surface)
@@ -555,6 +613,7 @@ where
         authorization,
         controls,
         retained_controls,
+        imported,
         guard_read,
         lineage_read,
         observed,
@@ -566,14 +625,15 @@ where
 }
 
 // The retained context is data; both property and attribute selections come
-// independently from Guard's actual Legacy constructor and registered inputs.
-// ROOT has no Recorded/foreign view selector in this bounded producer. Source
-// signature and physical-profile checks follow actual Original validation.
+// independently from the actual installation or completed known-view inputs.
+// There is no operation-local candidate override for this historical source.
+// The default observation selects only those inputs; actual held source signature
+// and physical-profile checks follow separately after Original validation.
 /// Compares one retained view's ordinary inputs with actual installed meanings.
 ///
 /// # Errors
 /// Rejects absent context, mismatched full profile or unavailable actual selection.
-fn compare_view_inputs<S, C>(
+pub(super) fn compare_view_inputs<S, C>(
     guard: &Guard<S, C>,
     lineage: &CheckedLineage,
     view: &ConsumedViewPolicy,
@@ -587,7 +647,10 @@ fn compare_view_inputs<S, C>(
 ///
 /// # Errors
 /// Rejects contradictory paths/layers, invalid defaults or a source-root mismatch.
-fn check_views(lineage: &CheckedLineage, commit: &Commit) -> Result<usize, StoreFailure> {
+pub(super) fn check_views(
+    lineage: &CheckedLineage,
+    commit: &Commit,
+) -> Result<usize, StoreFailure> {
     let views = &lineage.used.views;
     let mut occurrences = BTreeMap::new();
     for view in views {

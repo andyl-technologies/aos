@@ -1,4 +1,4 @@
-//! Checks exact native probe publications before the measured operation begins.
+//! Checks exact native probe and fresh Commit catalog publication boundaries.
 //!
 //! All values are observations from actual held selection or the forwarded native
 //! executor. These comparisons neither create lineage nor grant publication rights.
@@ -187,6 +187,391 @@ impl Selection {
             assert_eq!(predecessor, self.snapshot);
         }
         assert_read_unchanged(&fixture.fs, snapshot_read).await?;
+        Ok(())
+    }
+
+    /// Borrows the complete independently selected publication state.
+    pub(super) fn state(&self) -> &PublicationState {
+        &self.state
+    }
+
+    /// Checks the sole fresh Commit catalog publication and its Candidate successor.
+    ///
+    /// # Errors
+    /// Propagates unavailable physical records and malformed canonical bindings.
+    ///
+    /// # Panics
+    /// Panics on another publication, descriptor, state change or missing native ACK.
+    pub(super) async fn assert_commit_catalog_chain<
+        C: Clock + BucketBinding + Clone + Sync + 'static,
+    >(
+        &self,
+        fixture: &Fixture<C>,
+        target: &str,
+        record: &terrane_core::refs::RefRecord,
+    ) -> TestResult {
+        let commit = &record.commit;
+        use crate::{
+            pack::{EntryKind, MergedShard, PackId, PackReader, RawBodyDecoder, RecordState},
+            store::LocalFs,
+        };
+        use terrane_core::{
+            bucket::{BucketCapabilities, GenerationManifest},
+            identity::{IdentityKind, TERRANE_V1},
+        };
+
+        let rows = fixture.fs.mutations();
+        let [catalog, candidate] = rows.as_slice() else {
+            panic!(
+                "cold fork requires exactly one fresh Commit catalog and one Candidate publication"
+            );
+        };
+        assert!(matches!(catalog.transaction.proof, PublicationProof::Raw));
+        assert!(matches!(
+            candidate.transaction.proof,
+            PublicationProof::Candidate(_)
+        ));
+        let final_selection = Self::capture(fixture).await?;
+        assert_eq!(final_selection.control_identity, self.control_identity);
+        for read in self.reads.iter().filter(|read| read.bytes().is_some()) {
+            assert_read_unchanged(&fixture.fs, read).await?;
+        }
+
+        let mut state = self.state.clone();
+        let mut logical = self.logical.clone();
+        let mut stamp = self.stamp;
+        let mut snapshot = self.snapshot.clone();
+        for row in &rows {
+            assert!(
+                row.acknowledged,
+                "publication lacks actual native executor ACK"
+            );
+            assert!(fixture.fs.effects().contains(&(
+                if matches!(row.transaction.proof, PublicationProof::Raw) {
+                    "SealRawPublication".into()
+                } else {
+                    "SealMutationPublication".into()
+                },
+                Some(row.path.clone())
+            )));
+            let transaction = &row.transaction;
+            assert_eq!(transaction.encode()?, row.transaction_bytes);
+            assert_eq!(transaction.old.as_ref(), Some(&state));
+            assert_eq!(
+                transaction.predecessor,
+                Some(PredecessorSlot {
+                    revision: stamp.0,
+                    digest: stamp.1
+                })
+            );
+            assert_eq!(
+                transaction.new.revision,
+                state.revision.checked_add(1).ok_or("revision overflow")?
+            );
+            let slot = PublicationCommit::decode(&row.slot_bytes)?;
+            assert_eq!(slot.encode()?, row.slot_bytes);
+            assert_eq!(slot.revision, transaction.new.revision);
+            assert_eq!(slot.predecessor, Some(stamp.1));
+            slot.check_transaction(
+                &format!("publication/commits/{}", slot.revision),
+                &row.transaction_bytes,
+            )?;
+            transaction.check_key(&slot.transaction_key)?;
+            let control = row.path.ancestors().nth(3).ok_or("native slot control")?;
+            assert_eq!(
+                row.path,
+                control.join(format!("publication/commits/{}", slot.revision))
+            );
+            assert_eq!(fixture.fs.read_nofollow(&row.path).await?, row.slot_bytes);
+            assert_eq!(
+                fixture
+                    .fs
+                    .read_nofollow(&control.join(&slot.transaction_key))
+                    .await?,
+                row.transaction_bytes
+            );
+            let portable_bytes = fixture
+                .fs
+                .read_nofollow(&fixture.bucket().root().join(&transaction.snapshot.key))
+                .await?;
+            transaction.check_snapshot(&portable_bytes)?;
+            let portable = PortableSnapshot::decode(&portable_bytes)?;
+            assert_eq!(portable.encode()?, portable_bytes);
+            assert_eq!(portable.revision, transaction.new.revision);
+            assert_eq!(portable.origin, transaction.new.binding);
+            for change in &transaction.changes {
+                assert_eq!(logical.get(&change.key).cloned().flatten(), change.expected);
+                logical.insert(change.key.clone(), change.new.clone());
+            }
+            let expected_projection = if portable.predecessor.is_some() {
+                assert_eq!(portable.predecessor.as_ref(), Some(&snapshot));
+                transaction
+                    .changes
+                    .iter()
+                    .map(|change| (change.key.clone(), change.new.clone()))
+                    .collect::<BTreeMap<_, _>>()
+            } else {
+                logical.clone()
+            };
+            assert_eq!(
+                portable
+                    .projection
+                    .iter()
+                    .map(|row| (row.key.clone(), row.value.clone()))
+                    .collect::<BTreeMap<_, _>>(),
+                expected_projection
+            );
+            state = transaction.new.clone();
+            stamp = (slot.revision, *blake3::hash(&row.slot_bytes).as_bytes());
+            snapshot = transaction.snapshot.clone();
+        }
+        assert_eq!(state, final_selection.state);
+        assert_eq!(logical, final_selection.logical);
+        assert_eq!(stamp, final_selection.stamp);
+        assert_eq!(snapshot, final_selection.snapshot);
+
+        let mut expected_state = self.state.clone();
+        expected_state.revision = expected_state
+            .revision
+            .checked_add(1)
+            .ok_or("catalog revision overflow")?;
+        assert_eq!(catalog.transaction.new, expected_state);
+        let cap_change = catalog
+            .transaction
+            .changes
+            .iter()
+            .find(|row| row.key == "CAPABILITIES")
+            .ok_or("catalog CAPABILITIES change")?;
+        assert_eq!(cap_change.expected.as_deref(), Some(self.capabilities()?));
+        let mut old_cap = BucketCapabilities::decode(self.capabilities()?)?;
+        let new_cap = BucketCapabilities::decode(
+            cap_change
+                .new
+                .as_deref()
+                .ok_or("catalog successor capabilities")?,
+        )?;
+        assert_eq!(
+            new_cap.generation,
+            Some(
+                old_cap
+                    .generation
+                    .ok_or("prior generation")?
+                    .checked_add(1)
+                    .ok_or("generation overflow")?
+            )
+        );
+        let old_generation = old_cap.generation.ok_or("prior generation")?;
+        let new_generation = new_cap.generation.ok_or("successor generation")?;
+        old_cap.generation = new_cap.generation;
+        assert_eq!(
+            new_cap, old_cap,
+            "catalog changes no other capability field"
+        );
+        assert_eq!(
+            new_cap.encode()?,
+            cap_change.new.clone().ok_or("new capabilities")?
+        );
+        let old_manifest_key = format!("objects/index/{old_generation}/MANIFEST");
+        let old_manifest = GenerationManifest::decode(
+            self.logical
+                .get(&old_manifest_key)
+                .and_then(Option::as_deref)
+                .ok_or("prior manifest")?,
+        )?;
+        let new_manifest_key = format!("objects/index/{new_generation}/MANIFEST");
+        let manifest_change = catalog
+            .transaction
+            .changes
+            .iter()
+            .find(|row| row.key == new_manifest_key)
+            .ok_or("successor manifest")?;
+        assert_eq!(manifest_change.expected, None);
+        let new_manifest_bytes = manifest_change
+            .new
+            .as_deref()
+            .ok_or("successor manifest bytes")?;
+        let new_manifest = GenerationManifest::decode(new_manifest_bytes)?;
+        assert_eq!(new_manifest.encode()?.as_slice(), new_manifest_bytes);
+        assert_eq!(new_manifest.generation, new_generation);
+        assert_eq!(new_manifest.cycle, old_manifest.cycle);
+        assert_eq!(new_manifest.exclusions, old_manifest.exclusions);
+        assert_eq!(new_manifest.burns, old_manifest.burns);
+        let old_inventory = old_manifest
+            .inventory
+            .as_ref()
+            .ok_or("complete prior inventory")?;
+        let new_inventory = new_manifest
+            .inventory
+            .as_ref()
+            .ok_or("complete successor inventory")?;
+        assert!(old_inventory.iter().all(|row| new_inventory.contains(row)));
+        let additions = new_inventory
+            .iter()
+            .filter(|row| !old_inventory.contains(row))
+            .collect::<Vec<_>>();
+        let [addition] = additions.as_slice() else {
+            panic!("fresh Commit adds exactly one pack");
+        };
+        assert_eq!(new_inventory.len(), old_inventory.len() + 1);
+        let pack_id = PackId::from_random_bytes(addition.pack_id);
+        let pack_bytes = fixture
+            .fs
+            .read_nofollow(&fixture.bucket().root().join(pack_id.pack_key()))
+            .await?;
+        let index_bytes = fixture
+            .fs
+            .read_nofollow(&fixture.bucket().root().join(pack_id.index_key()))
+            .await?;
+        assert_eq!(pack_bytes.len() as u64, addition.pack_size);
+        assert_eq!(index_bytes.len() as u64, addition.index_size);
+        TERRANE_V1.verify(
+            &TERRANE_V1.from_digest(IdentityKind::Pack, &addition.pack_hash)?,
+            &pack_bytes,
+        )?;
+        TERRANE_V1.verify(
+            &TERRANE_V1.from_digest(IdentityKind::Index, &addition.index_hash)?,
+            &index_bytes,
+        )?;
+        let pack = PackReader::open(&pack_bytes)?;
+        pack.check_index_object(&index_bytes)?;
+        let [entry] = pack.entries() else {
+            panic!("fresh pack contains only the signed Commit");
+        };
+        assert_eq!(entry.kind(), EntryKind::Commit);
+        assert_eq!(entry.hash(), commit);
+        let actual_commit = pack.read(EntryKind::Commit, commit, &RawBodyDecoder)?;
+        assert_eq!(
+            terrane_core::refs::Commit::decode(&actual_commit)?.identity()?,
+            *commit
+        );
+
+        let mut expected_candidate_keys = vec![
+            "CAPABILITIES".to_owned(),
+            "publication/SELECTED-HISTORY".to_owned(),
+            format!("{target}:record"),
+        ];
+        expected_candidate_keys.sort();
+        assert_eq!(
+            candidate
+                .transaction
+                .changes
+                .iter()
+                .map(|row| row.key.clone())
+                .collect::<Vec<_>>(),
+            expected_candidate_keys
+        );
+        let candidate_cap = candidate
+            .transaction
+            .changes
+            .iter()
+            .find(|row| row.key == "CAPABILITIES")
+            .ok_or("Candidate capability change")?;
+        assert_eq!(candidate_cap.expected.as_ref(), cap_change.new.as_ref());
+        let mut expected_cap = new_cap.clone();
+        let names = expected_cap
+            .ref_names
+            .as_mut()
+            .ok_or("complete ref names")?;
+        let position = names
+            .binary_search_by(|name| name.as_bytes().cmp(target.as_bytes()))
+            .err()
+            .ok_or("fresh target absent from old names")?;
+        names.insert(position, target.to_owned());
+        assert_eq!(
+            candidate_cap.new.as_deref(),
+            Some(expected_cap.encode()?.as_slice())
+        );
+        let target_change = candidate
+            .transaction
+            .changes
+            .iter()
+            .find(|row| row.key == format!("{target}:record"))
+            .ok_or("Candidate target record")?;
+        assert_eq!(target_change.expected, None);
+        assert_eq!(
+            target_change.new.as_deref(),
+            Some(record.encode()?.as_slice())
+        );
+
+        let mut old_entries = Vec::new();
+        for shard in &old_manifest.shards {
+            let key = format!("objects/index/{old_generation}/{}.idx", shard.shard);
+            let bytes = self
+                .logical
+                .get(&key)
+                .and_then(Option::as_deref)
+                .ok_or("prior shard")?;
+            old_entries.extend_from_slice(
+                MergedShard::decode(bytes, old_generation, u8::try_from(shard.shard)?)?.entries(),
+            );
+        }
+        let mut new_entries = Vec::new();
+        let mut allowed_keys = vec!["CAPABILITIES".to_owned(), new_manifest_key];
+        for shard in &new_manifest.shards {
+            let key = format!("objects/index/{new_generation}/{}.idx", shard.shard);
+            allowed_keys.push(key.clone());
+            let change = catalog
+                .transaction
+                .changes
+                .iter()
+                .find(|row| row.key == key)
+                .ok_or("successor shard change")?;
+            assert_eq!(change.expected, None);
+            let bytes = change.new.as_deref().ok_or("successor shard bytes")?;
+            assert_eq!(bytes.len() as u64, shard.index_size);
+            TERRANE_V1.verify(
+                &TERRANE_V1.from_digest(IdentityKind::Index, &shard.index_hash)?,
+                bytes,
+            )?;
+            let decoded = MergedShard::decode(bytes, new_generation, u8::try_from(shard.shard)?)?;
+            assert_eq!(decoded.encode().as_slice(), bytes);
+            new_entries.extend_from_slice(decoded.entries());
+            if let Some((hash, size)) = shard.filter {
+                let filter_key = format!("objects/index/{new_generation}/{}.flt", shard.shard);
+                allowed_keys.push(filter_key.clone());
+                let filter = catalog
+                    .transaction
+                    .changes
+                    .iter()
+                    .find(|row| row.key == filter_key)
+                    .ok_or("unchanged copied filter")?;
+                assert_eq!(filter.expected, None);
+                let bytes = filter.new.as_deref().ok_or("filter bytes")?;
+                assert_eq!(bytes.len() as u64, size);
+                TERRANE_V1.verify(&TERRANE_V1.from_digest(IdentityKind::Filter, &hash)?, bytes)?;
+                assert_eq!(
+                    self.logical
+                        .get(&format!(
+                            "objects/index/{old_generation}/{}.flt",
+                            shard.shard
+                        ))
+                        .and_then(Option::as_deref),
+                    Some(bytes)
+                );
+            }
+        }
+        assert!(old_entries.iter().all(|entry| new_entries.contains(entry)));
+        let additions = new_entries
+            .iter()
+            .filter(|entry| !old_entries.contains(entry))
+            .collect::<Vec<_>>();
+        let [added] = additions.as_slice() else {
+            panic!("catalog adds only one fresh Commit descriptor");
+        };
+        assert_eq!(new_entries.len(), old_entries.len() + 1);
+        assert_eq!(added.pack(), pack_id);
+        assert_eq!(added.entry(), entry);
+        assert_eq!(added.state(), RecordState::Live);
+        allowed_keys.sort();
+        assert_eq!(
+            catalog
+                .transaction
+                .changes
+                .iter()
+                .map(|row| row.key.clone())
+                .collect::<Vec<_>>(),
+            allowed_keys
+        );
         Ok(())
     }
 

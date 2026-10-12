@@ -12,6 +12,9 @@ use terrane_core::{
 #[path = "context_tests.rs"]
 mod context_tests;
 
+#[path = "read_failure_tests.rs"]
+mod read_failure_tests;
+
 // RFC 8032 test vector 1 is public fixture material, not a configured credential.
 fn vector<const N: usize>(hex: &str) -> [u8; N] {
     let mut result = [0; N];
@@ -355,4 +358,170 @@ fn dictionary_selection_requires_checked_class_and_explicit_unique_mapping() {
         ))
     ));
     assert_eq!(object.reads.load(Ordering::Relaxed), reads);
+
+    trained_class_dictionaries_follow_verified_object_classification();
+}
+
+/// Builds disjoint, deterministic training samples for two registered classes.
+fn class_training_samples(class: Magic) -> Vec<Vec<u8>> {
+    (0..64)
+        .map(|sample| {
+            let mut bytes = match class {
+                Magic::Text => String::from("account,region,quantity,description\n"),
+                Magic::Shebang => String::from("#!/bin/tool\n"),
+                _ => panic!("only the two explicit fixture classes are trained"),
+            };
+            for row in 0..32 {
+                let line = match class {
+                    Magic::Text => format!(
+                        "account-{sample:03},region-{},quantity-{},ledger entry {row:03}\n",
+                        sample % 7,
+                        row * 13 + sample,
+                    ),
+                    Magic::Shebang => format!(
+                        "export ITEM_{row:03}=value_{sample:03}\nrun_task --stage {} --item {row:03}\n",
+                        sample % 11,
+                    ),
+                    _ => unreachable!("class checked before assembling rows"),
+                };
+                bytes.push_str(&line);
+            }
+            bytes.into_bytes()
+        })
+        .collect()
+}
+
+/// Constructs the expected chunk address directly from its registered preimage.
+fn expected_dictionary_identity(plaintext: &[u8]) -> Identity {
+    let mut preimage = blake3::Hasher::new();
+    preimage.update(b"terrane-chunk-v1\0");
+    preimage.update(plaintext);
+    TERRANE_V1
+        .from_digest(IdentityKind::Chunk, preimage.finalize().as_bytes())
+        .expect("independent chunk-domain digest")
+}
+
+/// Couples real training and authenticated classification to ordinary chunk reads.
+fn trained_class_dictionaries_follow_verified_object_classification() {
+    let classes = [Magic::Text, Magic::Shebang];
+    let corpora = classes.map(class_training_samples);
+    let dictionaries = corpora.each_ref().map(|samples| {
+        zstd::dict::from_samples(samples, 2048).expect("actual per-class dictionary training")
+    });
+    assert_ne!(dictionaries[0], dictionaries[1]);
+    let identities = dictionaries
+        .each_ref()
+        .map(|bytes| expected_dictionary_identity(bytes));
+    assert_ne!(identities[0], identities[1]);
+    let mapping = DictionarySet::new([
+        (Magic::Text, identities[0].clone()),
+        (Magic::Shebang, identities[1].clone()),
+    ])
+    .expect("distinct trained deployment dictionaries");
+    let store = MemoryStore::default();
+    let profile = terrane_core::chunking::ChunkProfile::cdc_1m([0; 32]);
+
+    // These private test insertions retain real codec envelopes. The production
+    // resolver still fetches and verifies dictionary plaintext by its identity.
+    for (dictionary, identity) in dictionaries.iter().zip(&identities) {
+        let encoded = crate::codec::encode_chunk(dictionary, profile.maximum(), 3, None)
+            .expect("standalone final dictionary encoding");
+        store
+            .bytes
+            .lock()
+            .expect("test mutex")
+            .insert(identity.digest().to_vec(), encoded);
+    }
+    for (index, class) in classes.into_iter().enumerate() {
+        let mut plaintext = corpora[index][0].clone();
+        for sample in &corpora[index][1..8] {
+            plaintext.extend_from_slice(sample);
+        }
+        let object = Object::new(plaintext.clone());
+        let (commit, history, location, secret) = fixture(&object);
+        let verifier = Checked {
+            history: &history,
+            location: &location,
+        };
+        let mut table = SideTable::new();
+        // Request actual class.magic without the optional shebang detail record.
+        let records = ready(produce_required_signed(
+            &mut table,
+            &store,
+            &object,
+            &Requirements {
+                hashes: Vec::new(),
+                classify: vec![Magic::Text],
+            },
+            &SignedProducer::new(&commit, &secret),
+            &verifier,
+            true,
+        ))
+        .expect("class.magic computed from actual object and signed by checked producer");
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
+        assert_eq!(record.value, AttributeValue::Magic(class));
+        let record_identity = record.identity().expect("classification record identity");
+        assert_eq!(table.trust(&record_identity), Some(Trust::VerifiedProducer));
+        ready(table.verify(&record_identity, &object))
+            .expect("recomputed plaintext classification");
+        assert!(object.max_read.load(Ordering::Relaxed) <= MAGIC_PREFIX_LIMIT);
+        let evidence = terrane_core::derived::verify_record_producer(record, &history, &location)
+            .expect("authenticated reachable class.magic producer");
+
+        let reads = object.reads.load(Ordering::Relaxed);
+        let selected = mapping
+            .select(&evidence)
+            .expect("checked per-class choice")
+            .expect("explicit class dictionary");
+        assert_eq!(
+            selected,
+            identities[index]
+                .terrane_v1_digest()
+                .expect("expected digest")
+        );
+        assert_ne!(
+            selected,
+            identities[1 - index]
+                .terrane_v1_digest()
+                .expect("other class digest")
+        );
+        assert_eq!(object.reads.load(Ordering::Relaxed), reads);
+        assert_ne!(record_identity.kind(), identities[index].kind());
+
+        let resolver = StoreDictionaries::new(&store, &profile);
+        let dictionary_reads = store.reads.load(Ordering::Relaxed);
+        let dictionary =
+            ready(resolver.resolve(selected)).expect("fetched and verified trained dictionary");
+        assert_eq!(dictionary, dictionaries[index]);
+        assert_eq!(store.reads.load(Ordering::Relaxed), dictionary_reads + 1);
+        let encoded =
+            crate::codec::encode_chunk(&plaintext, profile.maximum(), 3, Some(&dictionary))
+                .expect("selected trained dictionary encodes actual class object");
+        assert_eq!(
+            terrane_core::codec::parse_envelope(&encoded)
+                .expect("dictionary envelope")
+                .codec,
+            terrane_core::codec::Codec::ZstdDictionary(selected),
+        );
+        let identity = expected_dictionary_identity(&plaintext);
+        store
+            .bytes
+            .lock()
+            .expect("test mutex")
+            .insert(identity.digest().to_vec(), encoded.clone());
+        let fetched = ready(store.get(&identity, None)).expect("stored dictionary-coded chunk");
+        assert_eq!(fetched, encoded);
+        let decoded = crate::codec::decode_verified(
+            &fetched,
+            plaintext.len(),
+            &profile,
+            true,
+            &identity,
+            Some(&dictionary),
+        )
+        .expect("dictionary-coded plaintext and chunk identity verified");
+        assert_eq!(decoded.plaintext(), plaintext);
+        assert_eq!(decoded.identity(), &identity);
+    }
 }

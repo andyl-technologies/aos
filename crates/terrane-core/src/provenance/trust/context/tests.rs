@@ -1,5 +1,10 @@
 //! Checks inert trust-context schemas independently of runtime authority.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "invalid canonical test fixtures must fail their assertions"
+)]
+
 use super::*;
 use crate::cbor;
 use crate::provenance::Preset;
@@ -209,3 +214,101 @@ fn prov_context_rejects_truncated_and_excessive_claims() {
     fields[1] = [vec![0x7b], vec![0xff; 8]].concat();
     assert_eq!(check_row(&fields), Err(Rejected));
 }
+
+fn recorded_context(revision: u64, behavioral: &[&str], later: &[&str]) -> Vec<u8> {
+    let mut record = Vec::new();
+    cbor::write_array(&mut record, 4);
+    cbor::write_bytes(&mut record, &[2; 32]);
+    cbor::write_uint(&mut record, revision);
+    for names in [behavioral, later] {
+        cbor::write_array(&mut record, names.len());
+        for name in names {
+            cbor::write_text(&mut record, name);
+        }
+    }
+    array(&[
+        vec![3],
+        bytes(&VIEW),
+        text(DOMAIN),
+        bytes(Selector::preset(Preset::Any).encode()),
+        vec![0xf6],
+        vec![0],
+        vec![0xf6],
+        record,
+    ])
+}
+
+#[test]
+fn registered_v3_requires_exact_historical_vocabulary_and_preservation_fence() {
+    // This literal is independent of the owning historical vocabulary helper.
+    let original = [
+        "acl",
+        "baseline",
+        "chunk",
+        "classify",
+        "compaction_threshold",
+        "compression",
+        "dedup",
+        "degraded",
+        "domain",
+        "durability",
+        "encryption",
+        "gap_merge_bytes",
+        "hashes",
+        "home",
+        "index",
+        "merge",
+        "on-release",
+        "passthrough",
+        "prefetch",
+        "quota",
+        "reassembly",
+        "redundancy",
+        "reflog_retain",
+        "replicate",
+        "retain",
+        "span_max_bytes",
+        "store",
+        "strict-attrs",
+        "trust",
+        "warm",
+        "whole_pack_threshold",
+        "wipe",
+        "writers",
+    ];
+    for revision in [1, 2, 3] {
+        let mut names = original.to_vec();
+        if revision >= 2 {
+            names.push("index-roots");
+        }
+        if revision >= 3 {
+            names.push("index-gaps");
+        }
+        names.sort_unstable();
+        let registered = recorded_context(revision, &names, &["future"]);
+        assert!(validate(&registered).is_ok());
+
+        // Retain the existing selected-side schema in the registered v3 position.
+        let mut decoder = crate::cbor::Decoder::new(&registered);
+        assert_eq!(decoder.array(8).unwrap(), 8);
+        for _ in 0..6 {
+            decoder.skip_value(65536).unwrap();
+        }
+        let selected_offset = decoder.position();
+        let mut with_side = registered.clone();
+        let evidence = bytes(&array(&[array(&row_fields(b"file"))]));
+        with_side.splice(selected_offset..selected_offset + 1, evidence);
+        assert!(validate(&with_side).is_ok());
+        let mut empty_side = registered.clone();
+        empty_side.splice(selected_offset..selected_offset + 1, bytes(&array(&[])));
+        assert!(validate(&empty_side).is_err());
+        assert!(validate(&recorded_context(revision, &names[..names.len() - 1], &[])).is_err());
+        assert!(validate(&recorded_context(revision, &names, &["domain"])).is_err());
+        assert!(validate(&recorded_context(revision, &names, &["future", "future"])).is_err());
+        assert!(validate(&recorded_context(revision, &names, &["z", "a"])).is_err());
+    }
+    assert!(validate(&recorded_context(4, &original, &[])).is_err());
+    assert!(validate(&recorded_context(1, &original, &[""])).is_err());
+}
+
+mod recorded_execution;

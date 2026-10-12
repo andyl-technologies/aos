@@ -1,8 +1,10 @@
 //! Retains protected administrative exclusion beneath an already held backend.
 //!
 //! This synchronization witness grants no repository authority. Native original
-//! verification and selected publication use its actual path and inode checks;
-//! the lock remains owned until the complete checked operation has finished.
+//! verification and selected publication use its actual path and inode checks.
+//! Shared read exclusion and exclusive writer exclusion are chosen before
+//! nonblocking acquisition. The lock remains owned until the complete checked
+//! operation has finished, including every retained native duplicate.
 
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
@@ -81,6 +83,28 @@ impl RetainedControlRecord {
 }
 
 impl RetainedControls {
+    /// Rechecks every exact consumed control under its already retained exclusion.
+    ///
+    /// # Errors
+    /// Rejects unavailable retention, replaced or unsafe ancestors/directory/lock,
+    /// changed record identities or bytes and underlying nofollow read failures.
+    pub(crate) async fn revalidate<F: LocalFs + BucketBinding>(
+        &self,
+        fs: &F,
+    ) -> Result<(), StoreFailure> {
+        let mut controls =
+            OriginalControls::retained(fs, &self.directory, self.owner, self).await?;
+        for record in &self.records {
+            let selector = record
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(invalid)?;
+            controls.read_record(selector).await?;
+        }
+        controls.revalidate().await
+    }
+
     /// Retains the actual already duplicated exclusion in the submitted worker.
     pub(crate) fn exclusions(&self) -> std::sync::Arc<[crate::store::NativeExclusion]> {
         std::sync::Arc::clone(&self.exclusions)
@@ -112,6 +136,15 @@ impl RetainedControls {
     }
 }
 
+/// Selects administrative access before acquiring the stable control inode.
+#[derive(Clone, Copy)]
+pub(super) enum ControlAccess {
+    /// Preserves exact records for verification without admitting a writer.
+    Read,
+    /// Excludes every reader and writer before installing protected records.
+    Write,
+}
+
 /// Holds one protected control directory and its stable coordination inode.
 pub(crate) struct ControlExclusion<'a, F: LocalFs> {
     fs: &'a F,
@@ -120,6 +153,8 @@ pub(crate) struct ControlExclusion<'a, F: LocalFs> {
     directory_identity: (u64, u64),
     lock_identity: (u64, u64),
     _lock: F::Lock,
+    #[cfg(test)]
+    _trace: crate::ref_advance::NativeTrace,
 }
 
 impl<'a, F: LocalFs + BucketBinding> ControlExclusion<'a, F> {
@@ -131,6 +166,29 @@ impl<'a, F: LocalFs + BucketBinding> ControlExclusion<'a, F> {
     pub(crate) async fn retain_used(
         &mut self,
         pins: &[terrane_core::gc::publication::evidence::RequiredControlPin],
+    ) -> Result<RetainedControls, StoreFailure> {
+        let mut expected = Vec::with_capacity(pins.len());
+        for pin in pins {
+            let bytes = self.read_record(&pin.key).await?;
+            pin.check_record(&bytes).map_err(|_| invalid())?;
+            expected.push((pin.key.clone(), bytes));
+        }
+        self.retain_named(&expected).await
+    }
+
+    /// Retains exact checked administrative records without assigning a pin kind.
+    ///
+    /// Dedicated disclosure-role configuration has no registered control-pin
+    /// variant. Its checked producer supplies exact canonical bytes here solely
+    /// to retain physical exclusion and detect replacement in the native worker.
+    /// This receipt establishes no role, actor or repository authority.
+    ///
+    /// # Errors
+    /// Rejects duplicate names, differing bytes, replaced records or ancestors,
+    /// unsafe protection and unsupported native descriptor retention.
+    pub(crate) async fn retain_named(
+        &mut self,
+        expected: &[(String, Vec<u8>)],
     ) -> Result<RetainedControls, StoreFailure> {
         self.revalidate().await?;
         let ancestors = self.capture_ancestors().await?;
@@ -148,12 +206,18 @@ impl<'a, F: LocalFs + BucketBinding> ControlExclusion<'a, F> {
                 }
             })?;
 
-        let mut records = Vec::with_capacity(pins.len());
-        for pin in pins {
-            let path = self.record_path(&pin.key)?;
+        let mut names = std::collections::BTreeSet::new();
+        let mut records = Vec::with_capacity(expected.len());
+        for (key, expected_bytes) in expected {
+            if !names.insert(key) {
+                return Err(invalid());
+            }
+            let path = self.record_path(key)?;
             let identity = protected_file(self.fs, &path, self.owner).await?;
-            let bytes = self.read_record(&pin.key).await?;
-            pin.check_record(&bytes).map_err(|_| invalid())?;
+            let bytes = self.read_record(key).await?;
+            if bytes != *expected_bytes {
+                return Err(invalid());
+            }
             if protected_file(self.fs, &path, self.owner).await? != identity {
                 return Err(invalid());
             }
@@ -218,13 +282,18 @@ impl<'a, F: LocalFs + BucketBinding> ControlExclusion<'a, F> {
 
     /// Acquires actual administrative exclusion after backend exclusion.
     ///
+    /// Access is chosen before acquisition. Contention returns immediately so
+    /// callers release backend exclusion instead of waiting on retained controls.
+    ///
     /// # Errors
     /// Rejects unprotected paths, replaced coordination or directory inodes,
-    /// owner or mode changes, and unavailable filesystem observations.
+    /// owner or mode changes, unsupported acquisition, busy controls and unavailable
+    /// filesystem observations.
     pub(super) async fn acquire(
         fs: &'a F,
         directory: &Path,
         owner: u32,
+        access: ControlAccess,
     ) -> Result<Self, StoreFailure> {
         let mut ancestor = PathBuf::new();
         for part in directory.components() {
@@ -248,11 +317,22 @@ impl<'a, F: LocalFs + BucketBinding> ControlExclusion<'a, F> {
         let directory_identity = (metadata.dev(), metadata.ino());
         let lock_path = directory.join("retention.lock");
         let lock_identity = protected_file(fs, &lock_path, owner).await?;
-        let lock = fs
-            .lock_existing_exclusive(&lock_path)
-            .await
-            .map_err(io_failure)?;
+        #[cfg(test)]
+        let trace = crate::ref_advance::NativeTrace::new(&lock_path, "original-control-acquire");
+        let lock = match access {
+            ControlAccess::Read => fs.try_lock_existing_shared(&lock_path).await,
+            ControlAccess::Write => fs.try_lock_existing_exclusive(&lock_path).await,
+        }
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::Unsupported {
+                StoreFailure::with_source(crate::store::StoreErrorKind::Unsupported, error)
+            } else {
+                io_failure(error)
+            }
+        })?;
 
+        #[cfg(test)]
+        trace.mark("actual-control-lock-acquired");
         let mut held = Self {
             fs,
             directory: directory.to_path_buf(),
@@ -260,6 +340,8 @@ impl<'a, F: LocalFs + BucketBinding> ControlExclusion<'a, F> {
             directory_identity,
             lock_identity,
             _lock: lock,
+            #[cfg(test)]
+            _trace: trace,
         };
         held.revalidate().await?;
         Ok(held)
@@ -345,7 +427,7 @@ impl<'a, F: LocalFs + BucketBinding> OriginalControls<'a, F> {
         owner: u32,
     ) -> Result<Self, StoreFailure> {
         Ok(Self::Acquired(
-            ControlExclusion::acquire(fs, directory, owner).await?,
+            ControlExclusion::acquire(fs, directory, owner, ControlAccess::Read).await?,
         ))
     }
 
@@ -451,3 +533,6 @@ impl<'a, F: LocalFs + BucketBinding> OriginalControls<'a, F> {
         Ok(bytes)
     }
 }
+
+#[cfg(all(test, feature = "tokio"))]
+mod lock_mode_tests;

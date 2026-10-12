@@ -14,7 +14,8 @@ const SOURCE_DOMAIN: &str = "private:source";
 const PUBLIC: &str = "public";
 const AUTHORITY_SECRET: [u8; 32] = [21; 32];
 
-fn defaults() -> Defaults<'static> {
+/// Supplies the actual fixed defaults for signed disclosure fixtures.
+pub(super) fn defaults() -> Defaults<'static> {
     Defaults {
         store: "test",
         private_domain: SOURCE_DOMAIN,
@@ -22,7 +23,8 @@ fn defaults() -> Defaults<'static> {
     }
 }
 
-fn authority() -> DisclosureAuthority<'static> {
+/// Supplies independently configured scoped disclosure authority and key lifetime.
+pub(super) fn authority() -> DisclosureAuthority<'static> {
     DisclosureAuthority {
         repository: "private-source-repository",
         domain: SOURCE_DOMAIN,
@@ -34,7 +36,14 @@ fn authority() -> DisclosureAuthority<'static> {
     }
 }
 
-fn root_tree(items: Vec<crate::tree_format::LeafItem<'_>>, domain: &str) -> (Digest, Vec<u8>) {
+/// Builds a canonical namespace with independently specified domain and trust.
+///
+/// # Panics
+/// Panics if the literal canonical tree cannot be built or encoded.
+pub(super) fn root_tree(
+    items: Vec<crate::tree_format::LeafItem<'_>>,
+    domain: &str,
+) -> (Digest, Vec<u8>) {
     let mut value = Vec::new();
     cbor::write_text(&mut value, domain);
     tree(
@@ -52,7 +61,16 @@ fn root_tree(items: Vec<crate::tree_format::LeafItem<'_>>, domain: &str) -> (Dig
     )
 }
 
-fn authored(commit: Commit, domain: &str, secret: &[u8; 32], baseline: bool) -> VerifiedCommit {
+/// Signs canonical metadata using actual original request and embedded token checks.
+///
+/// # Panics
+/// Panics if literal token, request context or genuine signing checks fail.
+pub(super) fn authored(
+    commit: Commit,
+    domain: &str,
+    secret: &[u8; 32],
+    baseline: bool,
+) -> VerifiedCommit {
     authored_claims(
         commit,
         &[RequestRoot { path: b"/", domain }],
@@ -93,7 +111,8 @@ fn authored_claims(
     })
 }
 
-fn file() -> Entry<'static> {
+/// Supplies the canonical disclosed file with its real inline content identity.
+pub(super) fn file() -> Entry<'static> {
     let mut value = entry(b"");
     value.kind = EntryKind::File {
         mode: 0o644,
@@ -104,17 +123,29 @@ fn file() -> Entry<'static> {
     value
 }
 
-struct Fixture {
-    source: VerifiedHistory,
-    source_commit: VerifiedCommit,
-    destination: VerifiedHistory,
-    destination_commit: VerifiedCommit,
-    target: EntryLocation,
-    source_root: Digest,
+/// Retains genuine independently signed source and certified destination histories.
+pub(super) struct Fixture {
+    /// Complete actual source history with independently checked original scope.
+    pub(super) source: VerifiedHistory,
+    /// Actual signed introducing source Commit.
+    pub(super) source_commit: VerifiedCommit,
+    /// Destination-only canonical history, without the private source graph.
+    pub(super) destination: VerifiedHistory,
+    /// Actual signed certified destination Commit.
+    pub(super) destination_commit: VerifiedCommit,
+    /// Exact destination entry whose origin the certificate binds.
+    pub(super) target: EntryLocation,
+    /// Actual source namespace root named by the certified source receipt.
+    pub(super) source_root: Digest,
     source_bytes: Vec<u8>,
 }
 
-fn fixture(value: Entry<'_>) -> Fixture {
+/// Produces a real certificate from verified source history and finalized signed metadata.
+///
+/// # Panics
+/// Panics if canonical fixture trees, signatures, token/original scope, or actual
+/// disclosure issuance fail.
+pub(super) fn fixture(value: Entry<'_>) -> Fixture {
     let (source_root, source_bytes) = root_tree(
         vec![
             item(b"file", value.clone()),
@@ -280,4 +311,5 @@ fn disclosed_candidate<'a>(
 
 mod boundaries;
 mod projection;
+mod recorded;
 mod retention;

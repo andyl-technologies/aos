@@ -1,8 +1,8 @@
-//! Builds canonical empty genesis data without granting activation authority.
+//! Builds canonical empty or copied genesis data without activation authority.
 //!
 //! The catalog and staged proposal contain only public record data. Their
-//! binding and known-empty inventory must still be justified by the native
-//! creator before any record is installed or selected.
+//! binding and complete inventory must still be justified by the native
+//! creator or explicit copy factory before any record is installed or selected.
 //!
 //! ```text
 //! fixed profile + binding + timestamp -> empty catalog
@@ -20,9 +20,9 @@ use terrane_core::gc::publication::{
 };
 use terrane_core::identity::{IdentityKind, TERRANE_V1};
 
-/// Carries the complete empty proposal before its operation nonce is generated.
+/// Carries the fixed empty or copied proposal before its nonce is generated.
 pub(super) struct EmptyCatalog {
-    /// The proposed genesis state, with complete empty burn ownership.
+    /// The destination genesis state, preserving copied burn completeness.
     pub(super) state: PublicationState,
     /// The complete catalog, including explicit physical lease absence.
     pub(super) logical: BTreeMap<String, Option<Vec<u8>>>,
@@ -110,7 +110,7 @@ pub(super) fn catalog(
     Ok(EmptyCatalog { state, logical })
 }
 
-/// Binds the full empty checkpoint and transaction to a provided native nonce.
+/// Binds the fixed full checkpoint and transaction to a provided native nonce.
 ///
 /// # Errors
 /// Rejects noncanonical snapshot data or any disagreement between the whole
@@ -159,6 +159,46 @@ pub(super) fn stage(catalog: EmptyCatalog, nonce: [u8; 32]) -> Result<Genesis, S
         snapshot_bytes,
         transaction,
     })
+}
+
+/// Rebinds verified ordinary copy data without importing physical authority.
+///
+/// # Errors
+/// Rejects incomplete catalog or history data and unsupported canonical records.
+pub(super) fn copied_catalog(
+    mut logical: BTreeMap<String, Option<Vec<u8>>>,
+    binding: BackendBinding,
+    timestamp: u64,
+) -> Result<EmptyCatalog, StoreFailure> {
+    let state = crate::bucket::publication::copy_payload::state(&logical, binding.clone())?;
+    logical.insert("gc/lease".into(), None);
+    logical.insert(
+        "publication/SELECTED-HISTORY".into(),
+        Some(
+            SelectedHistory {
+                branches: state.branches.clone(),
+                origin: binding,
+            }
+            .encode()
+            .map_err(|_| corrupt())?,
+        ),
+    );
+    let cap = logical
+        .get("CAPABILITIES")
+        .and_then(Option::as_deref)
+        .ok_or_else(corrupt)?;
+    let mut cap = BucketCapabilities::decode(cap).map_err(|_| corrupt())?;
+    let current_catalog = format!("objects/index/{}/", cap.generation.ok_or_else(corrupt)?);
+    // Obsolete catalog generations stay copied physical data. Selecting them
+    // in genesis would assert their historical burn sets as current ownership.
+    logical
+        .retain(|key, _| !key.starts_with("objects/index/") || key.starts_with(&current_catalog));
+    cap.probed_at = timestamp;
+    logical.insert(
+        "CAPABILITIES".into(),
+        Some(cap.encode().map_err(|_| corrupt())?),
+    );
+    Ok(EmptyCatalog { state, logical })
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@ use super::fs::ProbeFs;
 use crate::{
     bucket::{BucketBinding, FileBucket, held::SingleHeld},
     domain::DomainNamespace,
-    guard::Guard,
+    guard::{AuthoringNamespaceProfile, Guard},
     pack::{MergedEntry, MergedShard, PackIndexSnapshot, PackReader, RawBodyDecoder, RecordState},
     ref_advance::{CommitRequest, CommitTiming, Coordinator, StagedUpload},
     repository::Repository,
@@ -68,15 +68,26 @@ type ValidatedOffers = Vec<(IdentityKind, Vec<u8>)>;
 
 /// Records actual configured-validator calls, never publication permission.
 #[derive(Clone, Default)]
-pub(super) struct Validator(Arc<Mutex<ValidatedOffers>>);
+pub(super) struct Validator {
+    calls: Arc<Mutex<ValidatedOffers>>,
+    repository: Option<Arc<crate::repository::MetadataValidator>>,
+}
 
 impl Validator {
+    /// Installs the real repository schema validator with the actual configured profile.
+    fn repository(profile: terrane_core::chunking::ChunkProfile) -> Self {
+        Self {
+            calls: Arc::default(),
+            repository: Some(Arc::new(crate::repository::MetadataValidator::new(profile))),
+        }
+    }
+
     /// Counts exact offered bytes that reached the real configured schema validator.
     ///
     /// # Panics
     /// Panics if instrumentation was poisoned by another failed fixture assertion.
     pub(super) fn calls(&self, kind: IdentityKind, bytes: &[u8]) -> usize {
-        required(self.0.lock())
+        required(self.calls.lock())
             .iter()
             .filter(|(actual, body)| *actual == kind && body == bytes)
             .count()
@@ -85,7 +96,10 @@ impl Validator {
 
 impl ContentValidator for Validator {
     fn validate_meta(&self, upload: &MetaUpload<'_>) -> Result<(), StoreFailure> {
-        required(self.0.lock()).push((upload.kind(), upload.bytes().to_vec()));
+        required(self.calls.lock()).push((upload.kind(), upload.bytes().to_vec()));
+        if let Some(validator) = &self.repository {
+            return validator.validate_meta(upload);
+        }
         let valid = match upload.kind() {
             IdentityKind::Node => {
                 tree_format::decode_node_for(upload.bytes(), true, 262144, TreeUse::Ordinary)
@@ -112,6 +126,9 @@ impl ContentValidator for Validator {
         &self,
         upload: &MetaUpload<'_>,
     ) -> Result<Vec<ChunkRequirement>, StoreFailure> {
+        if let Some(validator) = &self.repository {
+            return validator.chunk_requirements(upload);
+        }
         if upload.kind() != IdentityKind::Node {
             return Ok(Vec::new());
         }
@@ -170,6 +187,8 @@ pub(super) struct Fixture<C: Clock + BucketBinding = TokioClock> {
     pub(super) validator: Validator,
     /// The actual private Original directory chosen before any candidate exists.
     pub(super) original: PathBuf,
+    /// Independent authoring inputs installed before this fixture's first signature.
+    pub(super) authoring: Option<AuthoringNamespaceProfile>,
 }
 
 impl Fixture {
@@ -183,6 +202,21 @@ impl Fixture {
     pub(super) async fn new() -> TestResult<Self> {
         Self::with_clock(TokioClock).await
     }
+
+    /// Installs a real active namespace profile before native initialization and signing.
+    ///
+    /// # Errors
+    /// Preserves actual profile, Original, bucket and native setup failures.
+    ///
+    /// # Panics
+    /// Propagates the shared seed fixture's setup assertions.
+    pub(super) async fn active_owner() -> TestResult<Self> {
+        Self::with_profile(
+            TokioClock,
+            Some(AuthoringNamespaceProfile::new(3, 3, &[], 2)?),
+        )
+        .await
+    }
 }
 
 impl<C: Clock + BucketBinding + Clone + Sync + 'static> Fixture<C> {
@@ -194,6 +228,13 @@ impl<C: Clock + BucketBinding + Clone + Sync + 'static> Fixture<C> {
     /// # Panics
     /// Propagates the existing independently configured fixture's setup assertions.
     pub(super) async fn with_clock(clock: C) -> TestResult<Self> {
+        Self::with_profile(clock, None).await
+    }
+
+    async fn with_profile(
+        clock: C,
+        authoring: Option<AuthoringNamespaceProfile>,
+    ) -> TestResult<Self> {
         let seed = crate::ref_advance::tests::raw_fixture().await;
         let entropy = TokioLocalFs.random_bytes(16).await?;
         let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -205,20 +246,31 @@ impl<C: Clock + BucketBinding + Clone + Sync + 'static> Fixture<C> {
             .await?;
         let owner = TokioLocalFs.symlink_metadata(&original).await?.uid();
         let fs = ProbeFs::default();
-        let validator = Validator::default();
-        let bucket = FileBucket::open(
-            crate::ref_advance::tests::config(root.clone()).await,
-            fs.clone(),
-            clock.clone(),
-            validator.clone(),
-        )
-        .await?;
-        let guard = Guard::new(
-            bucket,
-            clock.clone(),
-            seed.guard().keys().to_vec(),
-            seed.guard().config().clone(),
-        );
+        let config = crate::ref_advance::tests::config(root.clone()).await;
+        let validator = if authoring.is_some() {
+            Validator::repository(config.chunk_profile.clone())
+        } else {
+            Validator::default()
+        };
+        let bucket = FileBucket::open(config, fs.clone(), clock.clone(), validator.clone()).await?;
+        let guard = match &authoring {
+            Some(inputs) => Guard::new_active(
+                bucket,
+                clock.clone(),
+                seed.guard().keys().to_vec(),
+                seed.guard().config().clone(),
+            )
+            .with_recorded_authoring(
+                inputs.context().clone(),
+                inputs.registries().attribute_revision,
+            )?,
+            None => Guard::new(
+                bucket,
+                clock.clone(),
+                seed.guard().keys().to_vec(),
+                seed.guard().config().clone(),
+            ),
+        };
         let coordinator = Coordinator::new(
             guard,
             CommitTiming::new(
@@ -244,6 +296,7 @@ impl<C: Clock + BucketBinding + Clone + Sync + 'static> Fixture<C> {
             fs,
             validator,
             original,
+            authoring,
         })
     }
 
@@ -617,13 +670,7 @@ impl<C: Clock + BucketBinding + Clone + Sync + 'static> Fixture<C> {
                     .any(|(_, committed)| *committed == journal)
             );
         }
-        assert!(
-            self.fs
-                .observations()
-                .entropy_lengths
-                .iter()
-                .any(|length| *length == 16)
-        );
+        assert!(self.fs.observations().entropy_lengths.contains(&16));
         Ok(())
     }
 }
@@ -675,6 +722,9 @@ pub(super) fn node(verbs: u8) -> TestResult<(Identity, Vec<u8>)> {
     Ok((TERRANE_V1.calculate(IdentityKind::Node, &bytes)?, bytes))
 }
 
+/// Pairs a signed-writer request with independently expected member identities and bytes.
+pub(super) type RequestWithExpectedMembers = (CommitRequest, Vec<(Identity, Vec<u8>)>);
+
 /// Offers multiple actual canonical Meta members to the unchanged signed writer.
 ///
 /// # Errors
@@ -685,7 +735,7 @@ pub(super) fn node(verbs: u8) -> TestResult<(Identity, Vec<u8>)> {
 pub(super) fn request(
     parents: Vec<Digest>,
     extras: &[u8],
-) -> TestResult<(CommitRequest, Vec<(Identity, Vec<u8>)>)> {
+) -> TestResult<RequestWithExpectedMembers> {
     let mut request = crate::ref_advance::tests::request(parents);
     let root = node(31)?;
     request.commit.tree = root.0.terrane_v1_digest()?;
