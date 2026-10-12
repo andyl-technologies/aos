@@ -26,18 +26,30 @@ const PLAINTEXT: &[u8] = b"current authority is independent of original authorin
 const START: u64 = 1000;
 const EXPIRES: u64 = 1100;
 
+/// Names the retained native repository used for current-authority witnesses.
 pub(super) type NativeRepository =
     Repository<FileBucket<FaultFs, TokioClock, Validator>, TestClock, FaultFs>;
 
+/// Owns an independently initialized repository and its genuine authority inputs.
 pub(super) struct Factory {
+    /// Retains the repository's original evidence and protected publication binding.
     pub(super) repository: NativeRepository,
+    /// Supplies this physical repository's issuer key, capability and signing secret.
     pub(super) authority: LocalAuthority,
+    /// Observes and pauses genuine filesystem publication effects.
     pub(super) fs: FaultFs,
+    /// Supplies the independently controlled authorization clock.
     pub(super) clock: TestClock,
+    /// Selects the private or public domain used by proposed fixture trees.
     pub(super) private: bool,
 }
 
 impl Factory {
+    /// Initializes an independent native factory in the selected disclosure domain.
+    ///
+    /// # Panics
+    /// Panics if fixture setup, secure randomness, credentials, bucket opening or
+    /// protected original-retention initialization fails.
     pub(super) async fn initialize(private: bool) -> Self {
         let raw = raw_fixture().await;
         let root = raw.store().root().to_owned();
@@ -130,12 +142,18 @@ impl Factory {
         }
     }
 
+    /// Borrows the coordinator belonging to this retained native repository.
     pub(super) fn coordinator(
         &self,
     ) -> &Coordinator<FileBucket<FaultFs, TokioClock, Validator>, TestClock, FaultFs> {
         self.repository.coordinator()
     }
 
+    /// Stages a file proposal with the requested parents and fixture root ACL.
+    ///
+    /// # Panics
+    /// Panics if the ACL mask is unsupported or tree construction, identity
+    /// calculation or staged metadata validation fails.
     pub(super) fn proposal(
         &self,
         parents: Vec<[u8; 32]>,
@@ -148,6 +166,11 @@ impl Factory {
         proposal
     }
 
+    /// Resolves publication control from the actual held backend registration.
+    ///
+    /// # Panics
+    /// Panics if exclusion or observation fails, the registration is absent or
+    /// its physical path does not name `backend-registration.cbor`.
     pub(super) async fn control(&self) -> PathBuf {
         let held = crate::bucket::held::SingleHeld::acquire(self.coordinator().store())
             .await
@@ -219,6 +242,11 @@ fn tree_with_mode(verbs: u8, private: bool, mode: u16) -> Tree<'static> {
     .unwrap()
 }
 
+/// Derives a genuine narrower capability and verifies it at the fixture start time.
+///
+/// # Panics
+/// Panics if proposal construction, token decoding, attenuation or verification
+/// fails, including a caveat that attempts to widen the original authority.
 pub(super) fn attenuate(factory: &Factory, caveat: Caveat) -> Vec<u8> {
     let proposal = factory.proposal(Vec::new(), 31);
     let secret = proposal.terminal_secret;
@@ -750,11 +778,12 @@ async fn fresh_authority() {
     );
 }
 
-/// Requires genuine independently current checks before upload and selected CAS.
+/// Checks independent current heads, tokens, epochs and root ACLs during disclosure.
 ///
 /// # Panics
-/// Panics if authenticated setup fails, a late expiry publishes, an independent
-/// authority transition bypasses exclusion, or a valid current pair is refused.
+/// Panics if authenticated setup fails, a late expiry publishes, a competing
+/// transition bypasses exclusion, a refusal has the wrong verb or changes a head,
+/// rejected metadata is uploaded, or a valid current pair is refused.
 pub(super) async fn recheck_current_authority() {
     late_expiry(true).await;
     late_expiry(false).await;
