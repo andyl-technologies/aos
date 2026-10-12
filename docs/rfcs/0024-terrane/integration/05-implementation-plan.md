@@ -153,9 +153,27 @@ original-occurrence and projected-result policy checks. Five pure regressions
 and a native persistence/reopening witness are registered before composition.
 GC review also identifies a copied-destination refusal when a valid burned pack
 has no remaining source exclusion, and a cancellation witness whose asynchronous
-poll cannot prove retained exclusion. Isolated corrections and independent source
-review are in progress. These source results do not complete a task or advance
-T1's freeze.
+poll cannot prove retained exclusion. Both isolated corrections pass independent
+source review; runtime qualification remains pending. These source results do
+not complete a task or advance T1's freeze.
+
+One separate diagnostic of the archived 2,048-entry ordinary case completes
+maintained publication, then reaches the same external cap during reopen. Its
+actual terminal is `-15` after 1,803.934 seconds, with no final assertions or
+accounting result. All 31 diagnostic payloads and 112 raw events are independently
+verified; the original 990-payload qualification packet remains unchanged.
+This trace does not establish the original capped phase or a causal bottleneck.
+
+Shared callers now preserve the parent and disclosure-source property
+interpretations and admission's canonical affected publication paths. Native
+Notes inventory, recorded disclosure and retained-reader refusal regressions
+are registered. PROV-31 review also identifies renewed ancestor authorization
+for unchanged graft descriptors; its correction and genuine scoped-publication
+witnesses pass independent source review; runtime qualification remains pending.
+The local CLI/SDK source workline is reviewed. Private Core composition passes
+its library build and all-target compilation after a test-only import correction.
+The interrupted Clippy invocation has no terminal receipt and remains unqualified;
+qualification resumes through the direct AOS Cargo shell. No new gate is qualified.
 
 Additional isolated worklines inspect growing-index completion, indexed replay
 and permanent recovery, while a separate worker qualifies the five public SDK

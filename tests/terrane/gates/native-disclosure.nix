@@ -23,6 +23,9 @@
     (map (name: "ref_advance::disclosure_tests::${name}") names);
 
   boundaryTests = [
+    "recorded::disclosure_recorded_authoring_survives_selected_ack_and_destination_only_reopen"
+    "recorded::disclosure_active_three_refuses_malformed_later_properties_before_effects"
+    "control_lock::disclosure_install_refuses_retained_original_reader_after_backend_release"
     "disclosure_boundary_reopens_after_source_and_signing_seed_erasure"
     "disclosure_boundary_rejects_whole_commit_receipt_and_projection_mutations"
     "disclosure_boundary_rejects_uncovered_siblings_attributes_and_unanchored_parents"
