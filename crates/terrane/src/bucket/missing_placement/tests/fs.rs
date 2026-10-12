@@ -236,6 +236,36 @@ impl LocalFs for ProbeFs {
         TokioLocalFs.read_nofollow(path).await
     }
 
+    async fn read_payload_ranges(
+        &self,
+        request: crate::store::NativePayloadRangeRead,
+    ) -> io::Result<Option<crate::store::NativePayloadRangeRecord>> {
+        // Native retained readers must keep the same unavailable-artifact hook
+        // as scalar reads, including fresh closing checks of consumed ranges.
+        let unavailable = {
+            let mut state = self.state();
+            let unavailable = state.unavailable.as_deref().is_some_and(|path| {
+                request
+                    .read_data_range()
+                    .is_some_and(|(actual, _)| actual == path)
+                    || request
+                        .closing_data_ranges_for_test()
+                        .is_some_and(|mut ranges| ranges.any(|(actual, _)| actual == path))
+            });
+            if unavailable {
+                state.observations.unavailable_reads += 1;
+            }
+            unavailable
+        };
+        if unavailable {
+            return Err(io::Error::other(
+                "missing-placement fixture exact nofollow read unavailable",
+            ));
+        }
+
+        TokioLocalFs.read_payload_ranges(request).await
+    }
+
     async fn read_ordinary_record(
         &self,
         read: crate::store::NativeOrdinaryRead,
