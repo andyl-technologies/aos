@@ -51,6 +51,20 @@ impl AuthorizedSnapshot {
     }
 }
 
+// Borrows immutable witnesses without manufacturing another authorized snapshot.
+// The common checker still derives every current request independently.
+struct SnapshotRead<'a> {
+    history: &'a VerifiedHistory,
+    commit: &'a VerifiedCommit,
+    evidence: &'a TreeEvidence,
+    scope: &'a [u8],
+    storage_domain: &'a str,
+    interpretation: &'a super::recorded_properties::SelectedReadInterpretation,
+    authority_reference: &'a str,
+    token: &'a [u8],
+    surface: &'a str,
+}
+
 impl<S: Store, C: Clock> Guard<S, C> {
     /// Issues hash-read evidence only for the exact authenticated file selection.
     ///
@@ -423,28 +437,196 @@ impl<S: Store, C: Clock> Guard<S, C> {
         path: &[u8],
         observation: HistoryObservation<'_>,
     ) -> Result<Vec<super::AuthorizedRef>, StoreFailure> {
+        self.snapshot_read_authorizations(
+            SnapshotRead {
+                history: &snapshot.history,
+                commit: &snapshot.commit,
+                evidence: &snapshot.evidence,
+                scope: &snapshot.scope,
+                storage_domain: &snapshot.storage_domain,
+                interpretation: &snapshot.interpretation,
+                authority_reference: &snapshot.authority_reference,
+                token: &snapshot.token,
+                surface: &snapshot.surface,
+            },
+            path,
+            observation,
+        )
+        .await
+    }
+
+    /// Checks a producer path using this invocation's immutable history witnesses.
+    ///
+    /// No live permission is retained. The selected domain and every ordinary
+    /// ACL, token, epoch and trust check are recomputed for the actual path.
+    ///
+    /// # Errors
+    /// Preserves selected interpretation, domain, current authority and trust failures.
+    pub(in crate::guard) async fn producer_authorizations_from_history(
+        &self,
+        (verified, history): (&super::history::VerifiedTree, &VerifiedHistory),
+        token: &[u8],
+        path: &[u8],
+        surface: &str,
+        observation: HistoryObservation<'_>,
+    ) -> Result<(String, Vec<super::AuthorizedRef>), StoreFailure> {
+        let observation = observation.requested_target();
+        let original = verified
+            .commit
+            .commit()
+            .profile_pair
+            .commit_context
+            .as_ref()
+            .ok_or_else(invalid)?
+            .reference();
+        let authority = self
+            .config()
+            .policy_authority
+            .as_deref()
+            .unwrap_or(original);
+        let interpretation = self.select_view(
+            verified.commit.identity(),
+            verified.evidence.root,
+            observation,
+        )?;
+        let policy_layers = verified
+            .evidence
+            .policy_path(path, self.config().min_chunk_size)?;
+        let layers = policy_layers
+            .iter()
+            .map(|(properties, overrides)| RootLayer {
+                properties,
+                overrides,
+            })
+            .collect::<Vec<_>>();
+        let policy = interpretation.resolve(&layers, self.defaults_for(&verified.evidence))?;
+        let domain = domain_label(&policy).map_err(|_| invalid())?.to_owned();
+        if domain != self.config().storage_domain {
+            return Err(denied(authority, Verb::Read));
+        }
+        let requests = self
+            .snapshot_read_authorizations(
+                SnapshotRead {
+                    history,
+                    commit: &verified.commit,
+                    evidence: &verified.evidence,
+                    scope: path,
+                    storage_domain: &domain,
+                    interpretation: &interpretation,
+                    authority_reference: authority,
+                    token,
+                    surface,
+                },
+                path,
+                observation,
+            )
+            .await?;
+        Ok((domain, requests))
+    }
+
+    /// Captures the Originals associated with a successfully completed local history.
+    ///
+    /// # Errors
+    /// Refuses missing protected Original contexts for any reached record.
+    #[cfg(feature = "std")]
+    pub(in crate::guard) fn producer_originals(
+        &self,
+        history: &VerifiedHistory,
+    ) -> Result<Vec<super::OriginalCommitContext>, StoreFailure> {
+        history
+            .commits()
+            .map(|commit| self.original_commit(&commit.identity()))
+            .collect()
+    }
+
+    /// Refreshes every Original and installed selection in an immutable preparation.
+    ///
+    /// The record inventory includes disclosure-expanded dependencies. It grants
+    /// no completion by itself; callers supply only their successfully completed
+    /// invocation-local history and retain the owning closing control checks.
+    ///
+    /// # Errors
+    /// Refuses changed selected meanings, unavailable Originals and changed controls.
+    #[cfg(feature = "std")]
+    pub(in crate::guard) async fn refresh_producer_history(
+        &self,
+        history: &VerifiedHistory,
+        originals: &[super::OriginalCommitContext],
+        observation: HistoryObservation<'_>,
+    ) -> Result<(), StoreFailure> {
+        if history.commits().count() != originals.len() {
+            return Err(invalid());
+        }
+        for (commit, original) in history.commits().zip(originals) {
+            let view = commit.identity();
+            if *original.commit() != view || self.original_commit(&view)? != *original {
+                return Err(invalid());
+            }
+            let baseline = original.baseline();
+            let association = super::AssociationView {
+                commit: &view,
+                id: baseline.authority().id(),
+                reference: baseline.reference(),
+                epoch: baseline.epoch(),
+            };
+            let checked = match observation.identity() {
+                Some(held) if held.writable() => {
+                    self.recheck_original_commit_observed(baseline, association, held)
+                        .await?
+                }
+                Some(held) => {
+                    self.recheck_original_commit_read_observed(baseline, association, held)
+                        .await?
+                }
+                None => self.check_original_commit(baseline, association).await?,
+            };
+            if &checked != original {
+                return Err(invalid());
+            }
+            observation.check_completion_original(&checked)?;
+            observation.record_original(&checked)?;
+            let selected = self.select_view(view, commit.commit().tree, observation)?;
+            if selected.selection()
+                != history
+                    .property_selection(view)
+                    .map_err(super::index_maintenance::failure)?
+            {
+                return Err(invalid());
+            }
+        }
+        Ok(())
+    }
+
+    async fn snapshot_read_authorizations(
+        &self,
+        snapshot: SnapshotRead<'_>,
+        path: &[u8],
+        observation: HistoryObservation<'_>,
+    ) -> Result<Vec<super::AuthorizedRef>, StoreFailure> {
         if self.select_view(
             snapshot.commit.identity(),
             snapshot.evidence.root,
             observation,
-        )? != snapshot.interpretation
+        )? != *snapshot.interpretation
         {
             return Err(invalid());
         }
         if !(snapshot.scope == b"/"
             || path == snapshot.scope
             || path
-                .strip_prefix(snapshot.scope.as_slice())
+                .strip_prefix(snapshot.scope)
                 .is_some_and(|suffix| suffix.starts_with(b"/")))
         {
-            return Err(denied(&snapshot.authority_reference, Verb::Read));
+            return Err(denied(snapshot.authority_reference, Verb::Read));
         }
         if path != b"/" {
+            // Keep the existing per-path evaluator, including its history clone.
+            // Its Rc-backed state must finish before the following native await.
             let trust = snapshot.interpretation.evaluator(
-                &snapshot.history,
+                snapshot.history,
                 (snapshot.commit.identity(), snapshot.evidence.root),
                 Selector::preset(Preset::Any),
-                &snapshot.storage_domain,
+                snapshot.storage_domain,
                 None,
             )?;
             let relative = path.strip_prefix(b"/").ok_or_else(invalid)?;
@@ -457,20 +639,20 @@ impl<S: Store, C: Clock> Guard<S, C> {
         }
         let (current, live) = self
             .authorize_observed_with_evidence(
-                &snapshot.authority_reference,
-                &snapshot.token,
+                snapshot.authority_reference,
+                snapshot.token,
                 Verb::Read,
                 &[path.to_vec()],
-                &snapshot.surface,
+                snapshot.surface,
                 observation,
             )
             .await?;
         let record = current
             .record()
-            .ok_or_else(|| denied(&snapshot.authority_reference, Verb::Read))?;
+            .ok_or_else(|| denied(snapshot.authority_reference, Verb::Read))?;
         // Reuse only the evidence freshly checked for this exact current ref.
         // Every path and content boundary still performs its own authorization.
-        let live = live.ok_or_else(|| denied(&snapshot.authority_reference, Verb::Read))?;
+        let live = live.ok_or_else(|| denied(snapshot.authority_reference, Verb::Read))?;
         let live_roots = live.occurrences(self.config().min_chunk_size)?;
         for bound in snapshot
             .evidence
@@ -484,12 +666,12 @@ impl<S: Store, C: Clock> Guard<S, C> {
             if covers && !live_roots.iter().any(|root| root.path == bound.path) {
                 // Removing a named policy root cannot delegate its historical
                 // content to an accidentally broader surviving ancestor ACL.
-                return Err(denied(&snapshot.authority_reference, Verb::Read));
+                return Err(denied(snapshot.authority_reference, Verb::Read));
             }
         }
-        let now = self.now(&snapshot.authority_reference, Verb::Read)?;
-        let token = auth::verify(&snapshot.token, self.keys(), now)
-            .map_err(|_| denied(&snapshot.authority_reference, Verb::Read))?;
+        let now = self.now(snapshot.authority_reference, Verb::Read)?;
+        let token = auth::verify(snapshot.token, self.keys(), now)
+            .map_err(|_| denied(snapshot.authority_reference, Verb::Read))?;
         let layers = snapshot
             .evidence
             .policy_path(path, self.config().min_chunk_size)?;
@@ -502,7 +684,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
             .collect::<Vec<_>>();
         let policy = snapshot
             .interpretation
-            .resolve(&layers, self.defaults_for(&snapshot.evidence))?;
+            .resolve(&layers, self.defaults_for(snapshot.evidence))?;
         let domain = domain_label(&policy).map_err(|_| invalid())?;
         let root_path = snapshot
             .evidence
@@ -516,20 +698,20 @@ impl<S: Store, C: Clock> Guard<S, C> {
                     domain,
                 }],
                 now,
-                surface: &snapshot.surface,
+                surface: snapshot.surface,
                 locality: &self.config().home,
-                epochs: &[(&snapshot.authority_reference, record.writer_epoch)],
+                epochs: &[(snapshot.authority_reference, record.writer_epoch)],
             })
-            .map_err(|_| denied(&snapshot.authority_reference, Verb::Read))?;
+            .map_err(|_| denied(snapshot.authority_reference, Verb::Read))?;
         let selected = super::AuthorizedRef {
-            reference: snapshot.authority_reference.clone(),
+            reference: snapshot.authority_reference.to_owned(),
             record: current.record().cloned(),
             token,
             verb: Verb::Read,
             root_paths: vec![root_path],
             root_domains: vec![domain.to_owned()],
-            surface: snapshot.surface.clone(),
-            token_bytes: snapshot.token.clone(),
+            surface: snapshot.surface.to_owned(),
+            token_bytes: snapshot.token.to_vec(),
         };
         Ok(vec![current, selected])
     }

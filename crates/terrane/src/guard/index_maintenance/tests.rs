@@ -17,6 +17,93 @@ use support::*;
 const ATTRIBUTE: &str = "hash.sha256";
 
 #[tokio::test]
+async fn native_repeated_producer_checks_preserve_current_and_original_refusal() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = complete_population().await?;
+    let guard = fixture.repository.coordinator().guard();
+    let record = guard
+        .store()
+        .ref_get(REFERENCE)
+        .await?
+        .ok_or("selected source")?;
+    let token = crate::ref_advance::tests::token();
+    let observation = crate::guard::HistoryObservation::default();
+    let snapshot = guard
+        .read_commit_snapshot_observed(record.commit, &token, b"/", "sdk", observation)
+        .await?;
+    let mut work = crate::guard::read::indexes::IndexLookupCurrentWork::default();
+    let requests = guard
+        .check_index_source_producers(&snapshot, observation, &mut work)
+        .await?;
+    // The population carries multiple occurrences from the same genuine signed
+    // producer. Reuse must retain every current occurrence and producer request.
+    assert!(work.attribute_origin_checks >= 2);
+    assert!(work.producer_checks >= 2);
+    assert!(requests.len() >= 2 * (work.occurrence_checks + work.producer_checks));
+    assert!(work.history_boundary_calls < 2 * work.attribute_origin_checks);
+
+    let originals = guard.producer_originals(&snapshot.history)?;
+
+    fixture
+        .fs
+        .set_permissions_and_sync(&fixture.control, std::fs::Permissions::from_mode(0o777))
+        .await?;
+    let cached_refusal = guard
+        .refresh_producer_history(
+            &snapshot.history,
+            &originals,
+            observation.requested_target(),
+        )
+        .await;
+    let refused = guard
+        .check_index_source_producers(&snapshot, observation, &mut Default::default())
+        .await;
+    fixture
+        .fs
+        .set_permissions_and_sync(&fixture.control, std::fs::Permissions::from_mode(0o700))
+        .await?;
+    assert!(refused.is_err());
+    assert!(cached_refusal.is_err());
+    assert_eq!(guard.store().ref_get(REFERENCE).await?, Some(record));
+
+    // All write verbs imply Read. Publish an empty ACL through genuine Admin
+    // authority; earlier immutable witnesses cannot carry the old live grant.
+    let (mut session, mut request) = fixture.template().await?;
+    let evidence =
+        crate::guard::TreeEvidence::load_tree(guard.store(), request.commit.tree, &[], 262144)
+            .await?;
+    let tree = {
+        let source = evidence.tree(evidence.root, 262144)?;
+        let mut properties = source.props().unwrap_or_default().to_vec();
+        properties.retain(|property| property.name != "acl");
+        properties.push(terrane_core::tree_format::Property {
+            name: "acl",
+            value: b"\x80",
+        });
+        let tree = terrane_core::tree_builder::Tree::build(
+            source.iter().cloned().collect(),
+            Some(properties),
+            262144,
+            terrane_core::tree_format::TreeUse::Ordinary,
+        )?;
+        crate::repository::PreparedTree::from_tree(&tree)?
+    };
+    request.commit.tree = tree.root();
+    fixture
+        .repository
+        .commit_with_report(&mut session, tree, request)
+        .await?;
+    let denied = guard
+        .check_index_source_producers(&snapshot, observation, &mut Default::default())
+        .await;
+    assert!(matches!(denied, Err(ref error) if matches!(
+        error.kind(), crate::store::StoreErrorKind::Denied { .. }
+    )));
+    Ok(())
+}
+
+#[tokio::test]
 async fn native_index_verify_reports_divergence_without_mutation() -> TestResult {
     let fixture = complete_population().await?;
     let (repository, selected) = divergent(&fixture).await?;
