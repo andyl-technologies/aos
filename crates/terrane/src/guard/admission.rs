@@ -13,7 +13,7 @@ pub use index_writer::{
 use std::collections::{BTreeMap, BTreeSet};
 
 use terrane_core::auth::{self, Request, RequestRoot, Verb};
-use terrane_core::identity::{Digest, IdentityKind, TERRANE_V1};
+use terrane_core::identity::Digest;
 use terrane_core::properties::{self, PropertyName, RootLayer, Value};
 use terrane_core::provenance::{self, VerifiedCommit};
 use terrane_core::refs::{
