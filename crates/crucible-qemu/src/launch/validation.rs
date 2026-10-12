@@ -395,6 +395,26 @@ pub(in crate::launch) fn validate_optional_diagnostic_trace(
         return Err(QemuPreSpawnLaunchValidationError::DuplicateOption { option: "-D" });
     }
     if trace_selections.len() > 1 {
+        let origin = [
+            "-D",
+            QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+            "-trace",
+            QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION,
+            "-trace",
+            super::QEMU_APIC_ORIGIN_TRACE_SELECTION,
+        ];
+        if log_files.as_slice() == [QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME]
+            && trace_selections.as_slice()
+                == [
+                    QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION,
+                    super::QEMU_APIC_ORIGIN_TRACE_SELECTION,
+                ]
+            && args
+                .windows(origin.len())
+                .any(|window| window.iter().map(String::as_str).eq(origin))
+        {
+            return Ok(());
+        }
         let witness = [
             "-D",
             QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,

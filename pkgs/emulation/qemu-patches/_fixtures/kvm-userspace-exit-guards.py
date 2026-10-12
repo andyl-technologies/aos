@@ -18,6 +18,142 @@ def body(source, declaration):
     return source[start:end]
 
 
+def original_schema_prefix(schema_bytes):
+    """Undo only thirteen authenticated timestamp-example comment reflows."""
+    examples = (
+        # SHUTDOWN retains the exact original JSON example bytes.
+        (b"""#     <- { "event": "SHUTDOWN",
+#          "data": { "guest": true, "reason": "guest-shutdown" },
+#          "timestamp": { "seconds": 1267040730, "microseconds": 682951 } }
+""",
+         b"""#     <- { "event": "SHUTDOWN",
+#          "data": { "guest": true, "reason": "guest-shutdown" },
+#          "timestamp": { "seconds": 1267040730, "microseconds":
+#     682951 } }
+"""),
+        # POWERDOWN retains the exact original JSON example bytes.
+        (b"""#     <- { "event": "POWERDOWN",
+#          "timestamp": { "seconds": 1267040730, "microseconds": 682951 } }
+""",
+         b"""#     <- { "event": "POWERDOWN",
+#          "timestamp": { "seconds": 1267040730, "microseconds":
+#     682951 } }
+"""),
+        # RESET retains the exact original JSON example bytes.
+        (b"""#     <- { "event": "RESET",
+#          "data": { "guest": false, "reason": "guest-reset" },
+#          "timestamp": { "seconds": 1267041653, "microseconds": 9518 } }
+""",
+         b"""#     <- { "event": "RESET",
+#          "data": { "guest": false, "reason": "guest-reset" },
+#          "timestamp": { "seconds": 1267041653, "microseconds": 9518
+#     } }
+"""),
+        # STOP retains the exact original JSON example bytes.
+        (b"""#     <- { "event": "STOP",
+#          "timestamp": { "seconds": 1267041730, "microseconds": 281295 } }
+""",
+         b"""#     <- { "event": "STOP",
+#          "timestamp": { "seconds": 1267041730, "microseconds":
+#     281295 } }
+"""),
+        # RESUME retains the exact original JSON example bytes.
+        (b"""#     <- { "event": "RESUME",
+#          "timestamp": { "seconds": 1271770767, "microseconds": 582542 } }
+""",
+         b"""#     <- { "event": "RESUME",
+#          "timestamp": { "seconds": 1271770767, "microseconds":
+#     582542 } }
+"""),
+        # SUSPEND retains the exact original JSON example bytes.
+        (b"""#     <- { "event": "SUSPEND",
+#          "timestamp": { "seconds": 1344456160, "microseconds": 309119 } }
+""",
+         b"""#     <- { "event": "SUSPEND",
+#          "timestamp": { "seconds": 1344456160, "microseconds":
+#     309119 } }
+"""),
+        # SUSPEND_DISK retains the exact original JSON example bytes.
+        (b"""#     <- { "event": "SUSPEND_DISK",
+#          "timestamp": { "seconds": 1344456160, "microseconds": 309119 } }
+""",
+         b"""#     <- { "event": "SUSPEND_DISK",
+#          "timestamp": { "seconds": 1344456160, "microseconds":
+#     309119 } }
+"""),
+        # WAKEUP retains the exact original JSON example bytes.
+        (b"""#     <- { "event": "WAKEUP",
+#          "timestamp": { "seconds": 1344522075, "microseconds": 745528 } }
+""",
+         b"""#     <- { "event": "WAKEUP",
+#          "timestamp": { "seconds": 1344522075, "microseconds":
+#     745528 } }
+"""),
+        # WATCHDOG retains the exact original JSON example bytes.
+        (b"""#     <- { "event": "WATCHDOG",
+#          "data": { "action": "reset" },
+#          "timestamp": { "seconds": 1267061043, "microseconds": 959568 } }
+""",
+         b"""#     <- { "event": "WATCHDOG",
+#          "data": { "action": "reset" },
+#          "timestamp": { "seconds": 1267061043, "microseconds":
+#     959568 } }
+"""),
+        # GUEST_PANICKED retains the exact original JSON example bytes.
+        (b"""#     <- { "event": "GUEST_PANICKED",
+#          "data": { "action": "pause" },
+#          "timestamp": { "seconds": 1648245231, "microseconds": 900001 } }
+""",
+         b"""#     <- { "event": "GUEST_PANICKED",
+#          "data": { "action": "pause" },
+#          "timestamp": { "seconds": 1648245231, "microseconds":
+#     900001 } }
+"""),
+        # GUEST_CRASHLOADED retains the exact original JSON example bytes.
+        (b"""#     <- { "event": "GUEST_CRASHLOADED",
+#          "data": { "action": "run" },
+#          "timestamp": { "seconds": 1648245259, "microseconds": 893771 } }
+""",
+         b"""#     <- { "event": "GUEST_CRASHLOADED",
+#          "data": { "action": "run" },
+#          "timestamp": { "seconds": 1648245259, "microseconds":
+#     893771 } }
+"""),
+        # GUEST_PVSHUTDOWN retains the exact original JSON example bytes.
+        (b"""#     <- { "event": "GUEST_PVSHUTDOWN",
+#          "timestamp": { "seconds": 1648245259, "microseconds": 893771 } }
+""",
+         b"""#     <- { "event": "GUEST_PVSHUTDOWN",
+#          "timestamp": { "seconds": 1648245259, "microseconds":
+#     893771 } }
+"""),
+        # MEMORY_FAILURE retains the exact original JSON example bytes.
+        (b"""#     <- { "event": "MEMORY_FAILURE",
+#          "data": { "recipient": "hypervisor",
+#                    "action": "fatal",
+#                    "flags": { "action-required": false,
+#                               "recursive": false } },
+#          "timestamp": { "seconds": 1267061043, "microseconds": 959568 } }
+""",
+         b"""#     <- { "event": "MEMORY_FAILURE",
+#          "data": { "recipient": "hypervisor",
+#                    "action": "fatal",
+#                    "flags": { "action-required": false,
+#                               "recursive": false } },
+#          "timestamp": { "seconds": 1267061043, "microseconds":
+#     959568 } }
+"""),
+    )
+
+    original = schema_bytes
+    for before, after in examples:
+        old_count, new_count = original.count(before), original.count(after)
+        if (old_count, new_count) == (0, 1):
+            original = original.replace(after, before, 1)
+        elif (old_count, new_count) != (1, 0):
+            raise ValueError("original QAPI example has unknown or duplicate bytes")
+    return original
+
 def verify(source):
     """Preserve original editions and require guards before native effects."""
     clock_bytes = (source / "accel/kvm/crucible-clock.c").read_bytes()
@@ -43,7 +179,7 @@ def verify(source):
         "f36399e0a3b79c6b793b3d39bce8eb192ffd53913ebd09b136a1d4b14802aff0"
     ):
         raise ValueError("original KVM v1/v3 implementation changed")
-    if hashlib.sha256(schema_bytes[:133725]).hexdigest() != (
+    if hashlib.sha256(original_schema_prefix(schema_bytes)[:133725]).hexdigest() != (
         "6a807fd6e62b2ce79dca0aace3bd802567c8e7fae9790d3ee2c7882c030df4bc"
     ):
         raise ValueError("original KVM QAPI prefix changed")

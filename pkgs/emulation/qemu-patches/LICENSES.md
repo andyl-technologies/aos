@@ -226,6 +226,12 @@ The atomic integration patch creates these QEMU source files:
 | `system/crucible-memory-payload-roots.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `system/crucible-memory-roots.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `util/crucible-timer-finite.inc.c` | MIT | Explicit SPDX identifier |
+| `plugins/stopped-install.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/stopped-install-system.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/stopped-startup.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `accel/tcg/whole-grant-codec.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `accel/tcg/whole-grant-service.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `accel/tcg/whole-service-loop.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 
 The separately built Rust `crucible-qemu-plugin` and C
 `crucible-qemu-trace-plugin` carry explicit GPL-2.0-only notices. The generated

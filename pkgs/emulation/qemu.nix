@@ -3394,9 +3394,12 @@ in
                   ("sole global virtual timer owner registration", rr,
                    r"qemu_timer_register_crucible_global_virtual_timer_owner\(",
                    1),
-                  ("sim RR global virtual timer owner", rr,
+                  ("sim RR global virtual timer owner",
+                   re.sub(r"/\*.*?\*/", "", rr, flags=re.DOTALL),
                    r"static bool rr_crucible_sim_global_virtual_timer_owner"
                    r"\(void\)\s*\{\s*"
+                   r"if \(icount_crucible_whole_selected\(\)\) \{\s*"
+                   r"return rr_crucible_whole_event_current\(\) == 0;\s*\}\s*"
                    r"return first_cpu && qemu_cpu_is_self\(first_cpu\) &&\s*"
                    r"!qemu_crucible_fault_lifecycle_virtual_timers_paused\(\);"
                    r"\s*\}",

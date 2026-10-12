@@ -93,6 +93,7 @@ pub(crate) const MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES: usize = 65_536;
 pub const QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME: &str = "crucible-runtime-determinism.trace";
 pub(crate) const QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION: &str =
     "enable=crucible_sim_determinism_*";
+pub(crate) const QEMU_APIC_ORIGIN_TRACE_SELECTION: &str = "enable=crucible_apic_origin_*";
 // Keep the diagnostic trace sparse enough that the bounded retained tail
 // includes the QMP exchange after a 60-second command timeout.
 pub(crate) const QEMU_RUNTIME_LIVENESS_TRACE_SELECTION: &str = "enable=*qmp*";
@@ -625,6 +626,7 @@ pub struct QemuLaunchCommandBuilder {
     debug_guest_activation_endpoint: bool,
     rr_control_boundary_trace: bool,
     runtime_determinism_trace: bool,
+    apic_origin_trace: bool,
     runtime_determinism_trace_budget_bytes: u64,
     runtime_liveness_trace: bool,
 }
@@ -653,6 +655,7 @@ impl QemuLaunchCommandBuilder {
             debug_guest_activation_endpoint: false,
             rr_control_boundary_trace: false,
             runtime_determinism_trace: false,
+            apic_origin_trace: false,
             runtime_determinism_trace_budget_bytes: MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES,
             runtime_liveness_trace: false,
         }
@@ -744,6 +747,7 @@ impl QemuLaunchCommandBuilder {
     pub(crate) const fn with_rr_control_boundary_trace(mut self) -> Self {
         self.rr_control_boundary_trace = true;
         self.runtime_determinism_trace = false;
+        self.apic_origin_trace = false;
         self.runtime_liveness_trace = false;
         self
     }
@@ -758,7 +762,15 @@ impl QemuLaunchCommandBuilder {
     pub(crate) const fn with_runtime_determinism_trace(mut self) -> Self {
         self.rr_control_boundary_trace = false;
         self.runtime_determinism_trace = true;
+        self.apic_origin_trace = false;
         self.runtime_liveness_trace = false;
+        self
+    }
+
+    /// Adds the separate, bounded APIC programming diagnostic to this trace.
+    #[must_use]
+    pub(crate) const fn with_apic_origin_trace(mut self, enabled: bool) -> Self {
+        self.apic_origin_trace = enabled;
         self
     }
 
@@ -778,6 +790,7 @@ impl QemuLaunchCommandBuilder {
     pub(crate) const fn with_runtime_liveness_trace(mut self) -> Self {
         self.rr_control_boundary_trace = false;
         self.runtime_determinism_trace = false;
+        self.apic_origin_trace = false;
         self.runtime_liveness_trace = true;
         self
     }
@@ -873,6 +886,11 @@ impl QemuLaunchCommandBuilder {
         } else if self.runtime_determinism_trace {
             resource_requirements = resource_requirements
                 .with_diagnostic_trace_bytes(self.runtime_determinism_trace_budget_bytes);
+            if self.apic_origin_trace {
+                // The host retains a full raw copy before any cross-run test.
+                resource_requirements = resource_requirements
+                    .with_diagnostic_trace_bytes(self.runtime_determinism_trace_budget_bytes);
+            }
         } else if self.runtime_liveness_trace {
             resource_requirements = resource_requirements
                 .with_diagnostic_trace_bytes(MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES);
@@ -957,6 +975,12 @@ impl QemuLaunchCommandBuilder {
                 "-trace".to_owned(),
                 QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION.to_owned(),
             ]);
+            if self.apic_origin_trace {
+                args.extend([
+                    "-trace".to_owned(),
+                    QEMU_APIC_ORIGIN_TRACE_SELECTION.to_owned(),
+                ]);
+            }
         } else if self.runtime_liveness_trace {
             args.extend([
                 "-D".to_owned(),
