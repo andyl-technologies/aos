@@ -177,9 +177,12 @@ There are no skipped or ignored cases. Renewed native composition `4ee2921d3186`
 passes SDK all-target compilation, strict all-target Clippy and the default
 native build. Both corrected scoped-publication and planning refusal tests pass
 with their original substantive assertions. The complete unfiltered 1,111-case
-SDK phase is still running and has reported process-spawn descriptor exhaustion
-and native operation failures; it is not a passing qualification. A shared
-Nextest correction reserves all runner slots for each Terrane package case,
+SDK phase is interrupted and failed after process-spawn descriptor exhaustion
+and native operation failures. Its actual partial summary records 356 of 1,111
+tests run: 285 passed, 28 failed and 43 execution failures; 755 remain unrun.
+The interrupted active case is not an assertion result. Source, input and
+executable seals remain unchanged. A shared Nextest correction reserves all
+runner slots for each Terrane package case,
 preserving all existing process bounds, production clocks, file limits and
 test selection. Its renewed package execution remains pending. Shared native
 prerequisites now use the source-bound SDK image with unchanged selectors, fresh
@@ -195,8 +198,22 @@ gaps, physical reconstruction and complete-closure refusal remain required.
 Independent wire fixtures cover growing predicate populations and zero present
 candidates. Enumeration counters describe the actual changed traversal; complete
 relation allocations and total CPU work are outside their scope. Source review
-passes; renewed Core and native runtime measurements and owning gates remain
-pending. This does not qualify DRV-29 or advance the identity freeze.
+passes. The first Core build identifies a borrowed-key move; its one-line
+ownership correction preserves expected rows and counters. Fresh composition
+`60d0e2705e46` then passes Core build, all-target compilation, strict all-target
+Clippy and all 770 package Nextest tests, with no skipped or ignored cases.
+Package results bind eleven sealed AOS binaries and the growing-predicate
+regression.
+Native measurements and owning gates remain pending. This does not qualify
+DRV-29 or advance the identity freeze.
+
+Source review separately identifies missing native payload-range forwarding in
+the missing-placement test adapter. Its correction retains real descriptor
+capture and closing checks, the exact unavailable-artifact cause and observation
+count, and all seven fault witnesses. Admission validation moves to a focused
+private module with equivalent Guard visibility and unchanged bodies; missing
+history and test-helper documentation is completed. These corrections remain
+subject to native compilation, exact witnesses and package qualification.
 
 Additional isolated worklines inspect growing-index completion, indexed replay
 and permanent recovery, while a separate worker qualifies the five public SDK
