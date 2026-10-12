@@ -53,7 +53,11 @@ fn key(hex: &str) -> [u8; 32] {
         .unwrap()
 }
 
-pub(super) fn secret() -> [u8; 32] {
+/// Supplies the fixed test issuer key for genuine fixture token attenuation.
+///
+/// # Panics
+/// Panics if the literal test key cannot be decoded.
+pub(crate) fn secret() -> [u8; 32] {
     key("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
 }
 
