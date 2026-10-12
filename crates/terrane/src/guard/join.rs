@@ -14,20 +14,33 @@ use crate::store::{Clock, InvalidReason, Store, StoreErrorKind, StoreFailure};
 #[cfg(all(test, feature = "tokio", unix))]
 mod tests;
 
+/// Selects the source operation whose current authority a join requires.
 #[derive(Clone, Copy)]
 pub(crate) enum JoinKind {
+    /// Requires current source Read for an ordinary merge.
     Merge,
+    /// Requires current source Fork for a fold.
     Fold,
 }
 
+/// Borrows join policy and owns the destination proposal for an explicit source.
 pub(crate) struct JoinRequest<'a> {
+    /// Names the independently authorized incoming reference.
     pub(crate) source: &'a str,
+    /// Owns the destination proposal and its current operation credentials.
     pub(crate) request: CommitRequest,
+    /// Borrows the explicit policies used for canonical merging.
     pub(crate) policies: &'a [MergePolicy],
+    /// Selects ordinary merge or fold source-authority semantics.
     pub(crate) kind: JoinKind,
 }
 
 impl<S: Store, C: Clock> Guard<S, C> {
+    /// Admits a canonical source join and returns its excluded root scopes.
+    ///
+    /// # Errors
+    /// Rejects invalid proposals, missing common ancestry or current source and
+    /// destination denial; preserves history, canonical merge and storage failures.
     pub(crate) async fn admit_join(
         &self,
         reference: &str,

@@ -11,11 +11,17 @@ use terrane_core::tree_format::{Entry, EntryKind, Property};
 
 use crate::domain::DomainRecord;
 
+/// Supplies exact reference-domain and graft evidence to pure candidate validation.
 pub(crate) struct AdmissionContext<'a> {
+    /// Borrows existing identity-bound domain records.
     pub(crate) records: &'a [DomainRecord],
+    /// Borrows identities staged in the configured destination storage domain.
     pub(crate) staged: &'a BTreeSet<Digest>,
+    /// Names the physical domain assigned to staged content.
     pub(crate) storage_domain: &'a str,
+    /// Retains exact target identities, overrides and resolved occurrence policies.
     pub(crate) grafts: Vec<(Digest, Option<Vec<Property<'a>>>, EffectiveProperties<'a>)>,
+    /// Reports the current Admin decision independently established by admission.
     pub(crate) administrator: bool,
     /// Borrows the candidate's exact interpretation used for policy resolution.
     pub(crate) property_selection: &'a Selection,

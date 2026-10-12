@@ -12,6 +12,13 @@ use terrane_core::refs::Locality;
 use super::{AuthorizedRef, denied};
 use crate::store::{Clock, StoreFailure};
 
+/// Reauthenticates exact retained request bytes at the freshly sampled configured time.
+///
+/// This refresh checks token scope and caveats without replacing current ACL checks.
+///
+/// # Errors
+/// Returns the original request verb and reference as Denied when time, signature,
+/// principal identity or fresh request authorization fails.
 pub(super) fn refresh(
     keys: &[IssuerKey],
     home: &Locality,
@@ -54,6 +61,9 @@ pub(super) fn refresh(
         .map_err(|_| denied(reference, verb))
 }
 
+/// Translates retained-clock I/O failures while preserving their original source.
+///
+/// Unsupported operations remain Unsupported; other I/O failures become Unavailable.
 #[cfg(feature = "std")]
 pub(super) fn retention_failure(error: std::io::Error) -> StoreFailure {
     let kind = if error.kind() == std::io::ErrorKind::Unsupported {

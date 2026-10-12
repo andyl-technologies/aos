@@ -26,10 +26,15 @@ use dictionaries::{ReadContent, ReadDictionary};
 
 /// Holds an authorized scoped target without exposing its private historical witnesses.
 pub struct AuthorizedSnapshot {
+    /// Retains the complete immutable history checked for this scoped target.
     pub(crate) history: VerifiedHistory,
+    /// Retains the exact signed target selected by the read operation.
     pub(crate) commit: VerifiedCommit,
+    /// Retains canonical tree metadata for reachable scoped reads.
     pub(crate) evidence: TreeEvidence,
+    /// Names the absolute path whose reachability and current Read were checked.
     pub(crate) scope: Vec<u8>,
+    /// Names the resolved physical content domain for this target.
     pub(crate) storage_domain: String,
     /// Fixed caller interpretation selected from checked immutable view/root evidence.
     pub(crate) interpretation: super::recorded_properties::SelectedReadInterpretation,

@@ -75,23 +75,37 @@ fn bind_occurrence_domains(
     Ok(())
 }
 
+/// Owns input identities and current credentials for a losing-writer rebase.
 pub(crate) struct RebaseRequest {
+    /// Identifies the supplied common baseline that merge replay must verify.
     pub(crate) base: Digest,
+    /// Retains the exact destination head that admission must still expect.
     pub(crate) ours: RefRecord,
+    /// Identifies the incoming commit whose history must be verified.
     pub(crate) theirs: Digest,
+    /// Supplies the terminal signing key for the current operation token.
     pub(crate) terminal_secret: [u8; 32],
+    /// Retains the current operation credentials for ordinary admission.
     pub(crate) token: Vec<u8>,
+    /// Names the surface used for current authorization.
     pub(crate) surface: String,
 }
 
+/// Selects ordinary merge replay or fold replay with explicit root exclusions.
 pub(super) enum MergeOperation<'a> {
+    /// Replays an ordinary merge without fold exclusions.
     Merge,
+    /// Replays a fold while retaining its independently authorized excluded roots.
     Fold(&'a BTreeSet<Vec<u8>>),
 }
 
+/// Retains unsigned canonical merge output before ordinary current admission.
 pub(super) struct PreparedMerge {
+    /// Retains the canonical proposed merge commit without admission authority.
     pub(super) commit: Commit,
+    /// Retains rebuilt immutable metadata needed by the proposed merge.
     pub(super) uploads: Vec<StagedUpload>,
+    /// Lists root scopes excluded by canonical fold replay.
     pub(super) excluded: Vec<Vec<u8>>,
 }
 
@@ -104,6 +118,11 @@ impl<'a> Roots<'a> for Forest<'a> {
 }
 
 impl<S: Store, C: Clock> Guard<S, C> {
+    /// Replays and admits a losing-writer merge against its exact retained head.
+    ///
+    /// # Errors
+    /// Rejects incompatible multi-writer policy or changed expected heads and
+    /// preserves history, merge replay, current admission and storage failures.
     pub(crate) async fn admit_rebase(
         &self,
         reference: &str,

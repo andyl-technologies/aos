@@ -11,8 +11,11 @@ use super::admission::CandidateRequest;
 use super::{Guard, StagedUpload, invalid};
 use crate::store::{Clock, Store, StoreFailure};
 
+/// Retains a qualified attribute value and its actual current-readable producer path.
 pub(super) struct RequirementEvidence {
+    /// Retains the value authenticated through its genuine producing history.
     pub(super) attribute: VerifiedAttributeEvidence,
+    /// Names the producing occurrence requiring fresh Read authorization.
     pub(super) path: Vec<u8>,
 }
 
