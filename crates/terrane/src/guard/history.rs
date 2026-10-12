@@ -9,12 +9,14 @@ use terrane_core::auth::RequestRoot;
 use terrane_core::identity::Digest;
 use terrane_core::provenance::{self, VerifiedCommit, VerifiedHistory};
 
+/// Owns operation-local reuse of ordinary candidate preparation.
 #[cfg(feature = "std")]
 pub(in crate::guard) mod candidate_preparation;
 #[cfg(all(test, feature = "std", feature = "tokio", unix))]
 mod candidate_preparation_tests;
 #[cfg(feature = "std")]
 mod collection;
+/// Prepares selected view inputs for the owning signed-history checks.
 #[cfg(feature = "std")]
 pub(in crate::guard) mod completion;
 mod disclosure;
@@ -39,8 +41,10 @@ pub(crate) struct HistoryObservation<'a> {
     held: Option<&'a crate::bucket::held::HeldIdentity<'a>>,
     #[cfg(feature = "std")]
     consumed: Option<&'a super::consumed::ConsumedResolver>,
+    /// Borrows ordinary inputs captured for the actual candidate operation.
     #[cfg(feature = "std")]
     pub(super) candidate: Option<&'a super::view_selection::CandidateInputs>,
+    /// Borrows a private repair purpose without supplying current authority.
     #[cfg(feature = "std")]
     pub(super) maintenance: Option<&'a super::index_maintenance::Purpose>,
     requested_target: bool,
@@ -50,6 +54,7 @@ pub(crate) struct HistoryObservation<'a> {
 }
 
 impl<'a> HistoryObservation<'a> {
+    /// Borrows the held backend identity without granting authorization.
     #[cfg(feature = "std")]
     pub(crate) fn identity(self) -> Option<&'a crate::bucket::held::HeldIdentity<'a>> {
         self.held
@@ -135,6 +140,11 @@ impl<'a> HistoryObservation<'a> {
         self
     }
 
+    /// Reports whether this dependency needs namespace-only qualification.
+    ///
+    /// Collection always requires complete qualification. Maintenance excludes
+    /// the actual candidate, while requested-target mode excludes the requested
+    /// view; neither choice supplies current rights or serving completion.
     #[cfg(feature = "std")]
     pub(super) fn namespace_only(self, view: Digest, requested: Digest, collection: bool) -> bool {
         if collection {
@@ -343,9 +353,17 @@ impl VerifiedCollectionTree {
     }
 }
 
+/// Pairs a signature-checked commit with its addressed canonical tree evidence.
+///
+/// The private loader constructs this before complete history verification.
+/// Owning callers must finish Original and history checks before using it as
+/// provenance evidence; this value supplies no current operation authority.
 pub(crate) struct VerifiedTree {
+    /// Retains the commit authenticated against its original signed claims.
     pub(crate) commit: VerifiedCommit,
+    /// Retains addressed metadata for the exact signed tree and decoding usage.
     pub(crate) evidence: TreeEvidence,
+    /// Retains the independently selected interpretation for this view and root.
     interpretation: super::recorded_properties::SelectedReadInterpretation,
 }
 
@@ -423,6 +441,13 @@ impl<S: Store, C: Clock> Guard<S, C> {
         })
     }
 
+    /// Loads an exact signed tree and completes its canonical dependency history.
+    ///
+    /// The result supplies immutable provenance evidence without current rights.
+    ///
+    /// # Errors
+    /// Preserves metadata, signature, selected interpretation, complete history
+    /// and protected Original failures under the default observation.
     pub(crate) async fn verified_tree(
         &self,
         identity: Digest,
