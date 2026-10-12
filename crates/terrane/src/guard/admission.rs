@@ -1464,7 +1464,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
                 reference,
                 request.token,
                 Verb::Commit,
-                &[root.path.clone()],
+                std::slice::from_ref(&root.path),
                 request.surface,
                 observation,
             )
