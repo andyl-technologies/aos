@@ -8,7 +8,6 @@
 //! current-head monotonicity, and commits stay with this owner. Physical Repair
 //! and Reconcile require their separate signed-receipt path.
 
-use aos_sandbox_protocol::domain_ledger::ownership_gate::OwnershipGateStatusV1;
 use aos_proto::aos::sandbox::v1::OperatorRecoveryAction;
 use aos_sandbox_core::{ObjectDigest, OperationId};
 use sha2::{Digest as _, Sha256};
@@ -20,6 +19,7 @@ use super::{
 use crate::cli_model::{
     AuthorizedOperatorRecoveryV1, InvalidObservationClientAdapter, OperatorRecoveryRequestV1,
 };
+use aos_sandbox_protocol::domain_ledger::ownership_gate::OwnershipGateStatusV1;
 use aos_sandbox_protocol::public_api::{
     CheckedOperationPhaseV1, CheckedOperationResourceV1, CheckedRetryClassV1,
     CheckedSandboxResourceV1, PublicConditionCodeV1,

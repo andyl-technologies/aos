@@ -6,7 +6,6 @@
 //! retry keep their existing ordering. Worker-local Git custody and selected
 //! bootstrap bookends remain in the parent reconciliation loop.
 
-use aos_sandbox_protocol::domain_ledger::ownership_gate::OwnershipGateStatusV1;
 use std::time::Instant;
 
 use aos_proto::aos::sandbox::v1::{
@@ -28,6 +27,7 @@ use aos_sandbox_core::{
     CapabilityId, NodeId, Operation as CapabilityOperation, OperationId, ResourceKind, Selector,
 };
 use aos_sandbox_ownership_protocol::protocol::session_client::OwnershipSessionTransportError;
+use aos_sandbox_protocol::domain_ledger::ownership_gate::OwnershipGateStatusV1;
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 
 use super::{

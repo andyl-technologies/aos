@@ -14,12 +14,12 @@
 //! boot-inventory joins, and live public authorization beside their invariants.
 //! Their methods continue to borrow this controller's sole reconciler and Journal.
 
-use aos_sandbox_protocol::domain_ledger::ownership_gate::OwnershipGateStatusV1;
 use aos_sandbox_core::{ObjectDigest, OperationId, RawPairedClockSample};
 use aos_sandbox_ownership_protocol::protocol::session_client::OwnershipAuthoritySessionClient;
 #[cfg(target_os = "linux")]
 use sha2::{Digest as _, Sha256};
 
+use aos_sandbox_protocol::domain_ledger::ownership_gate::OwnershipGateStatusV1;
 use aos_sandbox_protocol::public_api::request::DormantPublicApiClientV1;
 #[cfg(test)]
 use crate::RecordNamespace;
