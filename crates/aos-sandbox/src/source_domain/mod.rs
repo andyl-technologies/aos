@@ -8,17 +8,8 @@
 
 use crate::journal::JournalLimits;
 
-mod cross_domain;
 mod fixed_writer;
 
-pub use cross_domain::{
-    AppliedCrossDomainJournalTransactionV1, CrossDomainJournalCommitOutcomeV1,
-    CrossDomainJournalOutcomeUnknownV1, CrossDomainJournalRecoveryV1, CrossDomainJournalSnapshotV1,
-    CrossDomainJournalSuccessorV1, CrossDomainPostcommitCapabilityV1,
-    CrossDomainPostcommitRecordV1, CrossDomainSemanticTupleV1,
-    PreparedCrossDomainJournalTransactionV1, ProtectedCrossDomainJournalV1,
-    ReplayedCrossDomainPostcommitV1, ValidatedCrossDomainPostcommitV1,
-};
 #[cfg(target_os = "linux")]
 pub use fixed_writer::ControllerSourceJournalConstructionV1;
 #[cfg(target_os = "linux")]
