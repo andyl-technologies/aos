@@ -711,6 +711,12 @@ fn unavailable() -> StoreFailure {
 }
 
 impl<S, C> Guard<S, C> {
+    /// Copies the retained bootstrap bound to an exact reference and writer epoch.
+    ///
+    /// This lookup does not replace the required physical Original recheck.
+    ///
+    /// # Errors
+    /// Rejects missing bindings or unavailable retained-state synchronization.
     pub(crate) fn original_bootstrap(
         &self,
         reference: &str,
@@ -724,6 +730,12 @@ impl<S, C> Guard<S, C> {
             .ok_or_else(invalid)
     }
 
+    /// Copies the retained Original context associated with an exact commit.
+    ///
+    /// This lookup does not establish current rights or recheck physical controls.
+    ///
+    /// # Errors
+    /// Rejects missing associations or unavailable retained-state synchronization.
     pub(crate) fn original_commit(
         &self,
         commit: &terrane_core::identity::Digest,

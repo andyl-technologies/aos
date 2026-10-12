@@ -139,6 +139,9 @@ pub(super) async fn divergent(fixture: &Fixture) -> TestResult<(NativeRepository
 ///
 /// # Errors
 /// Preserves actual fixture storage, signed-history, authorization and assertion failures.
+///
+/// # Panics
+/// Panics if the constructed signed producer or source witnesses contradict fixture assertions.
 pub(super) async fn divergent_with_producer(
     fixture: &Fixture,
     deny_producer: bool,
@@ -549,6 +552,7 @@ pub(super) async fn repair_request(
     Ok((session, request))
 }
 
+/// Selects the actual indexed metadata object removed or corrupted by a fixture.
 #[derive(Clone, Copy)]
 pub(super) enum Loss {
     Primary,
@@ -562,6 +566,9 @@ pub(super) enum Loss {
 ///
 /// # Errors
 /// Preserves actual fixture storage, signed-history, authorization and assertion failures.
+///
+/// # Panics
+/// Panics if canonical population or the required gap and producer assertions fail.
 pub(super) async fn partial_index_population() -> TestResult<Fixture> {
     let fixture = Fixture::new_population().await?;
     fixture.partial().await?;
@@ -616,6 +623,9 @@ pub(super) async fn partial_index_population() -> TestResult<Fixture> {
 ///
 /// # Errors
 /// Preserves actual fixture storage, signed-history, authorization and assertion failures.
+///
+/// # Panics
+/// Panics if the observed auxiliary identity or selected source invariants differ from the fixture.
 pub(super) async fn lose_auxiliary(fixture: &Fixture, loss: Loss) -> TestResult<RefRecord> {
     let guard = fixture.repository.coordinator().guard();
     trace("loss-ref-get");
@@ -733,6 +743,7 @@ pub(super) async fn lose_auxiliary(fixture: &Fixture, loss: Loss) -> TestResult<
     Ok(record)
 }
 
+/// Selects the protected input invalidated after genuine source capture.
 #[derive(Clone, Copy)]
 pub(super) enum Late {
     SourceOriginal,
@@ -744,6 +755,9 @@ pub(super) enum Late {
 ///
 /// # Errors
 /// Preserves actual fixture storage, signed-history, authorization and assertion failures.
+///
+/// # Panics
+/// Panics if late invalidation fails to preserve the expected refusal and selected-state invariants.
 pub(super) async fn late_refusal(kind: Late) -> TestResult {
     use std::sync::atomic::Ordering;
     let token = crate::ref_advance::tests::token();
@@ -823,6 +837,9 @@ pub(super) async fn late_refusal(kind: Late) -> TestResult {
 ///
 /// # Errors
 /// Preserves genuine population, native replacement and refusal assertion failures.
+///
+/// # Panics
+/// Panics if recovery succeeds unexpectedly or changes the retained source and selected state.
 pub(super) async fn recovery_boundary_refusal(kind: Option<Late>) -> TestResult {
     use super::fixture::RecoveryFault;
     use crate::store::Clock;

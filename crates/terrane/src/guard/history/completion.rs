@@ -42,6 +42,7 @@ pub(in crate::guard) enum InterpretationSelection {
 }
 
 impl InterpretationSelection {
+    /// Projects the deliberately selected ordinary mode without granting authority.
     pub(in crate::guard) fn semantics(self) -> properties::selected::Selection {
         match self {
             Self::Legacy => properties::selected::Selection::Legacy,

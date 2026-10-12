@@ -14,6 +14,11 @@ use crate::domain::DomainRecord;
 use crate::store::{Clock, Store, StoreFailure};
 
 impl<S: Store, C: Clock> Guard<S, C> {
+    /// Admits a verified ancestor as the destination under current root policy.
+    ///
+    /// # Errors
+    /// Rejects non-ancestors, current authority or policy failures and preserves
+    /// complete history, Original, attribute-producer and storage failures.
     pub(crate) async fn admit_rollback(
         &self,
         reference: &str,
@@ -142,6 +147,11 @@ impl<S: Store, C: Clock> Guard<S, C> {
         })
     }
 
+    /// Admits a ref-policy replacement after current Admin checks on every root.
+    ///
+    /// # Errors
+    /// Rejects denied Admin, missing current heads or invalid policy combinations
+    /// and preserves complete history, selected-profile and storage failures.
     pub(crate) async fn admit_policy(
         &self,
         reference: &str,
@@ -224,6 +234,9 @@ impl<S: Store, C: Clock> Guard<S, C> {
     }
 
     /// Confirms namespace membership through actual pinned backend reads.
+    ///
+    /// # Errors
+    /// Preserves canonical tree, identity and pinned backend read failures.
     pub(super) async fn existing_records(
         &self,
         evidence: &TreeEvidence,

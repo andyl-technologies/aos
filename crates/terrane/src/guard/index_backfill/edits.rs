@@ -43,6 +43,7 @@ struct Plan {
     report: IndexBackfillReport,
 }
 
+/// Retains a preparation diagnostic as the source of a malformed-request refusal.
 pub(super) fn failure<E>(error: E) -> StoreFailure
 where
     E: std::error::Error + Send + Sync + 'static,
@@ -373,6 +374,11 @@ fn replace_targets(entry: &mut Entry<'_>, replacements: &BTreeMap<Digest, Digest
     changed
 }
 
+/// Prepares canonical backfill edits from authenticated snapshot and side records.
+///
+/// # Errors
+/// Rejects incomplete or contradictory evidence and preserves canonical tree,
+/// index preparation, attribute-value and encoding failures.
 pub(super) fn execute<S: Store, C: Clock>(
     guard: &Guard<S, C>,
     snapshot: &AuthorizedSnapshot,

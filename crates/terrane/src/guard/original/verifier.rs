@@ -137,9 +137,11 @@ type TagCheck =
         OriginalState,
     ) -> Pin<Box<dyn Future<Output = Result<RefRecord, AdvanceError>> + 'a>>;
 
+/// Owns genuine backend callbacks and retained inputs for protected Original checks.
 #[derive(Clone)]
 pub(in crate::guard) struct OriginalVerifier {
     authority: OriginalAuthority,
+    /// Retains the independently installed disclosure roles for this authority.
     #[cfg(unix)]
     pub(in crate::guard::original) roles:
         Vec<crate::repository::local_authority::public_trust::DisclosureRoleRecord>,
