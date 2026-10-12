@@ -237,10 +237,26 @@ privately composes the reviewed GC native-read forwarding, fixture setup semapho
 native admission observations and explicit disclosure snapshot corrections. Its
 SDK all-target compilation, strict Clippy, default native build and exact formatter
 pair pass. It retains all substantive refusal assertions and original bounds, and
-samples test process descriptors separately. The first exact GC fault matrix
-passes in 145.838 seconds; one-second sampling observes peaks of 347 test-process
-descriptors and 12 runner descriptors, without establishing an exact maximum.
-The remaining focused cases are pending; this does not qualify the package.
+samples test process descriptors separately. All three exact GC cases and all
+six admission/join/Original cases pass. The run stops at its tenth case: the
+Legacy indexed-publication witness expects Commit denial but observes exactly
+`Invalid(MalformedRequest)` with no attached source. Three disclosure cases
+remain unrun in that sealed packet. One-second sampling observes test-process
+peaks of 347, 157 and 321 in the three GC cases and 12 runner descriptors,
+without establishing exact maxima. Source, input and executable seals remain
+unchanged; this focused failing phase does not qualify the package.
+An independent new packet executes each of the three unrun cases once on the
+same sealed source and executables. One rotation refusal case passes; current
+authority refuses with exact source-less Admin denial where the witness expects
+Commit denial, and successful rotation stops while building a noncanonical test
+tree. Both failures remain recorded. Source review traces the Legacy outcome to
+revision-1 rejection of `index-roots` before ACL checks. Its isolated correction
+requires the exact invalid-request category, genuine Active publication of the
+same complete proposal, absent offered identities/ref/lineage under Legacy and
+the existing ordinary Legacy revision-1 publication control. That stronger
+witness remains uncompiled and unrun. Separate source workers review current
+Admin ordering and canonical rotation fixtures; no production authorization,
+tree ordering, process bound or milestone requirement is weakened.
 Separately, a borrowed authenticated-history inventory permits producer preparation
 to refresh every retained Original, including disclosure dependencies; the iterator
 grants neither completion nor current authority. The bounded growth repair remains
