@@ -177,40 +177,6 @@ impl<S: Store, C: Clock> Guard<S, C> {
         Ok(())
     }
 
-    /// Resolves every new candidate occurrence with its preselected authoring inputs.
-    ///
-    /// # Errors
-    /// Rejects malformed canonical occurrences, invalid properties or ambiguous
-    /// path/domain rows before any candidate signature exists.
-    pub(super) fn authoring_candidate_roots(
-        &self,
-        evidence: &super::TreeEvidence,
-    ) -> Result<Vec<(Vec<u8>, String)>, StoreFailure> {
-        let mut roots = Vec::new();
-        for occurrence in evidence.occurrences(self.config().min_chunk_size)? {
-            let layers = occurrence
-                .layers
-                .iter()
-                .map(|(properties, overrides)| RootLayer {
-                    properties,
-                    overrides,
-                })
-                .collect::<Vec<_>>();
-            let effective = self.resolve_authoring(&layers, self.defaults_for(evidence))?;
-            roots.push((
-                occurrence.path,
-                super::domain_label(&effective)
-                    .map_err(|_| invalid())?
-                    .to_owned(),
-            ));
-        }
-        roots.sort();
-        if roots.is_empty() || roots.windows(2).any(|pair| pair[0] == pair[1]) {
-            return Err(invalid());
-        }
-        Ok(roots)
-    }
-
     /// Derives publication units from canonical witnesses and exact per-view selections.
     ///
     /// The local comparison commit grants no authority and is never signed or
