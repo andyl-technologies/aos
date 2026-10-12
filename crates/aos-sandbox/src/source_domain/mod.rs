@@ -1,10 +1,8 @@
-//! Owns protected Native Source journal custody and cross-domain transactions.
+//! Owns the fixed Native Source journal and original paid/Q04 custody.
 //!
 //! The private fixed-writer child retains the live Source writer, paid opening
-//! originals and Q04 loans used by Controller and Runtime callers. The private
-//! cross-domain child retains the dormant four-domain join and recovery engine.
-//! Shared fixed names, limits and the replay-member bound belong to this owner;
-//! lifecycle schemas and accepted lifecycle identities remain Lifecycle-owned.
+//! originals and Q04 loans used by Controller and Runtime callers. Fixed names
+//! and limits belong to this owner; Lifecycle retains its schemas and recovery.
 
 use crate::journal::JournalLimits;
 

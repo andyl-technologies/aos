@@ -235,7 +235,7 @@ Selected native physical ownership is not qualification on other Unix targets.
 | [Journal](../../../crates/aos-sandbox-journal/src/lib.rs) | Portable framing/native DATA and opt-in physical custody; Domain retains typed semantic admission and final crossings. |
 | [Protocol](../../../crates/aos-sandbox-protocol/src/lib.rs) | Canonical historical/local DATA; current grants, signing keys and native loans remain upper. |
 | [Domain Journal](../../../crates/aos-sandbox/src/journal.rs) and [protected domain adapter](../../../crates/aos-sandbox/src/protected_domain_journal.rs) | Native role transitions, original retained causes and cross-owner loans; private organization, not protected role-crate isolation. |
-| [Native Source](../../../crates/aos-sandbox/src/source_domain/mod.rs) | Private fixed-writer and four-domain CrossDomain owners; native custody and recovery remain in Domain, without a Source Cargo boundary. |
+| [Native Source](../../../crates/aos-sandbox/src/source_domain/mod.rs) | Private fixed-writer owner retains paid opening and Q04 custody in Domain, without a Source Cargo boundary. |
 | [Ownership](../../../crates/aos-sandbox-ownership/src/lib.rs) and [Policy](../../../crates/aos-sandbox-policy/src/lib.rs) | Historical lease state and pure compiler/verifier DATA; fresh issuance, Root binding and protected publication remain Native. |
 | [Controller Runtime](../../../crates/aos-sandbox-controller-runtime/src/lib.rs), Security and signers | Concrete Controller above session custody; Security and Source/Cache signers still depend on Domain. |
 | [Guest root tree](../../../crates/aos-sandbox-guest-root-tree/src/lib.rs) and [realization](../../../crates/aos-sandbox-guest-root-realization/src/lib.rs) | Separate nonauthorizing measurement and physical realization; original admission/effect/recovery custody remains at callers. |
@@ -355,14 +355,10 @@ identity and actual reservation/Journal custody stay Native. These are private
 source responsibilities, not protected Cargo owners.
 
 `source_domain` owns the live fixed Source Journal, paid opening originals and
-original Q04 loans in private `fixed_writer`; private `cross_domain` retains the
-dormant four-domain transaction, replay and postcommit engine. The adapter retains
-actual Journal and evidence-owner loans; snapshots retain instance/sequence/root
-DATA. One crate-private Lifecycle recovery reexport reaches the unchanged existing
-verifier; lifecycle schemas, accepted identities and factories stay Lifecycle-owned.
-This direct owner-path cutover adds no loan, factory, producer or currentness
-authority and establishes neither a Source Cargo boundary nor the complete
-protected Source/Lifecycle closure.
+original Q04 loans in private `fixed_writer`. Individual protected recovery remains
+with each domain owner; Lifecycle retains its schemas, accepted identities and
+private verifier factory. This ownership establishes neither a Source Cargo
+boundary nor the complete protected Source/Lifecycle closure.
 
 Private `cache_residency::recovery::logical_pin` owns complete Acquire/Renew/Release
 planning with one shared successor recipe. Complete retained-ledger and exact
