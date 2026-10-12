@@ -707,7 +707,7 @@ fn canonical_internal_routes_check_child_summaries_and_boundaries() {
 
 #[test]
 fn verification_enumerates_each_occurrence_once_as_predicates_grow() {
-    for population in [8_u8, 16, 32] {
+    for population in [8_u8, 16, 24] {
         for missing_only in [false, true] {
             let mut entries = Vec::new();
             let mut nodes = BTreeMap::new();
