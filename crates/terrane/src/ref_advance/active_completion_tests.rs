@@ -202,49 +202,51 @@ async fn native_active_completion_legacy_one_never_coerces_indexed_view() -> Res
             crate::guard::StagedUpload::Chunk { identity, .. } => Ok(identity.clone()),
         })
         .collect::<core::result::Result<Vec<_>, _>>()?;
-    let owner_identity = TERRANE_V1.from_digest(IdentityKind::Node, &proposal.owner)?;
-    let owner_bytes = proposal
-        .request
-        .uploads
-        .iter()
-        .find_map(|upload| match upload {
-            crate::guard::StagedUpload::Meta {
-                kind: IdentityKind::Node,
-                bytes,
-            } if TERRANE_V1
-                .calculate(IdentityKind::Node, bytes)
-                .ok()
-                .as_ref()
-                == Some(&owner_identity) =>
-            {
-                Some(bytes)
-            }
-            _ => None,
-        })
-        .ok_or("indexed owner upload missing")?;
-    let owner = terrane_core::tree_format::decode_node_for(
-        owner_bytes,
-        true,
-        262144,
-        terrane_core::tree_format::TreeUse::Ordinary,
-    )?;
-    let properties = owner.props.ok_or("indexed owner properties missing")?;
-    let active_context = terrane_core::properties::semantics::RecordedContext::new(3, 3, &[])?;
-    active_context.validate_map(&properties)?;
-    assert_eq!(
-        terrane_core::properties::semantics::RecordedContext::new(1, 1, &[])?
-            .validate_map(&properties),
-        Err(terrane_core::properties::Error::UnknownProperty)
-    );
-    let binding = properties
-        .iter()
-        .find(|property| property.name == "index-roots")
-        .ok_or("indexed owner binding missing")?;
-    assert_eq!(
-        terrane_core::properties::semantics::RecordedContext::new(1, 1, &[])?
-            .validate_map(core::slice::from_ref(binding)),
-        Err(terrane_core::properties::Error::UnknownProperty)
-    );
+    {
+        let owner_identity = TERRANE_V1.from_digest(IdentityKind::Node, &proposal.owner)?;
+        let owner_bytes = proposal
+            .request
+            .uploads
+            .iter()
+            .find_map(|upload| match upload {
+                crate::guard::StagedUpload::Meta {
+                    kind: IdentityKind::Node,
+                    bytes,
+                } if TERRANE_V1
+                    .calculate(IdentityKind::Node, bytes)
+                    .ok()
+                    .as_ref()
+                    == Some(&owner_identity) =>
+                {
+                    Some(bytes)
+                }
+                _ => None,
+            })
+            .ok_or("indexed owner upload missing")?;
+        let owner = terrane_core::tree_format::decode_node_for(
+            owner_bytes,
+            true,
+            262144,
+            terrane_core::tree_format::TreeUse::Ordinary,
+        )?;
+        let properties = owner.props.ok_or("indexed owner properties missing")?;
+        let active_context = terrane_core::properties::semantics::RecordedContext::new(3, 3, &[])?;
+        active_context.validate_map(&properties)?;
+        assert_eq!(
+            terrane_core::properties::semantics::RecordedContext::new(1, 1, &[])?
+                .validate_map(&properties),
+            Err(terrane_core::properties::Error::UnknownProperty)
+        );
+        let binding = properties
+            .iter()
+            .find(|property| property.name == "index-roots")
+            .ok_or("indexed owner binding missing")?;
+        assert_eq!(
+            terrane_core::properties::semantics::RecordedContext::new(1, 1, &[])?
+                .validate_map(core::slice::from_ref(binding)),
+            Err(terrane_core::properties::Error::UnknownProperty)
+        );
+    }
 
     // The same complete canonical namespace and carriers genuinely publish
     // under Active selection; refusal below cannot be an unrelated bad upload.
