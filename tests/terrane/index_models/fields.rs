@@ -116,7 +116,7 @@ pub(crate) fn entry(value: &Value) -> Entry<'static> {
 /// Constructs a complete public leaf Node from independent expanded fields.
 ///
 /// # Panics
-/// Panics if the fixture level or property fields are invalid.
+/// Panics if the fixture level, property fields or expanded Entry fields are invalid.
 pub(crate) fn node(case: &Case) -> Node<'static> {
     Node {
         level: case.model.field(1).uint().try_into().unwrap(),
