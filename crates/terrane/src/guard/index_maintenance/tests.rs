@@ -32,16 +32,43 @@ async fn native_repeated_producer_checks_preserve_current_and_original_refusal()
     let snapshot = guard
         .read_commit_snapshot_observed(record.commit, &token, b"/", "sdk", observation)
         .await?;
+    let stored = physical(guard.store().root()).await?;
+    let controls = physical(&fixture.control).await?;
+    let publication = publication_image(&fixture.repository).await?;
     let mut work = crate::guard::read::indexes::IndexLookupCurrentWork::default();
     let requests = guard
         .check_index_source_producers(&snapshot, observation, &mut work)
         .await?;
     // The population carries multiple occurrences from the same genuine signed
     // producer. Reuse must retain every current occurrence and producer request.
-    assert!(work.attribute_origin_checks >= 2);
-    assert!(work.producer_checks >= 2);
-    assert!(requests.len() >= 2 * (work.occurrence_checks + work.producer_checks));
-    assert!(work.history_boundary_calls < 2 * work.attribute_origin_checks);
+    assert_eq!(work.occurrence_checks, 2);
+    assert_eq!(work.attribute_origin_checks, 2);
+    assert_eq!(work.producer_checks, 2);
+    assert_eq!(work.producer_entries, 2);
+    assert_eq!(work.history_boundary_calls, 2);
+    assert_eq!(requests.len(), 8);
+    for request in &requests {
+        assert_eq!(request.reference(), REFERENCE);
+        assert_eq!(request.verb(), terrane_core::auth::Verb::Read);
+        assert_eq!(request.record(), Some(&record));
+        assert_eq!(request.root_paths(), &[b"/".to_vec()]);
+    }
+
+    let mut repeated_work = crate::guard::read::indexes::IndexLookupCurrentWork::default();
+    let repeated = guard
+        .check_index_source_producers(&snapshot, observation, &mut repeated_work)
+        .await?;
+    assert_eq!(repeated_work, work);
+    assert_eq!(repeated.len(), requests.len());
+    for (first, second) in requests.iter().zip(&repeated) {
+        assert_eq!(second.reference(), first.reference());
+        assert_eq!(second.verb(), first.verb());
+        assert_eq!(second.record(), first.record());
+        assert_eq!(second.root_paths(), first.root_paths());
+    }
+    assert_eq!(physical(guard.store().root()).await?, stored);
+    assert_eq!(physical(&fixture.control).await?, controls);
+    assert_eq!(publication_image(&fixture.repository).await?, publication);
 
     let originals = guard.producer_originals(&snapshot.history)?;
 
@@ -63,9 +90,30 @@ async fn native_repeated_producer_checks_preserve_current_and_original_refusal()
         .fs
         .set_permissions_and_sync(&fixture.control, std::fs::Permissions::from_mode(0o700))
         .await?;
-    assert!(refused.is_err());
-    assert!(cached_refusal.is_err());
-    assert_eq!(guard.store().ref_get(REFERENCE).await?, Some(record));
+    // Acquired and retained Original control checks both reject non-0700
+    // directories through the same malformed-request boundary.
+    let expected =
+        crate::store::StoreErrorKind::Invalid(crate::store::InvalidReason::MalformedRequest);
+    let refused = refused.expect_err("unsafe source Original must refuse");
+    assert_eq!(
+        refused.kind(),
+        &expected,
+        "actual source refusal: {refused:?}"
+    );
+    let cached_refusal =
+        cached_refusal.expect_err("cached history must refresh Original protection");
+    assert_eq!(
+        cached_refusal.kind(),
+        &expected,
+        "actual cached refusal: {cached_refusal:?}"
+    );
+    assert_eq!(
+        guard.store().ref_get(REFERENCE).await?,
+        Some(record.clone())
+    );
+    assert_eq!(physical(guard.store().root()).await?, stored);
+    assert_eq!(physical(&fixture.control).await?, controls);
+    assert_eq!(publication_image(&fixture.repository).await?, publication);
 
     // All write verbs imply Read. Publish an empty ACL through genuine Admin
     // authority; earlier immutable witnesses cannot carry the old live grant.
@@ -94,12 +142,29 @@ async fn native_repeated_producer_checks_preserve_current_and_original_refusal()
         .repository
         .commit_with_report(&mut session, tree, request)
         .await?;
+    let denied_record = guard.store().ref_get(REFERENCE).await?;
+    let denied_stored = physical(guard.store().root()).await?;
+    let denied_controls = physical(&fixture.control).await?;
+    let denied_publication = publication_image(&fixture.repository).await?;
     let denied = guard
         .check_index_source_producers(&snapshot, observation, &mut Default::default())
         .await;
-    assert!(matches!(denied, Err(ref error) if matches!(
-        error.kind(), crate::store::StoreErrorKind::Denied { .. }
-    )));
+    let denied = denied.expect_err("published empty ACL must revoke current Read");
+    assert_eq!(
+        denied.kind(),
+        &crate::store::StoreErrorKind::Denied {
+            verb: "read",
+            pattern: REFERENCE.to_owned(),
+        },
+        "actual current refusal: {denied:?}"
+    );
+    assert_eq!(guard.store().ref_get(REFERENCE).await?, denied_record);
+    assert_eq!(physical(guard.store().root()).await?, denied_stored);
+    assert_eq!(physical(&fixture.control).await?, denied_controls);
+    assert_eq!(
+        publication_image(&fixture.repository).await?,
+        denied_publication
+    );
     Ok(())
 }
 
