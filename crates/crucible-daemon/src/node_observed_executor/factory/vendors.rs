@@ -74,6 +74,12 @@ impl InstalledNodeCatalog {
         limits: RuntimeLimits,
     ) -> Result<InstalledPreparedWorld, NodeObservedError> {
         drop(scenario.canonical_bytes()?);
+        if activation.world_binding_hash != scenario.world.identity()? {
+            return Err(refused(
+                "vendor activation differs from authored whole world",
+            ));
+        }
+
         // The portable complete scenario is already bounded before these copies.
         // It conveys configuration data; only registry source/class gates can
         // authenticate the resulting plan and native realization.
@@ -159,3 +165,7 @@ impl InstalledNodeCatalog {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "vendors_world_binding_tests.rs"]
+mod world_binding_tests;

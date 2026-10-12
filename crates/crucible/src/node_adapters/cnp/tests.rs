@@ -273,6 +273,16 @@ fn connect_with_schema(
     installed: &mut Installed,
     schemas: Rc<dyn BodySchemaVerifier>,
 ) {
+    let (controller, handshake) = original_control(guard, socket, installed, schemas);
+    guard.attach(controller, handshake).unwrap();
+}
+
+fn original_control(
+    guard: &CnpLaunchGuard,
+    socket: &std::path::Path,
+    installed: &mut Installed,
+    schemas: Rc<dyn BodySchemaVerifier>,
+) -> (ReferenceController, Handshake) {
     let bootstrap = installed.bootstrap.clone();
     let features = vec![id("cnp.control-evidence/1"), id("cnp.core/1")];
     let (binding, _) = installed
@@ -369,7 +379,7 @@ fn connect_with_schema(
         installed.qualifications.clone(),
     )
     .unwrap();
-    guard.attach(controller, handshake).unwrap();
+    (controller, handshake)
 }
 
 #[test]
@@ -493,3 +503,6 @@ mod original_conflict;
 
 #[path = "acceptance_tests.rs"]
 mod acceptance;
+
+#[path = "original_attachment_tests.rs"]
+mod original_attachment;

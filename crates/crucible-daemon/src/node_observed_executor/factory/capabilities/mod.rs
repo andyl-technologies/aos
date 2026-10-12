@@ -202,7 +202,7 @@ impl InstalledNodeCatalog {
         refs: std::sync::Arc<dyn crucible_cas::content_store::MutableRefBackend>,
     ) -> Result<crate::node_observed_executor::NodeObservedBackend, NodeObservedError> {
         let prepared = self.prepare_capability_world(resolved, execution)?;
-        Self::finish_observed(
+        self.finish_observed(
             prepared,
             &resolved.candidate.selections,
             configuration,

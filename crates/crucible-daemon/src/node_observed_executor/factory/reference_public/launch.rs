@@ -222,6 +222,7 @@ pub(super) fn launch(
         connection_incident: incidents.clone(),
         private_launch,
         original_hello,
+        ordinary_negotiation: None,
     })?;
     std::fs::DirBuilder::new()
         .mode(0o700)

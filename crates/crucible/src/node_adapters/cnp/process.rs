@@ -18,6 +18,9 @@ mod extensions;
 
 pub use extensions::CnpExtensionAttachmentFailure;
 
+#[path = "process_attachment.rs"]
+mod original_attachment;
+
 pub(super) enum CnpRegistrar {
     Legacy(Handshake),
     Extensions(ExtensionHandshake),

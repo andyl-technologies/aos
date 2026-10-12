@@ -43,9 +43,10 @@ pub use factory::{
     NativeCapturePoint, NativeWorldOutcome, NativeWorldRecord, NativeWorldRequest,
     NativeWorldRetention, NativeWorldService, OriginalTypedWindowSeal, PreparedTypedReaderCohort,
     PreparedTypedReaderHostCollection, PreparedTypedReaderHostInvocation,
-    PreparedTypedReaderHostSources, PreparedTypedReaderSession, QualificationRunError,
-    ReclaimedTypedReaderHostCollection, ReclaimedTypedReaderHostSources,
-    ReferenceQualificationObservation, ReferenceQualificationRun, ResolvedCapabilityWorld,
+    PreparedTypedReaderHostSources, PreparedTypedReaderSession, PublicReferenceVendorProfile,
+    PublicReferenceVendorSelection, QualificationRunError, ReclaimedTypedReaderHostCollection,
+    ReclaimedTypedReaderHostSources, ReferenceQualificationObservation, ReferenceQualificationRun,
+    ReferenceVendorInstallation, ReferenceVendorInstallationRequest, ResolvedCapabilityWorld,
     RootInitialRetirementFailure, RootNamespaceReleaseFailure, RootRestoredRetirementFailure,
     RootUnstartedRetirementFailure, SelectedTypedReaderHostSource, SelectedTypedReaderPublicRole,
     StoredTypedReaderResultPublisher, TypedReaderAdoptionFailure, TypedReaderCohortReservation,
@@ -68,12 +69,12 @@ pub use factory::{
 pub use service::{
     CapabilityCandidateRecipe, CapabilityPreparationAction, CapabilityPreparationRecord,
     CapabilityPreparationRequest, CapabilityPreparationState, ConditionalPreparationRecord,
-    ConditionalPreparationRequest, ConditionalPreparationState, NodeDebugRecord,
-    NodeDebugResumeRequest, NodeDebugStartRequest, NodeDebugState, NodeDebugStop,
+    ConditionalPreparationRequest, ConditionalPreparationState, InstalledVendorServiceFactory,
+    NodeDebugRecord, NodeDebugResumeRequest, NodeDebugStartRequest, NodeDebugState, NodeDebugStop,
     NodeObservationRetention, NodeObservationService, NodeObservationServiceConfig,
     NodeObservationServiceError, NodePreservingDebugAction, NodePreservingDebugCapture,
     NodePreservingDebugRecord, NodePreservingDebugRequest, NodePreservingDebugResumeRequest,
-    NodePreservingDebugState, OriginalLineageHostInstallation,
+    NodePreservingDebugState, OriginalLineageHostInstallation, ReferenceVendorServiceFactory,
 };
 pub use terminal_publication::StoredTerminalResultPublisher;
 

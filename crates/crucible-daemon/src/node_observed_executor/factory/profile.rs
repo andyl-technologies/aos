@@ -211,6 +211,11 @@ fn build_world_once(
     let condition_preserving = condition_preservation::selected(selections);
     for selection in selections {
         let (mut descriptor, mut binding, mut owner, mut complete) = match &selection.kind {
+            InstalledNodeKind::InstalledVendor { .. } => {
+                return Err(refused(
+                    "vendor selection requires its trusted complete-world planner",
+                ));
+            }
             InstalledNodeKind::ReferenceDevice {
                 quantum_ps,
                 host_budget_ns,

@@ -2099,6 +2099,21 @@ provider, and all 37 source-quality checks. These checks establish collection
 and transport behavior. Complete native qualification and the registered
 application-target, ABI and license gates remain separate requirements.
 
+## Installed public vendor integration
+
+The ordinary service installs the public vendor factory before binding its
+control endpoint. Preparation retains the original pre-child custody slot,
+rechecks authentic leases before native effects, and forwards durable
+publication into that same journal. Uncertain publication remains retained;
+a later outage cannot erase a positively committed original record. Duplicate
+or foreign owner rosters refuse before storage callbacks.
+
+Three affected crates compile their test targets, and all 16 scoped controls
+pass. These checks establish preparation and publication behavior. Complete
+singleton behavioral acceptance remains absent, and reclaimed peer journals
+still need positive semantic resolution before ordinary shutdown can finish.
+Native readiness and capture/restore qualification remain incomplete.
+
 ## Selected DMTCP writer package
 
 The source-built `dmtcp-selected-writer-park` package passes its normal

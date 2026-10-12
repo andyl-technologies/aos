@@ -4,7 +4,7 @@
 //! adds complete behavioral acceptance before native allocation and again at
 //! actual graph admission. It cannot turn a decoded report into native custody.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, rc::Rc};
 
 use crucible::node_admission::{AdmissionEvidence, EvidenceError, QualificationClaim};
 use crucible_node_contract::{
@@ -23,7 +23,7 @@ use crate::{
 };
 
 pub(super) struct InstalledBehavioralAcceptance {
-    pub(super) policy: Box<dyn InstalledAcceptancePolicy + Send>,
+    pub(super) policy: Rc<dyn InstalledAcceptancePolicy>,
     pub(super) limits: AcceptanceLimits,
 }
 
@@ -44,6 +44,18 @@ impl InstalledNodeCatalog {
     pub fn install_behavioral_acceptance(
         &mut self,
         policy: Box<dyn InstalledAcceptancePolicy + Send>,
+        limits: AcceptanceLimits,
+    ) -> Result<(), NodeObservedError> {
+        let policy: Rc<dyn InstalledAcceptancePolicy + Send> = Rc::from(policy);
+        let policy: Rc<dyn InstalledAcceptancePolicy> = policy;
+        self.install_shared_behavioral_acceptance(policy, limits)
+    }
+
+    // Actor-local installations retain the SAME normal policy in the catalog
+    // and provider; the portable selector cannot supply or replace it.
+    pub(crate) fn install_shared_behavioral_acceptance(
+        &mut self,
+        policy: Rc<dyn InstalledAcceptancePolicy>,
         limits: AcceptanceLimits,
     ) -> Result<(), NodeObservedError> {
         let defaults = AcceptanceLimits::default();
@@ -212,6 +224,7 @@ fn has_closed_source_qualification(kind: &super::InstalledNodeKind) -> bool {
     use super::InstalledNodeKind;
 
     match kind {
+        InstalledNodeKind::InstalledVendor { .. } => false,
         InstalledNodeKind::HostClock
         | InstalledNodeKind::HostRateAlarmClock { .. }
         | InstalledNodeKind::HostRateAlarmClockProducer { .. }

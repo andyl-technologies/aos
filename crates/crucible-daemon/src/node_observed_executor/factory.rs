@@ -11,6 +11,7 @@ mod host_state;
 mod io;
 mod kvm;
 pub(super) mod recorded_ingress;
+mod vendor_selection;
 mod vendors;
 mod vendors_mixed;
 
@@ -109,8 +110,9 @@ pub use native_state::{
 };
 pub use recorded_ingress::InstalledRecordedIngressProfile;
 pub use reference_public::{
-    InstalledPublicReferencePackage, InstalledReferenceQualifier, QualificationRunError,
-    ReferenceQualificationObservation, ReferenceQualificationRun,
+    InstalledPublicReferencePackage, InstalledReferenceQualifier, PublicReferenceVendorProfile,
+    PublicReferenceVendorSelection, QualificationRunError, ReferenceQualificationObservation,
+    ReferenceQualificationRun, ReferenceVendorInstallation, ReferenceVendorInstallationRequest,
 };
 pub use scripted::InstalledScriptedSourceProfile;
 pub use seeded::InstalledSeededLinkProfile;
@@ -155,6 +157,15 @@ use crate::node_scenario::{NodeRunConfiguration, NodeScenario};
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "implementation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InstalledNodeKind {
+    /// Names a trusted installed ordinary vendor world; configuration grants no authority.
+    InstalledVendor {
+        /// Selects the installed provider identity.
+        provider: Id,
+        /// Selects its independently inspected source profile.
+        profile: Id,
+        /// Binds the full source-installed immutable configuration.
+        configuration: ContentRef,
+    },
     /// Runs the owned host integer clock with no timers or autonomous work.
     HostClock,
     /// Runs a distinct causal rational counter and original alarm/response inventory.
@@ -277,6 +288,15 @@ impl<'de> Deserialize<'de> for InstalledNodeKind {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let wire = InstalledNodeKindWire::deserialize(deserializer)?;
         Ok(match wire {
+            InstalledNodeKindWire::InstalledVendor {
+                provider,
+                profile,
+                configuration,
+            } => Self::InstalledVendor {
+                provider,
+                profile,
+                configuration,
+            },
             InstalledNodeKindWire::HostClock {} => Self::HostClock,
             InstalledNodeKindWire::HostRateAlarmClock { definition } => {
                 Self::HostRateAlarmClock { definition }
@@ -355,6 +375,11 @@ impl<'de> Deserialize<'de> for InstalledNodeKind {
 #[derive(Deserialize)]
 #[serde(tag = "implementation", rename_all = "snake_case", deny_unknown_fields)]
 enum InstalledNodeKindWire {
+    InstalledVendor {
+        provider: Id,
+        profile: Id,
+        configuration: ContentRef,
+    },
     /// Runs the owned host integer clock with no timers or autonomous work.
     HostClock {},
     HostRateAlarmClock {
@@ -509,6 +534,7 @@ pub struct InstalledNodeCatalog {
     artifacts: BTreeMap<String, InstalledIoArtifact>,
     behavioral_acceptance: Option<acceptance::InstalledBehavioralAcceptance>,
     vendor_providers: Option<crucible::node_contract::InstalledProviderRegistry>,
+    vendor_worlds: BTreeMap<Id, vendor_selection::InstalledVendorWorld>,
     original_lineage: transcript::original_lineage::selection::Installation,
 }
 
@@ -556,6 +582,7 @@ impl InstalledNodeCatalog {
             artifacts: BTreeMap::new(),
             behavioral_acceptance: None,
             vendor_providers: None,
+            vendor_worlds: BTreeMap::new(),
             original_lineage: transcript::original_lineage::selection::Installation::new(),
         })
     }
@@ -633,6 +660,9 @@ impl InstalledNodeCatalog {
         &self,
         selections: &[InstalledNodeSelection],
     ) -> Result<NodeScenario, NodeObservedError> {
+        if vendor_selection::is_selected(selections) {
+            return vendor_selection::scenario(self, selections);
+        }
         if selections
             .iter()
             .any(|selection| matches!(selection.kind, InstalledNodeKind::Gem5ArmRoot))
@@ -678,10 +708,11 @@ impl InstalledNodeCatalog {
         refs: Arc<dyn MutableRefBackend>,
     ) -> Result<NodeObservedBackend, NodeObservedError> {
         let prepared = self.prepare_world(selections, scenario, execution)?;
-        Self::finish_observed(prepared, selections, configuration, execution, blobs, refs)
+        self.finish_observed(prepared, selections, configuration, execution, blobs, refs)
     }
 
     fn finish_observed(
+        &self,
         prepared_world: InstalledPreparedWorld,
         selections: &[InstalledNodeSelection],
         configuration: NodeRunConfiguration,
@@ -720,6 +751,8 @@ impl InstalledNodeCatalog {
                 .any(|selection| matches!(selection.kind, InstalledNodeKind::Gem5ArmRoot))
             {
                 arm_root::public_catalog::publisher(stored)?
+            } else if vendor_selection::is_selected(selections) {
+                vendor_selection::publisher(self, selections, stored)?
             } else {
                 Box::new(stored)
             };
@@ -754,6 +787,9 @@ impl InstalledNodeCatalog {
         scenario: NodeScenario,
         execution: ExecutionId,
     ) -> Result<InstalledPreparedWorld, NodeObservedError> {
+        if vendor_selection::is_selected(selections) {
+            return vendor_selection::prepare(self, selections, scenario, execution);
+        }
         if selections
             .iter()
             .any(|selection| matches!(selection.kind, InstalledNodeKind::Gem5ArmRoot))
@@ -1176,6 +1212,11 @@ impl InstalledNodeCatalog {
         };
         for selection in selections {
             match &selection.kind {
+                InstalledNodeKind::InstalledVendor { .. } => {
+                    return Err(refused(
+                        "installed vendor custody cannot become a host model",
+                    ));
+                }
                 InstalledNodeKind::Gem5ArmRoot
                 | InstalledNodeKind::Gem5Closed { .. }
                 | InstalledNodeKind::Gem5ClosedPreserving { .. }

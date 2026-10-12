@@ -27,6 +27,9 @@ pub(super) struct PublicPeerScope {
     // public CAS roots or inert observation evidence.
     pub(super) private_launch: Vec<u8>,
     pub(super) original_hello: Vec<u8>,
+    // Ordinary preparation retains actual negotiated originals in this SAME entry.
+    pub(super) ordinary_negotiation:
+        Option<Rc<RefCell<super::vendor_bridge::OriginalReferenceNegotiation>>>,
 }
 
 struct Entry {
@@ -87,6 +90,16 @@ impl PublicReferenceCustodyQueue {
                 "public peer reservation scope differs",
             ));
         }
+        if let Some(original) = &scope.ordinary_negotiation {
+            let original = original.try_borrow().map_err(|_| {
+                ProviderError::Correlation("ordinary negotiation holder is already borrowed")
+            })?;
+            if !original.is_unstarted() {
+                return Err(ProviderError::Correlation(
+                    "ordinary negotiation holder was used before reservation",
+                ));
+            }
+        }
         let mut registry = self.0.borrow_mut();
         let index = registry.entries.iter().position(Option::is_none).ok_or(
             ProviderError::ResourceExhausted("public peer reservation unavailable"),
@@ -128,21 +141,98 @@ impl PublicReferenceCustodyQueue {
         prepared: &PreparedWorldPublication,
         status: PublicationStatus,
     ) -> Result<(), ProviderError> {
+        if prepared.prepared_owners().len() != record.owners.len()
+            || record.owners.iter().any(|owner| {
+                prepared
+                    .prepared_owners()
+                    .iter()
+                    .filter(|prepared| {
+                        prepared.owner_id == owner.owner
+                            && prepared.incarnation_id == owner.incarnation
+                            && prepared.owner_generation == owner.generation
+                    })
+                    .count()
+                    != 1
+            })
+        {
+            return Err(ProviderError::Correlation(
+                "original public preparation owner scope differs",
+            ));
+        }
+        self.record_scope_publication(record, status)
+    }
+
+    pub(super) fn publication(
+        &self,
+        record: &ActivationRecord,
+    ) -> Result<Option<PublicationStatus>, ProviderError> {
+        self.authenticate_publication_scope(record)?;
         let registry = self.0.borrow();
-        let entries = registry.entries.iter().flatten().collect::<Vec<_>>();
-        if entries.len() != record.owners.len()
-            || prepared.prepared_owners().len() != record.owners.len()
-            || entries.iter().any(|entry| {
+        let mut statuses = registry
+            .entries
+            .iter()
+            .flatten()
+            .map(|entry| entry.borrow().scope.publication);
+        let original = statuses.next().ok_or(ProviderError::Correlation(
+            "original public publication owner absent",
+        ))?;
+        if statuses.any(|status| status != original) {
+            return Err(ProviderError::Correlation(
+                "original public publication owners disagree",
+            ));
+        }
+        Ok(original)
+    }
+
+    pub(super) fn record_scope_publication(
+        &self,
+        record: &ActivationRecord,
+        status: PublicationStatus,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_publication_scope(record)?;
+        for entry in self.0.borrow().entries.iter().flatten() {
+            let mut entry = entry.borrow_mut();
+            // A later outage cannot erase a positively committed original.
+            if entry.scope.publication != Some(PublicationStatus::Committed) {
+                entry.scope.publication = Some(status);
+            }
+        }
+        Ok(())
+    }
+
+    fn authenticate_publication_scope(
+        &self,
+        record: &ActivationRecord,
+    ) -> Result<(), ProviderError> {
+        let registry = self.0.borrow();
+        if record.owners.is_empty()
+            || registry.entries.iter().flatten().count() != record.owners.len()
+            || registry.entries.iter().flatten().any(|entry| {
                 let entry = entry.borrow();
-                entry.scope.activation != *record || !record.owners.contains(&entry.scope.owner)
+                entry.scope.activation != *record
+                    || record
+                        .owners
+                        .iter()
+                        .filter(|owner| **owner == entry.scope.owner)
+                        .count()
+                        != 1
+            })
+            || record.owners.iter().any(|owner| {
+                registry
+                    .entries
+                    .iter()
+                    .flatten()
+                    .filter(|entry| {
+                        let entry = entry.borrow();
+                        entry.scope.activation == *record && entry.scope.owner == *owner
+                    })
+                    .count()
+                    != 1
             })
         {
             return Err(ProviderError::Correlation(
                 "original public publication scope differs",
             ));
-        }
-        for entry in entries {
-            entry.borrow_mut().scope.publication = Some(status);
         }
         Ok(())
     }

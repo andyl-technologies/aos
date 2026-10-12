@@ -8,6 +8,9 @@
 //!   maximum_pending_requests:1..64}
 //! ```
 
+#[path = "vendor_installation.rs"]
+mod vendor_installation;
+
 use std::{
     collections::BTreeSet,
     fs::{self, File},
@@ -240,6 +243,20 @@ impl NodeControlDaemon {
         transcripts: Option<crucible::node_adapters::transcript::TranscriptArchive>,
         original: Option<crate::node_observed_executor::OriginalLineageHostInstallation>,
     ) -> Result<Self, NodeControlError> {
+        Self::start_inner_installed(policy, transcripts, original, None)
+    }
+
+    fn start_inner_installed(
+        policy: NodeDaemonPolicy,
+        transcripts: Option<crucible::node_adapters::transcript::TranscriptArchive>,
+        original: Option<crate::node_observed_executor::OriginalLineageHostInstallation>,
+        vendor: Option<Box<dyn crate::node_observed_executor::InstalledVendorServiceFactory>>,
+    ) -> Result<Self, NodeControlError> {
+        if vendor.is_some() && (transcripts.is_some() || original.is_some()) {
+            return Err(refused(
+                "vendor installation cannot replace original source modes",
+            ));
+        }
         policy.validate()?;
         let lock_path = policy.state_directory.join("node-daemon.lock");
         let fd = rustix::fs::open(
@@ -282,7 +299,15 @@ impl NodeControlDaemon {
             maximum_worlds: policy.maximum_worlds,
             maximum_pending_requests: policy.maximum_pending_requests,
         };
-        let service = if let Some(installation) = original {
+        let service = if let Some(installation) = vendor {
+            NodeObservationService::start_with_vendor_installation(
+                service_configuration,
+                installation,
+                repository.clone(),
+                Arc::clone(&blobs),
+                Arc::clone(&refs),
+            )
+        } else if let Some(installation) = original {
             let archive =
                 transcripts.ok_or_else(|| refused("original-lineage archive unavailable"))?;
             NodeObservationService::start_with_original_lineage_authorities(

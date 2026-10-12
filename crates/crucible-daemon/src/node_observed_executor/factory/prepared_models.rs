@@ -105,6 +105,9 @@ impl PreparedModelRoster {
         let mut models = BTreeMap::new();
         for selection in selections {
             match &selection.kind {
+                InstalledNodeKind::InstalledVendor { .. } => {
+                    return Err(refused("vendor preparation cannot become a host model"));
+                }
                 InstalledNodeKind::HostNetLink {
                     source_node,
                     latency_ps,

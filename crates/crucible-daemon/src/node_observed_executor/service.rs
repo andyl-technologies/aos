@@ -20,6 +20,8 @@ pub use debug_preserving::{
     NodePreservingDebugRequest, NodePreservingDebugResumeRequest, NodePreservingDebugState,
 };
 mod original_claim;
+mod vendor_installation;
+pub use vendor_installation::{InstalledVendorServiceFactory, ReferenceVendorServiceFactory};
 mod root_preparation;
 use root_preparation::ledger::RootPreparationLedger;
 pub use root_preparation::{
@@ -291,6 +293,27 @@ impl NodeObservationService {
         blobs: Arc<dyn ImmutableBlobBackend>,
         refs: Arc<dyn MutableRefBackend>,
     ) -> Result<Self, NodeObservationServiceError> {
+        Self::start_inner_installed(
+            configuration,
+            transcripts,
+            vendor_installation::ActorInstallations {
+                original,
+                vendor: None,
+            },
+            repository,
+            blobs,
+            refs,
+        )
+    }
+
+    fn start_inner_installed(
+        configuration: NodeObservationServiceConfig,
+        transcripts: Option<crucible::node_adapters::transcript::TranscriptArchive>,
+        installations: vendor_installation::ActorInstallations,
+        repository: Arc<CampaignRepository>,
+        blobs: Arc<dyn ImmutableBlobBackend>,
+        refs: Arc<dyn MutableRefBackend>,
+    ) -> Result<Self, NodeObservationServiceError> {
         if configuration.maximum_pending_requests == 0
             || configuration.maximum_pending_requests > 64
             || configuration.maximum_worlds == 0
@@ -344,10 +367,13 @@ impl NodeObservationService {
                 )
                 .and_then(|mut catalog| {
                     catalog.install_artifacts(configuration.installed_artifacts)?;
-                    if let Some(original) = original {
+                    if let Some(original) = installations.original {
                         catalog
                             .install_behavioral_acceptance(original.behavioral, original.limits)?;
                         catalog.install_original_lineage_authority(original.source)?;
+                    }
+                    if let Some(vendor) = installations.vendor {
+                        vendor.install(&mut catalog)?;
                     }
                     Ok(catalog)
                 });
@@ -755,12 +781,14 @@ fn run_actor(
                 catalog.retire_original_lineage_preparations();
             }
             let _ = catalog.custody().poll_reclamation(&mut context);
+            let _ = catalog.poll_vendor_reclamation();
         }))
         .is_err()
         {
             stopping.store(true, Ordering::Release);
         }
-        let reclaimed = catalog.custody().reserved_worlds() == 0;
+        let reclaimed =
+            catalog.custody().reserved_worlds() == 0 && catalog.retained_vendor_peers() == 0;
         if gc.is_ok() {
             if reclaimed {
                 retired_roots.clear();

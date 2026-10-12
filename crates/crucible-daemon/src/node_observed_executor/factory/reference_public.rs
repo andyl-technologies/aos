@@ -5,10 +5,17 @@
 //! native enrollment, common-world readiness and independent qualification
 //! ledger acceptance remain distinct requirements before executable admission.
 
+mod vendor_bridge;
+pub use vendor_bridge::{
+    PublicReferenceVendorProfile, PublicReferenceVendorSelection, ReferenceVendorInstallation,
+    ReferenceVendorInstallationRequest,
+};
+
 mod candidate;
 mod context;
 mod criteria;
 mod custody;
+mod custody_publication;
 mod graphs;
 mod harness;
 mod installation;
@@ -60,3 +67,5 @@ mod source_original_conflict_wire;
 
 #[cfg(test)]
 mod source_window_provider_loss;
+
+pub(super) use vendor_bridge::ReferenceVendorCleanup;
