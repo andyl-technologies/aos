@@ -8,7 +8,7 @@
 pub(in crate::guard) mod support;
 
 use crate::ref_advance::tests::{fixture, request_file, request_file_acl, token};
-use crate::store::{RefStore, StoreErrorKind};
+use crate::store::{InvalidReason, RefStore, StoreErrorKind};
 use std::error::Error;
 use support::{fork_request, observed, refresh_retained};
 use terrane_core::identity::IdentityKind;
@@ -433,7 +433,10 @@ async fn native_child_only_scope_refuses_descriptor_policy_domain_and_sibling_ch
             b"\x61y".as_slice(),
             PARENT_ACL,
             PARENT_DOMAIN,
-            "commit",
+            StoreErrorKind::Denied {
+                verb: "commit",
+                pattern: SOURCE.into(),
+            },
         ),
         (
             "root policy",
@@ -442,7 +445,10 @@ async fn native_child_only_scope_refuses_descriptor_policy_domain_and_sibling_ch
             b"\x61x".as_slice(),
             b"\x81\x82\x66writer\x18\x1f".as_slice(),
             PARENT_DOMAIN,
-            "admin",
+            StoreErrorKind::Denied {
+                verb: "admin",
+                pattern: SOURCE.into(),
+            },
         ),
         (
             "domain",
@@ -450,8 +456,10 @@ async fn native_child_only_scope_refuses_descriptor_policy_domain_and_sibling_ch
             b"stable other".as_slice(),
             b"\x61x".as_slice(),
             PARENT_ACL,
+            // The unchanged public children are more open than this private
+            // parent. DOM-2 rejects canonical policy before current authority.
             b"\x6cprivate:test".as_slice(),
-            "commit",
+            StoreErrorKind::Invalid(InvalidReason::MalformedRequest),
         ),
         (
             "sibling",
@@ -460,10 +468,13 @@ async fn native_child_only_scope_refuses_descriptor_policy_domain_and_sibling_ch
             b"\x61x".as_slice(),
             PARENT_ACL,
             PARENT_DOMAIN,
-            "commit",
+            StoreErrorKind::Denied {
+                verb: "commit",
+                pattern: SOURCE.into(),
+            },
         ),
     ];
-    for (case, child, other, descriptor, acl, domain, verb) in cases {
+    for (case, child, other, descriptor, acl, domain, expected) in cases {
         let mut request =
             child_scope_request(vec![first.commit], child, other, descriptor, acl, domain);
         request.token = scoped.clone();
@@ -472,13 +483,13 @@ async fn native_child_only_scope_refuses_descriptor_policy_domain_and_sibling_ch
 
         let failure = match guard.admit(SOURCE, first.writer_epoch + 1, request).await {
             Err(failure) => failure,
-            Ok(_) => panic!("{case} must require independently governed affected authority"),
+            Ok(_) => panic!("{case} must preserve canonical policy and affected authority checks"),
         };
 
-        assert!(
-            matches!(failure.kind(), StoreErrorKind::Denied { verb: actual, pattern } if *actual == verb && pattern == SOURCE),
-            "{case}: {failure:?}"
-        );
+        assert_eq!(failure.kind(), &expected, "{case}: {failure:?}");
+        if case == "domain" {
+            assert!(failure.source().is_none(), "{case}: {failure:?}");
+        }
         guard.store().assert_no_effects();
         let before = {
             let holder = crate::bucket::held::SingleHeld::acquire(native.store())
@@ -500,11 +511,13 @@ async fn native_child_only_scope_refuses_descriptor_policy_domain_and_sibling_ch
         request.token = scoped.clone();
         request.terminal_secret = terminal;
         let failure = native.advance(&mut session, request).await.unwrap_err();
-        assert!(
-            matches!(failure, crate::ref_advance::AdvanceError::Store(ref failure)
-            if matches!(failure.kind(), StoreErrorKind::Denied { verb: actual, pattern } if *actual == verb && pattern == SOURCE)),
-            "{case}: {failure:?}"
-        );
+        let crate::ref_advance::AdvanceError::Store(failure) = failure else {
+            panic!("{case}: {failure:?}");
+        };
+        assert_eq!(failure.kind(), &expected, "{case}: {failure:?}");
+        if case == "domain" {
+            assert!(failure.source().is_none(), "{case}: {failure:?}");
+        }
         let holder = crate::bucket::held::SingleHeld::acquire(native.store())
             .await
             .unwrap();
