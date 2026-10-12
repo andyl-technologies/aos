@@ -11,6 +11,7 @@ use terrane_core::gc::publication::*;
 use terrane_core::properties::PropertyName;
 use terrane_core::refs::Locality;
 
+/// Builds alternating local and remote backend binding models from a case number.
 pub(super) fn binding(case: usize) -> BackendBinding {
     if case.is_multiple_of(2) {
         BackendBinding::Local {

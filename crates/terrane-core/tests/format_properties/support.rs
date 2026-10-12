@@ -16,6 +16,7 @@ impl Generator {
         Self(seed)
     }
 
+    /// Advances the xorshift state and returns the next reproducible word.
     pub(super) fn next(&mut self) -> u64 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
@@ -23,10 +24,12 @@ impl Generator {
         self.0
     }
 
+    /// Fills a fixed-size byte array from successive generated low bytes.
     pub(super) fn bytes<const N: usize>(&mut self) -> [u8; N] {
         std::array::from_fn(|_| self.next() as u8)
     }
 
+    /// Permutes a slice in place with the reproducible Fisher-Yates selection sequence.
     pub(super) fn shuffle<T>(&mut self, values: &mut [T]) {
         for index in (1..values.len()).rev() {
             let selected = (self.next() % (index + 1) as u64) as usize;
@@ -38,6 +41,10 @@ impl Generator {
 /// Checks byte uniqueness, every truncated prefix, and sampled mutations.
 /// A mutation may describe another valid model; successful decodes must retain
 /// its exact canonical bytes rather than being incorrectly required to fail.
+///
+/// # Panics
+/// Panics if the original bytes fail reencoding, a truncated prefix is accepted,
+/// or an accepted mutation reencodes differently. Propagates callback panics.
 pub(super) fn byte_properties<E: Debug>(
     name: &str,
     bytes: &[u8],
@@ -81,6 +88,11 @@ pub(super) fn byte_properties<E: Debug>(
 
 /// Applies every nonminimal header variant and map duplicate/order mutation to
 /// generated CBOR, including nested values rather than only its first byte.
+///
+/// # Panics
+/// Panics on byte-property failures, accepted trailing/noncanonical variants or
+/// input outside the walker's supported canonical CBOR subset. Propagates
+/// callback panics.
 pub(super) fn cbor_properties<E: Debug>(
     name: &str,
     bytes: &[u8],
@@ -238,6 +250,11 @@ macro_rules! check_record {
     }};
 }
 
+/// Reexports the typed record roundtrip and canonical-byte property assertion macro.
+///
+/// # Panics
+/// The macro panics if model encoding/decoding fails, roundtrips or bytes differ,
+/// or a structural CBOR property assertion fails.
 pub(super) use check_record;
 
 /// Builds structurally valid envelopes with opaque, unauthenticated signatures.

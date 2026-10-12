@@ -7,6 +7,10 @@ use super::core_model::{auth, cbor};
 use super::support::{digest, fixed};
 use alloc::{vec, vec::Vec};
 
+/// Builds the unverified legacy authority fields and fixed ref grant.
+///
+/// # Panics
+/// Panics if the fixed grant verb bits or pattern fail validation.
 pub(super) fn authority() -> auth::Authority {
     auth::Authority {
         issuer: "issuer.example".into(),
@@ -24,6 +28,7 @@ pub(super) fn authority() -> auth::Authority {
     }
 }
 
+/// Builds the legacy attenuation fields with the fixed ref and epoch caveats.
 pub(super) fn attenuation() -> auth::Attenuation {
     auth::Attenuation {
         not_after: None,
@@ -36,10 +41,18 @@ pub(super) fn attenuation() -> auth::Attenuation {
     }
 }
 
+/// Reads the published next-block public key from its literal hexadecimal fixture.
+///
+/// # Panics
+/// Panics if the literal is malformed or does not decode to 32 bytes.
 pub(super) fn next_key() -> [u8; 32] {
     digest("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c")
 }
 
+/// Reads the opaque published authority signature without signing or verification.
+///
+/// # Panics
+/// Panics if the literal is malformed or does not decode to 64 bytes.
 pub(super) fn authority_signature() -> [u8; 64] {
     fixed(concat!(
         "7239961b2b42911f2f2ad53e5b8715d82f18ba850cad724863832e43d45bbd4ccffd",
@@ -47,6 +60,10 @@ pub(super) fn authority_signature() -> [u8; 64] {
     ))
 }
 
+/// Reads the opaque published attenuation signature without signing or verification.
+///
+/// # Panics
+/// Panics if the literal is malformed or does not decode to 64 bytes.
 pub(super) fn attenuation_signature() -> [u8; 64] {
     fixed(concat!(
         "3fda3b61fb042cf3fe81e027fb7968fef6f8e40fb59e7ccb98117c97392ba0bbd",
@@ -54,6 +71,11 @@ pub(super) fn attenuation_signature() -> [u8; 64] {
     ))
 }
 
+/// Assembles the complete legacy token wire projection from ordinary fixture fields.
+///
+/// # Panics
+/// Panics if grant validation or key/signature fixture parsing fails, or the
+/// attenuation model contains caveats other than ref and epoch.
 pub(super) fn wire_projection() -> Vec<u8> {
     let authority = authority();
     let attenuation = attenuation();

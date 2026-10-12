@@ -355,6 +355,9 @@ pub(super) fn current_fields(copied: bool, local: bool) -> CurrentCollectionFenc
 }
 
 /// Constructs all twelve copied placement fence fields independently.
+///
+/// # Panics
+/// Panics if the current-collection fixture lacks its required manifest.
 pub(super) fn copied_fence(local: bool) -> CopiedPlacementFence {
     let common = current_fields(true, local);
     CopiedPlacementFence {
