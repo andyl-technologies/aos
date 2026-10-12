@@ -807,6 +807,7 @@ fn hex(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// Coordinates opt-in native test pauses after baseline retention and before pair acquisition.
 #[cfg(all(test, feature = "tokio"))]
 pub(super) mod test_pause {
     use std::{
@@ -851,10 +852,14 @@ pub(super) mod test_pause {
         Ok((observed, resume))
     }
 
-    /// Waits for an armed test pause after actual baseline retention.
+    /// Signals an armed destination's baseline boundary and waits for its test to resume.
+    ///
+    /// Returns immediately when this destination has no armed pause. The pause
+    /// supplies no publication authority or guarantee about elapsed time.
     ///
     /// # Errors
-    /// Rejects poisoned pause synchronization or disconnected test channels.
+    /// Rejects poisoned synchronization, a dropped entered receiver or a dropped
+    /// resume sender.
     pub(super) async fn after_baseline(root: &Path) -> Result<(), StoreFailure> {
         let pause = PAUSES
             .get_or_init(|| Mutex::new(BTreeMap::new()))
