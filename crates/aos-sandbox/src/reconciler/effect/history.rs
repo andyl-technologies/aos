@@ -12,7 +12,7 @@
 
 use sha2::{Digest as _, Sha256};
 
-use super::super::operation_ledger::DeleteGateHistoryV1;
+use super::super::delete_gate_history::DeleteGateHistoryV1;
 // The whole codec shares its fixed private model vocabulary with this parent.
 use super::*;
 
@@ -1000,7 +1000,7 @@ pub(crate) fn validate_delete_effect_record(
     root: &[u8],
     delete_effects: &mut usize,
 ) -> Result<(), ReconcilerError> {
-    use super::super::OwnershipGateStatusV1;
+    use aos_sandbox_protocol::domain_ledger::ownership_gate::OwnershipGateStatusV1;
     use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 
     let invalid = || ReconcilerError::CorruptLedger("invalid Delete batch admission metadata");

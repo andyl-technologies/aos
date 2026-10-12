@@ -1,10 +1,9 @@
-//! Owns the upper OwnershipGate ledger DATA and its protected draft bindings.
+//! Owns the complete OwnershipGate historical model and canonical V1 codec.
 //!
-//! This private owner bounds and decodes durable inputs; it neither authenticates
-//! activation facts nor reads a journal, supplies currentness, or grants effects.
-//! Admission, state transitions, publication joins, and recovery remain with the
-//! Reconciler. Complete Operation records and their keys now use the existing
-//! Protocol `domain_ledger::operation` DATA owner directly.
+//! A plan retains the exact bounded Claim, Publication Draft and request DATA.
+//! Pending/Activated records describe durable history; decoding neither checks
+//! current publication nor activates ownership or creates an executable effect.
+//! Native admission, activation, Journal custody and currentness remain upper.
 //!
 //! The established records have these layouts:
 //!
@@ -25,8 +24,7 @@ use aos_sandbox_core::model::{KeyReference, KeyUsage, StableKeyId};
 use aos_sandbox_core::{ObjectDigest, OperationId};
 use aos_sandbox_ownership_protocol::{CLAIM_BYTES, OwnershipClaimV1};
 
-use super::ReconcilerError;
-use crate::journal::IdempotencyKey;
+use super::transaction::IdempotencyKey;
 use crate::publication::AuthorityPublicationDraftV1;
 
 const MAXIMUM_OWNERSHIP_DRAFT_BYTES: usize = 15 * 1024 * 1024;
@@ -37,21 +35,21 @@ const OWNERSHIP_GATE_FIXED_BYTES: usize = 252;
 /// Carries the bounded non-authorizing inputs durably held before ownership.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnershipGatePlanV1 {
-    pub(super) operation_id: OperationId,
-    pub(super) idempotency_key: IdempotencyKey,
-    pub(super) request_digest: [u8; 32],
-    pub(super) claim: OwnershipClaimV1,
-    pub(super) publication_draft: AuthorityPublicationDraftV1,
+    operation_id: OperationId,
+    idempotency_key: IdempotencyKey,
+    request_digest: [u8; 32],
+    claim: OwnershipClaimV1,
+    publication_draft: AuthorityPublicationDraftV1,
 }
 
 impl OwnershipGatePlanV1 {
-    pub(super) fn new(
+    pub fn new(
         operation_id: OperationId,
         idempotency_key: IdempotencyKey,
         request_digest: [u8; 32],
         claim: OwnershipClaimV1,
         publication_draft: AuthorityPublicationDraftV1,
-    ) -> Result<Self, ReconcilerError> {
+    ) -> Result<Self, OwnershipGateDataErrorV1> {
         let expected_authority = publication_draft.ownership_authority();
         if operation_id.as_bytes() == &[0; 16]
             || request_digest == [0; 32]
@@ -60,7 +58,9 @@ impl OwnershipGatePlanV1 {
             || expected_authority.usage() != KeyUsage::OwnershipLease
             || publication_draft.canonical_bytes().len() > MAXIMUM_OWNERSHIP_DRAFT_BYTES
         {
-            return Err(ReconcilerError::InvalidPlan("invalid ownership gate plan"));
+            return Err(OwnershipGateDataErrorV1::InvalidPlan(
+                "invalid ownership gate plan",
+            ));
         }
         validate_claim_draft_context(&claim, &publication_draft)?;
         Ok(Self {
@@ -82,6 +82,12 @@ impl OwnershipGatePlanV1 {
     #[must_use]
     pub const fn request_digest(&self) -> [u8; 32] {
         self.request_digest
+    }
+
+    /// Borrows the original stored request digest without copying its bytes.
+    #[must_use]
+    pub const fn request_digest_bytes(&self) -> &[u8; 32] {
+        &self.request_digest
     }
 
     /// Returns the exact original idempotency key.
@@ -136,7 +142,7 @@ pub enum OwnershipGateStatusV1 {
 fn validate_claim_draft_context(
     claim: &OwnershipClaimV1,
     draft: &AuthorityPublicationDraftV1,
-) -> Result<(), ReconcilerError> {
+) -> Result<(), OwnershipGateDataErrorV1> {
     let assignment = claim.assignment();
     let manifest = draft.manifest();
     let semantics = manifest.manifest();
@@ -147,16 +153,16 @@ fn validate_claim_draft_context(
         || claim.node() != semantics.node()
         || claim.desired_generation() != semantics.desired_generation()
     {
-        return Err(ReconcilerError::InvalidPlan(
+        return Err(OwnershipGateDataErrorV1::InvalidPlan(
             "ownership claim does not match authority publication draft",
         ));
     }
     Ok(())
 }
 
-pub(super) fn encode_ownership_gate(
+pub fn encode_ownership_gate(
     gate: &OwnershipGateStatusV1,
-) -> Result<Vec<u8>, ReconcilerError> {
+) -> Result<Vec<u8>, OwnershipGateDataErrorV1> {
     let (state, plan, publication_digest, lease_generation, lease_digest) = match gate {
         OwnershipGateStatusV1::Pending(plan) => (1_u8, plan, [0; 32], 0, [0; 32]),
         OwnershipGateStatusV1::Activated {
@@ -172,20 +178,25 @@ pub(super) fn encode_ownership_gate(
             *lease_digest.as_bytes(),
         ),
     };
-    let idempotency_length = u16::try_from(plan.idempotency_key.as_bytes().len())
-        .map_err(|_| ReconcilerError::InvalidPlan("ownership idempotency key is too large"))?;
+    let idempotency_length =
+        u16::try_from(plan.idempotency_key.as_bytes().len()).map_err(|_| {
+            OwnershipGateDataErrorV1::InvalidPlan("ownership idempotency key is too large")
+        })?;
     let expected_authority = plan.expected_authority();
     let key_id = expected_authority.stable_key_id().as_str().as_bytes();
-    let key_id_length = u16::try_from(key_id.len())
-        .map_err(|_| ReconcilerError::InvalidPlan("ownership authority key ID is too large"))?;
-    let draft_length = u32::try_from(plan.publication_draft.canonical_bytes().len())
-        .map_err(|_| ReconcilerError::InvalidPlan("ownership publication draft is too large"))?;
+    let key_id_length = u16::try_from(key_id.len()).map_err(|_| {
+        OwnershipGateDataErrorV1::InvalidPlan("ownership authority key ID is too large")
+    })?;
+    let draft_length =
+        u32::try_from(plan.publication_draft.canonical_bytes().len()).map_err(|_| {
+            OwnershipGateDataErrorV1::InvalidPlan("ownership publication draft is too large")
+        })?;
     let capacity = OWNERSHIP_GATE_FIXED_BYTES
         .checked_add(plan.idempotency_key.as_bytes().len())
         .and_then(|value| value.checked_add(key_id.len()))
         .and_then(|value| value.checked_add(CLAIM_BYTES))
         .and_then(|value| value.checked_add(plan.publication_draft.canonical_bytes().len()))
-        .ok_or(ReconcilerError::InvalidPlan(
+        .ok_or(OwnershipGateDataErrorV1::InvalidPlan(
             "ownership gate length overflow",
         ))?;
     let mut bytes = Vec::with_capacity(capacity);
@@ -213,14 +224,14 @@ pub(super) fn encode_ownership_gate(
     Ok(bytes)
 }
 
-pub(super) fn decode_ownership_gate(
+pub fn decode_ownership_gate(
     bytes: &[u8],
-) -> Result<OwnershipGateStatusV1, ReconcilerError> {
+) -> Result<OwnershipGateStatusV1, OwnershipGateDataErrorV1> {
     let mut reader = BoundedReader::new(bytes, ownership_gate_read_error);
     if reader.array::<8>()? != *OWNERSHIP_GATE_MAGIC
         || u16::from_be_bytes(reader.array::<2>()?) != OWNERSHIP_GATE_VERSION
     {
-        return Err(ReconcilerError::CorruptLedger(
+        return Err(OwnershipGateDataErrorV1::CorruptLedger(
             "invalid ownership gate version",
         ));
     }
@@ -233,9 +244,9 @@ pub(super) fn decode_ownership_gate(
     let authority_generation = u64::from_be_bytes(reader.array::<8>()?);
     let authority_fingerprint = reader.array::<32>()?;
     let claim_length = usize::try_from(u32::from_be_bytes(reader.array::<4>()?))
-        .map_err(|_| ReconcilerError::CorruptLedger("ownership claim length overflow"))?;
+        .map_err(|_| OwnershipGateDataErrorV1::CorruptLedger("ownership claim length overflow"))?;
     let draft_length = usize::try_from(u32::from_be_bytes(reader.array::<4>()?))
-        .map_err(|_| ReconcilerError::CorruptLedger("ownership draft length overflow"))?;
+        .map_err(|_| OwnershipGateDataErrorV1::CorruptLedger("ownership draft length overflow"))?;
     let claim_digest = ObjectDigest::from_bytes(reader.array::<32>()?);
     let draft_digest = ObjectDigest::from_bytes(reader.array::<32>()?);
     let publication_digest = ObjectDigest::from_bytes(reader.array::<32>()?);
@@ -253,7 +264,7 @@ pub(super) fn decode_ownership_gate(
         || draft_length == 0
         || draft_length > MAXIMUM_OWNERSHIP_DRAFT_BYTES
     {
-        return Err(ReconcilerError::CorruptLedger(
+        return Err(OwnershipGateDataErrorV1::CorruptLedger(
             "invalid ownership gate fields",
         ));
     }
@@ -262,54 +273,58 @@ pub(super) fn decode_ownership_gate(
         .and_then(|value| value.checked_add(key_id_length))
         .and_then(|value| value.checked_add(claim_length))
         .and_then(|value| value.checked_add(draft_length))
-        .ok_or(ReconcilerError::CorruptLedger(
+        .ok_or(OwnershipGateDataErrorV1::CorruptLedger(
             "ownership gate length overflow",
         ))?;
     if expected_length != bytes.len() {
-        return Err(ReconcilerError::CorruptLedger(
+        return Err(OwnershipGateDataErrorV1::CorruptLedger(
             "invalid ownership gate length",
         ));
     }
     let idempotency = reader.bytes(idempotency_length)?;
     let key_id = std::str::from_utf8(reader.bytes(key_id_length)?)
-        .map_err(|_| ReconcilerError::CorruptLedger("ownership key ID is not UTF-8"))?;
+        .map_err(|_| OwnershipGateDataErrorV1::CorruptLedger("ownership key ID is not UTF-8"))?;
     let claim_bytes = reader.bytes(claim_length)?;
     let publication_draft_bytes = reader.bytes(draft_length)?;
     reader.finish()?;
-    let claim = OwnershipClaimV1::from_canonical_bytes(claim_bytes)
-        .map_err(|_| ReconcilerError::CorruptLedger("invalid canonical ownership claim"))?;
+    let claim = OwnershipClaimV1::from_canonical_bytes(claim_bytes).map_err(|_| {
+        OwnershipGateDataErrorV1::CorruptLedger("invalid canonical ownership claim")
+    })?;
     if claim.canonical_bytes().as_slice() != claim_bytes || claim.digest() != claim_digest {
-        return Err(ReconcilerError::CorruptLedger(
+        return Err(OwnershipGateDataErrorV1::CorruptLedger(
             "ownership claim digest mismatch",
         ));
     }
     let encoded_authority = KeyReference::new(
-        StableKeyId::new(key_id.to_owned())
-            .map_err(|_| ReconcilerError::CorruptLedger("invalid ownership authority key ID"))?,
+        StableKeyId::new(key_id.to_owned()).map_err(|_| {
+            OwnershipGateDataErrorV1::CorruptLedger("invalid ownership authority key ID")
+        })?,
         authority_generation,
         ObjectDigest::from_bytes(authority_fingerprint),
         KeyUsage::OwnershipLease,
     );
-    let publication_draft =
-        AuthorityPublicationDraftV1::from_canonical_bytes(publication_draft_bytes)
-            .map_err(|_| ReconcilerError::CorruptLedger("invalid authority publication draft"))?;
+    let publication_draft = AuthorityPublicationDraftV1::from_canonical_bytes(
+        publication_draft_bytes,
+    )
+    .map_err(|_| OwnershipGateDataErrorV1::CorruptLedger("invalid authority publication draft"))?;
     if publication_draft.canonical_bytes() != publication_draft_bytes
         || publication_draft.digest() != draft_digest
         || publication_draft.ownership_authority() != &encoded_authority
     {
-        return Err(ReconcilerError::CorruptLedger(
+        return Err(OwnershipGateDataErrorV1::CorruptLedger(
             "ownership publication draft does not match gate metadata",
         ));
     }
     let plan = OwnershipGatePlanV1::new(
         OperationId::from_bytes(operation_bytes),
-        IdempotencyKey::new(idempotency.to_vec())
-            .map_err(|_| ReconcilerError::CorruptLedger("invalid ownership idempotency key"))?,
+        IdempotencyKey::new(idempotency.to_vec()).map_err(|_| {
+            OwnershipGateDataErrorV1::CorruptLedger("invalid ownership idempotency key")
+        })?,
         request_digest,
         claim,
         publication_draft,
     )
-    .map_err(|_| ReconcilerError::CorruptLedger("invalid ownership gate plan"))?;
+    .map_err(|_| OwnershipGateDataErrorV1::CorruptLedger("invalid ownership gate plan"))?;
     match state {
         1 if publication_digest.as_bytes() == &[0; 32]
             && lease_generation == 0
@@ -328,14 +343,14 @@ pub(super) fn decode_ownership_gate(
                 lease_digest,
             })
         }
-        _ => Err(ReconcilerError::CorruptLedger(
+        _ => Err(OwnershipGateDataErrorV1::CorruptLedger(
             "invalid ownership gate activation state",
         )),
     }
 }
 
-fn ownership_gate_read_error(error: ReadError) -> ReconcilerError {
-    ReconcilerError::CorruptLedger(match error {
+fn ownership_gate_read_error(error: ReadError) -> OwnershipGateDataErrorV1 {
+    OwnershipGateDataErrorV1::CorruptLedger(match error {
         ReadError::LengthOverflow => "ownership gate length overflow",
         ReadError::Truncated => "truncated ownership gate",
         ReadError::NonzeroReserved => "invalid ownership gate reserved bytes",
@@ -343,39 +358,13 @@ fn ownership_gate_read_error(error: ReadError) -> ReconcilerError {
     })
 }
 
-/// Holds one original Gate across Journal row checks without exposing its plan.
-pub(crate) struct DeleteGateHistoryV1(pub(super) OwnershipGateStatusV1);
-
-/// Decodes and compares the complete original Delete ownership-gate row.
-///
-/// # Errors
-///
-/// Returns the original Reconciler error when the row, Pending tag, metadata,
-/// or canonical bytes do not match the selected Delete batch.
-pub(crate) fn decode_delete_gate(
-    gate_row: &crate::journal::JournalRecord,
-    operation_id: OperationId,
-    batch: crate::lifecycle::delete_batch::DeleteBatchViewV1<'_>,
-    idempotency: &crate::journal::JournalRecord,
-) -> Result<DeleteGateHistoryV1, ReconcilerError> {
-    use crate::journal::RecordNamespace;
-
-    let invalid = || ReconcilerError::CorruptLedger("invalid Delete batch admission metadata");
-    if gate_row.namespace() != RecordNamespace::OwnershipGate
-        || gate_row.key() != operation_id.as_bytes()
-    {
-        return Err(invalid());
-    }
-    let gate = decode_ownership_gate(gate_row.value().ok_or_else(invalid)?)?;
-    let OwnershipGateStatusV1::Pending(plan) = &gate else {
-        return Err(invalid());
-    };
-    if plan.operation_id() != operation_id
-        || plan.request_digest() != batch.request_digest()
-        || plan.idempotency_key().as_bytes() != idempotency.key()
-        || encode_ownership_gate(&gate)?.as_slice() != gate_row.value().ok_or_else(invalid)?
-    {
-        return Err(invalid());
-    }
-    Ok(DeleteGateHistoryV1(gate))
+/// Reports invalid Gate plan inputs or corrupt retained Gate bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum OwnershipGateDataErrorV1 {
+    /// Structural plan validation or bounded encoding rejected the inputs.
+    #[error("invalid reconciliation plan: {0}")]
+    InvalidPlan(&'static str),
+    /// The complete retained record violates the original Gate grammar.
+    #[error("corrupt durable effect ledger: {0}")]
+    CorruptLedger(&'static str),
 }

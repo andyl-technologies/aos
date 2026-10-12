@@ -20,8 +20,8 @@ pub(crate) fn validate_runtime_authority_pending(
         .and_then(|bytes| decode_operation(bytes).map_err(ReconcilerError::from))?;
     let plan = gate_plan(&gate);
     if operation.runtime_intent_digest() != Some(pending.intent_digest())
-        || &plan.request_digest != pending.request_digest()
-        || plan.publication_draft.manifest() != pending.manifest()
+        || plan.request_digest_bytes() != pending.request_digest()
+        || plan.publication_draft().manifest() != pending.manifest()
         || plan.publication_draft_digest() != pending.source_draft_digest()
     {
         return Err(ReconcilerError::CorruptLedger(
@@ -154,8 +154,8 @@ pub(crate) fn validate_runtime_authority_binding(
             "runtime authority decision precedes ownership activation",
         ));
     };
-    if &plan.request_digest != binding.request_digest()
-        || plan.publication_draft.manifest() != binding.manifest()
+    if plan.request_digest_bytes() != binding.request_digest()
+        || plan.publication_draft().manifest() != binding.manifest()
         || plan.publication_draft_digest() != binding.source_draft_digest()
         || publication_digest != binding.publication_digest()
         || lease_generation != binding.lease_generation()
@@ -210,11 +210,11 @@ fn runtime_gate(
         .ok_or(ReconcilerError::CorruptLedger(
             "runtime authority gate is missing",
         ))
-        .and_then(decode_ownership_gate)?;
+        .and_then(|bytes| decode_ownership_gate(bytes).map_err(ReconcilerError::from))?;
     let plan = gate_plan(&gate);
     if !operation.ownership_gated()
-        || plan.operation_id != operation_id
-        || journal.check_idempotency(&plan.idempotency_key, plan.request_digest)
+        || plan.operation_id() != operation_id
+        || journal.check_idempotency(plan.idempotency_key(), plan.request_digest())
             != IdempotencyOutcome::Replay(operation_id)
         || !matches!(
             (&gate, operation.state()),

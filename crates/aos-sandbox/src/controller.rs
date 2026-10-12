@@ -14,6 +14,7 @@
 //! boot-inventory joins, and live public authorization beside their invariants.
 //! Their methods continue to borrow this controller's sole reconciler and Journal.
 
+use aos_sandbox_protocol::domain_ledger::ownership_gate::OwnershipGateStatusV1;
 use aos_sandbox_core::{ObjectDigest, OperationId, RawPairedClockSample};
 use aos_sandbox_ownership_protocol::protocol::session_client::OwnershipAuthoritySessionClient;
 #[cfg(target_os = "linux")]
@@ -40,7 +41,7 @@ use crate::publisher_authority::{
 use crate::publisher_policy::{PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore};
 use crate::{
     AcceptOutcome, OperationPlan, OwnershipAuthorityVerifier, OwnershipClockObservationError,
-    OwnershipGateStatusV1, OwnershipResumeError,
+    OwnershipResumeError,
     OwnershipResumeOutcomeV1, ReconcileOutcome, Reconciler, ReconcilerError,
     SingleNodeEffectExecutor, ValidatedUnfinishedOperationV1,
 };

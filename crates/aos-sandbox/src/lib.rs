@@ -366,7 +366,7 @@ pub use reconciler::{
     AcceptOutcome, AuthorityBoundEffectPlanV1, AuthorityEffectAttemptTimingV1,
     AuthorityEffectObservationV1, EffectDomain, EffectFailure, EffectObservation, EffectPlan,
     EffectReceipt, OperationPlan, OperatorStorageRepairReconcileV1, OwnershipGateActivationOutcome,
-    OwnershipGatePlanV1, OwnershipGateStatusV1, PreparedAuthorityBrokerRequestV1,
+    PreparedAuthorityBrokerRequestV1,
     PreparedAuthorityEffectV1, PublicMutationEffectV1, PublicOperationAdmissionV1,
     PublicOperationAuthorizationV1, ReconcileOutcome, Reconciler, ReconcilerError,
     SingleNodeEffectExecutor, UnfinishedOperationStateV1, ValidatedAuthorityEffectReceiptV1,

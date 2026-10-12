@@ -29,6 +29,7 @@ pub mod capacity;
 pub mod create_q04_history;
 pub mod execution_observe_reservation;
 pub mod operation;
+pub mod ownership_gate;
 pub mod project_admission_metadata;
 pub mod project_source;
 pub mod protected_names;

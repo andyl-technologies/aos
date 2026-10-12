@@ -66,7 +66,7 @@ mod effect;
 #[cfg(target_os = "linux")]
 mod fuse_admission;
 mod observe_reservation;
-mod operation_ledger;
+mod delete_gate_history;
 mod operator_repair_failure;
 pub(crate) mod project_admission;
 mod runtime_authority;
@@ -120,16 +120,18 @@ use aos_sandbox_protocol::domain_ledger::operation::{
     MAXIMUM_EFFECTS, MAXIMUM_GATED_EFFECTS, OPERATION_KEY_BYTES, OPERATION_RECORD_V2_BYTES,
     OperationRecord, decode_operation, decode_operation_key, effect_key, encode_operation_record,
 };
-use operation_ledger::{decode_ownership_gate, encode_ownership_gate};
+use aos_sandbox_protocol::domain_ledger::ownership_gate::{
+    OwnershipGateDataErrorV1, OwnershipGatePlanV1, OwnershipGateStatusV1,
+    decode_ownership_gate, encode_ownership_gate,
+};
 pub(crate) use effect::{
     compare_capacity_effect_history, decode_capacity_effect_history, validate_delete_effect_record,
 };
-pub(crate) use operation_ledger::decode_delete_gate;
+pub(crate) use delete_gate_history::decode_delete_gate;
 #[cfg(test)]
 use aos_sandbox_protocol::domain_ledger::operation::{
     OPERATION_RECORD_V1_BYTES, OPERATION_RUNTIME_INTENT_DIGEST_BYTES, RECORD_VERSION_V1,
 };
-pub use operation_ledger::{OwnershipGatePlanV1, OwnershipGateStatusV1};
 use aos_sandbox_protocol::domain_ledger::public_operation::{OperationState, resource_version};
 pub(crate) use aos_sandbox_protocol::domain_ledger::public_operation::{
     public_operation_method_from_record_code_v1, public_operation_method_record_code_v1,
@@ -1303,6 +1305,15 @@ impl From<aos_sandbox_protocol::domain_ledger::public_operation::PublicOperation
     }
 }
 
+impl From<OwnershipGateDataErrorV1> for ReconcilerError {
+    fn from(error: OwnershipGateDataErrorV1) -> Self {
+        match error {
+            OwnershipGateDataErrorV1::InvalidPlan(reason) => Self::InvalidPlan(reason),
+            OwnershipGateDataErrorV1::CorruptLedger(reason) => Self::CorruptLedger(reason),
+        }
+    }
+}
+
 /// Reports whether exact ownership-gate activation committed or replayed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OwnershipGateActivationOutcome {
@@ -1596,14 +1607,14 @@ where
             OwnershipGateStatusV1::Pending(plan)
             | OwnershipGateStatusV1::Activated { plan, .. } => plan,
         };
-        let claim_assignment = durable_plan.claim.assignment();
+        let claim_assignment = durable_plan.claim().assignment();
         if sandbox != claim_assignment.sandbox()
             || assignment_digest != claim_assignment.digest()
             || source_draft_digest != durable_plan.publication_draft_digest()
             || &ownership_authority != durable_plan.expected_authority()
-            || receipt_action != durable_plan.claim.action()
-            || receipt_request_id != *durable_plan.claim.request_id()
-            || receipt_claim_digest != durable_plan.claim.digest()
+            || receipt_action != durable_plan.claim().action()
+            || receipt_request_id != *durable_plan.claim().request_id()
+            || receipt_claim_digest != durable_plan.claim().digest()
         {
             return Err(ReconcilerError::OwnershipActivationConflict);
         }
@@ -1644,7 +1655,7 @@ where
             }
             store.prepare_activation(
                 operation_id,
-                plan.request_digest,
+                plan.request_digest(),
                 plan.publication_draft(),
                 &prepared,
             )?
@@ -2734,7 +2745,7 @@ where
         let gate = self
             .journal
             .get(RecordNamespace::OwnershipGate, operation_id.as_bytes())
-            .map(decode_ownership_gate)
+            .map(|bytes| decode_ownership_gate(bytes).map_err(ReconcilerError::from))
             .transpose()?;
         let Some(gate) = gate else {
             return if operation.ownership_gated() {
@@ -2756,10 +2767,10 @@ where
             OwnershipGateStatusV1::Pending(plan)
             | OwnershipGateStatusV1::Activated { plan, .. } => plan,
         };
-        if plan.operation_id != operation_id
+        if plan.operation_id() != operation_id
             || self
                 .journal
-                .check_idempotency(&plan.idempotency_key, plan.request_digest)
+                .check_idempotency(plan.idempotency_key(), plan.request_digest())
                 != IdempotencyOutcome::Replay(operation_id)
         {
             return Err(ReconcilerError::CorruptLedger(
@@ -4247,7 +4258,7 @@ pub(crate) fn validated_ownership_gate_from_journal_v1(
         .transpose()?;
     let gate = journal
         .get(RecordNamespace::OwnershipGate, operation_id.as_bytes())
-        .map(decode_ownership_gate)
+        .map(|bytes| decode_ownership_gate(bytes).map_err(ReconcilerError::from))
         .transpose()?;
     let (operation, gate) = match (operation, gate) {
         (None, None) => {
@@ -9167,13 +9178,20 @@ mod tests {
     fn ownership_gate_codec_preserves_fixed_header_and_activation_error_order() {
         let plan = gated_operation().ownership_gate.unwrap();
         let gate = OwnershipGateStatusV1::Pending(plan);
-        let bytes = encode_ownership_gate(&gate).unwrap();
-        assert_eq!(decode_ownership_gate(&bytes).unwrap(), gate);
+        let bytes = encode_ownership_gate(&gate)
+            .map_err(ReconcilerError::from)
+            .unwrap();
+        assert_eq!(
+            decode_ownership_gate(&bytes)
+                .map_err(ReconcilerError::from)
+                .unwrap(),
+            gate
+        );
 
         let mut bad_magic = bytes[..8].to_vec();
         bad_magic[0] ^= 1;
         assert!(matches!(
-            decode_ownership_gate(&bad_magic),
+            decode_ownership_gate(&bad_magic).map_err(ReconcilerError::from),
             Err(ReconcilerError::CorruptLedger(
                 "invalid ownership gate version"
             ))
@@ -9181,7 +9199,7 @@ mod tests {
         for length in [0, 7, 8, 9, 10, 11, 15, 16, 251] {
             assert!(
                 matches!(
-                    decode_ownership_gate(&bytes[..length]),
+                    decode_ownership_gate(&bytes[..length]).map_err(ReconcilerError::from),
                     Err(ReconcilerError::CorruptLedger("truncated ownership gate"))
                 ),
                 "length {length}"
@@ -9191,7 +9209,7 @@ mod tests {
         let mut bad_version = bytes[..10].to_vec();
         bad_version[9] ^= 1;
         assert!(matches!(
-            decode_ownership_gate(&bad_version),
+            decode_ownership_gate(&bad_version).map_err(ReconcilerError::from),
             Err(ReconcilerError::CorruptLedger(
                 "invalid ownership gate version"
             ))
@@ -9201,7 +9219,7 @@ mod tests {
         bad_reserved[10] = 0xff;
         bad_reserved[11] = 1;
         assert!(matches!(
-            decode_ownership_gate(&bad_reserved),
+            decode_ownership_gate(&bad_reserved).map_err(ReconcilerError::from),
             Err(ReconcilerError::CorruptLedger(
                 "invalid ownership gate reserved bytes"
             ))
@@ -9210,7 +9228,7 @@ mod tests {
         let mut bad_state = bytes;
         bad_state[10] = 0xff;
         assert!(matches!(
-            decode_ownership_gate(&bad_state),
+            decode_ownership_gate(&bad_state).map_err(ReconcilerError::from),
             Err(ReconcilerError::CorruptLedger(
                 "invalid ownership gate activation state"
             ))
@@ -9221,7 +9239,9 @@ mod tests {
     fn ownership_gate_codec_preserves_bounds_length_utf8_and_nested_error_order() {
         let plan = gated_operation().ownership_gate.unwrap();
         let gate = OwnershipGateStatusV1::Pending(plan);
-        let bytes = encode_ownership_gate(&gate).unwrap();
+        let bytes = encode_ownership_gate(&gate)
+            .map_err(ReconcilerError::from)
+            .unwrap();
         let idempotency_length = usize::from(u16::from_be_bytes(bytes[64..66].try_into().unwrap()));
         let key_id_length = usize::from(u16::from_be_bytes(bytes[66..68].try_into().unwrap()));
         let key_id_start = 252 + idempotency_length;
@@ -9234,7 +9254,7 @@ mod tests {
         corrupt.push(0);
         corrupt[16..32].fill(0);
         assert!(matches!(
-            decode_ownership_gate(&corrupt),
+            decode_ownership_gate(&corrupt).map_err(ReconcilerError::from),
             Err(ReconcilerError::CorruptLedger(
                 "invalid ownership gate fields"
             ))
@@ -9242,7 +9262,7 @@ mod tests {
 
         corrupt[16..32].copy_from_slice(&bytes[16..32]);
         assert!(matches!(
-            decode_ownership_gate(&corrupt),
+            decode_ownership_gate(&corrupt).map_err(ReconcilerError::from),
             Err(ReconcilerError::CorruptLedger(
                 "invalid ownership gate length"
             ))
@@ -9250,7 +9270,7 @@ mod tests {
 
         corrupt.pop().unwrap();
         assert!(matches!(
-            decode_ownership_gate(&corrupt),
+            decode_ownership_gate(&corrupt).map_err(ReconcilerError::from),
             Err(ReconcilerError::CorruptLedger(
                 "ownership key ID is not UTF-8"
             ))
@@ -9258,7 +9278,7 @@ mod tests {
 
         corrupt[key_id_start] = bytes[key_id_start];
         assert!(matches!(
-            decode_ownership_gate(&corrupt),
+            decode_ownership_gate(&corrupt).map_err(ReconcilerError::from),
             Err(ReconcilerError::CorruptLedger(
                 "invalid canonical ownership claim"
             ))
@@ -9267,7 +9287,7 @@ mod tests {
         corrupt[claim_start] = bytes[claim_start];
         corrupt[116] ^= 1;
         assert!(matches!(
-            decode_ownership_gate(&corrupt),
+            decode_ownership_gate(&corrupt).map_err(ReconcilerError::from),
             Err(ReconcilerError::CorruptLedger(
                 "ownership claim digest mismatch"
             ))
@@ -9275,7 +9295,7 @@ mod tests {
 
         corrupt[116] = bytes[116];
         assert!(matches!(
-            decode_ownership_gate(&corrupt),
+            decode_ownership_gate(&corrupt).map_err(ReconcilerError::from),
             Err(ReconcilerError::CorruptLedger(
                 "invalid ownership gate activation state"
             ))

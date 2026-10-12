@@ -6,6 +6,7 @@
 //! claim. Returned carrier fields remain hostile until the negotiated session
 //! validates their transcript, method, transaction, and outcome.
 
+use aos_sandbox_protocol::domain_ledger::ownership_gate::OwnershipGateStatusV1;
 use aos_sandbox_core::{OperationId, ProtocolVersion, RawPairedClockSample};
 use aos_sandbox_ownership_protocol::protocol::session_client::{
     OwnershipAuthoritySessionClient, OwnershipSessionTransportError,
@@ -20,7 +21,7 @@ use aos_sandbox_ownership_protocol::protocol::{
 
 use crate::{
     AuthorityPublicationError, AuthorityPublicationStore, OwnershipAuthorityVerifier,
-    OwnershipGateActivationOutcome, OwnershipGateStatusV1, OwnershipLeaseAcquisitionError,
+    OwnershipGateActivationOutcome, OwnershipLeaseAcquisitionError,
     Reconciler, ReconcilerError, SingleNodeEffectExecutor,
 };
 
