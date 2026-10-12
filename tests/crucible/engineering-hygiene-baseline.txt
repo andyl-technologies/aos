@@ -128,6 +128,7 @@ shape-review|crates/crucible-protocol/src/selectable_catalog_plan.rs|sha256:c89f
 shape-review|crates/crucible-qemu-plugin/src/fault_command_test.rs|sha256:b2bea7f6985bcb46cd76cdba0c0257334203c35de0427b25d01eec2d85ec0f16|tests|1331|Fault-command bridge codec, translation, and hostile-input tests.|threshold-not-reached
 shape-review|crates/crucible-qemu-plugin/src/runtime.rs|sha256:72273f9372fc47b32ebef2d664fe9bc2346c767d266c4c33625118f0a79034d0|implementation|2855|Live QEMU plugin installation and process-lifetime runtime ownership.|Capability preflight, callback registration, endpoint identity, control service, and teardown must execute in one atomic runtime order.
 shape-review|crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs|sha256:2044611813c1bb102c262968d377779e2220750f4ebe93832d4f62a626e9e353|implementation|2792|Live vCPU-boundary and sim-loop shared-memory callback adapters.|The vCPU, time, network, block, and 9p callbacks coordinate through one process-global runtime and quantum publication state.
+shape-review|crates/crucible-qemu-plugin/src/runtime/live_whitebox.rs|sha256:f4f11a36a9070a639f9ca0c4d37d3aa96f32bd888d6c3c5ef291d6d590800ce5|implementation|1014|Live white-box doorbell recognition, payload-register discovery, and selectable catalog reconciliation.|threshold-not-reached
 shape-review|crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs|sha256:fa5306e275b3033e8d3470d0f676935ef5680e816efb27bd03f7b3607f885507|tests|1612|Live QEMU callback integration tests.|vCPU boundary, timer, block, 9p, network, control, and fingerprint cases share one installed live-callback runtime fixture and shared-memory publication contract.
 shape-review|crates/crucible-qemu-plugin/src/runtime/tests.rs|sha256:bc4b0b9ad9bfe7c8533ed9aea371bb7ff2e258894b0c89ecbc6f5ce9ba85fe70|tests|1888|Live runtime installation, control-worker, and teardown tests.|Installation, endpoint identity, callback teardown, and fatal-policy cases traverse one process-owner lifecycle.
 shape-review|crates/crucible-qemu-plugin/src/whitebox_doorbell/selectable/catalog.rs|sha256:84c44d252883863601c93374a50ca861ac0fe7fdc0f91ec2280062987b2b4ac2|implementation|1253|Guest-selectable declaration, pending-request, reply, and checkpoint catalog state.|threshold-not-reached
@@ -190,7 +191,6 @@ shape-line|crates/aos-core/src/nar/cache.rs|635
 shape-line|crates/aos-core/src/output.rs|739
 shape-line|crates/aos-doc/src/data/builtins.rs|1511
 shape-line|crates/aos-doc/src/data/language.rs|953
-shape-line|crates/aos-doc/src/extract.rs|695
 shape-line|crates/aos-doc/src/nix_parser.rs|642
 shape-line|crates/aos-doc/src/tui.rs|1726
 shape-line|crates/aos-hub-console-contract/src/lib.rs|1240
@@ -272,31 +272,12 @@ shape-line|crates/aos-net/src/protocol/http.rs|746
 shape-line|crates/aos-net/src/protocol/s3.rs|913
 shape-line|crates/aos-net/src/protocol/sftp.rs|778
 shape-line|crates/aos-net/src/transfer.rs|1216
-shape-line|crates/aos-package/src/attestation.rs|2174
-shape-line|crates/aos-package/src/clean.rs|1139
 shape-line|crates/aos-package/src/config.rs|1013
-shape-line|crates/aos-package/src/config_artifact.rs|627
-shape-line|crates/aos-package/src/config_eval/activation.rs|1691
-shape-line|crates/aos-package/src/config_eval/materialize.rs|2876
-shape-line|crates/aos-package/src/config_eval/mod.rs|2675
-shape-line|crates/aos-package/src/config_eval/runtime.rs|659
-shape-line|crates/aos-package/src/config_eval/stock.rs|1257
-shape-line|crates/aos-package/src/config_eval/system_roots.rs|969
-shape-line|crates/aos-package/src/config_eval/tests.rs|1501
-shape-line|crates/aos-package/src/credential_artifact.rs|3194
 shape-line|crates/aos-package/src/deps.rs|1635
 shape-line|crates/aos-package/src/download.rs|1321
-shape-line|crates/aos-package/src/exposed_units.rs|6399
-shape-line|crates/aos-package/src/graph_compile/mod.rs|1190
-shape-line|crates/aos-package/src/graph_compile/reproject.rs|772
-shape-line|crates/aos-package/src/graph_compile/subverbs.rs|1176
-shape-line|crates/aos-package/src/graph_compile/tests.rs|871
 shape-line|crates/aos-package/src/install.rs|3077
 shape-line|crates/aos-package/src/lib.rs|6690
-shape-line|crates/aos-package/src/metadata/tests.rs|1356
-shape-line|crates/aos-package/src/metadata/yaml.rs|657
 shape-line|crates/aos-package/src/package_attestation.rs|4009
-shape-line|crates/aos-package/src/policy.rs|716
 shape-line|crates/aos-package/src/profile/merge.rs|757
 shape-line|crates/aos-package/src/profile/meta.rs|802
 shape-line|crates/aos-package/src/profile/mod.rs|691
@@ -318,15 +299,12 @@ shape-line|crates/aos-package/src/registry/thinpack.rs|983
 shape-line|crates/aos-package/src/registry/tuf.rs|1633
 shape-line|crates/aos-package/src/registry/webgen.rs|1369
 shape-line|crates/aos-package/src/remove.rs|1181
-shape-line|crates/aos-package/src/resolve.rs|968
-shape-line|crates/aos-package/src/rollback.rs|645
 shape-line|crates/aos-package/src/security.rs|1434
 shape-line|crates/aos-package/src/source.rs|980
 shape-line|crates/aos-package/src/store.rs|1319
 shape-line|crates/aos-package/src/sysroot.rs|7300
 shape-line|crates/aos-package/src/sysroot_lock.rs|680
 shape-line|crates/aos-package/src/types.rs|5980
-shape-line|crates/aos-package/src/unit_diff.rs|1445
 shape-line|crates/aos-package/src/upgrade.rs|1984
 shape-line|crates/aos-package/src/verify.rs|1086
 shape-line|crates/aos-package/tests/common/mod.rs|885
