@@ -82,7 +82,8 @@ use resume_admission::validate_exact_resume_request;
 
 mod start_replay_log;
 use start_replay_log::{
-    append_start_replay_events, observe_replayed_choice_free_boot, with_replay_progress,
+    StartReplayProgress, append_start_replay_events, observe_replayed_choice_free_boot,
+    with_replay_progress,
 };
 
 /// Failure to bind an admitted attempt to a fresh production VM lifecycle.
@@ -2521,6 +2522,7 @@ pub(crate) fn materialize_start_from<F, D>(
             ));
         }
         let prior_len = current.schedule.len();
+        let prior_progress = StartReplayProgress::observe(&replay, prior_len);
         context.charge_execution_quantum().map_err(|error| {
             AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
                 QemuFreshStartReplayError::ResourceRefusal(error),
@@ -2560,7 +2562,6 @@ pub(crate) fn materialize_start_from<F, D>(
                 ),
             ));
         }
-        let prior_completed_quanta = replay.completed_quanta;
         replay.completed_quanta = completed_quanta;
         replay.frontier = outcome.frontier;
         if context.cancellation().is_canceled() {
@@ -2666,21 +2667,10 @@ pub(crate) fn materialize_start_from<F, D>(
                 QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Terminated),
             ));
         }
-        if replay.completed_quanta == prior_completed_quanta && current.schedule.len() == prior_len
-        {
-            return Err(AttemptWorkerFailure::Terminal(
-                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::DivergedAt {
-                    reason: "no progress",
-                    index: prior_len,
-                    expected: String::from("quantum or schedule progress"),
-                    observed: format!(
-                        "quanta={} schedule_len={}",
-                        replay.completed_quanta,
-                        current.schedule.len()
-                    ),
-                }),
-            ));
-        }
+        prior_progress.require_advance(StartReplayProgress::observe(
+            &replay,
+            current.schedule.len(),
+        ))?;
     }
 }
 

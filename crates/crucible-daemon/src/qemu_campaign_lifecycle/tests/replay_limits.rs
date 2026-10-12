@@ -1,7 +1,9 @@
-//! Start replay limit failures report how far replay progressed.
+//! Start replay limit and progress failures report how far replay progressed.
 
 use super::*;
-use crate::qemu_campaign_lifecycle::start_replay_log::start_replay_limit_failure;
+use crate::qemu_campaign_lifecycle::start_replay_log::{
+    StartReplayProgress, start_replay_limit_failure,
+};
 
 type ReplayFailure = AttemptWorkerFailure<QemuFreshExecutionRunnerError<String, String>>;
 
@@ -53,4 +55,64 @@ fn replay_progress_preserves_other_failures() {
             QemuFreshStartReplayError::Terminated
         ))
     ));
+}
+
+fn guest_marker_entry() -> crucible::SchedulerEventLogEntry {
+    crucible::SchedulerEventLogEntry::guest_semantic_marker_observation(
+        0,
+        Icount { retired: 7 },
+        NodeId {
+            name: String::from("traffic-west"),
+        },
+        String::from("boot.route-probing"),
+        String::from("instance-1"),
+        Vec::new(),
+    )
+}
+
+/// A control-only quantum resolves an idle node's input without a RUN or a
+/// decision; its log entries are progress even though quanta stay put.
+#[test]
+fn replay_progress_counts_log_or_frontier_advance_without_a_quantum() {
+    let mut replay = QemuFreshStartMaterialization::at_quanta(41_518);
+    let before = StartReplayProgress::observe(&replay, 1_884);
+
+    replay.event_log.push(guest_marker_entry());
+    let logged: Result<(), ReplayFailure> =
+        before.require_advance(StartReplayProgress::observe(&replay, 1_884));
+    assert!(logged.is_ok());
+
+    let before = StartReplayProgress::observe(&replay, 1_884);
+    replay.frontier = crucible::VirtualTime { ticks: 250 };
+    let advanced: Result<(), ReplayFailure> =
+        before.require_advance(StartReplayProgress::observe(&replay, 1_884));
+    assert!(advanced.is_ok());
+}
+
+#[test]
+fn replay_progress_refuses_a_quantum_that_moved_nothing() {
+    let replay = QemuFreshStartMaterialization::at_quanta(41_518);
+    let before = StartReplayProgress::observe(&replay, 1_884);
+
+    let failure: ReplayFailure = before
+        .require_advance(StartReplayProgress::observe(&replay, 1_884))
+        .expect_err("an unchanged quantum must fail closed");
+
+    let AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+        QemuFreshStartReplayError::DivergedAt {
+            reason,
+            index,
+            observed,
+            ..
+        },
+    )) = failure
+    else {
+        panic!("expected a typed no-progress divergence: {failure:?}");
+    };
+    assert_eq!(reason, "no progress");
+    assert_eq!(index, 1_884);
+    assert_eq!(
+        observed,
+        "quanta=41518 schedule_len=1884 event_log_entries=0 frontier_ticks=0"
+    );
 }

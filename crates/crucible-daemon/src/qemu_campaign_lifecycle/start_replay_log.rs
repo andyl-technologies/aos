@@ -1,8 +1,10 @@
-//! Bounded event-log accounting and boot-prefix grouping for start replay.
+//! Bounded event-log accounting, progress, and boot-prefix grouping for
+//! start replay.
 //!
 //! Start replay retains the complete genesis log under the same entry and
-//! byte bounds as result sealing, and groups the audited Envoy boot prefix
-//! exactly as the parent attempt did so the two logs stay identical.
+//! byte bounds as result sealing, refuses a quantum that advances none of
+//! its replay coordinates, and groups the audited Envoy boot prefix exactly
+//! as the parent attempt did so the two logs stay identical.
 
 use super::*;
 
@@ -64,6 +66,63 @@ pub(super) fn with_replay_progress<F, D>(
             },
         )),
         failure => failure,
+    }
+}
+
+/// The replay coordinates that one start-replay quantum must advance.
+///
+/// A control-only scheduler quantum can resolve a timer or input for an idle
+/// node without a RUN or a decision. It appends the resolved happenings to the
+/// log, and may move the frontier, while the quantum counter and schedule stay
+/// put. The modeled driver accepts such quanta, so replay counts any advanced
+/// coordinate as progress and refuses only a quantum that moved none of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct StartReplayProgress {
+    completed_quanta: u64,
+    schedule_len: usize,
+    event_log_entries: usize,
+    frontier: crucible::VirtualTime,
+}
+
+impl StartReplayProgress {
+    /// Captures the coordinates of `replay` with its current schedule length.
+    pub(super) fn observe(replay: &QemuFreshStartMaterialization, schedule_len: usize) -> Self {
+        Self {
+            completed_quanta: replay.completed_quanta,
+            schedule_len,
+            event_log_entries: replay.event_log.len(),
+            frontier: replay.frontier,
+        }
+    }
+
+    /// Requires `after` to advance at least one coordinate past `self`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a terminal "no progress" divergence when every coordinate is
+    /// unchanged, since another identical quantum could repeat forever.
+    pub(super) fn require_advance<F, D>(
+        self,
+        after: Self,
+    ) -> Result<(), AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>> {
+        if after != self {
+            return Ok(());
+        }
+
+        Err(AttemptWorkerFailure::Terminal(
+            QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::DivergedAt {
+                reason: "no progress",
+                index: self.schedule_len,
+                expected: String::from("quantum, schedule, event-log, or frontier progress"),
+                observed: format!(
+                    "quanta={} schedule_len={} event_log_entries={} frontier_ticks={}",
+                    self.completed_quanta,
+                    self.schedule_len,
+                    self.event_log_entries,
+                    self.frontier.ticks,
+                ),
+            }),
+        ))
     }
 }
 
