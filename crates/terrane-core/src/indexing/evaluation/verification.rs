@@ -34,7 +34,7 @@ fn inventory(
                     value: source.value(&item.entry)?.map(<[u8]>::to_vec),
                 };
                 relations.entry(predicate).or_default().push(ExpectedRow {
-                    key: item.key,
+                    key: item.key.clone(),
                     children: None,
                 });
             }
