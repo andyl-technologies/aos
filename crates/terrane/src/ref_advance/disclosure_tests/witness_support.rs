@@ -298,6 +298,9 @@ pub(super) struct PhysicalEntry {
 
 /// Snapshots every destination bucket/control entry, including unselected temporary files.
 ///
+/// A bucket root includes its original control sibling; an original control
+/// root snapshots only that protected namespace.
+///
 /// This is a before/after persistent-state oracle, not a syscall counter: a
 /// transient create/remove entirely between observations is outside its scope.
 /// Reads intentionally exclude atime, which inspection itself can update.
@@ -306,7 +309,16 @@ pub(super) struct PhysicalEntry {
 /// Panics if a fixture entry cannot be observed or has an unexpected special kind.
 pub(super) async fn physical_snapshot(root: &std::path::Path) -> BTreeMap<PathBuf, PhysicalEntry> {
     let root = root.to_owned();
-    let mut pending = vec![control(&root), root];
+    // Rotation checks pass the protected control root directly. Deriving its
+    // sibling again would probe a nonexistent second original-control suffix.
+    let is_control = root
+        .file_name()
+        .is_some_and(|name| name.as_encoded_bytes().ends_with(b"-original-control"));
+    let mut pending = if is_control {
+        vec![root]
+    } else {
+        vec![control(&root), root]
+    };
     let mut entries = BTreeMap::new();
     while let Some(path) = pending.pop() {
         let metadata = tokio::fs::symlink_metadata(&path).await.unwrap();

@@ -251,7 +251,8 @@ fn request(
 
 fn assert_denied(result: Result<RefRecord, AdvanceError>, verb: &'static str) {
     assert!(
-        matches!(result, Err(AdvanceError::Store(error)) if matches!(error.kind(), StoreErrorKind::Denied { verb: actual, pattern } if *actual == verb && pattern == REFERENCE))
+        matches!(&result, Err(AdvanceError::Store(error)) if matches!(error.kind(), StoreErrorKind::Denied { verb: actual, pattern } if *actual == verb && pattern == REFERENCE)),
+        "expected current {verb} denial for {REFERENCE}, observed {result:?}"
     );
 }
 

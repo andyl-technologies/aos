@@ -202,7 +202,8 @@ async fn native_active_completion_legacy_one_never_coerces_indexed_view() -> Res
     );
     // ROOT ordinary authoring resolution rejects unregistered index-roots.
     assert!(
-        matches!(failure.kind(),StoreErrorKind::Denied { verb: "commit", pattern } if pattern == REFERENCE)
+        matches!(failure.kind(),StoreErrorKind::Denied { verb: "commit", pattern } if pattern == REFERENCE),
+        "Legacy indexed publication refusal: {failure:?}"
     );
     assert_eq!(
         repository.coordinator().store().ref_get(REFERENCE).await?,
