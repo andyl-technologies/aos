@@ -18,6 +18,10 @@
     "gc::runner::tests::source_carry::post_done::imported::foreign_used_view_and_original_survive_done_reopen_and_zero_node_cold_fork"
     "gc::runner::tests::source_carry::post_done::ordinary::consumed_original_reincarnation_after_done_refuses_cold_publication_without_tree_io"
   ];
+  runCases = import ./_native-cases.nix {
+    label = "native-local-gc-conformance";
+    inherit selectors;
+  };
 in
   # This check proves ordinary local-v1 only. Copied and remote permanent
   # ownership remain separate requirements of the full two-phase deletion gate.
@@ -25,22 +29,7 @@ in
     for prerequisite in ${builtins.concatStringsSep " " (map toString prerequisites)}; do
       test -s "$prerequisite/result"
     done
-    cd crates
-    cargo test --frozen --offline -p terrane --no-default-features \
-      --features tokio,surface-sdk --lib -- --list > "$TMPDIR/local-gc-tests.txt"
-    python3 ../tests/terrane/check_native_gate.py inventory \
-      "$TMPDIR/local-gc-tests.txt" '${builtins.toJSON selectors}'
-
-    for test_name in ${builtins.concatStringsSep " " selectors}; do
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
-        --features tokio,surface-sdk --lib "$test_name" -- --exact \
-        > "$TMPDIR/local-gc-test.log" 2>&1; then
-        cat "$TMPDIR/local-gc-test.log"
-        exit 1
-      fi
-      python3 ../tests/terrane/check_native_gate.py execution \
-        "$TMPDIR/local-gc-test.log" "[\"$test_name\"]"
-    done
+    ${runCases}
     printf 'PASS: ordinary local-v1 retirement and post-Done reuse (14 exact cases), with physical recovery and current qualification prerequisites\n' \
       > "$out/result"
   ''

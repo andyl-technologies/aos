@@ -13,24 +13,13 @@
     "selected_bridge::native_guard::cold_fork::tests::ordinary::publication::requalification::faults::requalification_refuses_native_sync_without_ack"
     "selected_bridge::native_guard::cold_fork::tests::ordinary::publication::requalification::indexes::requalification_refuses_actual_required_index_read_failure"
   ];
+  runCases = import ./_native-cases.nix {
+    label = "native-source-requalification";
+    inherit selectors;
+  };
 in
   # Full completion is a separate acknowledged operation before the cold fork.
   sourceGate "native-source-requalification" ''
-    cd crates
-    cargo test --frozen --offline -p terrane --no-default-features \
-      --features tokio,surface-sdk --lib -- --list > "$TMPDIR/source-requalification-tests.txt"
-    python3 ../tests/terrane/check_native_gate.py inventory \
-      "$TMPDIR/source-requalification-tests.txt" '${builtins.toJSON selectors}'
-
-    for test_name in ${builtins.concatStringsSep " " selectors}; do
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
-        --features tokio,surface-sdk --lib "$test_name" -- --exact \
-        > "$TMPDIR/source-requalification-test.log" 2>&1; then
-        cat "$TMPDIR/source-requalification-test.log"
-        exit 1
-      fi
-      python3 ../tests/terrane/check_native_gate.py execution \
-        "$TMPDIR/source-requalification-test.log" "[\"$test_name\"]"
-    done
+    ${runCases}
     printf 'PASS: twelve exact separate source requalification and refusal cases\n' > "$out/result"
   ''

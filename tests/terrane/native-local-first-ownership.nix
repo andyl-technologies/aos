@@ -8,23 +8,13 @@
     "ownership::fresh_current_authority_required_before_each_ownership_effect"
   ];
   selectors = map (name: "gc::runner::tests::local_ownership::${name}") tests;
+  runCases = import ./_native-cases.nix {
+    label = "native-local-first-ownership";
+    inherit selectors;
+  };
 in
   sourceGate "native-local-first-ownership" ''
-    cd crates
-    cargo test --frozen --offline -p terrane --no-default-features \
-      --features tokio,surface-sdk --lib -- --list > "$TMPDIR/local-ownership-tests.txt"
-    python3 ../tests/terrane/check_native_gate.py inventory \
-      "$TMPDIR/local-ownership-tests.txt" '${builtins.toJSON selectors}'
-    for test_name in ${builtins.concatStringsSep " " selectors}; do
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
-        --features tokio,surface-sdk --lib "$test_name" -- --exact \
-        > "$TMPDIR/local-ownership-test.log" 2>&1; then
-        cat "$TMPDIR/local-ownership-test.log"
-        exit 1
-      fi
-      python3 ../tests/terrane/check_native_gate.py execution \
-        "$TMPDIR/local-ownership-test.log" "[\"$test_name\"]"
-    done
+    ${runCases}
     printf 'PASS: ordinary local first ownership (6 exact cases); unlink/recovery/cancellation remain separate\n' \
       > "$out/result"
   ''

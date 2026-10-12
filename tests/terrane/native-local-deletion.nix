@@ -13,25 +13,14 @@
     "recovery::missing_trash_crash_requires_fresh_retirement_and_full_d_before_done"
   ];
   selectors = map (name: "gc::runner::tests::local_deletion::${name}") names;
+  runCases = import ./_native-cases.nix {
+    label = "native-local-deletion";
+    inherit selectors;
+  };
 in
   # These cases cover ordinary local-v1 deletion and recovery. Remote permanent
   # ownership and copied retirement retain their separately specified protocol.
   sourceGate "native-local-deletion" ''
-    cd crates
-    cargo test --frozen --offline -p terrane --no-default-features \
-      --features tokio,surface-sdk --lib -- --list > "$TMPDIR/local-deletion-tests.txt"
-    python3 ../tests/terrane/check_native_gate.py inventory \
-      "$TMPDIR/local-deletion-tests.txt" '${builtins.toJSON selectors}'
-
-    for test_name in ${builtins.concatStringsSep " " selectors}; do
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
-        --features tokio,surface-sdk --lib "$test_name" -- --exact \
-        > "$TMPDIR/local-deletion-test.log" 2>&1; then
-        cat "$TMPDIR/local-deletion-test.log"
-        exit 1
-      fi
-      python3 ../tests/terrane/check_native_gate.py execution \
-        "$TMPDIR/local-deletion-test.log" "[\"$test_name\"]"
-    done
+    ${runCases}
     printf 'PASS: eleven exact ordinary local-v1 deletion and recovery cases\n' > "$out/result"
   ''

@@ -8,24 +8,12 @@
     "written_mutation_retains_unsynchronized_source_lineage_preimage"
   ];
   selectors = map (name: "ref_advance::fault_tests::mutation_ack::write_set::${name}") tests;
+  runCases = import ./_native-cases.nix {
+    label = "native-written-mutation-sync";
+    inherit selectors;
+  };
 in
   sourceGate "native-written-mutation-sync" ''
-    cd crates
-    cargo test --frozen --offline -p terrane --no-default-features \
-      --features tokio,surface-sdk --lib -- --list > "$TMPDIR/written-mutation-tests.txt"
-    python3 ../tests/terrane/check_native_gate.py inventory \
-      "$TMPDIR/written-mutation-tests.txt" '${builtins.toJSON selectors}'
-    for test_name in ${builtins.concatStringsSep " " selectors}; do
-      test_log="$TMPDIR/$test_name.log"
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
-        --features tokio,surface-sdk --lib "$test_name" -- --exact \
-        > "$test_log" 2>&1; then
-        cat "$test_log"
-        exit 1
-      fi
-      cat "$test_log"
-      python3 ../tests/terrane/check_native_gate.py execution \
-        "$test_log" "[\"$test_name\"]"
-    done
+    ${runCases}
     printf 'PASS: actual written mutation durability (6 exact cases)\n' > "$out/result"
   ''
