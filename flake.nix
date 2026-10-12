@@ -331,8 +331,9 @@
           };
       in {
         default = developmentShell "aos-dev" ([aosCli aosCli.apm aosCli.apr] ++ toolPackages);
-        # The Terrane workspace must be buildable before repackaging the AOS
-        # CLI against its new members and vendor lockfile.
+        # Cargo iteration needs the source-built tools and native libraries
+        # before the packaged CLI is rebuilt against workspace changes.
+        cargo = developmentShell "terrane-dev" toolPackages;
         terrane = developmentShell "terrane-dev" toolPackages;
       }
     );

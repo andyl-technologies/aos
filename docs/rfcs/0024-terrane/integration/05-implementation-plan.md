@@ -169,8 +169,11 @@ interpretations and admission's canonical affected publication paths. Native
 Notes inventory, recorded disclosure and retained-reader refusal regressions
 are registered. PROV-31 review also identifies renewed ancestor authorization
 for unchanged graft descriptors; its correction and genuine scoped-publication
-witnesses remain under review. The local CLI/SDK source workline is reviewed;
-private Core task composition precedes compiler checks. No new gate is qualified.
+witnesses pass independent source review; runtime qualification remains pending.
+The local CLI/SDK source workline is reviewed. Private Core composition passes
+its library build and all-target compilation after a test-only import correction.
+The interrupted Clippy invocation has no terminal receipt and remains unqualified;
+qualification resumes through the direct AOS Cargo shell. No new gate is qualified.
 
 Additional isolated worklines inspect growing-index completion, indexed replay
 and permanent recovery, while a separate worker qualifies the five public SDK
