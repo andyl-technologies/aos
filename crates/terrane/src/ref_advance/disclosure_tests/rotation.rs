@@ -1,7 +1,9 @@
 //! Exercises genuine selected key rotation and immutable historical certificates.
 
 use super::current_authority::{Factory, attenuate};
-use super::witness_support::{control, file, physical_snapshot, proposal, storage_failure};
+use super::witness_support::{
+    control, control_snapshot, file, physical_snapshot, proposal, storage_failure,
+};
 use super::*;
 use crate::domain::DomainNamespace;
 use crate::ref_advance::{DisclosureCommitRequest, DisclosureCommitSelection};
@@ -212,7 +214,7 @@ pub(super) async fn retain_historical_and_issue_new() {
     assert_eq!(old_roles.len(), 1);
     let old_key = old_roles[0].public_key;
     assert_eq!(certificate_keys(&destination, old).await, vec![old_key]);
-    let protected_before = physical_snapshot(&control(source.coordinator().store().root())).await;
+    let protected_before = control_snapshot(source.coordinator().store().root()).await;
     let source_head = source
         .coordinator()
         .store()
@@ -238,7 +240,7 @@ pub(super) async fn retain_historical_and_issue_new() {
             .unwrap(),
         source_head
     );
-    let protected_after = physical_snapshot(&control(source.coordinator().store().root())).await;
+    let protected_after = control_snapshot(source.coordinator().store().root()).await;
     for (path, bytes) in protected_before {
         // Native publication replaces its selected descriptor; historical role,
         // seed and Original records must retain their exact protected bytes.
@@ -508,7 +510,7 @@ pub(super) async fn deny_admin_and_ambiguous_time() {
         .unwrap();
     let root = source.coordinator().store().root().to_owned();
     let bucket_before = physical_snapshot(&root).await;
-    let protected_before = physical_snapshot(&control(&root)).await;
+    let protected_before = control_snapshot(&root).await;
     let read_only = attenuate(&source, Caveat::Verb(Verbs::new(1).unwrap()));
     let denied = source
         .repository
@@ -548,5 +550,5 @@ pub(super) async fn deny_admin_and_ambiguous_time() {
         Some(head)
     );
     assert_eq!(physical_snapshot(&root).await, bucket_before);
-    assert_eq!(physical_snapshot(&control(&root)).await, protected_before);
+    assert_eq!(control_snapshot(&root).await, protected_before);
 }
