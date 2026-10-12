@@ -144,6 +144,14 @@ pub(crate) struct AdmittedCommit {
 }
 
 impl AdmittedCommit {
+    /// Copies the ordinary semantics retained by the successful admission.
+    ///
+    /// This projection grants no current rights or completed-history authority.
+    #[cfg(feature = "std")]
+    pub(crate) fn admitted_property_selection(&self) -> properties::selected::Selection {
+        self.admission_interpretation.selection()
+    }
+
     /// Borrows exact canonical current units retained by owning admission.
     pub(crate) fn publication_paths(&self) -> &[Vec<u8>] {
         &self.publication_paths

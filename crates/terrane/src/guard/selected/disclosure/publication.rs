@@ -58,7 +58,7 @@ where
     )
     .await?;
     let mut markers = Vec::new();
-    let authoring = concrete.guard().completion_inputs()?.selection;
+    let authoring = concrete.guard().authoring_property_selection()?;
     for selection in &preloaded {
         let (root, path, domain) = locate(
             concrete.guard(),
@@ -266,7 +266,7 @@ where
             destination.guard(),
             &evidence,
             &selection.selector.destination_path,
-            &admitted.admission_interpretation.selection(),
+            &admitted.admitted_property_selection(),
         )?;
         let source_entry = EntrySource {
             commit: source_location.commit,
@@ -321,7 +321,7 @@ where
     }
     #[cfg(all(test, feature = "tokio"))]
     super::mutations::apply_before_sign(concrete.store().root(), &mut record)?;
-    let destination_interpretation = admitted.admission_interpretation.selection();
+    let destination_interpretation = admitted.admitted_property_selection();
     let mut prototype_history = VerifiedHistory::new_selected(
         destination.guard().config().min_chunk_size,
         destination_interpretation.clone(),
@@ -375,7 +375,7 @@ where
             destination.guard(),
             &evidence,
             &selection.selector.destination_path,
-            &admitted.admission_interpretation.selection(),
+            &admitted.admitted_property_selection(),
         )?;
         finalized
             .profile_pair

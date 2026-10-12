@@ -65,6 +65,18 @@ pub(in crate::guard) struct SelectedInputs {
 }
 
 impl<S, C> Guard<S, C> {
+    /// Copies the normalized constructor-selected ordinary authoring semantics.
+    ///
+    /// The returned data grants no current rights or completed-history authority.
+    ///
+    /// # Errors
+    /// Rejects unsupported or unregistered constructor-selected semantics.
+    pub(crate) fn authoring_property_selection(
+        &self,
+    ) -> Result<properties::selected::Selection, StoreFailure> {
+        Ok(self.completion_inputs()?.selection)
+    }
+
     /// Captures the real constructor selection and full registered ordinary profile.
     ///
     /// # Errors

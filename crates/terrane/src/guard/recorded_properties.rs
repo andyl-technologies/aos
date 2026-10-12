@@ -116,8 +116,8 @@ impl SelectedReadInterpretation {
         }
     }
 
-    /// Copies exact retained interpretation data for the checked history owner.
-    pub(in crate::guard) fn selection(&self) -> Selection {
+    /// Copies exact retained ordinary semantics without granting history authority.
+    pub(crate) fn selection(&self) -> Selection {
         match self {
             Self::Legacy => Selection::Legacy,
             Self::Recorded(entry) => Selection::Recorded(entry.context().clone()),
