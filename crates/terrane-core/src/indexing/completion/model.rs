@@ -20,16 +20,26 @@ use crate::{
     },
 };
 
+/// Carries fixture construction failures as boxed typed errors.
 pub(super) type TestResult<T = ()> = Result<T, Box<dyn core::error::Error>>;
+/// Maps fixture root identities to their immutable namespace Trees.
 pub(super) type Graph<'a> = BTreeMap<Digest, Tree<'a>>;
+/// Sets the fixture chunk minimum used by namespace Tree construction.
 pub(super) const MINIMUM: u64 = 262_144;
+/// Names the shared fixture file object.
 pub(super) const OBJECT: Digest = [0x11; 32];
+/// Names a distinct fixture object for disagreement witnesses.
 pub(super) const OTHER: Digest = [0x22; 32];
 
+/// Constructs the active fixture semantic revision tuple.
+///
+/// # Errors
+/// Returns the semantic-context error if the fixture tuple is unsupported.
 pub(super) fn context() -> TestResult<SemanticContext> {
     Ok(SemanticContext::new(3, 2, 1)?)
 }
 
+/// Hashes a literal domain, NUL separator and payload independently.
 pub(super) fn hash(domain: &[u8], bytes: &[u8]) -> Digest {
     let mut hasher = blake3::Hasher::new();
     hasher.update(domain);
@@ -38,6 +48,7 @@ pub(super) fn hash(domain: &[u8], bytes: &[u8]) -> Digest {
     *hasher.finalize().as_bytes()
 }
 
+/// Builds an inline fixture file with optional matching uid and tag.a values.
 pub(super) fn file(value: Option<&'static [u8]>) -> Entry<'static> {
     Entry {
         kind: EntryKind::File {
@@ -64,6 +75,7 @@ pub(super) fn file(value: Option<&'static [u8]>) -> Entry<'static> {
     }
 }
 
+/// Builds a bare fixture graft to the supplied namespace root.
 pub(super) fn graft(root: Digest) -> Entry<'static> {
     Entry {
         kind: EntryKind::Tree { root, props: None },
@@ -75,6 +87,7 @@ pub(super) fn graft(root: Digest) -> Entry<'static> {
     }
 }
 
+/// Copies a local key into a fixture leaf with the supplied entry.
 pub(super) fn leaf(key: &[u8], entry: Entry<'static>) -> LeafItem<'static> {
     LeafItem {
         key: key.to_vec(),
@@ -82,6 +95,10 @@ pub(super) fn leaf(key: &[u8], entry: Entry<'static>) -> LeafItem<'static> {
     }
 }
 
+/// Builds and inserts an ordinary fixture Tree, returning its root identity.
+///
+/// # Errors
+/// Returns Tree construction errors for invalid rows, properties or resource limits.
 pub(super) fn add<'a>(
     graph: &mut Graph<'a>,
     rows: Vec<LeafItem<'a>>,
@@ -93,6 +110,10 @@ pub(super) fn add<'a>(
     Ok(root)
 }
 
+/// Builds a repeated-graft namespace containing present and missing values.
+///
+/// # Errors
+/// Returns construction errors from the child or owner Tree.
 pub(super) fn fixture() -> TestResult<(Graph<'static>, Digest)> {
     let mut graph = Graph::new();
     let child = add(
@@ -118,6 +139,7 @@ fn text_key(name: &str) -> Vec<u8> {
     bytes
 }
 
+/// Assembles a noninherited attribute binding wrapper in encoded-key order.
 pub(super) fn binding(bindings: &[(&str, Digest)]) -> Vec<u8> {
     let mut pairs = bindings.to_vec();
     pairs.sort_by_cached_key(|(name, _)| text_key(name));
@@ -135,6 +157,7 @@ pub(super) fn binding(bindings: &[(&str, Digest)]) -> Vec<u8> {
     bytes
 }
 
+/// Assembles a property map from raw payloads in encoded-key order.
 pub(super) fn property_map(properties: &[Property<'_>]) -> Vec<u8> {
     let mut properties = properties.to_vec();
     properties.sort_by_cached_key(|property| text_key(property.name));
@@ -192,6 +215,11 @@ fn namespace_entry(bytes: &mut Vec<u8>, entry: &Entry<'_>) {
     }
 }
 
+/// Assembles a namespace root Node with the supplied property envelope.
+///
+/// # Panics
+/// Panics for leaf entries with xattrs, provenance, hard links, manifests, graft
+/// overrides or kinds outside the oracle's inline-file/directory/graft subset.
 pub(super) fn namespace_wire(tree: &Tree<'_>, properties: Option<&[Property<'_>]>) -> Vec<u8> {
     let mut bytes = alloc::vec![if properties.is_some() { 0xa3 } else { 0xa2 }, 1];
     cbor::write_uint(&mut bytes, u64::from(tree.root().level()));
@@ -231,10 +259,15 @@ pub(super) fn namespace_wire(tree: &Tree<'_>, properties: Option<&[Property<'_>]
     bytes
 }
 
+/// Assembles an owner root Node with an explicit property map.
+///
+/// # Panics
+/// Panics for leaf entries outside the namespace wire oracle's supported subset.
 pub(super) fn owner_wire(tree: &Tree<'_>, properties: &[Property<'_>]) -> Vec<u8> {
     namespace_wire(tree, Some(properties))
 }
 
+/// Assembles the detached registered index recipe for an owner and attribute.
 pub(super) fn recipe(owner: Digest, attribute: &str) -> Vec<u8> {
     let mut bytes = alloc::vec![
         0xa3, 1, 0x65, b'i', b'n', b'd', b'e', b'x', 2, 0x81, 0x58, 0x20
@@ -250,6 +283,7 @@ pub(super) fn recipe(owner: Digest, attribute: &str) -> Vec<u8> {
     bytes
 }
 
+/// Assembles the common Memo record from recipe and index identities.
 pub(super) fn memo(q: Digest, index: Digest) -> Vec<u8> {
     let mut bytes = alloc::vec![0xa2, 1, 0x58, 0x20];
     bytes.extend(q);
@@ -377,6 +411,11 @@ fn route(
     }
 }
 
+/// Builds literal index closure bytes by exhaustively expanding fixture grafts.
+///
+/// # Panics
+/// Panics if a referenced source root is absent or an inventoried predicate has
+/// no occurrence route; inputs must form a finite acyclic fixture graph.
 pub(super) fn index(graph: &Graph<'_>, owner: Digest, attribute: &str) -> IndexData {
     let mut predicates = BTreeSet::new();
     inventory(graph, owner, attribute, &mut predicates);
@@ -414,6 +453,9 @@ pub(super) fn index(graph: &Graph<'_>, owner: Digest, attribute: &str) -> IndexD
 }
 
 /// Counts supplied-byte checks for the repeated-graft fixture's literal leaves.
+///
+/// # Panics
+/// Panics if the supplied closure does not contain exactly seven Nodes.
 pub(super) fn fixture_physical_bytes(data: &IndexData) -> (usize, usize) {
     let repeated = (*b"pz")
         .into_iter()

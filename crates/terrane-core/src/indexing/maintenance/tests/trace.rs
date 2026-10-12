@@ -24,6 +24,7 @@ struct Trace {
     tail_closed: bool,
 }
 
+/// Assembles a prefix-compressed terminal Index row naming the fixture object.
 pub(super) fn terminal(key: &[u8], previous: &[u8]) -> Vec<u8> {
     let shared = key.iter().zip(previous).take_while(|(a, b)| a == b).count();
     let mut bytes = Vec::new();
@@ -206,6 +207,10 @@ fn fields(work: StreamWork) -> [usize; 7] {
     ]
 }
 
+/// Checks full multilevel encoding/hash traces against an independent literal model.
+///
+/// # Panics
+/// Panics if fixture construction or an asserted independent witness fails.
 pub(super) fn assert_literal_multilevel() {
     let mut graph = Graph::new();
     let owner = add(&mut graph, Vec::new());
@@ -294,6 +299,10 @@ pub(super) fn assert_literal_multilevel() {
     );
 }
 
+/// Checks exact capacity splits and prolonged-tail invalidation against literal traces.
+///
+/// # Panics
+/// Panics if fixture construction or an asserted independent witness fails.
 pub(super) fn assert_capacity_and_prolonged_tail() {
     // Every stored noninitial row is at most 100 bytes. Selecting full-key
     // hashes above the largest possible threshold prevents all content cuts,

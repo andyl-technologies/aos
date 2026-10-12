@@ -2,6 +2,10 @@
 
 use super::*;
 
+/// Checks complete present/missing occurrence fields across repeated and deep grafts.
+///
+/// # Panics
+/// Panics if fixture construction or an asserted lookup contract fails.
 pub(super) fn check() {
     super::internal::check();
     let (data, _, missing, _) = model();

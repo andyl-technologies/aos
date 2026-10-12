@@ -355,7 +355,8 @@ fn hierarchical_index_matches_independent_source_occurrences() {
     assert_eq!(checked.candidates, 2);
     assert_eq!(checked.missing_objects, 2);
     assert!(constructed.work.source_roots > graph.len());
-    assert!(checked.work.source_roots > graph.len());
+    assert_eq!(checked.work.source_roots, 3);
+    assert_eq!(checked.work.source_entries, 12);
     assert!(checked.work.rows > 0);
 
     // Source recurrence keeps both graft occurrences despite shared child bytes.
@@ -702,4 +703,111 @@ fn canonical_internal_routes_check_child_summaries_and_boundaries() {
         evaluation::verify(&recipe, &graph, MINIMUM, context(), &data),
         Err(Error::Relationship)
     );
+}
+
+#[test]
+fn verification_enumerates_each_occurrence_once_as_predicates_grow() {
+    for population in [8_u8, 16, 24] {
+        for missing_only in [false, true] {
+            let mut entries = Vec::new();
+            let mut nodes = BTreeMap::new();
+            let mut primary = Vec::new();
+            let mut gaps = Vec::new();
+            for number in 0..population {
+                let object = [number; 32];
+                let key = alloc::format!("f-{number:03}").into_bytes();
+                let missing = missing_only || number % 2 == 0;
+                entries.push(leaf(
+                    &key,
+                    file(object, if missing { None } else { Some(b"\x01") }, false),
+                ));
+                let child_route = add(&mut nodes, &[terminal(&key, object)], None);
+                let owner_route = add(
+                    &mut nodes,
+                    &[
+                        forward(b"g", object, child_route),
+                        forward(b"h", object, child_route),
+                    ],
+                    None,
+                );
+                if missing {
+                    gaps.push(forward(&object, object, owner_route));
+                } else {
+                    primary.push(forward(&primary_key(1, object), object, owner_route));
+                }
+            }
+            let child = Tree::build(entries, None, MINIMUM, TreeUse::Ordinary).unwrap();
+            let child_root = child.root_identity();
+            let owner_tree = Tree::build(
+                alloc::vec![leaf(b"g", graft(child_root)), leaf(b"h", graft(child_root))],
+                None,
+                MINIMUM,
+                TreeUse::Ordinary,
+            )
+            .unwrap();
+            let owner = owner_tree.root_identity();
+            let graph = BTreeMap::from([(child_root, child), (owner, owner_tree)]);
+            let gap = add(&mut nodes, &gaps, None);
+            let root = add(&mut nodes, &primary, Some(gap));
+            let data = IndexData {
+                root,
+                nodes,
+                work: Work::default(),
+            };
+            let recipe = IndexEvaluationRecipe::new(owner, "uid").unwrap();
+            let checked = evaluation::verify(&recipe, &graph, MINIMUM, context(), &data).unwrap();
+            assert_eq!(checked.candidates, primary.len());
+            assert_eq!(checked.missing_objects, gaps.len());
+            assert_eq!(checked.work.source_roots, 3);
+            assert_eq!(checked.work.source_entries, 2 + 2 * usize::from(population));
+            assert_eq!(
+                checked.physical_work.reconstructions.len(),
+                2 + 3 * usize::from(population)
+            );
+            let built = evaluation::construct(&recipe, &graph, MINIMUM, context()).unwrap();
+            assert_eq!(built.root, data.root);
+            assert_eq!(built.nodes, data.nodes);
+
+            // A validly hashed but incomplete route must refuse even when the
+            // primary has zero candidates and only missing-value evidence exists.
+            let mut omitted = data.clone();
+            omitted.nodes.remove(&data.root);
+            omitted.nodes.remove(&gap);
+            let object = [0; 32];
+            let child_route = add(&mut omitted.nodes, &[terminal(b"f-000", object)], None);
+            let original_owner_route = node_id(&wire(
+                &[
+                    forward(b"g", object, child_route),
+                    forward(b"h", object, child_route),
+                ],
+                None,
+            ));
+            omitted.nodes.remove(&original_owner_route);
+            let owner_route = add(
+                &mut omitted.nodes,
+                &[forward(b"g", object, child_route)],
+                None,
+            );
+            let mut altered_gaps = gaps.clone();
+            altered_gaps[0] = forward(&object, object, owner_route);
+            let gap = add(&mut omitted.nodes, &altered_gaps, None);
+            omitted.root = add(&mut omitted.nodes, &primary, Some(gap));
+            assert_eq!(
+                evaluation::verify(&recipe, &graph, MINIMUM, context(), &omitted),
+                Err(Error::Relationship)
+            );
+
+            let mut omitted_gap = data.clone();
+            omitted_gap.nodes.remove(&data.root);
+            omitted_gap.nodes.remove(&node_id(&wire(&gaps, None)));
+            omitted_gap.nodes.remove(&original_owner_route);
+            omitted_gap.nodes.remove(&child_route);
+            let gap = add(&mut omitted_gap.nodes, &gaps[1..], None);
+            omitted_gap.root = add(&mut omitted_gap.nodes, &primary, Some(gap));
+            assert_eq!(
+                evaluation::verify(&recipe, &graph, MINIMUM, context(), &omitted_gap),
+                Err(Error::Relationship)
+            );
+        }
+    }
 }

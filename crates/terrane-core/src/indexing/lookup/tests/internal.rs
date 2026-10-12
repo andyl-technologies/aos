@@ -130,6 +130,10 @@ fn assert_work(actual: Work, expected: Work) {
     assert_eq!(actual, expected, "complete immutable C/P/W model");
 }
 
+/// Checks rich repeated occurrences and exact lookup work across an internal route.
+///
+/// # Panics
+/// Panics if fixture construction or an asserted lookup contract fails.
 pub(super) fn check() {
     let keys: Vec<_> = (0..POPULATION)
         .map(|index| alloc::format!("file{index:05}").into_bytes())

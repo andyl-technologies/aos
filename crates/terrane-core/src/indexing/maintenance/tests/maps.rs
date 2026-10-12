@@ -33,6 +33,10 @@ fn graph(population: usize, stage: usize) -> (Graph, Digest) {
     (graph, owner)
 }
 
+/// Checks balanced-map work for fixed sparse deltas across large repeated snapshots.
+///
+/// # Panics
+/// Panics if fixture construction or an asserted independent witness fails.
 pub(super) fn assert_large_contextual_maps() {
     for population in [32, 512] {
         let graphs: Vec<_> = (0..34).map(|stage| graph(population, stage)).collect();

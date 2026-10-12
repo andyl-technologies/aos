@@ -2,6 +2,10 @@
 
 use super::*;
 
+/// Checks literal candidate ranges, value types and logarithmic population seeks.
+///
+/// # Panics
+/// Panics if fixture construction or an asserted lookup contract fails.
 pub(super) fn check() {
     let (data, present, _, gap) = model();
     let (old, original) = sources();

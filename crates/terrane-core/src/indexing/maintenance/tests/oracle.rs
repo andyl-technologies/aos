@@ -12,12 +12,18 @@ use crate::tree_format::{NodeItems, Property};
 type Properties =
     BTreeMap<(Vec<Vec<u8>>, alloc::string::String), (Digest, Address, Property<'static>)>;
 
+/// Maps contextual coordinates and local keys to complete logical row/binding values.
 pub(super) type Logical = BTreeMap<(Coordinate, Vec<u8>), RouteValue>;
 
+/// Owns independently expanded namespace states and their canonical index closure.
 pub(super) struct Model {
+    /// Canonical auxiliary closure built from the complete finite namespace model.
     pub(super) data: IndexData,
+    /// Complete row and gap/owner-binding values keyed by coordinate and local key.
     pub(super) logical: Logical,
+    /// Namespace root at each local graft-key sequence, retaining repeated occurrences.
     pub(super) sources: BTreeMap<Vec<Vec<u8>>, Digest>,
+    /// Complete namespace entries and source-bearing addresses at expanded key sequences.
     pub(super) inputs: BTreeMap<Vec<Vec<u8>>, (Address, Entry<'static>)>,
     properties: Properties,
 }
@@ -41,6 +47,12 @@ fn binding(attribute: Option<&str>, root: Digest) -> Vec<u8> {
 }
 
 impl Model {
+    /// Expands a finite uid namespace into independent source and index models.
+    ///
+    /// # Panics
+    /// Panics if a referenced source is absent, an inventoried predicate lacks a
+    /// route, index Tree construction fails or logical row keys collide. The graph
+    /// must be acyclic.
     pub(super) fn new(graph: &Graph, owner: Digest) -> Self {
         let mut model = Self {
             data: IndexData {
@@ -269,6 +281,11 @@ impl Model {
     }
 }
 
+/// Compares discovery inputs, participating states and properties with full models.
+///
+/// # Panics
+/// Panics if transitions/counts differ, transition addresses are absent or model
+/// source paths are incomplete.
 pub(super) fn assert_discovery(old: &Model, new: &Model, discovery: &Discovery<'_, '_>) {
     let keys: BTreeSet<_> = old
         .inputs
@@ -430,6 +447,10 @@ fn address_for(model: &Model, hops: &[Vec<u8>]) -> Address {
     address
 }
 
+/// Compares complete route transitions and closure work with full model differences.
+///
+/// # Panics
+/// Panics if model Node decoding fails or route/closure fields and counts differ.
 pub(super) fn assert_routes(old: &Model, new: &Model, work: &UpdateWork) {
     let added: Vec<_> = new
         .data

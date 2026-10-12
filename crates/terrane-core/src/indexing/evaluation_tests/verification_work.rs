@@ -172,6 +172,10 @@ impl Model {
     }
 }
 
+/// Proves physical verifier work against literal multilevel and repeated-graft models.
+///
+/// # Panics
+/// Panics if fixture construction or an asserted independent witness fails.
 pub(super) fn prove_physical_work() {
     let (owner, graph) = sources();
     let recipe = IndexEvaluationRecipe::new(owner, "uid").unwrap();
