@@ -269,6 +269,24 @@ runtime remain pending. Owning Nix gates,
 the complete current T1 floor and mandatory application targets remain pending.
 No task or milestone advances.
 
+Fresh private composition `e10fa76d1b62` binds the reviewed producer reuse,
+Legacy refusal, exact current Admin/Commit controls and canonical rotation
+fixtures. The exact formatter pair passes. SDK Clippy then stops with a compile
+error: the new Original-selection refresh calls a private sibling-module error
+mapper. No native case, growth population or renewed Core package runs on this
+source. Its correction preserves the existing error category and attached cause;
+the failed source remains sealed before another qualification.
+
+Independent source review also finds a valid mixed-revision cold source wrongly
+refused after its candidate already witnesses a signed root claim. An unnecessary
+prior-tree comparison reinterprets inert later parent properties under current
+semantics. The isolated PROP-30/PROV-31/ALG-32 correction stops after a sufficient
+witness and retains prior-only fallback. The owning `algebra-fork` gate now
+requires genuine recorded parent/current-child publication and the existing
+calibrated zero-Node native acknowledgement oracle. Separate rotation witnesses
+require exact protected-record errors and successful controls. These changes
+remain uncompiled and unrun; task counts, T1's exit and all freezes are unchanged.
+
 Additional isolated worklines inspect growing-index completion, indexed replay
 and permanent recovery, while a separate worker qualifies the five public SDK
 checkout cases against the retained `d116ffe6239a` archive. All five exact cases
