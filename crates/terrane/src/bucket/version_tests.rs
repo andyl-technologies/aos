@@ -631,26 +631,42 @@ async fn v2_numbered_logs_require_migration_and_preserve_exact_existing_bytes() 
         .unwrap();
     let original_log = legacy_log.encode().unwrap();
     TokioLocalFs.write_new(&path, &original_log).await.unwrap();
+    let original_ref = bucket.ref_get(name).await.unwrap();
+    let original_history = bucket.ref_log_read(name, 1).await.unwrap();
+    assert_eq!(original_ref, None);
+    assert!(original_history.is_empty());
+
     assert_eq!(
         bucket.ref_log_append(name, 1, &legacy_log).await.unwrap(),
         RefLogAppendOutcome::Exists
     );
-    let mut conflicting = legacy_log;
-    conflicting.timestamp += 1;
-    assert!(matches!(
-        bucket
-            .ref_log_append(name, 1, &conflicting)
-            .await
-            .unwrap_err()
-            .kind(),
-        StoreErrorKind::Corrupt(_)
-    ));
     assert_eq!(TokioLocalFs.read(&path).await.unwrap(), original_log);
     assert_eq!(
         TokioLocalFs.read(&cap_path).await.unwrap(),
         original_capabilities
     );
-    assert!(bucket.ref_log_read(name, 1).await.unwrap().is_empty());
+    assert_eq!(bucket.ref_get(name).await.unwrap(), original_ref);
+    assert_eq!(
+        bucket.ref_log_read(name, 1).await.unwrap(),
+        original_history
+    );
+
+    let mut conflicting = legacy_log;
+    conflicting.timestamp += 1;
+    assert_eq!(
+        bucket.ref_log_append(name, 1, &conflicting).await.unwrap(),
+        RefLogAppendOutcome::Exists
+    );
+    assert_eq!(TokioLocalFs.read(&path).await.unwrap(), original_log);
+    assert_eq!(
+        TokioLocalFs.read(&cap_path).await.unwrap(),
+        original_capabilities
+    );
+    assert_eq!(bucket.ref_get(name).await.unwrap(), original_ref);
+    assert_eq!(
+        bucket.ref_log_read(name, 1).await.unwrap(),
+        original_history
+    );
     tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
 }
 
