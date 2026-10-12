@@ -589,7 +589,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
             if selected.selection()
                 != history
                     .property_selection(view)
-                    .map_err(super::index_maintenance::failure)?
+                    .map_err(|error| StoreFailure::with_source(invalid().kind().clone(), error))?
             {
                 return Err(invalid());
             }
