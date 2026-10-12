@@ -24,11 +24,11 @@ pub(super) struct Occurrence {
     pub(super) revisions: SemanticRevisions,
     /// Explicit namespace use established by the owning completed signed history.
     pub(super) usage: terrane_core::tree_format::TreeUse,
-    /// Physical namespace nodes and their root placements.
+    /// Physical namespace nodes and their root placements after metadata preparation.
     pub(super) nodes: Vec<(Digest, bool)>,
-    /// Exact decoded local attribute-to-index bindings.
+    /// Exact local attribute-to-index bindings after metadata preparation.
     pub(super) bindings: Vec<(String, Digest)>,
-    /// Complete file and conflict-candidate content edges in this root.
+    /// Complete file and conflict-candidate edges after metadata preparation.
     pub(super) files: Vec<File>,
 }
 
@@ -86,9 +86,9 @@ pub(super) struct Edges {
 /// Loads one view and resolves every actual occurrence under its own interpretation.
 ///
 /// # Errors
-/// Preserves complete Guard refusals and rejects malformed local index bindings
-/// or invalid canonical occurrence/path evidence before scheduling anything.
-pub(super) async fn acquire<S: Store, C: Clock>(
+/// Preserves complete Guard refusals and rejects incomplete dependencies or
+/// invalid canonical occurrence/path evidence before scheduling anything.
+pub(super) async fn acquire_scoped<S: Store, C: Clock>(
     guard: &Guard<S, C>,
     consumed: &ConsumedResolver,
     observation: HistoryObservation<'_>,
@@ -108,16 +108,52 @@ pub(super) async fn acquire<S: Store, C: Clock>(
 /// Resolves occurrences from a genuinely qualified root's retained own-scope history.
 ///
 /// # Errors
-/// Rejects malformed bindings, inconsistent interpretation or canonical positions;
+/// Rejects incomplete dependencies, inconsistent interpretation or canonical positions;
 /// the caller first checks the same held root carrier, Session and resolver.
-pub(super) fn retained<'history, S: Store, C: Clock>(
+pub(super) fn retained_scoped<'history, S: Store, C: Clock>(
     guard: &Guard<S, C>,
     verified: &'history VerifiedCollectionTree,
 ) -> Result<View<'history>, CollectionError> {
     prepare(guard, ViewEvidence::Retained(verified))
 }
 
-/// Applies the same complete occurrence interpretation to fresh and retained views.
+/// Loads complete producer metadata for side-record attribution.
+///
+/// # Errors
+/// Preserves scoped history verification and own metadata decoding failures.
+pub(super) async fn acquire<S: Store, C: Clock>(
+    guard: &Guard<S, C>,
+    consumed: &ConsumedResolver,
+    observation: HistoryObservation<'_>,
+    commit: Digest,
+    layer_root: Option<Digest>,
+) -> Result<View<'static>, CollectionError> {
+    let view = acquire_scoped(guard, consumed, observation, commit, layer_root).await?;
+    prepare_all_metadata(guard, view)
+}
+
+/// Prepares complete independently rooted producer metadata for attribution.
+///
+/// # Errors
+/// Preserves scoped history validation and own metadata decoding failures.
+pub(super) fn retained<'history, S: Store, C: Clock>(
+    guard: &Guard<S, C>,
+    verified: &'history VerifiedCollectionTree,
+) -> Result<View<'history>, CollectionError> {
+    prepare_all_metadata(guard, retained_scoped(guard, verified)?)
+}
+
+fn prepare_all_metadata<'history, S: Store, C: Clock>(
+    guard: &Guard<S, C>,
+    mut view: View<'history>,
+) -> Result<View<'history>, CollectionError> {
+    for occurrence in &mut view.occurrences {
+        prepare_metadata(guard, view.verified.get(), occurrence)?;
+    }
+    Ok(view)
+}
+
+/// Resolves authenticated scope before enumerating any own occurrence metadata.
 fn prepare<'history, S: Store, C: Clock>(
     guard: &Guard<S, C>,
     verified: ViewEvidence<'history>,
@@ -157,78 +193,14 @@ fn prepare<'history, S: Store, C: Clock>(
             attribute: 2,
             tree: 1,
         };
-        let tree = evidence
-            .tree()
-            .evidence
-            .tree(root, guard.config().min_chunk_size)?;
-        let nodes = tree
-            .nodes()
-            .map(|node| (node.identity(), node.identity() == root))
-            .collect();
-        let bindings = match tree
-            .props()
-            .unwrap_or_default()
-            .iter()
-            .find(|property| property.name == "index-roots")
-        {
-            None => Vec::new(),
-            Some(property) => IndexRoots::decode_binding(property.value)
-                .map_err(invalid)?
-                .as_bindings()
-                .iter()
-                .map(|binding| (binding.attribute.to_owned(), binding.node))
-                .collect(),
-        };
-        let mut files = Vec::new();
-        for item in tree.iter() {
-            let mut entries = vec![&item.entry];
-            while let Some(entry) = entries.pop() {
-                match &entry.kind {
-                    EntryKind::File { content, .. } => files.push(File {
-                        content: *content,
-                        dictionaries: entry
-                            .attrs
-                            .iter()
-                            .filter(|attribute| {
-                                attribute.name == AttributeName::ZstdDictionary.as_str()
-                            })
-                            .map(|attribute| {
-                                match AttributeValue::decode(
-                                    AttributeName::ZstdDictionary,
-                                    attribute.value,
-                                ) {
-                                    Ok(AttributeValue::ZstdDictionary(hash)) => Ok(hash),
-                                    Ok(_) => Err(invalid(
-                                        terrane_core::derived::Error::InvalidProvenance,
-                                    )),
-                                    Err(source) => Err(invalid(source)),
-                                }
-                            })
-                            .collect::<Result<Vec<_>, _>>()?,
-                        location: EntryLocation {
-                            commit,
-                            root,
-                            path: item.key.clone(),
-                        },
-                    }),
-                    EntryKind::Conflict { candidates, base } => {
-                        entries.extend(candidates);
-                        if let Some(Some(base)) = base {
-                            entries.push(base);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
         occurrences.push(Occurrence {
             context,
             domain: selected.domain().to_owned(),
             revisions,
             usage: evidence.tree().evidence.root_usage(root),
-            nodes,
-            bindings,
-            files,
+            nodes: Vec::new(),
+            bindings: Vec::new(),
+            files: Vec::new(),
         });
     }
     occurrences.sort_by(|left, right| left.context.cmp(&right.context));
@@ -244,6 +216,89 @@ fn prepare<'history, S: Store, C: Clock>(
         occurrences,
         edges,
     })
+}
+
+/// Enumerates own metadata only after exact occurrence completion is checked.
+///
+/// # Errors
+/// Preserves tree decoding failures and rejects malformed local index bindings
+/// or declared dictionary values in the completed owning history.
+pub(super) fn prepare_metadata<S: Store, C: Clock>(
+    guard: &Guard<S, C>,
+    verified: &VerifiedCollectionTree,
+    occurrence: &mut Occurrence,
+) -> Result<(), CollectionError> {
+    let evidence = verified;
+    let commit = evidence.tree().commit.identity();
+    let root = *occurrence.context.root();
+    let tree = evidence
+        .tree()
+        .evidence
+        .tree(root, guard.config().min_chunk_size)?;
+    let nodes = tree
+        .nodes()
+        .map(|node| (node.identity(), node.identity() == root))
+        .collect();
+    let bindings = match tree
+        .props()
+        .unwrap_or_default()
+        .iter()
+        .find(|property| property.name == "index-roots")
+    {
+        None => Vec::new(),
+        Some(property) => IndexRoots::decode_binding(property.value)
+            .map_err(invalid)?
+            .as_bindings()
+            .iter()
+            .map(|binding| (binding.attribute.to_owned(), binding.node))
+            .collect(),
+    };
+    let mut files = Vec::new();
+    for item in tree.iter() {
+        let mut entries = vec![&item.entry];
+        while let Some(entry) = entries.pop() {
+            match &entry.kind {
+                EntryKind::File { content, .. } => files.push(File {
+                    content: *content,
+                    dictionaries: entry
+                        .attrs
+                        .iter()
+                        .filter(|attribute| {
+                            attribute.name == AttributeName::ZstdDictionary.as_str()
+                        })
+                        .map(|attribute| {
+                            match AttributeValue::decode(
+                                AttributeName::ZstdDictionary,
+                                attribute.value,
+                            ) {
+                                Ok(AttributeValue::ZstdDictionary(hash)) => Ok(hash),
+                                Ok(_) => {
+                                    Err(invalid(terrane_core::derived::Error::InvalidProvenance))
+                                }
+                                Err(source) => Err(invalid(source)),
+                            }
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                    location: EntryLocation {
+                        commit,
+                        root,
+                        path: item.key.clone(),
+                    },
+                }),
+                EntryKind::Conflict { candidates, base } => {
+                    entries.extend(candidates);
+                    if let Some(Some(base)) = base {
+                        entries.push(base);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    occurrence.nodes = nodes;
+    occurrence.bindings = bindings;
+    occurrence.files = files;
+    Ok(())
 }
 
 /// Selects an actual canonical root and all complete graft descendants.

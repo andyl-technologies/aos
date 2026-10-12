@@ -20,6 +20,7 @@ use terrane_core::tree_format::{Attribute, Entry, EntryKind, LeafItem, Property,
 
 mod attributes;
 mod checkpoints;
+mod cutoffs;
 mod disclosure;
 mod indexes;
 mod memos;
@@ -90,4 +91,9 @@ async fn gc_common_walk_native_complete_checkpoint_reopens_and_preserves_context
 #[tokio::test]
 async fn gc_common_walk_native_independently_rooted_source_keeps_own_producer_context() {
     rooted::independently_rooted_source_keeps_own_producer_context().await;
+}
+
+#[tokio::test]
+async fn gc_common_walk_native_broader_cutoff_reuses_full_occurrence_expansion() {
+    cutoffs::broader_cutoff_reuses_full_occurrence_expansion().await;
 }
