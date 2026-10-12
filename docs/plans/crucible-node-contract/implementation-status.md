@@ -2099,6 +2099,22 @@ provider, and all 37 source-quality checks. These checks establish collection
 and transport behavior. Complete native qualification and the registered
 application-target, ABI and license gates remain separate requirements.
 
+## Staged whole-operation control framing
+
+The portable whole-operation protocol separates retained input stages from
+compute operations, with independent finite capacities and complete original
+bodies. Source receipts and consumed commit acknowledgments correlate the
+original staged input. Queue plans validate ring geometry and logical names
+using checked offsets; native pointers and callback objects remain private.
+The explicit launch selection retains four-vCPU, 50 ps SIM provenance and
+image commitments without granting native construction authority.
+
+All 198 protocol unit controls pass, with one preexisting ignored test. Strict
+library/test compilation and Clippy pass. The ordinary composite setup encoding
+remains edition two; the staged selection uses an explicit edition three.
+Actual plugin producers, callback integration and complete native readiness
+remain unqualified by these codec checks.
+
 ## Process-private shared-memory ownership
 
 Setup mappings retain their original ownership metadata across forks. A child

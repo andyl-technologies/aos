@@ -56,6 +56,7 @@ pub mod guest_introspection;
 pub mod guest_introspection_doorbell;
 pub mod node_control;
 pub mod plugin_setup_plan;
+pub mod whole_control;
 mod preemption;
 mod selectable;
 pub mod selectable_catalog_plan;
