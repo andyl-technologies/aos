@@ -462,6 +462,14 @@ impl LocalFs for TestFs {
         TokioLocalFs.lock_existing_exclusive(path).await
     }
 
+    async fn try_lock_existing_shared(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        TokioLocalFs.try_lock_existing_shared(path).await
+    }
+
+    async fn try_lock_existing_exclusive(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        TokioLocalFs.try_lock_existing_exclusive(path).await
+    }
+
     async fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         self.check_data_read(path)?;
         TokioLocalFs.read(path).await
@@ -470,6 +478,37 @@ impl LocalFs for TestFs {
     async fn read_range(&self, path: &Path, range: ByteRange) -> std::io::Result<Vec<u8>> {
         self.check_data_read(path)?;
         TokioLocalFs.read_range(path, range).await
+    }
+
+    async fn read_ordinary_record(
+        &self,
+        read: crate::store::NativeOrdinaryRead,
+    ) -> std::io::Result<Option<crate::store::NativeOrdinaryRecord>> {
+        // Leaf recipes retain the same body trap as scalar reads. Physical
+        // closing recipes must execute the real native read-only projection.
+        if let Some(path) = read.path_for_test() {
+            self.check_data_read(path)?;
+        }
+
+        TokioLocalFs.read_ordinary_record(read).await
+    }
+
+    async fn read_payload_ranges(
+        &self,
+        request: crate::store::NativePayloadRangeRead,
+    ) -> std::io::Result<Option<crate::store::NativePayloadRangeRecord>> {
+        // Native reads and closing replays must encounter the same body trap
+        // as scalar reads. Probe and descriptor capture consume no body bytes.
+        if let Some((path, _)) = request.read_data_range() {
+            self.check_data_read(path)?;
+        }
+        if let Some(ranges) = request.closing_data_ranges_for_test() {
+            for (path, _) in ranges {
+                self.check_data_read(path)?;
+            }
+        }
+
+        TokioLocalFs.read_payload_ranges(request).await
     }
 
     async fn write_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
