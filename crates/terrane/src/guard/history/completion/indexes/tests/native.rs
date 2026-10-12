@@ -13,7 +13,10 @@ use std::time::Duration;
 
 use crate::bucket::{FileBucket, FileBucketConfig, FileBucketPublicationConfig};
 use crate::domain::DomainNamespace;
-use crate::guard::{Guard, RecordedNamespaceProfile, RecordedNamespaceProfiles, StagedUpload};
+use crate::guard::{
+    AuthoringNamespaceProfile, Guard, RecordedNamespaceProfile, RecordedNamespaceProfiles,
+    StagedUpload,
+};
 use crate::ref_advance::{CommitTiming, Coordinator};
 use crate::repository::Repository;
 use crate::store::{
@@ -69,14 +72,19 @@ pub(super) struct Fixture {
 }
 
 impl Fixture {
-    /// Retains actual Original evidence before ordinary immutable object staging.
+    /// Retains actual Original evidence under explicitly supplied authoring inputs.
+    ///
+    /// Ordinary immutable staging preserves the independent historical wire graph.
     ///
     /// # Errors
     /// Preserves native open, preparation, durability and object admission errors.
     /// # Panics
     /// Panics if native setup, immutable addresses or preserved selected-state
     /// assertions fail.
-    pub(super) async fn new(graph: wire::Graph) -> Result<Self, Box<dyn std::error::Error>> {
+    pub(super) async fn new(
+        graph: wire::Graph,
+        authoring: AuthoringNamespaceProfile,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let seed = crate::ref_advance::tests::fixture().await;
         let root = seed.store().root().to_owned();
         let authority = seed.guard().configured_original_authority()?;
@@ -99,13 +107,13 @@ impl Fixture {
         .await?;
         // Retain these historical bytes without assigning active index meaning
         // or letting authoring maintenance replace the independent wire graph.
-        let guard = Guard::new(
+        let guard = Guard::new_with_authoring_namespace_profile(
             bucket,
             TokioClock,
             seed.guard().keys().to_vec(),
             seed.guard().config().clone(),
-        )
-        .with_recorded_authoring(RecordedContext::new(1, 3, &["index-roots"])?, 1)?;
+            authoring,
+        );
         let coordinator = Coordinator::new(
             guard,
             CommitTiming::new(
