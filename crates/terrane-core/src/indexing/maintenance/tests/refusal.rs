@@ -26,6 +26,10 @@ fn changed(data: &IndexData, mutate: impl FnOnce(&mut crate::tree_format::Node<'
     changed
 }
 
+/// Checks actual preparation refusal and typed error chains for malformed carriers.
+///
+/// # Panics
+/// Panics if fixture construction or an asserted independent witness fails.
 pub(super) fn assert_raw_relations_refuse() {
     let (graph, owner) = fixture(0, 3, 1);
     let recipe = IndexEvaluationRecipe::new(owner, "uid").unwrap();

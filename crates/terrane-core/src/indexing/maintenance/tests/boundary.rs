@@ -30,6 +30,10 @@ fn content_cut(size: usize, length: usize, bytes: &[u8]) -> bool {
         < (base * u64::try_from(length).unwrap() / 8).min(1 << 32)
 }
 
+/// Checks separate recovered leaf regions and shared unchanged middle Nodes.
+///
+/// # Panics
+/// Panics if fixture construction or an asserted independent witness fails.
 pub(super) fn assert_separated_recovery_and_middle() {
     let keys: Vec<_> = (0..24000)
         .map(|index| alloc::format!("item-{index:08}-{}", "x".repeat(180)).into_bytes())
@@ -161,6 +165,10 @@ pub(super) fn assert_separated_recovery_and_middle() {
     assert_result(&updated, &new_graph, new_owner, &replacement);
 }
 
+/// Checks a real changed ChildRef that destroys a nonterminal internal content cut.
+///
+/// # Panics
+/// Panics if fixture construction or an asserted independent witness fails.
 pub(super) fn assert_internal_content_cut() {
     let mut graph = Graph::new();
     let owner = add(

@@ -2,15 +2,27 @@
 
 use super::*;
 
+/// Sets the chunk minimum for lookup fixture Trees.
 pub(super) const MINIMUM: u64 = 262_144;
+/// Names the fixture object with both present and missing occurrences.
 pub(super) const ONE: Digest = [0x11; 32];
+/// Names the distinct fixture object with a present value.
 pub(super) const TWO: Digest = [0x22; 32];
+/// Names the fixture Manifest object with missing values.
 pub(super) const THREE: Digest = [0x33; 32];
 
+/// Constructs the active fixture semantic revision tuple.
+///
+/// # Panics
+/// Panics if the fixed fixture tuple becomes unsupported.
 pub(super) fn context() -> SemanticContext {
     SemanticContext::new(3, 2, 1).unwrap()
 }
 
+/// Calculates the Node identity of independently assembled fixture bytes.
+///
+/// # Panics
+/// Panics if the registered identity calculation or v1 digest conversion fails.
 pub(super) fn id(bytes: &[u8]) -> Digest {
     TERRANE_V1
         .calculate(IdentityKind::Node, bytes)
@@ -19,6 +31,7 @@ pub(super) fn id(bytes: &[u8]) -> Digest {
         .unwrap()
 }
 
+/// Builds a fixture file with optional inline attribute and selected content tag.
 pub(super) fn file<'a>(
     object: Digest,
     value: Option<&'a [u8]>,
@@ -51,6 +64,7 @@ pub(super) fn file<'a>(
     }
 }
 
+/// Builds a bare fixture graft to the supplied root.
 pub(super) fn graft(root: Digest) -> Entry<'static> {
     Entry {
         kind: EntryKind::Tree { root, props: None },
@@ -62,6 +76,7 @@ pub(super) fn graft(root: Digest) -> Entry<'static> {
     }
 }
 
+/// Copies a local key into a leaf containing the supplied fixture entry.
 pub(super) fn leaf<'a>(key: &[u8], entry: Entry<'a>) -> LeafItem<'a> {
     LeafItem {
         key: key.to_vec(),
@@ -69,17 +84,26 @@ pub(super) fn leaf<'a>(key: &[u8], entry: Entry<'a>) -> LeafItem<'a> {
     }
 }
 
+/// Builds an ordinary fixture Tree without root properties.
+///
+/// # Panics
+/// Panics if the supplied rows fail Tree validation or resource limits.
 pub(super) fn tree(rows: Vec<LeafItem<'_>>) -> Tree<'_> {
     Tree::build(rows, None, MINIMUM, TreeUse::Ordinary).unwrap()
 }
 
+/// Holds a literal terminal or forwarding index row for wire assembly.
 #[derive(Clone)]
 pub(super) struct ModelRow {
+    /// Complete local row key, including any primary object suffix.
     pub(super) key: Vec<u8>,
+    /// Sole object target carried by the specialized row.
     pub(super) object: Digest,
+    /// Continuation Node identity, absent for a terminal occurrence.
     pub(super) route: Option<Digest>,
 }
 
+/// Builds a literal terminal row with one object target.
 pub(super) fn terminal(key: &[u8], object: Digest) -> ModelRow {
     ModelRow {
         key: key.to_vec(),
@@ -88,6 +112,7 @@ pub(super) fn terminal(key: &[u8], object: Digest) -> ModelRow {
     }
 }
 
+/// Builds a literal forwarding row with one object and continuation.
 pub(super) fn forward(key: &[u8], object: Digest, route: Digest) -> ModelRow {
     ModelRow {
         key: key.to_vec(),
@@ -96,6 +121,7 @@ pub(super) fn forward(key: &[u8], object: Digest, route: Digest) -> ModelRow {
     }
 }
 
+/// Concatenates canonical value bytes and the object digest without validation.
 pub(super) fn value_key(value: &[u8], object: Digest) -> Vec<u8> {
     let mut key = value.to_vec();
     key.extend_from_slice(&object);
@@ -103,6 +129,7 @@ pub(super) fn value_key(value: &[u8], object: Digest) -> Vec<u8> {
 }
 
 // Integer fields and prefix compression are independent of carrier validation.
+/// Assembles a prefix-compressed leaf Node and optional noninherited gap binding.
 pub(super) fn wire(rows: &[ModelRow], gap: Option<Digest>) -> Vec<u8> {
     let mut bytes = Vec::new();
     cbor::write_map(&mut bytes, if gap.is_some() { 3 } else { 2 });
@@ -151,6 +178,10 @@ pub(super) fn wire(rows: &[ModelRow], gap: Option<Digest>) -> Vec<u8> {
     bytes
 }
 
+/// Assembles and stores a literal leaf Node, returning its identity.
+///
+/// # Panics
+/// Panics if the registered Node identity calculation fails.
 pub(super) fn add(
     nodes: &mut BTreeMap<Digest, Vec<u8>>,
     rows: &[ModelRow],
@@ -162,6 +193,10 @@ pub(super) fn add(
     root
 }
 
+/// Builds the literal primary/route/gap closure and returns selected route roots.
+///
+/// # Panics
+/// Panics if fixture Node identity calculation fails.
 pub(super) fn model() -> (IndexData, Digest, Digest, Digest) {
     let mut nodes = BTreeMap::new();
     let child_present = add(&mut nodes, &[terminal(b"a", ONE)], None);
@@ -230,6 +265,10 @@ pub(super) fn model() -> (IndexData, Digest, Digest, Digest) {
     )
 }
 
+/// Builds the matching repeated-graft source graph and owner identity.
+///
+/// # Panics
+/// Panics if the fixed namespace rows fail Tree construction.
 pub(super) fn sources() -> (Digest, BTreeMap<Digest, Tree<'static>>) {
     let child = tree(alloc::vec![
         leaf(b"a", file(ONE, Some(b"\x01"), "uid", false)),
@@ -248,6 +287,10 @@ pub(super) fn sources() -> (Digest, BTreeMap<Digest, Tree<'static>>) {
     (root, BTreeMap::from([(root, owner), (child_root, child)]))
 }
 
+/// Encodes a validated owner-local binding for one selected attribute.
+///
+/// # Panics
+/// Panics if the attribute is unregistered or binding validation/encoding fails.
 pub(super) fn binding(attribute: &str, root: Digest) -> Vec<u8> {
     let hex: alloc::string::String = root
         .iter()
@@ -263,6 +306,10 @@ pub(super) fn binding(attribute: &str, root: Digest) -> Vec<u8> {
         .unwrap()
 }
 
+/// Rebuilds the fixture owner with a supplied index-roots payload in a cloned graph.
+///
+/// # Panics
+/// Panics if the old owner is absent or the replacement Tree cannot be built.
 pub(super) fn bind<'a>(
     old: Digest,
     original: &BTreeMap<Digest, Tree<'a>>,

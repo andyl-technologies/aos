@@ -20,6 +20,10 @@ fn item_length(item: &LeafItem<'_>, previous: &[u8]) -> usize {
     bytes.len()
 }
 
+/// Checks contextual verifier work separately from deduplicated retention work.
+///
+/// # Panics
+/// Panics if fixture construction or an asserted independent witness fails.
 pub(super) fn prove_physical_accounting() {
     // Two predicates each revisit the same child through two distinct grafts.
     // Missing values also force a primary-root index-gaps property replacement.

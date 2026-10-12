@@ -2,6 +2,10 @@
 
 use super::*;
 
+/// Checks preparation reuse and refusal of malformed or divergent immutable inputs.
+///
+/// # Panics
+/// Panics if fixture construction or an asserted lookup contract fails.
 pub(super) fn check() {
     let (data, present, missing, gap) = model();
     let (old, original) = sources();

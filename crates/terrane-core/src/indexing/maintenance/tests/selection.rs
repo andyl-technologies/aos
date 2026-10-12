@@ -2,6 +2,10 @@
 
 use super::*;
 
+/// Checks that unrelated supplied roots do not change relevant update work.
+///
+/// # Panics
+/// Panics if fixture construction or an asserted independent witness fails.
 pub(super) fn assert_unrelated_roots_do_not_enter_update() {
     let (graph, owner) = fixture(0, 8, 2);
     let (next_graph, next_owner) = fixture(1, 8, 2);
@@ -77,6 +81,10 @@ pub(super) fn assert_unrelated_roots_do_not_enter_update() {
     }
 }
 
+/// Checks removal-only transitions through a surviving changed graft ancestor.
+///
+/// # Panics
+/// Panics if fixture construction or an asserted independent witness fails.
 pub(super) fn assert_removal_only_surviving_ancestor() {
     let mut graph = Graph::new();
     let child = add(
