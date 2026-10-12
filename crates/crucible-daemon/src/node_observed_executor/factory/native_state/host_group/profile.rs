@@ -89,14 +89,17 @@ impl IndependentGroupProfile {
         }
         let (scenario, qualification) = compose(&native.scenario, &group, false)?;
 
-        Ok(Self {
-            scenario,
-            native: Rc::new(native),
-            group,
-            qualification,
-            preserving: false,
-            metadata: None,
-        })
+        super::super::behavioral::projection::enroll(
+            Self {
+                scenario,
+                native: Rc::new(native),
+                group,
+                qualification,
+                preserving: false,
+                metadata: None,
+            },
+            catalog,
+        )
     }
 
     /// Regenerates a distinct complete native and Host preparation-bearing source.
@@ -137,14 +140,17 @@ impl IndependentGroupProfile {
         }
         let (mut scenario, qualification) = compose(&native.scenario, &group, true)?;
         let metadata = super::metadata::MetadataClosure::install(&mut scenario, &native, catalog)?;
-        Ok(Self {
-            scenario,
-            native: Rc::new(native),
-            group,
-            qualification,
-            preserving: true,
-            metadata: Some(metadata),
-        })
+        super::super::behavioral::projection::enroll(
+            Self {
+                scenario,
+                native: Rc::new(native),
+                group,
+                qualification,
+                preserving: true,
+                metadata: Some(metadata),
+            },
+            catalog,
+        )
     }
 }
 

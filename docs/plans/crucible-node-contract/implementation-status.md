@@ -2067,6 +2067,25 @@ or ordinary class acceptance. Current combined application-target compilation,
 native qualification and boundary gates remain required; raw evidence stays
 local.
 
+## Original behavioral collection and shutdown continuation
+
+Behavioral collection borrows the original runtime through an evidence-only
+interface. Reports retain the complete requirement population and every
+unexecuted obligation; partial observations cannot produce accepted native
+support. CPU and storage observations recheck the actual source, activation
+and complete-world binding before collecting or publishing an outcome.
+
+An incomplete graceful Shutdown reply can continue on its original stream and
+first deadline. The request is never resent, and expired, foreign or permanently
+failed replies retain the original exchange and containment state.
+
+Verification includes 55 focused core/daemon cases on the unchanged production
+bodies, a fresh provider test build and all five affected transport cases after
+a test-only lint correction, strict all-target checks for core, daemon and
+provider, and all 37 source-quality checks. These checks establish collection
+and transport behavior. Complete native qualification and the registered
+application-target, ABI and license gates remain separate requirements.
+
 ## Selected DMTCP writer package
 
 The source-built `dmtcp-selected-writer-park` package passes its normal
@@ -2075,6 +2094,12 @@ the installed binary/source tuple, all 77 declared installed artifacts and
 27 native source roles. The package retains the matching complete source and
 original license notices. These checks establish ordinary package behavior;
 the retained client receipts do not establish complete guest reclamation.
+
+A fresh build of the complete current repository directory, including its
+generic license inventory, passes the application, checkpoint and two fresh
+restore checks. The matching source output independently preserves the upstream
+archive, all ten patches, recipe, continuation fixture and current license
+inventory. The earlier sparse-directory package result remains historical.
 
 Selected native terminal parking, authenticated final-account issuance and
 operational restore adoption remain unqualified. Configured native compilation

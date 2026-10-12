@@ -643,3 +643,9 @@ fn reclaim_twins(left: &InstalledMixedEngine, right: &InstalledMixedEngine) {
     }
     panic!("original twin worlds still retain native custody");
 }
+
+#[path = "independent_group/behavioral_gate.rs"]
+mod behavioral_gate;
+
+#[path = "independent_group/ordinary_behavioral.rs"]
+mod ordinary_behavioral;

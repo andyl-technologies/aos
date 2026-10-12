@@ -133,6 +133,8 @@ pub struct NodeRuntime {
     collecting: Option<Rc<crate::node_admission::ConformanceGraph>>,
     // Fixed before any graceful adapter callback, including unsupported reads.
     pub(super) graceful_retirement: bool,
+    // A fixed data-only slot records a refusal site without allocation or authority.
+    original_error_site: Option<&'static str>,
 }
 
 impl NodeRuntime {
@@ -299,6 +301,7 @@ impl NodeRuntime {
             condition_stop: None,
             collecting,
             graceful_retirement: false,
+            original_error_site: None,
         })
     }
 
@@ -560,6 +563,17 @@ impl NodeRuntime {
                     || !native_evidence_valid
                     || !valid_outcome(&admission, &outcome)
                 {
+                    self.original_error_site = Some(
+                        if outcome.retained_outputs.len() > self.limits.maximum_retained_outputs {
+                            "operation/retained-output-credit"
+                        } else if !quantum_closed {
+                            "operation/quantum-not-closed"
+                        } else if !native_evidence_valid {
+                            "operation/native-outcome-authentication"
+                        } else {
+                            "operation/common-outcome-validation"
+                        },
+                    );
                     self.contain_roster(token.route());
                     let failure = OperationFailure {
                         effects: EffectKnowledge::Unknown,

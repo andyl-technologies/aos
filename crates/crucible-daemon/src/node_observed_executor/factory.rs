@@ -89,6 +89,10 @@ pub use io::{InstalledHostIoProfile, InstalledIoArtifact, InstalledIoArtifactSou
 pub use kvm::{
     MAX_KVM_CANDIDATE_POLICY_BYTES, load_installed_kvm_candidate, prepare_installed_kvm_candidate,
 };
+pub use native_state::behavioral::{
+    Gem5BehavioralCase, Gem5BehavioralReport, Gem5BehavioralRequest, Gem5BehavioralRun,
+    InstalledGem5BehavioralAcceptance,
+};
 pub use native_state::public_catalog::{InstalledNativePreservation, InstalledPreparedNativeWorld};
 pub use native_state::public_group::{
     InstalledIndependentNativePreservation, InstalledIndependentNativeRestore,
@@ -768,7 +772,9 @@ impl InstalledNodeCatalog {
                     | InstalledNodeKind::Gem5ClosedEpochPreserving { .. }
             )
         }) {
-            self.require_behavioral_host_scope()?;
+            if !native_state::host_group::selection::selected(selections) {
+                self.require_behavioral_host_scope()?;
+            }
             return native_state::public_catalog::prepare(self, selections, scenario, execution);
         }
         let artifacts = self.artifacts.clone();

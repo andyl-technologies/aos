@@ -14,7 +14,7 @@ pub(in crate::node_observed_executor::factory) struct IndependentGroupSelection<
 }
 
 /// Recognizes the distinct prospective group without changing the Clock path.
-pub(in crate::node_observed_executor::factory::native_state) fn selected(
+pub(in crate::node_observed_executor::factory) fn selected(
     selections: &[InstalledNodeSelection],
 ) -> bool {
     selections.get(2..).is_some_and(|additional| {

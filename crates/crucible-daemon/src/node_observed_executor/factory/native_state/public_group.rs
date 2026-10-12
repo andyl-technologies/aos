@@ -770,7 +770,6 @@ impl InstalledNodeCatalog {
         &self,
         selections: &[InstalledNodeSelection],
     ) -> Result<NodeScenario, NodeObservedError> {
-        self.require_behavioral_host_scope()?;
         Ok(IndependentGroupProfile::build_preserving(
             InstalledGem5ClosedProfile::built_in()?,
             self,
@@ -794,7 +793,6 @@ impl InstalledNodeCatalog {
         scenario: NodeScenario,
         execution: ExecutionId,
     ) -> Result<InstalledPreparedIndependentNativeWorld, NodeObservedError> {
-        self.require_behavioral_host_scope()?;
         let expected = self.independent_native_scenario(selections)?;
         if scenario.canonical_bytes()? != expected.canonical_bytes()? {
             return Err(refused(
@@ -842,7 +840,6 @@ impl InstalledNodeCatalog {
         selections: &[InstalledNodeSelection],
         source: NativeArchiveRecord,
     ) -> Result<InstalledIndependentNativeRestore, NodeObservedError> {
-        self.require_behavioral_host_scope()?;
         let engine =
             InstalledMixedEngine::with_runtime(self.socket_parent.clone(), self.custody.clone())?;
         let plan = engine.prepare_independent_cold_group(self, selections, source)?;

@@ -32,6 +32,23 @@ impl NodeRuntime {
 }
 
 impl OriginalRuntimeWitness<'_> {
+    /// Reads the retained error site under this runtime's original activation.
+    ///
+    /// This fixed diagnostic is data, not a native receipt or permission. It
+    /// preserves the existing outward error and cannot settle an obligation.
+    /// No installed or native callback runs during this read.
+    ///
+    /// # Errors
+    /// Refuses an inactive runtime or a foreign opaque activation, even when its
+    /// represented identifiers equal the original activation record.
+    pub fn original_error_site(
+        &self,
+        activation: &super::WorldActivation,
+    ) -> Result<Option<&'static str>, RuntimeError> {
+        self.runtime.validate_activation(activation)?;
+        Ok(self.runtime.original_error_site)
+    }
+
     /// Borrows an actual current original permission, outcome and input custody.
     ///
     /// # Errors

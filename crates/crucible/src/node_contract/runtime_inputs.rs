@@ -75,9 +75,14 @@ impl NodeRuntime {
                 operation: batch.stage_operation().clone(),
                 route: route.clone(),
             };
-            let provenance = self.prepare_input_provenance(&batch)?;
-            let lineage = self.prepare_original_input_lineage(&batch)?;
+            let provenance = self.prepare_input_provenance(&batch).inspect_err(|_| {
+                self.original_error_site = Some("input/producer-provenance");
+            })?;
+            let lineage = self.prepare_original_input_lineage(&batch).inspect_err(|_| {
+                self.original_error_site = Some("input/original-lineage");
+            })?;
             if lineage.is_some() && provenance.is_none() {
+                self.original_error_site = Some("input/lineage-without-provenance");
                 return Err(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt));
             }
             super::final_collection_scope(self.collecting.as_deref())
@@ -151,6 +156,7 @@ impl NodeRuntime {
                     _ => false,
                 };
                 if !valid {
+                    self.original_error_site = Some("input/native-acknowledgement");
                     let failure = OperationFailure {effects: EffectKnowledge::Unknown,
                         reason: "native acknowledgement does not authenticate the original complete input cut".into()};
                     if let Some(retained) = self.input_batches.get_mut(&operation) {
@@ -252,6 +258,7 @@ impl NodeRuntime {
                     .is_ok()
         });
         if !valid {
+            self.original_error_site = Some("input/recovered-native-acknowledgement");
             self.contain_roster(&route);
             return Err(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt));
         }
@@ -285,6 +292,7 @@ impl NodeRuntime {
         if retained.failure.is_some()
             || retained.acknowledgement.as_ref() != Some(&acknowledgement.acknowledgement)
         {
+            self.original_error_site = Some("input/retained-acknowledgement-identity");
             return Err(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt));
         }
         if let Some(commit) = &retained.commit {
@@ -340,6 +348,7 @@ impl NodeRuntime {
             || retained.batch.node() != commit.node()
             || retained.failure.is_some()
         {
+            self.original_error_site = Some("input/custody-commit-identity");
             return Err(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt));
         }
         if retained.committed {

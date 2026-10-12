@@ -939,6 +939,75 @@ fn deadline(timeout: Duration) -> Result<OperationalDeadline, ProviderError> {
         .ok_or(ProviderError::ResourceExhausted("gem5 native deadline"))
 }
 
+// The original receive cut stays in the audited transport boundary. This view
+// borrows the SAME stream and retained first deadline; it cannot reconnect,
+// construct another deadline, or write from the receive-only continuation.
+struct OriginalShutdownIo<'a, T> {
+    io: &'a mut T,
+    deadline: OperationalDeadline,
+}
+
+impl<'a, T: Read + Write> OriginalShutdownIo<'a, T> {
+    fn new(io: &'a mut T, deadline: OperationalDeadline) -> Self {
+        Self { io, deadline }
+    }
+
+    fn exchange(&mut self, exchange: &mut Gem5ShutdownExchange) -> Result<(), ProviderError> {
+        let result = graceful_shutdown::exchange_once(self.io, exchange);
+        self.retain_result(result, exchange)
+    }
+
+    fn continue_reply(&mut self, exchange: &mut Gem5ShutdownExchange) -> Result<(), ProviderError> {
+        if exchange.acknowledged {
+            return Ok(());
+        }
+        if !exchange.receive_continuation || exchange.written_bytes != 23 {
+            return Err(ProviderError::Conflict(
+                "original Shutdown reply is uncertain; no continuation or resend",
+            ));
+        }
+        if self.deadline.is_expired() {
+            exchange.receive_continuation = false;
+            return Err(ProviderError::Conflict(
+                "original Shutdown reply exceeded its first deadline",
+            ));
+        }
+        let result = graceful_shutdown::receive_original_reply(self.io, exchange);
+        self.retain_result(result, exchange)
+    }
+
+    fn retain_result(
+        &self,
+        result: Result<(), ProviderError>,
+        exchange: &mut Gem5ShutdownExchange,
+    ) -> Result<(), ProviderError> {
+        match result {
+            Ok(()) => {
+                exchange.receive_continuation = false;
+                if self.deadline.is_expired() {
+                    return Err(ProviderError::Conflict(
+                        "original Shutdown reply exceeded its first deadline",
+                    ));
+                }
+                exchange.acknowledged = true;
+                Ok(())
+            }
+            Err(error) => {
+                let transient_receive = matches!(
+                    &error,
+                    ProviderError::Io(error)
+                        if matches!(error.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock)
+                );
+                exchange.receive_continuation = exchange.receive_continuation
+                    && exchange.written_bytes == 23
+                    && transient_receive
+                    && !self.deadline.is_expired();
+                Err(error)
+            }
+        }
+    }
+}
+
 struct DeadlineIo<'a> {
     stream: &'a mut UnixStream,
     deadline: OperationalDeadline,

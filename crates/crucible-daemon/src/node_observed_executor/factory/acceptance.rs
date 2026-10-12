@@ -12,7 +12,7 @@ use crucible_node_contract::{
     NodeBinding, OperatingMode, Repeatability, SchemaRef, Validate, canonical,
 };
 
-use super::{InstalledNodeCatalog, NodeObservedError, refused};
+use super::{InstalledNodeCatalog, NodeObservedError, native_state, refused};
 use crate::{
     node_qualification::{
         AcceptanceLimits, AcceptanceScope, Applicability, BehavioralAdmissionEvidence,
@@ -34,8 +34,9 @@ impl InstalledNodeCatalog {
     /// selected unit. It derives scope from installed artifacts, not request
     /// reports. This additional gate preserves all native source qualification.
     /// No currently incomplete reference report becomes ordinarily qualified.
-    /// Specialized gem5 preparation remains refused with this policy installed
-    /// until its distinct native admission path supports the same recheck.
+    /// The fixed four-owner gem5 group rechecks this same policy around actual
+    /// preparation and complete graph admission. Other specialized native paths
+    /// remain refused until they support that same conjunction.
     ///
     /// # Errors
     /// Refuses replacement, outstanding host custody or ceilings larger than the
@@ -67,6 +68,58 @@ impl InstalledNodeCatalog {
         Ok(())
     }
 
+    pub(super) fn original_gem5_behavioral_projection(
+        &self,
+        scenario: &NodeScenario,
+    ) -> Result<
+        Option<std::rc::Rc<native_state::behavioral::projection::OriginalReportProjection>>,
+        NodeObservedError,
+    > {
+        let Some(installed) = &self.behavioral_acceptance else {
+            return Ok(None);
+        };
+        let evidence = BehavioralAdmissionEvidence::new(
+            &PreallocationCheck,
+            installed.policy.as_ref(),
+            installed.limits,
+        );
+        let mut selected = std::collections::BTreeMap::new();
+        let mut original: Option<(ContentRef, Vec<u8>)> = None;
+        for source in &scenario.compatibility {
+            let scope = installed
+                .policy
+                .scope_for_node(&source.node_id)
+                .map_err(|error| refused(&error.to_string()))?;
+            if scope.required_classes != required_classes(scenario, source)? {
+                return Err(refused(
+                    "behavioral original classes differ from selected source",
+                ));
+            }
+            evidence
+                .qualify(QualificationClaim::Node {
+                    binding: scope.binding,
+                    binding_hash: &scope.binding.identity()?,
+                    qualification_refs: &scope.binding.qualification_refs,
+                })
+                .map_err(|error| refused(&error.to_string()))?;
+            if let Some((reference, bytes)) = &original {
+                if reference != scope.original_claim || bytes.as_slice() != scope.original_bytes {
+                    return Err(refused("four owners have different accepted originals"));
+                }
+            } else {
+                original = Some((scope.original_claim.clone(), scope.original_bytes.to_vec()));
+            }
+            selected.insert(source.node_id.clone(), scope.binding.clone());
+        }
+        let (reference, bytes) =
+            original.ok_or_else(|| refused("behavioral original report absent"))?;
+        Ok(Some(std::rc::Rc::new(
+            native_state::behavioral::projection::OriginalReportProjection::checked(
+                scenario, selected, reference, &bytes,
+            )?,
+        )))
+    }
+
     pub(super) fn require_behavioral_host_scope(&self) -> Result<(), NodeObservedError> {
         if self.behavioral_acceptance.is_some() {
             return Err(refused(
@@ -74,6 +127,48 @@ impl InstalledNodeCatalog {
             ));
         }
         Ok(())
+    }
+
+    /// Adds installed behavioral acceptance to the complete original group graph.
+    ///
+    /// The original evidence still authenticates every native enrollment and
+    /// source predicate. Behavioral claims are checked again after preparation;
+    /// source qualification alone cannot satisfy an installed accepted report.
+    pub(super) fn admit_behavioral_native_group(
+        &self,
+        scenario: &NodeScenario,
+        bindings: &[NodeBinding],
+        original: &dyn AdmissionEvidence,
+        capabilities: Option<&super::ResolvedCapabilityWorld>,
+        limits: crucible::node_admission::AdmissionLimits,
+    ) -> Result<crucible::node_admission::AdmittedGraph, NodeObservedError> {
+        let selected = self
+            .behavioral_acceptance
+            .as_ref()
+            .map(|installed| SourceBindingPolicy::new(installed.policy.as_ref(), scenario));
+        let behavioral = self
+            .behavioral_acceptance
+            .as_ref()
+            .zip(selected.as_ref())
+            .map(|(installed, policy)| {
+                BehavioralAdmissionEvidence::new(original, policy, installed.limits)
+            });
+        let qualified: &dyn AdmissionEvidence = match &behavioral {
+            Some(behavioral) => behavioral,
+            None => original,
+        };
+        let capability =
+            capabilities.map(
+                |resolved| super::capabilities::admission::CapabilityAdmission {
+                    original: qualified,
+                    resolved,
+                },
+            );
+        let admission: &dyn AdmissionEvidence = match &capability {
+            Some(capability) => capability,
+            None => qualified,
+        };
+        Ok(scenario.admit(bindings, admission, limits)?)
     }
 
     pub(super) fn preflight_behavioral_acceptance(
@@ -228,7 +323,7 @@ impl InstalledQualificationAuthority for SourceBindingPolicy<'_> {
 
 // This projection is host code over the freshly regenerated descriptor binding
 // and verified guarantee object. A vendor's claim.classes cannot reduce it.
-fn required_classes(
+pub(super) fn required_classes(
     scenario: &NodeScenario,
     binding: &BindingCompatibility,
 ) -> Result<BTreeSet<QualificationClass>, NodeObservedError> {

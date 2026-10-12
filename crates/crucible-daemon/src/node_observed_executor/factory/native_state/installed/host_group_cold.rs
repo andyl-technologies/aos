@@ -92,6 +92,7 @@ impl InstalledMixedEngine {
                 "complete group archive differs from regenerated source",
             ));
         }
+        catalog.preflight_behavioral_acceptance(selections, &profile.scenario)?;
         let target = fresh_group_target(&profile, &archive)?;
         let clock = HostModel::Clock(VirtualClock::new());
         let (models, _empty_nodes) =
@@ -219,23 +220,13 @@ impl InstalledMixedEngine {
             host_bindings,
             native_graph,
         )?);
-        let capability_admission = capabilities.map(|resolved| {
-            super::super::super::capabilities::admission::CapabilityAdmission {
-                original: evidence.as_ref(),
-                resolved,
-            }
-        });
-        let admission: &dyn crucible::node_admission::AdmissionEvidence =
-            match &capability_admission {
-                None => evidence.as_ref(),
-                Some(admission) => admission,
-            };
-        let graph = Rc::new(
-            profile
-                .scenario
-                .admit(evidence.bindings(), admission, admission_limits())
-                .map_err(error)?,
-        );
+        let graph = Rc::new(catalog.admit_behavioral_native_group(
+            &profile.scenario,
+            evidence.bindings(),
+            evidence.as_ref(),
+            capabilities,
+            admission_limits(),
+        )?);
         let namespace = self.namespace()?;
         Ok(IndependentColdWorld {
             profile,

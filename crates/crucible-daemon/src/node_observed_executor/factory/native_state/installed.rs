@@ -675,7 +675,8 @@ fn cpu_owner(target: &ActivationRecord) -> Result<OwnerIdentity, NodeObservedErr
         .ok_or_else(|| refused("mixed CPU owner absent"))
 }
 
-fn admission_limits() -> AdmissionLimits {
+pub(in crate::node_observed_executor::factory::native_state) fn admission_limits() -> AdmissionLimits
+{
     AdmissionLimits {
         maximum_content_bytes: 512 * 1024 * 1024,
         maximum_total_content_bytes: 2 * 1024 * 1024 * 1024,

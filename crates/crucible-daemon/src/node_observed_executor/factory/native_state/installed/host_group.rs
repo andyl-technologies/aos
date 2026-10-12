@@ -120,6 +120,9 @@ impl InstalledMixedEngine {
                 "complete independent group differs from actual installed source",
             ));
         }
+        // Complete current behavioral scope precedes inactive models, native
+        // slots and Child. The same policy is rechecked at final graph admission.
+        catalog.preflight_behavioral_acceptance(selections, &profile.scenario)?;
         // The new ordinary source retains all original private ACK attempts.
         // Legacy live and mechanism-only preparations preserve their old path.
         let acknowledgement_history = if preserving && capabilities.is_some() {
@@ -305,23 +308,13 @@ impl InstalledMixedEngine {
             host_bindings,
             original_native_graph,
         )?);
-        let capability_admission = capabilities.map(|resolved| {
-            super::super::super::capabilities::admission::CapabilityAdmission {
-                original: evidence.as_ref(),
-                resolved,
-            }
-        });
-        let admission: &dyn crucible::node_admission::AdmissionEvidence =
-            match &capability_admission {
-                Some(admission) => admission,
-                None => evidence.as_ref(),
-            };
-        let graph = Rc::new(
-            profile
-                .scenario
-                .admit(evidence.bindings(), admission, admission_limits())
-                .map_err(error)?,
-        );
+        let graph = Rc::new(catalog.admit_behavioral_native_group(
+            &profile.scenario,
+            evidence.bindings(),
+            evidence.as_ref(),
+            capabilities,
+            admission_limits(),
+        )?);
         let mut actual_clock = HostModelNode::new(
             &graph,
             &Id::new("clock")?,

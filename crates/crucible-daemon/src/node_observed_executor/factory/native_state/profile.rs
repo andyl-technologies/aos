@@ -33,6 +33,8 @@ use crate::node_scenario::{NodeScenario, ScenarioContent};
 /// Retains one regenerated candidate and its independently installed package.
 pub(super) struct MixedProfile {
     pub(super) scenario: NodeScenario,
+    pub(super) behavioral_projection:
+        Option<Rc<super::behavioral::projection::OriginalReportProjection>>,
     pub(super) installed: Rc<InstalledGem5ClosedProfile>,
     pub(super) qualification: ContentRef,
     pub(super) isa: String,
@@ -65,10 +67,15 @@ impl MixedProfile {
         } else {
             Self::build(self.installed.clone(), host, &self.isa)
         }?;
-        match &self.capabilities {
-            Some(resolved) => baseline.with_capabilities(resolved),
-            None => Ok(baseline),
+        let mut current = match &self.capabilities {
+            Some(resolved) => baseline.with_capabilities(resolved)?,
+            None => baseline,
+        };
+        if let Some(projection) = &self.behavioral_projection {
+            projection.apply(&mut current.scenario)?;
+            current.behavioral_projection = Some(projection.clone());
         }
+        Ok(current)
     }
 
     pub(super) fn with_capabilities(
@@ -418,6 +425,7 @@ impl MixedProfile {
             scheduling_epochs,
             host_clocks: host_clocks.to_vec(),
             capabilities: None,
+            behavioral_projection: None,
         })
     }
 }

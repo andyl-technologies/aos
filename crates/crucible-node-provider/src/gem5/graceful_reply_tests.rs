@@ -22,10 +22,10 @@ struct ReceiveRefusal {
 
 impl Read for ReceiveRefusal {
     fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
-        if self.read_bytes == self.refusal_at {
-            if let Some(kind) = self.refusal.take() {
-                return Err(std::io::Error::new(kind, "original receive refusal"));
-            }
+        if self.read_bytes == self.refusal_at
+            && let Some(kind) = self.refusal.take()
+        {
+            return Err(std::io::Error::new(kind, "original receive refusal"));
         }
         let limit = if self.refusal.is_some() {
             bytes.len().min(self.refusal_at - self.read_bytes)
@@ -74,8 +74,11 @@ fn first_receive(
     exchange: &mut Gem5ShutdownExchange,
     original: OperationalDeadline,
 ) {
-    let result = exchange_once(io, exchange);
-    assert!(retain_exchange_result(result, exchange, original).is_err());
+    assert!(
+        OriginalShutdownIo::new(io, original)
+            .exchange(exchange)
+            .is_err()
+    );
     assert_eq!(exchange.written_bytes(), FRAME.len());
     assert_eq!(exchange.received_bytes().len(), 9);
     assert!(!exchange.acknowledged());
@@ -96,7 +99,9 @@ fn transient_original_reply_completes_without_another_frame_or_deadline() {
         peer.read_exact(&mut request).unwrap();
         assert_eq!(request, FRAME);
 
-        continue_reply(&mut io, &mut exchange, original).unwrap();
+        OriginalShutdownIo::new(&mut io, original)
+            .continue_reply(&mut exchange)
+            .unwrap();
 
         assert!(exchange.acknowledged());
         assert!(!exchange.reply_continuation_pending());
@@ -117,14 +122,22 @@ fn expired_original_budget_refuses_without_reading_already_available_reply() {
     let prefix = exchange.received_bytes().to_vec();
     let expired = OperationalDeadline::expired_fixture();
 
-    assert!(continue_reply(&mut io, &mut exchange, expired).is_err());
+    assert!(
+        OriginalShutdownIo::new(&mut io, expired)
+            .continue_reply(&mut exchange)
+            .is_err()
+    );
     assert_eq!(exchange.received_bytes(), prefix);
     assert_eq!(io.read_bytes, 9);
     assert_eq!(io.written, FRAME);
     assert!(!exchange.acknowledged());
     assert!(!exchange.reply_continuation_pending());
     // Neither the expired budget nor a later supplied budget revives the latch.
-    assert!(continue_reply(&mut io, &mut exchange, original).is_err());
+    assert!(
+        OriginalShutdownIo::new(&mut io, original)
+            .continue_reply(&mut exchange)
+            .is_err()
+    );
     assert_eq!(io.read_bytes, 9);
 }
 
@@ -136,15 +149,26 @@ fn foreign_and_overcredit_reply_refusals_remain_sticky_after_continuation() {
         let (mut io, _peer) = transport(&reply, std::io::ErrorKind::Interrupted);
         let original = OperationalDeadline::after(Duration::from_secs(5)).unwrap();
         let mut exchange = Gem5ShutdownExchange::reserved();
-        let result = exchange_once(&mut io, &mut exchange);
-        assert!(retain_exchange_result(result, &mut exchange, original).is_err());
+        assert!(
+            OriginalShutdownIo::new(&mut io, original)
+                .exchange(&mut exchange)
+                .is_err()
+        );
         if exchange.reply_continuation_pending() {
-            assert!(continue_reply(&mut io, &mut exchange, original).is_err());
+            assert!(
+                OriginalShutdownIo::new(&mut io, original)
+                    .continue_reply(&mut exchange)
+                    .is_err()
+            );
         }
         let received = exchange.received_bytes().to_vec();
 
         assert!(!exchange.reply_continuation_pending());
-        assert!(continue_reply(&mut io, &mut exchange, original).is_err());
+        assert!(
+            OriginalShutdownIo::new(&mut io, original)
+                .continue_reply(&mut exchange)
+                .is_err()
+        );
         assert_eq!(exchange.received_bytes(), received);
         assert_eq!(io.written, FRAME);
         assert!(!exchange.acknowledged());
@@ -163,7 +187,11 @@ fn eof_and_nontransient_receive_refusals_never_become_reaping_authority() {
         first_receive(&mut io, &mut exchange, original);
 
         assert!(!exchange.reply_continuation_pending());
-        assert!(continue_reply(&mut io, &mut exchange, original).is_err());
+        assert!(
+            OriginalShutdownIo::new(&mut io, original)
+                .continue_reply(&mut exchange)
+                .is_err()
+        );
         assert_eq!(io.read_bytes, 9);
         assert!(!exchange.acknowledged());
     }
@@ -172,7 +200,11 @@ fn eof_and_nontransient_receive_refusals_never_become_reaping_authority() {
     let original = OperationalDeadline::after(Duration::from_secs(5)).unwrap();
     let mut exchange = Gem5ShutdownExchange::reserved();
     first_receive(&mut io, &mut exchange, original);
-    assert!(continue_reply(&mut io, &mut exchange, original).is_err());
+    assert!(
+        OriginalShutdownIo::new(&mut io, original)
+            .continue_reply(&mut exchange)
+            .is_err()
+    );
     assert!(!exchange.reply_continuation_pending());
     assert!(!exchange.acknowledged());
     assert_eq!(exchange.received_bytes(), &FRAME[..9]);
@@ -215,11 +247,18 @@ fn transient_partial_request_never_resends_or_enters_receive_continuation() {
         reads: 0,
     };
     let mut exchange = Gem5ShutdownExchange::reserved();
-    let result = exchange_once(&mut io, &mut exchange);
-    assert!(retain_exchange_result(result, &mut exchange, original).is_err());
+    assert!(
+        OriginalShutdownIo::new(&mut io, original)
+            .exchange(&mut exchange)
+            .is_err()
+    );
 
     assert!(!exchange.reply_continuation_pending());
-    assert!(continue_reply(&mut io, &mut exchange, original).is_err());
+    assert!(
+        OriginalShutdownIo::new(&mut io, original)
+            .continue_reply(&mut exchange)
+            .is_err()
+    );
     assert_eq!(exchange.written_bytes(), 7);
     assert_eq!(io.written, &FRAME[..7]);
     assert_eq!(io.reads, 0);

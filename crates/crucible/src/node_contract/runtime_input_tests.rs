@@ -428,6 +428,10 @@ fn wrong_cut_or_lost_native_buffer_cannot_release_staging_custody() {
         Err(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt))
     ));
     assert_eq!(
+        runtime.original_witness().original_error_site(&activation),
+        Ok(Some("input/native-acknowledgement"))
+    );
+    assert_eq!(
         runtime
             .owners
             .get(&Id::new("owner/a").unwrap())
@@ -444,5 +448,9 @@ fn wrong_cut_or_lost_native_buffer_cannot_release_staging_custody() {
         runtime.recover_input_staging(&activation, &Id::new("stage/a").unwrap()),
         Err(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt))
     ));
+    assert_eq!(
+        runtime.original_witness().original_error_site(&activation),
+        Ok(Some("input/recovered-native-acknowledgement"))
+    );
     assert_eq!(buffer.borrow().calls, 1);
 }

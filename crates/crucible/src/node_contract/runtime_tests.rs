@@ -885,6 +885,7 @@ fn runtime(mode: OperatingMode) -> (NodeRuntime, Vec<Rc<RefCell<NativeState>>>) 
         condition_stop: None,
         collecting: None,
         graceful_retirement: false,
+        original_error_site: None,
     };
     (runtime, vec![a_state, b_state])
 }
@@ -1205,12 +1206,39 @@ fn authentic_receipt_rejection_and_overshoot_both_quarantine_without_clamping() 
             )))
         ));
         assert_eq!(
+            runtime.original_witness().original_error_site(&activation),
+            Ok(Some(if invalid_evidence {
+                "operation/native-outcome-authentication"
+            } else {
+                "operation/common-outcome-validation"
+            }))
+        );
+        assert_eq!(
             runtime.owner_lifecycle(&id("shared-owner")),
             Some(Lifecycle::Quarantined)
         );
         assert!(runtime.acknowledge(&token, &[]).is_err());
         assert_eq!(state[0].borrow().ack_calls, 0);
     }
+}
+
+#[test]
+fn retained_error_site_refuses_another_opaque_activation() {
+    let (mut original, _) = runtime(OperatingMode::Exact);
+    let activation = activate(&mut original);
+    let (mut foreign, _) = runtime(OperatingMode::Exact);
+    let foreign_activation = activate(&mut foreign);
+
+    assert_eq!(
+        original.original_witness().original_error_site(&activation),
+        Ok(None)
+    );
+    assert_eq!(
+        original
+            .original_witness()
+            .original_error_site(&foreign_activation),
+        Err(RuntimeError::ForeignAuthority)
+    );
 }
 
 fn quantum(runtime: &mut NodeRuntime, activation: &WorldActivation) -> OperationToken {
@@ -1471,23 +1499,65 @@ pub(super) fn test_nodes(
 fn graph_mismatch_returns_owned_handles_and_cleanup_remains_supervised() {
     let (graph, nodes, states, mut record) = admitted_parts();
     record.owners[0].incarnation = id("foreign-incarnation");
-    let failure = match NodeRuntime::new(
-        &graph,
-        nodes,
-        record,
-        RuntimeLimits::default(),
-        crate::node_contract::test_custody_slot(),
-    ) {
+    let limits = RuntimeLimits::default();
+    let queue = crate::node_contract::RuntimeCustodyQueue::new(1).unwrap();
+    let slot =
+        crate::node_contract::RuntimeCustodySupervisor::reserve_world(&queue, &record, limits)
+            .unwrap();
+    assert_eq!(queue.reserved_worlds(), 1);
+    assert_eq!(queue.retained_worlds(), 0);
+
+    let failure = match NodeRuntime::new(&graph, nodes, record, limits, slot) {
         Err(failure) => failure,
         Ok(_) => panic!("mismatched owner incarnation must refuse"),
     };
     assert_eq!(failure.error, RuntimeError::InvalidRoute);
     assert_eq!(failure.nodes.len(), 2);
-    assert_eq!(states[0].borrow().quarantine_calls, 0);
+    states[0].borrow_mut().reclamation_pending = true;
+    states[1].borrow_mut().invalid_reclamation = true;
 
+    // Drop transfers every original handle before a cleanup or route callback.
     drop(failure);
+    assert_eq!(queue.reserved_worlds(), 1);
+    assert_eq!(queue.retained_worlds(), 1);
+    assert_eq!(states[0].borrow().quarantine_calls, 0);
+    assert_eq!(states[1].borrow().quarantine_calls, 0);
+    let mut context = Context::from_waker(Waker::noop());
+
+    assert!(matches!(
+        queue.poll_reclamation(&mut context),
+        Poll::Pending
+    ));
     assert_eq!(states[0].borrow().quarantine_calls, 1);
     assert_eq!(states[1].borrow().quarantine_calls, 1);
+    assert_eq!(queue.retained_worlds(), 1);
+    assert!(matches!(
+        queue.poll_reclamation(&mut context),
+        Poll::Ready(Err(RuntimePollFailure::Admission(
+            RuntimeError::InvalidReceipt
+        )))
+    ));
+    assert_eq!(queue.reserved_worlds(), 1);
+    assert_eq!(queue.retained_worlds(), 1);
+
+    // One authentic owner receipt cannot release its still-invalid sibling.
+    states[0].borrow_mut().reclamation_pending = false;
+    assert!(matches!(
+        queue.poll_reclamation(&mut context),
+        Poll::Pending
+    ));
+    assert_eq!(queue.reserved_worlds(), 1);
+    assert_eq!(queue.retained_worlds(), 1);
+    assert_eq!(states[0].borrow().quarantine_calls, 1);
+    assert_eq!(states[1].borrow().quarantine_calls, 1);
+
+    states[1].borrow_mut().invalid_reclamation = false;
+    assert!(matches!(
+        queue.poll_reclamation(&mut context),
+        Poll::Ready(Ok(()))
+    ));
+    assert_eq!(queue.reserved_worlds(), 0);
+    assert_eq!(queue.retained_worlds(), 0);
 }
 
 #[test]

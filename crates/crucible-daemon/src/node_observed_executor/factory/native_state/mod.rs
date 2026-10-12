@@ -5,6 +5,7 @@
 //! images, actual live certificates and fresh owner binding remain backend-owned.
 
 pub(super) mod archive;
+pub(in crate::node_observed_executor::factory) mod behavioral;
 mod control;
 mod custody;
 mod evidence;
