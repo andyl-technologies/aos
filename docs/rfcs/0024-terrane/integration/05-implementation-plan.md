@@ -277,6 +277,17 @@ mapper. No native case, growth population or renewed Core package runs on this
 source. Its correction preserves the existing error category and attached cause;
 the failed source remains sealed before another qualification.
 
+Subsequent private trees `11bc0ef7d876` and `4d157b029455` also pass the exact
+formatter pair. Strict SDK Clippy first rejects two nonidiomatic producer-map
+updates, then reaches the Legacy fixture and rejects a request move while its
+decoded owner still borrows the offered bytes. Isolated corrections use map
+entries with unchanged vacant preparation and occupied freshness checks, and
+end borrowed fixture models before publication consumes the request. Source
+comparison after removing the lexical block confirms unchanged revision
+assertions and independent publication controls. Both failed packets retain
+unchanged sources and prior evidence; all native, Core renewal and growth
+executions remain unstarted.
+
 Independent source review also finds a valid mixed-revision cold source wrongly
 refused after its candidate already witnesses a signed root claim. An unnecessary
 prior-tree comparison reinterprets inert later parent properties under current
