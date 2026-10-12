@@ -1,4 +1,8 @@
-{sourceGate, ...}: let
+{
+  sourceGate,
+  nativeSdkGate,
+  ...
+}: let
   # Cargo's ordinary name filters allow empty success; every gate must exercise
   # a matching test, even after test modules are reorganized.
   runTests = ''
@@ -16,6 +20,13 @@
       fi
     }
   '';
+
+  runNativeTest = name:
+    import ../_native-cases.nix {
+      label = "cdc-" + builtins.hashString "sha256" name;
+      selectors = [name];
+      enterCrates = false;
+    };
 in {
   object-identity-from-manifest = sourceGate "object-identity-from-manifest" ''
     cd crates
@@ -24,26 +35,26 @@ in {
     printf 'PASS: canonical manifests and identity from known chunk references\n' > "$out/result"
   '';
 
-  cdc-boundaries = sourceGate "cdc-boundaries" ''
+  cdc-boundaries = nativeSdkGate "cdc-boundaries" ''
     cd crates
     ${runTests}
     run_tests -p terrane-core chunking::tests
     run_tests -p terrane codec::tests::admission_requires_identity_size_and_first_nonfinal_boundary
     run_tests -p terrane --lib codec::tests::object_final_chunks_require_the_first_boundary_while_dictionaries_remain_standalone -- --exact
     run_tests -p terrane --lib derived::tests::object_boundary_tests::derived_object_reads_reject_a_final_chunk_with_an_earlier_boundary -- --exact
-    run_tests -p terrane --no-default-features --features tokio,surface-sdk --lib bucket::manifest_tests::manifest_admission_rechecks_nonfinal_context_after_inventory_only_import -- --exact
-    run_tests -p terrane --no-default-features --features tokio,surface-sdk --lib bucket::manifest_tests::canonical_final::manifest_admission_rejects_a_final_chunk_with_an_earlier_boundary -- --exact
+    ${runNativeTest "bucket::manifest_tests::manifest_admission_rechecks_nonfinal_context_after_inventory_only_import"}
+    ${runNativeTest "bucket::manifest_tests::canonical_final::manifest_admission_rejects_a_final_chunk_with_an_earlier_boundary"}
     printf 'PASS: seeded FastCDC boundaries and profile edge cases\n' > "$out/result"
   '';
 
-  chunk-codec = sourceGate "chunk-codec" ''
+  chunk-codec = nativeSdkGate "chunk-codec" ''
     cd crates
     ${runTests}
     run_tests -p terrane-core codec::tests
     run_tests -p terrane codec::tests
-    run_tests -p terrane --no-default-features --features tokio,surface-sdk --lib guard::read::dictionary_tests::registered_dictionary_codecs_round_trip_through_guarded_content -- --exact
-    run_tests -p terrane --no-default-features --features tokio,surface-sdk --lib guard::read::dictionary_tests::dictionary_dependency_validation_precedes_plaintext_exposure -- --exact
-    run_tests -p terrane --no-default-features --features tokio,surface-sdk --lib ref_advance::disclosure_tests::disclosure_dictionary_dependencies_preserve_registered_codecs_and_verified_lengths -- --exact
+    ${runNativeTest "guard::read::dictionary_tests::registered_dictionary_codecs_round_trip_through_guarded_content"}
+    ${runNativeTest "guard::read::dictionary_tests::dictionary_dependency_validation_precedes_plaintext_exposure"}
+    ${runNativeTest "ref_advance::disclosure_tests::disclosure_dictionary_dependencies_preserve_registered_codecs_and_verified_lengths"}
     printf 'PASS: chunk envelope, frame, dictionary, and receiver checks\n' > "$out/result"
   '';
 
