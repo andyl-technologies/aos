@@ -1,12 +1,95 @@
 //! Independently authenticates existing inline values and their current producers.
 
+use std::collections::BTreeMap;
+
 use terrane_core::derived::{AttrRecord, AttributeName, AttributeValue, verify_record_producer};
-use terrane_core::tree_format::EntryKind;
+use terrane_core::identity::Digest;
+use terrane_core::provenance::VerifiedHistory;
+use terrane_core::tree_format::{ContentRef, EntryKind};
 
 use crate::guard::{AuthorizedRef, AuthorizedSnapshot, Guard, HistoryObservation, invalid};
 use crate::store::{Clock, Store, StoreFailure};
 
 use super::failure;
+
+#[derive(Eq, Ord, PartialEq, PartialOrd)]
+enum ContentKind {
+    Inline,
+    Manifest,
+}
+
+#[derive(Eq, Ord, PartialEq, PartialOrd)]
+struct CandidateKey {
+    content_kind: ContentKind,
+    object: Digest,
+    size: u64,
+    name: AttributeName,
+    encoded: Vec<u8>,
+}
+
+struct ProducerInputs {
+    history: VerifiedHistory,
+    originals: Vec<crate::guard::OriginalCommitContext>,
+    candidates: BTreeMap<CandidateKey, Vec<Vec<u8>>>,
+}
+
+struct ServingInputs {
+    verified: crate::guard::history::VerifiedTree,
+    history: VerifiedHistory,
+    originals: Vec<crate::guard::OriginalCommitContext>,
+}
+
+fn candidate_key(
+    content: ContentRef,
+    size: u64,
+    name: AttributeName,
+    encoded: &[u8],
+) -> CandidateKey {
+    let (content_kind, object) = match content {
+        ContentRef::Inline(object) => (ContentKind::Inline, object),
+        ContentRef::Manifest(object) => (ContentKind::Manifest, object),
+    };
+    CandidateKey {
+        content_kind,
+        object,
+        size,
+        name,
+        encoded: encoded.to_vec(),
+    }
+}
+
+// Inventory only immutable bytes. Provenance checks remain at the original
+// matching-row boundary, so unrelated attributes cannot change refusal order.
+fn inventory(
+    verified: &crate::guard::history::VerifiedTree,
+    minimum: u64,
+    work: &mut crate::guard::read::indexes::IndexLookupCurrentWork,
+) -> Result<BTreeMap<CandidateKey, Vec<Vec<u8>>>, StoreFailure> {
+    let mut candidates = BTreeMap::<CandidateKey, Vec<Vec<u8>>>::new();
+    for occurrence in verified.evidence.occurrences(minimum)? {
+        let tree = verified.evidence.tree(occurrence.root, minimum)?;
+        for item in tree.iter() {
+            work.producer_entries = work.producer_entries.checked_add(1).ok_or_else(invalid)?;
+            let EntryKind::File { content, size, .. } = &item.entry.kind else {
+                continue;
+            };
+            let mut path = occurrence.path.clone();
+            if path != b"/" {
+                path.push(b'/');
+            }
+            path.extend_from_slice(&item.key);
+            for attribute in &item.entry.attrs {
+                if let Ok(name) = AttributeName::parse(attribute.name) {
+                    candidates
+                        .entry(candidate_key(*content, *size, name, attribute.value))
+                        .or_default()
+                        .push(path.clone());
+                }
+            }
+        }
+    }
+    Ok(candidates)
+}
 
 impl<S: Store, C: Clock> Guard<S, C> {
     /// Repeats current occurrence and producer checks without reading plaintext.
@@ -55,6 +138,12 @@ impl<S: Store, C: Clock> Guard<S, C> {
             rows
         };
         let mut requests = Vec::new();
+        // These maps cannot escape this fixed observation, guard or credential
+        // invocation. Serving and source qualification have distinct purposes.
+        // The signed view fixes each root; refresh checks its retained selection
+        // and every captured Original. Domain and live rights are never cached.
+        let mut producers = BTreeMap::<Digest, ProducerInputs>::new();
+        let mut serving = BTreeMap::<Digest, ServingInputs>::new();
         for (path, content, size, values) in rows {
             work.occurrence_checks = work.occurrence_checks.checked_add(1).ok_or_else(invalid)?;
             requests.extend(
@@ -73,79 +162,72 @@ impl<S: Store, C: Clock> Guard<S, C> {
                     .attribute_origin_checks
                     .checked_add(1)
                     .ok_or_else(invalid)?;
-                work.history_boundary_calls = work
-                    .history_boundary_calls
-                    .checked_add(1)
-                    .ok_or_else(invalid)?;
                 let producer = snapshot
                     .history
                     .attribute_producer(&location, name.as_str())
                     .map_err(failure)?;
-                let (verified, history) = self
-                    .verified_tree_history_observed(producer, observation)
+                if !producers.contains_key(&producer) {
+                    work.history_boundary_calls = work
+                        .history_boundary_calls
+                        .checked_add(1)
+                        .ok_or_else(invalid)?;
+                    let (verified, history) = self
+                        .verified_tree_history_observed(producer, observation)
+                        .await?;
+                    let candidates = inventory(&verified, self.config().min_chunk_size, work)?;
+                    let originals = self.producer_originals(&history)?;
+                    producers.insert(
+                        producer,
+                        ProducerInputs {
+                            history,
+                            originals,
+                            candidates,
+                        },
+                    );
+                } else {
+                    let prepared = producers.get(&producer).ok_or_else(invalid)?;
+                    self.refresh_producer_history(
+                        &prepared.history,
+                        &prepared.originals,
+                        observation,
+                    )
                     .await?;
-                let paths = {
-                    let mut paths = Vec::new();
-                    for occurrence in verified
-                        .evidence
-                        .occurrences(self.config().min_chunk_size)?
+                }
+                let prepared = producers.get(&producer).ok_or_else(invalid)?;
+                let mut paths = Vec::new();
+                for producer_path in prepared
+                    .candidates
+                    .get(&candidate_key(content, size, name, &encoded))
+                    .into_iter()
+                    .flatten()
+                {
+                    let (source, _) = prepared
+                        .history
+                        .locate(
+                            producer,
+                            producer_path.strip_prefix(b"/").ok_or_else(invalid)?,
+                        )
+                        .map_err(failure)?;
+                    if prepared
+                        .history
+                        .attribute_producer(&source, name.as_str())
+                        .map_err(failure)?
+                        != producer
                     {
-                        let tree = verified
-                            .evidence
-                            .tree(occurrence.root, self.config().min_chunk_size)?;
-                        for item in tree.iter() {
-                            work.producer_entries =
-                                work.producer_entries.checked_add(1).ok_or_else(invalid)?;
-                            let EntryKind::File {
-                                content: actual,
-                                size: actual_size,
-                                ..
-                            } = &item.entry.kind
-                            else {
-                                continue;
-                            };
-                            if *actual != content
-                                || *actual_size != size
-                                || !item.entry.attrs.iter().any(|attribute| {
-                                    attribute.name == name.as_str() && attribute.value == encoded
-                                })
-                            {
-                                continue;
-                            }
-                            let mut producer_path = occurrence.path.clone();
-                            if producer_path != b"/" {
-                                producer_path.push(b'/');
-                            }
-                            producer_path.extend_from_slice(&item.key);
-                            let (source, _) = history
-                                .locate(
-                                    producer,
-                                    producer_path.strip_prefix(b"/").ok_or_else(invalid)?,
-                                )
-                                .map_err(failure)?;
-                            if history
-                                .attribute_producer(&source, name.as_str())
-                                .map_err(failure)?
-                                != producer
-                            {
-                                continue;
-                            }
-                            let value = AttributeValue::decode(name, &encoded).map_err(failure)?;
-                            let object = match content {
-                                terrane_core::tree_format::ContentRef::Inline(object)
-                                | terrane_core::tree_format::ContentRef::Manifest(object) => object,
-                            };
-                            verify_record_producer(
-                                &AttrRecord::new(object, value, producer),
-                                &history,
-                                &source,
-                            )
-                            .map_err(failure)?;
-                            paths.push(producer_path);
-                        }
+                        continue;
                     }
-                    paths
-                };
+                    let value = AttributeValue::decode(name, &encoded).map_err(failure)?;
+                    let object = match content {
+                        ContentRef::Inline(object) | ContentRef::Manifest(object) => object,
+                    };
+                    verify_record_producer(
+                        &AttrRecord::new(object, value, producer),
+                        &prepared.history,
+                        &source,
+                    )
+                    .map_err(failure)?;
+                    paths.push(producer_path.clone());
+                }
                 if paths.is_empty() {
                     return Err(invalid());
                 }
@@ -156,13 +238,39 @@ impl<S: Store, C: Clock> Guard<S, C> {
                 for producer_path in paths {
                     work.producer_checks =
                         work.producer_checks.checked_add(1).ok_or_else(invalid)?;
-                    work.history_boundary_calls = work
-                        .history_boundary_calls
-                        .checked_add(1)
-                        .ok_or_else(invalid)?;
-                    match self
-                        .read_commit_snapshot_authorizations_observed(
+                    if !serving.contains_key(&producer) {
+                        work.history_boundary_calls = work
+                            .history_boundary_calls
+                            .checked_add(1)
+                            .ok_or_else(invalid)?;
+                        let (verified, history) = self
+                            .verified_tree_history_observed(
+                                producer,
+                                observation.requested_target(),
+                            )
+                            .await?;
+                        let originals = self.producer_originals(&history)?;
+                        serving.insert(
                             producer,
+                            ServingInputs {
+                                verified,
+                                history,
+                                originals,
+                            },
+                        );
+                    } else {
+                        let prepared = serving.get(&producer).ok_or_else(invalid)?;
+                        self.refresh_producer_history(
+                            &prepared.history,
+                            &prepared.originals,
+                            observation.requested_target(),
+                        )
+                        .await?;
+                    }
+                    let prepared = serving.get(&producer).ok_or_else(invalid)?;
+                    match self
+                        .producer_authorizations_from_history(
+                            (&prepared.verified, &prepared.history),
                             token,
                             &producer_path,
                             surface,
@@ -170,8 +278,8 @@ impl<S: Store, C: Clock> Guard<S, C> {
                         )
                         .await
                     {
-                        Ok((producer_snapshot, current)) => {
-                            if producer_snapshot.storage_domain != snapshot.storage_domain {
+                        Ok((domain, current)) => {
+                            if domain != snapshot.storage_domain {
                                 return Err(invalid());
                             }
                             requests.extend(current);
