@@ -21,16 +21,23 @@ enum Stage {
 
 /// Holds rebuilt canonical objects and the exact old-to-new root correspondence.
 pub(super) struct MarkerTrees {
+    /// Identifies the rebuilt destination namespace root.
     pub(super) root: Digest,
+    /// Maps each original root to its canonical rebuilt replacement.
     pub(super) roots: BTreeMap<Digest, Digest>,
+    /// Retains immutable metadata needed to stage the rebuilt correspondence.
     pub(super) uploads: Vec<StagedUpload>,
 }
 
 /// Describes one actual destination occurrence selected by the private producer.
 pub(super) struct MarkerOccurrence {
+    /// Identifies the original containing root of the selected destination entry.
     pub(super) root: Digest,
+    /// Names the entry path relative to its containing root.
     pub(super) path: Vec<u8>,
+    /// Identifies the independently derived public introducing commit.
     pub(super) introducer: Digest,
+    /// Names the actual resolved destination disclosure domain.
     pub(super) destination_domain: String,
 }
 

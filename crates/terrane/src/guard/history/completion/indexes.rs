@@ -102,6 +102,11 @@ pub(super) async fn verify<S: ContentStore>(
     Ok(())
 }
 
+/// Translates an index failure while retaining the complete index diagnostic as its source.
+///
+/// Nested store failures keep their exact kind, including Denied scopes. Other
+/// invalid relationships become malformed requests; incomplete or unsupported
+/// relationships become Unsupported, and unclassified store errors become Unavailable.
 pub(in crate::guard) fn failure(error: Error) -> StoreFailure {
     let kind = match &error {
         Error::Store { failure, .. } => failure.kind().clone(),

@@ -11,19 +11,29 @@ use crate::store::{ContentStore, StoreErrorKind, StoreFailure};
 
 use super::IndexBackfillGapReason;
 
+/// Retains one side record with genuine producer evidence and its readable occurrence.
 pub(super) struct CheckedRecord {
+    /// Retains the exact ordinary attribute record qualified by the producer.
     pub(super) record: AttrRecord,
+    /// Retains immutable evidence authenticated by the owning history verifier.
     pub(super) producer: ProducerEvidence,
+    /// Names the producing occurrence checked under current Read and trust.
     pub(super) path: Vec<u8>,
 }
 
+/// Collects qualified side records and explicit reasons for missing evidence.
 pub(super) struct Records {
+    /// Retains the rebuilt side table whose records passed producer qualification.
     pub(super) table: SideTable,
     checked: BTreeMap<Digest, CheckedRecord>,
     failed: BTreeMap<(Digest, AttributeName), IndexBackfillGapReason>,
 }
 
 impl Records {
+    /// Borrows the qualified evidence for an exact selected side record.
+    ///
+    /// # Errors
+    /// Rejects malformed record identities or records absent from qualified evidence.
     pub(super) fn selected(&self, record: &AttrRecord) -> Result<&CheckedRecord, StoreFailure> {
         let identity = record.identity().map_err(super::edits::failure)?;
         self.checked
@@ -31,6 +41,7 @@ impl Records {
             .ok_or_else(crate::guard::invalid)
     }
 
+    /// Returns the observed gap reason or MissingEvidence when none was recorded.
     pub(super) fn missing(&self, object: Digest, name: AttributeName) -> IndexBackfillGapReason {
         self.failed
             .get(&(object, name))
@@ -41,6 +52,10 @@ impl Records {
 
 // Kind and profile are checked before the digest becomes a private ordering
 // key. Public reports retain the complete original identity.
+/// Extracts a private ordering key after checking Attribute kind and identity profile.
+///
+/// # Errors
+/// Rejects non-Attribute identities or identities outside the Terrane v1 profile.
 pub(super) fn record_key(identity: &Identity) -> Result<Digest, StoreFailure> {
     if identity.kind() != IdentityKind::Attribute {
         return Err(crate::guard::invalid());
@@ -63,6 +78,11 @@ impl ProducerVerifier for Qualified<'_> {
     }
 }
 
+/// Qualifies catalog records through actual producer history and current readable paths.
+///
+/// # Errors
+/// Preserves catalog, immutable read and side-table failures. Expected producer
+/// refusals become gap reasons; other producer failures propagate unchanged.
 #[cfg(unix)]
 pub(super) async fn acquire<F, B, V, C>(
     guard: &Guard<crate::bucket::FileBucket<F, B, V>, C>,

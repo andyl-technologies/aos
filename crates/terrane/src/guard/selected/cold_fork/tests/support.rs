@@ -42,17 +42,24 @@ use terrane_core::{
     tree_format::{Property, TreeUse},
 };
 
+/// Carries the original typed diagnostic from a native test operation.
 pub(super) type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
+/// Grants every registered operation to the fixture principal.
 pub(super) const ALL_VERBS: u8 =
     Verb::Read as u8 | Verb::Fork as u8 | Verb::Commit as u8 | Verb::Tag as u8 | Verb::Admin as u8;
+/// Combines scoped Read and Commit for ordinary fixture publication.
 pub(super) const READ_COMMIT: u8 = Verb::Read as u8 | Verb::Commit as u8;
+/// Names the independently published source reference.
 pub(super) const SOURCE: &str = "refs/heads/_/source";
+/// Combines source Fork and destination Commit for fixture copying.
 pub(super) const FORK_COMMIT: u8 = Verb::Fork as u8 | Verb::Commit as u8;
+/// Names the independently selected cold destination reference.
 pub(super) const TARGET: &str = "refs/heads/_/cold";
 
 const SECRET: [u8; 32] = [29; 32];
 
+/// Names the actual native bucket with effect observation and metadata validation.
 pub(super) type Bucket<C = TokioClock> = FileBucket<ProbeFs, C, MetadataValidator>;
 
 /// Requires setup to succeed while retaining its original typed diagnostic.
@@ -77,6 +84,10 @@ pub(super) fn rejected<T: std::fmt::Debug, E>(result: Result<T, E>) -> E {
     }
 }
 
+/// Issues a genuine fixture token with the supplied exact grants.
+///
+/// # Errors
+/// Preserves authority validation and token issuance failures.
 pub(super) fn token(grants: Vec<Grant>) -> TestResult<Vec<u8>> {
     Ok(Token::issue(
         Authority {
@@ -97,11 +108,18 @@ pub(super) fn token(grants: Vec<Grant>) -> TestResult<Vec<u8>> {
     .encode())
 }
 
+/// Issues a genuine fixture token covering every registered reference operation.
+///
+/// # Errors
+/// Preserves grant validation and token issuance failures.
 pub(super) fn full_token() -> TestResult<Vec<u8>> {
     token(vec![Grant::new("refs/**".into(), Verbs::new(ALL_VERBS)?)?])
 }
 
 /// Builds canonical empty local Legacy trees before any asynchronous operation.
+///
+/// # Errors
+/// Preserves canonical tree construction and token issuance failures.
 pub(super) fn request(parents: Vec<Digest>, verbs: u8) -> TestResult<CommitRequest> {
     let mut acl = vec![0x81, 0x82, 0x66];
     acl.extend_from_slice(b"writer");
@@ -173,6 +191,9 @@ pub(super) fn request(parents: Vec<Digest>, verbs: u8) -> TestResult<CommitReque
 }
 
 /// Supplies genuine additional-principal widening through ordinary signed admission.
+///
+/// # Errors
+/// Preserves canonical tree construction and token issuance failures.
 pub(super) fn widened_request(parents: Vec<Digest>) -> TestResult<CommitRequest> {
     let mut proposal = request(parents, ALL_VERBS)?;
     let mut acl = vec![0x82, 0x82, 0x66];
@@ -212,6 +233,10 @@ pub(super) fn widened_request(parents: Vec<Digest>) -> TestResult<CommitRequest>
     Ok(proposal)
 }
 
+/// Builds a fresh copied-tree proposal without unreachable staged uploads.
+///
+/// # Errors
+/// Preserves canonical baseline construction and token issuance failures.
 pub(super) fn fork_request() -> TestResult<CommitRequest> {
     let mut request = request(Vec::new(), ALL_VERBS)?;
     request.uploads.clear();
@@ -221,20 +246,38 @@ pub(super) fn fork_request() -> TestResult<CommitRequest> {
 
 /// Keeps real opened backend, protected controls and independently configured keys.
 pub(super) struct Fixture<C: Clock + BucketBinding = TokioClock> {
+    /// Owns the actual native coordinator and protected retention setup.
     pub(super) repository: Repository<Bucket<C>, C, ProbeFs>,
+    /// Retains the forwarding filesystem observer used by the native backend.
     pub(super) fs: ProbeFs,
+    /// Retains the same injected clock used by the fixture publication producer.
     pub(super) clock: C,
+    /// Names the protected Original control directory created for this fixture.
     pub(super) original: PathBuf,
     owner: u32,
 }
 
 impl Fixture {
+    /// Opens a genuine native fixture with its ordinary Tokio clock.
+    ///
+    /// # Errors
+    /// Preserves filesystem setup, bucket opening and Original initialization failures.
+    ///
+    /// # Panics
+    /// Panics if metadata and content observers differ or fixture synchronization is poisoned.
     pub(super) async fn open() -> TestResult<Self> {
         Self::with_clock(TokioClock).await
     }
 }
 
 impl<C: Clock + BucketBinding + Clone + Sync + 'static> Fixture<C> {
+    /// Opens a genuine native fixture with the supplied actual injected clock.
+    ///
+    /// # Errors
+    /// Preserves entropy, filesystem setup, bucket opening and Original initialization failures.
+    ///
+    /// # Panics
+    /// Panics if metadata and content observers differ or fixture synchronization is poisoned.
     pub(super) async fn with_clock(clock: C) -> TestResult<Self> {
         let entropy = TokioLocalFs.random_bytes(16).await?;
         let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -281,10 +324,18 @@ impl<C: Clock + BucketBinding + Clone + Sync + 'static> Fixture<C> {
         })
     }
 
+    /// Borrows the actual opened bucket owned by the fixture repository.
     pub(super) fn bucket(&self) -> &Bucket<C> {
         self.repository.coordinator().store()
     }
 
+    /// Publishes a proposal through an actual native writer session.
+    ///
+    /// # Errors
+    /// Preserves session opening, current admission and native publication failures.
+    ///
+    /// # Panics
+    /// Panics if the forwarding filesystem observation synchronization is poisoned.
     pub(super) async fn publish(
         &self,
         reference: &str,
@@ -300,6 +351,13 @@ impl<C: Clock + BucketBinding + Clone + Sync + 'static> Fixture<C> {
             .await?)
     }
 
+    /// Publishes two genuine source commits and checks their completed lineage context.
+    ///
+    /// # Errors
+    /// Preserves proposal, publication, observation and lineage qualification failures.
+    ///
+    /// # Panics
+    /// Panics if actual Node reads, completed contexts or protected controls are missing.
     pub(super) async fn complete_source(&self, verbs: u8) -> TestResult<RefRecord> {
         let first = self.publish(SOURCE, request(Vec::new(), verbs)?).await?;
         let observer = self.bucket().observe_metadata_for_tests()?;
@@ -331,6 +389,13 @@ impl<C: Clock + BucketBinding + Clone + Sync + 'static> Fixture<C> {
         Ok(second)
     }
 
+    /// Requires exact completed contexts for every genuine lineage view.
+    ///
+    /// # Errors
+    /// Rejects missing contexts or mismatched independently selected view inputs.
+    ///
+    /// # Panics
+    /// Panics if view contexts are incomplete or protected control dependencies are absent.
     pub(super) fn assert_full_context(&self, lineage: &CheckedLineage) -> TestResult {
         let contexts = lineage
             .used
@@ -358,6 +423,12 @@ impl<C: Clock + BucketBinding + Clone + Sync + 'static> Fixture<C> {
     /// Calibrates PUT, GET and a fresh reopen against each bucket's own observer.
     ///
     /// Validator Node decodes are distinct from read-side Core TreeEvidence decodes.
+    ///
+    /// # Errors
+    /// Preserves actual selection, metadata I/O, reopen and successor-check failures.
+    ///
+    /// # Panics
+    /// Panics if observer identity, metadata counters or addressed bytes contradict calibration.
     pub(super) async fn calibrate(&self, root: Digest) -> TestResult {
         let before = calibration::Selection::capture(self).await?;
         let mutation_start = self.fs.mutations().len();
@@ -413,6 +484,13 @@ impl<C: Clock + BucketBinding + Clone + Sync + 'static> Fixture<C> {
         Ok(())
     }
 
+    /// Requires genuine cold publication without Node I/O and with a native acknowledgment.
+    ///
+    /// # Errors
+    /// Preserves source observations, calibration, publication and retained-state checks.
+    ///
+    /// # Panics
+    /// Panics if cold counters, actual acknowledgment or selected-state invariants fail.
     pub(super) async fn assert_cold(&self, source: &str, target: &str) -> TestResult<RefRecord> {
         let before = Snapshot::capture(self, source).await?;
         let prior = Commit::decode(&before.commit)?;
@@ -577,17 +655,31 @@ fn coordinator<C: Clock + BucketBinding + Clone>(
 
 /// Preserves complete source/ref/log and protected Original read observations.
 pub(super) struct Snapshot {
+    /// Retains the exact selected whole source record.
     pub(super) record: RefRecord,
+    /// Retains the addressed signed source commit bytes.
     pub(super) commit: Vec<u8>,
+    /// Retains the complete actual selected publication state.
     pub(super) state: PublicationState,
+    /// Retains the exact logical projection of selected control values.
     pub(super) logical: BTreeMap<String, Option<Vec<u8>>>,
+    /// Retains the actual selected lineage record observation when present.
     pub(super) lineage_read: Option<RecordRead>,
+    /// Retains the actual selected Guard snapshot record observation.
     pub(super) guard_read: RecordRead,
     history: Vec<RecordRead>,
+    /// Retains exact protected Original file bytes and incarnations.
     pub(super) originals: Vec<FileImage>,
 }
 
 impl Snapshot {
+    /// Captures actual selected source and protected Original observations under exclusion.
+    ///
+    /// # Errors
+    /// Preserves holder acquisition, selected reads, identity decoding and protected file failures.
+    ///
+    /// # Panics
+    /// Panics if captured lineage controls name a different Original owner or control directory.
     pub(super) async fn capture<C: Clock + BucketBinding + Clone + Sync + 'static>(
         fixture: &Fixture<C>,
         source: &str,
@@ -659,6 +751,10 @@ impl Snapshot {
         })
     }
 
+    /// Decodes the actual retained selected lineage bytes without constructing authority.
+    ///
+    /// # Errors
+    /// Rejects absent lineage bytes or invalid canonical lineage encoding.
     pub(super) fn lineage(&self) -> TestResult<CheckedLineage> {
         Ok(CheckedLineage::decode(
             self.lineage_read
@@ -668,6 +764,13 @@ impl Snapshot {
         )?)
     }
 
+    /// Requires the exact source head, signed commit and retained history observations.
+    ///
+    /// # Errors
+    /// Preserves actual head, commit and retained history read failures.
+    ///
+    /// # Panics
+    /// Panics if source head, signed bytes or history observations changed.
     pub(super) async fn assert_head_and_history_unchanged<
         C: Clock + BucketBinding + Clone + Sync + 'static,
     >(
@@ -695,6 +798,13 @@ impl Snapshot {
         Ok(())
     }
 
+    /// Requires exact source history and protected Original observations to remain unchanged.
+    ///
+    /// # Errors
+    /// Preserves source and protected control read failures.
+    ///
+    /// # Panics
+    /// Panics if any captured source or protected Original observation changed.
     pub(super) async fn assert_source_unchanged<
         C: Clock + BucketBinding + Clone + Sync + 'static,
     >(
@@ -733,6 +843,7 @@ impl Snapshot {
 
 /// Stores fixture observations without constructing a native read receipt.
 pub(super) struct FileImage {
+    /// Names the exact protected file observed by the fixture.
     pub(super) path: PathBuf,
     bytes: Vec<u8>,
     metadata: std::fs::Metadata,
@@ -749,6 +860,13 @@ impl FileImage {
     }
 }
 
+/// Requires the bytes and incarnation of an actual native read to remain unchanged.
+///
+/// # Errors
+/// Rejects missing captured bytes or metadata and preserves current filesystem read failures.
+///
+/// # Panics
+/// Panics if bytes or the complete metadata stamp changed.
 pub(super) async fn assert_read_unchanged(fs: &ProbeFs, read: &RecordRead) -> TestResult {
     assert_eq!(
         fs.read_nofollow(read.path()).await?.as_slice(),
@@ -760,6 +878,7 @@ pub(super) async fn assert_read_unchanged(fs: &ProbeFs, read: &RecordRead) -> Te
     Ok(())
 }
 
+/// Copies the complete incarnation and metadata tuple compared by the fixture.
 pub(super) fn stamp(
     metadata: &std::fs::Metadata,
 ) -> (u64, u64, u32, u32, u32, u64, i64, i64, i64, i64, u64) {
@@ -778,6 +897,10 @@ pub(super) fn stamp(
     )
 }
 
+/// Requires zero actual Node GET, PUT and validator decode observations.
+///
+/// # Panics
+/// Panics if any observed Node counter is nonzero.
 pub(super) fn assert_no_nodes(counts: &crate::bucket::content_observation::ContentCounts) {
     assert_eq!(
         (counts.node_gets, counts.node_puts, counts.node_decodes),
@@ -785,6 +908,10 @@ pub(super) fn assert_no_nodes(counts: &crate::bucket::content_observation::Conte
     );
 }
 
+/// Borrows the original typed store failure from supported repository error forms.
+///
+/// # Panics
+/// Panics if the repository error does not contain an actual store failure.
 pub(super) fn store_failure(error: &RepositoryError) -> &StoreFailure {
     match error {
         RepositoryError::Store(failure)
@@ -794,11 +921,18 @@ pub(super) fn store_failure(error: &RepositoryError) -> &StoreFailure {
     }
 }
 
+/// Encodes a fixture digest as lowercase hexadecimal text.
 pub(super) fn hex(digest: &Digest) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Activates a genuine protocol Selected alias with its complete normal log.
+///
+/// # Errors
+/// Preserves signed commit reads, canonical decoding, log append and ref CAS failures.
+///
+/// # Panics
+/// Panics if the actual ref CAS does not apply the alias.
 pub(super) async fn raw_alias(
     fixture: &Fixture,
     source: &RefRecord,

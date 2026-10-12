@@ -15,10 +15,14 @@ mod requalification;
 
 pub(super) use requalification::SourceMutation;
 
+/// Observes real pack I/O and native effects while forwarding the actual filesystem.
 #[derive(Clone, Default)]
 pub(super) struct CountingFs {
+    /// Arms refusal of actual pack-body I/O for no-read witnesses.
     pub(super) reject_packs: Arc<AtomicBool>,
+    /// Counts actual intercepted pack-body operations.
     pub(super) pack_io: Arc<AtomicUsize>,
+    /// Counts actual submitted filesystem effects.
     pub(super) effects: Arc<AtomicUsize>,
     lose_original_after_retention: Arc<Mutex<Option<PathBuf>>>,
     acknowledged: Arc<Mutex<Vec<terrane_core::gc::publication::PublicationTransaction>>>,

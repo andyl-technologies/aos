@@ -851,6 +851,10 @@ pub(super) mod test_pause {
         Ok((observed, resume))
     }
 
+    /// Waits for an armed test pause after actual baseline retention.
+    ///
+    /// # Errors
+    /// Rejects poisoned pause synchronization or disconnected test channels.
     pub(super) async fn after_baseline(root: &Path) -> Result<(), StoreFailure> {
         let pause = PAUSES
             .get_or_init(|| Mutex::new(BTreeMap::new()))

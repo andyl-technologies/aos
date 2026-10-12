@@ -22,9 +22,13 @@ use terrane_core::refs::RefRecord;
 
 /// Carries the exact initial current observation without supplying permissions.
 pub(super) struct CurrentHistoryRequest<'a> {
+    /// Names the reference whose whole current head must remain selected.
     pub(super) reference: String,
+    /// Retains the exact current record captured before history completion.
     pub(super) record: RefRecord,
+    /// Retains the pending physical read inputs requiring independent closure.
     pub(super) current: PendingCurrentReadCheck,
+    /// Borrows synchronization and trace inputs without supplying authority.
     pub(super) observation: HistoryObservation<'a>,
 }
 
