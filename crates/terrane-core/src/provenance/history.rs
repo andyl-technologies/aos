@@ -335,6 +335,16 @@ impl VerifiedHistory {
         self.commits.get(identity)
     }
 
+    /// Borrows every authenticated signed commit record in identity order.
+    ///
+    /// The inventory includes records reached through disclosure dependencies,
+    /// not only ordinary parents. Records establish signature verification;
+    /// iteration grants no history completion, Original association, or current
+    /// authorization. Callers must independently retain or refresh that evidence.
+    pub fn commits(&self) -> impl Iterator<Item = &VerifiedCommit> {
+        self.commits.values()
+    }
+
     pub(super) fn root_reachable(&self, commit: Digest, root: Digest) -> bool {
         self.root_presence(commit, root) == Ok(true)
     }
