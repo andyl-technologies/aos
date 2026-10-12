@@ -1,4 +1,8 @@
-{sourceGate, ...}: let
+{
+  sourceGate,
+  nativeSdkGate,
+  ...
+}: let
   runTests = filter: ''
     if ! cargo test --frozen --offline -p terrane-core --lib ${filter} > "$TMPDIR/test.log" 2>&1; then
       cat "$TMPDIR/test.log"
@@ -7,15 +11,14 @@
     python3 -c 'import pathlib, re, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit(not re.search(r"test result: ok\. [1-9][0-9]* passed; 0 failed", output))' "$TMPDIR/test.log"
   '';
 
-  runNativeTest = name: ''
-    if ! cargo test --frozen --offline -p terrane --no-default-features --features tokio,surface-sdk --lib ${name} -- --exact > "$TMPDIR/test.log" 2>&1; then
-      cat "$TMPDIR/test.log"
-      exit 1
-    fi
-    python3 -c 'import pathlib, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit("test result: ok. 1 passed; 0 failed" not in output or "test " + sys.argv[2] + " ... ok" not in output)' "$TMPDIR/test.log" "${name}"
-  '';
+  runNativeTest = name:
+    import ../_native-cases.nix {
+      label = "properties-" + builtins.hashString "sha256" name;
+      selectors = [name];
+      enterCrates = false;
+    };
 in {
-  property-resolution = sourceGate "property-resolution" ''
+  property-resolution = nativeSdkGate "property-resolution" ''
     cd crates
     ${runTests "properties::tests::resolution"}
     ${runTests "properties::depth_tests"}

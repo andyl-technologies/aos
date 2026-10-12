@@ -24,27 +24,13 @@
     "store::native_effect::publication::capture::predicate_tests::differing_original_input_constraints_remain_distinct_and_fail_closed"
     "store::native_effect::publication::capture::predicate_tests::missing_input_stays_absent_after_predicate_coalescence"
   ];
+  runCases = import ./_native-cases.nix {
+    label = "native-index-loading";
+    inherit selectors;
+  };
 in
   # Immutable loading and relationship verification precede current view checks.
   sourceGate "native-index-loading" ''
-    cd crates
-    cargo test --frozen --offline -p terrane --no-default-features \
-      --features tokio,surface-sdk --lib -- --list > "$out/discovery.log"
-    python3 ../tests/terrane/check_native_gate.py inventory \
-      "$out/discovery.log" '${builtins.toJSON selectors}'
-
-    case_number=0
-    for test_name in ${builtins.concatStringsSep " " selectors}; do
-      case_number=$((case_number + 1))
-      case_log="$out/case-$case_number.log"
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
-        --features tokio,surface-sdk --lib "$test_name" -- --exact \
-        > "$case_log" 2>&1; then
-        cat "$case_log"
-        exit 1
-      fi
-      python3 ../tests/terrane/check_native_gate.py execution \
-        "$case_log" "[\"$test_name\"]"
-    done
+    ${runCases}
     printf 'PASS: twenty-three exact immutable index loading and physical input refusal cases\n' > "$out/result"
   ''

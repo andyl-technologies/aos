@@ -2,8 +2,13 @@
 {
   label,
   selectors,
+  enterCrates ? true,
 }: ''
-  cd crates
+  ${
+    if enterCrates
+    then "cd crates"
+    else ""
+  }
   mkdir -p "$out/logs"
   inventory_log="$out/logs/${label}-inventory.log"
   if "$TERRANE_NATIVE_SDK_TEST_BINARY" --list > "$inventory_log" 2>&1; then

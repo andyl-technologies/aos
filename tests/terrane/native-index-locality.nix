@@ -12,24 +12,13 @@
   selectors =
     map (name: "guard::authoring::tests::publication::locality::${name}") nativeNames
     ++ map (name: "guard::admission::index_writer::propagation::tests::${name}") pureNames;
+  runCases = import ./_native-cases.nix {
+    label = "native-index-locality";
+    inherit selectors;
+  };
 in
   # Exhaustive canonical output checks run outside the measured maintenance.
   sourceGate "native-index-locality" ''
-    cd crates
-    cargo test --frozen --offline -p terrane --no-default-features \
-      --features tokio,surface-sdk --lib -- --list > "$TMPDIR/index-locality-tests.txt"
-    python3 ../tests/terrane/check_native_gate.py inventory \
-      "$TMPDIR/index-locality-tests.txt" '${builtins.toJSON selectors}'
-
-    for test_name in ${builtins.concatStringsSep " " selectors}; do
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
-        --features tokio,surface-sdk --lib "$test_name" -- --exact \
-        > "$TMPDIR/index-locality-test.log" 2>&1; then
-        cat "$TMPDIR/index-locality-test.log"
-        exit 1
-      fi
-      python3 ../tests/terrane/check_native_gate.py execution \
-        "$TMPDIR/index-locality-test.log" "[\"$test_name\"]"
-    done
+    ${runCases}
     printf 'PASS: three native graft locality and three structural cases; full preparation charged separately\n' > "$out/result"
   ''

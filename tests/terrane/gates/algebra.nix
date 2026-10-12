@@ -1,5 +1,6 @@
 {
   sourceGate,
+  nativeSdkGate,
   forkPrerequisites,
   ...
 }: let
@@ -8,10 +9,12 @@
     python3 -c 'import pathlib, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit("test result: ok. 1 passed; 0 failed" not in output or "test " + sys.argv[2] + " ... ok" not in output)' "$TMPDIR/test.log" "${name}"
   '';
 
-  runNativeTest = name: ''
-    cargo test --frozen --offline -p terrane --no-default-features --features tokio,surface-sdk --lib ${name} -- --exact > "$TMPDIR/test.log"
-    python3 -c 'import pathlib, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit("test result: ok. 1 passed; 0 failed" not in output or "test " + sys.argv[2] + " ... ok" not in output)' "$TMPDIR/test.log" "${name}"
-  '';
+  runNativeTest = name:
+    import ../_native-cases.nix {
+      label = "algebra-" + builtins.hashString "sha256" name;
+      selectors = [name];
+      enterCrates = false;
+    };
 
   overlayGraftSelectors = [
     "overlay_overlapping_grafts_preserve_lower_children_and_recipe_inputs"
@@ -55,25 +58,14 @@
     "current_revision::root_native_cold_fork_refuses_changed_historical_inputs_without_nodes"
   ];
 in {
-  algebra-fork = sourceGate "algebra-fork" ''
+  algebra-fork = nativeSdkGate "algebra-fork" ''
     for prerequisite in ${builtins.concatStringsSep " " (map toString forkPrerequisites)}; do
       test -s "$prerequisite/result"
     done
-    cd crates
-    cargo test --frozen --offline -p terrane --no-default-features \
-      --features tokio,surface-sdk --lib -- --list > "$TMPDIR/algebra-fork-tests.txt"
-    python3 ../tests/terrane/check_native_gate.py inventory \
-      "$TMPDIR/algebra-fork-tests.txt" '${builtins.toJSON forkSelectors}'
-    for test_name in ${builtins.concatStringsSep " " forkSelectors}; do
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
-        --features tokio,surface-sdk --lib "$test_name" -- --exact \
-        > "$TMPDIR/algebra-fork-test.log" 2>&1; then
-        cat "$TMPDIR/algebra-fork-test.log"
-        exit 1
-      fi
-      python3 ../tests/terrane/check_native_gate.py execution \
-        "$TMPDIR/algebra-fork-test.log" "[\"$test_name\"]"
-    done
+    ${import ../_native-cases.nix {
+      label = "algebra-fork";
+      selectors = forkSelectors;
+    }}
     printf 'PASS: native cold-fork publication (12 exact cases), selected source requalification and preservation\n' \
       > "$out/result"
   '';
@@ -131,7 +123,7 @@ in {
     printf 'PASS: pure ordered Merkle comparison and subtree skipping\n' > "$out/result"
   '';
 
-  algebra-merge = sourceGate "algebra-merge" ''
+  algebra-merge = nativeSdkGate "algebra-merge" ''
     cd crates
     ${runTest "algebra::tests::merge_rules_and_fast_forward"}
     ${runTest "algebra::tests::merge_conflicts_and_ordered_policies"}
