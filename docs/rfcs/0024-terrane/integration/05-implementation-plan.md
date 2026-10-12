@@ -173,14 +173,30 @@ witnesses pass independent source review; runtime qualification remains pending.
 The local CLI/SDK and pure provenance source worklines are reviewed. Private Core
 composition passes all-target compilation, strict all-target Clippy and all 769
 package Nextest cases after test-only import and sorted-fixture corrections.
-There are no skipped or ignored cases. Native SDK all-target compilation passes
-on the composed source; subsequent strict Clippy identifies a duplicated test
-module's unused fixture constructor. Its six original callers remain required;
-the scoped repair preserves both actual authoring configurations. Shared native
+There are no skipped or ignored cases. Renewed native composition `4ee2921d3186`
+passes SDK all-target compilation, strict all-target Clippy and the default
+native build. Both corrected scoped-publication and planning refusal tests pass
+with their original substantive assertions. The complete unfiltered 1,111-case
+SDK phase is still running and has reported process-spawn descriptor exhaustion
+and native operation failures; it is not a passing qualification. A shared
+Nextest correction reserves all runner slots for each Terrane package case,
+preserving all existing process bounds, production clocks, file limits and
+test selection. Its renewed package execution remains pending. Shared native
 prerequisites now use the source-bound SDK image with unchanged selectors, fresh
 protected storage and retained logs. Nix evaluation, shell syntax and positive
 and negative log checks pass; actual owning gates, the current T1 floor and
 mandatory application targets remain pending. No task or freeze advances.
+
+Independent source review identifies repeated full namespace enumeration for
+each distinct index predicate. A scoped verifier correction inventories each
+namespace occurrence once, then checks exact independently expected hierarchical
+relations against every actual carrier occurrence. Repeated grafts, missing-value
+gaps, physical reconstruction and complete-closure refusal remain required.
+Independent wire fixtures cover growing predicate populations and zero present
+candidates. Enumeration counters describe the actual changed traversal; complete
+relation allocations and total CPU work are outside their scope. Source review
+passes; renewed Core and native runtime measurements and owning gates remain
+pending. This does not qualify DRV-29 or advance the identity freeze.
 
 Additional isolated worklines inspect growing-index completion, indexed replay
 and permanent recovery, while a separate worker qualifies the five public SDK
