@@ -70,14 +70,19 @@ async fn reopen(factory: Factory) -> Factory {
 }
 
 fn tree(names: &[&[u8]], private: bool) -> Tree<'static> {
+    let mut entries = names
+        .iter()
+        .map(|name| LeafItem {
+            key: name.to_vec(),
+            entry: file(PLAINTEXT),
+        })
+        .collect::<Vec<_>>();
+    // These names describe a namespace set, not operation or layer order.
+    // Canonical construction still rejects duplicate keys after sorting.
+    entries.sort_by(|left, right| left.key.cmp(&right.key));
+
     Tree::build(
-        names
-            .iter()
-            .map(|name| LeafItem {
-                key: name.to_vec(),
-                entry: file(PLAINTEXT),
-            })
-            .collect(),
+        entries,
         materialization::properties(private),
         262144,
         TreeUse::Ordinary,
