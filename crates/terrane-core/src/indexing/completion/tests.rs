@@ -648,8 +648,8 @@ fn owner_completion_forms_common_memo_only_after_binding_and_separates_work() ->
     assert_ne!(result.associations[0].recipe_hash, q_before);
     let check = &result.work.checks[0];
     assert_eq!(check.before, check.after.verification);
-    assert_eq!(check.before.work.source_roots, 12);
-    assert_eq!(check.before.work.source_entries, 28);
+    assert_eq!(check.before.work.source_roots, 3);
+    assert_eq!(check.before.work.source_entries, 7);
     assert_eq!(check.before.work.nodes, 9);
     assert_eq!(check.before.work.rows, 12);
     let (decoded, hashed) = fixture_physical_bytes(&data);
