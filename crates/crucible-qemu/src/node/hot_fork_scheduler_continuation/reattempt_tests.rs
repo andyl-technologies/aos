@@ -177,6 +177,16 @@ fn serve_released_qmp(mut socket: UnixStream, status: serde_json::Value) -> std:
     }
 }
 
+/// Returns host-I/O budgets wide enough to span several installer attempts.
+///
+/// One Restore transaction retains the absolute deadline chosen by its first
+/// attempt across every retry. The modeled peer never makes the host wait, so
+/// these budgets only keep scheduler load from expiring that deadline.
+fn retained_restore_policy() -> QemuAsyncDriverPolicy {
+    let budget = std::time::Duration::from_secs(5);
+    QemuAsyncDriverPolicy::new(budget, budget, budget, budget)
+}
+
 #[test]
 fn child_installer_retains_ceiling_and_restore_receipt_after_failed_wake()
 -> Result<(), Box<dyn Error>> {
@@ -244,7 +254,7 @@ fn child_installer_retains_ceiling_and_restore_receipt_after_failed_wake()
                 crucible::NodeId { name: "vm".into() },
                 RetainedProcess(process),
                 QemuShutdownPolicy::fast_test(),
-                QemuAsyncDriverPolicy::fast_test(),
+                retained_restore_policy(),
                 QemuCrashDetector::new("child"),
                 Some(&stopped_restore_ack),
             )
@@ -300,7 +310,7 @@ fn child_installer_retains_ceiling_and_restore_receipt_after_failed_wake()
                 crucible::NodeId { name: "vm".into() },
                 RetainedProcess(process),
                 QemuShutdownPolicy::fast_test(),
-                QemuAsyncDriverPolicy::fast_test(),
+                retained_restore_policy(),
                 QemuCrashDetector::new("child"),
                 Some(&stopped_restore_ack),
             )
@@ -334,7 +344,7 @@ fn child_installer_retains_ceiling_and_restore_receipt_after_failed_wake()
                 crucible::NodeId { name: "vm".into() },
                 RetainedProcess(process),
                 QemuShutdownPolicy::fast_test(),
-                QemuAsyncDriverPolicy::fast_test(),
+                retained_restore_policy(),
                 QemuCrashDetector::new("child"),
                 Some(&foreign_capability),
             )
@@ -358,7 +368,7 @@ fn child_installer_retains_ceiling_and_restore_receipt_after_failed_wake()
             crucible::NodeId { name: "vm".into() },
             RetainedProcess(process),
             QemuShutdownPolicy::fast_test(),
-            QemuAsyncDriverPolicy::fast_test(),
+            retained_restore_policy(),
             QemuCrashDetector::new("child"),
             Some(&stopped_restore_ack),
         )?;
