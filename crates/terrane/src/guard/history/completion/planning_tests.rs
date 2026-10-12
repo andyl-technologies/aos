@@ -156,146 +156,17 @@ async fn selected(
 
 /// Retains native history with explicitly selected later-property registrations.
 ///
-/// Local preparation preserves genuine retention checks while reusing the history
-/// guards, read adapters and selected-state observations unchanged.
+/// The shared builder preserves genuine retention checks, history guards, read
+/// adapters and selected-state observations for each explicit registration set.
 async fn historical_fixture(
     graph: wire::Graph,
     later_properties: &[&str],
 ) -> Result<native::Fixture, Box<dyn std::error::Error>> {
-    use std::os::unix::fs::MetadataExt;
-    use std::time::Duration;
-
-    use crate::bucket::{FileBucket, FileBucketConfig, FileBucketPublicationConfig};
-    use crate::domain::DomainNamespace;
-    use crate::guard::{AuthoringNamespaceProfile, Guard, StagedUpload};
-    use crate::ref_advance::{CommitTiming, Coordinator};
-    use crate::repository::Repository;
-    use crate::store::{
-        ContentStore, ContentUpload, MetaUpload, RefStore, TokioClock, TokioLocalFs,
-    };
-    use terrane_core::identity::IdentityKind;
-
-    let seed = crate::ref_advance::tests::fixture().await;
-    let root = seed.store().root().to_owned();
-    let authority = seed.guard().configured_original_authority()?;
-    let owner = std::fs::symlink_metadata(&root)?.uid();
-    let bucket = FileBucket::open(
-        FileBucketConfig {
-            root: root.clone(),
-            publication_control: Some(FileBucketPublicationConfig {
-                operator_uid: owner,
-                control: None,
-            }),
-            chunk_profile_name: seed.guard().config().chunk_profile_name.clone(),
-            chunk_profile: (*seed.guard().config().chunk_profile).clone(),
-            locality: seed.guard().config().home.clone(),
-        },
-        TokioLocalFs,
-        TokioClock,
-        native::Validator,
-    )
-    .await?;
-
     // Revision 1 rejects unregistered index-roots. Explicit registration may
     // preserve it as inert later data; the separate revision 3 historical
     // profile must still verify its complete I/P/G relationships.
-    let guard = Guard::new_with_authoring_namespace_profile(
-        bucket,
-        TokioClock,
-        seed.guard().keys().to_vec(),
-        seed.guard().config().clone(),
-        AuthoringNamespaceProfile::new(1, 3, later_properties, 1)?,
-    );
-    let coordinator = Coordinator::new(
-        guard,
-        CommitTiming::new(
-            Duration::from_secs(30),
-            Duration::from_secs(60),
-            Duration::from_secs(10),
-        )?,
-        TokioLocalFs,
-    );
-    let repository = Repository::reopen_native_retention(
-        coordinator,
-        &DomainNamespace {
-            root,
-            domain: "public".into(),
-        },
-        authority.control(),
-        owner,
-    )
-    .await?;
-
-    let token = crate::ref_advance::tests::token();
-    let mut session = repository
-        .begin("refs/heads/_/historical", &token, "sdk")
-        .await?;
-    let mut request = crate::ref_advance::tests::request_file(Vec::new(), wire::BODY);
-    request.commit.tree = graph.owner;
-    request.uploads.retain(|upload| {
-        !matches!(
-            upload,
-            StagedUpload::Meta {
-                kind: IdentityKind::Node,
-                ..
-            }
-        )
-    });
-    request
-        .uploads
-        .extend(graph.nodes.values().map(|bytes| StagedUpload::Meta {
-            kind: IdentityKind::Node,
-            bytes: bytes.clone(),
-        }));
-    let before = native::selected(&repository).await?;
-    let (commit, uploads) = repository
-        .prepare_retained_history_fixture(&mut session, request)
-        .await?;
-
-    for upload in &uploads {
-        let identity = repository
-            .coordinator()
-            .store()
-            .put(upload.as_upload()?)
-            .await?;
-        if let StagedUpload::Meta {
-            kind: IdentityKind::Node,
-            bytes,
-        } = upload
-        {
-            assert_eq!(identity.terrane_v1_digest()?, wire::hash(bytes));
-        }
-    }
-    let encoded = commit.commit().encode()?;
-    let actual = repository
-        .coordinator()
-        .store()
-        .put(ContentUpload::Meta(MetaUpload::new(
-            IdentityKind::Commit,
-            &encoded,
-        )?))
-        .await?;
-    assert_eq!(actual.terrane_v1_digest()?, commit.identity());
-    let fixture = native::Fixture {
-        repository,
-        commit,
-        graph,
-    };
-    assert!(
-        fixture
-            .repository
-            .coordinator()
-            .store()
-            .ref_get("refs/heads/_/historical")
-            .await?
-            .is_none()
-    );
-    let after = native::selected(&fixture.repository).await?;
-    assert_eq!(before.0.guard, after.0.guard);
-    assert_eq!(before.0.sources, after.0.sources);
-    assert_eq!(before.0.branches, after.0.branches);
-    assert_eq!(before.0.loss_generation, after.0.loss_generation);
-    Ok(fixture)
+    let authoring = crate::guard::AuthoringNamespaceProfile::new(1, 3, later_properties, 1)?;
+    native::Fixture::new(graph, authoring).await
 }
 
 fn assert_same_refusal(

@@ -6,7 +6,9 @@
 use std::collections::BTreeSet;
 use std::error::Error as _;
 
-use crate::guard::{ConsumedResolver, HistoryObservation, StagedUpload, TreeEvidence};
+use crate::guard::{
+    AuthoringNamespaceProfile, ConsumedResolver, HistoryObservation, StagedUpload, TreeEvidence,
+};
 use crate::indexing::{Error, ErrorKind};
 use crate::store::{CorruptSubject, StoreErrorKind, StoreFailure};
 use terrane_core::gc::publication::evidence::ViewInterpretationMode;
@@ -103,7 +105,11 @@ fn index_error(failure: &StoreFailure) -> &Error {
 
 #[tokio::test]
 async fn historical_index_completion_validates_real_signed_owner_and_full_carriers() -> TestResult {
-    let fixture = native::Fixture::new(wire::Graph::small()).await?;
+    let fixture = native::Fixture::new(
+        wire::Graph::small(),
+        AuthoringNamespaceProfile::new(1, 3, &["index-roots"], 1)?,
+    )
+    .await?;
     let guard = fixture.guard(2).await?;
     let before = native::selected(&fixture.repository).await?;
 
@@ -146,7 +152,11 @@ async fn historical_index_completion_validates_real_signed_owner_and_full_carrie
 
 #[tokio::test]
 async fn historical_index_completion_preserves_repeated_occurrence_policy_contexts() -> TestResult {
-    let fixture = native::Fixture::new(wire::Graph::repeated()).await?;
+    let fixture = native::Fixture::new(
+        wire::Graph::repeated(),
+        AuthoringNamespaceProfile::new(1, 3, &["index-roots"], 1)?,
+    )
+    .await?;
     let guard = fixture.guard(2).await?;
     let before = native::selected(&fixture.repository).await?;
 
@@ -306,7 +316,11 @@ async fn historical_index_completion_keeps_missing_binding_and_conflict_incomple
             .all(|(node, _)| *node == missing.owner)
     );
 
-    let fixture = native::Fixture::new(missing.clone()).await?;
+    let fixture = native::Fixture::new(
+        missing.clone(),
+        AuthoringNamespaceProfile::new(1, 3, &["index-roots"], 1)?,
+    )
+    .await?;
     let guard = fixture.guard(2).await?;
     let before = native::selected(&fixture.repository).await?;
     let original = guard.original_commit(&fixture.commit.identity())?;
@@ -342,7 +356,11 @@ async fn historical_index_completion_keeps_missing_binding_and_conflict_incomple
 #[tokio::test]
 async fn historical_index_completion_uses_independently_installed_attribute_profile() -> TestResult
 {
-    let fixture = native::Fixture::new(wire::Graph::small()).await?;
+    let fixture = native::Fixture::new(
+        wire::Graph::small(),
+        AuthoringNamespaceProfile::new(1, 3, &["index-roots"], 1)?,
+    )
+    .await?;
     let old = fixture.guard(1).await?;
     let active = fixture.guard(2).await?;
     let before = native::selected(&fixture.repository).await?;
@@ -372,7 +390,11 @@ async fn historical_index_completion_uses_independently_installed_attribute_prof
     graph.rows[0].1 = wire::file_with_pointer(graph.object, graph.present);
     // Omit the owner binding to isolate namespace attribute semantics.
     graph.rebind(None, false);
-    let inert = native::Fixture::new(graph).await?;
+    let inert = native::Fixture::new(
+        graph,
+        AuthoringNamespaceProfile::new(1, 3, &["index-roots"], 1)?,
+    )
+    .await?;
     let old = inert.guard(1).await?;
     let inputs = native::complete(&old, &inert.commit).await?;
     assert_eq!(
@@ -392,7 +414,11 @@ async fn historical_index_completion_uses_independently_installed_attribute_prof
 #[tokio::test]
 async fn historical_index_completion_rechecks_full_profile_only_after_history_finish() -> TestResult
 {
-    let fixture = native::Fixture::new(wire::Graph::small()).await?;
+    let fixture = native::Fixture::new(
+        wire::Graph::small(),
+        AuthoringNamespaceProfile::new(1, 3, &["index-roots"], 1)?,
+    )
+    .await?;
     let guard = fixture.guard(2).await?;
     let original = guard.original_commit(&fixture.commit.identity())?;
     let consumed = ConsumedResolver::new(&guard, original.baseline().authority())?;
