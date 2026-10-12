@@ -266,16 +266,40 @@ pub(super) async fn retain_historical_and_issue_new() {
         source_head
     );
     let protected_after = control_snapshot(source.coordinator().store().root()).await;
-    for (path, bytes) in protected_before {
-        // Native publication replaces its selected descriptor; historical role,
-        // seed and Original records must retain their exact protected bytes.
-        if path
-            .file_name()
+    let source_control = control(source.coordinator().store().root());
+    assert!(protected_before.contains_key(&source_control.join("registration.cbor")));
+    let association = format!(
+        "commit-{}.cbor",
+        original
+            .commit
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    assert!(protected_before.contains_key(&source_control.join(association)));
+    assert!(protected_before.keys().any(|path| {
+        path.file_name()
             .unwrap()
-            .to_string_lossy()
-            .starts_with("disclosure-")
-        {
-            assert_eq!(protected_after.get(&path), Some(&bytes));
+            .as_encoded_bytes()
+            .starts_with(b"bootstrap-")
+    }));
+    for (path, entry) in protected_before {
+        let name = path.file_name().unwrap().as_encoded_bytes();
+        // Retention selectors identify immutable Original registration,
+        // bootstrap, association and import/binding/trust records. Rotation
+        // adds role/seed files and replaces the selected descriptor; directory
+        // timestamps may change, but existing protected files must stay exact.
+        let original_record = name == b"registration.cbor"
+            || (name.ends_with(b".cbor")
+                && [b"bootstrap-".as_slice(), b"commit-", b"import-"]
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix)));
+        if original_record || name.starts_with(b"disclosure-") {
+            assert_eq!(
+                protected_after.get(&path),
+                Some(&entry),
+                "rotation changed retained protected file: {path:?}"
+            );
         }
     }
     let source = reopen(source).await;
