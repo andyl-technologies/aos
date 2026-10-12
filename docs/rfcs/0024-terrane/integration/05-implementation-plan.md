@@ -213,7 +213,18 @@ capture and closing checks, the exact unavailable-artifact cause and observation
 count, and all seven fault witnesses. Admission validation moves to a focused
 private module with equivalent Guard visibility and unchanged bodies; missing
 history and test-helper documentation is completed. These corrections remain
-subject to native compilation, exact witnesses and package qualification.
+subject to package and owning-gate qualification. Fresh private composition
+`d84c608c5b1c` passes strict SDK Clippy, SDK all-target compilation and the default
+native build. All ten focused cases pass: the seven missing-placement witnesses,
+the unchanged actual deadline-expiry witness, and both corrected Guard/planning
+cases. The unfiltered 1,111-case SDK suite is running with the committed package
+scheduling correction; no complete package result is claimed. Static review
+matches all 394 SDK selector uses to the archived inventory, with no missing,
+ignored or duplicate required selector within a gate. Successful population
+cases now remove their owned scratch directories after both execution validators;
+the six growing witnesses and DRV-29 qualification blocker remain unchanged.
+Test-helper documentation corrections preserve exact source bodies and remain
+isolated from the active qualification checkout. No task or milestone advances.
 
 Additional isolated worklines inspect growing-index completion, indexed replay
 and permanent recovery, while a separate worker qualifies the five public SDK
