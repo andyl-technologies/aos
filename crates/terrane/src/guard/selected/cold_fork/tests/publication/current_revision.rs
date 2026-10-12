@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use super::support::{
     ALL_VERBS, Fixture, SOURCE, Snapshot, TARGET, TestResult, assert_no_nodes, fork_request,
-    rejected, store_failure,
+    rejected, request, store_failure,
 };
 use crate::bucket::{BucketBinding, FileBucket, FileBucketConfig, FileBucketPublicationConfig};
 use crate::domain::DomainNamespace;
@@ -28,6 +28,25 @@ use terrane_core::refs::Commit;
 async fn reopen<C: Clock + BucketBinding + Clone + Sync + 'static>(
     fixture: &mut Fixture<C>,
     current_revision: u64,
+    associations: Vec<ViewSelection>,
+) -> TestResult {
+    reopen_with_authoring(
+        fixture,
+        RecordedContext::new(1, current_revision, &[])?,
+        1,
+        associations,
+    )
+    .await
+}
+
+/// Reopens actual controls with independently selected authoring semantics.
+///
+/// # Errors
+/// Preserves bucket, configuration and protected retention reopening failures.
+async fn reopen_with_authoring<C: Clock + BucketBinding + Clone + Sync + 'static>(
+    fixture: &mut Fixture<C>,
+    authoring: RecordedContext,
+    attribute_revision: u64,
     associations: Vec<ViewSelection>,
 ) -> TestResult {
     let current = fixture.repository.coordinator().guard();
@@ -56,7 +75,7 @@ async fn reopen<C: Clock + BucketBinding + Clone + Sync + 'static>(
     )
     .await?;
     let guard = Guard::new(bucket, fixture.clock.clone(), keys, config)
-        .with_recorded_authoring(RecordedContext::new(1, current_revision, &[])?, 1)?
+        .with_recorded_authoring(authoring, attribute_revision)?
         .with_view_selections(associations)?;
     let coordinator = Coordinator::new(
         guard,
@@ -358,5 +377,142 @@ async fn root_native_cold_fork_refuses_changed_historical_inputs_without_nodes()
         before.assert_source_unchanged(&fixture, SOURCE).await?;
         assert_no_nodes(&observer.snapshot());
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn root_native_cold_fork_preserves_inert_later_parent_after_current_revision_advance()
+-> TestResult {
+    use crate::ref_advance::StagedUpload;
+    use terrane_core::identity::IdentityKind;
+    use terrane_core::tree_builder::Tree;
+    use terrane_core::tree_format::{Property, TreeUse};
+
+    let mut fixture = Fixture::open().await?;
+    let historical = RecordedContext::new(1, 3, &["index-gaps", "index-roots"])?;
+    reopen_with_authoring(&mut fixture, historical.clone(), 1, Vec::new()).await?;
+    let mut parent_request = request(Vec::new(), ALL_VERBS)?;
+    let parent_root = {
+        // These canonical empty arrays are preserve-only data under revision one.
+        // Revision three rejects index-gaps on this namespace root if consulted.
+        let tree = Tree::build(
+            Vec::new(),
+            Some(vec![
+                Property {
+                    name: "acl",
+                    value: b"\x81\x82\x66writer\x18\x1f",
+                },
+                Property {
+                    name: "domain",
+                    value: b"\x66public",
+                },
+                Property {
+                    name: "index-gaps",
+                    value: b"\x80",
+                },
+                Property {
+                    name: "index-roots",
+                    value: b"\x80",
+                },
+            ]),
+            262144,
+            TreeUse::Ordinary,
+        )?;
+        parent_request.commit.tree = tree.root_identity();
+        parent_request.uploads = tree
+            .nodes()
+            .map(|node| StagedUpload::Meta {
+                kind: IdentityKind::Node,
+                bytes: node.encoded().to_vec(),
+            })
+            .collect();
+        tree.root_identity()
+    };
+    let parent = fixture.publish(SOURCE, parent_request).await?;
+    let parent_selection = ViewSelection::new(
+        parent.commit,
+        parent_root,
+        Selection::Recorded(historical.clone()),
+        1,
+    )?;
+    let current = RecordedContext::new(3, 3, &[])?;
+    reopen_with_authoring(
+        &mut fixture,
+        current.clone(),
+        2,
+        vec![parent_selection.clone()],
+    )
+    .await?;
+
+    // Genuine admission removes the inert properties and completes P -> C under
+    // the exact independently installed interpretation of each signed view.
+    let child_request = request(vec![parent.commit], ALL_VERBS)?;
+    let child_root = child_request.commit.tree;
+    assert_ne!(parent_root, child_root);
+    let child = fixture.publish(SOURCE, child_request).await?;
+    let child_selection = ViewSelection::new(
+        child.commit,
+        child_root,
+        Selection::Recorded(current.clone()),
+        2,
+    )?;
+    reopen_with_authoring(
+        &mut fixture,
+        current,
+        2,
+        vec![parent_selection, child_selection],
+    )
+    .await?;
+
+    let selected = Snapshot::capture(&fixture, SOURCE).await?;
+    let signed = Commit::decode(&selected.commit)?;
+    assert_eq!(signed.parents, vec![parent.commit]);
+    assert_eq!(signed.tree, child_root);
+    let lineage = selected.lineage()?;
+    assert_eq!(lineage.source, child);
+    fixture.assert_full_context(&lineage)?;
+    let contexts = lineage
+        .used
+        .view_interpretations
+        .as_ref()
+        .ok_or("completed contexts")?;
+    assert_eq!(contexts.len(), 2);
+    for (view, root, revision, attribute, later) in [
+        (
+            parent.commit,
+            parent_root,
+            1,
+            1,
+            vec!["index-gaps".to_owned(), "index-roots".to_owned()],
+        ),
+        (child.commit, child_root, 3, 2, Vec::new()),
+    ] {
+        let context = contexts
+            .iter()
+            .find(|context| context.view == view)
+            .ok_or("completed view")?;
+        assert_eq!(context.original_root, root);
+        assert_eq!(
+            context.mode,
+            terrane_core::gc::publication::evidence::ViewInterpretationMode::Recorded
+        );
+        assert_eq!(context.registries.property_revision, revision);
+        assert_eq!(context.registries.attribute_revision, attribute);
+        assert_eq!(context.registries.later_properties, later);
+    }
+    let history = fixture
+        .repository
+        .coordinator()
+        .guard()
+        .verified_history(child.commit)
+        .await?;
+    for (view, root) in [(parent.commit, parent_root), (child.commit, child_root)] {
+        let verified = history.commit(&view).ok_or("fully verified actual view")?;
+        assert_eq!(verified.identity(), view);
+        assert_eq!(verified.commit().tree, root);
+    }
+    drop(history);
+
+    fixture.assert_cold(SOURCE, TARGET).await?;
     Ok(())
 }

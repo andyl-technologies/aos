@@ -557,7 +557,7 @@ where
             .first()
             .and_then(|parent| lineage.used.views.iter().find(|view| &view.view == parent));
         let mut witnessed = false;
-        for view in std::iter::once(candidate).chain(previous) {
+        'witness: for view in std::iter::once(candidate).chain(previous) {
             for root in &view.roots {
                 if root.path == claim.path()
                     && occurrence_domain(
@@ -570,6 +570,9 @@ where
                     )? == claim.domain()
                 {
                     witnessed = true;
+                    // A sufficient candidate occurrence needs no optional prior witness.
+                    // Later inert parent properties must not be reinterpreted here.
+                    break 'witness;
                 }
             }
         }
