@@ -2,9 +2,11 @@
 //!
 //! These finite witnesses use real native Original controls, ordinary schema and
 //! identity validators, secure creators and closed executor-filled acknowledgments.
-//! They establish no paired/backfill producer coverage or DRV-29 timing bound.
+//! The additional private owner witness uses the genuine closed reference factory.
+//! These tests establish no paired/import, backfill-completeness or DRV-29 bound.
 
 mod fs;
+mod owners;
 mod support;
 
 use crate::{
@@ -26,7 +28,11 @@ use terrane_core::{
     refs::Commit,
 };
 
-fn store_failure(error: &RepositoryError) -> &StoreFailure {
+/// Borrows the actual native Store error through the unchanged repository wrapper.
+///
+/// # Panics
+/// Panics when the operation failed outside the expected native Store boundary.
+pub(super) fn store_failure(error: &RepositoryError) -> &StoreFailure {
     match error {
         RepositoryError::Store(failure)
         | RepositoryError::Advance(AdvanceError::Store(failure)) => failure,
@@ -51,7 +57,11 @@ fn upload_failure(error: &RepositoryError) {
     );
 }
 
-async fn wait(receiver: std::sync::mpsc::Receiver<()>) -> TestResult {
+/// Waits for the real native handoff using the existing finite timeout.
+///
+/// # Errors
+/// Preserves the blocking task, disconnected channel and unchanged handoff timeout.
+pub(super) async fn wait(receiver: std::sync::mpsc::Receiver<()>) -> TestResult {
     tokio::task::spawn_blocking(move || receiver.recv_timeout(Duration::from_secs(10))).await??;
     Ok(())
 }
@@ -79,13 +89,18 @@ async fn native_meta_batch_selects_one_genuine_pair_for_distinct_validated_membe
 
     let record = fixture.publish(proposal).await?;
 
-    fixture.assert_pair(&members).await?;
+    let commit_identity = TERRANE_V1.from_digest(IdentityKind::Commit, &record.commit)?;
+    let commit_bytes = fixture.bucket().get(&commit_identity, None).await?;
+    let mut packed_members = members.clone();
+    packed_members.push((commit_identity, commit_bytes.clone()));
+    fixture.assert_pair(&packed_members).await?;
+    assert!(fixture.validator.calls(IdentityKind::Commit, &commit_bytes) >= 1);
     let observations = fixture.fs.observations();
-    // The member run and the signed Commit each have their own ordinary pair;
-    // the candidate's final CheckedMutation is a different selected boundary.
-    assert_eq!(observations.raw.len(), 2);
-    assert_eq!(observations.pending.len(), 4);
-    assert_eq!(observations.committed.len(), 4);
+    // The final member run and its closed signed Commit share one real pair.
+    // The final CheckedMutation remains a distinct selected boundary.
+    assert_eq!(observations.raw.len(), 1);
+    assert_eq!(observations.pending.len(), 2);
+    assert_eq!(observations.committed.len(), 2);
     let selected = fixture
         .assert_final_mutation(&members[0].0, None, &backend)
         .await?;
@@ -150,7 +165,7 @@ async fn native_meta_batch_selects_one_genuine_pair_for_distinct_validated_membe
             bytes: second_node.clone(),
         },
     ];
-    fixture.publish(proposal).await?;
+    let record = fixture.publish(proposal).await?;
     let selected = fixture.snapshot().await?;
     let root_row = required(
         selected
@@ -180,7 +195,45 @@ async fn native_meta_batch_selects_one_genuine_pair_for_distinct_validated_membe
         fixture.bucket().get(&second_identity, None).await?,
         second_node
     );
-    assert_eq!(fixture.fs.observations().raw.len(), 5);
+    let commit_row = required(
+        selected
+            .rows
+            .get(&record.commit)
+            .ok_or("actual signed Commit in final Meta run"),
+    );
+    assert_eq!(commit_row.pack(), second_row.pack());
+    assert_eq!(fixture.fs.observations().raw.len(), 4);
+
+    // A final real Chunk remains a barrier: the closed Commit must keep its
+    // ordinary separate pair rather than joining an earlier metadata run.
+    let fixture = Fixture::new().await?;
+    let (mut proposal, members) = request(Vec::new(), &[])?;
+    let file = crate::ref_advance::tests::request_file(Vec::new(), b"final ordinary Chunk barrier");
+    let chunk = required(
+        file.uploads
+            .into_iter()
+            .find(|upload| matches!(upload, StagedUpload::Chunk { .. }))
+            .ok_or("actual final Chunk offer"),
+    );
+    proposal.uploads.push(chunk);
+    let record = fixture.publish(proposal).await?;
+    let selected = fixture.snapshot().await?;
+    let root_row = required(
+        selected
+            .rows
+            .get(&members[0].0.terrane_v1_digest()?)
+            .ok_or("root before final Chunk"),
+    );
+    let commit_row = required(
+        selected
+            .rows
+            .get(&record.commit)
+            .ok_or("separate signed Commit after final Chunk"),
+    );
+    assert_ne!(root_row.pack(), commit_row.pack());
+    assert_eq!(fixture.fs.observations().raw.len(), 3);
+
+    owners::positive_owner_publication().await?;
     Ok(())
 }
 
@@ -685,6 +738,8 @@ async fn native_meta_batch_rechecks_current_original_and_deadline_before_ack() -
             }
         }
     }
+    owners::retained_owner_reads().await?;
+
     for phase in [Phase::Pending, Phase::Raw, Phase::Mutation] {
         let clock = expiry_clock();
         let fixture = Fixture::with_clock(clock.clone()).await?;

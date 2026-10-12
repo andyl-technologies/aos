@@ -760,3 +760,6 @@ fn read_configuration<'a>(decoder: &mut Decoder<'a>, bytes: &'a [u8]) -> Result<
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod recorded_context_tests;

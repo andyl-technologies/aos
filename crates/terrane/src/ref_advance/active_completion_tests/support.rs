@@ -401,11 +401,19 @@ pub(super) fn divergent_index() -> Result<Indexed> {
         });
     }
     // Distinct immutable addresses are staged once through the real batch route.
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = Vec::new();
     let mut unique = Vec::new();
     for upload in actual.request.uploads {
         let retain = match &upload {
-            StagedUpload::Meta { kind, bytes } => seen.insert(TERRANE_V1.calculate(*kind, bytes)?),
+            StagedUpload::Meta { kind, bytes } => {
+                let identity = TERRANE_V1.calculate(*kind, bytes)?;
+                if seen.contains(&identity) {
+                    false
+                } else {
+                    seen.push(identity);
+                    true
+                }
+            }
             _ => true,
         };
         if retain {

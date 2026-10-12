@@ -11,40 +11,40 @@ use terrane_core::properties::{Defaults, EffectiveProperties, RootLayer};
 use terrane_core::refs::RefName;
 use terrane_core::tree_format::{MAX_NODE_ITEMS_BYTES, Property};
 
-use super::history::completion::InterpretationSelection;
+use super::recorded_properties::SelectedReadInterpretation;
 use super::{AuthorizedRef, Guard, acl_permits, denied, domain_label, invalid};
 use crate::bucket::BucketBinding;
 use crate::bucket::held::HeldBucket;
 use crate::selected_bridge::native_guard::cold_fork::QualifiedPolicies;
-use crate::store::{Clock, ContentValidator, LocalFs, RefStore, StoreErrorKind, StoreFailure};
+use crate::store::{Clock, ContentValidator, LocalFs, RefStore, StoreFailure};
 
 /// Resolves a previously qualified occurrence without opening its TreeNode.
 ///
 /// # Errors
 /// Rejects malformed canonical property maps or unresolved effective domains.
-pub(crate) fn occurrence_domain<S, C>(
-    guard: &Guard<S, C>,
+pub(crate) fn occurrence_domain(
     occurrence: &ConsumedRootPolicy,
     view: &ConsumedViewPolicy,
     configuration: &terrane_core::gc::publication::evidence::TrustedGuardConfig,
+    interpretation: &SelectedReadInterpretation,
 ) -> Result<String, StoreFailure> {
-    with_occurrence_policy(guard, occurrence, view, configuration, |policy| {
+    with_occurrence_policy(occurrence, view, configuration, interpretation, |policy| {
         Ok(domain_label(policy).map_err(|_| invalid())?.to_owned())
     })
 }
 
-/// Resolves retained layers using this Guard's actual Legacy constructor selection.
+/// Resolves an occurrence under its independently installed view interpretation.
 ///
 /// The callback borrows effective values only while the decoded layer owners
 /// remain alive. Neither lineage labels nor a missing association select legacy.
 ///
 /// # Errors
 /// Rejects malformed maps, invalid effective properties or callback refusals.
-pub(crate) fn with_occurrence_policy<S, C, T>(
-    guard: &Guard<S, C>,
+pub(crate) fn with_occurrence_policy<T>(
     occurrence: &ConsumedRootPolicy,
     view: &ConsumedViewPolicy,
     configuration: &terrane_core::gc::publication::evidence::TrustedGuardConfig,
+    interpretation: &SelectedReadInterpretation,
     use_policy: impl FnOnce(&EffectiveProperties<'_>) -> Result<T, StoreFailure>,
 ) -> Result<T, StoreFailure> {
     let (properties, overrides) = decode_layers(occurrence)?;
@@ -56,22 +56,87 @@ pub(crate) fn with_occurrence_policy<S, C, T>(
             overrides,
         })
         .collect::<Vec<_>>();
-    match guard.interpretation {
-        InterpretationSelection::Legacy => {}
-        InterpretationSelection::Active => {
-            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
-        }
-    }
-    let policy = terrane_core::properties::resolve(
+    let policy = interpretation.resolve(
         &layers,
         Defaults {
             store: &configuration.store_name,
             private_domain: &view.default_domain,
             home: configuration.home.region.as_deref().unwrap_or("local"),
         },
-    )
-    .map_err(|_| invalid())?;
+    )?;
     use_policy(&policy)
+}
+
+impl<S, C> Guard<S, C> {
+    /// Selects configuration for a previously checked immutable view and root.
+    ///
+    /// # Errors
+    /// Rejects an absent or mismatched independently supplied recorded association.
+    pub(crate) fn cold_fork_interpretation(
+        &self,
+        view: &ConsumedViewPolicy,
+    ) -> Result<SelectedReadInterpretation, StoreFailure> {
+        let root = view.roots.first().ok_or_else(invalid)?.root;
+        self.select_view(view.view, root, super::HistoryObservation::default())
+    }
+
+    /// Compares ordinary retained inputs with actual independently selected meanings.
+    ///
+    /// This supplies no lineage completeness, current permission or Original proof.
+    ///
+    /// # Errors
+    /// Rejects absent context, changed full profile, strict mapping failures and
+    /// unavailable configured selection without fetching a TreeNode.
+    #[cfg(all(test, feature = "tokio", unix))]
+    pub(crate) fn compare_cold_fork_view_inputs(
+        &self,
+        retained: Option<&terrane_core::gc::publication::evidence::ConsumedViewInterpretation>,
+        view: terrane_core::identity::Digest,
+        root: terrane_core::identity::Digest,
+    ) -> Result<(), StoreFailure> {
+        let inputs = self.selected_view_inputs(view, root, super::HistoryObservation::default())?;
+        let selected = self.select_view(view, root, super::HistoryObservation::default())?;
+        let registries = inputs.registries;
+        super::consumed::view_interpretation::compare_selected_inputs(
+            retained,
+            view,
+            root,
+            &selected,
+            &registries,
+        )
+    }
+
+    /// Checks a verified source against its independently installed namespace profile.
+    ///
+    /// # Errors
+    /// Rejects missing or changed selected associations and unsupported registered profiles.
+    pub(crate) fn check_cold_fork_source_profile(
+        &self,
+        commit: &terrane_core::provenance::VerifiedCommit,
+        observation: super::HistoryObservation<'_>,
+    ) -> Result<(), StoreFailure>
+    where
+        S: crate::store::Store,
+        C: Clock,
+    {
+        self.selected_view_profile(commit, observation).map(|_| ())
+    }
+
+    /// Rechecks a retained interpretation against this actual Guard installation.
+    ///
+    /// # Errors
+    /// Rejects changed mode, view/root association or preservation configuration.
+    pub(crate) fn check_cold_fork_interpretation(
+        &self,
+        view: &ConsumedViewPolicy,
+        selected: &SelectedReadInterpretation,
+    ) -> Result<(), StoreFailure> {
+        let root = view.roots.first().ok_or_else(invalid)?.root;
+        if self.select_view(view.view, root, super::HistoryObservation::default())? != *selected {
+            return Err(invalid());
+        }
+        Ok(())
+    }
 }
 
 fn property_map(bytes: &[u8]) -> Result<Vec<Property<'_>>, StoreFailure> {
@@ -135,10 +200,10 @@ where
         for view in policies.source_views() {
             for occurrence in &view.roots {
                 let domain = with_occurrence_policy(
-                    self,
                     occurrence,
                     view,
                     policies.configuration(),
+                    policies.interpretation(view)?,
                     |policy| {
                         self.check_acl(&verified, policy, reference, Verb::Fork)?;
                         Ok(domain_label(policy).map_err(|_| invalid())?.to_owned())
@@ -223,7 +288,12 @@ where
         let mut occurrences = std::collections::BTreeMap::new();
         for view in policies.source_views() {
             for root in &view.roots {
-                let domain = occurrence_domain(self, root, view, policies.configuration())?;
+                let domain = occurrence_domain(
+                    root,
+                    view,
+                    policies.configuration(),
+                    policies.interpretation(view)?,
+                )?;
                 if occurrences
                     .insert(root.path.clone(), domain.clone())
                     .is_some_and(|old| old != domain)
@@ -309,7 +379,7 @@ impl ColdForkBinding {
     }
 }
 
-/// Projects the fresh candidate's independently executed actual Legacy inputs.
+/// Projects the fresh candidate's independently executed authoring inputs.
 ///
 /// This ordinary data projection cannot qualify a source or mint completed history.
 /// Only the selected producer derives candidate rows after fresh signature/Original
@@ -326,16 +396,23 @@ pub(crate) fn candidate_context<S, C>(
     if actual != admitted.completion_inputs {
         return Err(invalid());
     }
+    let candidate_inputs = guard.capture_candidate_inputs(admitted)?;
+    let selected = guard.selected_view_inputs(
+        admitted.commit.identity(),
+        admitted.commit.commit().tree,
+        super::HistoryObservation::default().candidate(&candidate_inputs),
+    )?;
+    if selected != actual {
+        return Err(invalid());
+    }
     let context = terrane_core::gc::publication::evidence::ConsumedViewInterpretation {
         view: admitted.commit.identity(),
         original_root: admitted.commit.commit().tree,
-        mode: match guard.interpretation {
-            InterpretationSelection::Legacy => {
+        mode: match &actual.selection {
+            terrane_core::properties::selected::Selection::Legacy => {
                 terrane_core::gc::publication::evidence::ViewInterpretationMode::Legacy
             }
-            InterpretationSelection::Active => {
-                return Err(StoreFailure::new(StoreErrorKind::Unsupported));
-            }
+            _ => terrane_core::gc::publication::evidence::ViewInterpretationMode::Recorded,
         },
         registries: actual.registries,
     };
@@ -346,4 +423,28 @@ pub(crate) fn candidate_context<S, C>(
         .check_supported_interpretation()
         .map_err(|_| invalid())?;
     Ok(context)
+}
+
+/// Retains exact executed inputs after the owning genuine cold derivation.
+///
+/// The caller supplies only the existing closed admission. The actual Guard
+/// independently compares its complete authoring inputs, signed view/root and
+/// installed association before retaining ordinary selection data. This operation
+/// neither constructs Pending/CompletedViewUse nor supplies graph completeness,
+/// Original/current permission or native publication authority.
+///
+/// # Errors
+/// Rejects changed actual inputs, contradictory candidate/view/root associations
+/// or unavailable synchronization. The owning producer separately verifies the
+/// qualified source, new Original, exact fork derivation and final native ACK.
+pub(crate) fn retain_candidate_selection<S, C>(
+    guard: &Guard<S, C>,
+    admitted: &crate::guard::AdmittedCommit,
+) -> Result<(), StoreFailure> {
+    let context = candidate_context(guard, admitted)?;
+    guard.retain_executed_view_inputs(
+        context.view,
+        context.original_root,
+        &admitted.completion_inputs,
+    )
 }

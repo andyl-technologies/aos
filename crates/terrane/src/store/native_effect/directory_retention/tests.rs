@@ -75,6 +75,7 @@ fn request(root: &std::path::Path, lock: &File, plan: Plan) -> NativeFsEffect {
         }],
         preimages: Vec::new(),
         final_check: None,
+        pairs: Vec::new(),
         plan,
         gates: Vec::new(),
         faults: Vec::new(),
@@ -239,6 +240,7 @@ async fn aborted_waiter_retains_directory_and_kernel_exclusion_through_durabilit
         std::fs::set_permissions(&from, std::fs::Permissions::from_mode(0o600)).unwrap();
         let directories: Arc<[NativeOpenedDirectory]> = vec![directory(&root)].into();
         let retained = Arc::downgrade(&directories);
+        let descriptor = Arc::downgrade(&directories[0].file);
         let mut effect = request(
             &root,
             &lock,
@@ -265,6 +267,7 @@ async fn aborted_waiter_retains_directory_and_kernel_exclusion_through_durabilit
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
         assert_retained_directory(&retained);
+        assert!(descriptor.upgrade().is_some());
         drop(lock);
         let contender = OpenOptions::new()
             .read(true)
@@ -290,7 +293,9 @@ async fn aborted_waiter_retains_directory_and_kernel_exclusion_through_durabilit
         release.send(()).unwrap();
         receipt.recv_timeout(Duration::from_secs(30)).unwrap();
         worker.join().unwrap();
+        wait_for_directory_release(&retained, &descriptor).await;
         assert!(retained.upgrade().is_none());
+        assert!(descriptor.upgrade().is_none());
         std::fs::remove_dir_all(root).unwrap();
     }
 }
@@ -309,6 +314,7 @@ fn queued_aborted_waiter_retains_actual_directories_and_namespace_lock() {
         let target = root.join("queued-body");
         let directories: Arc<[NativeOpenedDirectory]> = vec![directory(&root)].into();
         let retained = Arc::downgrade(&directories);
+        let descriptor = Arc::downgrade(&directories[0].file);
         let effect = request(
             &root,
             &lock,
@@ -335,6 +341,7 @@ fn queued_aborted_waiter_retains_actual_directories_and_namespace_lock() {
         .await;
         drop(waiter);
         assert_retained_directory(&retained);
+        assert!(descriptor.upgrade().is_some());
         drop(lock);
         assert!(!target.exists());
         let contender = OpenOptions::new()
@@ -361,9 +368,28 @@ fn queued_aborted_waiter_retains_actual_directories_and_namespace_lock() {
         busy.await.unwrap();
         receipt.recv_timeout(Duration::from_secs(30)).unwrap();
         observer.join().unwrap();
+        wait_for_directory_release(&retained, &descriptor).await;
         assert!(retained.upgrade().is_none());
+        assert!(descriptor.upgrade().is_none());
         std::fs::remove_dir_all(root).unwrap();
     });
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Test-only teardown deadline never enters authority or publication evidence."
+)]
+async fn wait_for_directory_release(
+    retained: &std::sync::Weak<[NativeOpenedDirectory]>,
+    descriptor: &std::sync::Weak<File>,
+) {
+    // A cohort's last strong count reaches zero before its fields finish dropping.
+    // The queued-worker fixture deliberately has no Tokio timer driver.
+    let started = std::time::Instant::now();
+    while retained.upgrade().is_some() || descriptor.upgrade().is_some() {
+        assert!(started.elapsed() < Duration::from_secs(30));
+        tokio::task::yield_now().await;
+    }
 }
 
 // The transient observation is dropped before worker release; only the command
