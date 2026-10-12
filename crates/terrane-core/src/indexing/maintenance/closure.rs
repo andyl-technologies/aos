@@ -28,21 +28,32 @@ use crate::{
     tree_format::NodeItems,
 };
 
+/// Retains a physical Node, extracted outgoing edges and incoming-edge count.
 #[derive(Clone, Debug)]
 pub(super) struct Record<'a> {
+    /// Canonical physical Node retained by the reachable closure.
     pub(super) node: Rc<StoredNode<'a>>,
     edges: Rc<Vec<Digest>>,
     references: usize,
 }
 
+/// Counts reachability-map changes and outgoing-edge traversal.
 #[derive(Default)]
 pub(super) struct Work {
+    /// Balanced-map operations, with overflow checked separately by the caller.
     pub(super) maps: MapWork,
+    /// Outgoing edges traversed while installing or retiring physical records.
     pub(super) edges: usize,
+    /// Previously absent physical records installed.
     pub(super) added: usize,
+    /// Physical records retired after their last incoming reference.
     pub(super) removed: usize,
 }
 
+/// Extracts physical, continuation and gap edges into an unreferenced record.
+///
+/// # Errors
+/// Rejects leaf entries outside the closed carrier shape or malformed gap bindings.
 pub(super) fn record(
     node: Rc<StoredNode<'_>>,
     context: SemanticContext,
@@ -83,6 +94,11 @@ pub(super) fn record(
     ))
 }
 
+/// Extracts and stages a physical record by identity, replacing any prior record.
+///
+/// # Errors
+/// Rejects invalid carrier entries or gap bindings during edge extraction.
+/// Staging-map counter overflow is deferred to its `work` check.
 pub(super) fn stage<'a>(
     node: Rc<StoredNode<'a>>,
     context: SemanticContext,
@@ -94,8 +110,15 @@ pub(super) fn stage<'a>(
     Ok(work)
 }
 
+/// Adds an incoming reference, installing absent records from staging.
+///
 /// Installation stops at an existing record; outgoing edges belong to the
 /// physical object once, while every incoming physical/logical edge counts.
+/// Map-count overflow is deferred to the caller's map-work check.
+///
+/// # Errors
+/// Rejects missing staged records or reference, installation or edge-count overflow.
+/// Earlier closure changes and work charges remain applied on failure.
 pub(super) fn add<'a>(
     digest: Digest,
     closure: &mut Map<Digest, Record<'a>>,
@@ -119,6 +142,13 @@ pub(super) fn add<'a>(
     Ok(())
 }
 
+/// Removes an incoming reference and recursively retires unreferenced records.
+///
+/// Map-count overflow is deferred to the caller's map-work check.
+///
+/// # Errors
+/// Rejects absent closure records or retirement/traversal-count overflow.
+/// Earlier closure changes and work charges remain applied on failure.
 pub(super) fn remove(
     digest: Digest,
     closure: &mut Map<Digest, Record<'_>>,

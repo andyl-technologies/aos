@@ -243,6 +243,16 @@ fn publication(
     Ok(result)
 }
 
+/// Applies bound discovery in the requested maintenance or initialization mode.
+///
+/// The previous snapshot remains immutable; successful arena copies are monotone
+/// even if later validation fails. Deferred map-count overflow is checked before
+/// returning the new snapshot and its work.
+///
+/// # Errors
+/// Rejects mismatched discovery bindings or mode, unavailable or invalid source
+/// paths, contradictory transitions, invalid canonical carrier/tree data,
+/// arena allocation refusal and resource or accounting limits.
 pub(super) fn apply<'new_graph, 'epoch>(
     old: &PreparedIndex<'_, 'epoch>,
     discovery: &Discovery<'new_graph, 'epoch>,

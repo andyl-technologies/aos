@@ -16,6 +16,10 @@ fn key(name: &str) -> Vec<u8> {
     bytes
 }
 
+/// Validates a nonempty selection batch and orders it by encoded attribute keys.
+///
+/// # Errors
+/// Rejects empty batches, unregistered attribute names and duplicate selections.
 pub(super) fn ordered<'input>(
     selections: &[Selection<'input>],
 ) -> Result<Vec<Selection<'input>>, Error> {
@@ -35,6 +39,17 @@ pub(super) fn ordered<'input>(
     Ok(ordered.into_values().collect())
 }
 
+/// Merges selected index identities into validated owner-local bindings.
+///
+/// Replaces selected bindings while preserving unselected bindings and other
+/// properties. The caller validates selections and their index closures first.
+/// An unchanged binding reuses its payload; a changed binding is copied into
+/// the arena, with properties returned in encoded-key order.
+///
+/// # Errors
+/// Rejects malformed existing noninherited wrappers or merged binding values,
+/// binding codec size limits, encoding-count overflow, and arena payload-limit
+/// or allocation refusal. Work counters may be updated before an error.
 pub(super) fn merge<'value>(
     owner: &Tree<'value>,
     selections: &[Selection<'_>],

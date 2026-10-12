@@ -14,6 +14,10 @@ use crate::{
     tree_format::{Attribute, Entry, EntryKind, NodeItems, TreeUse},
 };
 
+/// Classifies an optional carrier entry into its logical row value.
+///
+/// # Errors
+/// Rejects entries outside the closed carrier shape or malformed continuation bytes.
 pub(super) fn value(
     context: SemanticContext,
     entry: Option<&Entry<'_>>,
@@ -29,6 +33,10 @@ pub(super) fn value(
         .transpose()
 }
 
+/// Builds a specialized row, copying any encoded continuation into stable storage.
+///
+/// # Errors
+/// Rejects binding values, structural-byte count overflow or arena allocation refusal.
 pub(super) fn entry<'a>(
     arena: &'a ByteArena,
     value: &RouteValue,
@@ -60,6 +68,11 @@ pub(super) fn entry<'a>(
     })
 }
 
+/// Resolves local graft hops through checked source Trees, returning absent paths.
+///
+/// # Errors
+/// Rejects unavailable sources, mismatched identities/use/geometry, conflicts,
+/// invalid graft attributes and lookup or path-accounting overflow.
 pub(super) fn resolve(
     sources: &SourceLookup<'_, '_>,
     owner: Digest,
@@ -116,6 +129,10 @@ fn get<'tree, 'a>(
     )
 }
 
+/// Borrows an auxiliary row through a measured physical path search.
+///
+/// # Errors
+/// Rejects path-node or key-comparison count overflow.
 pub(super) fn auxiliary<'tree, 'a>(
     tree: &'tree Tree<'a>,
     key: &[u8],

@@ -215,6 +215,7 @@ fn remove<K: Ord + Clone, V: Clone>(link: &Link<K, V>, key: &K, work: &mut MapWo
 }
 
 impl<K: Ord + Clone, V: Clone> Map<K, V> {
+    /// Borrows the value for a key and records the lookup's search work.
     pub(super) fn get(&self, key: &K, work: &mut MapWork) -> Option<&V> {
         work.operation(self.height());
         let mut next = self.0.as_ref();
@@ -230,24 +231,32 @@ impl<K: Ord + Clone, V: Clone> Map<K, V> {
         None
     }
 
+    /// Inserts or replaces a value by copying its balanced path and recording work.
     pub(super) fn insert(&mut self, key: K, value: V, work: &mut MapWork) {
         work.operation(self.height());
         self.0 = Some(insert(&self.0, key, value, work));
     }
 
+    /// Removes a key if present, preserving other snapshots and recording work.
     pub(super) fn remove(&mut self, key: &K, work: &mut MapWork) {
         work.operation(self.height());
         self.0 = remove(&self.0, key, work);
     }
 
+    /// Returns the number of stored key/value pairs.
     pub(super) fn len(&self) -> usize {
         count(&self.0)
     }
 
+    /// Returns the root's stored height, or zero for an empty map.
     pub(super) fn height(&self) -> usize {
         height(&self.0)
     }
 
+    /// Visits every key/value pair in ascending key order.
+    ///
+    /// # Panics
+    /// Propagates any panic from the visitor.
     pub(super) fn visit(&self, visitor: &mut impl FnMut(&K, &V)) {
         fn walk<K, V>(link: &Link<K, V>, visitor: &mut impl FnMut(&K, &V)) {
             if let Some(node) = link {
@@ -260,6 +269,11 @@ impl<K: Ord + Clone, V: Clone> Map<K, V> {
     }
 
     #[cfg(test)]
+    /// Checks subtree balance, stored metadata and immediate-child key order.
+    ///
+    /// # Panics
+    /// Panics if subtree heights differ by more than one, stored heights or
+    /// counts disagree with their children, or a child violates key order.
     pub(super) fn assert_balanced(&self) {
         fn check<K: Ord, V>(link: &Link<K, V>) -> (usize, usize) {
             let Some(node) = link else {

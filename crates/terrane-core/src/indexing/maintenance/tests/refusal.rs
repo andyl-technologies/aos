@@ -5,6 +5,7 @@ use crate::{
     identity::{IdentityKind, TERRANE_V1},
     tree_format::{NodeItems, decode_node_for, encode_node_for},
 };
+use core::error::Error as _;
 
 fn changed(data: &IndexData, mutate: impl FnOnce(&mut crate::tree_format::Node<'_>)) -> IndexData {
     let mut node = decode_node_for(&data.nodes[&data.root], true, MINIMUM, TreeUse::Index).unwrap();
@@ -75,20 +76,53 @@ pub(super) fn assert_raw_relations_refuse() {
     ];
     let arena = ByteArena::new(1024 * 1024).unwrap();
     for (case, data) in variants.iter().enumerate() {
-        assert!(
-            prepare(&recipe, &source, &graph, data, &arena, MINIMUM, context()).is_err(),
-            "generic-valid disagreement {case}"
-        );
+        let error =
+            prepare(&recipe, &source, &graph, data, &arena, MINIMUM, context()).unwrap_err();
+        let evaluation = error
+            .source()
+            .unwrap()
+            .downcast_ref::<evaluation::Error>()
+            .unwrap();
+        if matches!(case, 1..=3) {
+            assert_eq!(
+                evaluation,
+                &evaluation::Error::Carrier(crate::indexing::Error::Schema),
+                "generic-valid disagreement {case}"
+            );
+            let carrier = evaluation
+                .source()
+                .unwrap()
+                .downcast_ref::<crate::indexing::Error>()
+                .unwrap();
+            assert_eq!(carrier, &crate::indexing::Error::Schema);
+        } else {
+            let expected = if case == 4 {
+                evaluation::Error::MissingNode
+            } else {
+                evaluation::Error::Relationship
+            };
+            assert_eq!(evaluation, &expected);
+            assert!(evaluation.source().is_none());
+        }
     }
     // These freshly assembled bytes bypass the owning Node/Entry encoders.
     // Duplicate map keys, nonminimal integers and an empty Index target list
     // must fail through the real decoder/verifier path with fresh identities.
-    for bytes in [
-        alloc::vec![0xa3, 1, 0, 1, 0, 2, 0x80],
-        alloc::vec![0xa2, 1, 0x18, 0, 2, 0x80],
-        alloc::vec![
-            0xa2, 1, 0, 2, 0x81, 0x83, 0x41, b'a', 0, 0xa2, 1, 7, 14, 0x80
-        ],
+    for (bytes, expected) in [
+        (
+            alloc::vec![0xa3, 1, 0, 1, 0, 2, 0x80],
+            crate::tree_format::Error::Node,
+        ),
+        (
+            alloc::vec![0xa2, 1, 0x18, 0, 2, 0x80],
+            crate::tree_format::Error::Cbor(crate::cbor::Error::NonCanonical),
+        ),
+        (
+            alloc::vec![
+                0xa2, 1, 0, 2, 0x81, 0x83, 0x41, b'a', 0, 0xa2, 1, 7, 14, 0x80
+            ],
+            crate::tree_format::Error::Entry,
+        ),
     ] {
         let mut preimage = b"terrane-node-v1\0".to_vec();
         preimage.extend_from_slice(&bytes);
@@ -98,7 +132,20 @@ pub(super) fn assert_raw_relations_refuse() {
             nodes: BTreeMap::from([(root, bytes)]),
             work: Default::default(),
         };
-        assert!(prepare(&recipe, &source, &graph, &data, &arena, MINIMUM, context()).is_err());
+        let error =
+            prepare(&recipe, &source, &graph, &data, &arena, MINIMUM, context()).unwrap_err();
+        let evaluation = error
+            .source()
+            .unwrap()
+            .downcast_ref::<evaluation::Error>()
+            .unwrap();
+        assert_eq!(evaluation, &evaluation::Error::Tree(expected));
+        let tree = evaluation
+            .source()
+            .unwrap()
+            .downcast_ref::<crate::tree_format::Error>()
+            .unwrap();
+        assert_eq!(tree, &expected);
     }
     assert!(SemanticContext::new(2, 1, 1).is_err());
     assert!(SemanticContext::new(3, 1, 1).is_err());
