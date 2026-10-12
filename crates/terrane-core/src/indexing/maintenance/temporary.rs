@@ -39,6 +39,7 @@ impl Counter {
     }
 }
 
+/// Wraps an ordered key with shared comparison accounting.
 pub(super) struct Key<K> {
     value: K,
     counter: Rc<Counter>,
@@ -65,6 +66,7 @@ impl<K: Ord> PartialEq for Key<K> {
 
 impl<K: Ord> Eq for Key<K> {}
 
+/// Holds transaction-local ordered values with deferred counter-overflow checks.
 pub(super) struct Ordered<K, V> {
     values: BTreeMap<Key<K>, V>,
     counter: Rc<Counter>,
@@ -80,6 +82,7 @@ impl<K, V> Default for Ordered<K, V> {
 }
 
 impl<K: Ord + Clone, V> Ordered<K, V> {
+    /// Creates an empty map with zeroed shared accounting.
     pub(super) fn new() -> Self {
         Self::default()
     }
@@ -92,37 +95,48 @@ impl<K: Ord + Clone, V> Ordered<K, V> {
         }
     }
 
+    /// Returns an entry handle while recording its lookup and comparisons.
     pub(super) fn entry(&mut self, key: K) -> btree_map::Entry<'_, Key<K>, V> {
         let key = self.key(key);
         self.values.entry(key)
     }
 
+    /// Borrows a value while recording the lookup and comparisons.
     pub(super) fn get(&self, key: &K) -> Option<&V> {
         self.values.get(&self.key(key.clone()))
     }
 
+    /// Tests key membership through an accounted lookup.
     pub(super) fn contains_key(&self, key: &K) -> bool {
         self.get(key).is_some()
     }
 
+    /// Inserts a value, returning any replaced value and accounting for the search.
     pub(super) fn insert(&mut self, key: K, value: V) -> Option<V> {
         let key = self.key(key);
         self.values.insert(key, value)
     }
 
+    /// Removes and returns a value if present, accounting for the search.
     pub(super) fn remove(&mut self, key: &K) -> Option<V> {
         let key = self.key(key.clone());
         self.values.remove(&key)
     }
 
+    /// Returns whether the map contains no values without charging a lookup.
     pub(super) fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
 
+    /// Borrows keys in ascending order without charging searches or comparisons.
     pub(super) fn keys(&self) -> impl Iterator<Item = &K> {
         self.values.keys().map(|key| &key.value)
     }
 
+    /// Returns accumulated accounting after checking deferred counter overflow.
+    ///
+    /// # Errors
+    /// Returns `Error::Limit` if any operation or comparison charge overflowed.
     pub(super) fn work(&self) -> Result<TemporaryWork, Error> {
         if self.counter.overflow.get() {
             Err(Error::Limit)

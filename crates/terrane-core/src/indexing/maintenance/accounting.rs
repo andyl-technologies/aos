@@ -24,6 +24,7 @@ pub struct MapWork {
 }
 
 impl MapWork {
+    /// Records an operation and starting height, deferring overflow to `checked`.
     pub(super) fn operation(&mut self, height: usize) {
         Self::charge(&mut self.operations, 1, &mut self.overflow);
         self.maximum_height = self.maximum_height.max(height);
@@ -36,18 +37,22 @@ impl MapWork {
         }
     }
 
+    /// Records a node probe, deferring overflow to `checked`.
     pub(super) fn probe(&mut self) {
         Self::charge(&mut self.probes, 1, &mut self.overflow);
     }
 
+    /// Records a key comparison, deferring overflow to `checked`.
     pub(super) fn compare(&mut self) {
         Self::charge(&mut self.comparisons, 1, &mut self.overflow);
     }
 
+    /// Records a node allocation, deferring overflow to `checked`.
     pub(super) fn allocate(&mut self) {
         Self::charge(&mut self.allocations, 1, &mut self.overflow);
     }
 
+    /// Combines counts, maximum heights and deferred overflow flags.
     pub(super) fn combine(&mut self, other: Self) {
         Self::charge(&mut self.operations, other.operations, &mut self.overflow);
         self.maximum_height = self.maximum_height.max(other.maximum_height);
@@ -57,6 +62,10 @@ impl MapWork {
         self.overflow |= other.overflow;
     }
 
+    /// Checks whether any accumulated map count overflowed.
+    ///
+    /// # Errors
+    /// Returns `Error::Limit` if charging or combining recorded an overflow.
     pub(super) fn checked(&self) -> Result<(), Error> {
         if self.overflow {
             Err(Error::Limit)
@@ -66,6 +75,10 @@ impl MapWork {
     }
 }
 
+/// Adds an amount without changing the counter on overflow.
+///
+/// # Errors
+/// Returns `Error::Limit` if the sum exceeds `usize`.
 pub(super) fn add(counter: &mut usize, amount: usize) -> Result<(), Error> {
     *counter = counter.checked_add(amount).ok_or(Error::Limit)?;
     Ok(())
@@ -83,6 +96,10 @@ pub struct TemporaryWork {
 }
 
 impl TemporaryWork {
+    /// Adds temporary operation, comparison and scan counts in order.
+    ///
+    /// # Errors
+    /// Rejects counter overflow; earlier successful additions remain applied.
     pub(super) fn combine(&mut self, other: Self) -> Result<(), Error> {
         add(&mut self.operations, other.operations)?;
         add(&mut self.comparisons, other.comparisons)?;
@@ -102,6 +119,10 @@ pub struct StagingWork {
 }
 
 impl StagingWork {
+    /// Adds inspected-node, row and extracted-edge counts in order.
+    ///
+    /// # Errors
+    /// Rejects counter overflow; earlier successful additions remain applied.
     pub(super) fn combine(&mut self, other: Self) -> Result<(), Error> {
         add(&mut self.nodes, other.nodes)?;
         add(&mut self.rows, other.rows)?;
