@@ -94,14 +94,19 @@ async fn native_repeated_producer_checks_preserve_current_and_original_refusal()
     // directories through the same malformed-request boundary.
     let expected =
         crate::store::StoreErrorKind::Invalid(crate::store::InvalidReason::MalformedRequest);
-    let refused = refused.expect_err("unsafe source Original must refuse");
+    let refused = match refused {
+        Err(error) => error,
+        Ok(_) => panic!("unsafe source Original must refuse"),
+    };
     assert_eq!(
         refused.kind(),
         &expected,
         "actual source refusal: {refused:?}"
     );
-    let cached_refusal =
-        cached_refusal.expect_err("cached history must refresh Original protection");
+    let cached_refusal = match cached_refusal {
+        Err(error) => error,
+        Ok(()) => panic!("cached history must refresh Original protection"),
+    };
     assert_eq!(
         cached_refusal.kind(),
         &expected,
@@ -149,7 +154,10 @@ async fn native_repeated_producer_checks_preserve_current_and_original_refusal()
     let denied = guard
         .check_index_source_producers(&snapshot, observation, &mut Default::default())
         .await;
-    let denied = denied.expect_err("published empty ACL must revoke current Read");
+    let denied = match denied {
+        Err(error) => error,
+        Ok(_) => panic!("published empty ACL must revoke current Read"),
+    };
     assert_eq!(
         denied.kind(),
         &crate::store::StoreErrorKind::Denied {
