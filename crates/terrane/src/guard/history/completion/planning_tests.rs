@@ -622,13 +622,13 @@ async fn paired_preparation_keeps_full_history_and_relationship_checks() -> Test
     else {
         panic!("historical owner registration refusal lost its typed admission cause");
     };
+    // Canonical root planning validates the exact revision-1 vocabulary before
+    // current authority. An unregistered later name has no preservation rights.
     assert_eq!(
         failure.kind(),
-        &StoreErrorKind::Denied {
-            verb: "commit",
-            pattern: "refs/heads/_/historical".into()
-        }
+        &StoreErrorKind::Invalid(InvalidReason::MalformedRequest)
     );
+    assert!(failure.source().is_none());
 
     let fixture = historical_fixture(wire::Graph::small(), &["index-roots"]).await?;
     let (guard, inputs, evidence) = selected(&fixture, 2).await?;
