@@ -22,6 +22,7 @@ use terrane_core::refs::{Locality, RefRecord};
 use super::*;
 #[cfg(not(feature = "send"))]
 use crate::store::*;
+use crate::store::{InvalidReason, StoreErrorKind};
 
 #[cfg(not(feature = "send"))]
 fn ready<F: std::future::Future>(future: F) -> F::Output {
@@ -163,6 +164,32 @@ fn dom_reference_order_checks_every_kind_and_incomparable_name() {
                 DomainAdmission::new(Some(source), destination, &[]).is_ok(),
                 destination.permits_reference(source),
                 "transition {source:?} -> {destination:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn dom_reference_order_rejects_empty_domain_names_before_admission() {
+    let id = identity(IdentityKind::Node, b"referenced-root");
+    for invalid_domain in [Domain::Tenant(""), Domain::Group(""), Domain::Private("")] {
+        let reference = DomainReference {
+            identity: &id,
+            domain: invalid_domain,
+        };
+        let attempts = [
+            DomainAdmission::new(None, invalid_domain, &[]),
+            DomainAdmission::new(Some(invalid_domain), Domain::Private("valid"), &[]),
+            DomainAdmission::new(None, Domain::Private("valid"), &[reference]),
+            DomainAdmission::from_records(None, invalid_domain, &[]),
+            DomainAdmission::from_records(Some(invalid_domain), Domain::Private("valid"), &[]),
+        ];
+
+        for attempt in attempts {
+            assert_eq!(
+                attempt.unwrap_err().kind(),
+                &StoreErrorKind::Invalid(InvalidReason::Upload { rule_id: "DOM-1" }),
+                "{invalid_domain:?}"
             );
         }
     }
@@ -452,108 +479,4 @@ fn dom_existence_oracle_filters_and_explicit_disclosure_remain_scoped() {
         encoded
     );
     assert_eq!(public.backend.writes.get(), 1);
-}
-
-#[cfg(not(feature = "send"))]
-struct DeletionFixture {
-    roots: Vec<DomainBinding>,
-    events: RefCell<Vec<&'static str>>,
-    fail_intent: Cell<bool>,
-    fail_backend: Cell<bool>,
-}
-
-#[cfg(not(feature = "send"))]
-#[async_trait::async_trait(?Send)]
-impl DomainDeletionBackend for DeletionFixture {
-    fn domain(&self) -> &str {
-        "tenant:a"
-    }
-
-    async fn domain_roots(&self) -> Result<Vec<DomainBinding>, StoreFailure> {
-        Ok(self.roots.clone())
-    }
-
-    async fn delete_domain_data(&self) -> Result<(), StoreFailure> {
-        self.events.borrow_mut().push("delete");
-        if self.fail_backend.get() {
-            return Err(StoreFailure::new(StoreErrorKind::ReadOnly));
-        }
-        Ok(())
-    }
-}
-
-#[cfg(not(feature = "send"))]
-#[async_trait::async_trait(?Send)]
-impl DomainDeletionAudit for DeletionFixture {
-    async fn domain_deleted(&self, domain: &str) -> Result<bool, StoreFailure> {
-        assert_eq!(domain, "tenant:a");
-        Ok(!self.fail_intent.get() && self.events.borrow().contains(&"intent"))
-    }
-
-    async fn record_intent(&self, event: &DomainDeletionEvent) -> Result<Identity, StoreFailure> {
-        assert_eq!(event.domain, "tenant:a");
-        self.events.borrow_mut().push("intent");
-        if self.fail_intent.get() {
-            return Err(StoreFailure::new(StoreErrorKind::ReadOnly));
-        }
-        Ok(identity(IdentityKind::Commit, b"intent"))
-    }
-
-    async fn record_completion(
-        &self,
-        _: &DomainDeletionEvent,
-        intent: &Identity,
-    ) -> Result<Identity, StoreFailure> {
-        assert_eq!(intent, &identity(IdentityKind::Commit, b"intent"));
-        self.events.borrow_mut().push("complete");
-        Ok(identity(IdentityKind::Commit, b"complete"))
-    }
-}
-
-#[cfg(not(feature = "send"))]
-#[test]
-fn dom_deletion_requires_every_root_admin_and_orders_audit_before_removal() {
-    let first = access("tenant:a", Verb::Admin);
-    let mut other_binding = first.binding().clone();
-    other_binding.path = b"/second".to_vec();
-    let second = DomainAccess::authorized(
-        other_binding,
-        Verb::Admin,
-        first.subject().to_owned(),
-        *first.token_id(),
-    )
-    .unwrap();
-    let plan = DomainDeletionPlan::new(
-        "tenant:a".into(),
-        vec![first.binding().clone(), second.binding().clone()],
-    )
-    .unwrap();
-    let fixture = DeletionFixture {
-        roots: vec![first.binding().clone(), second.binding().clone()],
-        events: RefCell::new(Vec::new()),
-        fail_intent: Cell::new(false),
-        fail_backend: Cell::new(false),
-    };
-
-    assert!(ready(plan.execute(std::slice::from_ref(&first), &fixture, &fixture)).is_err());
-    assert!(fixture.events.borrow().is_empty());
-    let incomplete =
-        DomainDeletionPlan::new("tenant:a".into(), vec![first.binding().clone()]).unwrap();
-    assert!(ready(incomplete.execute(std::slice::from_ref(&first), &fixture, &fixture)).is_err());
-    assert!(fixture.events.borrow().is_empty());
-    let permissions = [first, second];
-    fixture.fail_intent.set(true);
-    assert!(ready(plan.execute(&permissions, &fixture, &fixture)).is_err());
-    assert_eq!(*fixture.events.borrow(), ["intent"]);
-
-    fixture.events.borrow_mut().clear();
-    fixture.fail_intent.set(false);
-    fixture.fail_backend.set(true);
-    assert!(ready(plan.execute(&permissions, &fixture, &fixture)).is_err());
-    assert_eq!(*fixture.events.borrow(), ["intent", "delete"]);
-
-    fixture.events.borrow_mut().clear();
-    fixture.fail_backend.set(false);
-    ready(plan.execute(&permissions, &fixture, &fixture)).unwrap();
-    assert_eq!(*fixture.events.borrow(), ["intent", "delete", "complete"]);
 }

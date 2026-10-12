@@ -4,9 +4,11 @@
 //! publication authority. The caller retains its actual held namespace and
 //! freshly checks selected authority before completing a history walk.
 
+#[cfg(all(feature = "tokio", unix))]
+use super::unsupported;
 use super::{
     BucketBinding, ExactRead, FencePolicy, Frame, LocalFs, MetadataStamp, ParentFence, Path,
-    PathBuf, StoreFailure, copy_parents, corrupt, io_failure, unsupported,
+    PathBuf, StoreFailure, copy_parents, corrupt, io_failure,
 };
 use crate::bucket::publication::receipts::RecordRead;
 

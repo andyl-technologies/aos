@@ -12,6 +12,10 @@ use std::collections::BTreeMap;
 use terrane_core::identity::{Identity, IdentityKind, TERRANE_V1};
 use terrane_core::manifest::{ChunkRef, Manifest};
 
+/// Creates a native empty content bucket with independent fixture control.
+///
+/// # Panics
+/// Panics if entropy or bucket creation fails.
 pub(super) async fn fixture() -> FileBucket<TokioLocalFs, TokioClock, Validator> {
     let entropy = TokioLocalFs.random_bytes(16).await.unwrap();
     let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -21,16 +25,22 @@ pub(super) async fn fixture() -> FileBucket<TokioLocalFs, TokioClock, Validator>
         .unwrap()
 }
 
+/// Calculates the exact registered chunk identity of fixture plaintext.
+///
+/// # Panics
+/// Panics if the registered identity calculation fails.
 pub(super) fn chunk_identity(bytes: &[u8]) -> Identity {
     TERRANE_V1.calculate(IdentityKind::Chunk, bytes).unwrap()
 }
 
+/// Encodes fixture plaintext with the registered raw chunk tag.
 pub(super) fn raw(bytes: &[u8]) -> Vec<u8> {
     let mut encoded = vec![0];
     encoded.extend_from_slice(bytes);
     encoded
 }
 
+/// Builds the complete fixture upload proposal without admitting content.
 pub(super) fn upload<'a>(
     encoded: &'a [u8],
     identity: &'a Identity,
@@ -531,8 +541,10 @@ async fn dictionaries_are_fetched_by_verified_chunk_identity_before_decode() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn portable_copy_reopens_as_the_same_bucket_layout() {
-    let bucket = fixture().await;
+    let native = crate::ref_advance::tests::fixture().await;
+    let bucket = native.store();
     let plaintext = b"portable sealed body";
     let identity = chunk_identity(plaintext);
     bucket
@@ -545,10 +557,19 @@ async fn portable_copy_reopens_as_the_same_bucket_layout() {
         ))
         .await
         .unwrap();
-    use super::tests::{PreparedCas, Selected};
-    let record = terrane_core::refs::RefRecord::first([1; 32], 1, Locality::default()).selected();
-    bucket
-        .prepared_cas("refs/heads/tenant/main", None, &record)
+    let mut session = native
+        .begin(
+            "refs/heads/tenant/main",
+            &crate::ref_advance::tests::token(),
+            "sdk",
+        )
+        .await
+        .unwrap();
+    let record = native
+        .advance(
+            &mut session,
+            crate::ref_advance::tests::request_file(Vec::new(), plaintext),
+        )
         .await
         .unwrap();
     let destination = bucket.root().with_extension("copy");
@@ -566,14 +587,114 @@ async fn portable_copy_reopens_as_the_same_bucket_layout() {
             }
         }
     }
-    let copied = FileBucket::open(
-        config(destination.clone()),
+    let mut configuration = bucket.inner.config.clone();
+    configuration.root = destination.clone();
+    configuration.publication_control.as_mut().unwrap().control = None;
+    let source_control = super::publication::configured_location(
+        bucket.root(),
+        bucket.inner.config.publication_control.as_ref().unwrap(),
+    )
+    .unwrap()
+    .1;
+    let destination_control = super::publication::configured_location(
+        &configuration.root,
+        configuration.publication_control.as_ref().unwrap(),
+    )
+    .unwrap()
+    .1;
+    assert_ne!(destination_control, source_control);
+    let source_registration = TokioLocalFs
+        .read_nofollow(&source_control.join("backend-registration.cbor"))
+        .await
+        .unwrap();
+    let pointer_before_registration = TokioLocalFs
+        .read_nofollow(&destination.join("publication/PORTABLE"))
+        .await
+        .unwrap();
+    let missing_control = TokioLocalFs
+        .symlink_metadata(&destination_control)
+        .await
+        .unwrap_err();
+    assert_eq!(missing_control.kind(), std::io::ErrorKind::NotFound);
+
+    // A copied payload cannot register its own new physical incarnation.
+    let refusal = match FileBucket::open(
+        configuration.clone(),
         TokioLocalFs,
         TokioClock,
-        Validator,
+        crate::ref_advance::tests::Validator,
+    )
+    .await
+    {
+        Ok(_) => panic!("ordinary open registered an existing copied payload"),
+        Err(error) => error,
+    };
+    assert!(matches!(refusal.kind(), StoreErrorKind::Unsupported));
+    assert_eq!(
+        TokioLocalFs
+            .symlink_metadata(&destination_control)
+            .await
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert_eq!(
+        TokioLocalFs
+            .read_nofollow(&destination.join("publication/PORTABLE"))
+            .await
+            .unwrap(),
+        pointer_before_registration
+    );
+
+    let initialized = FileBucket::initialize_portable_copy(
+        configuration.clone(),
+        TokioLocalFs,
+        TokioClock,
+        crate::ref_advance::tests::Validator,
     )
     .await
     .unwrap();
+    let destination_registration = TokioLocalFs
+        .read_nofollow(&destination_control.join("backend-registration.cbor"))
+        .await
+        .unwrap();
+    let registration =
+        terrane_core::gc::publication::BackendRegistration::decode(&destination_registration)
+            .unwrap();
+    assert_eq!(
+        registration.activation,
+        terrane_core::gc::publication::Activation::Active
+    );
+    assert_ne!(destination_registration, source_registration);
+    assert_eq!(
+        initialized.get(&identity, None).await.unwrap(),
+        raw(plaintext)
+    );
+    drop(initialized);
+
+    // Ordinary reopen now consumes the actual completed destination registration.
+    let copied = FileBucket::open(
+        configuration,
+        TokioLocalFs,
+        TokioClock,
+        crate::ref_advance::tests::Validator,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        TokioLocalFs
+            .read_nofollow(&destination_control.join("backend-registration.cbor"))
+            .await
+            .unwrap(),
+        destination_registration
+    );
+    assert_eq!(
+        TokioLocalFs
+            .read_nofollow(&source_control.join("backend-registration.cbor"))
+            .await
+            .unwrap(),
+        source_registration
+    );
     assert_eq!(copied.get(&identity, None).await.unwrap(), raw(plaintext));
     assert_eq!(
         crate::store::RefStore::ref_get(&copied, "refs/heads/tenant/main")
@@ -585,6 +706,10 @@ async fn portable_copy_reopens_as_the_same_bucket_layout() {
         copied.catalog().await.unwrap().capabilities.generation,
         bucket.catalog().await.unwrap().capabilities.generation
     );
+    drop(copied);
     tokio::fs::remove_dir_all(destination).await.unwrap();
+    tokio::fs::remove_dir_all(destination_control)
+        .await
+        .unwrap();
     tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
 }

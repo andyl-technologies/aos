@@ -310,6 +310,30 @@ impl LocalFs for ObservedFs {
         Ok(guard)
     }
 
+    async fn try_lock_existing_shared(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        let observed = self.observe.load(std::sync::atomic::Ordering::SeqCst);
+        if observed {
+            self.attempts.add_permits(1);
+        }
+        let guard = TokioLocalFs.try_lock_existing_shared(path).await?;
+        if observed {
+            self.acquired.add_permits(1);
+        }
+        Ok(guard)
+    }
+
+    async fn try_lock_existing_exclusive(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        let observed = self.observe.load(std::sync::atomic::Ordering::SeqCst);
+        if observed {
+            self.attempts.add_permits(1);
+        }
+        let guard = TokioLocalFs.try_lock_existing_exclusive(path).await?;
+        if observed {
+            self.acquired.add_permits(1);
+        }
+        Ok(guard)
+    }
+
     async fn random_bytes(&self, length: usize) -> std::io::Result<Vec<u8>> {
         TokioLocalFs.random_bytes(length).await
     }

@@ -108,6 +108,14 @@ impl Session {
         &self.lease
     }
 
+    /// Returns the configured nonzero renewal duration for local wait scheduling.
+    ///
+    /// This duration grants no authority; effects still check the actual whole
+    /// selected lease, its current expiry and all retained native predicates.
+    pub(super) fn renewal_duration(&self) -> Duration {
+        Duration::from_secs(self.duration)
+    }
+
     /// Rechecks the same retained clock before every observation and effect.
     ///
     /// # Errors

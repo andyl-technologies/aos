@@ -237,10 +237,10 @@ impl LocalFs for ProbeFs {
         };
         let hook = {
             let mut state = self.state();
-            if let Some(path) = &path {
-                if phase == Some(Phase::Raw) {
-                    state.observations.raw.push(path.clone());
-                }
+            if let Some(path) = &path
+                && phase == Some(Phase::Raw)
+            {
+                state.observations.raw.push(path.clone());
             }
             if let Some(observed) = mutation {
                 state.observations.mutations.push(observed);
@@ -289,17 +289,17 @@ impl LocalFs for ProbeFs {
             return Err(error);
         }
         assert!(!swallow, "registered real sync failure was not reached");
-        if let Some(path) = path {
-            if phase == Some(Phase::Pending) || phase == Some(Phase::Committed) {
-                let journal = required(CreationJournal::decode(&required(std::fs::read(&path))));
-                let mut state = self.state();
-                if phase == Some(Phase::Pending) {
-                    assert!(matches!(journal.state, JournalState::Pending));
-                    state.observations.pending.push((path, journal));
-                } else {
-                    assert!(matches!(journal.state, JournalState::Committed { .. }));
-                    state.observations.committed.push((path, journal));
-                }
+        if let Some(path) = path
+            && (phase == Some(Phase::Pending) || phase == Some(Phase::Committed))
+        {
+            let journal = required(CreationJournal::decode(&required(std::fs::read(&path))));
+            let mut state = self.state();
+            if phase == Some(Phase::Pending) {
+                assert!(matches!(journal.state, JournalState::Pending));
+                state.observations.pending.push((path, journal));
+            } else {
+                assert!(matches!(journal.state, JournalState::Committed { .. }));
+                state.observations.committed.push((path, journal));
             }
         }
         Ok(())
@@ -321,8 +321,53 @@ impl LocalFs for ProbeFs {
         TokioLocalFs.read_nofollow(path).await
     }
 
+    async fn read_payload_ranges(
+        &self,
+        read: crate::store::NativePayloadRangeRead,
+    ) -> io::Result<Option<crate::store::NativePayloadRangeRecord>> {
+        let unavailable = self.state().unavailable.clone();
+        let refused = unavailable.as_deref().is_some_and(|path| {
+            read.read_data_range()
+                .is_some_and(|(actual, _)| actual == path)
+                || read
+                    .closing_data_ranges_for_test()
+                    .is_some_and(|mut ranges| ranges.any(|(actual, _)| actual == path))
+        });
+        if refused {
+            return Err(io::Error::other(
+                "batch fixture exact nofollow read unavailable",
+            ));
+        }
+
+        // Forward the sealed descriptor recipe without replacing its original
+        // range continuity checks or supplying a publication acknowledgment.
+        TokioLocalFs.read_payload_ranges(read).await
+    }
+
+    async fn read_ordinary_record(
+        &self,
+        read: crate::store::NativeOrdinaryRead,
+    ) -> io::Result<Option<crate::store::NativeOrdinaryRecord>> {
+        // Preserve the ordinary leaf's exact nofollow failure hook. Held-history
+        // closing observations use the genuine native worker and cannot supply
+        // a creator or publication acknowledgment.
+        if read.path_for_test().is_some() {
+            return Ok(None);
+        }
+
+        TokioLocalFs.read_ordinary_record(read).await
+    }
+
     async fn lock_existing_exclusive(&self, path: &Path) -> io::Result<Self::Lock> {
         TokioLocalFs.lock_existing_exclusive(path).await
+    }
+
+    async fn try_lock_existing_shared(&self, path: &Path) -> io::Result<Self::Lock> {
+        TokioLocalFs.try_lock_existing_shared(path).await
+    }
+
+    async fn try_lock_existing_exclusive(&self, path: &Path) -> io::Result<Self::Lock> {
+        TokioLocalFs.try_lock_existing_exclusive(path).await
     }
 
     async fn lock_exclusive(&self, path: &Path) -> io::Result<Self::Lock> {
