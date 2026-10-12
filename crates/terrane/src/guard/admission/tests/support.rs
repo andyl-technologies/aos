@@ -75,6 +75,24 @@ impl ObservedStore {
             .unwrap_or(0)
     }
 
+    /// Returns all addressed ordinary GET calls for one immutable kind.
+    ///
+    /// Native retained namespace readers are observed separately by the bucket.
+    ///
+    /// # Panics
+    /// Panics if the closed kind registry rejects the kind or the mutex is poisoned.
+    pub(in crate::guard) fn total_content_reads(&self, kind: IdentityKind) -> usize {
+        let domain = TERRANE_V1.domain(kind).unwrap();
+        self.reads
+            .lock()
+            .unwrap()
+            .content
+            .iter()
+            .filter(|((_, observed_domain, _), _)| *observed_domain == domain)
+            .map(|(_, reads)| *reads)
+            .sum()
+    }
+
     /// Returns the number of whole current-ref reads for one canonical name.
     ///
     /// # Panics
@@ -237,6 +255,31 @@ pub(in crate::guard) async fn fork_request(
     request.uploads.clear();
     request.reference_records = source.existing_records(&evidence).await.unwrap();
     request
+}
+
+/// Temporarily removes a genuine protected association to test fresh history reads.
+///
+/// The caller restores the returned original and archived paths after refusal.
+///
+/// # Panics
+/// Panics if the fixture has no real association or its rename fails.
+pub(in crate::guard) async fn archive_original(
+    source: &Guard<Bucket, TokioClock>,
+    commit: Digest,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    let context = source.original_commit(&commit).unwrap();
+    let hex = commit
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let original = context
+        .baseline()
+        .authority()
+        .control()
+        .join(format!("commit-{hex}.cbor"));
+    let archived = original.with_extension("removed");
+    tokio::fs::rename(&original, &archived).await.unwrap();
+    (original, archived)
 }
 
 impl CapabilityReport for ObservedStore {
