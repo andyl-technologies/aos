@@ -19,23 +19,13 @@
     map (name: "selected_bridge::native_guard::cold_fork::tests::ordinary::${name}") tests
     ++ map (name: "selected_bridge::native_guard::cold_fork::tests::ordinary::publication::${name}") publicationTests
     ++ ["guard::original::verifier::cold::tests::abandoned_routes_are_pruned_without_evicting_live_attempts"];
+  runCases = import ./_native-cases.nix {
+    label = "native-cold-fork-source";
+    inherit selectors;
+  };
 in
   sourceGate "native-cold-fork-source" ''
-    cd crates
-    cargo test --frozen --offline -p terrane --no-default-features \
-      --features tokio,surface-sdk --lib -- --list > "$TMPDIR/cold-fork-source-tests.txt"
-    python3 ../tests/terrane/check_native_gate.py inventory \
-      "$TMPDIR/cold-fork-source-tests.txt" '${builtins.toJSON selectors}'
-    for test_name in ${builtins.concatStringsSep " " selectors}; do
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
-        --features tokio,surface-sdk --lib "$test_name" -- --exact \
-        > "$TMPDIR/cold-fork-source-test.log" 2>&1; then
-        cat "$TMPDIR/cold-fork-source-test.log"
-        exit 1
-      fi
-      python3 ../tests/terrane/check_native_gate.py execution \
-        "$TMPDIR/cold-fork-source-test.log" "[\"$test_name\"]"
-    done
+    ${runCases}
     printf 'PASS: native cold-fork source and publication prerequisites (13 exact cases); source-preserving collection remains separate\n' \
       > "$out/result"
   ''

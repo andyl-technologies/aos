@@ -8,23 +8,13 @@
     "held_renewal_cancellation_retains_exclusion_and_poisoning"
   ];
   selectors = map (name: "gc::lease::held_tests::${name}") tests;
+  runCases = import ./_native-cases.nix {
+    label = "native-held-lease-renewal";
+    inherit selectors;
+  };
 in
   sourceGate "native-held-lease-renewal" ''
-    cd crates
-    cargo test --frozen --offline -p terrane --no-default-features \
-      --features tokio,surface-sdk --lib -- --list > "$TMPDIR/held-renewal-tests.txt"
-    python3 ../tests/terrane/check_native_gate.py inventory \
-      "$TMPDIR/held-renewal-tests.txt" '${builtins.toJSON selectors}'
-    for test_name in ${builtins.concatStringsSep " " selectors}; do
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
-        --features tokio,surface-sdk --lib "$test_name" -- --exact \
-        > "$TMPDIR/held-renewal-test.log" 2>&1; then
-        cat "$TMPDIR/held-renewal-test.log"
-        exit 1
-      fi
-      python3 ../tests/terrane/check_native_gate.py execution \
-        "$TMPDIR/held-renewal-test.log" "[\"$test_name\"]"
-    done
+    ${runCases}
     printf 'PASS: retained-context lease renewal (6 exact cases); deletion ownership remains separate\n' \
       > "$out/result"
   ''

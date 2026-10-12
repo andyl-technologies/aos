@@ -6,26 +6,12 @@
     "gc::lease::held_tests::output_sync::noop_and_swallowed_real_sync_failure_never_acknowledge_renewal"
     "gc::lease::held_tests::output_sync::lease_acknowledges_real_unrelated_cache_repair_and_removal"
   ];
+  runCases = import ./_native-cases.nix {
+    label = "native-lease-output-sync";
+    inherit selectors;
+  };
 in
   sourceGate "native-lease-output-sync" ''
-    cd crates
-    if ! cargo test --frozen --offline -p terrane --no-default-features \
-      --features tokio,surface-sdk --lib -- --list > "$out/inventory.log" 2>&1; then
-      cat "$out/inventory.log"
-      exit 1
-    fi
-    python3 ../tests/terrane/check_native_gate.py inventory \
-      "$out/inventory.log" '${builtins.toJSON selectors}'
-    for test_name in ${builtins.concatStringsSep " " selectors}; do
-      test_log="$out/$test_name.log"
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
-        --features tokio,surface-sdk --lib "$test_name" -- --exact \
-        > "$test_log" 2>&1; then
-        cat "$test_log"
-        exit 1
-      fi
-      python3 ../tests/terrane/check_native_gate.py execution \
-        "$test_log" "[\"$test_name\"]"
-    done
+    ${runCases}
     printf 'PASS: actual lease output durability (5 exact cases)\n' > "$out/result"
   ''

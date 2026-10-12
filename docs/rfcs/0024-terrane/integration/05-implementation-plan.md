@@ -170,10 +170,17 @@ Notes inventory, recorded disclosure and retained-reader refusal regressions
 are registered. PROV-31 review also identifies renewed ancestor authorization
 for unchanged graft descriptors; its correction and genuine scoped-publication
 witnesses pass independent source review; runtime qualification remains pending.
-The local CLI/SDK source workline is reviewed. Private Core composition passes
-its library build and all-target compilation after a test-only import correction.
-The interrupted Clippy invocation has no terminal receipt and remains unqualified;
-qualification resumes through the direct AOS Cargo shell. No new gate is qualified.
+The local CLI/SDK and pure provenance source worklines are reviewed. Private Core
+composition passes all-target compilation, strict all-target Clippy and all 769
+package Nextest cases after test-only import and sorted-fixture corrections.
+There are no skipped or ignored cases. Native SDK all-target compilation passes
+on the composed source; subsequent strict Clippy identifies a duplicated test
+module's unused fixture constructor. Its six original callers remain required;
+the scoped repair preserves both actual authoring configurations. Shared native
+prerequisites now use the source-bound SDK image with unchanged selectors, fresh
+protected storage and retained logs. Nix evaluation, shell syntax and positive
+and negative log checks pass; actual owning gates, the current T1 floor and
+mandatory application targets remain pending. No task or freeze advances.
 
 Additional isolated worklines inspect growing-index completion, indexed replay
 and permanent recovery, while a separate worker qualifies the five public SDK

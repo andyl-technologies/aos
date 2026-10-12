@@ -12,23 +12,13 @@
     "gc_restore_native_reopen_and_fresh_cycle_make_old_trash_stale"
   ];
   selectors = map (name: "gc::runner::tests::restore::${name}") tests;
+  runCases = import ./_native-cases.nix {
+    label = "native-preownership-restore";
+    inherit selectors;
+  };
 in
   sourceGate "native-preownership-restore" ''
-    cd crates
-    cargo test --frozen --offline -p terrane --no-default-features \
-      --features tokio,surface-sdk --lib -- --list > "$TMPDIR/restore-tests.txt"
-    python3 ../tests/terrane/check_native_gate.py inventory \
-      "$TMPDIR/restore-tests.txt" '${builtins.toJSON selectors}'
-    for test_name in ${builtins.concatStringsSep " " selectors}; do
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
-        --features tokio,surface-sdk --lib "$test_name" -- --exact \
-        > "$TMPDIR/restore-test.log" 2>&1; then
-        cat "$TMPDIR/restore-test.log"
-        exit 1
-      fi
-      python3 ../tests/terrane/check_native_gate.py execution \
-        "$TMPDIR/restore-test.log" "[\"$test_name\"]"
-    done
+    ${runCases}
     printf 'PASS: native pre-ownership restore (10 exact cases); two-phase deletion remains separate\n' \
       > "$out/result"
   ''

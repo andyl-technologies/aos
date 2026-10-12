@@ -35,26 +35,15 @@
     "gc::runner::permanent_local_tests::recovery::staging::permanent_local_staging_replaced_original_preimage_refuses_selection"
     "gc::runner::permanent_local_tests::recovery::staging::permanent_local_staging_cancellation_keeps_proposals_unselected_after_reopen"
   ];
+  runCases = import ./_native-cases.nix {
+    label = "local-permanent-reconciliation";
+    inherit selectors;
+  };
 in
   # This auxiliary check covers permanent local recovery. Full two-phase GC
   # and provider qualification still require their complete owning gate sets.
   sourceGate "local-permanent-reconciliation" ''
-    cd crates
-    cargo test --frozen --offline -p terrane --no-default-features \
-      --features tokio,surface-sdk --lib -- --list > "$TMPDIR/permanent-local-tests.txt"
-    python3 ../tests/terrane/check_native_gate.py inventory \
-      "$TMPDIR/permanent-local-tests.txt" '${builtins.toJSON selectors}'
-
-    for test_name in ${builtins.concatStringsSep " " selectors}; do
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
-        --features tokio,surface-sdk --lib "$test_name" -- --exact \
-        > "$TMPDIR/permanent-local-test.log" 2>&1; then
-        cat "$TMPDIR/permanent-local-test.log"
-        exit 1
-      fi
-      python3 ../tests/terrane/check_native_gate.py execution \
-        "$TMPDIR/permanent-local-test.log" "[\"$test_name\"]"
-    done
+    ${runCases}
     printf 'PASS: permanent local recovery and fresh-placement restore (34 exact cases)\n' \
       > "$out/result"
   ''
