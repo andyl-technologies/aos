@@ -10,7 +10,8 @@ pub(in crate::guard) mod support;
 use crate::ref_advance::tests::{fixture, request_file, request_file_acl, token};
 use crate::store::{InvalidReason, RefStore, StoreErrorKind};
 use std::error::Error;
-use support::{fork_request, observed, refresh_retained};
+use support::{archive_original, fork_request, observed, refresh_retained};
+use terrane_core::auth::Verb;
 use terrane_core::identity::IdentityKind;
 
 const SOURCE: &str = "refs/heads/_/main";
@@ -21,8 +22,15 @@ const PLAINTEXT: &[u8] = b"ordinary admission retains exact immutable witnesses"
 async fn fork_admission_uses_one_complete_source_tree_check_and_keeps_path_checks() {
     let coordinator = fixture().await;
     let mut session = coordinator.begin(SOURCE, &token(), "sdk").await.unwrap();
+    let ancestor = coordinator
+        .advance(
+            &mut session,
+            request_file(Vec::new(), b"earlier source tree"),
+        )
+        .await
+        .unwrap();
     let head = coordinator
-        .advance(&mut session, request_file(Vec::new(), PLAINTEXT))
+        .advance(&mut session, request_file(vec![ancestor.commit], PLAINTEXT))
         .await
         .unwrap();
     let request = fork_request(coordinator.guard(), head.commit).await;
@@ -34,28 +42,69 @@ async fn fork_admission_uses_one_complete_source_tree_check_and_keeps_path_check
         .evidence
         .root;
     let guard = observed(coordinator.guard());
+    let native_reads = coordinator.store().observe_content_for_tests();
+    native_reads.reset();
 
     let admitted = guard.admit_fork(SOURCE, CHILD, 1, request).await.unwrap();
 
-    // Root authorization, exact source verification and root-path authorization
-    // each load the target and its complete history. The former standalone
-    // history traversal added a seventh addressed commit read.
-    assert_eq!(
+    // Native current authorization reads through retained namespace readers.
+    // Addressed store GETs measure the separate exact immutable verifier only.
+    let historical_reads = guard
+        .store()
+        .content_reads(IdentityKind::Commit, head.commit);
+    assert!(historical_reads > 0);
+    assert!(
         guard
             .store()
-            .content_reads(IdentityKind::Commit, head.commit),
-        6
+            .content_reads(IdentityKind::Commit, ancestor.commit)
+            > 0
     );
-    assert_eq!(
-        guard.store().content_reads(IdentityKind::Node, source_tree),
-        7
+    let physical_reads = native_reads.snapshot();
+    assert_eq!(physical_reads.commit_puts, 0);
+    assert_eq!(physical_reads.node_puts, 0);
+    assert!(physical_reads.commit_gets > guard.store().total_content_reads(IdentityKind::Commit));
+    assert!(
+        physical_reads.node_gets > guard.store().content_reads(IdentityKind::Node, source_tree)
     );
     assert_eq!(guard.store().reference_reads(SOURCE), 2);
     assert_eq!(admitted.commit.commit().tree, source_tree);
     assert_eq!(admitted.commit.commit().parents, [head.commit]);
-    assert_eq!(admitted.source_authorization.as_ref().unwrap().record, head);
+    let source = admitted.source_authorization.as_ref().unwrap();
+    assert_eq!(source.record, head);
+    assert_eq!(source.reference, SOURCE);
+    assert_eq!(source.verb, Verb::Fork);
+    assert_eq!(source.paths, [b"/".to_vec()]);
+    assert!(admitted.expected.is_none());
     assert!(admitted.uploads.is_empty());
     guard.store().assert_no_effects();
+    assert!(coordinator.store().ref_get(CHILD).await.unwrap().is_none());
+
+    // A prior success cannot replace the ancestor's protected Original evidence.
+    let next = fork_request(coordinator.guard(), head.commit).await;
+    let (original, archived) = archive_original(coordinator.guard(), ancestor.commit).await;
+    guard.store().reset();
+    let failure = match guard.admit_fork(SOURCE, CHILD, 1, next).await {
+        Err(failure) => failure,
+        Ok(_) => panic!("missing ancestor Original must refuse fork admission"),
+    };
+    tokio::fs::rename(&archived, &original).await.unwrap();
+    assert!(matches!(
+        failure.kind(),
+        StoreErrorKind::Unavailable { retry_after: None }
+    ));
+    assert_eq!(
+        failure
+            .source()
+            .and_then(|source| source.downcast_ref::<std::io::Error>())
+            .unwrap()
+            .kind(),
+        std::io::ErrorKind::NotFound
+    );
+    guard.store().assert_no_effects();
+    assert_eq!(
+        coordinator.store().ref_get(SOURCE).await.unwrap(),
+        Some(head)
+    );
     assert!(coordinator.store().ref_get(CHILD).await.unwrap().is_none());
 }
 
@@ -75,6 +124,8 @@ async fn existing_commit_admission_checks_the_exact_parent_once_after_current_au
         .evidence
         .root;
     let guard = observed(coordinator.guard());
+    let native_reads = coordinator.store().observe_content_for_tests();
+    native_reads.reset();
 
     let admitted = guard
         .admit(
@@ -85,15 +136,15 @@ async fn existing_commit_admission_checks_the_exact_parent_once_after_current_au
         .await
         .unwrap();
 
-    // Independent current authorization and exact parent verification each
-    // perform two addressed reads. The discarded standalone history added one.
-    assert_eq!(
-        guard
-            .store()
-            .content_reads(IdentityKind::Commit, head.commit),
-        4
-    );
-    assert_eq!(guard.store().content_reads(IdentityKind::Node, root), 4);
+    let historical_reads = guard
+        .store()
+        .content_reads(IdentityKind::Commit, head.commit);
+    assert!(historical_reads > 0);
+    assert!(guard.store().content_reads(IdentityKind::Node, root) > 0);
+    let physical_reads = native_reads.snapshot();
+    assert!(physical_reads.commit_gets >= historical_reads);
+    assert_eq!(physical_reads.commit_puts, 0);
+    assert_eq!(physical_reads.node_puts, 0);
     assert_eq!(admitted.expected.as_ref(), Some(&head));
     assert_eq!(admitted.commit.commit().parents, [head.commit]);
     guard.store().assert_no_effects();
@@ -114,7 +165,8 @@ async fn fork_admission_rechecks_current_source_acl_after_an_earlier_success() {
     let first = fork_request(coordinator.guard(), head.commit).await;
     let next = fork_request(coordinator.guard(), head.commit).await;
     let guard = observed(coordinator.guard());
-    guard.admit_fork(SOURCE, CHILD, 1, first).await.unwrap();
+    let admitted = guard.admit_fork(SOURCE, CHILD, 1, first).await.unwrap();
+    assert_eq!(admitted.source_authorization.as_ref().unwrap().record, head);
 
     let revoked = coordinator
         .advance(
@@ -125,6 +177,13 @@ async fn fork_admission_rechecks_current_source_acl_after_an_earlier_success() {
         .unwrap();
     refresh_retained(coordinator.guard(), &guard);
     guard.store().reset();
+    let native_reads = coordinator.store().observe_content_for_tests();
+    native_reads.reset();
+    assert_ne!(revoked.commit, head.commit);
+    assert_eq!(
+        coordinator.store().ref_get(SOURCE).await.unwrap(),
+        Some(revoked.clone())
+    );
     let result = guard.admit_fork(SOURCE, CHILD, 1, next).await;
 
     let Err(failure) = result else {
@@ -134,11 +193,22 @@ async fn fork_admission_rechecks_current_source_acl_after_an_earlier_success() {
         matches!(failure.kind(), StoreErrorKind::Denied { verb: "fork", pattern } if pattern == SOURCE)
     );
     assert_eq!(guard.store().reference_reads(SOURCE), 1);
-    assert!(
+    // The genuine current reader must consume the new policy; the ordinary
+    // immutable verifier is never reached after current Fork refusal.
+    let physical_reads = native_reads.snapshot();
+    assert!(physical_reads.commit_gets > 0);
+    assert!(physical_reads.node_gets > 0);
+    assert_eq!(physical_reads.commit_puts, 0);
+    assert_eq!(physical_reads.node_puts, 0);
+    assert_eq!(
         guard
             .store()
-            .content_reads(IdentityKind::Commit, revoked.commit)
-            > 0
+            .content_reads(IdentityKind::Commit, revoked.commit),
+        0
+    );
+    assert_eq!(
+        coordinator.store().ref_get(SOURCE).await.unwrap(),
+        Some(revoked)
     );
     guard.store().assert_no_effects();
     assert!(coordinator.store().ref_get(CHILD).await.unwrap().is_none());
