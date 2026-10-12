@@ -3,6 +3,7 @@
 use super::support::{Generator, cbor_properties, check_record, token_bytes};
 use terrane_core::{bucket, gc, refs};
 
+/// Builds a selected ref record with the supplied sequence and fixed fixture fields.
 pub(super) fn head(seq: u64) -> refs::RefRecord {
     refs::RefRecord {
         commit: [8; 32],
@@ -14,6 +15,10 @@ pub(super) fn head(seq: u64) -> refs::RefRecord {
     }
 }
 
+/// Builds a seeded Commit model with case-selected provenance and optional fields.
+///
+/// # Panics
+/// Panics if the fixed request cannot be converted into its Commit context.
 pub(super) fn commit(generator: &mut Generator, case: usize) -> refs::Commit {
     let mut model = refs::Commit {
         tree: generator.bytes(),
