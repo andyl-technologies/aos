@@ -1,8 +1,9 @@
 //! Orders domain deletion behind complete root authority and durable audit.
 //!
 //! Audit events are ordinary signed commits in a separate retained repository;
-//! this module defines no new on-disk format. A backend must fence the deleted
-//! namespace so surviving handles cannot repopulate it after removal.
+//! this module defines no new on-disk format. Native deletion uses
+//! `Repository::delete_domain` to compare complete current
+//! authority under retained exclusion before removing domain-owned records.
 
 use terrane_core::auth::Verb;
 use terrane_core::identity::Identity;
@@ -141,128 +142,6 @@ pub trait DomainDeletionAudit {
         event: &DomainDeletionEvent,
         intent: &Identity,
     ) -> Result<Identity, StoreFailure>;
-}
-
-/// Removes every pack and index in one physically isolated bucket namespace.
-#[cfg_attr(feature = "send", async_trait::async_trait)]
-#[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
-pub trait DomainDeletionBackend {
-    /// Returns the canonical domain pinned to the physical namespace.
-    fn domain(&self) -> &str;
-
-    /// Returns the authority's complete current root inventory for this scope.
-    ///
-    /// # Errors
-    ///
-    /// Returns a specified failure when the inventory cannot be established.
-    /// A requester's supplied root subset or advisory LIST cannot establish it.
-    async fn domain_roots(&self) -> Result<Vec<DomainBinding>, StoreFailure>;
-
-    /// Fences the namespace and durably removes its domain-owned data.
-    ///
-    /// The fence must survive failure/reopen. Pending or completed deletion
-    /// cannot resume ordinary routing or accept writes from surviving handles.
-    ///
-    /// # Errors
-    ///
-    /// Returns a specified storage failure while retaining the deletion fence.
-    async fn delete_domain_data(&self) -> Result<(), StoreFailure>;
-}
-
-/// Requires admin decisions matching a trusted complete root inventory.
-pub struct DomainDeletionPlan {
-    domain: String,
-    roots: Vec<DomainBinding>,
-}
-
-impl DomainDeletionPlan {
-    /// Binds deletion to the authority's current complete domain-root inventory.
-    ///
-    /// Configuration must originate from the authoritative domain router; a
-    /// requester's selected subset cannot be used as this inventory.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Invalid(Upload)` for an unsupported domain, empty inventory,
-    /// duplicate roots, or a root bound to a different domain.
-    pub fn new(domain: String, roots: Vec<DomainBinding>) -> Result<Self, StoreFailure> {
-        let valid_kind = matches!(
-            Domain::parse(&domain),
-            Ok(Domain::Private(_) | Domain::Tenant(_))
-        );
-        let invalid_roots = roots.is_empty()
-            || roots
-                .iter()
-                .enumerate()
-                .any(|(index, root)| root.domain != domain || roots[..index].contains(root));
-        if !valid_kind || invalid_roots {
-            return Err(StoreFailure::new(StoreErrorKind::Invalid(
-                InvalidReason::Upload { rule_id: "DOM-20" },
-            )));
-        }
-
-        Ok(Self { domain, roots })
-    }
-
-    /// Deletes only after every root is authorized and intent is durable.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Denied` before writing audit or deleting if any root lacks a
-    /// matching admin decision. Audit or backend failures leave the operation
-    /// incomplete; the retained intent and backend fence permit safe recovery.
-    pub async fn execute<B: DomainDeletionBackend, A: DomainDeletionAudit>(
-        &self,
-        permissions: &[DomainAccess],
-        backend: &B,
-        audit: &A,
-    ) -> Result<Identity, StoreFailure> {
-        let actor = permissions.first().ok_or_else(|| self.denied())?;
-        if backend.domain() != self.domain
-            || permissions.len() != self.roots.len()
-            || permissions.iter().any(|access| {
-                access.verb() != Verb::Admin
-                    || access.subject() != actor.subject()
-                    || access.token_id() != actor.token_id()
-            })
-            || self.roots.iter().any(|root| {
-                permissions
-                    .iter()
-                    .filter(|access| access.binding() == root)
-                    .count()
-                    != 1
-            })
-        {
-            return Err(self.denied());
-        }
-
-        let current_roots = backend.domain_roots().await?;
-        if current_roots.len() != self.roots.len()
-            || self.roots.iter().any(|root| !current_roots.contains(root))
-        {
-            return Err(self.denied());
-        }
-
-        let event = DomainDeletionEvent {
-            domain: self.domain.clone(),
-            roots: self.roots.clone(),
-            subject: actor.subject().to_owned(),
-            token_id: *actor.token_id(),
-        };
-        let intent = audit.record_intent(&event).await?;
-        backend.delete_domain_data().await?;
-        audit.record_completion(&event, &intent).await
-    }
-
-    fn denied(&self) -> StoreFailure {
-        StoreFailure::new(StoreErrorKind::Denied {
-            verb: "admin",
-            pattern: self
-                .roots
-                .first()
-                .map_or_else(String::new, |root| root.reference.clone()),
-        })
-    }
 }
 
 #[cfg(all(test, feature = "std"))]

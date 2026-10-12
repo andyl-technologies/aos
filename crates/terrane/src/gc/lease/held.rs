@@ -381,8 +381,14 @@ where
     }
 }
 
+/// Rechecks actual retained control paths and receipt/pin records without acquiring locks.
+///
+/// The caller independently verifies every pin's configured registration owner.
+///
+/// # Errors
+/// Refuses changed descriptors, protection, canonical pin associations or physical reads.
 #[cfg(unix)]
-async fn revalidate_controls<F: LocalFs + BucketBinding>(
+pub(crate) async fn revalidate_controls<F: LocalFs + BucketBinding>(
     fs: &F,
     controls: &RetainedControls,
     pins: &[RequiredControlPin],
@@ -464,8 +470,12 @@ async fn revalidate_controls<F: LocalFs + BucketBinding>(
     Ok(())
 }
 
+/// Refuses retained native controls on unsupported platforms.
+///
+/// # Errors
+/// Always returns unsupported because native control identities require Unix.
 #[cfg(not(unix))]
-async fn revalidate_controls<F: LocalFs + BucketBinding>(
+pub(crate) async fn revalidate_controls<F: LocalFs + BucketBinding>(
     _: &F,
     _: &RetainedControls,
     _: &[RequiredControlPin],

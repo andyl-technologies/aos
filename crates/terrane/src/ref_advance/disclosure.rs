@@ -30,7 +30,7 @@ pub struct DisclosureUpload {
     pub destination_token: Vec<u8>,
     /// Registered operation surface for both authorization requests.
     pub surface: String,
-    /// Canonical upload whose bytes must equal the verified source encoding.
+    /// Upload matching the verified source plaintext or exact canonical metadata.
     pub upload: StagedUpload,
 }
 
@@ -186,3 +186,35 @@ impl<S: Store + Sync, C: Clock, F: LocalFs> Coordinator<S, C, F> {
         Ok(receipt)
     }
 }
+
+/// Selects one independently authorized source entry for a durable disclosure.
+///
+/// Coordinates remain untrusted until the actual source guard verifies its
+/// complete history and current Read rights under the held namespace pair.
+pub struct DisclosureCommitSelection {
+    /// Actual current source policy reference.
+    pub source_reference: String,
+    /// Immutable source view containing the selected entry.
+    pub source_commit: Digest,
+    /// Canonical absolute source entry path.
+    pub source_path: Vec<u8>,
+    /// Source capability, verified exclusively by the actual source guard.
+    pub source_token: Vec<u8>,
+    /// Canonical absolute occurrence in the destination proposal.
+    pub destination_path: Vec<u8>,
+}
+
+/// Proposes a complete destination commit and its explicit source selections.
+pub struct DisclosureCommitRequest {
+    /// Source selections whose actual rights are checked independently.
+    pub selections: Vec<DisclosureCommitSelection>,
+    /// Destination proposal authorized and signed by its own actual guard.
+    pub proposal: crate::guard::CommitRequest,
+}
+
+#[cfg(all(feature = "std", unix))]
+#[path = "disclosure/native.rs"]
+mod native;
+
+#[cfg(all(feature = "std", unix))]
+pub(crate) use native::PreloadedSelection;

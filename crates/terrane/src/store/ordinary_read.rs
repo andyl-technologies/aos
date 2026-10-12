@@ -16,6 +16,8 @@ use std::path::PathBuf;
 pub struct NativeOrdinaryRead {
     #[cfg(all(feature = "tokio", unix))]
     recipe: Recipe,
+    #[cfg(all(test, feature = "tokio", unix))]
+    observation: Option<Box<dyn FnMut(TestStage) + Send>>,
 }
 
 #[cfg(all(feature = "tokio", unix))]
@@ -49,6 +51,8 @@ impl NativeOrdinaryRead {
     pub(crate) fn for_leaf(path: &Path) -> Self {
         Self {
             recipe: Recipe::Leaf(path.to_owned()),
+            #[cfg(test)]
+            observation: None,
         }
     }
 
@@ -59,6 +63,8 @@ impl NativeOrdinaryRead {
     ) -> Self {
         Self {
             recipe: Recipe::Projection(projection),
+            #[cfg(test)]
+            observation: None,
         }
     }
 
@@ -76,8 +82,17 @@ impl NativeOrdinaryRead {
     /// NotFound after successful body reading remains an I/O error.
     #[cfg(all(feature = "tokio", unix))]
     pub(super) fn execute(self) -> std::io::Result<NativeOrdinaryRecord> {
-        match self.recipe {
-            Recipe::Leaf(path) => Self::execute_leaf(&path),
+        let Self {
+            recipe,
+            #[cfg(test)]
+            mut observation,
+        } = self;
+        match recipe {
+            Recipe::Leaf(path) => Self::execute_leaf(
+                &path,
+                #[cfg(test)]
+                &mut observation,
+            ),
             Recipe::Projection(projection) => {
                 projection.check()?;
                 Ok(NativeOrdinaryRecord {
@@ -89,9 +104,17 @@ impl NativeOrdinaryRead {
 
     /// Preserves the ordinary leaf's ordered metadata and whole-body checks.
     #[cfg(all(feature = "tokio", unix))]
-    fn execute_leaf(path: &Path) -> std::io::Result<NativeOrdinaryRecord> {
+    fn execute_leaf(
+        path: &Path,
+        #[cfg(test)] observation: &mut Option<Box<dyn FnMut(TestStage) + Send>>,
+    ) -> std::io::Result<NativeOrdinaryRecord> {
         use std::io::Read;
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+        // This local diagnostic measures actual worker execution, separately
+        // from caller dispatch and parent observations. It grants no evidence.
+        #[cfg(test)]
+        let trace = crate::ref_advance::NativeTrace::new(path, "ordinary-leaf-worker");
 
         let before = match std::fs::symlink_metadata(path) {
             Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => metadata,
@@ -108,6 +131,9 @@ impl NativeOrdinaryRead {
             Err(error) => return Err(error),
         };
 
+        #[cfg(test)]
+        Self::observe(observation, TestStage::BeforeOpen);
+
         let body = (|| {
             let mut file = std::fs::OpenOptions::new()
                 .read(true)
@@ -119,8 +145,15 @@ impl NativeOrdinaryRead {
                     "path is not a regular file",
                 ));
             }
+            #[cfg(test)]
+            Self::observe(observation, TestStage::BeforeBody);
+
+            #[cfg(test)]
+            trace.mark("descriptor-regular-before-whole-body");
             let mut bytes = Vec::new();
             file.read_to_end(&mut bytes)?;
+            #[cfg(test)]
+            trace.mark("whole-body-returned");
             Ok(bytes)
         })();
         let bytes = match body {
@@ -133,6 +166,9 @@ impl NativeOrdinaryRead {
             Err(error) => return Err(error),
         };
 
+        #[cfg(test)]
+        Self::observe(observation, TestStage::AfterBody);
+
         let after = std::fs::symlink_metadata(path)?;
         if !after.is_file()
             || after.file_type().is_symlink()
@@ -142,6 +178,11 @@ impl NativeOrdinaryRead {
                 outcome: OrdinaryReadOutcome::InvalidLayout,
             });
         }
+        #[cfg(test)]
+        Self::observe(observation, TestStage::Finished);
+        #[cfg(test)]
+        trace.mark("named-after-incarnation-accepted");
+
         Ok(NativeOrdinaryRecord {
             outcome: OrdinaryReadOutcome::Present(bytes, after),
         })
@@ -154,3 +195,36 @@ impl NativeOrdinaryRecord {
         self.outcome
     }
 }
+
+// Test observations change real filesystem nodes at ordinary leaf boundaries.
+// Physical closing recipes carry no leaf callback or invented body path.
+#[cfg(all(test, feature = "tokio", unix))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TestStage {
+    BeforeOpen,
+    BeforeBody,
+    AfterBody,
+    Finished,
+}
+
+#[cfg(all(test, feature = "tokio", unix))]
+impl NativeOrdinaryRead {
+    /// Borrows the actual leaf for operation-local physical test changes.
+    ///
+    /// Physical projections have several fixed inputs and no single leaf path.
+    pub(crate) fn path_for_test(&self) -> Option<&Path> {
+        match &self.recipe {
+            Recipe::Leaf(path) => Some(path),
+            Recipe::Projection(_) => None,
+        }
+    }
+
+    fn observe(observation: &mut Option<Box<dyn FnMut(TestStage) + Send>>, stage: TestStage) {
+        if let Some(observation) = observation.as_mut() {
+            observation(stage);
+        }
+    }
+}
+
+#[cfg(all(test, feature = "tokio", unix))]
+mod tests;

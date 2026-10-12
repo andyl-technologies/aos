@@ -4,11 +4,15 @@
 pub(in crate::bucket) mod current_node_reads;
 #[cfg(all(feature = "tokio", unix))]
 pub(in crate::bucket) mod held_nodes;
+mod member_reads;
 mod meta_batch;
+pub(in crate::bucket) mod ranged_pack;
+#[cfg(all(feature = "tokio", unix))]
+mod selected_get;
 
 pub(crate) use meta_batch::BatchOutcome;
 
-use super::catalog::{Catalog, registered};
+use super::catalog::{Catalog, CatalogReads, registered};
 use super::{BucketBinding, FileBucket, files};
 use crate::pack::{
     EntryKind, MergedEntry, NativeBodyDecoder, PackClass, PackId, PackIndexSnapshot, PackReader,
@@ -31,12 +35,14 @@ pub(super) enum VerifiedBody {
     ExcludedDetachedIndex,
 }
 
+/// Attributes stored content corruption to the exact requested identity.
 pub(super) fn corrupt(identity: &Identity) -> StoreFailure {
     StoreFailure::new(StoreErrorKind::Corrupt(CorruptSubject::Identity(
         identity.clone(),
     )))
 }
 
+/// Attributes upload rejection to its owning validation rule.
 pub(super) fn invalid(rule_id: &'static str) -> StoreFailure {
     StoreFailure::new(StoreErrorKind::Invalid(InvalidReason::Upload { rule_id }))
 }
@@ -150,46 +156,75 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         }
     }
 
-    async fn encoded_body(
+    async fn encoded_body<R: CatalogReads + ?Sized>(
         &self,
         catalog: &Catalog,
         identity: &Identity,
+        reads: &R,
+        confirmation: Option<&mut meta_batch::verification::Confirmation<'_>>,
     ) -> Result<(Vec<u8>, usize), StoreFailure> {
+        if identity.kind() == IdentityKind::Chunk
+            && let Some(member) = reads.read_member(catalog, identity).await?
+        {
+            return Ok(member);
+        }
         let location = self.location(catalog, identity)?;
         let id = location.pack();
         let inventory = catalog
             .inventory
             .as_ref()
             .and_then(|entries| entries.iter().find(|entry| entry.pack_id == *id.as_bytes()));
+        // Chunk and dictionary paths never opt into metadata preparation reuse.
+        let confirmation = confirmation.filter(|_| identity.kind() != IdentityKind::Chunk);
         let (bytes, index) = if let Some(entry) = inventory {
-            self.verified_container(entry).await?
+            if confirmation.is_some() {
+                let (pack, index) = Self::read_container_artifacts(entry, reads).await?;
+                (
+                    pack.into_bytes().ok_or_else(files::layout_corrupt)?,
+                    index.into_bytes().ok_or_else(files::layout_corrupt)?,
+                )
+            } else {
+                Self::verified_container_with_reads(entry, reads).await?
+            }
         } else {
             // Optional container inventory does not replace authoritative body
             // membership. Older live placements remain verified below against
             // their exact merged record and detached pack index.
-            let bytes = self
-                .read_optional(&registered(&id.pack_key())?)
+            let bytes = reads
+                .read_artifact(&registered(&id.pack_key())?)
                 .await?
+                .into_bytes()
                 .ok_or_else(|| corrupt(identity))?;
-            let index = self
-                .read_optional(&registered(&id.index_key())?)
+            let index = reads
+                .read_artifact(&registered(&id.index_key())?)
                 .await?
+                .into_bytes()
                 .ok_or_else(|| corrupt(identity))?;
             (bytes, index)
         };
-        let reader = PackReader::open(&bytes).map_err(|_| corrupt(identity))?;
-        if reader.header().id() != id {
-            return Err(corrupt(identity));
-        }
-        reader
-            .check_index_object(&index)
+        let entry = if let (Some(confirmation), Some(inventory)) = (confirmation, inventory) {
+            confirmation.member(catalog, inventory, &bytes, &index, identity)?
+        } else {
+            let reader = PackReader::open(&bytes).map_err(|_| corrupt(identity))?;
+            if reader.header().id() != id {
+                return Err(corrupt(identity));
+            }
+            let index_identity = match inventory {
+                Some(entry) => TERRANE_V1.from_digest(IdentityKind::Index, &entry.index_hash),
+                None => TERRANE_V1.calculate(IdentityKind::Index, &index),
+            }
             .map_err(|_| corrupt(identity))?;
-        let entry = reader
-            .entries()
-            .iter()
-            .find(|entry| entry.hash() == location.entry().hash())
-            .ok_or_else(|| corrupt(identity))?;
-        if entry != location.entry() {
+            reader
+                .check_index_object(&index)
+                .map_err(|_| corrupt(&index_identity))?;
+            let entry = reader
+                .entries()
+                .iter()
+                .find(|entry| entry.hash() == location.entry().hash())
+                .ok_or_else(|| corrupt(identity))?;
+            entry.clone()
+        };
+        if &entry != location.entry() {
             return Err(corrupt(identity));
         }
         let start = usize::try_from(entry.offset()).map_err(|_| corrupt(identity))?;
@@ -233,6 +268,31 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         catalog: &Catalog,
         identity: &Identity,
     ) -> Result<VerifiedBody, StoreFailure> {
+        self.verified_body_with_reads(catalog, identity, self).await
+    }
+
+    /// Verifies every body and dictionary through the caller's actual reader.
+    ///
+    /// # Errors
+    /// Preserves ordinary placement, exclusion, decoding and read failures.
+    async fn verified_body_with_reads<R: CatalogReads + ?Sized>(
+        &self,
+        catalog: &Catalog,
+        identity: &Identity,
+        reads: &R,
+    ) -> Result<VerifiedBody, StoreFailure> {
+        self.verified_body_with_confirmation(catalog, identity, reads, None)
+            .await
+    }
+
+    // The optional pure preparation is reachable only from final batch confirmation.
+    async fn verified_body_with_confirmation<R: CatalogReads + ?Sized>(
+        &self,
+        catalog: &Catalog,
+        identity: &Identity,
+        reads: &R,
+        confirmation: Option<&mut meta_batch::verification::Confirmation<'_>>,
+    ) -> Result<VerifiedBody, StoreFailure> {
         if identity == &empty_chunk()? {
             return Ok(VerifiedBody::Bytes(vec![0]));
         }
@@ -244,13 +304,15 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             // retirement completeness. Legacy unknown authority fails closed.
             return Err(StoreFailure::new(StoreErrorKind::Unsupported));
         }
-        if let Some(bytes) = self.container(catalog, identity).await? {
+        if let Some(bytes) = self.container_with_reads(catalog, identity, reads).await? {
             return Ok(VerifiedBody::Bytes(bytes));
         }
         if identity.kind() == IdentityKind::Pack {
             return Err(StoreFailure::new(StoreErrorKind::Absent(identity.clone())));
         }
-        let (encoded, length) = self.encoded_body(catalog, identity).await?;
+        let (encoded, length) = self
+            .encoded_body(catalog, identity, reads, confirmation)
+            .await?;
         if identity.kind() != IdentityKind::Chunk {
             let upload =
                 MetaUpload::new(identity.kind(), &encoded).map_err(|_| corrupt(identity))?;
@@ -303,7 +365,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                 plaintext_len = 0;
             } else {
                 (body, plaintext_len) = self
-                    .encoded_body(catalog, &current)
+                    .encoded_body(catalog, &current, reads, None)
                     .await
                     .map_err(|error| dictionary_read_failure(identity, error))?;
             }
@@ -602,6 +664,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             }
             return Ok(identity);
         }
+        observed.revalidate().await?;
         let id = PackId::generate(&self.inner.fs)
             .await
             .map_err(files::io_failure)?;
@@ -718,23 +781,35 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     ///
     /// # Errors
     /// Returns the same validation, conflict, corruption, or binding failures as the ordinary operation.
+    #[cfg(all(test, feature = "tokio", unix))]
     pub(super) async fn get_locked(
         &self,
         identity: &Identity,
         range: Option<ByteRange>,
     ) -> Result<Vec<u8>, StoreFailure> {
+        let mode = member_reads::mode(self.fs()).await?;
+        self.get_locked_mode(identity, range, mode).await
+    }
+
+    async fn get_locked_mode(
+        &self,
+        identity: &Identity,
+        range: Option<ByteRange>,
+        mode: ranged_pack::MemberReadMode,
+    ) -> Result<Vec<u8>, StoreFailure> {
         #[cfg(all(test, feature = "tokio", unix))]
         self.inner.content_observation.get(identity.kind());
 
         let catalog = self.catalog().await?;
-        self.get_catalog_body(&catalog, identity, range).await
+        self.get_catalog_body(&catalog, identity, range, mode).await
     }
 
     /// Verifies a body against one fresh held catalog and revalidates before return.
     ///
     /// No selected observation survives this individual read. Direct artifacts,
     /// body/dictionary verification and range validation retain their original
-    /// order, followed by a complete physical and selected-state recheck.
+    /// order. Native direct artifacts and bounded members retain one local read
+    /// ledger through the complete physical and selected-state closing checks.
     ///
     /// # Errors
     /// Preserves content, range and unavailable-read failures and rejects changed
@@ -751,10 +826,41 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         if !std::ptr::eq(self, held.bucket()) {
             return Err(files::layout_corrupt());
         }
+        let mode = member_reads::mode(self.fs()).await?;
+        #[cfg(all(test, feature = "tokio", unix))]
+        let trace = crate::ref_advance::NativeTrace::new(self.root(), "held-content-get");
+        #[cfg(all(test, feature = "tokio", unix))]
+        trace.mark(&format!("identity={identity:?} range={range:?}"));
+        #[cfg(all(feature = "tokio", unix))]
+        if matches!(mode, ranged_pack::MemberReadMode::Native) {
+            match held.identity_proof().retained_namespace() {
+                Ok(_) => {
+                    let observed = held.observe_for_read_ordinary_retained().await?;
+                    #[cfg(test)]
+                    trace.mark("observation-returned");
+                    return self
+                        .get_selected_observed_request(&observed, identity, range, mode)
+                        .await;
+                }
+                Err(error) if matches!(error.kind(), StoreErrorKind::Unsupported) => {}
+                Err(error) => return Err(error),
+            }
+        }
+
         let observed = held.observe_for_read().await?;
+        #[cfg(all(test, feature = "tokio", unix))]
+        trace.mark("observation-returned");
         let catalog = self.catalog_observed(&observed).await?;
-        let bytes = self.get_catalog_body(&catalog, identity, range).await?;
+        #[cfg(all(test, feature = "tokio", unix))]
+        trace.mark("catalog-returned");
+        let bytes = self
+            .get_catalog_body(&catalog, identity, range, mode)
+            .await?;
+        #[cfg(all(test, feature = "tokio", unix))]
+        trace.mark(&format!("verified-body-returned bytes={}", bytes.len()));
         observed.revalidate().await?;
+        #[cfg(all(test, feature = "tokio", unix))]
+        trace.mark("final-revalidation-returned");
         Ok(bytes)
     }
 
@@ -763,8 +869,36 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         catalog: &Catalog,
         identity: &Identity,
         range: Option<ByteRange>,
+        mode: ranged_pack::MemberReadMode,
     ) -> Result<Vec<u8>, StoreFailure> {
-        let bytes = self.verified_body(catalog, identity).await?;
+        if range.is_some() && identity.kind() == IdentityKind::Chunk {
+            let reads = member_reads::BoundedReads::with_mode(self, mode);
+            let bytes = self
+                .get_catalog_body_with_reads(catalog, identity, range, &reads)
+                .await?;
+            reads.close().await?;
+            return Ok(bytes);
+        }
+        self.get_catalog_body_with_reads(catalog, identity, range, self)
+            .await
+    }
+
+    async fn get_catalog_body_with_reads<R: CatalogReads + ?Sized>(
+        &self,
+        catalog: &Catalog,
+        identity: &Identity,
+        range: Option<ByteRange>,
+        reads: &R,
+    ) -> Result<Vec<u8>, StoreFailure> {
+        let bytes = match self
+            .verified_body_with_reads(catalog, identity, reads)
+            .await?
+        {
+            VerifiedBody::Bytes(bytes) => bytes,
+            VerifiedBody::ExcludedDetachedIndex => {
+                return Err(StoreFailure::new(StoreErrorKind::Absent(identity.clone())));
+            }
+        };
         let Some(range) = range else {
             return Ok(bytes);
         };
@@ -834,6 +968,11 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         identity: &Identity,
         range: Option<ByteRange>,
     ) -> Result<Vec<u8>, StoreFailure> {
+        let mode = member_reads::mode(self.fs()).await?;
+        #[cfg(all(feature = "tokio", unix))]
+        if !self.inner.access.read_only() {
+            return self.get_selected_request(identity, range, mode).await;
+        }
         #[cfg(test)]
         let mut trace = crate::ref_advance::PhaseTrace::new(
             &self.inner.clock,
@@ -845,7 +984,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         let _guard = self.read_exclusion().await?;
         #[cfg(test)]
         trace.mark("content-get-exclusion-acquired");
-        let value = self.get_locked(identity, range).await?;
+        let value = self.get_locked_mode(identity, range, mode).await?;
         #[cfg(test)]
         trace.mark("content-get-value-returned");
         self.ensure_layout().await?;

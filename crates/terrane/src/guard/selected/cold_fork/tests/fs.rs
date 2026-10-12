@@ -20,6 +20,7 @@ use std::{
 };
 use terrane_core::gc::publication::{PublicationCommit, PublicationProof, PublicationTransaction};
 
+/// Selects one finite mutation at the real native cold-publication boundary.
 pub(super) enum Hook {
     /// Removes an exact prior Original after real cold qualification, before staging.
     Remove(PathBuf),
@@ -33,14 +34,18 @@ pub(super) enum Hook {
     Expire(crate::store::TestClock),
 }
 
+/// Retains an actual submitted publication transaction and its observed acknowledgment.
 #[derive(Clone, Debug)]
 pub(super) struct Mutation {
+    /// Names the actual publication commit slot submitted to the executor.
     pub(super) path: PathBuf,
+    /// Retains the decoded transaction referenced by that slot.
     pub(super) transaction: PublicationTransaction,
     /// Retains exact bytes observed from the actual submitted publication slot.
     pub(super) slot_bytes: Vec<u8>,
     /// Retains exact bytes observed from the referenced immutable transaction.
     pub(super) transaction_bytes: Vec<u8>,
+    /// Reports whether the actual sealed executor acknowledged this mutation.
     pub(super) acknowledged: bool,
 }
 
@@ -53,38 +58,67 @@ struct State {
     mutations: Vec<Mutation>,
 }
 
+/// Records actual native filesystem effects while forwarding the genuine binding.
 #[derive(Clone, Default)]
 pub(super) struct ProbeFs(Arc<Mutex<State>>);
 
 impl ProbeFs {
+    /// Clears observations only after every armed hook has been consumed.
+    ///
+    /// # Panics
+    /// Panics on poisoned synchronization or an unconsumed hook.
     pub(super) fn reset(&self) {
         let mut state = required(self.0.lock());
         assert!(state.hook.is_none(), "unconsumed finite native hook");
         *state = State::default();
     }
 
+    /// Arms one finite mutation for a later actual native boundary.
+    ///
+    /// # Panics
+    /// Panics on poisoned synchronization or a previously armed hook.
     pub(super) fn arm(&self, hook: Hook) {
         let mut state = required(self.0.lock());
         assert!(state.hook.is_none(), "already armed native hook");
         state.hook = Some(hook);
     }
 
+    /// Reports whether the armed physical hook was reached.
+    ///
+    /// # Panics
+    /// Panics if observation synchronization is poisoned.
     pub(super) fn reached(&self) -> bool {
         required(self.0.lock()).reached
     }
 
+    /// Reports whether the actual immutable staging boundary was reached.
+    ///
+    /// # Panics
+    /// Panics if observation synchronization is poisoned.
     pub(super) fn staging_reached(&self) -> bool {
         required(self.0.lock()).staging_reached
     }
 
+    /// Copies the actual submitted publication mutation observations.
+    ///
+    /// # Panics
+    /// Panics if observation synchronization is poisoned.
     pub(super) fn mutations(&self) -> Vec<Mutation> {
         required(self.0.lock()).mutations.clone()
     }
 
+    /// Copies observed actual effect names and their optional paths.
+    ///
+    /// # Panics
+    /// Panics if observation synchronization is poisoned.
     pub(super) fn effects(&self) -> Vec<(String, Option<PathBuf>)> {
         required(self.0.lock()).effects.clone()
     }
 
+    /// Counts acknowledged candidate transactions that update the named ref.
+    ///
+    /// # Panics
+    /// Panics if observation synchronization is poisoned.
     pub(super) fn successful_ref_ack(&self, reference: &str) -> usize {
         let key = format!("{reference}:record");
         self.mutations()
@@ -101,6 +135,10 @@ impl ProbeFs {
             .count()
     }
 
+    /// Counts acknowledged lineage-only candidate transitions for the named source.
+    ///
+    /// # Panics
+    /// Panics if observation synchronization is poisoned.
     pub(super) fn successful_requalification_ack(&self, reference: &str) -> usize {
         self.mutations()
             .iter()
@@ -138,6 +176,13 @@ fn mutation(path: &Path) -> Mutation {
     }
 }
 
+/// Replaces an actual file incarnation while preserving its bytes and permissions.
+///
+/// # Errors
+/// Preserves metadata, read, create, permission, write and rename failures.
+///
+/// # Panics
+/// Panics if replacement retains the same incarnation or changes the file bytes.
 pub(super) fn replace(path: &Path) -> io::Result<()> {
     let original = std::fs::symlink_metadata(path)?;
     let body = std::fs::read(path)?;
@@ -215,6 +260,21 @@ impl LocalFs for ProbeFs {
             }
             EffectFaultProbe::Rename(path) => ("Rename", Some(path.to_owned()), false, false),
             EffectFaultProbe::FileSync => ("FileSync", None, false, false),
+            EffectFaultProbe::SealRetirementBarrier(path) => {
+                ("SealRetirementBarrier", Some(path.to_owned()), false, false)
+            }
+            EffectFaultProbe::ObserveCurrentPair(path) => {
+                ("ObserveCurrentPair", Some(path.to_owned()), false, false)
+            }
+            EffectFaultProbe::ObserveLocalTriple(path) => {
+                ("ObserveLocalTriple", Some(path.to_owned()), false, false)
+            }
+            EffectFaultProbe::LocalFirstOwnership(path, _) => {
+                ("LocalFirstOwnership", Some(path.to_owned()), false, false)
+            }
+            EffectFaultProbe::LocalDeletion(path, _) => {
+                ("LocalDeletion", Some(path.to_owned()), false, false)
+            }
             EffectFaultProbe::CopiedPreparation(path) => {
                 ("CopiedPreparation", Some(path.to_owned()), false, false)
             }
@@ -315,8 +375,39 @@ impl LocalFs for ProbeFs {
         TokioLocalFs.read_nofollow(path).await
     }
 
+    async fn read_ordinary_record(
+        &self,
+        read: crate::store::NativeOrdinaryRead,
+    ) -> io::Result<Option<crate::store::NativeOrdinaryRecord>> {
+        // Keep ordinary leaves on their existing scalar read path. Held history
+        // requires the unchanged native closing recipe before admission can
+        // complete; that read-only observation supplies no mutation ACK.
+        if read.path_for_test().is_some() {
+            return Ok(None);
+        }
+
+        TokioLocalFs.read_ordinary_record(read).await
+    }
+
+    async fn read_payload_ranges(
+        &self,
+        read: crate::store::NativePayloadRangeRead,
+    ) -> io::Result<Option<crate::store::NativePayloadRangeRecord>> {
+        // Execute unchanged sealed data reads and closing checks. These
+        // read-only observations cannot acknowledge a mutation effect.
+        TokioLocalFs.read_payload_ranges(read).await
+    }
+
     async fn lock_existing_exclusive(&self, path: &Path) -> io::Result<Self::Lock> {
         TokioLocalFs.lock_existing_exclusive(path).await
+    }
+
+    async fn try_lock_existing_shared(&self, path: &Path) -> io::Result<Self::Lock> {
+        TokioLocalFs.try_lock_existing_shared(path).await
+    }
+
+    async fn try_lock_existing_exclusive(&self, path: &Path) -> io::Result<Self::Lock> {
+        TokioLocalFs.try_lock_existing_exclusive(path).await
     }
 
     async fn lock_exclusive(&self, path: &Path) -> io::Result<Self::Lock> {

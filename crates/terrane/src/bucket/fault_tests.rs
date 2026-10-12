@@ -46,6 +46,19 @@ impl LocalFs for FaultFs {
         use crate::store::{EffectFault, EffectFaultProbe};
 
         let mut faults = Vec::new();
+        if let Some(target) = effect
+            .immutable_catalog_cohort_targets()
+            .and_then(|targets| {
+                targets
+                    .into_iter()
+                    .find(|path| path.file_name().is_some_and(|name| name == "MANIFEST"))
+            })
+            && self.fail_manifest.swap(false, Ordering::SeqCst)
+        {
+            // The fixed cohort may rename earlier shards first. Refuse only
+            // its actual MANIFEST rename at the native pre-syscall boundary.
+            faults.push(EffectFault::BeforeRenameAt(target));
+        }
         match effect.fault_probe() {
             EffectFaultProbe::FileSync if self.fail_sync.swap(false, Ordering::SeqCst) => {
                 faults.push(EffectFault::BeforeFileSync);
@@ -96,6 +109,14 @@ impl LocalFs for FaultFs {
 
     async fn lock_existing_exclusive(&self, path: &Path) -> std::io::Result<Self::Lock> {
         TokioLocalFs.lock_existing_exclusive(path).await
+    }
+
+    async fn try_lock_existing_shared(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        TokioLocalFs.try_lock_existing_shared(path).await
+    }
+
+    async fn try_lock_existing_exclusive(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        TokioLocalFs.try_lock_existing_exclusive(path).await
     }
 
     async fn random_bytes(&self, length: usize) -> std::io::Result<Vec<u8>> {

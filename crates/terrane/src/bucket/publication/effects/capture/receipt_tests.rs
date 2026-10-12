@@ -325,3 +325,9 @@ async fn native_frame_preserves_changed_actual_incarnation_and_refuses_execution
         Ok(()) => panic!("replaced original inode was accepted by native execution"),
     }
 }
+
+#[path = "scoped_producer_tests.rs"]
+mod scoped_producer_tests;
+
+#[path = "install_scope_producer_tests.rs"]
+mod install_scope_producer_tests;
