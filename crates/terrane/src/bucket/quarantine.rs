@@ -68,12 +68,34 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         })
     }
 
-    /// Requires represented complete exclusion and permanent-burn sets.
+    /// Requires complete physical exclusion evidence for opaque index lookup.
     ///
-    /// Missing old inventory or artifacts does not make a represented set
-    /// unknown. Detached-index aliases independently name their physical pack.
+    /// Represented exclusion and burn sets remain known without old inventory
+    /// or artifacts. Legacy tombstones outside those sets additionally require
+    /// their inventory association; an empty key 6 cannot erase that evidence.
     pub(super) fn index_retirement_known(&self, catalog: &Catalog) -> bool {
-        catalog.exclusions.is_some() && catalog.burns.is_some()
+        let (Some(exclusions), Some(burns)) = (&catalog.exclusions, &catalog.burns) else {
+            return false;
+        };
+
+        catalog
+            .shards
+            .iter()
+            .flat_map(|shard| shard.entries())
+            .filter(|entry| entry.state() == RecordState::Tombstone)
+            .all(|entry| {
+                let pack = entry.pack();
+                let pack_id = pack.as_bytes();
+                exclusions
+                    .binary_search_by_key(pack_id, |entry| entry.pack_id)
+                    .is_ok()
+                    || burns.binary_search(pack_id).is_ok()
+                    || catalog.inventory.as_ref().is_some_and(|entries| {
+                        entries
+                            .binary_search_by_key(pack_id, |entry| entry.pack_id)
+                            .is_ok()
+                    })
+            })
     }
 
     /// Tests a canonical detached index's embedded physical pack association.

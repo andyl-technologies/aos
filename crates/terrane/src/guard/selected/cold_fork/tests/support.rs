@@ -418,6 +418,8 @@ impl<C: Clock + BucketBinding + Clone + Sync + 'static> Fixture<C> {
         let prior = Commit::decode(&before.commit)?;
         self.calibrate(prior.tree).await?;
         let calibrated = Snapshot::capture(self, source).await?;
+        let publication_start = calibration::Selection::capture(self).await?;
+        assert_eq!(publication_start.state(), &calibrated.state);
         let observer = self.bucket().observe_content_for_tests();
 
         let next = self
@@ -451,7 +453,9 @@ impl<C: Clock + BucketBinding + Clone + Sync + 'static> Fixture<C> {
             .old
             .as_ref()
             .ok_or("actual prior native selection")?;
-        assert_eq!(old, &calibrated.state);
+        publication_start
+            .assert_commit_catalog_chain(self, target, &next)
+            .await?;
         assert_eq!(mutation.transaction.new.revision, old.revision + 1);
         assert!(matches!(
             mutation.transaction.proof,
