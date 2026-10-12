@@ -84,7 +84,14 @@ impl fmt::Display for Error {
     }
 }
 
-impl core::error::Error for Error {}
+impl core::error::Error for Error {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Evaluation(error) => Some(error),
+            Self::Binding | Self::Transition | Self::Allocation | Self::Limit => None,
+        }
+    }
+}
 
 /// A complete immutable value/object predicate, retaining actual absence.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
