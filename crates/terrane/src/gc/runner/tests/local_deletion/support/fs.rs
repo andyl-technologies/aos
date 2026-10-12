@@ -278,6 +278,28 @@ impl LocalFs for DeletionFs {
         self.inner.read_range(path, range).await
     }
 
+    async fn read_payload_ranges(
+        &self,
+        request: crate::store::NativePayloadRangeRead,
+    ) -> std::io::Result<Option<crate::store::NativePayloadRangeRecord>> {
+        // Keep the inner fixture's body-read trap on both reads and closing
+        // replays without changing the sealed native request or error source.
+        self.inner.read_payload_ranges(request).await
+    }
+
+    async fn read_ordinary_record(
+        &self,
+        read: crate::store::NativeOrdinaryRead,
+    ) -> std::io::Result<Option<crate::store::NativeOrdinaryRecord>> {
+        // Ordinary leaves retain scalar observation hooks. Physical closing
+        // projections must execute their original native descriptor checks.
+        if read.path_for_test().is_some() {
+            return Ok(None);
+        }
+
+        self.inner.read_ordinary_record(read).await
+    }
+
     async fn write_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         self.inner.write_new(path, bytes).await
     }

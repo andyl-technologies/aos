@@ -28,6 +28,7 @@ pub(super) struct ImportedEvidence {
     trust: Vec<u8>,
     // A same-original round trip supplements independently checked local
     // originals; its imported controls never replace their dependencies.
+    /// Reports a same-original import that supplements local Original dependencies.
     pub(super) supplements_local: bool,
 }
 

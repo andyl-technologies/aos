@@ -7,15 +7,18 @@
 use super::*;
 use crate::domain::DomainNamespace;
 use crate::ref_advance::fault_tests::FaultFs;
-use crate::ref_advance::{AdvanceError, DisclosureCommitRequest, DisclosureCommitSelection};
+use crate::ref_advance::{
+    AdvanceError, CommitRequest, DisclosureCommitRequest, DisclosureCommitSelection,
+};
 use crate::repository::Repository;
 use crate::repository::local_authority::{LocalAuthority, LocalAuthorityParameters};
 use crate::store::{InvalidReason, LocalFs, RefStore, StoreErrorKind, TestClock};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::PathBuf;
 use terrane_core::auth::{
-    Attenuation, Authority, Caveat, Grant, Token, Verbs, public_key_from_secret,
+    Attenuation, Authority, Caveat, Grant, Token, Verb, Verbs, public_key_from_secret,
 };
+use terrane_core::identity::Identity;
 use terrane_core::refs::{PrincipalKind, RefRecord};
 
 const REFERENCE: &str = "refs/heads/_/main";
@@ -23,18 +26,30 @@ const PLAINTEXT: &[u8] = b"current authority is independent of original authorin
 const START: u64 = 1000;
 const EXPIRES: u64 = 1100;
 
+/// Names the retained native repository used for current-authority witnesses.
 pub(super) type NativeRepository =
     Repository<FileBucket<FaultFs, TokioClock, Validator>, TestClock, FaultFs>;
 
+/// Owns an independently initialized repository and its genuine authority inputs.
 pub(super) struct Factory {
+    /// Retains the repository's original evidence and protected publication binding.
     pub(super) repository: NativeRepository,
+    /// Supplies this physical repository's issuer key, capability and signing secret.
     pub(super) authority: LocalAuthority,
+    /// Observes and pauses genuine filesystem publication effects.
     pub(super) fs: FaultFs,
+    /// Supplies the independently controlled authorization clock.
     pub(super) clock: TestClock,
+    /// Selects the private or public domain used by proposed fixture trees.
     pub(super) private: bool,
 }
 
 impl Factory {
+    /// Initializes an independent native factory in the selected disclosure domain.
+    ///
+    /// # Panics
+    /// Panics if fixture setup, secure randomness, credentials, bucket opening or
+    /// protected original-retention initialization fails.
     pub(super) async fn initialize(private: bool) -> Self {
         let raw = raw_fixture().await;
         let root = raw.store().root().to_owned();
@@ -127,12 +142,18 @@ impl Factory {
         }
     }
 
+    /// Borrows the coordinator belonging to this retained native repository.
     pub(super) fn coordinator(
         &self,
     ) -> &Coordinator<FileBucket<FaultFs, TokioClock, Validator>, TestClock, FaultFs> {
         self.repository.coordinator()
     }
 
+    /// Stages a file proposal with the requested parents and fixture root ACL.
+    ///
+    /// # Panics
+    /// Panics if the ACL mask is unsupported or tree construction, identity
+    /// calculation or staged metadata validation fails.
     pub(super) fn proposal(
         &self,
         parents: Vec<[u8; 32]>,
@@ -145,6 +166,11 @@ impl Factory {
         proposal
     }
 
+    /// Resolves publication control from the actual held backend registration.
+    ///
+    /// # Panics
+    /// Panics if exclusion or observation fails, the registration is absent or
+    /// its physical path does not name `backend-registration.cbor`.
     pub(super) async fn control(&self) -> PathBuf {
         let held = crate::bucket::held::SingleHeld::acquire(self.coordinator().store())
             .await
@@ -161,6 +187,10 @@ impl Factory {
 }
 
 fn tree(verbs: u8, private: bool) -> Tree<'static> {
+    tree_with_mode(verbs, private, 0o644)
+}
+
+fn tree_with_mode(verbs: u8, private: bool, mode: u16) -> Tree<'static> {
     let acl: &'static [u8] = match verbs {
         31 => b"\x81\x82\x66writer\x18\x1f",
         15 => b"\x81\x82\x66writer\x0f",
@@ -187,7 +217,7 @@ fn tree(verbs: u8, private: bool) -> Tree<'static> {
             key: b"file".to_vec(),
             entry: Entry {
                 kind: EntryKind::File {
-                    mode: 0o644,
+                    mode,
                     size: PLAINTEXT.len() as u64,
                     content: ContentRef::Inline(
                         TERRANE_V1
@@ -212,6 +242,11 @@ fn tree(verbs: u8, private: bool) -> Tree<'static> {
     .unwrap()
 }
 
+/// Derives a genuine narrower capability and verifies it at the fixture start time.
+///
+/// # Panics
+/// Panics if proposal construction, token decoding, attenuation or verification
+/// fails.
 pub(super) fn attenuate(factory: &Factory, caveat: Caveat) -> Vec<u8> {
     let proposal = factory.proposal(Vec::new(), 31);
     let secret = proposal.terminal_secret;
@@ -249,10 +284,30 @@ fn request(
     }
 }
 
-fn assert_denied(result: Result<RefRecord, AdvanceError>, verb: &'static str) {
+fn assert_denied(result: Result<RefRecord, AdvanceError>, verb: &'static str, witness: &str) {
     assert!(
-        matches!(result, Err(AdvanceError::Store(error)) if matches!(error.kind(), StoreErrorKind::Denied { verb: actual, pattern } if *actual == verb && pattern == REFERENCE))
+        matches!(&result, Err(AdvanceError::Store(error)) if matches!(error.kind(), StoreErrorKind::Denied { verb: actual, pattern } if *actual == verb && pattern == REFERENCE)),
+        "{witness}: expected current {verb} denial for {REFERENCE}, observed {result:?}"
     );
+}
+
+// A distinct metadata candidate witnesses refusal before upload even when its
+// ACL is unchanged and the original file bytes already exist in the destination.
+fn denied_proposal(
+    destination: &Factory,
+    parent: [u8; 32],
+    verbs: u8,
+) -> (CommitRequest, Identity) {
+    let candidate = tree_with_mode(verbs, destination.private, 0o600);
+    let node = TERRANE_V1
+        .calculate(IdentityKind::Node, candidate.root().encoded())
+        .unwrap();
+    let staged = materialization::stage_tree(request_file(vec![parent], PLAINTEXT), &candidate);
+    let mut proposal = destination
+        .authority
+        .commit_request(staged.commit, "sdk".into());
+    proposal.uploads = staged.uploads;
+    (proposal, node)
 }
 
 async fn late_expiry(source_expires: bool) {
@@ -355,7 +410,15 @@ async fn late_expiry(source_expires: bool) {
         };
         tokio::join!(publication, coordination)
     };
-    assert_denied(rejected, if source_expires { "read" } else { "commit" });
+    assert_denied(
+        rejected,
+        if source_expires { "read" } else { "commit" },
+        if source_expires {
+            "late source expiry at Candidate slot"
+        } else {
+            "late destination expiry at Candidate slot"
+        },
+    );
     assert_eq!(target.record(), before.as_ref());
     let expected = if source_expires {
         before
@@ -482,28 +545,62 @@ async fn fresh_authority() {
     );
     let baseline = advanced;
     target = independent_writer;
-    let denied_tree = tree(15, false);
-    let denied_node = TERRANE_V1
-        .calculate(IdentityKind::Node, denied_tree.root().encoded())
-        .unwrap();
     source.clock.set(EXPIRES, 0);
     destination.clock.set(EXPIRES, 0);
+    // AUTH-22 makes Admin imply Commit. A genuine Commit-only token can publish
+    // an unchanged ACL, but cannot authorize the separate ACL edit below.
+    let commit_only = attenuate(&destination, Caveat::Verb(Verbs::new(15).unwrap()));
+    destination
+        .coordinator()
+        .guard()
+        .authorize(REFERENCE, &commit_only, Verb::Commit, &[], "sdk")
+        .await
+        .unwrap();
+
+    // ACL edits check Admin before affected-root Commit. Keep those exact
+    // refusals alongside unchanged-ACL attempts that reach Commit independently.
+    // Expired destination tokens fail initial Commit authentication first.
     let cases = [
-        (true, Caveat::Before(EXPIRES)),
-        (false, Caveat::Before(EXPIRES)),
-        (true, Caveat::Epoch(REFERENCE.into(), original.writer_epoch)),
+        (true, Caveat::Before(EXPIRES), 15, "read"),
+        (false, Caveat::Before(EXPIRES), 15, "commit"),
+        (
+            true,
+            Caveat::Epoch(REFERENCE.into(), original.writer_epoch),
+            15,
+            "read",
+        ),
         (
             false,
             Caveat::Epoch(REFERENCE.into(), baseline.writer_epoch - 1),
+            15,
+            "admin",
         ),
-        (true, Caveat::Root("/file".into())),
-        (false, Caveat::Root("/file".into())),
-        (true, Caveat::Ref("refs/heads/_/other".into())),
-        (false, Caveat::Verb(Verbs::new(1).unwrap())),
+        (
+            false,
+            Caveat::Epoch(REFERENCE.into(), baseline.writer_epoch - 1),
+            31,
+            "commit",
+        ),
+        (true, Caveat::Root("/file".into()), 15, "read"),
+        (false, Caveat::Root("/file".into()), 15, "admin"),
+        (false, Caveat::Root("/file".into()), 31, "commit"),
+        (true, Caveat::Ref("refs/heads/_/other".into()), 15, "read"),
+        (false, Caveat::Verb(Verbs::new(1).unwrap()), 15, "admin"),
+        (false, Caveat::Verb(Verbs::new(1).unwrap()), 31, "commit"),
+        (false, Caveat::Verb(Verbs::new(15).unwrap()), 15, "admin"),
     ];
-    for (source_denial, caveat) in cases {
+    for (source_denial, caveat, candidate_acl, denied_verb) in cases {
+        let witness = format!(
+            "fresh {} authority, caveat {caveat:?}, candidate ACL {candidate_acl}",
+            if source_denial {
+                "source"
+            } else {
+                "destination"
+            }
+        );
         let narrowed = attenuate(if source_denial { &source } else { &destination }, caveat);
-        let mut proposal = destination.proposal(vec![baseline.commit], 15);
+        let (mut proposal, denied_node) =
+            denied_proposal(&destination, baseline.commit, candidate_acl);
         let source_token = if source_denial {
             narrowed
         } else {
@@ -518,7 +615,7 @@ async fn fresh_authority() {
                 request(original.commit, proposal, source_token),
             )
             .await;
-        assert_denied(rejected, if source_denial { "read" } else { "commit" });
+        assert_denied(rejected, denied_verb, &witness);
         assert_eq!(target.record(), Some(&baseline));
         assert_eq!(
             destination
@@ -550,16 +647,14 @@ async fn fresh_authority() {
     }
     // The selected immutable source predates the independently current read head.
     // A valid current pair must still certify that exact historical selection.
+    let mut proposal = destination.proposal(vec![baseline.commit], 31);
+    proposal.token = commit_only;
     let accepted = destination
         .coordinator()
         .advance_disclosure(
             source.coordinator().guard(),
             &mut target,
-            request(
-                original.commit,
-                destination.proposal(vec![baseline.commit], 31),
-                source.authority.token().to_vec(),
-            ),
+            request(original.commit, proposal, source.authority.token().to_vec()),
         )
         .await
         .unwrap();
@@ -589,28 +684,53 @@ async fn fresh_authority() {
         .commit_request(&mut target, destination.proposal(vec![accepted.commit], 1))
         .await
         .unwrap();
-    let rejected = destination
-        .coordinator()
-        .advance_disclosure(
-            source.coordinator().guard(),
-            &mut target,
-            request(
-                original.commit,
-                destination.proposal(vec![closed_destination.commit], 31),
-                source.authority.token().to_vec(),
-            ),
-        )
-        .await;
-    assert_denied(rejected, "commit");
-    assert_eq!(
-        destination
+    // The actual current root permits Read alone. An ACL edit is refused as
+    // Admin; retaining that ACL independently exposes its Commit refusal.
+    for (candidate_acl, denied_verb) in [(31, "admin"), (1, "commit")] {
+        let (proposal, denied_node) =
+            denied_proposal(&destination, closed_destination.commit, candidate_acl);
+        let rejected = destination
             .coordinator()
-            .store()
-            .ref_get(REFERENCE)
-            .await
-            .unwrap(),
-        Some(closed_destination)
-    );
+            .advance_disclosure(
+                source.coordinator().guard(),
+                &mut target,
+                request(original.commit, proposal, source.authority.token().to_vec()),
+            )
+            .await;
+        assert_denied(
+            rejected,
+            denied_verb,
+            &format!("closed current destination root, candidate ACL {candidate_acl}"),
+        );
+        assert_eq!(target.record(), Some(&closed_destination));
+        assert_eq!(
+            destination
+                .coordinator()
+                .store()
+                .ref_get(REFERENCE)
+                .await
+                .unwrap(),
+            Some(closed_destination.clone())
+        );
+        assert_eq!(
+            source
+                .coordinator()
+                .store()
+                .ref_get(REFERENCE)
+                .await
+                .unwrap(),
+            Some(current.clone())
+        );
+        assert_eq!(
+            destination
+                .coordinator()
+                .store()
+                .has(std::slice::from_ref(&denied_node))
+                .await
+                .unwrap(),
+            [false]
+        );
+    }
 
     let closed_source = source
         .repository
@@ -618,19 +738,17 @@ async fn fresh_authority() {
         .await
         .unwrap();
     assert_ne!(closed_source.commit, current.commit);
+    let (proposal, denied_node) = denied_proposal(&alternative, alternative_head.commit, 15);
     let rejected = alternative
         .coordinator()
         .advance_disclosure(
             source.coordinator().guard(),
             &mut alternative_target,
-            request(
-                original.commit,
-                alternative.proposal(vec![alternative_head.commit], 15),
-                source.authority.token().to_vec(),
-            ),
+            request(original.commit, proposal, source.authority.token().to_vec()),
         )
         .await;
-    assert_denied(rejected, "read");
+    assert_denied(rejected, "read", "closed current source root");
+    assert_eq!(alternative_target.record(), Some(&alternative_head));
     assert_eq!(
         alternative
             .coordinator()
@@ -649,13 +767,23 @@ async fn fresh_authority() {
             .unwrap(),
         Some(closed_source)
     );
+    assert_eq!(
+        alternative
+            .coordinator()
+            .store()
+            .has(std::slice::from_ref(&denied_node))
+            .await
+            .unwrap(),
+        [false]
+    );
 }
 
-/// Requires genuine independently current checks before upload and selected CAS.
+/// Checks independent current heads, tokens, epochs and root ACLs during disclosure.
 ///
 /// # Panics
-/// Panics if authenticated setup fails, a late expiry publishes, an independent
-/// authority transition bypasses exclusion, or a valid current pair is refused.
+/// Panics if authenticated setup fails, a late expiry publishes, a competing
+/// transition bypasses exclusion, a refusal has the wrong verb or changes a head,
+/// rejected metadata is uploaded, or a valid current pair is refused.
 pub(super) async fn recheck_current_authority() {
     late_expiry(true).await;
     late_expiry(false).await;

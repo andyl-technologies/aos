@@ -93,6 +93,9 @@ impl Location {
     ///
     /// # Errors
     /// Preserves incompatible installed inputs and actual native reopen failures.
+    ///
+    /// # Panics
+    /// Panics if the reopened native fixture violates its retained-history assertions.
     pub(in crate::guard) async fn reopen(
         &self,
         revision: u64,

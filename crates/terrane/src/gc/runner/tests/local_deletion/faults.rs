@@ -7,11 +7,21 @@ use crate::store::{Clock, EffectFault, StoreErrorKind};
 use std::io::{Seek, SeekFrom, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use terrane_core::gc::DeletePhase;
+use tokio::sync::Semaphore;
 
-async fn sync_fault(phase: DeletePhase, fault: EffectFault, source: &str, renamed: bool) {
+async fn sync_fault(
+    setup: &Semaphore,
+    phase: DeletePhase,
+    fault: EffectFault,
+    source: &str,
+    renamed: bool,
+) {
+    let permit = setup.acquire().await.require();
     let mut fixture = Fixture::new().await;
     let (mut collection, requested) = retired(&fixture).await;
     let original = before(&fixture, &requested).await;
+    drop(permit);
+
     fixture.clock.enable_timer();
     let owned = collection
         .own_local_pack(fixture.repository.coordinator(), requested)
@@ -65,44 +75,54 @@ async fn sync_fault(phase: DeletePhase, fault: EffectFault, source: &str, rename
 
 #[tokio::test]
 async fn each_unlink_directory_and_progress_sync_fault_preserves_exact_recoverable_prefix() {
+    // Bound native setup overlap while preserving concurrent real deletion waits.
+    let setup = Semaphore::new(1);
+
     tokio::join!(
         sync_fault(
+            &setup,
             DeletePhase::Invalidated,
             EffectFault::BeforeUnlink,
             "injected local unlink failure",
             false
         ),
         sync_fault(
+            &setup,
             DeletePhase::Invalidated,
             EffectFault::AfterUnlink,
             "injected local failure after unlink",
             false
         ),
         sync_fault(
+            &setup,
             DeletePhase::PackAbsent,
             EffectFault::BeforeDirectorySync,
             "injected creation directory sync failure",
             false
         ),
         sync_fault(
+            &setup,
             DeletePhase::PackAbsent,
             EffectFault::BeforeFileSync,
             "injected creation file sync failure",
             false
         ),
         sync_fault(
+            &setup,
             DeletePhase::IndexAbsent,
             EffectFault::AfterRename,
             "injected local failure after progress rename",
             true
         ),
         sync_fault(
+            &setup,
             DeletePhase::ContainersConfirmed,
             EffectFault::BeforeUnlink,
             "injected local unlink failure",
             false
         ),
         sync_fault(
+            &setup,
             DeletePhase::ContainersConfirmed,
             EffectFault::AfterUnlink,
             "injected local failure after unlink",

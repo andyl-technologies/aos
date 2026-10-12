@@ -217,14 +217,86 @@ subject to package and owning-gate qualification. Fresh private composition
 `d84c608c5b1c` passes strict SDK Clippy, SDK all-target compilation and the default
 native build. All ten focused cases pass: the seven missing-placement witnesses,
 the unchanged actual deadline-expiry witness, and both corrected Guard/planning
-cases. The unfiltered 1,111-case SDK suite is running with the committed package
-scheduling correction; no complete package result is claimed. Static review
+cases. The unfiltered SDK phase finishes with all 1,111 tests run: 1,093 pass,
+12 fail and six time out, with no skipped cases or execution failures. The actual
+summary duration is 21,243.252 seconds and exit status is 100. Source, input and
+executable seals remain unchanged. One-second observations record one active
+archive case and a peak of 13 runner descriptors; two GC cases still report
+descriptor exhaustion inside their test processes. Those observations do not
+measure test-process descriptor peaks or establish their cause. Two overlay
+cases reach their unchanged 120-second bounds, and the four 2,048/4,096-entry
+growth cases reach their unchanged 1,800-second bounds. Both 1,024-entry cases
+pass. This complete failing phase does not qualify the package. Static review
 matches all 394 SDK selector uses to the archived inventory, with no missing,
 ignored or duplicate required selector within a gate. Successful population
 cases now remove their owned scratch directories after both execution validators;
 the six growing witnesses and DRV-29 qualification blocker remain unchanged.
 Test-helper documentation corrections preserve exact source bodies and remain
-isolated from the active qualification checkout. No task or milestone advances.
+isolated from that sealed qualification checkout. A fresh thirteen-case diagnostic
+privately composes the reviewed GC native-read forwarding, fixture setup semaphore,
+native admission observations and explicit disclosure snapshot corrections. Its
+SDK all-target compilation, strict Clippy, default native build and exact formatter
+pair pass. It retains all substantive refusal assertions and original bounds, and
+samples test process descriptors separately. All three exact GC cases and all
+six admission/join/Original cases pass. The run stops at its tenth case: the
+Legacy indexed-publication witness expects Commit denial but observes exactly
+`Invalid(MalformedRequest)` with no attached source. Three disclosure cases
+remain unrun in that sealed packet. One-second sampling observes test-process
+peaks of 347, 157 and 321 in the three GC cases and 12 runner descriptors,
+without establishing exact maxima. Source, input and executable seals remain
+unchanged; this focused failing phase does not qualify the package.
+An independent new packet executes each of the three unrun cases once on the
+same sealed source and executables. One rotation refusal case passes; current
+authority refuses with exact source-less Admin denial where the witness expects
+Commit denial, and successful rotation stops while building a noncanonical test
+tree. Both failures remain recorded. Source review traces the Legacy outcome to
+revision-1 rejection of `index-roots` before ACL checks. Its isolated correction
+requires the exact invalid-request category, genuine Active publication of the
+same complete proposal, absent offered identities/ref/lineage under Legacy and
+the existing ordinary Legacy revision-1 publication control. That stronger
+witness remains uncompiled and unrun. Separate source workers review current
+Admin ordering and canonical rotation fixtures; no production authorization,
+tree ordering, process bound or milestone requirement is weakened.
+Separately, a borrowed authenticated-history inventory permits producer preparation
+to refresh every retained Original, including disclosure dependencies; the iterator
+grants neither completion nor current authority. The bounded growth repair remains
+isolated and retains existing per-path trust-evaluator cloning. Its source candidate
+passes scoped independent review and adds a genuine repeated-producer regression
+with exact current requests, separately repeated invocation work, typed Original
+and ACL refusals, and unchanged stored/publication bytes. The owning index gate
+and focused rebuild prerequisite now require this witness; its compilation and
+runtime remain pending. Owning Nix gates,
+the complete current T1 floor and mandatory application targets remain pending.
+No task or milestone advances.
+
+Fresh private composition `e10fa76d1b62` binds the reviewed producer reuse,
+Legacy refusal, exact current Admin/Commit controls and canonical rotation
+fixtures. The exact formatter pair passes. SDK Clippy then stops with a compile
+error: the new Original-selection refresh calls a private sibling-module error
+mapper. No native case, growth population or renewed Core package runs on this
+source. Its correction preserves the existing error category and attached cause;
+the failed source remains sealed before another qualification.
+
+Subsequent private trees `11bc0ef7d876` and `4d157b029455` also pass the exact
+formatter pair. Strict SDK Clippy first rejects two nonidiomatic producer-map
+updates, then reaches the Legacy fixture and rejects a request move while its
+decoded owner still borrows the offered bytes. Isolated corrections use map
+entries with unchanged vacant preparation and occupied freshness checks, and
+end borrowed fixture models before publication consumes the request. Source
+comparison after removing the lexical block confirms unchanged revision
+assertions and independent publication controls. Both failed packets retain
+unchanged sources and prior evidence; all native, Core renewal and growth
+executions remain unstarted.
+
+Independent source review also finds a valid mixed-revision cold source wrongly
+refused after its candidate already witnesses a signed root claim. An unnecessary
+prior-tree comparison reinterprets inert later parent properties under current
+semantics. The isolated PROP-30/PROV-31/ALG-32 correction stops after a sufficient
+witness and retains prior-only fallback. The owning `algebra-fork` gate now
+requires genuine recorded parent/current-child publication and the existing
+calibrated zero-Node native acknowledgement oracle. Separate rotation witnesses
+require exact protected-record errors and successful controls. These changes
+remain uncompiled and unrun; task counts, T1's exit and all freezes are unchanged.
 
 Additional isolated worklines inspect growing-index completion, indexed replay
 and permanent recovery, while a separate worker qualifies the five public SDK

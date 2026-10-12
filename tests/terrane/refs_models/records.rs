@@ -27,7 +27,8 @@ pub(crate) fn record(seq: u8, selected: bool) -> RefRecord {
 /// Builds a complete inert annotation through public data models.
 ///
 /// # Panics
-/// Panics if the fixed canonical tag name is rejected.
+/// Panics if the fixed canonical tag is rejected or the independent envelope
+/// table violates its invariant of being a map containing attestation field 3.
 fn envelope() -> SnapshotEnvelope {
     let tag = RefName::parse("refs/tags/_/snapshot")
         .unwrap_or_else(|error| panic!("tag fixture: {error}"));

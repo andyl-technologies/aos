@@ -8,6 +8,7 @@ use crate::store::native_publication_effects::collection_local_ownership::{
 use crate::store::{EffectFault, StoreErrorKind};
 use std::sync::mpsc;
 use terrane_core::gc::DeletePhase;
+use tokio::sync::Semaphore;
 
 async fn fault_boundary(boundary: u8) {
     let fixture = Fixture::new().await;
@@ -72,14 +73,18 @@ enum Change {
 }
 
 async fn current_boundary(
+    setup: &Semaphore,
     boundary: u8,
     phase: OwnershipPhase,
     change: Change,
     observe_later: bool,
 ) {
+    let permit = setup.acquire().await.require();
     let fixture = Fixture::new().await;
     let (mut collection, requested) = retired(&fixture).await;
     let before = before(&fixture, &requested).await;
+    drop(permit);
+
     fixture.clock.enable_timer();
     let (arrived, release, later) = if observe_later {
         let (arrived, release, later) = fixture.fs.pause_with_later_directory(boundary, phase);
@@ -146,10 +151,13 @@ async fn current_boundary(
     fixture.cleanup();
 }
 
-async fn final_read(change: Change) {
+async fn final_read(setup: &Semaphore, change: Change) {
+    let permit = setup.acquire().await.require();
     let fixture = Fixture::new().await;
     let (mut collection, requested) = retired(&fixture).await;
     let before = before(&fixture, &requested).await;
+    drop(permit);
+
     fixture.clock.enable_timer();
     let (arrived, release) = fixture.fs.pause_final_read();
     let mut operation =
@@ -198,10 +206,13 @@ async fn final_read(change: Change) {
     fixture.cleanup();
 }
 
-async fn queued_incarnation() {
+async fn queued_incarnation(setup: &Semaphore) {
+    let permit = setup.acquire().await.require();
     let fixture = Fixture::new().await;
     let (mut collection, requested) = retired(&fixture).await;
     let mut before = before(&fixture, &requested).await;
+    drop(permit);
+
     fixture.clock.enable_timer();
     let (arrived, release, later) = fixture
         .fs
@@ -237,19 +248,35 @@ async fn queued_incarnation() {
 
 #[tokio::test]
 async fn fresh_current_authority_required_before_each_ownership_effect() {
+    // Bound native setup overlap while preserving concurrent authority handoffs.
+    let setup = Semaphore::new(1);
+
     tokio::join!(
-        current_boundary(0, OwnershipPhase::AfterSourceSync, Change::Expiry, true),
         current_boundary(
+            &setup,
+            0,
+            OwnershipPhase::AfterSourceSync,
+            Change::Expiry,
+            true
+        ),
+        current_boundary(
+            &setup,
             1,
             OwnershipPhase::BeforeDirectorySync,
             Change::Control,
             true
         ),
-        current_boundary(2, OwnershipPhase::BeforeOpen, Change::Expiry, false),
-        current_boundary(3, OwnershipPhase::BeforeOpen, Change::Control, false),
-        current_boundary(4, OwnershipPhase::BeforeOpen, Change::Expiry, false),
-        final_read(Change::Expiry),
-        final_read(Change::Control),
-        queued_incarnation(),
+        current_boundary(&setup, 2, OwnershipPhase::BeforeOpen, Change::Expiry, false),
+        current_boundary(
+            &setup,
+            3,
+            OwnershipPhase::BeforeOpen,
+            Change::Control,
+            false
+        ),
+        current_boundary(&setup, 4, OwnershipPhase::BeforeOpen, Change::Expiry, false),
+        final_read(&setup, Change::Expiry),
+        final_read(&setup, Change::Control),
+        queued_incarnation(&setup),
     );
 }

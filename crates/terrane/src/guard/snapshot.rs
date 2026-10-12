@@ -25,11 +25,15 @@ pub(crate) struct TreeEvidence {
     pub(crate) usage: TreeUse,
     /// Roots proven completely compatible with ordinary canonical tree semantics.
     pub(crate) ordinary_roots: BTreeSet<Digest>,
+    /// Retains the decoded commit when loading through an addressed commit.
     pub(crate) commit: Option<Commit>,
+    /// Identifies the canonical namespace root addressed by this evidence.
     pub(crate) root: Digest,
     /// Root-identity default used only when no raw or inherited domain resolves.
     pub(crate) default_domain: String,
+    /// Retains exact addressed Node buffers for canonical reconstruction.
     pub(crate) nodes: BTreeMap<Digest, Vec<u8>>,
+    /// Lists the physically reached tree roots in the complete metadata graph.
     pub(crate) roots: BTreeSet<Digest>,
     /// Root/usage/geometry-bound addresses installed only after canonical validation.
     pub(crate) grafts: Option<Arc<ValidatedGrafts>>,
@@ -51,12 +55,22 @@ struct GraftMetadata<'a> {
 
 /// One root occurrence retains its full graft path, even when hashes repeat.
 pub(crate) struct RootOccurrence<'a> {
+    /// Identifies the canonical tree root at this particular occurrence.
     pub(crate) root: Digest,
+    /// Names the absolute path of this particular root occurrence.
     pub(crate) path: Vec<u8>,
+    /// Retains ancestor-first root properties paired with each graft override.
     pub(crate) layers: Vec<(Vec<Property<'a>>, Vec<Property<'a>>)>,
 }
 
 impl TreeEvidence {
+    /// Loads an addressed commit and its complete ordinary canonical tree metadata.
+    ///
+    /// Signature and current authority checks remain separate.
+    ///
+    /// # Errors
+    /// Rejects malformed or mismatched identities and incomplete canonical trees;
+    /// preserves originating metadata read failures.
     pub(crate) async fn load_commit<S: ContentStore>(
         store: &S,
         identity: Digest,
@@ -88,6 +102,11 @@ impl TreeEvidence {
         Ok(evidence)
     }
 
+    /// Loads a complete ordinary tree from exact staged Nodes and backend metadata.
+    ///
+    /// # Errors
+    /// Rejects duplicate or invalid staged Nodes and incomplete or contradictory
+    /// canonical metadata; preserves backend read failures.
     pub(crate) async fn load_tree<S: ContentStore>(
         store: &S,
         root: Digest,
@@ -276,6 +295,10 @@ impl TreeEvidence {
         Ok(Arc::clone(grafts))
     }
 
+    /// Reconstructs a canonical root under its independently recorded decoding usage.
+    ///
+    /// # Errors
+    /// Rejects absent, malformed or inconsistent metadata and incompatible geometry.
     pub(crate) fn tree(&self, root: Digest, min_chunk_size: u64) -> Result<Tree<'_>, StoreFailure> {
         self.tree_for(root, min_chunk_size, self.root_usage(root))
     }
@@ -344,6 +367,10 @@ impl TreeEvidence {
         Ok(tree)
     }
 
+    /// Collects ordered root and graft layers for an absolute namespace path.
+    ///
+    /// # Errors
+    /// Rejects invalid paths, cycles, excessive graft depth or malformed root metadata.
     pub(crate) fn policy_path(
         &self,
         path: &[u8],
@@ -510,6 +537,7 @@ impl TreeEvidence {
     }
 }
 
+/// Constructs the source-less malformed-request refusal used by tree evidence checks.
 pub(crate) fn invalid() -> StoreFailure {
     StoreFailure::new(StoreErrorKind::Invalid(InvalidReason::MalformedRequest))
 }
