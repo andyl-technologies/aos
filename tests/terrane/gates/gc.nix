@@ -56,6 +56,7 @@
     "gc::runner::walk::tests::native::gc_common_walk_native_attributes_retain_versions_without_discovery_roots"
     "gc::runner::walk::tests::native::gc_common_walk_native_complete_checkpoint_reopens_and_preserves_contextual_marks"
     "gc::runner::walk::tests::native::gc_common_walk_native_broader_cutoff_reuses_full_occurrence_expansion"
+    "gc::runner::walk::tests::native::gc_common_walk_native_recorded_preservation_keeps_inert_index_bindings"
     "gc::runner::walk::tests::native::gc_common_walk_native_independently_rooted_source_keeps_own_producer_context"
     "gc::runner::walk::tests::native::overlays::signed_overlay_layer_ancestry_survives_collection_and_reopen"
     "gc::runner::walk::tests::native::overlays::signed_overlay_layer_default_and_forged_context_are_refused"

@@ -133,7 +133,21 @@ Workers retain disjoint file ownership and separate worktrees. Independent
 review remains separate. One coordinated compiler serves build and Nix requests.
 T2 and branch worklines remain deferred.
 
-The latest frozen payload-sharing tree `ee7171fa88a7` passes native build,
+The renewed frozen composition `342f1cf7114b` (tree `90fb7240d717`) passes
+the exact formatter pair, strict SDK all-target Clippy, SDK all-target test
+compilation and the default native build. Its actual inventory contains 1,113
+tests across three AOS executables, with none ignored. Six focused cases pass,
+including the three cold-fork controls, Legacy refusal and current-authority
+disclosure. Historical-key rotation then fails full physical snapshot equality:
+the authorized session creates its mandatory epoch baseline after the snapshot.
+The exact baseline setup is corrected in an isolated fixture before the refusal
+snapshot; full equality and error assertions remain unchanged. Thirteen cases,
+Core renewal and all six growth populations remain unstarted in this packet.
+Source, compiler inputs and executables stay sealed and unchanged. A separate
+diagnostic continuation may exercise only the thirteen unstarted cases; it does
+not accept the failed focus set, any task or T1's freeze.
+
+The earlier frozen payload-sharing tree `ee7171fa88a7` passes native build,
 strict all-target SDK and Core Clippy, all-target test compilation and the exact
 formatter pair. Its inventories contain 1,101 SDK tests and 764 no-default Core
 tests. All seventeen payload-sharing counterproofs and twelve quick native/Core
@@ -6611,7 +6625,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `checks.terrane.gates.bundle-verify`.
 - [ ] **T-BKT-1** `bucket` backend over `file://`: key layout, mutability
   classes, atomic writes, filesystem CAS, generation manifests, startup
-  probe. Conformance is reopened for STORE-4: the existing ranged getter reads
+  probe. Independent full review identifies an inherited STORE-8 outcome
+  discrepancy: a safely read existing legacy log with different proposed
+  canonical bytes returns corruption instead of `exists`. The isolated fix
+  retains exact existing bytes, capabilities, ref and history, preserves missing
+  legacy-slot refusal, and awaits owning-gate and current-trunk qualification.
+  Conformance is reopened for STORE-4: the existing ranged getter reads
   the whole pack before slicing. Bounded framing/index/member reads and an
   actual no-whole-pack I/O witness remain required; previously passing slice
   and overflow checks do not qualify that requirement. D-77's version-2 ref
@@ -7011,6 +7030,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   checkpoint verification and current held authority remain mandatory. This
   source finding does not explain the two overlay timeouts; their original
   120-second bounds and separate runtime obligations remain unchanged.
+  Separate review identifies preexisting PROP-30/GC-5 refusals when collector
+  retention or metadata preparation treats preserved historical `index-roots`
+  bytes as active bindings. The mark gate now requires genuine recorded-view
+  root and graft preservation before the isolated semantic correction. Current
+  selected interpretation, malformed active-value refusals and exact native
+  proof contexts remain mandatory; no encoding or checkpoint schema changes.
   Parent-owned registrations and a nineteen-case auxiliary check now prepare
   isolated implementation of genuine local copied-destination first ownership.
   D-113 clarifies truthful conservative DATA roots/state at the existing
