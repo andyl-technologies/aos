@@ -81,6 +81,28 @@ impl OwnedSetupMapping {
         self.select_whole_inner(epoch, operation_capacity, None)
     }
 
+    /// Adopts the original constructor's exact roster before returning custody.
+    ///
+    /// The provider authenticates the original native constructor, mapping,
+    /// epoch, operation capacity and header offsets before calling this method.
+    /// Selection and one-time roster restriction complete in the same owner.
+    /// This local adoption supplies no native readiness or grant authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns sticky selection refusal or an empty, oversized, duplicate,
+    /// unavailable or foreign original-header roster refusal.
+    pub fn select_whole_roster_bounded(
+        &mut self,
+        epoch: u64,
+        operation_capacity: u64,
+        header_offsets: &[u64],
+    ) -> Result<(), WholeMappingCustodyError> {
+        self.select_whole_bounded(epoch, operation_capacity)?;
+        self.selected_mut()?
+            .restrict_paired_header_offsets(header_offsets)
+    }
+
     /// Adopts the same owner after its shared wrapper published selection.
     ///
     /// # Errors

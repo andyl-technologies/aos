@@ -218,6 +218,36 @@ impl SharedOwnedSetupMapping {
         epoch: u64,
         operation_capacity: u64,
     ) -> Result<(), WholeMappingCustodyError> {
+        self.select_whole_inner(epoch, operation_capacity, None)
+    }
+
+    /// Adopts the exact source-constructor roster under one original owner guard.
+    ///
+    /// The native getter and original constructor receipt authenticate this
+    /// epoch, capacity and roster before adoption. The backing fence, original
+    /// mapping cell and restricted roster are installed before this method
+    /// returns. No ownership guard crosses a native callback boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns sticky selection or original-header roster refusal. A failed
+    /// or concurrently refused adoption cannot publish successful custody.
+    /// This method establishes no native readiness or execution authority.
+    pub fn select_whole_roster_bounded(
+        &self,
+        epoch: u64,
+        operation_capacity: u64,
+        header_offsets: &[u64],
+    ) -> Result<(), WholeMappingCustodyError> {
+        self.select_whole_inner(epoch, operation_capacity, Some(header_offsets))
+    }
+
+    fn select_whole_inner(
+        &self,
+        epoch: u64,
+        operation_capacity: u64,
+        header_offsets: Option<&[u64]>,
+    ) -> Result<(), WholeMappingCustodyError> {
         let generation = self.generation()?;
         let result = (|| {
             generation
@@ -227,7 +257,16 @@ impl SharedOwnedSetupMapping {
             let domain = generation.domain.as_ref().map_err(|error| *error)?;
             domain.selected.store(true, Ordering::Release);
             let mut owner = try_lock(&generation.owner)?;
-            owner.select_whole_preselected(epoch, operation_capacity, domain)
+            owner.select_whole_preselected(epoch, operation_capacity, domain)?;
+            if let Some(offsets) = header_offsets {
+                owner
+                    .selected_mut()?
+                    .restrict_paired_header_offsets(offsets)?;
+            }
+            if generation.failed.load(Ordering::Acquire) {
+                return Err(WholeMappingCustodyError::Selected);
+            }
+            Ok(())
         })();
         if result.is_err() {
             generation.refuse_control();

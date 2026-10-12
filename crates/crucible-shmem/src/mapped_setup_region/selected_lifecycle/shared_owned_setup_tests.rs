@@ -573,8 +573,7 @@ fn exact_original_roster_allows_enrolled_ring_service_and_stays_held() -> TestRe
     let offsets = directed_header_offsets(&mut first, 0)?;
     first.hold_hot_fork_ring_io()?;
     let owner = SharedOwnedSetupMapping::new(first);
-    owner.select_whole_bounded(7, 1)?;
-    owner.with_selected(|selected| selected.restrict_paired_header_offsets(&offsets))??;
+    owner.select_whole_roster_bounded(7, 1, &offsets)?;
     owner.with_selected(|selected| {
         selected.begin_paired_scope(
             7,
@@ -690,5 +689,77 @@ fn invalid_or_renewed_roster_retains_sticky_mapping_custody() -> TestResult {
     assert!(retained.restrict_paired_header_offsets(&offsets).is_err());
     assert!(retained.selection_status().is_err());
     assert!(alias.release_hot_fork_ring_io().is_err());
+    Ok(())
+}
+
+#[test]
+fn atomic_roster_adoption_refuses_invalid_input_without_ordinary_fallback() -> TestResult {
+    let (_file, first, alias) = original_aliases()?;
+    first.hold_hot_fork_ring_io()?;
+    let owner = SharedOwnedSetupMapping::new(first);
+
+    assert!(owner.select_whole_roster_bounded(7, 1, &[1]).is_err());
+    assert!(owner.select_whole_roster_bounded(7, 1, &[1]).is_err());
+    assert!(
+        owner
+            .with_selected(|selected| selected.selection_status())
+            .is_err()
+    );
+    assert!(alias.release_hot_fork_ring_io().is_err());
+    assert!(alias.hot_fork_ring_io_snapshot()?.quiescent());
+    Ok(())
+}
+
+#[test]
+fn concurrent_refusal_during_adoption_cannot_return_successful_custody() -> TestResult {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    let (_file, mut first, alias) = original_aliases()?;
+    let offsets = directed_header_offsets(&mut first, 0)?;
+    first.hold_hot_fork_ring_io()?;
+    let owner = Arc::new(SharedOwnedSetupMapping::new(first));
+    let selecting_owner = Arc::clone(&owner);
+    let (outcome_tx, outcome_rx) = mpsc::sync_channel(1);
+    let records = super::super::registry()
+        .lock()
+        .expect("actual registry publication loan");
+    let worker = std::thread::spawn(move || {
+        let result = selecting_owner.select_whole_roster_bounded(7, 1, &offsets);
+        outcome_tx
+            .send(result)
+            .expect("report actual adoption result");
+    });
+
+    // The selector owns the actual mapping mutex while waiting for this real
+    // registry loan. A competing callback must refuse the same original cell.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match owner.generation()?.owner.try_lock() {
+            Err(std::sync::TryLockError::WouldBlock) => break,
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err("owner unexpectedly poisoned".into());
+            }
+            Ok(guard) => drop(guard),
+        }
+        if Instant::now() >= deadline {
+            drop(records);
+            worker.join().map_err(|_| "selector worker panicked")?;
+            return Err("selector did not acquire actual original owner".into());
+        }
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        owner.with_selected(|selected| selected.selection_status()),
+        Err(WholeMappingCustodyError::Busy)
+    );
+    drop(records);
+    assert_eq!(
+        outcome_rx.recv_timeout(Duration::from_secs(2))?,
+        Err(WholeMappingCustodyError::Selected)
+    );
+    worker.join().map_err(|_| "selector worker panicked")?;
+    assert!(alias.release_hot_fork_ring_io().is_err());
+    assert!(alias.hot_fork_ring_io_snapshot()?.quiescent());
     Ok(())
 }

@@ -2108,7 +2108,9 @@ selection fences ordinary aliases, while each original mapping retains its own
 epoch, bounded operation account and paired ring scope. Ordinary teardown keeps
 the original registration until the actual unmap completes.
 
-All 141 unit tests and seven separately executed fork/socket fixtures pass,
+Roster adoption restricts the original ring headers under the same ownership
+guard; invalid or concurrently refused adoption cannot return usable custody.
+All 143 unit tests and seven separately executed fork/socket fixtures pass,
 including replacement while a parent thread holds an ownership lock. Independent
 review verifies the exact source and executed controls. These process-private
 changes preserve the shared-memory layout; they grant no native readiness.
