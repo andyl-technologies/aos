@@ -13,6 +13,9 @@ struct ExpectedRow {
 }
 
 /// Inventories independently loaded namespace occurrences without consulting carriers.
+///
+/// Retains the complete expected relation output rather than only predicates.
+/// Source counters measure enumeration, not allocation or total CPU work.
 fn inventory(
     source: &Source<'_, '_>,
     root: Digest,

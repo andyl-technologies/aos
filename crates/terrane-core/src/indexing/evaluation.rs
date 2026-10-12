@@ -112,7 +112,7 @@ impl core::error::Error for Error {
 pub struct Work {
     /// Source root occurrences visited, including repeated graft occurrences.
     pub source_roots: usize,
-    /// Source entries inspected across all predicate traversals.
+    /// Source entries inspected across namespace occurrence traversals, including repeated visits.
     pub source_entries: usize,
     /// Physical auxiliary Nodes retained or visited, counting repeated visits.
     pub nodes: usize,
