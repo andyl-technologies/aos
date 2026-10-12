@@ -85,6 +85,14 @@ impl LocalFs for ReadFs {
         TokioLocalFs.lock_existing_exclusive(path).await
     }
 
+    async fn try_lock_existing_shared(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        TokioLocalFs.try_lock_existing_shared(path).await
+    }
+
+    async fn try_lock_existing_exclusive(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        TokioLocalFs.try_lock_existing_exclusive(path).await
+    }
+
     async fn random_bytes(&self, length: usize) -> std::io::Result<Vec<u8>> {
         TokioLocalFs.random_bytes(length).await
     }
