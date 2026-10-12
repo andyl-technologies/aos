@@ -714,7 +714,7 @@ pub struct GdbAttachInfo {
     /// Node whose gdbstub is exposed.
     pub node: NodeId,
     /// Backend-owned raw gdbstub endpoint.
-    pub qemu_endpoint: String,
+    pub backend_endpoint: String,
     /// Operator-facing listener served by Crucible.
     pub operator_listen: GdbListen,
     /// Whether Crucible mediates the raw backend gdbstub.

@@ -946,7 +946,7 @@ fn backend_quantum_loop_routes_gdbstub_to_wrapped_backend() {
         )
         .unwrap_or_else(|error| panic!("backend adapter should route gdbstub attach: {error}"));
 
-    assert_eq!(info.qemu_endpoint, "tcp:127.0.0.1:9001");
+    assert_eq!(info.backend_endpoint, "tcp:127.0.0.1:9001");
     assert_eq!(
         adapter.backend().opened,
         vec![(

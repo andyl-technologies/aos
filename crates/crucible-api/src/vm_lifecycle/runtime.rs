@@ -602,11 +602,11 @@ impl ProductionVmLifecycleLoop {
             });
         }
         let active_endpoint =
-            DebugGdbEndpoint::new("production_qemu_gdbstub", attach.qemu_endpoint.clone())
+            DebugGdbEndpoint::new("production_qemu_gdbstub", attach.backend_endpoint.clone())
                 .map_err(|error| SchedulerError::BoundaryViolation {
                     message: format!("validate active production debugger endpoint: {error}"),
                 })?;
-        if active_endpoint != request.current_qemu_gdbstub {
+        if active_endpoint != request.current_backend_gdbstub {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
                     "debug runtime replacement does not name the gateway's active backend",
@@ -700,7 +700,7 @@ impl ProductionVmLifecycleLoop {
         };
 
         let mut refreshed_attach = attach;
-        refreshed_attach.qemu_endpoint = candidate_path.to_string_lossy().into_owned();
+        refreshed_attach.backend_endpoint = candidate_path.to_string_lossy().into_owned();
         candidate.debug_attach = Some(refreshed_attach);
         candidate.debug_gateway = self.debug_gateway.take();
         candidate.debug_runtime_evidence = self.debug_runtime_evidence.clone();

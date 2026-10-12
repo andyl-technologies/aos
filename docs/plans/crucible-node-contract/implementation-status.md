@@ -2067,6 +2067,19 @@ or ordinary class acceptance. Current combined application-target compilation,
 native qualification and boundary gates remain required; raw evidence stays
 local.
 
+## Common debugger names and replay imports
+
+Shared debugger requests, reports and endpoint fields use backend names, and
+common checkpoint consumers import replay-closure types from their neutral
+defining module. QEMU launch channels and compatibility reexports keep their
+implementation-specific names. Public Rust field and breakpoint-variant names
+change, including their derived Debug labels; explicit diagnostic literals and
+serialized formats keep their existing representation.
+
+All targets compile across core, session, API and daemon consumers, and ten
+existing debugger controls pass. These checks cover the rename and shared
+imports; they do not add debugger capabilities to a native backend.
+
 ## Original behavioral collection and shutdown continuation
 
 Behavioral collection borrows the original runtime through an evidence-only
