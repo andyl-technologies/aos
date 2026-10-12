@@ -61,7 +61,7 @@ pub(super) fn refresh(
         .map_err(|_| denied(reference, verb))
 }
 
-/// Retains an Original retention I/O error while translating its failure kind.
+/// Translates retained-clock I/O failures while preserving their original source.
 ///
 /// Unsupported operations remain Unsupported; other I/O failures become Unavailable.
 #[cfg(feature = "std")]

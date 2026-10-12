@@ -27,7 +27,6 @@ pub(super) struct CheckedAttributeRecord {
     /// Existing producer evidence constructed by the authentic history verifier.
     pub(super) producer: ProducerEvidence,
     /// Actual producing file path that passed current scoped Read and trust.
-    /// Names the producing occurrence requiring fresh Read authorization.
     pub(super) path: Vec<u8>,
 }
 

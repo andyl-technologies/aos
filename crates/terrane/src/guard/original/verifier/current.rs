@@ -26,7 +26,7 @@ pub(super) struct CurrentHistoryRequest<'a> {
     pub(super) reference: String,
     /// Retains the exact current record captured before history completion.
     pub(super) record: RefRecord,
-    /// Retains the pending physical read inputs requiring independent closure.
+    /// Retains genuine token and time rechecks for this current invocation.
     pub(super) current: PendingCurrentReadCheck,
     /// Borrows synchronization and trace inputs without supplying authority.
     pub(super) observation: HistoryObservation<'a>,
