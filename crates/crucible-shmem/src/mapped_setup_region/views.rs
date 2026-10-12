@@ -198,6 +198,7 @@ pub struct MappedSetupRegion {
     /// fork child. The child must install its authenticated replacement before
     /// any typed accessor reconstructs a pointer.
     pub(super) mapping_process_id: libc::pid_t,
+    pub(super) mapping_registration: Option<super::selected_lifecycle::MappingRegistration>,
 }
 
 /// Stable filesystem identity of one mapped setup-region backing object.

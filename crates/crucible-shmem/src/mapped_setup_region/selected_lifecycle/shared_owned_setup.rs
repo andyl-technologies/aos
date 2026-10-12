@@ -1,0 +1,418 @@
+//! PID-tagged ownership for the original setup field and short native callbacks.
+//!
+//! A fork child never enters a copied parent ownership mutex. It authenticates
+//! immutable registration, installs the actual replacement, and publishes fresh
+//! process-private control in the same setup wrapper. No private pointer enters
+//! the shared-memory protocol.
+
+use std::cell::RefCell;
+use std::ops::Deref;
+use std::sync::atomic::AtomicPtr;
+
+use crate::HotForkChildMappingInstallError;
+
+use super::{
+    Arc, AtomicBool, Domain, MappedSetupRegion, MappingOwnerKey, MappingRegistration, Mutex,
+    MutexGuard, Ordering, OwnedSetupMapping, RetainedWholeMapping, ScopeCell,
+    SetupRegionBackingIdentity, WholeMappingCustodyError, registered_cell, registered_domain,
+    try_lock,
+};
+
+struct OwnerGeneration {
+    process: u32,
+    registration: ForkRegistration,
+    owner: Mutex<OwnedSetupMapping>,
+    domain: Result<Arc<Domain>, WholeMappingCustodyError>,
+    cell: Result<Arc<ScopeCell>, WholeMappingCustodyError>,
+    selected: AtomicBool,
+    failed: AtomicBool,
+}
+
+impl OwnerGeneration {
+    fn new(mapping: MappedSetupRegion) -> Self {
+        let domain = registered_domain(mapping.mapping_owner_key());
+        let cell = registered_cell(mapping.mapping_owner_key());
+        let registration = ForkRegistration {
+            owner: mapping.mapping_owner_key(),
+            region_len: mapping.region_len,
+            domain: domain.clone(),
+            cell: cell.clone(),
+        };
+        Self {
+            process: std::process::id(),
+            registration,
+            owner: Mutex::new(OwnedSetupMapping::new(mapping)),
+            domain,
+            cell,
+            selected: AtomicBool::new(false),
+            failed: AtomicBool::new(false),
+        }
+    }
+
+    fn refuse_control(&self) {
+        self.failed.store(true, Ordering::Release);
+        if let Ok(cell) = &self.cell {
+            cell.lease_alive.store(false, Ordering::Release);
+            super::paired_service::revoke_cell(cell);
+        }
+    }
+}
+
+struct ForkRegistration {
+    owner: MappingOwnerKey,
+    region_len: u64,
+    domain: Result<Arc<Domain>, WholeMappingCustodyError>,
+    cell: Result<Arc<ScopeCell>, WholeMappingCustodyError>,
+}
+
+thread_local! {
+    // A live read guard in the actual calling thread must not survive a
+    // shared child replacement. Copied guards of vanished threads never run.
+    static READ_OWNERS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Holds a read reference to the original mapping under its ownership guard.
+///
+/// References obtained through this guard cannot outlive it. The guard must
+/// end before returning to native code or requesting a selected mutable loan.
+pub struct SharedSetupMappingReadGuard<'a> {
+    owner: MutexGuard<'a, OwnedSetupMapping>,
+    wrapper: usize,
+}
+
+impl Deref for SharedSetupMappingReadGuard<'_> {
+    type Target = MappedSetupRegion;
+
+    fn deref(&self) -> &Self::Target {
+        self.owner.mapping()
+    }
+}
+
+impl Drop for SharedSetupMappingReadGuard<'_> {
+    fn drop(&mut self) {
+        READ_OWNERS.with(|owners| {
+            if let Ok(mut owners) = owners.try_borrow_mut()
+                && let Some(index) = owners.iter().rposition(|owner| *owner == self.wrapper)
+            {
+                owners.remove(index);
+            }
+        });
+    }
+}
+
+/// Owns the original setup field through process-private callback generations.
+///
+/// Native callbacks borrow this field through shared userdata. Short ownership
+/// guards end before returning to C. Fork replacement also uses shared access:
+/// it authenticates immutable parent registration without entering inherited
+/// locks, then publishes only the actual current-process replacement owner.
+pub struct SharedOwnedSetupMapping {
+    current: AtomicPtr<OwnerGeneration>,
+}
+
+struct SharedCallbackFence<'a> {
+    generation: &'a OwnerGeneration,
+    succeeded: bool,
+}
+
+impl Drop for SharedCallbackFence<'_> {
+    fn drop(&mut self) {
+        if !self.succeeded {
+            self.generation.refuse_control();
+        }
+    }
+}
+
+impl SharedOwnedSetupMapping {
+    /// Wraps the original setup mapping before registering callbacks.
+    #[must_use]
+    pub fn new(mapping: MappedSetupRegion) -> Self {
+        Self {
+            current: AtomicPtr::new(Box::into_raw(Box::new(OwnerGeneration::new(mapping)))),
+        }
+    }
+
+    fn generation(&self) -> Result<&OwnerGeneration, WholeMappingCustodyError> {
+        let pointer = self.current.load(Ordering::Acquire);
+        // SAFETY: construction always publishes one initialized Box. A shared
+        // child install retains previous generations permanently, and only
+        // exclusive wrapper Drop destroys its final current allocation.
+        let generation = unsafe { &*pointer };
+        if generation.process != std::process::id() {
+            return Err(WholeMappingCustodyError::Unregistered);
+        }
+        Ok(generation)
+    }
+
+    /// Borrows the same immutable mapping under a short ownership guard.
+    ///
+    /// # Errors
+    ///
+    /// Refuses foreign process ownership before any inherited mutex, then
+    /// refuses busy, poisoned or unregistered current ownership.
+    pub fn mapping(&self) -> Result<SharedSetupMappingReadGuard<'_>, WholeMappingCustodyError> {
+        let generation = self.generation()?;
+        let owner = try_lock(&generation.owner)?;
+        registered_domain(owner.mapping().mapping_owner_key())?;
+        let wrapper = std::ptr::from_ref(self) as usize;
+        READ_OWNERS.with(|owners| {
+            let mut owners = owners
+                .try_borrow_mut()
+                .map_err(|_| WholeMappingCustodyError::Busy)?;
+            owners
+                .try_reserve(1)
+                .map_err(|_| WholeMappingCustodyError::ResourceLimit)?;
+            owners.push(wrapper);
+            Ok::<_, WholeMappingCustodyError>(())
+        })?;
+        Ok(SharedSetupMappingReadGuard { owner, wrapper })
+    }
+
+    /// Borrows the unique ordinary mapping before callback registration.
+    ///
+    /// # Errors
+    ///
+    /// Refuses foreign ownership, sticky selection, poisoning or another
+    /// strong map owner. Shared child replacement uses its separate API.
+    pub fn ordinary_mapping_mut(
+        &mut self,
+    ) -> Result<&mut MappedSetupRegion, WholeMappingCustodyError> {
+        let pointer = *self.current.get_mut();
+        // SAFETY: exclusive access to the wrapper excludes every generation
+        // guard and callback borrowed through it. The current Box is live.
+        let generation = unsafe { &mut *pointer };
+        if generation.process != std::process::id() {
+            return Err(WholeMappingCustodyError::Unregistered);
+        }
+        if generation.selected.load(Ordering::Acquire) {
+            return Err(WholeMappingCustodyError::Selected);
+        }
+        generation
+            .owner
+            .get_mut()
+            .map_err(|_| WholeMappingCustodyError::Poisoned)?
+            .ordinary_mapping_mut()
+    }
+
+    /// Selects the default sixteen command slots in this same setup field.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same sticky custody refusals as [`Self::select_whole_bounded`].
+    pub fn select_whole(&self, epoch: u64) -> Result<(), WholeMappingCustodyError> {
+        self.select_whole_bounded(epoch, 16)
+    }
+
+    /// Selects constructor-bounded whole custody from shared native userdata.
+    ///
+    /// Selection fences every ordinary alias before a fallible owner lock.
+    /// Each original mapping retains its own epoch and operation counter.
+    /// The native constructor separately authenticates epoch and capacity.
+    ///
+    /// # Errors
+    ///
+    /// Refuses foreign ownership, prior selection, invalid bounds, unavailable
+    /// storage or registration, and rings that are not held and drained.
+    pub fn select_whole_bounded(
+        &self,
+        epoch: u64,
+        operation_capacity: u64,
+    ) -> Result<(), WholeMappingCustodyError> {
+        let generation = self.generation()?;
+        let result = (|| {
+            generation
+                .selected
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .map_err(|_| WholeMappingCustodyError::Selected)?;
+            let domain = generation.domain.as_ref().map_err(|error| *error)?;
+            domain.selected.store(true, Ordering::Release);
+            let mut owner = try_lock(&generation.owner)?;
+            owner.select_whole_preselected(epoch, operation_capacity, domain)
+        })();
+        if result.is_err() {
+            generation.refuse_control();
+        }
+        result
+    }
+
+    /// Borrows selected custody for one short native callback.
+    ///
+    /// The callback may begin, end or retire a paired scope. Existing registered
+    /// queue handles perform native IO between begin and end using its TLS
+    /// permit. No borrowed mapping reference can escape this closure.
+    ///
+    /// # Errors
+    ///
+    /// Refuses foreign, ordinary, failed, busy or poisoned custody, or retains
+    /// the callback's original error. Native authentication remains separate.
+    pub fn with_selected<T, E>(
+        &self,
+        callback: impl FnOnce(&mut RetainedWholeMapping) -> Result<T, E>,
+    ) -> Result<Result<T, E>, WholeMappingCustodyError> {
+        let generation = self.generation()?;
+        if generation.failed.load(Ordering::Acquire) {
+            generation.refuse_control();
+            return Err(WholeMappingCustodyError::Selected);
+        }
+        if !generation.selected.load(Ordering::Acquire) {
+            return Err(WholeMappingCustodyError::Unregistered);
+        }
+        let mut owner = match try_lock(&generation.owner) {
+            Ok(owner) => owner,
+            Err(error) => {
+                generation.refuse_control();
+                return Err(error);
+            }
+        };
+        let selected = match owner.selected_mut() {
+            Ok(selected) => selected,
+            Err(error) => {
+                generation.refuse_control();
+                return Err(error);
+            }
+        };
+        let mut fence = SharedCallbackFence {
+            generation,
+            succeeded: false,
+        };
+        let result = callback(selected);
+        fence.succeeded = result.is_ok();
+        if result.is_err() {
+            generation.refuse_control();
+        }
+        Ok(result)
+    }
+
+    /// Installs the actual fork replacement through shared setup userdata.
+    ///
+    /// Foreign generations are authenticated before locks or mapped reads.
+    /// The fresh owner and all control storage are allocated before the actual
+    /// exact-address install. Parent mutexes and abandoned parent guards remain
+    /// in their old generation; no mutable parent reference is manufactured.
+    ///
+    /// # Errors
+    ///
+    /// Refuses current-process reuse, inherited selection, a calling-thread
+    /// read guard, unavailable storage or registration, and the original
+    /// replacement descriptor or exact-address mapping errors.
+    pub fn install_hot_fork_child_mapping(
+        &self,
+        fd: std::os::fd::BorrowedFd<'_>,
+        expected: SetupRegionBackingIdentity,
+    ) -> Result<(), HotForkChildMappingInstallError> {
+        let refusal = |source| HotForkChildMappingInstallError::WholeCustody { source };
+        let original_pointer = self.current.load(Ordering::Acquire);
+        // SAFETY: published owner generations have immutable PID headers and
+        // remain live until exclusive Drop. This does not enter their mutex.
+        let parent = unsafe { &*original_pointer };
+        if parent.process == std::process::id() {
+            return Err(refusal(WholeMappingCustodyError::Unregistered));
+        }
+        let wrapper = std::ptr::from_ref(self) as usize;
+        if READ_OWNERS.with(|owners| owners.borrow().contains(&wrapper)) {
+            return Err(refusal(WholeMappingCustodyError::Busy));
+        }
+        let domain = parent
+            .registration
+            .domain
+            .as_ref()
+            .map_err(|error| refusal(*error))?;
+        if parent.selected.load(Ordering::Acquire) || domain.selected.load(Ordering::Acquire) {
+            return Err(refusal(WholeMappingCustodyError::Selected));
+        }
+        let cell = parent
+            .registration
+            .cell
+            .as_ref()
+            .map_err(|error| refusal(*error))?;
+        let key = parent.registration.owner;
+        let mapping = MappedSetupRegion {
+            address: key.address,
+            len: key.length,
+            region_len: parent.registration.region_len,
+            backing_identity: key.identity,
+            mapping_process_id: key.process as libc::pid_t,
+            mapping_registration: Some(MappingRegistration {
+                owner: key,
+                domain: Arc::clone(domain),
+                cell: Arc::clone(cell),
+            }),
+        };
+        let mut replacement = Box::new(OwnerGeneration::new(mapping));
+        let owner = replacement
+            .owner
+            .get_mut()
+            .map_err(|_| refusal(WholeMappingCustodyError::Poisoned))?;
+        owner
+            .ordinary_mapping_mut()
+            .map_err(refusal)?
+            .install_hot_fork_child_mapping(fd, expected)?;
+        replacement.domain = registered_domain(owner.mapping().mapping_owner_key());
+        replacement.cell = registered_cell(owner.mapping().mapping_owner_key());
+        replacement.registration = ForkRegistration {
+            owner: owner.mapping().mapping_owner_key(),
+            region_len: owner.mapping().region_len,
+            domain: replacement.domain.clone(),
+            cell: replacement.cell.clone(),
+        };
+        replacement
+            .domain
+            .as_ref()
+            .map_err(|error| refusal(*error))?;
+        replacement.cell.as_ref().map_err(|error| refusal(*error))?;
+        let replacement_pointer = Box::into_raw(replacement);
+        if self
+            .current
+            .compare_exchange(
+                original_pointer,
+                replacement_pointer,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            // SAFETY: this candidate was never published. Its actual mapping
+            // owner removes only its authenticated current record on Drop.
+            drop(unsafe { Box::from_raw(replacement_pointer) });
+            return Err(refusal(WholeMappingCustodyError::Busy));
+        }
+        // Retain the inherited generation: its copied mutex guard may still
+        // exist in the child calling thread, and must not be destroyed here.
+        Ok(())
+    }
+}
+
+impl Drop for SharedOwnedSetupMapping {
+    fn drop(&mut self) {
+        let pointer = *self.current.get_mut();
+        // SAFETY: exclusive wrapper Drop excludes its live borrowed guards.
+        // Previous generations were retained on replacement and are separate.
+        let mut generation = unsafe { Box::from_raw(pointer) };
+        if generation.process != std::process::id() {
+            // A child may drop a copied parent guard later. Keep its private
+            // mutex and owner live rather than destroying inherited storage.
+            std::mem::forget(generation);
+            return;
+        }
+        generation.refuse_control();
+        if generation.selected.load(Ordering::Acquire) {
+            let owner = match generation.owner.get_mut() {
+                Ok(owner) => owner,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            owner.retain_failed_selection_owner();
+        }
+    }
+}
+
+#[cfg(all(
+    test,
+    target_os = "linux",
+    target_arch = "x86_64",
+    target_env = "gnu",
+    target_abi = "",
+    target_endian = "little",
+    target_pointer_width = "64"
+))]
+#[path = "shared_owned_setup_tests.rs"]
+mod tests;

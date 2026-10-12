@@ -24,6 +24,12 @@ pub struct MappedRingIoBarrierSnapshot {
 /// Failure while changing whether a setup-region mapping survives `fork(2)`.
 #[derive(Debug, Error)]
 pub enum HotForkMappingDispositionError {
+    /// Sticky whole selection retains this original mapping.
+    #[error("the original mapping remains selected for whole execution")]
+    WholeCustody {
+        /// Retained local lifecycle refusal.
+        source: WholeMappingCustodyError,
+    },
     /// The current operating system has no supported mapping-inheritance API.
     #[error("hot-fork mapping inheritance disposition is unsupported on this platform")]
     Unsupported,
@@ -41,6 +47,12 @@ pub enum HotForkMappingDispositionError {
 /// Failure to install a branch-private setup mapping in a fork child.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum HotForkChildMappingInstallError {
+    /// Sticky whole selection retains this original mapping.
+    #[error("the original mapping remains selected for whole execution")]
+    WholeCustody {
+        /// Retained local lifecycle refusal.
+        source: WholeMappingCustodyError,
+    },
     /// The current operating system has no supported exact-address mapping API.
     #[error("hot-fork child setup mapping is unsupported on this platform")]
     Unsupported,
@@ -149,7 +161,10 @@ impl MappedSetupRegion {
         fd: std::os::fd::BorrowedFd<'_>,
         expected: SetupRegionBackingIdentity,
     ) -> Result<(), HotForkChildMappingInstallError> {
-        self.install_hot_fork_child_mapping_inner(fd, expected)
+        selected_lifecycle::install_registered(self, expected, |mapping| {
+            mapping.install_hot_fork_child_mapping_inner(fd, expected)
+        })
+        .map_err(|source| HotForkChildMappingInstallError::WholeCustody { source })?
     }
 
     #[cfg(target_os = "linux")]
@@ -253,25 +268,28 @@ impl MappedSetupRegion {
         &self,
         inherited: bool,
     ) -> Result<(), HotForkMappingDispositionError> {
-        let (advice, operation) = if inherited {
-            (libc::MADV_DOFORK, "MADV_DOFORK")
-        } else {
-            (libc::MADV_DONTFORK, "MADV_DONTFORK")
-        };
-        let status = {
-            // SAFETY: `base_ptr` and `len` identify the live mapping owned by
-            // this value. `madvise` changes only kernel inheritance metadata;
-            // it neither transfers ownership nor permits access outside the
-            // mapped range.
-            unsafe { libc::madvise(self.base_ptr().cast::<libc::c_void>(), self.len, advice) }
-        };
-        if status != 0 {
-            return Err(HotForkMappingDispositionError::Madvise {
-                operation,
-                source: std::io::Error::last_os_error(),
-            });
-        }
-        Ok(())
+        selected_lifecycle::ordinary_owned_mutation(self.mapping_owner_key(), || {
+            let (advice, operation) = if inherited {
+                (libc::MADV_DOFORK, "MADV_DOFORK")
+            } else {
+                (libc::MADV_DONTFORK, "MADV_DONTFORK")
+            };
+            let status = {
+                // SAFETY: `base_ptr` and `len` identify the live mapping owned by
+                // this value. `madvise` changes only kernel inheritance metadata;
+                // it neither transfers ownership nor permits access outside the
+                // mapped range.
+                unsafe { libc::madvise(self.base_ptr().cast::<libc::c_void>(), self.len, advice) }
+            };
+            if status != 0 {
+                return Err(HotForkMappingDispositionError::Madvise {
+                    operation,
+                    source: std::io::Error::last_os_error(),
+                });
+            }
+            Ok(())
+        })
+        .map_err(|source| HotForkMappingDispositionError::WholeCustody { source })?
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -395,45 +413,53 @@ impl MappedSetupRegion {
         &mut self,
         image: &HotForkRingImage,
     ) -> Result<(), HotForkRingImageError> {
-        let image_layout = image.validate()?;
-        let destination_layout =
-            self.layout()
-                .map_err(|source| HotForkRingImageError::RegionAccess {
-                    source: MappedSetupRegionAccessError::Header { source },
-                })?;
-        if image_layout != destination_layout {
-            return Err(HotForkRingImageError::LayoutMismatch);
-        }
-        let before = self
-            .hot_fork_ring_io_snapshot()
-            .map_err(|source| HotForkRingImageError::RegionAccess { source })?;
-        require_quiescent(before)?;
-
-        for segment in &image.segments {
-            let offset = usize::try_from(segment.offset)
-                .map_err(|_error| HotForkRingImageError::LengthOverflow)?;
-            let end = offset
-                .checked_add(segment.bytes.len())
-                .ok_or(HotForkRingImageError::LengthOverflow)?;
-            if end > self.len {
-                return Err(HotForkRingImageError::InvalidCanonicalImage {
-                    reason: "hot-fork-ring-image-destination-range",
-                });
+        selected_lifecycle::ordinary_owned_mutation(self.mapping_owner_key(), || {
+            let image_layout = image.validate()?;
+            let destination_layout =
+                self.layout()
+                    .map_err(|source| HotForkRingImageError::RegionAccess {
+                        source: MappedSetupRegionAccessError::Header { source },
+                    })?;
+            if image_layout != destination_layout {
+                return Err(HotForkRingImageError::LayoutMismatch);
             }
-            // SAFETY: `&mut self` provides exclusive Rust access to the live
-            // mapping, the exact range was validated against the destination
-            // layout, and the destination is an inactive private mapping whose
-            // producer and consumer endpoints are held and drained.
-            let destination = unsafe {
-                core::slice::from_raw_parts_mut(self.base_ptr().add(offset), segment.bytes.len())
-            };
-            destination.copy_from_slice(&segment.bytes);
-        }
-        let after = self
-            .hot_fork_ring_io_snapshot()
-            .map_err(|source| HotForkRingImageError::RegionAccess { source })?;
-        require_quiescent(after)?;
-        Ok(())
+            let before = self
+                .hot_fork_ring_io_snapshot()
+                .map_err(|source| HotForkRingImageError::RegionAccess { source })?;
+            require_quiescent(before)?;
+
+            for segment in &image.segments {
+                let offset = usize::try_from(segment.offset)
+                    .map_err(|_error| HotForkRingImageError::LengthOverflow)?;
+                let end = offset
+                    .checked_add(segment.bytes.len())
+                    .ok_or(HotForkRingImageError::LengthOverflow)?;
+                if end > self.len {
+                    return Err(HotForkRingImageError::InvalidCanonicalImage {
+                        reason: "hot-fork-ring-image-destination-range",
+                    });
+                }
+                // SAFETY: `&mut self` provides exclusive Rust access to the live
+                // mapping, the exact range was validated against the destination
+                // layout, and the destination is an inactive private mapping whose
+                // producer and consumer endpoints are held and drained.
+                let destination = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        self.base_ptr().add(offset),
+                        segment.bytes.len(),
+                    )
+                };
+                destination.copy_from_slice(&segment.bytes);
+            }
+            let after = self
+                .hot_fork_ring_io_snapshot()
+                .map_err(|source| HotForkRingImageError::RegionAccess { source })?;
+            require_quiescent(after)?;
+            Ok(())
+        })
+        .map_err(|_| HotForkRingImageError::InvalidCanonicalImage {
+            reason: "whole-selected-mapping",
+        })?
     }
 
     /// Holds producer and consumer admission for every validated ring.
@@ -476,6 +502,61 @@ impl MappedSetupRegion {
         &self,
         action: BarrierAction,
     ) -> Result<MappedRingIoBarrierSnapshot, MappedSetupRegionAccessError> {
+        if matches!(action, BarrierAction::Query) {
+            return self.apply_ring_io_barrier_with_loan(action);
+        }
+        selected_lifecycle::ordinary_owned_mutation(self.mapping_owner_key(), || {
+            self.apply_ring_io_barrier_with_loan(action)
+        })
+        .map_err(|source| MappedSetupRegionAccessError::WholeCustody { source })?
+    }
+
+    pub(super) fn selected_ring_header_addresses(
+        &self,
+    ) -> Result<Vec<usize>, WholeMappingCustodyError> {
+        let layout = self
+            .layout()
+            .map_err(|_| WholeMappingCustodyError::NotQuiescent)?;
+        let segments = ring_header_segments(layout);
+        let total = segments
+            .iter()
+            .try_fold(0_usize, |total, &(_, count, _)| {
+                total.checked_add(count as usize)
+            })
+            .ok_or(WholeMappingCustodyError::NotQuiescent)?;
+        if total > 65_536 {
+            return Err(WholeMappingCustodyError::ResourceLimit);
+        }
+        let mut addresses = Vec::new();
+        addresses
+            .try_reserve_exact(total)
+            .map_err(|_| WholeMappingCustodyError::NotQuiescent)?;
+        for &(segment, count, base) in &segments {
+            for index in 0..count {
+                let offset = mapped_segment_offset(
+                    segment,
+                    index,
+                    base,
+                    RING_HEADER_SIZE,
+                    RING_HEADER_ALIGN,
+                    self.len,
+                )
+                .map_err(|_| WholeMappingCustodyError::NotQuiescent)?;
+                addresses.push(
+                    self.mapping_start()
+                        .checked_add(offset)
+                        .ok_or(WholeMappingCustodyError::NotQuiescent)?,
+                );
+            }
+        }
+        addresses.sort_unstable();
+        Ok(addresses)
+    }
+
+    fn apply_ring_io_barrier_with_loan(
+        &self,
+        action: BarrierAction,
+    ) -> Result<MappedRingIoBarrierSnapshot, MappedSetupRegionAccessError> {
         let layout = self
             .layout()
             .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
@@ -515,8 +596,8 @@ impl MappedSetupRegion {
                 let ring = unsafe { &*self.base_ptr().add(offset).cast::<RingHeader>() };
                 let (producer, consumer) = match action {
                     BarrierAction::Hold => (
-                        ring.hold_hot_fork_producers(),
-                        ring.hold_hot_fork_consumers(),
+                        ring.hold_hot_fork_producers_with_mapping_loan(),
+                        ring.hold_hot_fork_consumers_with_mapping_loan(),
                     ),
                     BarrierAction::Query => (
                         ring.producer_barrier_snapshot(),
@@ -525,8 +606,8 @@ impl MappedSetupRegion {
                     BarrierAction::Release => {
                         // Reopen consumers first so already-queued content can
                         // drain before producers publish new entries.
-                        let consumer = ring.release_hot_fork_consumers();
-                        let producer = ring.release_hot_fork_producers();
+                        let consumer = ring.release_hot_fork_consumers_with_mapping_loan();
+                        let producer = ring.release_hot_fork_producers_with_mapping_loan();
                         (producer, consumer)
                     }
                 };

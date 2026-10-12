@@ -2099,6 +2099,22 @@ provider, and all 37 source-quality checks. These checks establish collection
 and transport behavior. Complete native qualification and the registered
 application-target, ABI and license gates remain separate requirements.
 
+## Process-private shared-memory ownership
+
+Setup mappings retain their original ownership metadata across forks. A child
+publishes a fresh process generation before entering ownership locks, so a
+parent thread's inherited mutex cannot block child replacement. Whole-operation
+selection fences ordinary aliases, while each original mapping retains its own
+epoch, bounded operation account and paired ring scope. Ordinary teardown keeps
+the original registration until the actual unmap completes.
+
+All 141 unit tests and seven separately executed fork/socket fixtures pass,
+including replacement while a parent thread holds an ownership lock. Independent
+review verifies the exact source and executed controls. These process-private
+changes preserve the shared-memory layout; they grant no native readiness.
+Actual plugin callback integration, complete ABI/license gates and application
+target compilation remain separate requirements.
+
 ## Installed public vendor integration
 
 The ordinary service installs the public vendor factory before binding its
