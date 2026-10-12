@@ -43,6 +43,15 @@ pub struct OwnershipGatePlanV1 {
 }
 
 impl OwnershipGatePlanV1 {
+    /// Constructs a bounded plan from the complete original structural inputs.
+    ///
+    /// This validates Claim/Draft context without authenticating a current
+    /// ownership result, publishing a record or granting dispatch eligibility.
+    ///
+    /// # Errors
+    ///
+    /// Rejects sentinel identities, invalid authority usage, oversized Drafts
+    /// and Claim/Draft assignment, node or generation mismatches.
     pub fn new(
         operation_id: OperationId,
         idempotency_key: IdempotencyKey,
@@ -126,7 +135,7 @@ impl OwnershipGatePlanV1 {
 pub enum OwnershipGateStatusV1 {
     /// The operation remains unavailable to ordinary reconciliation.
     Pending(OwnershipGatePlanV1),
-    /// Exact authority was published and the operation gate was released.
+    /// Historical publication and lease identifiers record an activated gate.
     Activated {
         /// The immutable admitted gate inputs.
         plan: OwnershipGatePlanV1,
@@ -160,6 +169,12 @@ fn validate_claim_draft_context(
     Ok(())
 }
 
+/// Encodes the complete historical Gate using the established V1 layout.
+///
+/// # Errors
+///
+/// Rejects key or Draft lengths that exceed their integer representations and
+/// checked aggregate-length overflow. Encoding does not validate live authority.
 pub fn encode_ownership_gate(
     gate: &OwnershipGateStatusV1,
 ) -> Result<Vec<u8>, OwnershipGateDataErrorV1> {
@@ -224,6 +239,12 @@ pub fn encode_ownership_gate(
     Ok(bytes)
 }
 
+/// Decodes the complete bounded V1 record and its original structural context.
+///
+/// # Errors
+///
+/// Rejects malformed headers, reserved bytes, bounds, lengths, UTF-8, canonical
+/// Claim/Draft bytes, context or activation fields in their original order.
 pub fn decode_ownership_gate(
     bytes: &[u8],
 ) -> Result<OwnershipGateStatusV1, OwnershipGateDataErrorV1> {

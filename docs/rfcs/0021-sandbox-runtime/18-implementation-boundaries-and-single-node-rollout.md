@@ -314,9 +314,9 @@ historical enclosure, with no public raw-history conversion.
 unchecked encoder, five private Copy fields and Operation/Effect key grammar.
 Public DATA getters, infallible assembly and state/metadata replacement are
 undeployed cutovers, not admission or semantic transition checks. Domain retains
-Journal, Effect, Gate, draft, Idempotency, clock, recovery/currentness recipes and
-original Reconciler error projections. Journal's materialized-row Effect key
-uses Protocol directly, as does its public projection metadata.
+Journal, native Effect/Gate admission and activation, clocks, recovery/currentness
+recipes and original Reconciler error projections. Journal's materialized-row
+Effect key uses Protocol directly, as does its public projection metadata.
 
 Protocol's `authorization_artifact` owns canonical broker/lease and Publisher
 signing preparations and immutable completed artifacts. Signing keys and
@@ -326,10 +326,12 @@ protected currentness stay with original owners, not this DATA API.
 
 The complete ordinary/Q04 Effect history codec and semantic/hash helpers stay
 in a private descendant of Native Effect, with original fields/factory scopes.
-Gate's complete model/codec remains in private `operation_ledger`, using Core's
-reader and Protocol's Operation/key owner; immutable draft validation stays
-Native. Domain Journal owns whole capacity-transfer, settlement and Delete
-recipes, with fixed original row/error frontiers and opaque Effect/Gate histories
+Protocol's `domain_ledger::ownership_gate` owns the complete Gate plan/state,
+V1 codec and immutable Claim/Draft context validation, using existing lower DATA.
+Native Delete retains its original batch/Gate relation and Reconciler error
+projection; live activation and current publication validation remain Native.
+Domain Journal owns whole capacity-transfer, settlement and Delete recipes, with
+fixed original row/error frontiers and opaque Effect/Gate histories
 that do not expose Native plans/drafts. Current admission, activation, clocks,
 Journal custody and current-authority recipes remain with their genuine owners;
 there are no aggregate recipe callbacks or portable Effect/Gate closure.

@@ -11,6 +11,8 @@
 //! scope DATA, the durable method/state registry and established resource projection.
 //! `operation` owns both established Operation record versions and their native
 //! Operation/Effect keys, without acquiring live admission or commit authority.
+//! [`ownership_gate`] owns the complete plan/state and V1 historical Gate codec;
+//! native activation and current-publication validation stay with Domain.
 //! [`protected_names`] owns historical physical-name pairs; [`source_project_history`]
 //! owns all five canonical Source rows, their terminal tag and complete historical
 //! join. Native currentness, signing, protected proofs and writer loans stay upper.
