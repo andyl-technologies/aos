@@ -234,13 +234,22 @@ the six growing witnesses and DRV-29 qualification blocker remain unchanged.
 Test-helper documentation corrections preserve exact source bodies and remain
 isolated from that sealed qualification checkout. A fresh thirteen-case diagnostic
 privately composes the reviewed GC native-read forwarding, fixture setup semaphore,
-native admission observations and explicit disclosure snapshot corrections. It
-retains all substantive refusal assertions and original bounds, and samples test
-process descriptors separately. Actual focused runtime results remain pending.
+native admission observations and explicit disclosure snapshot corrections. Its
+SDK all-target compilation, strict Clippy, default native build and exact formatter
+pair pass. It retains all substantive refusal assertions and original bounds, and
+samples test process descriptors separately. The first exact GC fault matrix
+passes in 145.838 seconds; one-second sampling observes peaks of 347 test-process
+descriptors and 12 runner descriptors, without establishing an exact maximum.
+The remaining focused cases are pending; this does not qualify the package.
 Separately, a borrowed authenticated-history inventory permits producer preparation
 to refresh every retained Original, including disclosure dependencies; the iterator
 grants neither completion nor current authority. The bounded growth repair remains
-isolated and retains existing per-path trust-evaluator cloning. Owning Nix gates,
+isolated and retains existing per-path trust-evaluator cloning. Its source candidate
+passes scoped independent review and adds a genuine repeated-producer regression
+with exact current requests, separately repeated invocation work, typed Original
+and ACL refusals, and unchanged stored/publication bytes. The owning index gate
+and focused rebuild prerequisite now require this witness; its compilation and
+runtime remain pending. Owning Nix gates,
 the complete current T1 floor and mandatory application targets remain pending.
 No task or milestone advances.
 
