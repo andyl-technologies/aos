@@ -21,16 +21,35 @@ enum Stage {
 
 /// Holds rebuilt canonical objects and the exact old-to-new root correspondence.
 pub(super) struct MarkerTrees {
+    /// Identifies the rebuilt canonical view root after marker and graft replacement.
     pub(super) root: Digest,
+    /// Maps each traversed original canonical root to its rebuilt canonical root.
+    ///
+    /// Shared graft targets have one mapping; unchanged roots may map to themselves.
     pub(super) roots: BTreeMap<Digest, Digest>,
+    /// Carries deduplicated encoded Node uploads emitted by the rebuilt trees.
+    ///
+    /// These staged bytes require separate admission and publication checks.
     pub(super) uploads: Vec<StagedUpload>,
 }
 
 /// Describes one actual destination occurrence selected by the private producer.
 pub(super) struct MarkerOccurrence {
+    /// Identifies the original canonical root containing the selected destination entry.
     pub(super) root: Digest,
+    /// Names the entry's complete tree key relative to its containing root.
+    ///
+    /// This key has no leading slash. The absolute destination path is the root
+    /// occurrence's absolute path joined with this key, including nested components.
     pub(super) path: Vec<u8>,
+    /// Identifies the source entry's historical introducer encoded into its marker.
+    ///
+    /// The digest alone supplies no signature, Original evidence or current permission.
     pub(super) introducer: Digest,
+    /// Records the destination occurrence's effective domain under authoring policy.
+    ///
+    /// Normalization rejects conflicting introducer/domain pairs for a shared root/key;
+    /// this label supplies no disclosure authority.
     pub(super) destination_domain: String,
 }
 
