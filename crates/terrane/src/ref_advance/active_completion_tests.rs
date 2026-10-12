@@ -192,23 +192,134 @@ async fn native_active_completion_missing_primary_never_selects_ref_or_lineage()
 #[tokio::test]
 async fn native_active_completion_legacy_one_never_coerces_indexed_view() -> Result {
     let repository = fixture(false).await?;
+    let proposal = indexed(Vec::new(), false)?;
+    let offered = proposal
+        .request
+        .uploads
+        .iter()
+        .map(|upload| match upload {
+            crate::guard::StagedUpload::Meta { kind, bytes } => TERRANE_V1.calculate(*kind, bytes),
+            crate::guard::StagedUpload::Chunk { identity, .. } => Ok(identity.clone()),
+        })
+        .collect::<core::result::Result<Vec<_>, _>>()?;
+    let owner_identity = TERRANE_V1.from_digest(IdentityKind::Node, &proposal.owner)?;
+    let owner_bytes = proposal
+        .request
+        .uploads
+        .iter()
+        .find_map(|upload| match upload {
+            crate::guard::StagedUpload::Meta {
+                kind: IdentityKind::Node,
+                bytes,
+            } if TERRANE_V1
+                .calculate(IdentityKind::Node, bytes)
+                .ok()
+                .as_ref()
+                == Some(&owner_identity) =>
+            {
+                Some(bytes)
+            }
+            _ => None,
+        })
+        .ok_or("indexed owner upload missing")?;
+    let owner = terrane_core::tree_format::decode_node_for(
+        owner_bytes,
+        true,
+        262144,
+        terrane_core::tree_format::TreeUse::Ordinary,
+    )?;
+    let properties = owner.props.ok_or("indexed owner properties missing")?;
+    let active_context = terrane_core::properties::semantics::RecordedContext::new(3, 3, &[])?;
+    active_context.validate_map(&properties)?;
+    assert_eq!(
+        terrane_core::properties::semantics::RecordedContext::new(1, 1, &[])?
+            .validate_map(&properties),
+        Err(terrane_core::properties::Error::UnknownProperty)
+    );
+    let binding = properties
+        .iter()
+        .find(|property| property.name == "index-roots")
+        .ok_or("indexed owner binding missing")?;
+    assert_eq!(
+        terrane_core::properties::semantics::RecordedContext::new(1, 1, &[])?
+            .validate_map(core::slice::from_ref(binding)),
+        Err(terrane_core::properties::Error::UnknownProperty)
+    );
+
+    // The same complete canonical namespace and carriers genuinely publish
+    // under Active selection; refusal below cannot be an unrelated bad upload.
+    let active = fixture(true).await?;
+    let mut active_request = request(Vec::new());
+    active_request.commit = proposal.request.commit.clone();
+    active_request.uploads = proposal.request.uploads.clone();
+    let mut active_session = active.begin(REFERENCE, &token(), "sdk").await?;
+    active
+        .commit_request(&mut active_session, active_request)
+        .await?;
+    let loaded = crate::indexing::load(
+        active.coordinator().store(),
+        proposal.owner,
+        "uid",
+        crate::indexing::SemanticRevisions {
+            property: 3,
+            attribute: 2,
+            tree: 1,
+        },
+        262144,
+    )
+    .await?;
+    assert_eq!(loaded.index_root(), proposal.primary);
+    let sources = loaded.sources()?;
+    let prepared = loaded.prepare(&sources.trees)?;
+    assert_eq!(prepared.preparation().verification.candidates, 1);
+
+    assert_eq!(
+        repository.coordinator().guard().semantic_selection(),
+        terrane_core::properties::selected::Selection::Legacy
+    );
+    assert_eq!(
+        repository.coordinator().store().has(&offered).await?,
+        vec![false; offered.len()]
+    );
     let mut session = repository.begin(REFERENCE, &token(), "sdk").await?;
     let failure = store_failure(
         repository
-            .commit_request(&mut session, indexed(Vec::new(), false)?.request)
+            .commit_request(&mut session, proposal.request)
             .await
             .err()
             .ok_or("Legacy constructor accepted active bindings")?,
     );
-    // ROOT ordinary authoring resolution rejects unregistered index-roots.
+    // Fresh affected-root derivation rejects the unregistered Legacy binding
+    // before current ACL authorization; it maps that invalid map to Invalid.
     assert!(
-        matches!(failure.kind(),StoreErrorKind::Denied { verb: "commit", pattern } if pattern == REFERENCE),
+        matches!(
+            failure.kind(),
+            StoreErrorKind::Invalid(crate::store::InvalidReason::MalformedRequest)
+        ),
         "Legacy indexed publication refusal: {failure:?}"
     );
     assert_eq!(
         repository.coordinator().store().ref_get(REFERENCE).await?,
         None
     );
+    assert_eq!(
+        repository.coordinator().store().has(&offered).await?,
+        vec![false; offered.len()]
+    );
+    assert_eq!(
+        repository.coordinator().guard().semantic_selection(),
+        terrane_core::properties::selected::Selection::Legacy
+    );
+    {
+        let holder = SingleHeld::acquire(repository.coordinator().store()).await?;
+        let destination = holder.destination();
+        let observed = destination.observe_publication().await?;
+        assert_eq!(
+            destination.selected_lineage(&observed, REFERENCE).await?,
+            None
+        );
+        observed.revalidate().await?;
+    }
     drop(session);
     let mut ordinary_session = repository.begin(REFERENCE, &token(), "sdk").await?;
     let ordinary = repository
