@@ -48,6 +48,24 @@ impl<'a> HistoryObservation<'a> {
         self
     }
 
+    /// Checks whether the actual resolver owns a freshly rechecked Original.
+    ///
+    /// This preserves the owning completion boundary for operation-local reuse;
+    /// it neither rechecks the protected record nor records its consumption.
+    ///
+    /// # Errors
+    /// Refuses an Original retained by a different concrete completion factory.
+    #[cfg(feature = "std")]
+    pub(in crate::guard) fn check_completion_original(
+        self,
+        checked: &super::OriginalCommitContext,
+    ) -> Result<(), StoreFailure> {
+        if let Some(consumed) = self.consumed {
+            consumed.check_completion_original(checked)?;
+        }
+        Ok(())
+    }
+
     /// Records freshly rechecked protected administrative dependencies.
     ///
     /// # Errors
