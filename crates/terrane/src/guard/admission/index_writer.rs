@@ -403,9 +403,10 @@ impl<S: Store, C: Clock> Guard<S, C> {
             if loaded.index_root() != binding {
                 return Err(invalid());
             }
-            // The shared synchronous executor checks this owner's exhaustive
-            // relationship before recomputing output rows, charging that real
-            // preparation once. No changed-output coverage is inferred here.
+            // Acquisition is shared; the synchronous executor independently
+            // prepares this owner's exhaustive relationship for each actual
+            // occurrence group before recomputing output rows and charges each
+            // preparation. No changed-output coverage is inferred here.
             return Ok(Some((loaded, inputs.reads())));
         }
         Ok(None)
