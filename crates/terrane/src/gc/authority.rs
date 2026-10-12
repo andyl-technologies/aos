@@ -26,12 +26,8 @@ where
     B: Clock + BucketBinding,
     V: ContentValidator + BucketBinding,
 {
-    let result = Guard::new(
-        MetadataStore::new(held, observed, session),
-        clock,
-        guard.keys.clone(),
-        guard.config.clone(),
-    );
+    let result =
+        guard.read_configuration_adapter(MetadataStore::new(held, observed, session), clock);
     *result
         .original_verifier
         .write()

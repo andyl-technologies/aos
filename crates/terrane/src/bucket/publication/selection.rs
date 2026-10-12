@@ -1,9 +1,16 @@
 //! Resolves a contiguous protected commit chain through exact consecutive reads.
 
+mod memo;
+
+#[cfg(all(test, feature = "tokio", unix))]
+mod tests;
+
+pub(super) use memo::DecodeMemo;
+
 use super::control::{Control, HeldReads};
 use super::projection::{self, Values};
 use super::receipts::RecordRead;
-use super::{Selected, corrupt, digest};
+use super::{PayloadRetention, Selected, corrupt, digest};
 use crate::bucket::held::HeldIdentity;
 use crate::bucket::{BucketBinding, FileBucket};
 use crate::store::{Clock, ContentValidator, LocalFs, StoreFailure};
@@ -25,7 +32,8 @@ enum ReadScope<'scope, F> {
 struct ChainReads<'scope, F> {
     scope: ReadScope<'scope, F>,
     records: Mutex<Vec<RecordRead>>,
-    retain_original: bool,
+    memo: Option<&'scope DecodeMemo>,
+    retention: PayloadRetention,
 }
 
 impl<'scope, F: LocalFs + BucketBinding> ChainReads<'scope, F> {
@@ -33,7 +41,8 @@ impl<'scope, F: LocalFs + BucketBinding> ChainReads<'scope, F> {
         Self {
             scope: ReadScope::Ordinary { control, fs },
             records: Mutex::new(Vec::new()),
-            retain_original: false,
+            memo: None,
+            retention: PayloadRetention::Observed,
         }
     }
 
@@ -41,15 +50,17 @@ impl<'scope, F: LocalFs + BucketBinding> ChainReads<'scope, F> {
         Self {
             scope: ReadScope::Held(reads),
             records: Mutex::new(Vec::new()),
-            retain_original: false,
+            memo: None,
+            retention: PayloadRetention::Observed,
         }
     }
 
-    fn held_retained(reads: HeldReads<'scope, F>) -> Self {
+    fn held_retained(reads: HeldReads<'scope, F>, retention: PayloadRetention) -> Self {
         Self {
             scope: ReadScope::Held(reads.retaining_original()),
             records: Mutex::new(Vec::new()),
-            retain_original: true,
+            memo: None,
+            retention,
         }
     }
 
@@ -118,7 +129,7 @@ pub(super) async fn resolve_held<
     control: &Control,
     held: &HeldIdentity<'_>,
 ) -> Result<Selected, StoreFailure> {
-    resolve_held_mode(bucket, control, held, false).await
+    resolve_held_mode(bucket, control, held, PayloadRetention::Observed, None).await
 }
 
 /// Retains original physical recipes during the actual held selected resolution.
@@ -134,7 +145,64 @@ pub(super) async fn resolve_held_retained<
     control: &Control,
     held: &HeldIdentity<'_>,
 ) -> Result<Selected, StoreFailure> {
-    resolve_held_mode(bucket, control, held, true).await
+    resolve_held_mode(bucket, control, held, PayloadRetention::Strict, None).await
+}
+
+/// Retains public payload recipes while preserving strict protected reads.
+///
+/// The observation-local memo reuses only pure checks of exact fresh bytes;
+/// original physical recipes are still captured before those bytes are consumed.
+///
+/// # Errors
+/// Rejects malformed selection, unavailable retention and changed bindings.
+#[cfg(all(feature = "tokio", unix))]
+pub(super) async fn resolve_held_ordinary_retained<F, C, V>(
+    bucket: &FileBucket<F, C, V>,
+    control: &Control,
+    held: &HeldIdentity<'_>,
+    memo: &DecodeMemo,
+) -> Result<Selected, StoreFailure>
+where
+    F: LocalFs + BucketBinding,
+    C: Clock + BucketBinding,
+    V: ContentValidator + BucketBinding,
+{
+    resolve_held_mode(
+        bucket,
+        control,
+        held,
+        PayloadRetention::Ordinary,
+        Some(memo),
+    )
+    .await
+}
+
+/// Reuses only pure successful checks after the same complete fresh held reads.
+///
+/// # Errors
+/// Preserves malformed-chain, changed-binding and unavailable-read refusals.
+pub(super) async fn resolve_held_reusing<F, C, V>(
+    bucket: &FileBucket<F, C, V>,
+    control: &Control,
+    held: &HeldIdentity<'_>,
+    memo: &DecodeMemo,
+) -> Result<Selected, StoreFailure>
+where
+    F: LocalFs + BucketBinding,
+    C: Clock + BucketBinding,
+    V: ContentValidator + BucketBinding,
+{
+    let mut reads = ChainReads::held(control.held_reads(&bucket.inner.fs, held).await?);
+    reads.memo = Some(memo);
+    let bytes = reads
+        .read("backend-registration.cbor")
+        .await?
+        .ok_or_else(corrupt)?;
+    let registration = BackendRegistration::decode(&bytes).map_err(|_| corrupt())?;
+    if registration.binding != control.binding || registration.activation != Activation::Active {
+        return Err(corrupt());
+    }
+    resolve_with_reads(bucket, control, registration.genesis, reads).await
 }
 
 async fn resolve_held_mode<
@@ -145,14 +213,16 @@ async fn resolve_held_mode<
     bucket: &FileBucket<F, C, V>,
     control: &Control,
     held: &HeldIdentity<'_>,
-    retain_original: bool,
+    retention: PayloadRetention,
+    memo: Option<&DecodeMemo>,
 ) -> Result<Selected, StoreFailure> {
     let held_reads = control.held_reads(&bucket.inner.fs, held).await?;
-    let reads = if retain_original {
-        ChainReads::held_retained(held_reads)
-    } else {
+    let mut reads = if matches!(retention, PayloadRetention::Observed) {
         ChainReads::held(held_reads)
+    } else {
+        ChainReads::held_retained(held_reads, retention)
     };
+    reads.memo = memo;
     let bytes = reads
         .read("backend-registration.cbor")
         .await?
@@ -198,7 +268,7 @@ async fn resolve_with_reads<
         let key = format!("publication/commits/{revision}");
         let Some(bytes) = reads.read(&key).await? else {
             let mut selected = selected.ok_or_else(corrupt)?;
-            if reads.retain_original
+            if !matches!(reads.retention, PayloadRetention::Observed)
                 && let Some(expected) = selected.state.guard
             {
                 // The selected digest identifies bytes, not their original
@@ -219,22 +289,36 @@ async fn resolve_with_reads<
                 if let terrane_core::gc::publication::CommittedSelection::Selected(record) =
                     &row.selection
                 {
-                    if reads.retain_original {
-                        bucket
-                            .committed_logs_observed_retained(
-                                &row.name,
-                                record.as_ref().clone(),
-                                &mut log_reads,
-                            )
-                            .await?;
-                    } else {
-                        bucket
-                            .committed_logs_observed(
-                                &row.name,
-                                record.as_ref().clone(),
-                                &mut log_reads,
-                            )
-                            .await?;
+                    match reads.retention {
+                        PayloadRetention::Observed => {
+                            bucket
+                                .committed_logs_observed(
+                                    &row.name,
+                                    record.as_ref().clone(),
+                                    &mut log_reads,
+                                )
+                                .await?;
+                        }
+                        PayloadRetention::Strict => {
+                            bucket
+                                .committed_logs_observed_retained(
+                                    &row.name,
+                                    record.as_ref().clone(),
+                                    &mut log_reads,
+                                )
+                                .await?;
+                        }
+                        #[cfg(all(feature = "tokio", unix))]
+                        PayloadRetention::Ordinary => {
+                            bucket
+                                .committed_logs_observed_mode(
+                                    &row.name,
+                                    record.as_ref().clone(),
+                                    &mut log_reads,
+                                    PayloadRetention::Ordinary,
+                                )
+                                .await?;
+                        }
                     }
                 }
             }
@@ -244,8 +328,13 @@ async fn resolve_with_reads<
             selected.reads = reads.finish().await?;
             return Ok(selected);
         };
-        let commit = PublicationCommit::decode(&bytes).map_err(|_| corrupt())?;
-        let slot_digest = digest(&bytes);
+        let (commit, slot_digest) = match reads.memo {
+            Some(memo) => memo.commit(&bytes)?,
+            None => (
+                PublicationCommit::decode(&bytes).map_err(|_| corrupt())?,
+                digest(&bytes),
+            ),
+        };
         if revision == 0 && genesis.is_some_and(|expected| expected != slot_digest) {
             return Err(corrupt());
         }
@@ -253,11 +342,15 @@ async fn resolve_with_reads<
             .read(&commit.transaction_key)
             .await?
             .ok_or_else(corrupt)?;
-        commit
-            .check_transaction(&key, &transaction_bytes)
-            .map_err(|_| corrupt())?;
-        let transaction =
-            PublicationTransaction::decode(&transaction_bytes).map_err(|_| corrupt())?;
+        let transaction = match reads.memo {
+            Some(memo) => memo.transaction(&commit, &bytes, &key, &transaction_bytes)?,
+            None => {
+                commit
+                    .check_transaction(&key, &transaction_bytes)
+                    .map_err(|_| corrupt())?;
+                PublicationTransaction::decode(&transaction_bytes).map_err(|_| corrupt())?
+            }
+        };
         let previous = selected.as_ref().map(|selected| PredecessorSlot {
             revision: selected.state.revision,
             digest: selected.digest,
@@ -285,20 +378,21 @@ async fn resolve_with_reads<
 
         let snapshot_key = terrane_core::bucket::BucketKey::parse(&transaction.snapshot.key)
             .map_err(|_| corrupt())?;
-        let snapshot_read = if reads.retain_original {
-            bucket.read_optional_retained(&snapshot_key).await?
-        } else {
-            bucket.read_optional_observed(&snapshot_key).await?
-        };
+        let snapshot_read = reads.retention.read(bucket, &snapshot_key).await?;
         let snapshot_bytes = reads.remember(snapshot_read)?.ok_or_else(corrupt)?;
-        transaction
-            .snapshot
-            .check_snapshot(&snapshot_bytes)
-            .map_err(|_| corrupt())?;
-        transaction
-            .check_snapshot(&snapshot_bytes)
-            .map_err(|_| corrupt())?;
-        let snapshot = PortableSnapshot::decode(&snapshot_bytes).map_err(|_| corrupt())?;
+        let snapshot = match reads.memo {
+            Some(memo) => memo.snapshot(&transaction, &transaction_bytes, &snapshot_bytes)?,
+            None => {
+                transaction
+                    .snapshot
+                    .check_snapshot(&snapshot_bytes)
+                    .map_err(|_| corrupt())?;
+                transaction
+                    .check_snapshot(&snapshot_bytes)
+                    .map_err(|_| corrupt())?;
+                PortableSnapshot::decode(&snapshot_bytes).map_err(|_| corrupt())?
+            }
+        };
         if let Some(pointer) = &snapshot.predecessor
             && selected.as_ref().map(|selected| &selected.snapshot) != Some(pointer)
         {

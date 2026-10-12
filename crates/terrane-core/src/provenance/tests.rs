@@ -11,6 +11,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey};
 mod context;
 mod disclosure;
 mod history_merge;
+mod mixed_interpretations;
 mod root_context;
 mod selector;
 mod side_attributes;

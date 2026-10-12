@@ -28,9 +28,15 @@ pub(super) struct CheckedAttributeRecord {
 }
 
 impl<S: Store, C: Clock> Guard<S, C> {
-    pub(super) async fn requirement_evidence(
+    /// Qualifies actual required attribute records and their current producing paths.
+    ///
+    /// # Errors
+    /// Rejects malformed records, invalid producers, unsupported functions and
+    /// current Read/trust denial; preserves originating Original/store failures.
+    pub(super) async fn requirement_evidence_observed(
         &self,
         request: &CandidateRequest<'_>,
+        observation: super::HistoryObservation<'_>,
     ) -> Result<Vec<RequirementEvidence>, StoreFailure> {
         let mut records = Vec::new();
         for upload in request.uploads {
@@ -59,7 +65,12 @@ impl<S: Store, C: Clock> Guard<S, C> {
         let mut verified = Vec::new();
         for record in records {
             let checked = self
-                .checked_attribute_record(record, request.token, request.surface)
+                .checked_attribute_record_observed(
+                    record,
+                    request.token,
+                    request.surface,
+                    observation,
+                )
                 .await?;
             verified.push(RequirementEvidence {
                 attribute: checked.producer.as_verified().clone(),
@@ -85,8 +96,31 @@ impl<S: Store, C: Clock> Guard<S, C> {
         token: &[u8],
         surface: &str,
     ) -> Result<CheckedAttributeRecord, StoreFailure> {
-        let history = self.verified_history(record.producer).await?;
-        let producer = self.verified_tree(record.producer).await?;
+        self.checked_attribute_record_observed(
+            record,
+            token,
+            surface,
+            super::HistoryObservation::default(),
+        )
+        .await
+    }
+
+    /// Authenticates a record's original producer under the exact borrowed observation.
+    ///
+    /// # Errors
+    /// Preserves signed history, Original, current Read/trust and storage failures;
+    /// rejects unsupported functions or contradictory value/content witnesses.
+    /// Initial failures follow the paired verifier's tree-before-history order.
+    pub(super) async fn checked_attribute_record_observed(
+        &self,
+        record: AttrRecord,
+        token: &[u8],
+        surface: &str,
+        observation: super::HistoryObservation<'_>,
+    ) -> Result<CheckedAttributeRecord, StoreFailure> {
+        let (producer, history) = self
+            .verified_tree_history_observed(record.producer, observation)
+            .await?;
         let locations = {
             let mut locations = Vec::new();
             for occurrence in producer
@@ -129,7 +163,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
                 continue;
             };
             let Ok(snapshot) = self
-                .read_commit_snapshot(record.producer, token, &path, surface)
+                .read_commit_snapshot_observed(record.producer, token, &path, surface, observation)
                 .await
             else {
                 continue;
@@ -168,7 +202,17 @@ impl<S: Store, C: Clock> Guard<S, C> {
         admitted: &super::AdmittedCommit,
         observation: super::HistoryObservation<'_>,
     ) -> Result<Vec<super::AuthorizedRef>, StoreFailure> {
-        let mut captured = Vec::new();
+        let mut captured = vec![
+            self.authorize_observed(
+                &admitted.publication_reference,
+                &admitted.token,
+                admitted.publication_verb,
+                admitted.publication_paths(),
+                &admitted.surface,
+                observation,
+            )
+            .await?,
+        ];
         for check in &admitted.admin_checks {
             let mut authorized = false;
             for path in &check.alternatives {

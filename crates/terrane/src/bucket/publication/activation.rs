@@ -89,13 +89,62 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                     .duration_since(std::time::SystemTime::UNIX_EPOCH)
                     .map_err(|_| files::malformed())?
                     .as_secs();
-                let request = crate::store::native_initialization_request(
+                let mut request = crate::store::native_initialization_request(
                     self.root(),
                     &path,
                     owner,
                     self.profile(),
                     timestamp,
                 )?;
+                #[cfg(unix)]
+                if let Some(expected) = registration.genesis {
+                    let activation = control
+                        .read_observed(&self.inner.fs, "publication/ACTIVATION")
+                        .await?;
+                    let bytes = activation.bytes().ok_or_else(corrupt)?;
+                    if super::digest(bytes) != expected {
+                        return Err(corrupt());
+                    }
+                    let commit = terrane_core::gc::publication::PublicationCommit::decode(bytes)
+                        .map_err(|_| corrupt())?;
+                    let transaction = control
+                        .read_observed(&self.inner.fs, &commit.transaction_key)
+                        .await?;
+                    let bytes = transaction.bytes().ok_or_else(corrupt)?;
+                    commit
+                        .check_transaction("publication/commits/0", bytes)
+                        .map_err(|_| corrupt())?;
+                    let proposal =
+                        terrane_core::gc::publication::PublicationTransaction::decode(bytes)
+                            .map_err(|_| corrupt())?;
+                    if proposal.new.binding != control.binding {
+                        return Err(corrupt());
+                    }
+                    let key = terrane_core::bucket::BucketKey::parse(&proposal.snapshot.key)
+                        .map_err(|_| corrupt())?;
+                    let snapshot = self.read_optional_observed(&key).await?;
+                    let bytes = snapshot.bytes().ok_or_else(corrupt)?;
+                    proposal.check_snapshot(bytes).map_err(|_| corrupt())?;
+                    let decoded = terrane_core::gc::publication::PortableSnapshot::decode(bytes)
+                        .map_err(|_| corrupt())?;
+                    if decoded.predecessor.is_some() {
+                        return Err(corrupt());
+                    }
+                    let logical = projection::apply(&decoded, None)?;
+                    let payload = self
+                        .validate_copy_payload(
+                            logical,
+                            control.binding.clone(),
+                            vec![activation, transaction, snapshot],
+                        )
+                        .await?;
+                    let retained_copy = self
+                        .inner
+                        .fs
+                        .retain_native_exclusion(&guard)
+                        .map_err(files::io_failure)?;
+                    request = crate::store::native_publication_effects::initialization_inputs::request_for_copy(request, payload, retained_copy)?;
+                }
                 crate::store::native_publication_effects::pending_initialization::activate_existing(
                     &self.inner.fs, request, retained,
                 ).await?;

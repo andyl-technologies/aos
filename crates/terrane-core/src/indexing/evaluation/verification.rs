@@ -1,6 +1,67 @@
 //! Checks physical Nodes and exact source relations with measured canonical reconstruction.
+//!
+//! One exhaustive namespace traversal builds occurrence-owned expected routes.
+//! Carrier checking then visits only that relation output, retaining independent
+//! physical checks for every repeated route occurrence.
 
 use super::*;
+
+/// Expected rows for one predicate at one namespace occurrence.
+struct ExpectedRow {
+    key: Vec<u8>,
+    children: Option<Vec<ExpectedRow>>,
+}
+
+/// Inventories independently loaded namespace occurrences without consulting carriers.
+///
+/// Retains the complete expected relation output rather than only predicates.
+/// Source counters measure enumeration, not allocation or total CPU work.
+fn inventory(
+    source: &Source<'_, '_>,
+    root: Digest,
+    active: &mut Vec<Digest>,
+    work: &mut Work,
+) -> Result<BTreeMap<Predicate, Vec<ExpectedRow>>, Error> {
+    source.enter(root, active, work)?;
+    let mut relations: BTreeMap<Predicate, Vec<ExpectedRow>> = BTreeMap::new();
+    for item in source.tree(root)?.iter() {
+        work.source_entries = work.source_entries.checked_add(1).ok_or(Error::Limit)?;
+        validate_namespace_attributes(2, &item.entry)?;
+        match &item.entry.kind {
+            EntryKind::File { content, .. } => {
+                let predicate = Predicate {
+                    object: object(content),
+                    value: source.value(&item.entry)?.map(<[u8]>::to_vec),
+                };
+                relations.entry(predicate).or_default().push(ExpectedRow {
+                    key: item.key.clone(),
+                    children: None,
+                });
+            }
+            EntryKind::Tree { root: child, props } => {
+                if props.as_ref().is_some_and(|properties| {
+                    properties
+                        .iter()
+                        .any(|property| matches!(property.name, "index-roots" | "index-gaps"))
+                }) {
+                    return Err(Error::Source);
+                }
+                // Each occurrence owns its relations. Shared digests must still
+                // undergo branch, depth and contextual validation on every hop.
+                for (predicate, children) in inventory(source, *child, active, work)? {
+                    relations.entry(predicate).or_default().push(ExpectedRow {
+                        key: item.key.clone(),
+                        children: Some(children),
+                    });
+                }
+            }
+            EntryKind::Conflict { .. } => return Err(Error::Incomplete),
+            _ => {}
+        }
+    }
+    active.pop();
+    Ok(relations)
+}
 
 struct Reader<'data> {
     data: &'data IndexData,
@@ -27,9 +88,10 @@ impl<'data> Reader<'data> {
         // This constructor emits exactly one empty frame, accounted below.
         // Full insertion and property replacement use the measured editor seam.
         let empty = Tree::build(Vec::new(), None, self.minimum, TreeUse::Index)?;
-        let initial = InitialFrameWork {
+        let initial = crate::tree_builder::StreamWork {
             node_bytes_encoded: empty.root().encoded().len(),
             node_bytes_hashed: self.preimage_length(empty.root().encoded().len())?,
+            ..Default::default()
         };
         let edits: Vec<_> = entries
             .iter()
@@ -131,91 +193,41 @@ impl<'data> Reader<'data> {
 
     fn route(
         &mut self,
-        source: &Source<'_, '_>,
-        source_root: Digest,
         predicate: &Predicate,
-        route: Option<Digest>,
-        active: &mut Vec<Digest>,
-    ) -> Result<bool, Error> {
-        source.enter(source_root, active, &mut self.work)?;
+        root: Digest,
+        expected: &[ExpectedRow],
+    ) -> Result<(), Error> {
         let role = if predicate.value.is_some() {
             Role::PresentRoute
         } else {
             Role::MissingRoute
         };
-        let rows = match route {
-            Some(root) => {
-                let (rows, gap) = self.physical(root, role)?;
-                if rows.is_empty() || gap.is_some() {
-                    return Err(Error::Relationship);
-                }
-                rows
-            }
-            None => Vec::new(),
-        };
-        let mut expected = 0;
-        for item in source.tree(source_root)?.iter() {
-            self.work.source_entries = self
-                .work
-                .source_entries
-                .checked_add(1)
-                .ok_or(Error::Limit)?;
-            let row = rows
-                .binary_search_by(|row| row.key.cmp(&item.key))
-                .ok()
-                .map(|position| &rows[position]);
-            match &item.entry.kind {
-                EntryKind::File { content, .. } => {
-                    let matches = object(content) == predicate.object
-                        && source.value(&item.entry)? == predicate.value.as_deref();
-                    if matches {
-                        let row = row.ok_or(Error::Relationship)?;
-                        let classified = validate_row(self.context, role, &row.key, &row.entry)?;
-                        if classified.object() != predicate.object || classified.route().is_some() {
-                            return Err(Error::Relationship);
-                        }
-                        expected += 1;
-                    } else if row.is_some() {
-                        return Err(Error::Relationship);
-                    }
-                }
-                EntryKind::Tree { root: child, .. } => {
-                    let child_route = match row {
-                        Some(row) => {
-                            let classified =
-                                validate_row(self.context, role, &row.key, &row.entry)?;
-                            if classified.object() != predicate.object {
-                                return Err(Error::Relationship);
-                            }
-                            Some(classified.route().ok_or(Error::Relationship)?)
-                        }
-                        None => None,
-                    };
-                    let child_nonempty =
-                        self.route(source, *child, predicate, child_route, active)?;
-                    if child_nonempty {
-                        if row.is_none() {
-                            return Err(Error::Relationship);
-                        }
-                        expected += 1;
-                    } else if row.is_some() {
-                        return Err(Error::Relationship);
-                    }
-                }
-                _ if row.is_some() => return Err(Error::Relationship),
-                _ => {}
-            }
-        }
-        active.pop();
-        if expected != rows.len() || (expected != 0) != route.is_some() {
+        let (rows, gap) = self.physical(root, role)?;
+        if expected.is_empty() || rows.len() != expected.len() || gap.is_some() {
             return Err(Error::Relationship);
         }
-        Ok(expected != 0)
+        for (row, expected) in rows.iter().zip(expected) {
+            if row.key != expected.key {
+                return Err(Error::Relationship);
+            }
+            let classified = validate_row(self.context, role, &row.key, &row.entry)?;
+            if classified.object() != predicate.object {
+                return Err(Error::Relationship);
+            }
+            match (&expected.children, classified.route()) {
+                (None, None) => {}
+                (Some(children), Some(child)) => self.route(predicate, child, children)?,
+                _ => return Err(Error::Relationship),
+            }
+        }
+        Ok(())
     }
 }
 
 /// Exhaustively verifies canonical auxiliary bytes against independently loaded sources.
 ///
+/// Enumerates each namespace occurrence once; source work counts that traversal.
+/// Physical work still counts every carrier occurrence and reconstruction.
 /// Checks every actual source occurrence, including absent inline values and
 /// repeated grafts. A digest cache does not suppress contextual checks. The
 /// supplied Node map must be exactly the reachable auxiliary closure; extra
@@ -247,19 +259,13 @@ pub fn verify(
         work: Work::default(),
         physical_work: PhysicalWork::default(),
     };
-    let mut predicates = BTreeSet::new();
-    source.inventory(
-        recipe.owner(),
-        &mut Vec::new(),
-        &mut predicates,
-        &mut reader.work,
-    )?;
+    let relations = inventory(&source, recipe.owner(), &mut Vec::new(), &mut reader.work)?;
     let (primary, gap) = reader.physical(data.root, Role::Primary)?;
-    let missing_objects = predicates
-        .iter()
+    let missing_objects = relations
+        .keys()
         .filter(|predicate| predicate.value.is_none())
         .count();
-    let candidates = predicates.len() - missing_objects;
+    let candidates = relations.len() - missing_objects;
     if primary.len() != candidates || gap.is_some() != (missing_objects != 0) {
         return Err(Error::Relationship);
     }
@@ -274,7 +280,7 @@ pub fn verify(
         None => Vec::new(),
     };
 
-    for predicate in predicates {
+    for (predicate, expected) in relations {
         let (rows, role, key) = match &predicate.value {
             Some(value) => (
                 &primary,
@@ -292,15 +298,7 @@ pub fn verify(
             return Err(Error::Relationship);
         }
         let route = classified.route().ok_or(Error::Relationship)?;
-        if !reader.route(
-            &source,
-            recipe.owner(),
-            &predicate,
-            Some(route),
-            &mut Vec::new(),
-        )? {
-            return Err(Error::Relationship);
-        }
+        reader.route(&predicate, route, &expected)?;
     }
     if reader.used.len() != data.nodes.len() {
         return Err(Error::Relationship);

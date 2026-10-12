@@ -7,6 +7,7 @@
 mod activation;
 mod checked;
 mod control;
+pub(crate) mod copy_payload;
 mod lease_reads;
 mod location;
 mod profile;
@@ -32,6 +33,42 @@ use terrane_core::gc::publication::{PublicationState, RawDigest};
 pub(crate) use super::containers::ContainerArtifacts;
 pub(crate) use profile::registered_profile;
 pub(crate) use transition::RawMutation;
+
+/// Selects physical DATA retention without changing protected control policy.
+#[derive(Clone, Copy)]
+pub(super) enum PayloadRetention {
+    /// Preserves the existing ordinary unretained payload reader.
+    Observed,
+    /// Captures the unchanged protected effect/history payload recipe.
+    Strict,
+    #[cfg(all(feature = "tokio", unix))]
+    /// Captures ordinary read-only descriptor data without effect authority.
+    Ordinary,
+}
+
+impl PayloadRetention {
+    /// Reads one payload using the selected operation's physical DATA policy.
+    ///
+    /// # Errors
+    /// Preserves absence, unsafe layout and unavailable original capture errors.
+    pub(super) async fn read<F, C, V>(
+        self,
+        bucket: &FileBucket<F, C, V>,
+        key: &terrane_core::bucket::BucketKey,
+    ) -> Result<receipts::RecordRead, StoreFailure>
+    where
+        F: LocalFs + BucketBinding,
+        C: Clock + BucketBinding,
+        V: ContentValidator + BucketBinding,
+    {
+        match self {
+            Self::Observed => bucket.read_optional_observed(key).await,
+            Self::Strict => bucket.read_optional_retained(key).await,
+            #[cfg(all(feature = "tokio", unix))]
+            Self::Ordinary => bucket.read_optional_ordinary_retained(key).await,
+        }
+    }
+}
 
 #[cfg(feature = "send")]
 type RecheckFuture<'held> =
@@ -126,6 +163,7 @@ impl SelectedObservation<'_> {
     /// # Errors
     /// Refuses an observation without original recipes, changed selected evidence,
     /// physical reincarnation, unsafe ancestry or unavailable whole-value reads.
+    #[cfg(all(feature = "tokio", unix))]
     pub(crate) async fn revalidate_physical_reads<F: LocalFs + BucketBinding>(
         &self,
         fs: &F,
@@ -270,6 +308,7 @@ pub(crate) struct SelectedReceipt {
     /// The exact committed revision and immutable slot digest.
     pub(crate) stamp: (u64, RawDigest),
     /// The whole verified state after the transition.
+    #[cfg(all(test, feature = "tokio", unix))]
     pub(crate) state: PublicationState,
 }
 
@@ -280,6 +319,51 @@ impl<
     const WRITABLE: bool,
 > super::held::HeldBucket<'_, F, C, V, WRITABLE>
 {
+    /// Validates a proposed whole collector projection under this actual live holder.
+    ///
+    /// This read-only result grants no mutation receipt or collector permission.
+    /// The closed producer must independently retain complete current roots,
+    /// controls and native pair before selecting any destructive transition.
+    ///
+    /// # Errors
+    /// Refuses a different namespace/operator, unavailable retention, a stale
+    /// whole lease/session, changed selection or invalid whole projection/successor.
+    pub(crate) async fn validate_collection_successor(
+        &self,
+        observed: &SelectedObservation<'_>,
+        session: &crate::gc::runner::session::Session,
+        next: &PublicationState,
+        logical: &BTreeMap<String, Option<Vec<u8>>>,
+    ) -> Result<(), StoreFailure> {
+        session.recheck()?;
+        if self.root() != observed.identity().root()
+            || self.physical_identity() != observed.identity().physical_identity()
+            || !observed.identity().writable()
+            || self.bucket().publication_operator_uid() != Some(observed.configured_operator_uid())
+        {
+            return Err(unsupported());
+        }
+        self.retained_namespace()?;
+        observed.identity().retained_namespace()?;
+        let lease = observed
+            .logical()
+            .get("gc/lease")
+            .and_then(Option::as_deref)
+            .map(terrane_core::gc::GcLease::decode)
+            .transpose()
+            .map_err(|_| corrupt())?;
+        session
+            .lease()
+            .check(lease.as_ref(), session.recheck()?)
+            .map_err(|_| corrupt())?;
+        observed.revalidate().await?;
+        projection::validate(self.bucket(), next, logical)?;
+        projection::validate_successor(observed.logical(), logical)?;
+        observed.revalidate().await?;
+        session.recheck()?;
+        Ok(())
+    }
+
     /// Observes exact selected bytes while retaining this actual holder borrow.
     ///
     /// # Errors
@@ -310,7 +394,11 @@ impl<
         let held = self.identity_proof();
         let control = control::Control::open(self.bucket(), false).await?;
         let selected = selection::resolve_held_retained(self.bucket(), &control, &held).await?;
-        let recheck: SelectedRecheck<'_> = Box::new(move || Box::pin(self.selected_held()));
+        let memo = std::sync::Arc::new(selection::DecodeMemo::new());
+        let recheck: SelectedRecheck<'_> = Box::new(move || {
+            let memo = std::sync::Arc::clone(&memo);
+            Box::pin(async move { self.selected_held_reusing(&memo).await })
+        });
         let observed = SelectedObservation {
             selected,
             operator_uid: self
@@ -327,6 +415,59 @@ impl<
         Ok(observed)
     }
 
+    /// Retains ordinary selected payload DATA under a read-only actual holder.
+    ///
+    /// Protected registration, commits, transactions and Guard records keep
+    /// their strict receipts. Portable snapshots and history payloads preserve
+    /// the public file layout and retain separate read-only physical recipes.
+    ///
+    /// # Errors
+    /// Refuses writable adapters, unsupported ordinary retention, incomplete
+    /// selected evidence and changed physical bindings or ancestry.
+    #[cfg(all(feature = "tokio", unix))]
+    pub(crate) async fn observe_publication_ordinary_retained(
+        &self,
+    ) -> Result<SelectedObservation<'_>, StoreFailure> {
+        if WRITABLE {
+            return Err(unsupported());
+        }
+        self.observe_for_read_ordinary_retained().await
+    }
+
+    /// Retains read recipes under the actual source or destination holder.
+    ///
+    /// Protected inputs retain their original strict receipts; public payloads
+    /// retain ordinary physical recipes captured before their bytes are consumed.
+    /// This observation performs no materialized-cache repair for either role.
+    ///
+    /// # Errors
+    /// Rejects malformed or unavailable selected evidence, unsupported retention,
+    /// changed physical bindings and missing trusted operator configuration.
+    #[cfg(all(feature = "tokio", unix))]
+    pub(crate) async fn observe_for_read_ordinary_retained(
+        &self,
+    ) -> Result<SelectedObservation<'_>, StoreFailure> {
+        let held = self.identity_proof();
+        let control = control::Control::open(self.bucket(), false).await?;
+        let memo = std::sync::Arc::new(selection::DecodeMemo::new());
+        let selected =
+            selection::resolve_held_ordinary_retained(self.bucket(), &control, &held, &memo)
+                .await?;
+        let recheck: SelectedRecheck<'_> = Box::new(move || {
+            let memo = std::sync::Arc::clone(&memo);
+            Box::pin(async move { self.selected_held_reusing(&memo).await })
+        });
+        Ok(SelectedObservation {
+            selected,
+            operator_uid: self
+                .bucket()
+                .publication_operator_uid()
+                .ok_or_else(unsupported)?,
+            identity: self.identity_proof(),
+            recheck,
+        })
+    }
+
     /// Resolves one complete read observation without repairing materialized caches.
     ///
     /// Its actual holder borrow and fresh full-chain recheck stay local to this
@@ -335,9 +476,13 @@ impl<
     /// # Errors
     /// Rejects malformed or unavailable selected evidence, changed physical
     /// bindings and missing trusted operator configuration.
-    pub(super) async fn observe_for_read(&self) -> Result<SelectedObservation<'_>, StoreFailure> {
+    pub(crate) async fn observe_for_read(&self) -> Result<SelectedObservation<'_>, StoreFailure> {
         let selected = self.selected_held().await?;
-        let recheck: SelectedRecheck<'_> = Box::new(move || Box::pin(self.selected_held()));
+        let memo = std::sync::Arc::new(selection::DecodeMemo::new());
+        let recheck: SelectedRecheck<'_> = Box::new(move || {
+            let memo = std::sync::Arc::clone(&memo);
+            Box::pin(async move { self.selected_held_reusing(&memo).await })
+        });
         Ok(SelectedObservation {
             selected,
             operator_uid: self
@@ -353,6 +498,15 @@ impl<
         let held = self.identity_proof();
         let control = control::Control::open(self.bucket(), false).await?;
         selection::resolve_held(self.bucket(), &control, &held).await
+    }
+
+    async fn selected_held_reusing(
+        &self,
+        memo: &selection::DecodeMemo,
+    ) -> Result<Selected, StoreFailure> {
+        let held = self.identity_proof();
+        let control = control::Control::open(self.bucket(), false).await?;
+        selection::resolve_held_reusing(self.bucket(), &control, &held, memo).await
     }
 
     /// Decodes the whole current ref from this exact actual selected observation.
@@ -576,6 +730,7 @@ impl<
     /// # Errors
     /// Rejects mismatched holders, missing or malformed evidence and raw digest
     /// disagreement; absence means the source has no selected checked lineage.
+    #[cfg(all(test, feature = "tokio", unix))]
     pub(crate) async fn selected_lineage(
         &self,
         observed: &SelectedObservation<'_>,
@@ -649,24 +804,6 @@ impl<
             }));
         }
         Ok(control)
-    }
-
-    async fn selected_evidence(
-        &self,
-        observed: &SelectedObservation<'_>,
-        kind: &str,
-        expected: RawDigest,
-    ) -> Result<Vec<u8>, StoreFailure> {
-        let control = self.check_observation(observed).await?;
-        let suffix: String = expected.iter().map(|byte| format!("{byte:02x}")).collect();
-        let bytes = control
-            .read(self.fs(), &format!("publication/{kind}/{suffix}"))
-            .await?
-            .ok_or_else(corrupt)?;
-        if digest(&bytes) != expected {
-            return Err(corrupt());
-        }
-        Ok(bytes)
     }
 }
 
@@ -767,6 +904,7 @@ impl<
         }
         Ok(SelectedReceipt {
             stamp: (selected.state.revision, selected.digest),
+            #[cfg(all(test, feature = "tokio", unix))]
             state: selected.state,
         })
     }
@@ -827,6 +965,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     /// # Errors
     /// Rejects stale observations, unavailable native retention, malformed
     /// whole preimages and successors, and indeterminate durable effects.
+    #[cfg(all(test, feature = "tokio", unix))]
     pub(crate) async fn publish_raw(
         &self,
         observed: &SelectedObservation<'_>,

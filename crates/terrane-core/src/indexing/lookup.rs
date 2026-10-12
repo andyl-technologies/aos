@@ -12,6 +12,9 @@
 
 mod traversal;
 
+#[cfg(test)]
+mod tests;
+
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::cmp::Ordering;

@@ -17,6 +17,9 @@ use crate::store::{Clock, ContentValidator, LocalFs};
 use std::collections::BTreeSet;
 use terrane_core::gc::{CheckpointPointer, GcMark, GcRoots, GcState, Phase, Windows};
 
+#[path = "selected_checkpoint/replay.rs"]
+pub(super) mod replay;
+
 #[cfg(not(feature = "send"))]
 use std::rc::Rc as Shared;
 #[cfg(feature = "send")]
@@ -142,7 +145,7 @@ where
     V: ContentValidator + BucketBinding,
     C: Clock,
 {
-    let now = session.recheck()?;
+    session.recheck()?;
     let holder = SingleHeld::acquire(guard.store()).await?;
     let held = holder.destination();
     let observed = held.observe_publication_unrepaired().await?;
@@ -174,45 +177,35 @@ where
     let state_key = format!("gc/{cycle}/state");
     let previous_roots = observed.logical().get(&root_key).cloned().flatten();
     let previous_state = observed.logical().get(&state_key).cloned().flatten();
-    let root_read = collection_observation::record(&held, &root_key).await?;
-    let state_read = collection_observation::record(&held, &state_key).await?;
     let mut inputs = Vec::new();
     let mut mark_reads = Vec::new();
     let mut marks = BTreeSet::new();
 
+    let root_histories;
     let (roots, mut state) = if matches!(action, Action::Begin) {
         if previous_roots.is_some() || previous_state.is_some() {
             return Err(denied().into());
         }
-        let refs = collection_observation::inventory(&held, &observed, &mut inputs).await?;
-        let roots = roots::snapshot(
+        root_histories = super::native_collection_roots::current(
             &history,
             &consumed,
-            observation,
-            refs,
-            roots::SnapshotSettings {
-                cycle,
-                epoch: session.lease().epoch,
-                timestamp: now,
-                windows,
-            },
+            &held,
+            &observed,
+            session,
+            (cycle, windows),
         )
         .await?;
+        inputs.extend(root_histories.current_inputs()?.iter().cloned());
+        let roots = root_histories.snapshot().clone();
         let state = roots::initial(&roots);
         (roots, state)
     } else {
-        let roots = GcRoots::decode(previous_roots.as_deref().ok_or_else(denied)?)?;
-        let state = GcState::decode(previous_state.as_deref().ok_or_else(denied)?)?;
-        if roots.cycle != cycle
-            || state.cycle != cycle
-            || state.snapshot_at != roots.timestamp
-            || state.epoch != session.lease().epoch
-            || roots.epoch != state.epoch
-            || !matches!(state.phase, Phase::Mark | Phase::Sweep)
-            || !state.progress.is_empty()
-        {
-            return Err(denied().into());
-        }
+        root_histories = super::native_collection_roots::cycle(
+            &history, &consumed, &held, &observed, session, cycle,
+        )
+        .await?;
+        let roots = root_histories.snapshot().clone();
+        let state = root_histories.cycle_state()?.clone();
         if let Action::Advance {
             roots: expected_roots,
             state: expected_state,
@@ -244,43 +237,27 @@ where
                 record,
             });
         }
-        // Revisit every signed destination before replaying its persisted contexts.
-        for root in &roots.roots {
-            session.recheck()?;
-            history
-                .verified_tree_observed(root.commit, observation)
-                .await?;
-        }
-        let mut replay = roots::initial(&roots);
-        let mut replay_marks = BTreeSet::new();
-        let mut replayed = false;
-        while !same_traversal(&replay, &state) {
-            if replay.pending.is_empty() {
-                return Err(denied().into());
-            }
-            session.recheck()?;
-            walk::expand(
-                &history,
-                &consumed,
-                observation,
-                &mut replay,
-                &mut replay_marks,
-            )
-            .await?;
-            if !replay_is_contained(&replay, &state) {
-                return Err(denied().into());
-            }
-            replayed = true;
-        }
-        if replayed {
-            for identity in history.store().identities()? {
-                replay_marks.insert(identity.terrane_v1_digest().map_err(|_| denied())?);
-            }
-        }
-        if replay_marks != marks {
-            return Err(denied().into());
-        }
+        replay::verify(
+            &history,
+            &consumed,
+            observation,
+            session,
+            &root_histories,
+            &state,
+            &marks,
+        )
+        .await?;
         (roots, state)
+    };
+
+    let (root_read, state_read) = if matches!(action, Action::Begin) {
+        (
+            collection_observation::record(&held, &root_key).await?,
+            collection_observation::record(&held, &state_key).await?,
+        )
+    } else {
+        let (roots, state) = root_histories.cycle_reads()?;
+        (roots.clone(), state.clone())
     };
 
     let publication = match action {
@@ -314,7 +291,15 @@ where
                         break;
                     }
                     session.recheck()?;
-                    walk::expand(&history, &consumed, observation, &mut state, &mut marks).await?;
+                    walk::expand(
+                        &history,
+                        &consumed,
+                        observation,
+                        &root_histories,
+                        &mut state,
+                        &mut marks,
+                    )
+                    .await?;
                 }
                 for identity in history.store().identities()? {
                     marks.insert(identity.terrane_v1_digest().map_err(|_| denied())?);
@@ -400,6 +385,7 @@ where
                 state: state_read,
                 marks: mark_reads,
                 inputs,
+                guard: root_histories.guard_read().clone(),
             },
             effects: GcCheckpointEffectContext {
                 lease: session.lease().clone(),
@@ -439,37 +425,11 @@ where
     Ok((roots, state))
 }
 
-fn same_traversal(left: &GcState, right: &GcState) -> bool {
-    left.cycle == right.cycle
-        && left.snapshot_at == right.snapshot_at
-        && left.pending == right.pending
-        && left.expanded == right.expanded
-        && left.objects == right.objects
-        && left.progress == right.progress
-}
-
-// Only persisted completed claims can be introduced during replay. Together
-// with the finite root cutoffs, this bounds authentic expansions without a
-// global history-size ceiling: stronger cutoff revisits are finite, while
-// already covered work removes a frontier entry without adding dependencies.
-// Equality of the final whole frontier and marks still establishes completion.
-fn replay_is_contained(replay: &GcState, target: &GcState) -> bool {
-    replay.expanded.iter().all(|context| {
-        target.expanded.iter().any(|completed| {
-            completed.commit == context.commit
-                && completed.proof_context == context.proof_context
-                && completed.parent_cutoff.covers(context.parent_cutoff)
-        })
-    }) && replay
-        .objects
-        .iter()
-        .all(|object| target.objects.binary_search(object).is_ok())
-}
-
 #[cfg(test)]
 mod tests {
     //! Qualifies replay claim containment without constructing native authority.
 
+    use super::replay::{replay_is_contained, same_traversal};
     use super::*;
     use terrane_core::gc::{ExpandedContext, ExpandedObject, ParentCutoff, ProofContext};
 
