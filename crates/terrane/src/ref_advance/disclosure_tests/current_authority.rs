@@ -246,7 +246,7 @@ fn tree_with_mode(verbs: u8, private: bool, mode: u16) -> Tree<'static> {
 ///
 /// # Panics
 /// Panics if proposal construction, token decoding, attenuation or verification
-/// fails, including a caveat that attempts to widen the original authority.
+/// fails.
 pub(super) fn attenuate(factory: &Factory, caveat: Caveat) -> Vec<u8> {
     let proposal = factory.proposal(Vec::new(), 31);
     let secret = proposal.terminal_secret;
