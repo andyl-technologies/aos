@@ -328,6 +328,23 @@ pub(super) async fn retain_historical_and_issue_new() {
         .await
         .unwrap();
     let refused_head = refused_target.record().cloned();
+    // This authorized session's epoch baseline is retained before production
+    // checks conflicting import trust. Complete that genuine setup before the
+    // refusal oracle, so its mandatory additive record is not a false mutation.
+    let guard = destination.coordinator().guard();
+    let retention = crate::repository::local_authority::NativeRetention {
+        authority: guard.configured_original_authority().unwrap(),
+        owner_uid: destination
+            .coordinator()
+            .store()
+            .publication_operator_uid()
+            .unwrap(),
+        authoring_acl: guard.config().initial_acl.clone(),
+    };
+    retention
+        .retain_baseline(guard, &destination.fs, &refused_target)
+        .await
+        .unwrap();
     let conflict_before = physical_snapshot(destination.coordinator().store().root()).await;
     let refused = destination
         .coordinator()
