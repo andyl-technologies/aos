@@ -18,6 +18,7 @@ mod lineage_roots;
 mod lineage_source;
 mod storage;
 mod typed_index;
+mod writer_final_debits;
 
 pub(super) use capture::source_epoch_evidence;
 
@@ -45,6 +46,7 @@ pub use lineage_source::{
     ORIGINAL_LINEAGE_RUNTIME_MEDIA, OriginalLineageSourcePinFailure, PinnedOriginalLineageSource,
 };
 pub use storage::{NativeArchive, NativeArchiveRecord, NativeArtifactState, NativeOwnerState};
+pub use writer_final_debits::{AuthenticatedWriterFinalDebits, OriginalWriterFinalDebitSource};
 
 /// Bounds metadata and streamed native preservation independently.
 #[derive(Clone, Copy, Debug)]
@@ -144,6 +146,36 @@ pub trait NativeWorldFactory {
         _scheduler: &crate::node_scheduling::SchedulingSnapshot,
     ) -> Result<Option<usize>, StateError> {
         Ok(None)
+    }
+
+    /// Authenticates complete original selected writer ancestry before live rebind.
+    ///
+    /// The opaque source has already verified the signed owner/cut, all typed
+    /// dependency bodies, attempted debit conservation and original delivery.
+    /// The installed policy must additionally bind its exact current compiled
+    /// writer/controller profile, complete capture/image/custody closure and
+    /// source-issued current transport/kernel ownership. A historical measured
+    /// getter, parsed account or digest alone cannot supply this permission.
+    /// Approval preserves historical data; operational adoption remains a
+    /// separate original native transition under its admitted whole-owner holds.
+    ///
+    /// # Errors
+    /// Refuses unsupported selected writer editions, absent complete original
+    /// source qualification or changed current profile/owner dependencies.
+    ///
+    /// # Panics
+    /// An installed implementation may panic. The caller must retain the
+    /// original owning source/runtime capsule and its existing failure custody
+    /// across callback unwind; approval never transfers that custody.
+    fn authenticate_writer_final_debit_source(
+        &self,
+        _graph: &AdmittedGraph,
+        _source: &AuthenticatedNativeSource<'_>,
+        _writer: &OriginalWriterFinalDebitSource<'_>,
+    ) -> Result<(), StateError> {
+        Err(refused(
+            "installed complete selected writer source remains unsupported",
+        ))
     }
 
     /// Authenticates the selected original-epoch codec before native effects or allocation.

@@ -2114,6 +2114,15 @@ restore checks. The matching source output independently preserves the upstream
 archive, all ten patches, recipe, continuation fixture and current license
 inventory. The earlier sparse-directory package result remains historical.
 
+The host archive importer verifies complete original writer histories, final
+debits, control delivery and terminal-park framing against retained typed
+dependencies before consulting the installed source verifier. The default
+verifier refuses unsupported source qualification. Parsing historical data
+creates no live native takeover permission. All 21 focused parser controls
+passed; the five affected delivery controls passed again after integration
+corrections. Core unit-target compilation and strict all-target core checks
+also pass.
+
 Selected native terminal parking, authenticated final-account issuance and
 operational restore adoption remain unqualified. Configured native compilation
 and eight inert descriptor controls have separate evidence; they do not execute
