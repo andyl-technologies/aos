@@ -1,6 +1,6 @@
 //! Independently authenticates existing inline values and their current producers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, btree_map::Entry};
 
 use terrane_core::derived::{AttrRecord, AttributeName, AttributeValue, verify_record_producer};
 use terrane_core::identity::Digest;
@@ -166,34 +166,35 @@ impl<S: Store, C: Clock> Guard<S, C> {
                     .history
                     .attribute_producer(&location, name.as_str())
                     .map_err(failure)?;
-                if !producers.contains_key(&producer) {
-                    work.history_boundary_calls = work
-                        .history_boundary_calls
-                        .checked_add(1)
-                        .ok_or_else(invalid)?;
-                    let (verified, history) = self
-                        .verified_tree_history_observed(producer, observation)
-                        .await?;
-                    let candidates = inventory(&verified, self.config().min_chunk_size, work)?;
-                    let originals = self.producer_originals(&history)?;
-                    producers.insert(
-                        producer,
-                        ProducerInputs {
+                let prepared: &ProducerInputs = match producers.entry(producer) {
+                    Entry::Vacant(entry) => {
+                        work.history_boundary_calls = work
+                            .history_boundary_calls
+                            .checked_add(1)
+                            .ok_or_else(invalid)?;
+                        let (verified, history) = self
+                            .verified_tree_history_observed(producer, observation)
+                            .await?;
+                        let candidates = inventory(&verified, self.config().min_chunk_size, work)?;
+                        let originals = self.producer_originals(&history)?;
+                        entry.insert(ProducerInputs {
                             history,
                             originals,
                             candidates,
-                        },
-                    );
-                } else {
-                    let prepared = producers.get(&producer).ok_or_else(invalid)?;
-                    self.refresh_producer_history(
-                        &prepared.history,
-                        &prepared.originals,
-                        observation,
-                    )
-                    .await?;
-                }
-                let prepared = producers.get(&producer).ok_or_else(invalid)?;
+                        })
+                    }
+                    Entry::Occupied(entry) => {
+                        let prepared = entry.into_mut();
+                        self.refresh_producer_history(
+                            &prepared.history,
+                            &prepared.originals,
+                            observation,
+                        )
+                        .await?;
+
+                        prepared
+                    }
+                };
                 let mut paths = Vec::new();
                 for producer_path in prepared
                     .candidates
@@ -238,36 +239,37 @@ impl<S: Store, C: Clock> Guard<S, C> {
                 for producer_path in paths {
                     work.producer_checks =
                         work.producer_checks.checked_add(1).ok_or_else(invalid)?;
-                    if !serving.contains_key(&producer) {
-                        work.history_boundary_calls = work
-                            .history_boundary_calls
-                            .checked_add(1)
-                            .ok_or_else(invalid)?;
-                        let (verified, history) = self
-                            .verified_tree_history_observed(
-                                producer,
-                                observation.requested_target(),
-                            )
-                            .await?;
-                        let originals = self.producer_originals(&history)?;
-                        serving.insert(
-                            producer,
-                            ServingInputs {
+                    let prepared: &ServingInputs = match serving.entry(producer) {
+                        Entry::Vacant(entry) => {
+                            work.history_boundary_calls = work
+                                .history_boundary_calls
+                                .checked_add(1)
+                                .ok_or_else(invalid)?;
+                            let (verified, history) = self
+                                .verified_tree_history_observed(
+                                    producer,
+                                    observation.requested_target(),
+                                )
+                                .await?;
+                            let originals = self.producer_originals(&history)?;
+                            entry.insert(ServingInputs {
                                 verified,
                                 history,
                                 originals,
-                            },
-                        );
-                    } else {
-                        let prepared = serving.get(&producer).ok_or_else(invalid)?;
-                        self.refresh_producer_history(
-                            &prepared.history,
-                            &prepared.originals,
-                            observation.requested_target(),
-                        )
-                        .await?;
-                    }
-                    let prepared = serving.get(&producer).ok_or_else(invalid)?;
+                            })
+                        }
+                        Entry::Occupied(entry) => {
+                            let prepared = entry.into_mut();
+                            self.refresh_producer_history(
+                                &prepared.history,
+                                &prepared.originals,
+                                observation.requested_target(),
+                            )
+                            .await?;
+
+                            prepared
+                        }
+                    };
                     match self
                         .producer_authorizations_from_history(
                             (&prepared.verified, &prepared.history),
