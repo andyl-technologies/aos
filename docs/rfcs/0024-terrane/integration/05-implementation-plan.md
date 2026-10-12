@@ -217,14 +217,32 @@ subject to package and owning-gate qualification. Fresh private composition
 `d84c608c5b1c` passes strict SDK Clippy, SDK all-target compilation and the default
 native build. All ten focused cases pass: the seven missing-placement witnesses,
 the unchanged actual deadline-expiry witness, and both corrected Guard/planning
-cases. The unfiltered 1,111-case SDK suite is running with the committed package
-scheduling correction; no complete package result is claimed. Static review
+cases. The unfiltered SDK phase finishes with all 1,111 tests run: 1,093 pass,
+12 fail and six time out, with no skipped cases or execution failures. The actual
+summary duration is 21,243.252 seconds and exit status is 100. Source, input and
+executable seals remain unchanged. One-second observations record one active
+archive case and a peak of 13 runner descriptors; two GC cases still report
+descriptor exhaustion inside their test processes. Those observations do not
+measure test-process descriptor peaks or establish their cause. Two overlay
+cases reach their unchanged 120-second bounds, and the four 2,048/4,096-entry
+growth cases reach their unchanged 1,800-second bounds. Both 1,024-entry cases
+pass. This complete failing phase does not qualify the package. Static review
 matches all 394 SDK selector uses to the archived inventory, with no missing,
 ignored or duplicate required selector within a gate. Successful population
 cases now remove their owned scratch directories after both execution validators;
 the six growing witnesses and DRV-29 qualification blocker remain unchanged.
 Test-helper documentation corrections preserve exact source bodies and remain
-isolated from the active qualification checkout. No task or milestone advances.
+isolated from that sealed qualification checkout. A fresh thirteen-case diagnostic
+privately composes the reviewed GC native-read forwarding, fixture setup semaphore,
+native admission observations and explicit disclosure snapshot corrections. It
+retains all substantive refusal assertions and original bounds, and samples test
+process descriptors separately. Actual focused runtime results remain pending.
+Separately, a borrowed authenticated-history inventory permits producer preparation
+to refresh every retained Original, including disclosure dependencies; the iterator
+grants neither completion nor current authority. The bounded growth repair remains
+isolated and retains existing per-path trust-evaluator cloning. Owning Nix gates,
+the complete current T1 floor and mandatory application targets remain pending.
+No task or milestone advances.
 
 Additional isolated worklines inspect growing-index completion, indexed replay
 and permanent recovery, while a separate worker qualifies the five public SDK
