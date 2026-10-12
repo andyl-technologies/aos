@@ -16,7 +16,7 @@ use super::{
 };
 use crate::guard::policy::AdmissionContext;
 use crate::guard::{Guard, StagedUpload, TreeEvidence, denied, domain_label};
-use crate::store::{Clock, Store, StoreErrorKind, StoreFailure};
+use crate::store::{Clock, Store, StoreFailure};
 
 impl<S: Store, C: Clock> Guard<S, C> {
     /// Checks candidate roots against current authority and admission policy.
