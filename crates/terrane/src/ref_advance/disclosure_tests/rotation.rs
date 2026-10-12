@@ -9,6 +9,7 @@ use crate::domain::DomainNamespace;
 use crate::ref_advance::{DisclosureCommitRequest, DisclosureCommitSelection};
 use crate::repository::Repository;
 use crate::store::{Clock, LocalFs, RefStore, StoreErrorKind};
+use std::error::Error as _;
 use std::os::unix::fs::MetadataExt;
 use terrane_core::auth::{Caveat, Verbs};
 use terrane_core::provenance::{DisclosureCandidate, OriginalBootstrapPolicy};
@@ -16,6 +17,25 @@ use terrane_core::provenance::{DisclosureCandidate, OriginalBootstrapPolicy};
 const REFERENCE: &str = "refs/heads/_/main";
 const NEW_REFERENCE: &str = "refs/heads/_/rotated";
 const PLAINTEXT: &[u8] = b"historical certificates retain their actual issuing key";
+
+fn assert_retention_denied(failure: &crate::store::StoreFailure, phase: &str) {
+    assert!(
+        matches!(
+            failure.kind(),
+            StoreErrorKind::Invalid(crate::store::InvalidReason::MalformedRequest)
+        ),
+        "{phase}: unexpected storage outcome: {failure:?}"
+    );
+    assert!(
+        matches!(
+            failure
+                .source()
+                .and_then(|source| source.downcast_ref::<crate::repository::Error>()),
+            Some(crate::repository::Error::Denied)
+        ),
+        "{phase}: expected protected retention refusal: {failure:?}"
+    );
+}
 
 async fn reopen(factory: Factory) -> Factory {
     let Factory {
@@ -284,6 +304,7 @@ pub(super) async fn retain_historical_and_issue_new() {
         .await
         .unwrap();
     let refused_head = refused_target.record().cloned();
+    let conflict_before = physical_snapshot(destination.coordinator().store().root()).await;
     let refused = destination
         .coordinator()
         .advance_disclosure(
@@ -306,7 +327,15 @@ pub(super) async fn retain_historical_and_issue_new() {
             },
         )
         .await;
-    assert!(refused.is_err());
+    let failure = match refused {
+        Err(crate::ref_advance::AdvanceError::Store(failure)) => failure,
+        outcome => panic!("conflicting old import trust: unexpected result: {outcome:?}"),
+    };
+    assert_retention_denied(&failure, "conflicting old import trust");
+    assert_eq!(
+        physical_snapshot(destination.coordinator().store().root()).await,
+        conflict_before
+    );
     assert_eq!(refused_target.record(), refused_head.as_ref());
     assert_eq!(
         destination
@@ -327,6 +356,19 @@ pub(super) async fn retain_historical_and_issue_new() {
             .unwrap(),
         retained_import
     );
+    assert_eq!(certificate_keys(&destination, old).await, vec![old_key]);
+    let fresh = Factory::initialize(false).await;
+    let imported = issue(
+        &source,
+        &fresh,
+        REFERENCE,
+        original.commit,
+        b"conflict",
+        &[b"conflict"],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(certificate_keys(&fresh, imported).await, vec![new_key]);
     let mut author = source
         .coordinator()
         .begin(NEW_REFERENCE, source.authority.token(), "sdk")
@@ -368,6 +410,7 @@ pub(super) async fn retain_historical_and_issue_new() {
         .await
         .unwrap();
     let rollback_head = rollback_target.record().cloned();
+    let rollback_before = physical_snapshot(destination.coordinator().store().root()).await;
     let rollback = destination
         .coordinator()
         .advance_disclosure(
@@ -390,7 +433,15 @@ pub(super) async fn retain_historical_and_issue_new() {
             },
         )
         .await;
-    assert!(rollback.is_err());
+    let failure = match rollback {
+        Err(crate::ref_advance::AdvanceError::Store(failure)) => failure,
+        outcome => panic!("newest role clock rollback: unexpected result: {outcome:?}"),
+    };
+    assert_retention_denied(&failure, "newest role clock rollback");
+    assert_eq!(
+        physical_snapshot(destination.coordinator().store().root()).await,
+        rollback_before
+    );
     assert_eq!(rollback_target.record(), rollback_head.as_ref());
     assert_eq!(
         destination
@@ -422,6 +473,7 @@ pub(super) async fn retain_historical_and_issue_new() {
         .await
         .unwrap();
     let refused_head = refused_target.record().cloned();
+    let missing_seed_before = physical_snapshot(destination.coordinator().store().root()).await;
     let refused = destination
         .coordinator()
         .advance_disclosure(
@@ -444,7 +496,29 @@ pub(super) async fn retain_historical_and_issue_new() {
             },
         )
         .await;
-    assert!(refused.is_err());
+    let failure = match refused {
+        Err(crate::ref_advance::AdvanceError::Store(failure)) => failure,
+        outcome => panic!("missing selected newest seed: unexpected result: {outcome:?}"),
+    };
+    assert!(
+        matches!(
+            failure.kind(),
+            StoreErrorKind::Unavailable { retry_after: None }
+        ),
+        "missing selected newest seed: unexpected storage outcome: {failure:?}"
+    );
+    assert_eq!(
+        failure
+            .source()
+            .and_then(|source| source.downcast_ref::<std::io::Error>())
+            .map(std::io::Error::kind),
+        Some(std::io::ErrorKind::NotFound),
+        "missing selected newest seed: unexpected cause: {failure:?}"
+    );
+    assert_eq!(
+        physical_snapshot(destination.coordinator().store().root()).await,
+        missing_seed_before
+    );
     assert_eq!(refused_target.record(), refused_head.as_ref());
     assert_eq!(
         destination
@@ -538,13 +612,29 @@ pub(super) async fn deny_admin_and_ambiguous_time() {
         StoreErrorKind::Denied { verb: "admin", .. }
     ));
     source.clock.set(1000, 0);
-    assert!(
+    let ambiguous = source
+        .repository
+        .rotate_disclosure_key(REFERENCE, source.authority.token(), "sdk")
+        .await
+        .unwrap_err();
+    assert_retention_denied(&storage_failure(ambiguous), "equal rotation issue time");
+    assert_eq!(
         source
-            .repository
-            .rotate_disclosure_key(REFERENCE, source.authority.token(), "sdk")
+            .coordinator()
+            .store()
+            .ref_get(REFERENCE)
             .await
-            .is_err()
+            .unwrap(),
+        Some(head.clone())
     );
+    assert_eq!(physical_snapshot(&root).await, bucket_before);
+    assert_eq!(control_snapshot(&root).await, protected_before);
+    source.clock.set(1001, 0);
+    source
+        .repository
+        .rotate_disclosure_key(REFERENCE, source.authority.token(), "sdk")
+        .await
+        .unwrap();
     assert_eq!(
         source
             .coordinator()
@@ -554,6 +644,4 @@ pub(super) async fn deny_admin_and_ambiguous_time() {
             .unwrap(),
         Some(head)
     );
-    assert_eq!(physical_snapshot(&root).await, bucket_before);
-    assert_eq!(control_snapshot(&root).await, protected_before);
 }
