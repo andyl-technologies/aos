@@ -332,9 +332,11 @@ protected currentness stay with original owners, not this DATA API.
 Protocol's `domain_ledger::effect_history` owns the complete V2-V6 Effect history
 codec, model, context and dispatch DATA. Native Effect retains signed/current
 and Guardian factories, private history enclosures and receipt validation;
-Native Journal retains full capacity-transfer and Delete recipes, using
-Reconciler historical helpers. Actual
-Journal, descriptor, writer and clock loans remain with their original owners.
+Protocol's `domain_ledger::controller_history_relation` owns three complete
+historical recipes: atomic Delete metadata, Controller capacity transfer and
+Controller capacity settlement. Gate/Effect intermediates stay private. Native
+Journal selects the predecessor bytes/key once; actual Journal, descriptor,
+writer and clock loans remain with their original owners.
 Consumers use the canonical DATA owner directly; obsolete Native DATA exports
 and historical decoders are retired. Passive history DATA conveys no authority.
 Protocol's `publication::bound_effect` owns the complete checked draft-to-effect
@@ -344,21 +346,22 @@ use that canonical owner directly, projecting errors at their original frontiers
 Publication currentness, activation and effect custody remain Native.
 Protocol's `domain_ledger::ownership_gate` owns the complete Gate plan/state,
 V1 codec and immutable Claim/Draft context validation, using existing lower DATA.
-Native Delete retains its original batch/Gate relation and Reconciler error
-projection; live activation and current publication validation remain Native.
+Delete metadata uses the complete lower batch/Gate/Effect relation, with the
+original final malformed-transaction refusal after Native current-map checks.
+Live activation and current publication validation remain Native.
 Protocol's `domain_ledger::lifecycle_model` owns the complete typed resource/edge
 vocabulary, both postorder rules and the unchanged shared model-error declaration.
 Native wrappers retain their original causes; graph admission remains upper.
 Protocol owns the complete `domain_ledger::delete_batch` grammar, checked borrowed
 views, owned outcomes and tombstone/collection/handoff DATA. Native Journal
-admission, real-writer COMMIT readback and full Gate/Effect relations remain upper.
+admission and real-writer COMMIT readback remain upper.
 One explicitly gated lower synthetic fixture serves codec and Native replay tests;
 its dev-only feature does not activate production defaults.
-Domain Journal owns whole capacity-transfer, settlement and Delete recipes, with
-fixed original row/error frontiers and opaque Effect/Gate histories
-that do not expose Native plans/drafts. Current admission, activation, clocks,
-Journal custody and current-authority recipes remain with their genuine owners;
-there are no aggregate recipe callbacks or portable Effect/Gate authority closure.
+Native Controller transfer/settlement retain actual grant recovery, consumed
+append accounting, purpose and row-order checks, and protected COMMIT. Lower
+history comparisons preserve full Plan/State/dispatch and metadata equality;
+they cannot establish capacity, Root authority or full Project replay closure.
+The superseded Reconciler historical helper owners and exports are retired.
 
 Private `journal::semantic_append` retains complete ordinary/closed append,
 paired advisory preflight, Q04 adapter and append-only-guard inherent recipes on
