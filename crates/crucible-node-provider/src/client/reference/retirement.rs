@@ -4,7 +4,7 @@ use std::io::Write;
 
 use crate::{
     ProviderError,
-    bodies::{ResponseShape, decode_request, decode_response},
+    bodies::{EffectCertainty, OperationState, ResponseShape, decode_request, decode_response},
     envelope::RequestOrigin,
 };
 
@@ -143,6 +143,39 @@ impl ReferenceController {
         self.write_private_original_history(output)
     }
 
+    /// Exports terminal originals including definitive source-owned refusals.
+    ///
+    /// This data export preserves each original refusal unchanged. Only a known
+    /// baseline error with not-started effects and operation state, no retry,
+    /// and no response extensions is terminal here. Actual semantic release and
+    /// native reclamation remain separate obligations of the same owning actor.
+    /// The completed-only exporter retains its stricter behavior.
+    ///
+    /// # Errors
+    /// Refuses missing, accepted, uncertain, partial, retryable or unknown-code
+    /// responses, unsupported probe archives and incomplete private transfers.
+    pub fn write_owned_terminal_originals(
+        &self,
+        output: &mut impl Write,
+    ) -> Result<(), ProviderError> {
+        for original in self.custody.originals() {
+            let response = original
+                .response
+                .as_ref()
+                .ok_or(ProviderError::Correlation(
+                    "original terminal control response remains uncertain",
+                ))?;
+            let request = decode_request(original.request.method, &original.request.body)?;
+            let response = decode_response(&request, &response.body)?;
+            if !terminal_original(&response.shape) {
+                return Err(ProviderError::Correlation(
+                    "original terminal control effect remains unresolved",
+                ));
+            }
+        }
+        self.write_private_original_history(output)
+    }
+
     fn validate_completed_originals(&self) -> Result<(), ProviderError> {
         for original in self.custody.originals() {
             let response = original
@@ -215,5 +248,93 @@ impl ReferenceController {
         )
         .map_err(crucible_node_contract::ContractError::from)?;
         Ok(())
+    }
+}
+
+// Refusal records are retained data, never native release authority.
+fn terminal_original(shape: &ResponseShape) -> bool {
+    match shape {
+        ResponseShape::Completed {
+            operation_state: OperationState::Completed,
+            ..
+        } => true,
+        ResponseShape::Error {
+            operation_state: OperationState::NotStarted,
+            error,
+            extensions,
+        } => {
+            !error.retryable
+                && extensions.is_empty()
+                && error.effect == EffectCertainty::NotStarted
+                && error.baseline_handling().1 == EffectCertainty::NotStarted
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod terminal_tests {
+    use super::*;
+    use crate::bodies::ErrorRecord;
+    use crucible_node_contract::Extensions;
+
+    fn refusal() -> ResponseShape {
+        ResponseShape::Error {
+            operation_state: OperationState::NotStarted,
+            error: ErrorRecord {
+                code: "CONFLICT".into(),
+                message: "original refusal".into(),
+                effect: EffectCertainty::NotStarted,
+                retryable: false,
+                details: Default::default(),
+            },
+            extensions: Extensions::new(),
+        }
+    }
+
+    #[test]
+    fn only_definitive_original_refusals_are_terminal() {
+        let source = refusal();
+        assert!(terminal_original(&source));
+        for state in [
+            OperationState::Running,
+            OperationState::Unknown,
+            OperationState::Completed,
+        ] {
+            let mut changed = source.clone();
+            if let ResponseShape::Error {
+                operation_state, ..
+            } = &mut changed
+            {
+                *operation_state = state;
+            }
+            assert!(!terminal_original(&changed));
+        }
+        for effect in [
+            EffectCertainty::Unknown,
+            EffectCertainty::InProgress,
+            EffectCertainty::Completed,
+        ] {
+            let mut changed = source.clone();
+            if let ResponseShape::Error { error, .. } = &mut changed {
+                error.effect = effect;
+            }
+            assert!(!terminal_original(&changed));
+        }
+        let mut changed = source.clone();
+        if let ResponseShape::Error { error, .. } = &mut changed {
+            error.retryable = true;
+        }
+        assert!(!terminal_original(&changed));
+        changed = source.clone();
+        if let ResponseShape::Error { error, .. } = &mut changed {
+            error.code = "unqualified-extension-error".into();
+        }
+        assert!(!terminal_original(&changed));
+        changed = source;
+        if let ResponseShape::Error { extensions, .. } = &mut changed {
+            extensions.insert("foreign".into(), serde_json::Value::Bool(true));
+        }
+        assert!(!terminal_original(&changed));
     }
 }

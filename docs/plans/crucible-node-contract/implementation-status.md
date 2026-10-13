@@ -2267,6 +2267,27 @@ contract controls retain their earlier source scope. The ordinary singleton
 collector and complete clause plan are implemented, but their current installed
 package and full 382-obligation acceptance remain unqualified.
 
+The singleton collector now seals its own pre-realization and prepared adverse
+probe populations before constructing a child. It retains nonrenewing attempt
+state and original observations rather than borrowing a two-owner fixture's
+history. A complete-clause verifier checks exact compiled clauses, locations,
+source references and dependency assignments. It still reports unresolved
+behavioral reviews as NotExecuted; source equality cannot issue acceptance.
+
+A separate owning terminal-history exporter preserves definitive original
+refusals alongside completed replies. Refusals must have a known baseline error,
+NotStarted effect and operation state, no retry and no response extensions.
+Semantic release and actual native reclamation remain mandatory before archival;
+the completed-only export API retains its existing contract.
+
+The seven-file successor passes four focused controls and strict three-crate
+all-target checks. Independent review binds every changed role to retained
+test artifacts, including the actual core library consumed by the daemon and
+its 569 source dependencies. The nine wired adverse probes have no installed
+singleton execution witness yet. Six additional adverse branches, complete
+independent clause reviews and factory acceptance remain unfinished. The
+separate ordinary package build uses the preceding frozen source cohort.
+
 ## Selected DMTCP writer package
 
 The source-built `dmtcp-selected-writer-park` package passes its normal

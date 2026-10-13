@@ -46,6 +46,8 @@ pub(in crate::node_observed_executor::factory::reference_public) struct Collecti
     pub(in crate::node_observed_executor::factory::reference_public) hello_id: Id,
     pub(in crate::node_observed_executor::factory::reference_public) connection_id: Id,
     pub(in crate::node_observed_executor::factory::reference_public) controller_nonce: Bytes,
+    pub(in crate::node_observed_executor::factory::reference_public) adverse:
+        Option<Rc<super::super::singleton_adverse::SingletonAdversePopulation>>,
     pub(in crate::node_observed_executor::factory::reference_public) observations:
         Rc<RefCell<Option<crucible_node_provider::client::ObservationHandle>>>,
 }
@@ -201,7 +203,7 @@ pub(in crate::node_observed_executor::factory::reference_public) fn prepare(
     originals.borrow_mut().upload.stdin = child.stdin.take();
     let guard =
         CnpLaunchGuard::new(child, request.directory, slot).map_err(|failure| failure.error)?;
-    let guard = super::ordinary_launch::negotiate_original(
+    let mut guard = super::ordinary_launch::negotiate_original(
         guard,
         &mut originals.borrow_mut(),
         installed,
@@ -214,8 +216,29 @@ pub(in crate::node_observed_executor::factory::reference_public) fn prepare(
             observation: Some(request.observations.as_ref()),
         },
     )?;
-    CnpReferencePreparation::prepare(guard, installed)
-        .map_err(|failure| ProviderError::Io(std::io::Error::other(failure.error.reason)))
+    if let Some(adverse) = &request.adverse {
+        let observations = request.observations.borrow();
+        adverse.collect_pre_realization(
+            installed,
+            &mut guard,
+            observations.as_ref().ok_or(ProviderError::Correlation(
+                "singleton original observer absent",
+            ))?,
+        )?;
+    }
+    let mut prepared = CnpReferencePreparation::prepare(guard, installed)
+        .map_err(|failure| ProviderError::Io(std::io::Error::other(failure.error.reason)))?;
+    if let Some(adverse) = &request.adverse {
+        let observations = request.observations.borrow();
+        adverse.collect_prepared(
+            installed,
+            &mut prepared,
+            observations.as_ref().ok_or(ProviderError::Correlation(
+                "singleton original observer absent",
+            ))?,
+        )?;
+    }
+    Ok(prepared)
 }
 
 fn package_error(error: crate::node_observed_executor::NodeObservedError) -> ProviderError {

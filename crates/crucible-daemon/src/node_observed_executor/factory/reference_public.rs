@@ -30,7 +30,9 @@ mod qualification;
 mod run_error;
 mod runtime_retries;
 mod singleton;
+mod singleton_adverse;
 mod singleton_criteria;
+mod singleton_clause;
 mod singleton_unit;
 mod source_metadata_reviews;
 #[cfg(test)]

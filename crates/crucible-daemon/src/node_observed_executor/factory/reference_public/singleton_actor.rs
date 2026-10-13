@@ -119,6 +119,8 @@ struct Actor {
     candidate: Option<PrivateCandidate>,
     unit: Option<SingletonQualificationUnit>,
     criteria: Option<SingletonQualificationCriteria>,
+    adverse: Option<Rc<super::super::singleton_adverse::SingletonAdversePopulation>>,
+    clause_verifier: Option<super::super::singleton_clause::SingletonClauseVerifier>,
     history: Option<OriginalHistory>,
     blobs: Arc<DirectoryBlobBackend>,
     refs: Arc<DirectoryRefBackend>,
@@ -148,6 +150,8 @@ impl Actor {
             candidate: None,
             unit: None,
             criteria: None,
+            adverse: None,
+            clause_verifier: None,
             history: None,
             blobs: Arc::new(DirectoryBlobBackend::new(
                 "installed-singleton-collection",
@@ -209,11 +213,21 @@ impl Actor {
         let unit =
             SingletonQualificationUnit::measure(installed, source_context(&package, &oracle)?)?;
         let criteria = SingletonQualificationCriteria::build(&unit).map_err(failure)?;
+        self.clause_verifier = Some(
+            super::super::singleton_clause::SingletonClauseVerifier::prepare(&unit, &criteria)
+                .map_err(failure)?,
+        );
         for (reference, bytes) in unit.objects.iter().chain(criteria.objects.iter()) {
             reference.verify(bytes)?;
             self.persist_exact(bytes)?;
         }
         criteria.reference.verify(&criteria.bytes)?;
+        let adverse = Rc::new(
+            super::super::singleton_adverse::SingletonAdversePopulation::new(installed, &unit)?,
+        );
+        adverse.reference.verify(&adverse.bytes)?;
+        self.persist_exact(&adverse.bytes)?;
+        self.adverse = Some(adverse);
         // Both complete objects precede the first native allocation. A failed
         // run retains this original population without changing its source scope.
         self.unit = Some(unit);
@@ -242,6 +256,7 @@ impl Actor {
                 connection_id: Id::new("singleton/connection")?,
                 controller_nonce: entropy()?,
                 observations: Rc::clone(&observer),
+                adverse: self.adverse.clone(),
             },
         )?;
         let graph = candidate
@@ -411,6 +426,21 @@ impl Actor {
             .criteria
             .as_ref()
             .ok_or(ProviderError::Correlation("singleton complete plan absent"))?;
+        let adverse = self
+            .adverse
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "singleton adverse population absent",
+            ))?
+            .observation()?;
+        let reviews = self
+            .clause_verifier
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "singleton clause verifier absent",
+            ))?
+            .population(criteria, &adverse)
+            .map_err(failure)?;
         let bytes = canonical::canonical_json(&serde_json::json!({
             "schema":"crucible.reference.singleton-original-observation.v1", "implementation":package.identity(),
             "unit":unit.identity, "plan":criteria.plan, "plan_reference":criteria.reference,
@@ -418,7 +448,7 @@ impl Actor {
             "prepared_world":publisher.original.map(|original|serde_json::json!({"nodes":original.nodes(),"owners":original.prepared_owners()})),
             "positive_semantic_native_archive_resolution":true,
             "remaining_clause_reviews":criteria.clauses.keys().collect::<Vec<_>>(),
-            "adverse_native_case":"NotExecuted", "qualification_accepted":false
+            "adverse_native_case":adverse,"complete_clause_reviews":reviews, "qualification_accepted":false
         }))?;
         self.persist_exact(&bytes)?;
         Ok(SingletonCollectionObservation {
@@ -525,6 +555,7 @@ fn source_context(
     let harness = canonical::canonical_json(&serde_json::json!({
         "schema":"crucible.reference.singleton-harness-source.v1", "actual_executable":canonical::content_ref(&bytes,"application/vnd.crucible.executable")?,
         "actor":include_str!("singleton_actor.rs"),"interface":include_str!("singleton.rs"),
+        "adverse":include_str!("singleton_adverse.rs"),"clause_verifier":include_str!("singleton_clause.rs"),
         "launch":include_str!("vendor_bridge/collecting_launch.rs"),"shared_original_transport":include_str!("vendor_bridge/negotiation.rs"),
         "source_package":package.identity()
     }))?;

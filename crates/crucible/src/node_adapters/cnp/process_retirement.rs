@@ -171,7 +171,7 @@ impl CnpPeerCustody {
         )
         .map_err(crucible_node_contract::ContractError::from)?;
         bounded.write_all(b",\"controller\":")?;
-        controller.write_owned_completed_originals(&mut bounded)?;
+        controller.write_owned_terminal_originals(&mut bounded)?;
         bounded.write_all(b"}")?;
         Ok(CnpSemanticRetirement { peer: self })
     }
