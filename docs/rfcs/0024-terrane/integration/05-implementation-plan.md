@@ -136,9 +136,11 @@ T2 and branch worklines remain deferred.
 Current qualification uses frozen head `d1071dc9e1a2` (tree `04b7bc9ff9a1`).
 The exact formatter pair, strict SDK all-target Clippy, SDK all-target
 compilation and default native build pass. Its actual inventory contains
-1,116 tests across three AOS executables, with none ignored. The first 22
-focused cases pass with unchanged source, compiler inputs and executables;
-the remaining six cases and broader qualification remain pending. Full
+1,116 tests across three AOS executables, with none ignored. All 28 focused
+cases pass once each with unchanged source, compiler inputs and executables.
+Authorized-only cancellation passes in 96.184 seconds under its unchanged
+120-second limit. Core renewal, all six growth populations, full SDK and Nix
+qualification remain pending. Full
 original task-diff review is complete for the 99 core-test, 58 ref-advance
 and 103 bucket paths. Two isolated bucket presentation corrections add a
 missing panic contract and method separation, with unchanged test bodies.
