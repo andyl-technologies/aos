@@ -2711,6 +2711,17 @@ These helpers issue no native execution, capture, restoration or readiness
 authority. Current complete application compilation and ABI/license gates
 remain required with the final integrated source.
 
+## Complete workspace vendor staging hash
+
+The workspace dependency hash now matches the exact current Cargo lockfile.
+All 639 original source archives were checked against its checksums, and a
+fresh complete NAR read reproduces the observed staging hash from the failed
+collector build. The lockfile and staging helper are unchanged. This corrects
+the stale fixed-output hash for ordinary Rust package and application checks;
+it does not reclassify that failed build or establish package acceptance.
+Future offline builds still require explicit local source admission, since
+Nix's offline flag does not isolate fixed-output builders from networking.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
