@@ -47,10 +47,24 @@ async fn native_repeated_producer_checks_preserve_current_and_original_refusal()
         crate::repository::PreparedTree::from_tree(&tree)?
     };
     request.commit.tree = tree.root();
+    // New file paths need identity-bound content-domain evidence. The template
+    // carries no reference records or uploads, so stage the genuine known body
+    // under the native profile rather than asserting an existing-reference grant.
+    request.uploads.push(crate::guard::StagedUpload::Chunk {
+        encoded: terrane_core::codec::encode_envelope(terrane_core::codec::EncodedChunk {
+            codec: terrane_core::codec::Codec::Raw,
+            body: fixture::BODY,
+        }),
+        identity: TERRANE_V1.calculate(IdentityKind::Chunk, fixture::BODY)?,
+        declared_plaintext_len: fixture::BODY.len(),
+        position: crate::store::ChunkPosition::Final,
+        profile: guard.config().chunk_profile.clone(),
+    });
     let published = fixture
         .repository
         .commit_with_report(&mut session, tree, request)
-        .await?;
+        .await
+        .map_err(|error| format!("new producer namespace publication: {error:?}"))?;
     assert!(
         published
             .index_work
@@ -204,7 +218,8 @@ async fn native_repeated_producer_checks_preserve_current_and_original_refusal()
     fixture
         .repository
         .commit_with_report(&mut session, tree, request)
-        .await?;
+        .await
+        .map_err(|error| format!("current ACL revocation publication: {error:?}"))?;
     let denied_record = guard.store().ref_get(REFERENCE).await?;
     let denied_stored = physical(guard.store().root()).await?;
     let denied_controls = physical(&fixture.control).await?;
