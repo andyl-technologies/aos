@@ -2345,6 +2345,18 @@ references the matching source output. It has not yet been integrated into
 QEMU's firmware installation. The remaining 39 blob inputs and 12 EDK2 images,
 guest boot and complete firmware/device qualification remain required.
 
+The additive qboot provider uses raw AOS GCC and binutils with an explicit
+freestanding static link. The source component compiles all 15 objects and
+produces the original 65,536-byte i386 ROM. Product validation rejects dynamic or
+interpreted ELF images and incomplete object/dependency inventories. An initial
+component link exposed upstream linker-probe misclassification and produced an
+oversized dynamic image; explicit supported linker flags correct it. The final
+recipe passes Nix parsing and formatting, and its component products pass
+readback. Independent review reconstructs every allocated ELF section at its
+original load address and reproduces the complete raw image, including zero
+gaps. Hermetic package/source-output construction, QEMU installation and
+guest behavior remain unqualified.
+
 ## Selected plugin preparation and process fencing
 
 The selected plugin retains one original Unix socket, setup descriptor journal,
