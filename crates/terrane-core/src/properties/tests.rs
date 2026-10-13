@@ -6,6 +6,18 @@ use crate::tree_format::{Attribute, ContentRef, Entry, EntryKind, Property};
 use alloc::vec;
 use alloc::vec::Vec;
 
+mod recorded_graft;
+
+#[test]
+fn domain_reference_recorded_graft_admission_preserves_trusted_later_bindings() {
+    recorded_graft::preserves_trusted_later_bindings();
+}
+
+#[test]
+fn domain_reference_recorded_graft_admission_keeps_placement_and_policy_refusals() {
+    recorded_graft::keeps_placement_and_policy_refusals();
+}
+
 fn text(value: &str) -> Vec<u8> {
     let mut bytes = Vec::new();
     cbor::write_text(&mut bytes, value);
@@ -48,9 +60,12 @@ fn file() -> Entry<'static> {
 #[test]
 fn resolution_registry_defaults_and_path_overrides() {
     let default = resolve(&[], defaults()).expect("defaults");
-    assert_eq!(PropertyName::ALL.len(), 33);
+    assert_eq!(PropertyName::ALL.len(), 35);
     for name in PropertyName::ALL {
-        assert!(default.get(*name).is_some());
+        assert_eq!(
+            default.get(*name).is_some(),
+            *name != PropertyName::IndexGaps
+        );
         assert_eq!(PropertyName::parse(name.as_str()), Ok(*name));
     }
     assert_eq!(default.domain(), Ok(Domain::Private("root")));
@@ -153,6 +168,93 @@ fn resolution_attr_by_requires_registered_attribute_names() {
             .is_err(),
             "unregistered attribute {name}"
         );
+    }
+}
+
+#[test]
+fn resolution_signed_by_key_requires_canonical_terminal_public_keys() {
+    use crate::properties::selected::Selection;
+    use crate::properties::semantics::RecordedContext;
+    use crate::provenance::Selector;
+
+    let valid_key = "0123456789abcdef".repeat(4);
+    let short_key = "0".repeat(63);
+    let long_key = "0".repeat(65);
+    let uppercase_key = "AB".repeat(32);
+    let nonhex_key = "g".repeat(64);
+    let multibyte_key = "é".repeat(32);
+    let selections = [
+        Selection::Legacy,
+        Selection::Active,
+        Selection::Recorded(RecordedContext::new(1, 3, &[]).expect("revision one")),
+        Selection::Recorded(RecordedContext::new(2, 3, &[]).expect("revision two")),
+        Selection::Recorded(RecordedContext::new(3, 3, &[]).expect("revision three")),
+    ];
+
+    for (key, valid) in [
+        (valid_key.as_str(), true),
+        ("", false),
+        ("rotation-key", false),
+        (short_key.as_str(), false),
+        (long_key.as_str(), false),
+        (uppercase_key.as_str(), false),
+        (nonhex_key.as_str(), false),
+        (multibyte_key.as_str(), false),
+    ] {
+        let atom = names(&["signed-by-key", key]);
+        let mut accepted = Vec::new();
+        cbor::write_array(&mut accepted, 2);
+        cbor::write_text(&mut accepted, "accepted-by");
+        accepted.extend_from_slice(&atom);
+        let mut negated = Vec::new();
+        cbor::write_array(&mut negated, 2);
+        cbor::write_text(&mut negated, "not");
+        negated.extend_from_slice(&accepted);
+
+        for selector in [&atom, &negated] {
+            assert_eq!(Selector::decode(selector).is_ok(), valid, "key {key:?}");
+
+            for encoded in [
+                selector.clone(),
+                binding(selector, true),
+                binding(selector, false),
+            ] {
+                let property = Property {
+                    name: "trust",
+                    value: &encoded,
+                };
+                let checked = validate_property(&property);
+                if valid {
+                    assert_eq!(
+                        checked.expect("canonical terminal key").1,
+                        Value::Selector(selector)
+                    );
+                } else {
+                    assert_eq!(checked, Err(Error::InvalidValue), "key {key:?}");
+                }
+
+                let properties = [property];
+                for selection in &selections {
+                    let effective = selection.resolve(
+                        &[RootLayer {
+                            properties: &properties,
+                            overrides: &[],
+                        }],
+                        defaults(),
+                    );
+                    if valid {
+                        assert_eq!(
+                            effective
+                                .expect("selected terminal key")
+                                .get(PropertyName::Trust),
+                            Some(&Value::Selector(selector))
+                        );
+                    } else {
+                        assert_eq!(effective, Err(Error::InvalidValue), "key {key:?}");
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1216,3 +1318,5 @@ fn domain_reference_graft_rejects_unregistered_property_bindings() {
     };
     assert_eq!(validate_commit(&[change], &[]), Err(Error::UnknownProperty));
 }
+
+mod classification;

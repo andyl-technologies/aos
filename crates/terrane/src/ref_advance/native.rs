@@ -34,9 +34,9 @@ pub(crate) struct NativeTagRequest {
 
 /// Borrows synchronization and independently retained original evidence.
 #[derive(Clone, Copy, Default)]
-pub(crate) struct PublicationObservation<'a> {
-    pub(crate) history: HistoryObservation<'a>,
-    pub(crate) original: Option<&'a OriginalCommitContext>,
+pub(crate) struct PublicationObservation<'held> {
+    pub(crate) history: HistoryObservation<'held>,
+    pub(crate) original: Option<&'held OriginalCommitContext>,
 }
 
 /// Borrows the registered clock with native Send synchronization bounds.
@@ -95,12 +95,27 @@ impl<F: LocalFs + BucketBinding> LocalFs for FsRef<'_, F> {
         self.0.lock_existing_exclusive(path).await
     }
 
+    async fn try_lock_existing_shared(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        self.0.try_lock_existing_shared(path).await
+    }
+
+    async fn try_lock_existing_exclusive(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        self.0.try_lock_existing_exclusive(path).await
+    }
+
     async fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         self.0.read(path).await
     }
 
     async fn read_nofollow(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         self.0.read_nofollow(path).await
+    }
+
+    async fn read_ordinary_record(
+        &self,
+        read: crate::store::NativeOrdinaryRead,
+    ) -> std::io::Result<Option<crate::store::NativeOrdinaryRecord>> {
+        self.0.read_ordinary_record(read).await
     }
 
     async fn read_protected_record(

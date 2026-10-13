@@ -28,7 +28,11 @@ async fn backend<F: LocalFs + BucketBinding>(
     Ok(backend_with_control(fs, observed).await?.0)
 }
 
-async fn backend_with_control<F: LocalFs + BucketBinding>(
+/// Captures the actual selected backend frame and its protected control location.
+///
+/// # Errors
+/// Refuses read-only access, unavailable retention and unsafe or changed selected inputs.
+pub(super) async fn backend_with_control<F: LocalFs + BucketBinding>(
     fs: &F,
     observed: &SelectedObservation<'_>,
 ) -> Result<(Frame, PathBuf), StoreFailure> {
@@ -39,6 +43,7 @@ async fn backend_with_control<F: LocalFs + BucketBinding>(
     let mut frame = Frame {
         exclusions: vec![receipt].into(),
         names: Vec::new(),
+        pairs: Vec::new(),
         reads: Vec::new(),
         parents: BTreeMap::new(),
         writes: None,
@@ -208,13 +213,11 @@ pub(crate) async fn stage_ref_log<F: LocalFs + BucketBinding>(
     let mut frame = backend(fs, observed).await?;
     let policy = FencePolicy::Payload { owner: frame.owner };
     let root = PathBuf::from(observed.identity().root());
-    if let Some(existing) = frame
+    if frame
         .actual_read(fs, &root.join(key.as_str()), policy)
         .await?
+        .is_some()
     {
-        if record.record.candidate_id.is_none() && existing != bytes {
-            return Err(corrupt());
-        }
         observed.revalidate().await?;
         return Ok(RefLogAppendOutcome::Exists);
     }
@@ -286,11 +289,20 @@ pub(crate) async fn stage_container_contextual<F: LocalFs + BucketBinding>(
     artifacts: &ContainerArtifacts,
     context: &crate::selected_bridge::native_guard::meta_batch::ImmutableEffectContext<'_, '_>,
 ) -> Result<(), StoreFailure> {
+    #[cfg(test)]
+    let trace = crate::ref_advance::NativeTrace::new(
+        observed.identity().root(),
+        "contextual-container-stage",
+    );
     context.check_selection(observed)?;
     let (mut frame, control) =
         super::contextual_frame(fs, observed, context.sources(), context.effect_context()).await?;
     let root = observed.identity().root();
+    #[cfg(test)]
+    trace.mark("creator-pair-entry");
     super::creation::stage_pair(fs, &mut frame, root, &control, artifacts).await?;
+    #[cfg(test)]
+    trace.mark("creator-pair-acknowledged");
     frame
         .execute(
             fs,
@@ -299,6 +311,8 @@ pub(crate) async fn stage_container_contextual<F: LocalFs + BucketBinding>(
             },
         )
         .await?;
+    #[cfg(test)]
+    trace.mark("creator-root-sync-acknowledged");
     observed.revalidate().await?;
     context.recheck()
 }
@@ -334,6 +348,66 @@ pub(crate) async fn publish_contextual<F: LocalFs + BucketBinding>(
     publish_inner(fs, observed, mutation, Some(context)).await
 }
 
+/// Separates genuinely new immutable outputs from every consumed input role.
+fn fresh_immutable_outputs(
+    root: &std::path::Path,
+    rows: &[(&str, &[u8])],
+    consumed_inputs: &std::collections::BTreeSet<PathBuf>,
+    created_outputs: &std::collections::BTreeSet<PathBuf>,
+) -> Result<std::collections::BTreeSet<PathBuf>, StoreFailure> {
+    let mut outputs = std::collections::BTreeSet::new();
+    for (key, _) in rows {
+        let canonical = BucketKey::parse(key).map_err(|_| corrupt())?;
+        let path = root.join(key);
+        // The canonical registry admits .pack only as a container body, which
+        // has a separate creator seal and never enters metadata durability.
+        if canonical.mutability() != Mutability::Immutable
+            || canonical.as_str().ends_with(".pack")
+            || consumed_inputs.contains(&path)
+        {
+            continue;
+        }
+        if created_outputs.contains(&path) {
+            outputs.insert(path);
+        }
+    }
+    Ok(outputs)
+}
+
+/// Classifies only new immutable noncontainer rows with no consumed input role.
+///
+/// # Errors
+/// Rejects noncanonical keys; conflicting bodies conservatively remain full.
+pub(super) fn early_install_candidates(
+    root: &std::path::Path,
+    owner: u32,
+    rows: &[(&str, &[u8])],
+    consumed_inputs: &std::collections::BTreeSet<PathBuf>,
+) -> Result<super::super::immutable_cohort::scope::Candidates, StoreFailure> {
+    let mut bodies = std::collections::BTreeMap::new();
+    let mut conflicting = std::collections::BTreeSet::new();
+    for &(key, bytes) in rows {
+        let canonical = BucketKey::parse(key).map_err(|_| corrupt())?;
+        let path = root.join(key);
+        if canonical.mutability() == Mutability::Immutable
+            && !canonical.as_str().ends_with(".pack")
+            && !consumed_inputs.contains(&path)
+        {
+            if bodies
+                .get(&path)
+                .is_some_and(|prior: &Vec<u8>| prior.as_slice() != bytes)
+            {
+                conflicting.insert(path.clone());
+            }
+            bodies.insert(path, bytes.to_vec());
+        }
+    }
+    bodies.retain(|path, _| !conflicting.contains(path));
+    Ok(super::super::immutable_cohort::scope::Candidates::new(
+        root, owner, bodies,
+    ))
+}
+
 async fn publish_inner<F: LocalFs + BucketBinding>(
     fs: &F,
     observed: &SelectedObservation<'_>,
@@ -342,6 +416,9 @@ async fn publish_inner<F: LocalFs + BucketBinding>(
         &crate::selected_bridge::native_guard::meta_batch::ImmutableEffectContext<'_, '_>,
     >,
 ) -> Result<super::CheckedPublication, StoreFailure> {
+    #[cfg(test)]
+    let trace =
+        crate::ref_advance::NativeTrace::new(observed.identity().root(), "raw-cohort-publication");
     if mutation.previous() != observed.state()
         || mutation.predecessor() != observed.stamp().1
         || mutation.previous_logical() != observed.logical()
@@ -366,6 +443,8 @@ async fn publish_inner<F: LocalFs + BucketBinding>(
             frame
         }
     };
+    #[cfg(test)]
+    trace.mark("retained-frame-capture-returned");
     let root = observed.identity().root();
     let owner = frame.owner;
     let control = observed
@@ -374,6 +453,7 @@ async fn publish_inner<F: LocalFs + BucketBinding>(
         .and_then(|read| read.path().parent())
         .ok_or_else(corrupt)?;
     for read in mutation.reads() {
+        read.require_effect_compatible()?;
         let key = read.path().strip_prefix(root).map_err(|_| corrupt())?;
         let key = key.to_str().ok_or_else(corrupt)?;
         BucketKey::parse(key).map_err(|_| corrupt())?;
@@ -395,26 +475,53 @@ async fn publish_inner<F: LocalFs + BucketBinding>(
         }
     }
     observed.revalidate().await?;
+    #[cfg(test)]
+    trace.mark("mutation-input-capture-returned");
+    // Input provenance survives subsequent output recapture, including absences.
+    let consumed_inputs: std::collections::BTreeSet<_> =
+        frame.reads.iter().map(|read| read.path.clone()).collect();
+    #[cfg(test)]
+    trace.mark("preproject-entry");
     frame
         .project(fs, root, observed.snapshot(), observed.logical())
         .await?;
+    #[cfg(test)]
+    trace.mark("preproject-returned");
 
     // Immutable catalog artifacts precede the snapshot-bearing selected slot.
+    let mut immutable_rows = Vec::new();
+    let mut fresh_rows = Vec::new();
     for change in mutation.changes() {
         let key = BucketKey::parse(&change.key).map_err(|_| corrupt())?;
         if key.mutability() == Mutability::Immutable {
-            frame
-                .install(
-                    fs,
-                    root,
-                    key.as_str(),
-                    change.new.as_deref().ok_or_else(malformed)?,
-                    FencePolicy::Payload { owner },
-                    Mutability::Immutable,
-                )
-                .await?;
+            let row = (
+                change.key.as_str(),
+                change.new.as_deref().ok_or_else(malformed)?,
+            );
+            immutable_rows.push(row);
+            // A same-value repair still consumes its logical predecessor.
+            if change.expected.is_none() {
+                fresh_rows.push(row);
+            }
         }
     }
+    // Freeze positive output roles before any installation can erase input
+    // provenance. Expected-value repairs and every consumed absence stay full.
+    let early_candidates = early_install_candidates(root, owner, &fresh_rows, &consumed_inputs)?;
+    #[cfg(test)]
+    trace.mark("tracked-immutable-install-entry");
+    let created_outputs = frame
+        .install_immutable_cohort_tracked(fs, root, &immutable_rows, Some(early_candidates))
+        .await?;
+    #[cfg(test)]
+    trace.mark("tracked-immutable-install-returned");
+    let fresh_immutable_outputs =
+        fresh_immutable_outputs(root, &fresh_rows, &consumed_inputs, &created_outputs)?;
+    #[cfg(test)]
+    trace.mark(&format!(
+        "fresh-immutable-output-count={}",
+        fresh_immutable_outputs.len()
+    ));
     let nonce: [u8; 32] = fs
         .random_bytes(32)
         .await
@@ -489,6 +596,11 @@ async fn publish_inner<F: LocalFs + BucketBinding>(
         )
         .await?;
 
+    // All payload renames have synchronized their actual parent directories.
+    // Refresh their complete bodies and current authority before selection;
+    // scoped intermediate reads never certify the selecting commit slot.
+    frame.verify_staged_payloads(fs, root).await?;
+
     // Exact consecutive create-once installation remains the sole selection.
     let slot = PublicationCommit {
         revision: mutation.next().revision,
@@ -528,11 +640,16 @@ async fn publish_inner<F: LocalFs + BucketBinding>(
         &snapshot_bytes,
         super::super::artifact_seal::raw_publication::RawDurabilityInputs {
             writes: frame.writes.as_ref().ok_or_else(unsupported)?,
+            fresh_immutable_outputs: &fresh_immutable_outputs,
             context: context.map(|context| context.effect_context()),
         },
     )
     .map_err(super::native_failure)?;
+    #[cfg(test)]
+    trace.mark("actual-native-cohort-ack-entry");
     frame.execute(fs, acknowledgment).await?;
+    #[cfg(test)]
+    trace.mark("actual-native-cohort-ack-returned");
     completed.take().map_err(|error| match error {
         super::NativeEffectFailure::Rejected(error) => error,
         super::NativeEffectFailure::Io(error) => {

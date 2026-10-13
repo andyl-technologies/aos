@@ -6,6 +6,8 @@
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_index_only_selects_new_destination_owner"
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_trash_only_selects_new_destination_owner"
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_all_absent_selects_new_destination_owner"
+    "gc::runner::copied_retirement_tests::gc_copied_retirement_native_absent_source_exclusion_selects_new_destination_owner"
+    "gc::runner::copied_retirement_tests::gc_copied_retirement_native_new_exclusion_preserves_unrelated_binding"
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_missing_foreign_original_keeps_complete_live_data"
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_unresolved_live_data_refuses_before_preparation"
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_incomplete_ref_or_absent_history_refuses_preparation"
@@ -26,26 +28,15 @@
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_first_owner_drops_unqualified_lineage_and_keeps_burns"
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_unused_memo_sharing_live_index_result_keeps_actual_context"
   ];
+  runCases = import ./_native-cases.nix {
+    label = "native-copied-retirement-first-ownership";
+    inherit selectors;
+  };
 in
   # This check covers local copied-destination first ownership. Recurring
   # recovery and provider-specific qualification remain separate obligations.
   sourceGate "native-copied-retirement-first-ownership" ''
-    cd crates
-    cargo test --frozen --offline -p terrane --no-default-features \
-      --features tokio,surface-sdk --lib -- --list > "$TMPDIR/copied-retirement-tests.txt"
-    python3 ../tests/terrane/check_native_gate.py inventory \
-      "$TMPDIR/copied-retirement-tests.txt" '${builtins.toJSON selectors}'
-
-    for test_name in ${builtins.concatStringsSep " " selectors}; do
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
-        --features tokio,surface-sdk --lib "$test_name" -- --exact \
-        > "$TMPDIR/copied-retirement-test.log" 2>&1; then
-        cat "$TMPDIR/copied-retirement-test.log"
-        exit 1
-      fi
-      python3 ../tests/terrane/check_native_gate.py execution \
-        "$TMPDIR/copied-retirement-test.log" "[\"$test_name\"]"
-    done
-    printf 'PASS: local copied-destination first ownership and retained-pair prerequisites (25 exact cases)\n' \
+    ${runCases}
+    printf 'PASS: local copied-destination first ownership and retained-pair prerequisites (27 exact cases)\n' \
       > "$out/result"
   ''

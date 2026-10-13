@@ -33,6 +33,14 @@ where
     C: Clock + BucketBinding,
     R: LocalFs + BucketBinding,
 {
+    #[cfg(test)]
+    let mut trace = crate::ref_advance::PhaseTrace::new(
+        coordinator.guard().clock(),
+        session.reference(),
+        Some(publication.admitted.commit.identity()),
+        Some(publication.started),
+        "cold-publication-entry",
+    );
     let admitted = &publication.admitted;
     admitted
         .cold_fork
@@ -64,6 +72,8 @@ where
         },
     )
     .await?;
+    #[cfg(test)]
+    trace.mark("cold-source-qualified");
     let early_destination = coordinator
         .guard()
         .check_cold_fork_candidate(
@@ -74,6 +84,8 @@ where
             publication.original.baseline(),
         )
         .await?;
+    #[cfg(test)]
+    trace.mark("cold-early-candidate-checked");
     let original_pins = crate::guard::publication_original_pins(&publication.original)?;
     let mut controls = qualified.policies.lineage.controls.clone();
     merge_controls(&mut controls, &original_pins)?;
@@ -86,6 +98,8 @@ where
     )
     .await?;
     qualified.revalidate(coordinator.guard()).await?;
+    #[cfg(test)]
+    trace.mark("cold-initial-original-revalidated");
     let initial_control_stamp = control_stamp(&initial_controls);
     let initial_guard = qualified.guard_read.clone();
     let initial_lineage = qualified.lineage_read.clone();
@@ -136,6 +150,8 @@ where
     {
         return Err(invalid().into());
     }
+    #[cfg(test)]
+    trace.mark("cold-commit-staged");
     let retained = observed
         .state()
         .branches
@@ -215,6 +231,8 @@ where
             }
         }
     }
+    #[cfg(test)]
+    trace.mark("cold-log-staged");
     let staged = coordinator.store().observe_publication().await?;
     if staged.state().guard != observed.state().guard
         || staged.state().loss_generation != observed.state().loss_generation
@@ -223,7 +241,11 @@ where
     {
         return Err(invalid().into());
     }
+    #[cfg(test)]
+    trace.mark("cold-staged-authority-compared");
     immutable.check_selection(&staged)?;
+    #[cfg(test)]
+    trace.mark("cold-staged-selection-checked");
     let same_controls = qualified.controls;
     let mut qualified = qualify_source_with_controls(
         concrete,
@@ -240,8 +262,12 @@ where
         Some(same_controls),
     )
     .await?;
+    #[cfg(test)]
+    trace.mark("cold-source-requalified");
     check_read(&initial_guard, &qualified.guard_read)?;
     check_read(&initial_lineage, &qualified.lineage_read)?;
+    #[cfg(test)]
+    trace.mark("cold-source-records-compared");
     let destination = coordinator
         .guard()
         .check_cold_fork_candidate(
@@ -252,6 +278,8 @@ where
             publication.original.baseline(),
         )
         .await?;
+    #[cfg(test)]
+    trace.mark("cold-final-candidate-checked");
     let retained_controls = qualified.controls.retain_used(&controls).await?;
     super::super::meta_batch::check_continuity(&initial_controls, &retained_controls)?;
     if initial_control_stamp != control_stamp(&retained_controls) {
@@ -265,7 +293,12 @@ where
     )
     .await?;
     qualified.revalidate(coordinator.guard()).await?;
+    coordinator
+        .guard()
+        .retain_cold_fork_selection(&qualified, admitted, &publication.original)?;
 
+    #[cfg(test)]
+    trace.mark("cold-final-original-retained");
     let requests = [qualified.authorization().clone(), destination];
     let consumed = ConsumedResolver::new(coordinator.guard(), authority)?;
     consumed.registration(authority)?;
@@ -291,6 +324,8 @@ where
     })?;
     used.configuration = actual.configuration;
     used.registries = actual.registries;
+    #[cfg(test)]
+    trace.mark("cold-actual-inputs-captured");
     derivation::extend_completed_fork(
         coordinator.guard(),
         &qualified,
@@ -298,6 +333,8 @@ where
         &publication.original,
         &mut used,
     )?;
+    #[cfg(test)]
+    trace.mark("cold-fork-lineage-extended");
     let digest = *blake3::hash(&snapshot).as_bytes();
     let lineage = CheckedLineage {
         source_name: session.reference().to_owned(),
@@ -312,6 +349,8 @@ where
     }
     .encode()
     .map_err(|_| invalid())?;
+    #[cfg(test)]
+    trace.mark("cold-lineage-encoded");
     let (mut state, changes) = staged.ref_transition(session.reference(), &next)?;
     state.sources.push(SourceLineage {
         name: session.reference().to_owned(),
@@ -330,22 +369,73 @@ where
         .guard()
         .source_requalification_configuration_adapter()?;
     let checked_lineage = qualified.policies.lineage.clone();
+    let snapshot_disclosures = ConsumedResolver::snapshot_disclosure_inputs(coordinator.guard())?;
     let final_snapshot = snapshot.clone();
     let final_authority = authority.clone();
+    #[cfg(test)]
+    let callback_trace =
+        crate::ref_advance::NativeTrace::new(authority.root(), "cold-final-callback");
     let final_check = super::super::super::OwnedFinalCheck {
         check: super::super::SharedCheck::new(move || {
+            #[cfg(test)]
+            callback_trace.mark("callback-entry");
             requests.recheck()?;
-            if ConsumedResolver::new(&configured, &final_authority)?.snapshot_bytes()?
+            #[cfg(test)]
+            callback_trace.mark("callback-requests-rechecked");
+            #[cfg(test)]
+            if std::env::var_os("TERRANE_REF_PHASE_TRACE").is_some() {
+                match ConsumedResolver::new_with_snapshot_disclosures(
+                    &configured,
+                    &final_authority,
+                    &snapshot_disclosures,
+                ) {
+                    Err(error) => eprintln!("cold-snapshot-acquisition-error {:?}", error.kind()),
+                    Ok(resolver) => match resolver.snapshot_bytes() {
+                        Err(error) => eprintln!("cold-snapshot-encoding-error {:?}", error.kind()),
+                        Ok(bytes) => {
+                            let actual = GuardSnapshot::decode(&bytes);
+                            let expected = GuardSnapshot::decode(&final_snapshot);
+                            if let (Ok(actual), Ok(expected)) = (actual, expected) {
+                                eprintln!(
+                                    "cold-snapshot-equality bytes={} registration={} issuers={} disclosures={} configuration={} registries={}",
+                                    bytes == final_snapshot,
+                                    actual.registration == expected.registration,
+                                    actual.issuers == expected.issuers,
+                                    actual.disclosures == expected.disclosures,
+                                    actual.configuration == expected.configuration,
+                                    actual.registries == expected.registries,
+                                );
+                            } else {
+                                eprintln!("cold-snapshot-diagnostic-decode-error");
+                            }
+                        }
+                    },
+                }
+            }
+            if ConsumedResolver::new_with_snapshot_disclosures(
+                &configured,
+                &final_authority,
+                &snapshot_disclosures,
+            )?
+            .snapshot_bytes()?
                 != final_snapshot
             {
                 return Err(invalid());
             }
+            #[cfg(test)]
+            callback_trace.mark("callback-snapshot-compared");
             for view in &checked_lineage.used.views {
+                #[cfg(test)]
+                callback_trace.mark("callback-view-comparison-entry");
                 configured.compare_requalification_view_inputs(&checked_lineage, view)?;
+                #[cfg(test)]
+                callback_trace.mark("callback-view-compared");
             }
             Ok(())
         }),
     };
+    #[cfg(test)]
+    trace.mark("cold-final-check-retained");
     let permit = super::super::super::CheckedMutation {
         observed: &staged,
         sources: Vec::new(),

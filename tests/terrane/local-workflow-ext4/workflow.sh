@@ -83,6 +83,18 @@ for name in issuer.seed terminal.seed token.cbor; do
     cp "$authority_dir/$name" "$workflow_root/expected/$name"
 done
 
+# Reinitialization must not replace the bucket or its persisted credentials.
+if cli init reinitialize --not-after "$not_after"; then
+    printf '%s\n' 'reinitialization unexpectedly succeeded' >&2
+    exit 1
+fi
+test ! -s "$workflow_root/logs/reinitialize.stdout"
+test "$(cat "$workflow_root/logs/reinitialize.stderr")" = \
+    'terrane: local bucket already exists'
+for name in issuer.seed terminal.seed token.cbor; do
+    cmp "$workflow_root/expected/$name" "$authority_dir/$name"
+done
+
 printf 'original content\0binary\377\n' >"$workflow_root/expected/original"
 printf 'executable content\n' >"$workflow_root/expected/executable"
 printf 'feature content\n' >"$workflow_root/expected/feature"
@@ -129,6 +141,22 @@ verify_checkout "$workflow_root/feature" no yes
 selected=$(cli checkout historical-checkout "commit:$original" "$workflow_root/historical")
 test "$selected" = "$original"
 verify_checkout "$workflow_root/historical" no no
+
+# Opening unsafe authority state must fail before creating an exposure and
+# leave all credentials intact. The next successful read proves restoration.
+chmod 755 "$authority_dir"
+if cli checkout unsafe-authority "$main_ref" "$workflow_root/denied"; then
+    printf '%s\n' 'unsafe authority unexpectedly served a checkout' >&2
+    exit 1
+fi
+test ! -s "$workflow_root/logs/unsafe-authority.stdout"
+test "$(cat "$workflow_root/logs/unsafe-authority.stderr")" = \
+    'terrane: repository access denied'
+test ! -e "$workflow_root/denied"
+for name in issuer.seed terminal.seed token.cbor; do
+    cmp "$workflow_root/expected/$name" "$authority_dir/$name"
+done
+chmod 700 "$authority_dir"
 
 # Reopen the on-disk repository again after all views have been served. The
 # live branch must retain its merge and the fixed target must retain its bytes.

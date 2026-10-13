@@ -1,8 +1,9 @@
 //! Checks fixed genesis staging and finishes activation under actual receipts.
 //!
-//! The program admits only the complete canonical empty genesis produced by the
-//! native creator. Existing Pending recovery consumes recorded staging; it
-//! neither creates another registration nor regenerates its operation nonce.
+//! The program compares the whole proposal against its fixed empty or verified
+//! copied catalog. D-108 copy staging makes the destination pointer durable
+//! before selecting slot zero. Existing Pending recovery consumes recorded
+//! staging; it neither creates another registration nor regenerates its nonce.
 
 use super::super::super::super::{
     ExactRead, FencePolicy, MetadataStamp, NamedFence, NativeExclusion, NativeOpenedDirectory,
@@ -21,6 +22,10 @@ use terrane_core::bucket::{BucketCapabilities, BucketKey, Mutability};
 use terrane_core::gc::publication::{
     Activation, BackendBinding, BackendRegistration, LogicalChange, PublicationCommit,
 };
+
+#[cfg(all(test, feature = "tokio", unix))]
+#[path = "../../../store/native_effect/directory_retention/cohorts.rs"]
+mod cohort_tests;
 
 /// Copies every ordered ancestor observation without rebinding its incarnation.
 pub(super) fn copy_parents(parents: &[ParentFence]) -> Vec<ParentFence> {
@@ -75,7 +80,7 @@ pub(in super::super) fn directory(
 /// Extends retained opened-directory ownership without rebinding older receipts.
 ///
 /// # Errors
-/// Rejects changed original receipts, poisoned storage and descriptor duplication failures.
+/// Rejects changed original receipts, unavailable physical checks and poisoned storage.
 pub(super) fn retain_directory(
     directories: &Directories,
     receipt: NativeOpenedDirectory,
@@ -85,7 +90,8 @@ pub(super) fn retain_directory(
     for old in current.iter() {
         old.check().map_err(io_failure)?;
         next.push(NativeOpenedDirectory {
-            file: Arc::new(old.file.try_clone().map_err(io_failure)?),
+            // Older submitted cohorts retain this same original descriptor.
+            file: Arc::clone(&old.file),
             path: old.path.clone(),
             stamp: old.stamp,
             policy: old.policy,
@@ -102,6 +108,7 @@ pub(in super::super) fn frame(owner: u32, exclusions: Arc<[NativeExclusion]>) ->
     Frame {
         exclusions,
         names: Vec::new(),
+        pairs: Vec::new(),
         reads: Vec::new(),
         parents: BTreeMap::new(),
         writes: None,
@@ -183,7 +190,7 @@ pub(super) fn restore_frame(
     Ok(result)
 }
 
-/// Requires the exact canonical empty proposal, without interpreting it as freshness.
+/// Requires the exact empty or verified-copy proposal without inferring freshness.
 ///
 /// # Errors
 /// Rejects partial catalogs, other proof classes, imported ownership or changed staging.
@@ -200,10 +207,13 @@ pub(in super::super) fn validate_stage(
         .and_then(|row| row.new.as_deref())
         .ok_or_else(corrupt)?;
     let cap = BucketCapabilities::decode(cap).map_err(|_| corrupt())?;
-    let expected = genesis::stage(
-        genesis::catalog(request.profile.clone(), binding.clone(), cap.probed_at)?,
-        stage.transaction.nonce,
-    )?;
+    let catalog = match &request.copy {
+        Some(copy) => {
+            genesis::copied_catalog(copy.payload.logical.clone(), binding.clone(), cap.probed_at)?
+        }
+        None => genesis::catalog(request.profile.clone(), binding.clone(), cap.probed_at)?,
+    };
+    let expected = genesis::stage(catalog, stage.transaction.nonce)?;
     if expected.transaction != stage.transaction || expected.snapshot_bytes != stage.snapshot_bytes
     {
         return Err(corrupt());
@@ -265,6 +275,9 @@ pub(in super::super) async fn finish<F: LocalFs + BucketBinding>(
     let before = BackendRegistration::decode(pending).map_err(|_| corrupt())?;
     if before.binding != *binding || before.activation != Activation::Pending {
         return Err(corrupt());
+    }
+    if request.copy.is_some() {
+        super::copy::prepare_pointer(&retained, request, &before, stage, frame).await?;
     }
     let transaction_key = format!("publication/transactions/{}", operation(stage));
     let transaction_bytes = stage.transaction.encode().map_err(|_| corrupt())?;
@@ -479,19 +492,11 @@ pub(super) async fn probe<F: LocalFs + BucketBinding>(
     let replacement = replacement.encode().map_err(|_| corrupt())?;
     let mut stale = cap.to_vec();
     stale.push(0);
-    match prepare_capability_change(fs, request, stage, frame, directories, &stale, &replacement)
-        .await
+    match checked_capability_change(fs, request, stage, frame, directories, &stale, &replacement)
+        .await?
     {
-        Err(error)
-            if matches!(
-                error.kind(),
-                crate::store::StoreErrorKind::Unavailable { .. }
-            ) =>
-        {
-            Ok(())
-        }
-        Err(error) => Err(error),
-        Ok(_) => Err(unsupported()),
+        None => Ok(()),
+        Some(_) => Err(unsupported()),
     }
 }
 
@@ -500,6 +505,7 @@ pub(super) async fn probe<F: LocalFs + BucketBinding>(
 /// # Errors
 /// Rejects an ineligible successor or changed complete selected projection;
 /// a stale whole expected CAP returns `Unavailable` before staging any data.
+#[cfg(all(test, feature = "tokio", unix))]
 pub(super) async fn prepare_capability_change<F: LocalFs + BucketBinding>(
     fs: &F,
     request: &NativePublicationInitialization,
@@ -509,6 +515,34 @@ pub(super) async fn prepare_capability_change<F: LocalFs + BucketBinding>(
     expected: &[u8],
     replacement: &[u8],
 ) -> Result<LogicalChange, StoreFailure> {
+    checked_capability_change(
+        fs,
+        request,
+        stage,
+        frame,
+        directories,
+        expected,
+        replacement,
+    )
+    .await?
+    .ok_or_else(|| {
+        StoreFailure::new(crate::store::StoreErrorKind::Unavailable { retry_after: None })
+    })
+}
+
+/// Distinguishes a verified stale comparison from failed physical probes.
+///
+/// A stale expected value is an ordinary comparison outcome. Native read and
+/// durability errors remain errors even when that comparison will refuse.
+async fn checked_capability_change<F: LocalFs + BucketBinding>(
+    fs: &F,
+    request: &NativePublicationInitialization,
+    stage: &NativeGenesisStage,
+    frame: &mut Frame,
+    directories: &Directories,
+    expected: &[u8],
+    replacement: &[u8],
+) -> Result<Option<LogicalChange>, StoreFailure> {
     let logical = stage
         .transaction
         .changes
@@ -613,13 +647,11 @@ pub(super) async fn prepare_capability_change<F: LocalFs + BucketBinding>(
         )
         .await?;
     if expected != original {
-        return Err(StoreFailure::new(
-            crate::store::StoreErrorKind::Unavailable { retry_after: None },
-        ));
+        return Ok(None);
     }
-    Ok(LogicalChange {
+    Ok(Some(LogicalChange {
         key: "CAPABILITIES".into(),
         expected: Some(original.to_vec()),
         new: Some(replacement.to_vec()),
-    })
+    }))
 }

@@ -2,6 +2,7 @@
 
 use terrane_core::{
     chunking::ChunkProfile,
+    derivation::Memo,
     derived::AttrRecord,
     identity::{IdentityKind, TERRANE_V1},
     manifest::Manifest,
@@ -19,6 +20,11 @@ use crate::store::{
 /// Cryptographic authority and complete-tree relationships remain Guard checks.
 /// Formats outside this local workflow fail explicitly rather than accepting
 /// opaque bytes without a registered validator.
+/// Memo validation checks only the common record schema (DRV-21); recipe replay
+/// must independently establish the claimed recipe/result association (DRV-22).
+/// Node validation accepts the registered ordinary, overlay-layer, and generic
+/// Index schemas. An upload supplies neither root status nor an Index role;
+/// those contexts and their relationships require independent tree validation.
 pub struct MetadataValidator {
     profile: Box<ChunkProfile>,
     #[cfg(all(test, feature = "tokio", unix))]
@@ -55,35 +61,6 @@ impl MetadataValidator {
         } else {
             Err(StoreFailure::new(StoreErrorKind::Unsupported))
         }
-    }
-
-    // Immutable admission checks whether a physical auxiliary Node has any
-    // registered schema. Only the owner-bound loader selects and checks its
-    // actual role and relationships; admission grants neither.
-    fn registered_index_node(&self, bytes: &[u8], root: bool) -> bool {
-        use terrane_core::indexing::carrier::{Role, SemanticContext, validate_node};
-
-        #[cfg(all(test, feature = "tokio", unix))]
-        self.observe_node_decode();
-        let Ok(node) = tree_format::decode_node_for(
-            bytes,
-            root,
-            self.profile.minimum() as u64,
-            TreeUse::Index,
-        ) else {
-            return false;
-        };
-        let Ok(context) = SemanticContext::new(3, 2, 1) else {
-            return false;
-        };
-        [
-            Role::Primary,
-            Role::Gap,
-            Role::PresentRoute,
-            Role::MissingRoute,
-        ]
-        .into_iter()
-        .any(|role| validate_node(context, role, &node, root).is_ok())
     }
 
     #[cfg(all(test, feature = "tokio", unix))]
@@ -135,33 +112,33 @@ impl ContentValidator for MetadataValidator {
                 "OBJ-15",
             ),
             IdentityKind::Node => (
-                {
-                    #[cfg(all(test, feature = "tokio", unix))]
-                    self.observe_node_decode();
-                    tree_format::decode_node_for(
-                        upload.bytes(),
-                        true,
-                        self.profile.minimum() as u64,
-                        TreeUse::Ordinary,
-                    )
-                }
-                .or_else(|_| {
-                    #[cfg(all(test, feature = "tokio", unix))]
-                    self.observe_node_decode();
-                    tree_format::decode_node_for(
-                        upload.bytes(),
-                        false,
-                        self.profile.minimum() as u64,
-                        TreeUse::Ordinary,
-                    )
-                })
-                .is_ok()
-                    || self.registered_index_node(upload.bytes(), true)
-                    || self.registered_index_node(upload.bytes(), false),
+                [TreeUse::Ordinary, TreeUse::OverlayLayer, TreeUse::Index]
+                    .into_iter()
+                    .any(|usage| {
+                        #[cfg(all(test, feature = "tokio", unix))]
+                        self.observe_node_decode();
+                        // Root-capable decoding includes every local nonroot
+                        // shape. Actual placement requires tree context.
+                        tree_format::decode_node_for(
+                            upload.bytes(),
+                            true,
+                            self.profile.minimum() as u64,
+                            usage,
+                        )
+                        .is_ok()
+                    }),
                 "TREE-25",
             ),
             IdentityKind::Commit => (Commit::decode(upload.bytes()).is_ok(), "REF-9"),
             IdentityKind::Attribute => (AttrRecord::decode(upload.bytes()).is_ok(), "DRV-1"),
+            IdentityKind::Memo => {
+                return Memo::decode(upload.bytes()).map(|_| ()).map_err(|error| {
+                    StoreFailure::with_source(
+                        StoreErrorKind::Invalid(InvalidReason::Upload { rule_id: "DRV-21" }),
+                        error,
+                    )
+                });
+            }
             _ => return Err(StoreFailure::new(StoreErrorKind::Unsupported)),
         };
         if !valid {
@@ -172,3 +149,9 @@ impl ContentValidator for MetadataValidator {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod memo_tests;
+
+#[cfg(test)]
+mod node_tests;

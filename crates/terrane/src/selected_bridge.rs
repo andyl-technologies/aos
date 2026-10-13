@@ -33,9 +33,36 @@ pub(crate) mod native_copied_retirement;
 #[path = "gc/selected_permanent_local.rs"]
 pub(crate) mod native_permanent_local;
 
+/// Derives opaque own-context histories from actual cycle or current roots.
+#[path = "gc/qualified_roots.rs"]
+pub(crate) mod native_collection_roots;
+
+/// Owns the closed initial nonburned retirement producer.
+#[path = "gc/selected_retirement.rs"]
+pub(crate) mod native_collection_retirement;
+
+/// Qualifies exact pre-ownership restoration under independently current held inputs.
+#[path = "gc/selected_restore.rs"]
+pub(crate) mod native_collection_restore;
+
+/// Qualifies renewed full-D waiting and first protected local ownership only.
+#[path = "gc/selected_local_ownership.rs"]
+pub(crate) mod native_local_ownership;
+
+/// Requalifies ordinary local ownership before actual unlink and recovery.
+#[path = "gc/selected_local_deletion.rs"]
+pub(crate) mod native_local_deletion;
+
+/// Retains independently verified root histories without destructive authority.
+pub(crate) use native_collection_roots::QualifiedCollectionRoots;
+
+/// Reconciles completed cycle marks with independently verified held current roots.
+#[path = "gc/current.rs"]
+pub(crate) mod native_current_collection;
+
 // This test-only descendant constructs typed deadline checks for effect mechanics
 // without exposing a production callback or authority factory.
-#[cfg(all(feature = "std", test))]
+#[cfg(all(feature = "std", test, feature = "tokio"))]
 #[path = "store/native_effect/final_check_tests.rs"]
 pub(crate) mod effect_test_checks;
 
@@ -184,6 +211,16 @@ impl OwnedFinalCheck {
         }
     }
 
+    /// Retains metadata-only continuity from an executor-produced maintenance pair.
+    pub(crate) fn restore_continuity(
+        pair: &crate::store::native_publication_effects::NativeRestorePair,
+    ) -> Self {
+        let held = pair.held();
+        Self {
+            check: SharedOwned::new(move || held.recheck().map_err(native_restore_failure)),
+        }
+    }
+
     /// Retains genuine candidate-family traversal beside current authority.
     ///
     /// The opaque native receipt refreshes its complete family enumeration and
@@ -213,24 +250,6 @@ impl OwnedFinalCheck {
     /// Preserves current request or deadline rejection from the checked producer.
     pub(crate) fn recheck(&self) -> Result<(), StoreFailure> {
         (self.check)()
-    }
-}
-
-/// Preserves the original native restore failure and its I/O cause.
-pub(crate) fn native_restore_failure(error: crate::store::NativeEffectFailure) -> StoreFailure {
-    match error {
-        crate::store::NativeEffectFailure::Rejected(error) => error,
-        crate::store::NativeEffectFailure::Io(error) => {
-            let kind = match error.kind() {
-                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem => {
-                    crate::store::StoreErrorKind::ReadOnly
-                }
-                std::io::ErrorKind::StorageFull => crate::store::StoreErrorKind::Capacity,
-                std::io::ErrorKind::Unsupported => crate::store::StoreErrorKind::Unsupported,
-                _ => crate::store::StoreErrorKind::Unavailable { retry_after: None },
-            };
-            StoreFailure::with_source(kind, error)
-        }
     }
 }
 
@@ -382,9 +401,18 @@ pub(crate) struct GcCheckpointReads {
     state: crate::bucket::publication::receipts::RecordRead,
     marks: Vec<GcMarkRead>,
     inputs: Vec<crate::bucket::publication::receipts::RecordRead>,
+    guard: crate::bucket::publication::receipts::RecordRead,
 }
 
 impl GcCheckpointReads {
+    /// Borrows the exact selected Guard record retained under protected owner checks.
+    ///
+    /// This input is separate from namespace Payload records and grants no
+    /// trust or mutation authority by its decoded bytes alone.
+    pub(crate) fn guard(&self) -> &crate::bucket::publication::receipts::RecordRead {
+        &self.guard
+    }
+
     /// Borrows the exact physical root record read, including actual absence.
     pub(crate) fn roots(&self) -> &crate::bucket::publication::receipts::RecordRead {
         &self.roots
@@ -395,7 +423,7 @@ impl GcCheckpointReads {
         &self.state
     }
 
-    /// Borrows all fixed incremental and final mark observations.
+    /// Borrows all fixed immutable mark-revision observations.
     pub(crate) fn marks(&self) -> &[GcMarkRead] {
         &self.marks
     }
@@ -414,13 +442,6 @@ pub(crate) enum GcMarkRead {
         shard: u8,
         /// Canonical immutable revision number.
         revision: u64,
-        /// Actual backend observation at the independently derived path.
-        record: crate::bucket::publication::receipts::RecordRead,
-    },
-    /// Reads a final shard identified by its shard number.
-    Final {
-        /// Canonical shard number in the collection's cycle.
-        shard: u8,
         /// Actual backend observation at the independently derived path.
         record: crate::bucket::publication::receipts::RecordRead,
     },
@@ -708,5 +729,191 @@ impl<'operation, 'held> CheckedMutation<'operation, 'held> {
             }
             CheckedEvidence::Advisory { .. } => PublicationProof::Raw,
         }
+    }
+}
+
+/// Retains fresh current-root verification under one actual selected observation.
+///
+/// This carrier is initialized only by the current qualification descendant.
+/// Its untrusted fence bytes name the selected cycle checkpoint; independent
+/// fresh traversal remains private operation evidence. It grants no physical
+/// age, incarnation, Trash, retirement, restore or deletion authority.
+pub(crate) struct CheckedCurrentCollection<'operation, 'held> {
+    observed: &'operation SelectedObservation<'held>,
+    session: &'operation crate::gc::runner::session::Session,
+    fence: terrane_core::gc::retirement::CurrentCollectionFence,
+    selected_roots: terrane_core::gc::GcRoots,
+    selected_state: terrane_core::gc::GcState,
+    #[cfg(all(test, feature = "tokio", unix))]
+    current_roots: terrane_core::gc::GcRoots,
+    #[cfg(all(test, feature = "tokio", unix))]
+    late_roots: terrane_core::gc::GcRoots,
+    #[cfg(all(test, feature = "tokio", unix))]
+    current_state: terrane_core::gc::GcState,
+    #[cfg(all(test, feature = "tokio", unix))]
+    cycle_marks: std::collections::BTreeSet<[u8; 32]>,
+    #[cfg(all(test, feature = "tokio", unix))]
+    current_marks: std::collections::BTreeSet<[u8; 32]>,
+    eligibility_marks: std::collections::BTreeSet<[u8; 32]>,
+    sources: Option<native_collection_sources::CompletedSources>,
+    reads: GcCheckpointReads,
+    effects: GcCheckpointEffectContext,
+}
+
+impl<'operation, 'held> CheckedCurrentCollection<'operation, 'held> {
+    /// Borrows the exact current namespace observation kept alive by the caller.
+    pub(crate) fn observed(&self) -> &'operation SelectedObservation<'held> {
+        self.observed
+    }
+
+    /// Borrows the canonical fence data, without selecting or authorizing it.
+    pub(crate) fn fence(&self) -> &terrane_core::gc::retirement::CurrentCollectionFence {
+        &self.fence
+    }
+
+    /// Borrows the independently replay-verified selected cycle roots and state.
+    pub(crate) fn selected_checkpoint(
+        &self,
+    ) -> (&terrane_core::gc::GcRoots, &terrane_core::gc::GcState) {
+        (&self.selected_roots, &self.selected_state)
+    }
+
+    /// Borrows the conservative fresh roots, later dominated roots and completed frontier.
+    #[cfg(all(test, feature = "tokio", unix))]
+    pub(crate) fn fresh_traversal(
+        &self,
+    ) -> (
+        &terrane_core::gc::GcRoots,
+        &terrane_core::gc::GcRoots,
+        &terrane_core::gc::GcState,
+    ) {
+        (&self.current_roots, &self.late_roots, &self.current_state)
+    }
+
+    /// Borrows cycle and fresh marks separately for inspection, never as caller proof.
+    #[cfg(all(test, feature = "tokio", unix))]
+    pub(crate) fn verified_marks(
+        &self,
+    ) -> (
+        &std::collections::BTreeSet<[u8; 32]>,
+        &std::collections::BTreeSet<[u8; 32]>,
+    ) {
+        (&self.cycle_marks, &self.current_marks)
+    }
+
+    /// Borrows independently completed source evidence only for retirement.
+    pub(crate) fn sources(&self) -> Option<&native_collection_sources::CompletedSources> {
+        self.sources.as_ref()
+    }
+
+    /// Tests every actual index member against the conservative verified union.
+    ///
+    /// A true value is a reachability predicate only. The retirement producer
+    /// still must bind the executor-qualified native pair to this selected
+    /// inventory, qualify its actual backend age and select the exact barrier.
+    pub(crate) fn members_unmarked(&self, index: &crate::pack::PackIndexSnapshot) -> bool {
+        index
+            .entries()
+            .iter()
+            .all(|entry| !self.eligibility_marks.contains(entry.hash()))
+    }
+
+    /// Tests one witness member against independently verified cycle/current marks.
+    pub(crate) fn member_unmarked(&self, hash: &[u8; 32]) -> bool {
+        !self.eligibility_marks.contains(hash)
+    }
+
+    /// Borrows the protected selected Guard read for the worker's exact preimage.
+    ///
+    /// Consumers capture this record with ProtectedRecord and the actual backend
+    /// operator; checkpoint metadata reads below use the separate Payload policy.
+    #[cfg(all(test, feature = "tokio", unix))]
+    pub(crate) fn guard_record(&self) -> &crate::bucket::publication::receipts::RecordRead {
+        self.reads.guard()
+    }
+
+    /// Borrows exact checkpoint, selected log, catalog and traversal read preimages.
+    pub(crate) fn reads(&self) -> &GcCheckpointReads {
+        &self.reads
+    }
+
+    /// Borrows retained consumed controls and the genuine owned Session check.
+    pub(crate) fn effect_context(&self) -> &GcCheckpointEffectContext {
+        &self.effects
+    }
+
+    /// Revalidates the held whole selection and actual collector time before handoff.
+    ///
+    /// # Errors
+    /// Refuses changed logical/control selection, cancellation, clock rollback
+    /// or lease expiry. Each worker also retains exact preimages, actual control
+    /// exclusions and the owned check; this async check cannot replace them.
+    pub(crate) async fn revalidate(&self) -> Result<(), StoreFailure> {
+        self.observed.revalidate().await?;
+        self.session.recheck()?;
+        self.effects.final_check.recheck()
+    }
+}
+
+/// Preserves the original native restore failure and its I/O cause.
+pub(crate) fn native_restore_failure(error: crate::store::NativeEffectFailure) -> StoreFailure {
+    match error {
+        crate::store::NativeEffectFailure::Rejected(error) => error,
+        crate::store::NativeEffectFailure::Io(error) => {
+            let kind = match error.kind() {
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem => {
+                    crate::store::StoreErrorKind::ReadOnly
+                }
+                std::io::ErrorKind::StorageFull => crate::store::StoreErrorKind::Capacity,
+                std::io::ErrorKind::Unsupported => crate::store::StoreErrorKind::Unsupported,
+                _ => crate::store::StoreErrorKind::Unavailable { retry_after: None },
+            };
+            StoreFailure::with_source(kind, error)
+        }
+    }
+}
+
+/// Retains independently current metadata qualification without old cycle marks.
+///
+/// Only the actual fresh-current producer initializes this carrier. Its reads,
+/// selected Guard and consumed controls remain bound to the live Session.
+pub(crate) struct CheckedRestoreCurrent<'operation, 'held> {
+    observed: &'operation SelectedObservation<'held>,
+    session: &'operation crate::gc::runner::session::Session,
+    inputs: Vec<crate::bucket::publication::receipts::RecordRead>,
+    guard: crate::bucket::publication::receipts::RecordRead,
+    effects: GcCheckpointEffectContext,
+}
+
+impl<'operation, 'held> CheckedRestoreCurrent<'operation, 'held> {
+    /// Borrows the actual selected namespace held for this complete operation.
+    pub(crate) fn observed(&self) -> &'operation SelectedObservation<'held> {
+        self.observed
+    }
+
+    /// Borrows every exact current ref, history, catalog and metadata observation.
+    pub(crate) fn inputs(&self) -> &[crate::bucket::publication::receipts::RecordRead] {
+        &self.inputs
+    }
+
+    /// Borrows the selected Guard separately from payload observations.
+    pub(crate) fn guard_record(&self) -> &crate::bucket::publication::receipts::RecordRead {
+        &self.guard
+    }
+
+    /// Borrows actual live controls and the owned Session/maintenance-pair check.
+    pub(crate) fn effect_context(&self) -> &GcCheckpointEffectContext {
+        &self.effects
+    }
+
+    /// Rechecks the actual held selection, current lease, clock and controls.
+    ///
+    /// # Errors
+    /// Refuses changed selected state or controls, lost lease, cancellation or clock discontinuity.
+    pub(crate) async fn revalidate(&self) -> Result<(), StoreFailure> {
+        self.effects.final_check.recheck()?;
+        self.observed.revalidate().await?;
+        self.session.recheck()?;
+        self.effects.final_check.recheck()
     }
 }

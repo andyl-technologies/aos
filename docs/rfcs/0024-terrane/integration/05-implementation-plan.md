@@ -133,6 +133,227 @@ Workers retain disjoint file ownership and separate worktrees. Independent
 review remains separate. One coordinated compiler serves build and Nix requests.
 T2 and branch worklines remain deferred.
 
+The renewed frozen composition `342f1cf7114b` (tree `90fb7240d717`) passes
+the exact formatter pair, strict SDK all-target Clippy, SDK all-target test
+compilation and the default native build. Its actual inventory contains 1,113
+tests across three AOS executables, with none ignored. Six focused cases pass,
+including the three cold-fork controls, Legacy refusal and current-authority
+disclosure. Historical-key rotation then fails full physical snapshot equality:
+the authorized session creates its mandatory epoch baseline after the snapshot.
+The exact baseline setup is corrected in an isolated fixture before the refusal
+snapshot; full equality and error assertions remain unchanged. Thirteen cases,
+Core renewal and all six growth populations remain unstarted in this packet.
+Source, compiler inputs and executables stay sealed and unchanged. A separate
+diagnostic continuation may exercise only the thirteen unstarted cases; it does
+not accept the failed focus set, any task or T1's freeze. Separate sealed
+continuations fail the repeated-producer fixture (two actual producers where
+the oracle assumed one), then pass all twelve originally unstarted cases
+09–20. Across these separate diagnostics, eighteen cases pass and two fail;
+this is not a passing full focus run. Both failed fixtures have reviewed
+corrections awaiting qualification on a fresh composition. Core renewal,
+all six growth populations and the complete current T1 floor remain pending.
+
+The next preparation `fcf229ee3358` is held before any formatter, compiler or
+runtime command: independent review identifies cancellation staging files that
+the new operation lookup would reject after a finite sync failure. A reviewed
+correction distinguishes only the native temporary names after protected
+nofollow capture; their bytes grant no authority. The corrected frozen tree
+`ac122d206f4f` passes the exact formatter pair, then strict SDK Clippy fails
+with two E0599 errors in the new preservation fixture. Its projected property
+selection is already the ordinary enum. Both calls are corrected to compare
+that enum directly. Compilation, actual inventory, focused runtime, Core and
+growth qualification remain unstarted in this failed packet; a new frozen
+composition must qualify the corrected source. No task or milestone advances.
+
+The corrected frozen tree `f008d9cf1fa7` passes the exact formatter pair,
+strict SDK all-target Clippy, all-target test compilation and the default
+native build. Its actual inventory contains 1,116 tests across three AOS
+executables, with none ignored. Six focused cases pass before issuer rotation
+fails its old-key assertion. The fixture recreates retained entries from
+plaintext instead of carrying their authenticated provenance; its correction
+and the per-introducer historical-certificate oracle pass source review. A
+separate sealed continuation fails the repeated-producer case with an exact
+source-free Commit denial. Its reviewed correction stages genuine content-domain
+evidence for the new names. The next sealed continuation passes thirteen cases,
+including STORE-8. The broader-cutoff fixture then fails before publication:
+its short Manifest file violates TREE-8/OBJ-16. A reviewed fixture correction
+uses actual profile boundaries and marks both genuine manifest members. Another
+separate continuation
+fails during preservation-fixture Guard installation; the current protected
+profile must remain fixed while historical authoring interpretations vary.
+That setup correction passes source review. A final separate cancellation run
+passes once in 100.774 seconds under its unchanged 120-second limit. The last
+two continuations use the unchanged compiled Rust and executable bytes with an
+explicitly distinguished plan-only source head. Across these separate runs,
+twenty cases pass and four fail; these diagnostics do not qualify the
+complete focused set. Core renewal, growth populations, owning Nix gates and
+the complete current T1 floor remain pending; no task or milestone advances.
+
+The earlier frozen payload-sharing tree `ee7171fa88a7` passes native build,
+strict all-target SDK and Core Clippy, all-target test compilation and the exact
+formatter pair. Its inventories contain 1,101 SDK tests and 764 no-default Core
+tests. All seventeen payload-sharing counterproofs and twelve quick native/Core
+cases pass with unchanged source, compiler inputs, executables and limits.
+Both 1,024-entry ordinary and adversarial native growth populations pass
+naturally in 1,117.411 and 1,161.338 seconds. The 2,048-entry ordinary population
+is externally stopped at the approved 1,800-second cap, with actual terminal
+`-15` after 1,802.696 seconds. It has no assertion result. The remaining growth
+populations and heavy runs are unstarted; DRV-29 remains unqualified. Independent
+review validates all 990 sealed packet payloads and identical full source/input/
+executable seals. Owning gates, mandatory application targets, per-crate Nextest
+and the full current T1 floor remain pending.
+
+Parallel source review identifies and corrects the DRV-22 nested-overlay memo
+replay gap, preserving the original recipe and Memo bytes and requiring separate
+original-occurrence and projected-result policy checks. Five pure regressions
+and a native persistence/reopening witness are registered before composition.
+GC review also identifies a copied-destination refusal when a valid burned pack
+has no remaining source exclusion, and a cancellation witness whose asynchronous
+poll cannot prove retained exclusion. Both isolated corrections pass independent
+source review; runtime qualification remains pending. These source results do
+not complete a task or advance T1's freeze.
+
+One separate diagnostic of the archived 2,048-entry ordinary case completes
+maintained publication, then reaches the same external cap during reopen. Its
+actual terminal is `-15` after 1,803.934 seconds, with no final assertions or
+accounting result. All 31 diagnostic payloads and 112 raw events are independently
+verified; the original 990-payload qualification packet remains unchanged.
+This trace does not establish the original capped phase or a causal bottleneck.
+
+Shared callers now preserve the parent and disclosure-source property
+interpretations and admission's canonical affected publication paths. Native
+Notes inventory, recorded disclosure and retained-reader refusal regressions
+are registered. PROV-31 review also identifies renewed ancestor authorization
+for unchanged graft descriptors; its correction and genuine scoped-publication
+witnesses pass independent source review; runtime qualification remains pending.
+The local CLI/SDK and pure provenance source worklines are reviewed. Private Core
+composition passes all-target compilation, strict all-target Clippy and all 769
+package Nextest cases after test-only import and sorted-fixture corrections.
+There are no skipped or ignored cases. Renewed native composition `4ee2921d3186`
+passes SDK all-target compilation, strict all-target Clippy and the default
+native build. Both corrected scoped-publication and planning refusal tests pass
+with their original substantive assertions. The complete unfiltered 1,111-case
+SDK phase is interrupted and failed after process-spawn descriptor exhaustion
+and native operation failures. Its actual partial summary records 356 of 1,111
+tests run: 285 passed, 28 failed and 43 execution failures; 755 remain unrun.
+The interrupted active case is not an assertion result. Source, input and
+executable seals remain unchanged. A shared Nextest correction reserves all
+runner slots for each Terrane package case,
+preserving all existing process bounds, production clocks, file limits and
+test selection. Its renewed package execution remains pending. Shared native
+prerequisites now use the source-bound SDK image with unchanged selectors, fresh
+protected storage and retained logs. Nix evaluation, shell syntax and positive
+and negative log checks pass; actual owning gates, the current T1 floor and
+mandatory application targets remain pending. No task or freeze advances.
+
+Independent source review identifies repeated full namespace enumeration for
+each distinct index predicate. A scoped verifier correction inventories each
+namespace occurrence once, then checks exact independently expected hierarchical
+relations against every actual carrier occurrence. Repeated grafts, missing-value
+gaps, physical reconstruction and complete-closure refusal remain required.
+Independent wire fixtures cover growing predicate populations and zero present
+candidates. Enumeration counters describe the actual changed traversal; complete
+relation allocations and total CPU work are outside their scope. Source review
+passes. The first Core build identifies a borrowed-key move; its one-line
+ownership correction preserves expected rows and counters. Fresh composition
+`60d0e2705e46` then passes Core build, all-target compilation, strict all-target
+Clippy and all 770 package Nextest tests, with no skipped or ignored cases.
+Package results bind eleven sealed AOS binaries and the growing-predicate
+regression.
+Native measurements and owning gates remain pending. This does not qualify
+DRV-29 or advance the identity freeze.
+
+Source review separately identifies missing native payload-range forwarding in
+the missing-placement test adapter. Its correction retains real descriptor
+capture and closing checks, the exact unavailable-artifact cause and observation
+count, and all seven fault witnesses. Admission validation moves to a focused
+private module with equivalent Guard visibility and unchanged bodies; missing
+history and test-helper documentation is completed. These corrections remain
+subject to package and owning-gate qualification. Fresh private composition
+`d84c608c5b1c` passes strict SDK Clippy, SDK all-target compilation and the default
+native build. All ten focused cases pass: the seven missing-placement witnesses,
+the unchanged actual deadline-expiry witness, and both corrected Guard/planning
+cases. The unfiltered SDK phase finishes with all 1,111 tests run: 1,093 pass,
+12 fail and six time out, with no skipped cases or execution failures. The actual
+summary duration is 21,243.252 seconds and exit status is 100. Source, input and
+executable seals remain unchanged. One-second observations record one active
+archive case and a peak of 13 runner descriptors; two GC cases still report
+descriptor exhaustion inside their test processes. Those observations do not
+measure test-process descriptor peaks or establish their cause. Two overlay
+cases reach their unchanged 120-second bounds, and the four 2,048/4,096-entry
+growth cases reach their unchanged 1,800-second bounds. Both 1,024-entry cases
+pass. This complete failing phase does not qualify the package. Static review
+matches all 394 SDK selector uses to the archived inventory, with no missing,
+ignored or duplicate required selector within a gate. Successful population
+cases now remove their owned scratch directories after both execution validators;
+the six growing witnesses and DRV-29 qualification blocker remain unchanged.
+Test-helper documentation corrections preserve exact source bodies and remain
+isolated from that sealed qualification checkout. A fresh thirteen-case diagnostic
+privately composes the reviewed GC native-read forwarding, fixture setup semaphore,
+native admission observations and explicit disclosure snapshot corrections. Its
+SDK all-target compilation, strict Clippy, default native build and exact formatter
+pair pass. It retains all substantive refusal assertions and original bounds, and
+samples test process descriptors separately. All three exact GC cases and all
+six admission/join/Original cases pass. The run stops at its tenth case: the
+Legacy indexed-publication witness expects Commit denial but observes exactly
+`Invalid(MalformedRequest)` with no attached source. Three disclosure cases
+remain unrun in that sealed packet. One-second sampling observes test-process
+peaks of 347, 157 and 321 in the three GC cases and 12 runner descriptors,
+without establishing exact maxima. Source, input and executable seals remain
+unchanged; this focused failing phase does not qualify the package.
+An independent new packet executes each of the three unrun cases once on the
+same sealed source and executables. One rotation refusal case passes; current
+authority refuses with exact source-less Admin denial where the witness expects
+Commit denial, and successful rotation stops while building a noncanonical test
+tree. Both failures remain recorded. Source review traces the Legacy outcome to
+revision-1 rejection of `index-roots` before ACL checks. Its isolated correction
+requires the exact invalid-request category, genuine Active publication of the
+same complete proposal, absent offered identities/ref/lineage under Legacy and
+the existing ordinary Legacy revision-1 publication control. That stronger
+witness remains uncompiled and unrun. Separate source workers review current
+Admin ordering and canonical rotation fixtures; no production authorization,
+tree ordering, process bound or milestone requirement is weakened.
+Separately, a borrowed authenticated-history inventory permits producer preparation
+to refresh every retained Original, including disclosure dependencies; the iterator
+grants neither completion nor current authority. The bounded growth repair remains
+isolated and retains existing per-path trust-evaluator cloning. Its source candidate
+passes scoped independent review and adds a genuine repeated-producer regression
+with exact current requests, separately repeated invocation work, typed Original
+and ACL refusals, and unchanged stored/publication bytes. The owning index gate
+and focused rebuild prerequisite now require this witness; its compilation and
+runtime remain pending. Owning Nix gates,
+the complete current T1 floor and mandatory application targets remain pending.
+No task or milestone advances.
+
+Fresh private composition `e10fa76d1b62` binds the reviewed producer reuse,
+Legacy refusal, exact current Admin/Commit controls and canonical rotation
+fixtures. The exact formatter pair passes. SDK Clippy then stops with a compile
+error: the new Original-selection refresh calls a private sibling-module error
+mapper. No native case, growth population or renewed Core package runs on this
+source. Its correction preserves the existing error category and attached cause;
+the failed source remains sealed before another qualification.
+
+Subsequent private trees `11bc0ef7d876` and `4d157b029455` also pass the exact
+formatter pair. Strict SDK Clippy first rejects two nonidiomatic producer-map
+updates, then reaches the Legacy fixture and rejects a request move while its
+decoded owner still borrows the offered bytes. Isolated corrections use map
+entries with unchanged vacant preparation and occupied freshness checks, and
+end borrowed fixture models before publication consumes the request. Source
+comparison after removing the lexical block confirms unchanged revision
+assertions and independent publication controls. Both failed packets retain
+unchanged sources and prior evidence; all native, Core renewal and growth
+executions remain unstarted.
+
+Independent source review also finds a valid mixed-revision cold source wrongly
+refused after its candidate already witnesses a signed root claim. An unnecessary
+prior-tree comparison reinterprets inert later parent properties under current
+semantics. The isolated PROP-30/PROV-31/ALG-32 correction stops after a sufficient
+witness and retains prior-only fallback. The owning `algebra-fork` gate now
+requires genuine recorded parent/current-child publication and the existing
+calibrated zero-Node native acknowledgement oracle. Separate rotation witnesses
+require exact protected-record errors and successful controls. These changes
+remain uncompiled and unrun; task counts, T1's exit and all freezes are unchanged.
+
 Additional isolated worklines inspect growing-index completion, indexed replay
 and permanent recovery, while a separate worker qualifies the five public SDK
 checkout cases against the retained `d116ffe6239a` archive. All five exact cases
@@ -6446,7 +6667,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `checks.terrane.gates.bundle-verify`.
 - [ ] **T-BKT-1** `bucket` backend over `file://`: key layout, mutability
   classes, atomic writes, filesystem CAS, generation manifests, startup
-  probe. Conformance is reopened for STORE-4: the existing ranged getter reads
+  probe. Independent full review identifies an inherited STORE-8 outcome
+  discrepancy: a safely read existing legacy log with different proposed
+  canonical bytes returns corruption instead of `exists`. The isolated fix
+  retains exact existing bytes, capabilities, ref and history, preserves missing
+  legacy-slot refusal, and awaits owning-gate and current-trunk qualification.
+  Conformance is reopened for STORE-4: the existing ranged getter reads
   the whole pack before slicing. Bounded framing/index/member reads and an
   actual no-whole-pack I/O witness remain required; previously passing slice
   and overflow checks do not qualify that requirement. D-77's version-2 ref
@@ -6838,6 +7064,20 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 - [ ] **T-GC-1** Mark-and-sweep collector: roots, mark, grace, two-phase
   sweep, singleton lease, resumability, retention values `gc`, `lease`,
   `ttl`, `forever`, and ordinary reflog duration/count selection.
+  Source review identifies a GC-6/GC-7 gap: a broader parent cutoff for the
+  same fully expanded commit and proof occurrence repeats its own metadata
+  expansion. Only newly eligible parent edges require another traversal.
+  The owning mark gate now requires a genuine native broader-cutoff regression
+  before the isolated fix. Witness-to-full promotion, distinct proof contexts,
+  checkpoint verification and current held authority remain mandatory. This
+  source finding does not explain the two overlay timeouts; their original
+  120-second bounds and separate runtime obligations remain unchanged.
+  Separate review identifies preexisting PROP-30/GC-5 refusals when collector
+  retention or metadata preparation treats preserved historical `index-roots`
+  bytes as active bindings. The mark gate now requires genuine recorded-view
+  root and graft preservation before the isolated semantic correction. Current
+  selected interpretation, malformed active-value refusals and exact native
+  proof contexts remain mandatory; no encoding or checkpoint schema changes.
   Parent-owned registrations and a nineteen-case auxiliary check now prepare
   isolated implementation of genuine local copied-destination first ownership.
   D-113 clarifies truthful conservative DATA roots/state at the existing
@@ -7327,6 +7567,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   cannot substitute for these cases. Remote-v2 permanent ownership remains
   separate. Missing selectors fail explicitly; the full two-phase gate stays
   pending until its actual requirements and runtime inventory are qualified.
+  Independent source review finds an ordinary local-v1 cancellation gap at
+  the durable Authorized-intent prefix, before any journal becomes DeleteOwned.
+  Restore currently misses that exact operation when all three creation
+  journals remain Committed. GC-15, GC-24 and GC-29 require its durable
+  cancellation before exclusion clearing or mutation. A distinct owning
+  native-local-deletion selector is registered before the isolated correction;
+  its execution and the full two-phase gate remain pending. This finding
+  establishes a cancellation conformance gap, not demonstrated data loss.
   Narrowed
   to trunk scope: compaction is T-GC-2 on
   B-jobs. — satisfies GC-1, GC-3 to GC-7, GC-9 to GC-17, GC-22 to GC-24,

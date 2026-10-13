@@ -36,7 +36,15 @@ fn open(path: &Path) -> std::io::Result<File> {
         .open(path)
 }
 
-fn lock(path: &Path, create: bool) -> std::io::Result<File> {
+/// Keeps namespace locks blocking and administrative lock attempts nonblocking.
+#[derive(Clone, Copy)]
+enum LockAccess {
+    Exclusive,
+    TryShared,
+    TryExclusive,
+}
+
+fn lock(path: &Path, create: bool, access: LockAccess) -> std::io::Result<File> {
     let held = OpenOptions::new()
         .read(true)
         .write(true)
@@ -48,9 +56,35 @@ fn lock(path: &Path, create: bool) -> std::io::Result<File> {
     if !before.is_file() || before.nlink() != 1 {
         return Err(std::io::Error::other("unsafe native test coordination"));
     }
-    held.lock()?;
+    let attempt = match access {
+        LockAccess::Exclusive => {
+            held.lock()?;
+            Ok(())
+        }
+        LockAccess::TryShared => held.try_lock_shared(),
+        LockAccess::TryExclusive => held.try_lock(),
+    };
+    match attempt {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "native test coordination inode is already held",
+            ));
+        }
+        Err(std::fs::TryLockError::Error(error)) => return Err(error),
+    }
+
+    let opened = held.metadata()?;
     let named = std::fs::symlink_metadata(path)?;
-    if (named.dev(), named.ino()) != (before.dev(), before.ino()) {
+    if !opened.is_file()
+        || !named.is_file()
+        || named.file_type().is_symlink()
+        || opened.nlink() != 1
+        || named.nlink() != 1
+        || (opened.dev(), opened.ino()) != (before.dev(), before.ino())
+        || (opened.dev(), opened.ino()) != (named.dev(), named.ino())
+    {
         return Err(std::io::Error::other("changed native test coordination"));
     }
     Ok(held)
@@ -89,11 +123,19 @@ impl LocalFs for TestFs {
     }
 
     async fn lock_exclusive(&self, path: &Path) -> std::io::Result<Self::Lock> {
-        lock(path, true)
+        lock(path, true, LockAccess::Exclusive)
     }
 
     async fn lock_existing_exclusive(&self, path: &Path) -> std::io::Result<Self::Lock> {
-        lock(path, false)
+        lock(path, false, LockAccess::Exclusive)
+    }
+
+    async fn try_lock_existing_shared(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        lock(path, false, LockAccess::TryShared)
+    }
+
+    async fn try_lock_existing_exclusive(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        lock(path, false, LockAccess::TryExclusive)
     }
 
     async fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {

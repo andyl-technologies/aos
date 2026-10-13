@@ -64,6 +64,15 @@ pub struct Repository<S: Store, C: Clock, F: LocalFs> {
     local_retention: Option<local_authority::NativeRetention>,
 }
 
+/// Returns a genuinely published record and its ordinary index preparation measurements.
+#[derive(Clone, Debug)]
+pub struct CommitReport {
+    /// Actual durable whole record returned by the existing publication pipeline.
+    pub record: RefRecord,
+    /// Work of the exact successfully published candidate, without authority claims.
+    pub index_work: crate::guard::IndexPublicationWork,
+}
+
 impl<S: Store, C: Clock, F: LocalFs> Repository<S, C, F> {
     /// Composes the shared coordinator with its exact filesystem and chunk profile.
     ///
@@ -191,9 +200,80 @@ where
     pub async fn commit(
         &self,
         session: &mut WriterSession,
+        tree: PreparedTree,
+        request: CommitRequest,
+    ) -> Result<RefRecord, Error> {
+        Ok(self
+            .commit_with_report(session, tree, request)
+            .await?
+            .record)
+    }
+
+    /// Publishes through the same guarded path and reports actual index preparation.
+    ///
+    /// # Errors
+    /// Preserves tree normalization, admission, protected retention, deadline,
+    /// fencing and durable publication failures from the ordinary commit path.
+    pub async fn commit_with_report(
+        &self,
+        session: &mut WriterSession,
+        tree: PreparedTree,
+        request: CommitRequest,
+    ) -> Result<CommitReport, Error> {
+        self.commit_tree_with_report(session, tree, request, None, None)
+            .await
+    }
+
+    /// Publishes actual unchanged-owner references through the ordinary signed path.
+    ///
+    /// # Errors
+    /// Preserves ordinary normalization, current authority, retention and final
+    /// acknowledgment failures, and rejects changed source/placement associations.
+    #[cfg(unix)]
+    pub(crate) async fn commit_with_existing_owner_report(
+        &self,
+        session: &mut WriterSession,
+        tree: PreparedTree,
+        request: CommitRequest,
+        references: crate::guard::ExistingOwnerReferences,
+    ) -> Result<CommitReport, Error> {
+        self.commit_tree_with_report(session, tree, request, Some(references), None)
+            .await
+    }
+
+    /// Publishes freshly qualified owner evidence within the original repair deadline.
+    ///
+    /// # Errors
+    /// Preserves normalization, source and current authority, protected retention,
+    /// fencing and final acknowledgment failures, including original expiration.
+    #[cfg(unix)]
+    pub(crate) async fn commit_with_existing_owner_report_started(
+        &self,
+        session: &mut WriterSession,
+        tree: PreparedTree,
+        request: CommitRequest,
+        references: crate::guard::ExistingOwnerReferences,
+        started: std::time::Duration,
+    ) -> Result<CommitReport, Error> {
+        self.commit_tree_with_report(session, tree, request, Some(references), Some(started))
+            .await
+    }
+
+    async fn commit_tree_with_report(
+        &self,
+        session: &mut WriterSession,
         mut tree: PreparedTree,
         mut request: CommitRequest,
-    ) -> Result<RefRecord, Error> {
+        #[cfg(unix)] references: Option<crate::guard::ExistingOwnerReferences>,
+        #[cfg(not(unix))] _references: Option<()>,
+        original_started: Option<std::time::Duration>,
+    ) -> Result<CommitReport, Error> {
+        if let Some(started) = original_started {
+            self.coordinator
+                .check_time(started)
+                .map_err(Error::Advance)?;
+        }
+
         if request.commit.tree != tree.root || tree.minimum != self.chunk_profile().minimum() as u64
         {
             return Err(Error::Unrealizable);
@@ -213,15 +293,27 @@ where
                     },
                 )
                 .collect::<Vec<_>>();
-            let effective =
-                terrane_core::properties::resolve(&layers, guard.defaults_for(&snapshot.evidence))
-                    .map_err(|_| Error::Denied)?;
+            // The inherited domain belongs to the checked parent view. Its
+            // recorded vocabulary must remain inert across later revisions.
+            let effective = snapshot
+                .interpretation
+                .resolve(&layers, guard.defaults_for(&snapshot.evidence))
+                .map_err(|_| Error::Denied)?;
             let domain = crate::guard::domain_label(&effective).map_err(|_| Error::Denied)?;
             tree.inherit_domain(domain)?;
             request.commit.tree = tree.root;
         }
         request.uploads.extend(tree.uploads);
-        self.commit_request(session, request).await
+        #[cfg(unix)]
+        {
+            self.commit_request_with_report_inner(session, request, references, original_started)
+                .await
+        }
+        #[cfg(not(unix))]
+        {
+            self.commit_request_with_report_inner(session, request, None, original_started)
+                .await
+        }
     }
 
     /// Publishes a canonical proposal through the shared protected retention path.
@@ -234,20 +326,40 @@ where
     /// Rejects missing or inconsistent protected evidence, failed durability,
     /// invalid proposals, denied current authority, expired deadlines and fenced
     /// or indeterminate publication, preserving the originating typed failure.
+    #[cfg(all(test, feature = "tokio", unix))]
     pub(crate) async fn commit_request(
         &self,
         session: &mut WriterSession,
         request: CommitRequest,
     ) -> Result<RefRecord, Error> {
-        self.commit_request_inner(session, request, None).await
+        Ok(self
+            .commit_request_with_report(session, request)
+            .await?
+            .record)
     }
 
-    async fn commit_request_inner(
+    /// Uses the ordinary internal publication path with its actual preparation report.
+    ///
+    /// # Errors
+    /// Preserves all original admission, retention and publication failures.
+    #[cfg(all(test, feature = "tokio", unix))]
+    pub(crate) async fn commit_request_with_report(
         &self,
         session: &mut WriterSession,
         request: CommitRequest,
+    ) -> Result<CommitReport, Error> {
+        self.commit_request_with_report_inner(session, request, None, None)
+            .await
+    }
+
+    async fn commit_request_with_report_inner(
+        &self,
+        session: &mut WriterSession,
+        request: CommitRequest,
+        #[cfg(unix)] references: Option<crate::guard::ExistingOwnerReferences>,
+        #[cfg(not(unix))] _references: Option<()>,
         original_started: Option<std::time::Duration>,
-    ) -> Result<RefRecord, Error> {
+    ) -> Result<CommitReport, Error> {
         if let Some(started) = original_started {
             self.coordinator
                 .check_time(started)
@@ -255,6 +367,29 @@ where
         }
 
         self.retain_baseline(session).await?;
+        #[cfg(unix)]
+        let prepared = match (references, original_started) {
+            (Some(references), Some(started)) => {
+                self.coordinator
+                    .prepare_advance_with_existing_owner_started(
+                        session, request, references, started,
+                    )
+                    .await
+            }
+            (Some(references), None) => {
+                self.coordinator
+                    .prepare_advance_with_existing_owner(session, request, references)
+                    .await
+            }
+            (None, Some(started)) => {
+                self.coordinator
+                    .prepare_advance_started(session, request, started)
+                    .await
+            }
+            (None, None) => self.coordinator.prepare_advance(session, request).await,
+        }
+        .map_err(Error::Advance)?;
+        #[cfg(not(unix))]
         let prepared = match original_started {
             Some(started) => {
                 self.coordinator
@@ -264,8 +399,46 @@ where
             None => self.coordinator.prepare_advance(session, request).await,
         }
         .map_err(Error::Advance)?;
+        let (outcome, index_work) = self.publish_retained_with_report(session, prepared).await?;
+        Ok(CommitReport {
+            record: outcome.record,
+            index_work,
+        })
+    }
 
-        Ok(self.publish_retained(session, prepared).await?.record)
+    /// Prepares and durably retains real signed historical test metadata.
+    ///
+    /// The ordinary current-authorized preparation and protected Original
+    /// producer run unchanged. Returned Commit and upload values are immutable
+    /// data; this boundary performs no selected ref or lineage publication.
+    ///
+    /// # Errors
+    /// Preserves preparation, current authority, deadline, Original association
+    /// and actual protected retention failures without manufacturing evidence.
+    #[cfg(all(test, feature = "tokio", unix))]
+    pub(crate) async fn prepare_retained_history_fixture(
+        &self,
+        session: &mut WriterSession,
+        request: CommitRequest,
+    ) -> Result<
+        (
+            terrane_core::provenance::VerifiedCommit,
+            Vec<crate::guard::StagedUpload>,
+        ),
+        Error,
+    > {
+        self.retain_baseline(session).await?;
+        let prepared = self
+            .coordinator
+            .prepare_advance(session, request)
+            .await
+            .map_err(Error::Advance)?;
+        let retention = self.local_retention.as_ref().ok_or(Error::Denied)?;
+        let _retained = retention
+            .retain_candidate(self.coordinator.guard(), self.coordinator.fs(), &prepared)
+            .await?;
+
+        Ok(prepared.historical_fixture_inputs())
     }
 
     /// Forks a source reference into a fresh signed guarded reference.
@@ -380,12 +553,30 @@ where
     async fn publish_retained(
         &self,
         session: &mut WriterSession,
-        mut prepared: PreparedAdvance,
+        prepared: PreparedAdvance,
     ) -> Result<crate::ref_advance::FoldOutcome, Error> {
+        Ok(self
+            .publish_retained_with_report(session, prepared)
+            .await?
+            .0)
+    }
+
+    async fn publish_retained_with_report(
+        &self,
+        session: &mut WriterSession,
+        mut prepared: PreparedAdvance,
+    ) -> Result<
+        (
+            crate::ref_advance::FoldOutcome,
+            crate::guard::IndexPublicationWork,
+        ),
+        Error,
+    > {
         #[cfg(unix)]
         {
             let retention = self.local_retention.as_ref().ok_or(Error::Denied)?;
             loop {
+                let index_work = prepared.index_work().clone();
                 let context = retention
                     .retain_candidate(self.coordinator.guard(), self.coordinator.fs(), &prepared)
                     .await?;
@@ -395,7 +586,7 @@ where
                     .await
                     .map_err(Error::Advance)?
                 {
-                    PublicationStep::Published(outcome) => return Ok(*outcome),
+                    PublicationStep::Published(outcome) => return Ok((*outcome, index_work)),
                     PublicationStep::Reprepare(next) => prepared = *next,
                 }
             }

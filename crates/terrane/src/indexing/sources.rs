@@ -67,7 +67,10 @@ impl LoadedSource {
                 &self.namespace,
                 *root,
                 true,
-                self.minimum,
+                PhysicalContext {
+                    minimum: self.minimum,
+                    usage: self.usage,
+                },
                 &mut Vec::new(),
                 &mut entries,
                 &mut work,
@@ -77,11 +80,11 @@ impl LoadedSource {
                 .get(root)
                 .ok_or_else(|| invalid(*root, evaluation::Error::MissingSource))?;
             increment(&mut work.node_decodes, 1, *root)?;
-            let node = decode_node_for(bytes, true, self.minimum, TreeUse::Ordinary)
+            let node = decode_node_for(bytes, true, self.minimum, self.usage)
                 .map_err(|error| invalid(*root, error))?;
             increment(&mut work.trees, 1, *root)?;
             increment(&mut work.entries, entries.len(), *root)?;
-            let tree = Tree::build(entries, node.props, self.minimum, TreeUse::Ordinary)
+            let tree = Tree::build(entries, node.props, self.minimum, self.usage)
                 .map_err(|error| invalid(*root, error))?;
             if tree.root_identity() != *root {
                 return Err(invalid(*root, evaluation::Error::Relationship));
@@ -103,6 +106,12 @@ impl LoadedSource {
     }
 }
 
+#[derive(Clone, Copy)]
+struct PhysicalContext {
+    minimum: u64,
+    usage: TreeUse,
+}
+
 struct Summary {
     level: u8,
     count: u64,
@@ -115,7 +124,7 @@ fn collect<'value>(
     bytes: &'value BTreeMap<Digest, Vec<u8>>,
     root: Digest,
     is_root: bool,
-    minimum: u64,
+    context: PhysicalContext,
     active: &mut Vec<Digest>,
     entries: &mut Vec<LeafItem<'value>>,
     work: &mut Reconstruction,
@@ -135,7 +144,7 @@ fn collect<'value>(
         return Err(invalid(root, evaluation::Error::Relationship));
     }
     increment(&mut work.node_decodes, 1, root)?;
-    let node = decode_node_for(raw, is_root, minimum, TreeUse::Ordinary)
+    let node = decode_node_for(raw, is_root, context.minimum, context.usage)
         .map_err(|error| invalid(root, error))?;
     active.push(root);
     let mut summary = Summary {
@@ -154,7 +163,7 @@ fn collect<'value>(
         }
         NodeItems::Internal(children) => {
             for child in children {
-                let actual = collect(bytes, child.child, false, minimum, active, entries, work)?;
+                let actual = collect(bytes, child.child, false, context, active, entries, work)?;
                 if actual.level.checked_add(1) != Some(node.level)
                     || actual.count != child.count
                     || actual.weight != child.weight

@@ -5,6 +5,8 @@
     reason = "Fixture assertions intentionally panic."
 )]
 
+mod raw_ack;
+
 use super::control::Control;
 use super::*;
 use crate::bucket::held::SingleHeld;
@@ -406,7 +408,7 @@ async fn configured_owner_and_protected_single_link_records_are_required() {
 }
 
 #[tokio::test]
-async fn pending_same_binding_recovers_existing_genesis_and_missing_genesis_refuses() {
+async fn pending_nonnull_genesis_without_copy_staging_refuses_existing_selected_genesis() {
     let bucket = fixture().await;
     let holder = SingleHeld::acquire(&bucket).await.unwrap();
     let control = Control::open(&bucket, false).await.unwrap();
@@ -416,64 +418,74 @@ async fn pending_same_binding_recovers_existing_genesis_and_missing_genesis_refu
         .unwrap()
         .unwrap();
     let mut pending = BackendRegistration::decode(&bytes).unwrap();
+    assert!(pending.genesis.is_some());
     pending.activation = Activation::Pending;
+    let pending_bytes = pending.encode().unwrap();
     control
         .install(
             &bucket.inner.fs,
             "backend-registration.cbor",
-            &pending.encode().unwrap(),
+            &pending_bytes,
             true,
         )
         .await
         .unwrap();
     drop(holder);
 
-    let reopened = FileBucket::open(
+    // Empty initialization records Pending/null. Rewriting Active/non-null
+    // cannot supply the original protected staging required for a copy.
+    let slot_path = control.path.join("publication/commits/0");
+    let pointer_path = bucket.root().join("publication/PORTABLE");
+    let slot_bytes = tokio::fs::read(&slot_path).await.unwrap();
+    let pointer_bytes = tokio::fs::read(&pointer_path).await.unwrap();
+    let error = FileBucket::open(
         config(bucket.root().to_owned()),
         TokioLocalFs,
         TokioClock,
         Validator,
     )
     .await
+    .err()
     .unwrap();
-    let current = Control::open(&reopened, false).await.unwrap();
-    let active = BackendRegistration::decode(
-        &current
-            .read(&bucket.inner.fs, "backend-registration.cbor")
+    assert!(matches!(
+        error.kind(),
+        crate::store::StoreErrorKind::Corrupt(crate::store::CorruptSubject::RefName(name))
+            if name == "publication"
+    ));
+    assert_eq!(tokio::fs::read(&slot_path).await.unwrap(), slot_bytes);
+    assert_eq!(tokio::fs::read(&pointer_path).await.unwrap(), pointer_bytes);
+    assert_eq!(
+        tokio::fs::read(control.path.join("backend-registration.cbor"))
             .await
-            .unwrap()
             .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(active.activation, Activation::Active);
-    assert_eq!(active.genesis, pending.genesis);
+        pending_bytes
+    );
+    assert!(matches!(
+        tokio::fs::symlink_metadata(control.path.join("publication/ACTIVATION")).await,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    ));
 
-    let holder = SingleHeld::acquire(&reopened).await.unwrap();
-    current
-        .install(
-            &bucket.inner.fs,
-            "backend-registration.cbor",
-            &pending.encode().unwrap(),
-            true,
-        )
-        .await
-        .unwrap();
-    tokio::fs::remove_file(current.path.join("publication/commits/0"))
-        .await
-        .unwrap();
-    tokio::fs::remove_file(bucket.root().join("publication/PORTABLE"))
-        .await
-        .unwrap();
-    drop(holder);
-    assert!(
-        FileBucket::open(
-            config(bucket.root().to_owned()),
-            TokioLocalFs,
-            TokioClock,
-            Validator
-        )
-        .await
-        .is_err()
+    tokio::fs::remove_file(&slot_path).await.unwrap();
+    tokio::fs::remove_file(&pointer_path).await.unwrap();
+    let error = FileBucket::open(
+        config(bucket.root().to_owned()),
+        TokioLocalFs,
+        TokioClock,
+        Validator,
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(matches!(
+        error.kind(),
+        crate::store::StoreErrorKind::Corrupt(crate::store::CorruptSubject::RefName(name))
+            if name == "publication"
+    ));
+    assert_eq!(
+        tokio::fs::read(control.path.join("backend-registration.cbor"))
+            .await
+            .unwrap(),
+        pending_bytes
     );
 
     tokio::fs::remove_dir_all(bucket.root()).await.unwrap();

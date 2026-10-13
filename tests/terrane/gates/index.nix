@@ -2,7 +2,7 @@
 # Memo replay/retention is owned by derivation-memo, not duplicated here.
 {
   lib,
-  sourceGate,
+  nativeSdkGate,
   ...
 }: let
   coreTests = [
@@ -140,6 +140,7 @@
     "guard::index_backfill::tests::native_index_backfill_closes_required_inline_and_index_gaps_in_real_commit"
     "guard::index_backfill::tests::native_index_backfill_preserves_complete_carriers_after_protected_reopen"
     "guard::index_backfill::tests::native_index_backfill_updates_existing_required_binding_in_real_commit"
+    "guard::index_maintenance::tests::native_repeated_producer_checks_preserve_current_and_original_refusal"
     "guard::index_maintenance::tests::native_index_verify_reports_divergence_without_mutation"
     "guard::index_maintenance::tests::native_index_rebuild_recovers_divergent_and_missing_auxiliary_closures"
     "guard::index_maintenance::tests::native_index_rebuild_rechecks_original_current_producer_and_final_ack"
@@ -227,19 +228,27 @@
       fi
       python3 ../tests/terrane/check_native_gate.py execution "${report}" ${expected}
     '';
-  in ''
-    mkdir -p "${directory}"
-    if ! cargo test --frozen --offline -p ${group.package} ${group.features} \
-      --lib -- --list > "${directory}/inventory.log" 2>&1; then
-      cat "${directory}/inventory.log" >&2
-      exit 1
-    fi
-    python3 ../tests/terrane/check_native_gate.py inventory \
-      "${directory}/inventory.log" ${required}
-    ${builtins.concatStringsSep "\n" (map runCase group.selectors)}
-  '';
+  in
+    if group.name == "native-tokio"
+    then
+      import ../_native-cases.nix {
+        label = "index-native-tokio";
+        selectors = group.selectors;
+        enterCrates = false;
+      }
+    else ''
+      mkdir -p "${directory}"
+      if ! cargo test --frozen --offline -p ${group.package} ${group.features} \
+        --lib -- --list > "${directory}/inventory.log" 2>&1; then
+        cat "${directory}/inventory.log" >&2
+        exit 1
+      fi
+      python3 ../tests/terrane/check_native_gate.py inventory \
+        "${directory}/inventory.log" ${required}
+      ${builtins.concatStringsSep "\n" (map runCase group.selectors)}
+    '';
 in {
-  index-tree-maintenance = sourceGate "index-tree-maintenance" ''
+  index-tree-maintenance = nativeSdkGate "index-tree-maintenance" ''
     cd crates
     ${builtins.concatStringsSep "\n" (map runGroup groups)}
 

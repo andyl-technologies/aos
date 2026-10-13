@@ -5,6 +5,10 @@
 //! fallback is decided before this run performs any effects; it never turns a
 //! corrupt or unavailable placement into absence. No generic Store API changes.
 
+pub(super) mod verification;
+#[cfg(all(test, feature = "tokio", unix))]
+mod verification_tests;
+
 use super::*;
 use crate::selected_bridge::native_guard::meta_batch::ImmutableEffectContext;
 
@@ -37,6 +41,14 @@ where
         uploads: &[MetaUpload<'_>],
         context: &ImmutableEffectContext<'_, '_>,
     ) -> Result<BatchOutcome, StoreFailure> {
+        #[cfg(test)]
+        let mut trace = crate::ref_advance::PhaseTrace::new(
+            &self.inner.clock,
+            "<native-meta-batch-local>",
+            None,
+            None,
+            "batch-entry",
+        );
         if !std::ptr::eq(self, held.bucket()) {
             return Err(files::layout_corrupt());
         }
@@ -161,6 +173,8 @@ where
             sealed.bytes(),
             sealed.index_object(),
         )?;
+        #[cfg(test)]
+        trace.mark("batch-container-stage-entry");
         crate::store::native_publication_effects::stage_container_contextual(
             held.fs(),
             &observed,
@@ -168,6 +182,8 @@ where
             context,
         )
         .await?;
+        #[cfg(test)]
+        trace.mark("batch-container-stage-acknowledged");
         let generation = catalog
             .capabilities
             .generation
@@ -183,6 +199,8 @@ where
             }
         }
         context.recheck()?;
+        #[cfg(test)]
+        trace.mark("batch-catalog-cohort-publication-entry");
         self.publish_pack_catalog_contextual(
             held,
             &observed,
@@ -198,9 +216,12 @@ where
         )
         .await?;
 
+        #[cfg(test)]
+        trace.mark("batch-catalog-cohort-publication-acknowledged");
         let selected = held.observe_publication().await?;
         context.check_selection(&selected)?;
         let catalog = self.catalog_observed(&selected).await?;
+        let mut confirmation = verification::Confirmation::new(&catalog);
         for identity in &identities {
             let bytes = distinct
                 .get(
@@ -210,9 +231,9 @@ where
                 )
                 .ok_or_else(files::layout_corrupt)?
                 .1;
-            if self.verified_body(&catalog, identity).await? != bytes {
-                return Err(corrupt(identity));
-            }
+            confirmation
+                .confirm_member(self, &catalog, identity, bytes, self)
+                .await?;
         }
         selected.revalidate().await?;
         context.recheck()?;

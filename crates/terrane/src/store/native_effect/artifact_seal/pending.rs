@@ -34,7 +34,7 @@ pub(in super::super) struct PendingRequest {
 
 impl PendingRequest {
     /// Borrows the exact protected record for native test phase selection.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "tokio"))]
     pub(in super::super) fn journal_path(&self) -> &Path {
         &self.journal
     }

@@ -53,7 +53,11 @@ fn key(hex: &str) -> [u8; 32] {
         .unwrap()
 }
 
-pub(super) fn secret() -> [u8; 32] {
+/// Supplies the fixed test issuer key for genuine fixture token attenuation.
+///
+/// # Panics
+/// Panics if the literal test key cannot be decoded.
+pub(crate) fn secret() -> [u8; 32] {
     key("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
 }
 
@@ -131,6 +135,41 @@ pub(super) async fn config(root: std::path::PathBuf) -> FileBucketConfig {
 /// Panics when test storage or protected native authority cannot be initialized.
 pub(crate) async fn fixture() -> super::native_fixture::NativeFixture<TokioLocalFs> {
     super::native_fixture::NativeFixture::initialize(raw_fixture().await).await
+}
+
+/// Initializes actual Recorded authoring before any protected native capture.
+///
+/// The current3 Guard is independently chosen here. The supplied historical
+/// context retains its own explicit current fence; no signed bytes select it.
+///
+/// # Errors
+/// Preserves registered selection and native fixture configuration errors.
+///
+/// # Panics
+/// Panics if the shared raw fixture, literal timing or actual native initialization fails.
+pub(crate) async fn recorded_fixture(
+    context: terrane_core::properties::semantics::RecordedContext,
+    attribute_revision: u64,
+) -> Result<super::native_fixture::NativeFixture<TokioLocalFs>, StoreFailure> {
+    let seed = raw_fixture().await;
+    let guard = Guard::new_active(
+        seed.store().clone(),
+        TokioClock,
+        seed.guard().keys().to_vec(),
+        seed.guard().config().clone(),
+    )
+    .with_recorded_authoring(context, attribute_revision)?;
+    let coordinator = Coordinator::new(
+        guard,
+        CommitTiming::new(
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+            Duration::from_secs(10),
+        )
+        .unwrap(),
+        TokioLocalFs,
+    );
+    Ok(super::native_fixture::NativeFixture::initialize(coordinator).await)
 }
 
 pub(super) async fn raw_fixture() -> Coordinator<Bucket, TokioClock, TokioLocalFs> {
@@ -309,20 +348,53 @@ async fn fork_creates_fresh_commit_with_source_parent_and_copied_receipts() {
         .unwrap();
     assert_eq!(copied.commit.commit().tree, original.commit.commit().tree);
     assert_eq!(copied.commit.commit().parents, vec![first.commit]);
-    let receipt = &copied
-        .commit
-        .commit()
-        .profile_pair
-        .entry_receipts
-        .as_ref()
-        .unwrap()[0];
-    assert!(
-        matches!(&receipt.origin, terrane_core::refs::EntryOrigin::Source(source)
-        if source.commit == first.commit && source.root == original.evidence.root && source.path == b"file")
+    // Canonical unchanged forks inherit origins through their sole parent.
+    // Copied current receipts would instead reintroduce the source's entries.
+    assert!(copied.commit.commit().profile_pair.entry_receipts.is_none());
+    let mut inherited_profile = original.commit.commit().profile_pair.clone();
+    inherited_profile.recipe = None;
+    inherited_profile.entry_receipts = None;
+    inherited_profile.commit_context = copied.commit.commit().profile_pair.commit_context.clone();
+    assert_eq!(copied.commit.commit().profile_pair, inherited_profile);
+    assert_eq!(copied.commit.identity(), fork.commit);
+    assert!(copied.commit.commit().signature.is_some());
+
+    let history = coordinator
+        .guard()
+        .verified_history(fork.commit)
+        .await
+        .unwrap();
+    for view in [first.commit, fork.commit] {
+        let location = terrane_core::provenance::EntryLocation {
+            commit: view,
+            root: original.evidence.root,
+            path: b"file".to_vec(),
+        };
+        let entry = history.entry(&location).unwrap();
+        assert_eq!(entry.attrs.len(), 1);
+        assert_eq!(entry.attrs[0].name, "note");
+        assert_eq!(entry.attrs[0].value, b"\x61x");
+        assert_eq!(history.introducing_commit(&location), Ok(first.commit));
+        assert_eq!(
+            history.attribute_producer(&location, "note"),
+            Ok(first.commit)
+        );
+    }
+    assert_eq!(
+        coordinator
+            .store()
+            .ref_get(session.reference())
+            .await
+            .unwrap(),
+        Some(first.clone())
     );
-    assert!(
-        matches!(&receipt.attributes.as_ref().unwrap()[0].1, terrane_core::refs::EntryOrigin::Source(source)
-        if source.commit == first.commit && source.path == b"file")
+    assert_eq!(
+        coordinator
+            .store()
+            .ref_get("refs/heads/_/child")
+            .await
+            .unwrap(),
+        Some(fork.clone())
     );
     assert_eq!(
         copied
@@ -603,6 +675,10 @@ async fn multiwriter_rebases_with_ordered_verified_core_merge_and_source_receipt
     let logs = reopened.ref_log_read(initial.reference(), 1).await.unwrap();
     assert_eq!(logs.last().unwrap().reason, RefLogReason::Merge);
     assert_eq!(logs.last().unwrap().expected_previous, Some(Some(current)));
+    assert!(
+        logs.iter().all(|entry| entry.record.commit != own_commit),
+        "retaining the losing proposal's Original must not select it as a ref advance"
+    );
     tokio::fs::remove_dir_all(root).await.unwrap();
 }
 

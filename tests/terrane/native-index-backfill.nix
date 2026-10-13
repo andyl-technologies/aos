@@ -8,24 +8,13 @@
     "native_index_backfill_updates_existing_required_binding_in_real_commit"
   ];
   selectors = map (name: "guard::index_backfill::tests::${name}") names;
+  runCases = import ./_native-cases.nix {
+    label = "native-index-backfill";
+    inherit selectors;
+  };
 in
   # Checked side-record reuse still requires actual inline and owner completion.
   sourceGate "native-index-backfill" ''
-    cd crates
-    cargo test --frozen --offline -p terrane --no-default-features \
-      --features tokio,surface-sdk --lib -- --list > "$TMPDIR/index-backfill-tests.txt"
-    python3 ../tests/terrane/check_native_gate.py inventory \
-      "$TMPDIR/index-backfill-tests.txt" '${builtins.toJSON selectors}'
-
-    for test_name in ${builtins.concatStringsSep " " selectors}; do
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
-        --features tokio,surface-sdk --lib "$test_name" -- --exact \
-        > "$TMPDIR/index-backfill-test.log" 2>&1; then
-        cat "$TMPDIR/index-backfill-test.log"
-        exit 1
-      fi
-      python3 ../tests/terrane/check_native_gate.py execution \
-        "$TMPDIR/index-backfill-test.log" "[\"$test_name\"]"
-    done
+    ${runCases}
     printf 'PASS: ${toString (builtins.length selectors)} exact native checked side-record backfill cases\n' > "$out/result"
   ''

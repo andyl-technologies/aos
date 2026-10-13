@@ -205,6 +205,18 @@ impl<S, C, F> Coordinator<S, C, F> {
         &self.guard
     }
 
+    /// Returns the already validated timing enforced by this coordinator.
+    pub(crate) fn timing(&self) -> CommitTiming {
+        self.timing
+    }
+
+    /// Returns the commit limit actually enforced by this coordinator's writer.
+    ///
+    /// This read-only observation grants no collector or publication authority.
+    pub(crate) fn maximum_commit_duration(&self) -> Duration {
+        self.timing.maximum()
+    }
+
     pub(crate) fn fs(&self) -> &F {
         &self.fs
     }
@@ -352,6 +364,49 @@ impl<S: Store, C: Clock, F: LocalFs> Coordinator<S, C, F> {
         paths: &[Vec<u8>],
         surface: &str,
     ) -> Result<WriterSession, AdvanceError> {
+        self.begin_observed(
+            reference,
+            token,
+            paths,
+            surface,
+            crate::guard::HistoryObservation::default().requested_target(),
+        )
+        .await
+    }
+
+    /// Opens a private retry session under the genuine paired destination exclusion.
+    ///
+    /// No setup state is selected. The paired publisher must independently
+    /// recapture current source and destination rights before any effect.
+    ///
+    /// # Errors
+    /// Preserves ordinary session failures and rejects a foreign held identity.
+    #[cfg(all(feature = "std", unix))]
+    pub(crate) async fn begin_held(
+        &self,
+        reference: &str,
+        token: &[u8],
+        surface: &str,
+        identity: &crate::bucket::held::HeldIdentity<'_>,
+    ) -> Result<WriterSession, AdvanceError> {
+        self.begin_observed(
+            reference,
+            token,
+            &[],
+            surface,
+            crate::guard::HistoryObservation::held(identity).requested_target(),
+        )
+        .await
+    }
+
+    async fn begin_observed(
+        &self,
+        reference: &str,
+        token: &[u8],
+        paths: &[Vec<u8>],
+        surface: &str,
+        observation: crate::guard::HistoryObservation<'_>,
+    ) -> Result<WriterSession, AdvanceError> {
         #[cfg(test)]
         let mut trace =
             super::PhaseTrace::new(self.guard.clock(), reference, None, None, "begin-entry");
@@ -365,7 +420,7 @@ impl<S: Store, C: Clock, F: LocalFs> Coordinator<S, C, F> {
         }
         let authorized = self
             .guard
-            .authorize(reference, token, Verb::Commit, paths, surface)
+            .authorize_observed(reference, token, Verb::Commit, paths, surface, observation)
             .await?;
         #[cfg(test)]
         trace.mark("begin-current-authorized");
@@ -736,7 +791,7 @@ impl<S: Store, C: Clock, F: LocalFs> Coordinator<S, C, F> {
                 &session.reference,
                 &admitted.token,
                 admitted.publication_verb,
-                &[],
+                admitted.publication_paths(),
                 &admitted.surface,
                 observation,
             )
@@ -779,7 +834,7 @@ impl<S: Store, C: Clock, F: LocalFs> Coordinator<S, C, F> {
                 &session.reference,
                 token,
                 admitted.publication_verb,
-                &[],
+                admitted.publication_paths(),
                 &admitted.surface,
                 observation,
             )
@@ -872,7 +927,7 @@ impl<S: Store, C: Clock, F: LocalFs> Coordinator<S, C, F> {
                 &session.reference,
                 &admitted.token,
                 admitted.publication_verb,
-                &[],
+                admitted.publication_paths(),
                 &admitted.surface,
                 observation,
             )
@@ -960,6 +1015,19 @@ impl<S: Store, C: Clock, F: LocalFs> Coordinator<S, C, F> {
                 captured.push(current);
             }
         }
+        for (commit, source) in &admitted.overlay_sources {
+            captured.extend(
+                self.guard
+                    .authorize_overlay_source_observed(
+                        *commit,
+                        source,
+                        &admitted.token,
+                        &admitted.surface,
+                        observation,
+                    )
+                    .await?,
+            );
+        }
         Ok(captured)
     }
 
@@ -1015,9 +1083,9 @@ impl<S: Store, C: Clock, F: LocalFs> Coordinator<S, C, F> {
             .await?;
         #[cfg(test)]
         trace.mark("immutable-source-admission-checked");
-        observation
-            .record_candidate(self.store(), admitted, self.guard().config().min_chunk_size)
-            .await?;
+        #[cfg(test)]
+        trace.mark("immutable-candidate-evidence-entry");
+        observation.record_candidate(self.guard(), admitted).await?;
         #[cfg(test)]
         trace.mark("immutable-candidate-evidence-recorded");
         Ok(())
@@ -1073,6 +1141,13 @@ impl<S: Store, C: Clock, F: LocalFs> Coordinator<S, C, F> {
             .checked_sub(started)
             .ok_or(AdvanceError::Expired)?;
         if elapsed > self.timing.maximum {
+            #[cfg(test)]
+            if std::env::var_os("TERRANE_REF_PHASE_TRACE").is_some() {
+                eprintln!(
+                    "ref-deadline original_started={started:?} elapsed={elapsed:?} maximum={:?} outcome=Expired",
+                    self.timing.maximum
+                );
+            }
             Err(AdvanceError::Expired)
         } else {
             Ok(())

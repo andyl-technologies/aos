@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use terrane_core::{
     cbor,
     identity::Digest,
-    provenance::{Selector, TrustContext},
+    provenance::Selector,
     surface::{View, ViewTarget},
     tree_format::{self, EntryKind},
 };
@@ -88,14 +88,16 @@ where
             let mut any = Vec::new();
             cbor::write_text(&mut any, "any");
             let selector = Selector::from_property(&any).map_err(|_| Error::Denied)?;
-            let trust = TrustContext::new(
-                &snapshot.history,
-                snapshot.commit.identity(),
-                selector,
-                &snapshot.storage_domain,
-                None,
-            )
-            .map_err(|_| Error::Denied)?;
+            let trust = snapshot
+                .interpretation
+                .evaluator(
+                    &snapshot.history,
+                    (snapshot.commit.identity(), snapshot.evidence.root),
+                    selector,
+                    &snapshot.storage_domain,
+                    None,
+                )
+                .map_err(|_| Error::Denied)?;
             if !trust.accepts_path(&relative) {
                 return Err(Error::Absent);
             }
@@ -224,14 +226,16 @@ fn project(
     let mut any = Vec::new();
     cbor::write_text(&mut any, "any");
     let selector = Selector::from_property(&any).map_err(|_| Error::Denied)?;
-    let trust = TrustContext::new(
-        &snapshot.history,
-        snapshot.commit.identity(),
-        selector,
-        &snapshot.storage_domain,
-        None,
-    )
-    .map_err(|_| Error::Denied)?;
+    let trust = snapshot
+        .interpretation
+        .evaluator(
+            &snapshot.history,
+            (snapshot.commit.identity(), snapshot.evidence.root),
+            selector,
+            &snapshot.storage_domain,
+            None,
+        )
+        .map_err(|_| Error::Denied)?;
     let mut pending = vec![(snapshot.evidence.root, Vec::new(), Vec::new())];
     let mut output = Vec::new();
     let mut link_groups = BTreeMap::new();

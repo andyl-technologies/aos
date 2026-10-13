@@ -23,12 +23,13 @@ pub(crate) mod protected_read;
 pub use native_clock::NativeEffectClock;
 
 /// Shares genuine injected clock state with retained-effect qualification tests.
-#[cfg(all(feature = "std", test))]
+#[cfg(all(feature = "std", test, feature = "tokio"))]
 pub(crate) use native_clock::gc_test_clock::TestClock;
 
 /// Reports actual successful lease synchronization to native tests without acknowledgment.
-#[cfg(all(feature = "std", test, feature = "tokio", unix))]
+#[cfg(all(test, feature = "tokio", unix))]
 pub(crate) use native_effect::LeaseSyncEvent;
+
 #[cfg(all(feature = "std", test, feature = "tokio", unix))]
 pub(crate) use native_effect::MutationSyncEvent;
 #[cfg(all(feature = "std", unix))]
@@ -41,7 +42,7 @@ pub(crate) use native_effect::publication::initialization_inputs::request_for_op
 pub use native_effect::publication::initialization_inputs::{
     NativePendingRoot, NativePublicationInitialization, NativePublicationInitializationOutcome,
 };
-#[cfg(all(feature = "std", test))]
+#[cfg(all(feature = "std", test, feature = "tokio"))]
 pub(crate) use native_effect::{EffectFault, EffectFaultProbe};
 #[cfg(feature = "std")]
 pub use native_effect::{NativeEffectFailure, NativeExclusion, NativeFsEffect};
@@ -775,7 +776,11 @@ pub trait LocalFs {
     /// Its worker retains actual opened directory descriptors independently of
     /// acquired exclusions through durable Pending and complete genesis staging.
     /// Cancellation of the asynchronous waiter must not release those inputs
-    /// while physical work remains. An existing root grants no freshness.
+    /// while physical work remains. An existing root grants no freshness. An
+    /// explicit portable-copy request additionally retains its existing actual
+    /// exclusion and independently verified ordinary closure. Only a genuine
+    /// native administrative create-new event supplies its destination receipt;
+    /// the worker stages D-108's exact proposal before recording Pending.
     /// The default refuses before creating any directory or coordination inode.
     ///
     /// # Errors

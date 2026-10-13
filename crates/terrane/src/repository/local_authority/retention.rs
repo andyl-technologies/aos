@@ -522,6 +522,7 @@ pub(crate) async fn retain<F: LocalFs + Sync, R: Record>(
 /// Acquires protected configuration exclusion after backend exclusion.
 ///
 /// The stable inode is never replaced; callers must not reverse this lock order.
+/// Busy readers or writers are refused immediately so backend exclusion can drop.
 ///
 /// # Errors
 /// Rejects unsafe paths, ownership, modes or aliases, missing reopen state,
@@ -552,7 +553,24 @@ pub(crate) async fn configuration_lock<F: LocalFs + Sync>(
         Err(error) => return Err(error.into()),
     }
     let before = fs.symlink_metadata(&path).await?;
-    let lock = fs.lock_exclusive(&path).await?;
+    let lock = fs
+        .try_lock_existing_exclusive(&path)
+        .await
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::WouldBlock => {
+                Error::Store(crate::store::StoreFailure::with_source(
+                    crate::store::StoreErrorKind::Unavailable { retry_after: None },
+                    error,
+                ))
+            }
+            std::io::ErrorKind::Unsupported => {
+                Error::Store(crate::store::StoreFailure::with_source(
+                    crate::store::StoreErrorKind::Unsupported,
+                    error,
+                ))
+            }
+            _ => Error::Io(error),
+        })?;
     validate_private_file(fs, &path, owner).await?;
     let after = fs.symlink_metadata(&path).await?;
     use std::os::unix::fs::MetadataExt;

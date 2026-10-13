@@ -6,8 +6,18 @@
 
 #[cfg(feature = "std")]
 mod admission;
+
+#[cfg(feature = "std")]
+pub use admission::{
+    IndexBindingGap, IndexGraftPreparationWork, IndexGraftPropagationWork,
+    IndexGraftValidationWork, IndexOperationWork, IndexPublicationWork,
+};
+#[cfg(feature = "std")]
+pub use history::completion::indexes::IndexInputReads;
 #[cfg(feature = "std")]
 mod attributes;
+#[cfg(feature = "std")]
+mod authoring;
 #[cfg(all(feature = "std", unix))]
 pub(crate) mod cold_fork;
 #[cfg(feature = "std")]
@@ -33,6 +43,8 @@ mod join;
 mod merge;
 #[cfg(feature = "std")]
 mod original;
+#[cfg(all(feature = "std", unix))]
+pub(crate) use original::retention_failure;
 #[cfg(feature = "std")]
 pub(crate) use original::{
     ControlExclusion, RetainedControls, consumed_pins as publication_original_pins,
@@ -42,6 +54,15 @@ mod policy;
 mod read;
 #[cfg(feature = "std")]
 mod requalification;
+#[cfg(feature = "std")]
+mod view_selection;
+#[cfg(all(feature = "std", unix))]
+pub(crate) use read::ExistingOwnerReferences;
+#[cfg(feature = "std")]
+pub use view_selection::ViewSelection;
+#[cfg(all(test, feature = "tokio", unix))]
+pub(crate) use view_selection::native_fixture as recorded_native_fixture;
+mod recorded_properties;
 mod scope;
 mod snapshot;
 mod staged;
@@ -68,8 +89,16 @@ use crate::store::{Clock, Store, StoreErrorKind, StoreFailure};
 #[cfg(feature = "std")]
 pub(crate) use admission::AdmittedCommit;
 #[cfg(feature = "std")]
+pub use authoring::AuthoringNamespaceProfile;
+#[cfg(feature = "std")]
 pub(crate) use consumed::ConsumedResolver;
+#[cfg(all(feature = "std", unix))]
+pub(crate) use history::DisclosureSourceSelection;
 pub(crate) use history::HistoryObservation;
+#[cfg(feature = "std")]
+pub(crate) use history::{
+    CollectionOccurrence, CompletedCollectionHistory, VerifiedCollectionTree,
+};
 #[cfg(feature = "std")]
 pub(crate) use join::{JoinKind, JoinRequest};
 #[cfg(feature = "std")]
@@ -81,6 +110,11 @@ pub use original::{OriginalAuthority, OriginalCommitContext, RetainedBootstrap};
 pub use read::AuthorizedSnapshot;
 #[cfg(feature = "std")]
 pub use read::indexes;
+#[cfg(feature = "std")]
+pub(crate) use recorded_properties::SelectedReadInterpretation;
+pub use recorded_properties::profiles::{
+    NamespaceProfileError, RecordedNamespaceProfile, RecordedNamespaceProfiles,
+};
 #[cfg(all(feature = "std", unix))]
 pub use snapshot::layers::OverlayInput;
 pub(crate) use snapshot::{TreeEvidence, invalid};
@@ -163,6 +197,7 @@ impl AuthorizedRef {
     /// DOM-24 pairs independently authorized source and destination requests.
     /// Groups and issuer keys remain independently checked claims; equality
     /// grants no current token, ACL, scope or publication authority.
+    #[cfg(any(feature = "std", test))]
     pub(crate) fn same_principal(&self, other: &Self) -> bool {
         let left = self.token.authority();
         let right = other.token.authority();
@@ -186,8 +221,18 @@ pub struct Guard<S, C> {
     clock: C,
     keys: Vec<IssuerKey>,
     config: GuardConfig,
+    // Weak cache keys distinguish this allocation without retaining authority.
+    // Every constructor and configuration adapter starts a fresh discriminator.
+    #[cfg(feature = "std")]
+    candidate_preparation_scope: std::sync::Arc<()>,
     #[cfg(feature = "std")]
     interpretation: history::completion::InterpretationSelection,
+    #[cfg(feature = "std")]
+    configured_current: history::completion::InterpretationSelection,
+    #[cfg(feature = "std")]
+    view_selections: view_selection::ViewSelections,
+    #[cfg(feature = "std")]
+    authoring_selection: Option<(terrane_core::properties::selected::Selection, u64)>,
     #[cfg(feature = "std")]
     original_verifier: std::sync::RwLock<Option<original::OriginalVerifier>>,
     #[cfg(feature = "std")]
@@ -200,7 +245,10 @@ pub struct Guard<S, C> {
 }
 
 impl<S, C> Guard<S, C> {
-    /// Creates the repository's single authorization enforcement point.
+    /// Creates the repository's authorization enforcement point in legacy read mode.
+    ///
+    /// Immutable reads deliberately use the legacy property/evaluator entrypoints.
+    /// This constructor does not recover historical interpretation configuration.
     pub fn new(store: S, clock: C, keys: Vec<IssuerKey>, config: GuardConfig) -> Self {
         Self {
             store,
@@ -208,7 +256,15 @@ impl<S, C> Guard<S, C> {
             keys,
             config,
             #[cfg(feature = "std")]
+            candidate_preparation_scope: std::sync::Arc::new(()),
+            #[cfg(feature = "std")]
             interpretation: history::completion::InterpretationSelection::Legacy,
+            #[cfg(feature = "std")]
+            configured_current: history::completion::InterpretationSelection::Legacy,
+            #[cfg(feature = "std")]
+            view_selections: view_selection::ViewSelections::default(),
+            #[cfg(feature = "std")]
+            authoring_selection: None,
             #[cfg(feature = "std")]
             original_verifier: std::sync::RwLock::new(None),
             #[cfg(feature = "std")]
@@ -226,6 +282,7 @@ impl<S, C> Guard<S, C> {
     pub fn new_active(store: S, clock: C, keys: Vec<IssuerKey>, config: GuardConfig) -> Self {
         let mut guard = Self::new(store, clock, keys, config);
         guard.interpretation = history::completion::InterpretationSelection::Active;
+        guard.configured_current = history::completion::InterpretationSelection::Active;
         guard
     }
 
@@ -233,12 +290,45 @@ impl<S, C> Guard<S, C> {
     pub(crate) fn semantic_selection(&self) -> terrane_core::properties::selected::Selection {
         #[cfg(feature = "std")]
         {
-            self.interpretation.semantics()
+            self.authoring_selection
+                .as_ref()
+                .map(|(selection, _)| selection.clone())
+                .unwrap_or_else(|| self.interpretation.semantics())
         }
         #[cfg(not(feature = "std"))]
         {
             terrane_core::properties::selected::Selection::Legacy
         }
+    }
+
+    fn view_semantics(
+        &self,
+        view: terrane_core::identity::Digest,
+        original_root: terrane_core::identity::Digest,
+        observation: HistoryObservation<'_>,
+    ) -> Result<terrane_core::properties::selected::Selection, StoreFailure> {
+        #[cfg(feature = "std")]
+        {
+            Ok(self
+                .selected_view_inputs(view, original_root, observation)?
+                .selection)
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            let _ = (view, original_root, observation);
+            Ok(self.semantic_selection())
+        }
+    }
+
+    #[cfg(all(test, feature = "tokio", unix))]
+    fn historical_evidence_semantics(
+        &self,
+        evidence: &TreeEvidence,
+        observation: HistoryObservation<'_>,
+    ) -> Result<terrane_core::properties::selected::Selection, StoreFailure> {
+        let commit = evidence.commit.as_ref().ok_or_else(invalid)?;
+        let view = commit.identity().map_err(|_| invalid())?;
+        self.view_semantics(view, evidence.root, observation)
     }
 
     pub(crate) fn store(&self) -> &S {
@@ -263,9 +353,23 @@ impl<S: Store, C: Clock> Guard<S, C> {
     /// Resolves every canonical graft occurrence before signing or verifying
     /// authoring assertions. Neither caller labels nor the signature alone
     /// establish which disclosure domain the immutable tree actually has.
+    ///
+    /// # Errors
+    /// Rejects malformed canonical occurrences, failed property resolution or
+    /// domain labels, and empty or duplicate root sets.
+    #[cfg(feature = "std")]
     pub(crate) fn authoring_roots(
         &self,
         evidence: &TreeEvidence,
+    ) -> Result<Vec<(Vec<u8>, String)>, StoreFailure> {
+        self.authoring_roots_selected(evidence, &self.semantic_selection())
+    }
+
+    #[cfg(feature = "std")]
+    fn authoring_roots_selected(
+        &self,
+        evidence: &TreeEvidence,
+        selection: &terrane_core::properties::selected::Selection,
     ) -> Result<Vec<(Vec<u8>, String)>, StoreFailure> {
         let mut roots = Vec::new();
         for occurrence in evidence.occurrences(self.config.min_chunk_size)? {
@@ -277,8 +381,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
                     overrides,
                 })
                 .collect::<Vec<_>>();
-            let effective = self
-                .semantic_selection()
+            let effective = selection
                 .resolve(&layers, self.defaults_for(evidence))
                 .map_err(|_| invalid())?;
             roots.push((
@@ -417,7 +520,11 @@ impl<S: Store, C: Clock> Guard<S, C> {
                     })
                     .collect::<Vec<_>>();
                 let policy = self
-                    .semantic_selection()
+                    .view_semantics(
+                        record.as_ref().ok_or_else(invalid)?.commit,
+                        evidence.root,
+                        observation,
+                    )?
                     .resolve(&layers, self.defaults_for(evidence))
                     .map_err(|_| denied(reference, verb))?;
                 self.check_acl(&verified, &policy, reference, verb)?;
@@ -538,13 +645,48 @@ impl<S: Store, C: Clock> Guard<S, C> {
         path: &[u8],
         surface: &str,
     ) -> Result<crate::domain::DomainAccess, StoreFailure> {
+        self.domain_access_observed(
+            reference,
+            token,
+            verb,
+            path,
+            surface,
+            HistoryObservation::default(),
+        )
+        .await
+    }
+
+    /// Checks the exact canonical domain occurrence under a held observation.
+    ///
+    /// # Errors
+    /// Preserves current token, ACL, whole-record, historical interpretation,
+    /// namespace binding, and underlying storage failures.
+    pub(crate) async fn domain_access_observed(
+        &self,
+        reference: &str,
+        token: &[u8],
+        verb: Verb,
+        path: &[u8],
+        surface: &str,
+        observation: HistoryObservation<'_>,
+    ) -> Result<crate::domain::DomainAccess, StoreFailure> {
         let authorization = self
-            .authorize(reference, token, verb, &[path.to_vec()], surface)
+            .authorize_observed(
+                reference,
+                token,
+                verb,
+                &[path.to_vec()],
+                surface,
+                observation,
+            )
             .await?;
         let record = authorization
             .record()
             .ok_or_else(|| denied(reference, verb))?;
-        let evidence = self.verified_tree(record.commit).await?.evidence;
+        let evidence = self
+            .verified_tree_observed(record.commit, observation)
+            .await?
+            .evidence;
         let occurrences = evidence.occurrences(self.config.min_chunk_size)?;
         let occurrence = occurrences
             .iter()
@@ -566,7 +708,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
             })
             .collect::<Vec<_>>();
         let effective = self
-            .semantic_selection()
+            .view_semantics(record.commit, evidence.root, observation)?
             .resolve(&layers, self.defaults_for(&evidence))
             .map_err(|_| denied(reference, verb))?;
         let domain = domain_label(&effective).map_err(|_| denied(reference, verb))?;
@@ -650,7 +792,19 @@ pub(crate) fn domain_label<'a>(
     }
 }
 
+#[cfg_attr(test, track_caller)]
 pub(crate) fn denied(reference: &str, verb: Verb) -> StoreFailure {
+    #[cfg(test)]
+    {
+        let caller = std::panic::Location::caller();
+        write_denial_diagnostic(format_args!(
+            "TERRANE-DENIAL-SITE {}:{}:{}\n",
+            caller.file(),
+            caller.line(),
+            caller.column(),
+        ));
+    }
+
     let verb = match verb {
         Verb::Read => "read",
         Verb::Fork => "fork",
@@ -662,6 +816,32 @@ pub(crate) fn denied(reference: &str, verb: Verb) -> StoreFailure {
         verb,
         pattern: reference.to_owned(),
     })
+}
+
+/// Reports a fixed test phase after its operation has already returned a denial.
+///
+/// It emits no request or policy data and leaves the returned failure unchanged.
+/// Output is enabled only by the local diagnostic derivation's explicit switch.
+#[cfg(all(test, feature = "tokio"))]
+pub(crate) fn trace_denial_phase(phase: &'static str) {
+    write_denial_diagnostic(format_args!("TERRANE-DENIAL-PHASE {phase}\n"));
+}
+
+// Logging occurs only after a denial is selected. Failed diagnostic output must
+// never change the original refusal, and ordinary library builds omit the helper.
+#[cfg(test)]
+fn write_denial_diagnostic(arguments: std::fmt::Arguments<'_>) {
+    use std::io::Write;
+
+    if std::env::var("TERRANE_TEST_DENIAL_CALLSITE")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        return;
+    }
+
+    let _ = std::io::stderr().lock().write_fmt(arguments);
 }
 
 // Collection verifies historical inputs through the same genuine Guard.

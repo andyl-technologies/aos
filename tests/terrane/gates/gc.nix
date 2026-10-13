@@ -1,5 +1,5 @@
 {
-  sourceGate,
+  nativeSdkGate,
   localTwoPhaseGc,
   ...
 }: let
@@ -55,6 +55,8 @@
     "gc::runner::walk::tests::common_walk_witness_and_legacy_rows_do_not_cover_full_present_context"
     "gc::runner::walk::tests::native::gc_common_walk_native_attributes_retain_versions_without_discovery_roots"
     "gc::runner::walk::tests::native::gc_common_walk_native_complete_checkpoint_reopens_and_preserves_contextual_marks"
+    "gc::runner::walk::tests::native::gc_common_walk_native_broader_cutoff_reuses_full_occurrence_expansion"
+    "gc::runner::walk::tests::native::gc_common_walk_native_recorded_preservation_keeps_inert_index_bindings"
     "gc::runner::walk::tests::native::gc_common_walk_native_independently_rooted_source_keeps_own_producer_context"
     "gc::runner::walk::tests::native::overlays::signed_overlay_layer_ancestry_survives_collection_and_reopen"
     "gc::runner::walk::tests::native::overlays::signed_overlay_layer_default_and_forged_context_are_refused"
@@ -85,33 +87,39 @@
         "$TMPDIR/gc-test.log" "[\"$test_name\"]"
     done
   '';
+
+  nativeFocusedTests = label: selectors:
+    import ../_native-cases.nix {
+      inherit label selectors;
+      enterCrates = false;
+    };
 in {
   gc-two-phase-delete = localTwoPhaseGc;
 
-  gc-grace-window = sourceGate "gc-grace-window" ''
+  gc-grace-window = nativeSdkGate "gc-grace-window" ''
     cd crates
-    ${focusedTests "tokio,surface-sdk" graceTests}
+    ${nativeFocusedTests "gc-grace-window" graceTests}
     printf 'PASS: actual pack/index timestamps, strict grace boundary and enforced commit window (4 exact cases)\n' \
       > "$out/result"
   '';
 
-  gc-roots-complete = sourceGate "gc-roots-complete" ''
+  gc-roots-complete = nativeSdkGate "gc-roots-complete" ''
     cd crates
-    ${focusedTests "tokio,surface-sdk" rootTests}
+    ${nativeFocusedTests "gc-roots-complete" rootTests}
     printf 'PASS: native selected root inventory, known empty roots, retention, opaque Notes and snapshot continuity (6 exact cases)\n' \
       > "$out/result"
   '';
 
-  gc-mark-reachability = sourceGate "gc-mark-reachability" ''
+  gc-mark-reachability = nativeSdkGate "gc-mark-reachability" ''
     cd crates
-    ${focusedTests "tokio,surface-sdk" markTests}
+    ${nativeFocusedTests "gc-mark-reachability" markTests}
     printf 'PASS: contextual metadata marking, independent producers, certified edges and native replay (${toString (builtins.length markTests)} exact cases)\n' \
       > "$out/result"
   '';
 
-  gc-singleton-lease = sourceGate "gc-singleton-lease" ''
+  gc-singleton-lease = nativeSdkGate "gc-singleton-lease" ''
     cd crates
-    ${focusedTests "tokio,surface-sdk" nativeTests}
+    ${nativeFocusedTests "gc-singleton-lease" nativeTests}
     ${focusedTests "std,surface-sdk" localTests}
     printf 'PASS: selected singleton lease, administrative exclusion, runner fencing, takeover and non-Send bindings (21 exact cases)\n' \
       > "$out/result"

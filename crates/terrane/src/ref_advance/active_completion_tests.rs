@@ -1,5 +1,7 @@
 //! Checks explicit active selection through genuine native signed-history publication.
 
+#[path = "recorded_selection_tests.rs"]
+mod recorded_selection_tests;
 mod support;
 
 use super::tests::{request, token};
@@ -190,22 +192,136 @@ async fn native_active_completion_missing_primary_never_selects_ref_or_lineage()
 #[tokio::test]
 async fn native_active_completion_legacy_one_never_coerces_indexed_view() -> Result {
     let repository = fixture(false).await?;
+    let proposal = indexed(Vec::new(), false)?;
+    let offered = proposal
+        .request
+        .uploads
+        .iter()
+        .map(|upload| match upload {
+            crate::guard::StagedUpload::Meta { kind, bytes } => TERRANE_V1.calculate(*kind, bytes),
+            crate::guard::StagedUpload::Chunk { identity, .. } => Ok(identity.clone()),
+        })
+        .collect::<core::result::Result<Vec<_>, _>>()?;
+    {
+        let owner_identity = TERRANE_V1.from_digest(IdentityKind::Node, &proposal.owner)?;
+        let owner_bytes = proposal
+            .request
+            .uploads
+            .iter()
+            .find_map(|upload| match upload {
+                crate::guard::StagedUpload::Meta {
+                    kind: IdentityKind::Node,
+                    bytes,
+                } if TERRANE_V1
+                    .calculate(IdentityKind::Node, bytes)
+                    .ok()
+                    .as_ref()
+                    == Some(&owner_identity) =>
+                {
+                    Some(bytes)
+                }
+                _ => None,
+            })
+            .ok_or("indexed owner upload missing")?;
+        let owner = terrane_core::tree_format::decode_node_for(
+            owner_bytes,
+            true,
+            262144,
+            terrane_core::tree_format::TreeUse::Ordinary,
+        )?;
+        let properties = owner.props.ok_or("indexed owner properties missing")?;
+        let active_context = terrane_core::properties::semantics::RecordedContext::new(3, 3, &[])?;
+        active_context.validate_map(&properties)?;
+        assert_eq!(
+            terrane_core::properties::semantics::RecordedContext::new(1, 1, &[])?
+                .validate_map(&properties),
+            Err(terrane_core::properties::Error::UnknownProperty)
+        );
+        let binding = properties
+            .iter()
+            .find(|property| property.name == "index-roots")
+            .ok_or("indexed owner binding missing")?;
+        assert_eq!(
+            terrane_core::properties::semantics::RecordedContext::new(1, 1, &[])?
+                .validate_map(core::slice::from_ref(binding)),
+            Err(terrane_core::properties::Error::UnknownProperty)
+        );
+    }
+
+    // The same complete canonical namespace and carriers genuinely publish
+    // under Active selection; refusal below cannot be an unrelated bad upload.
+    let active = fixture(true).await?;
+    let mut active_request = request(Vec::new());
+    active_request.commit = proposal.request.commit.clone();
+    active_request.uploads = proposal.request.uploads.clone();
+    let mut active_session = active.begin(REFERENCE, &token(), "sdk").await?;
+    active
+        .commit_request(&mut active_session, active_request)
+        .await?;
+    let loaded = crate::indexing::load(
+        active.coordinator().store(),
+        proposal.owner,
+        "uid",
+        crate::indexing::SemanticRevisions {
+            property: 3,
+            attribute: 2,
+            tree: 1,
+        },
+        262144,
+    )
+    .await?;
+    assert_eq!(loaded.index_root(), proposal.primary);
+    let sources = loaded.sources()?;
+    let prepared = loaded.prepare(&sources.trees)?;
+    assert_eq!(prepared.preparation().verification.candidates, 1);
+
+    assert_eq!(
+        repository.coordinator().guard().semantic_selection(),
+        terrane_core::properties::selected::Selection::Legacy
+    );
+    assert_eq!(
+        repository.coordinator().store().has(&offered).await?,
+        vec![false; offered.len()]
+    );
     let mut session = repository.begin(REFERENCE, &token(), "sdk").await?;
     let failure = store_failure(
         repository
-            .commit_request(&mut session, indexed(Vec::new(), false)?.request)
+            .commit_request(&mut session, proposal.request)
             .await
             .err()
             .ok_or("Legacy constructor accepted active bindings")?,
     );
-    // ROOT ordinary authoring resolution rejects unregistered index-roots.
+    // Fresh affected-root derivation rejects the unregistered Legacy binding
+    // before current ACL authorization; it maps that invalid map to Invalid.
     assert!(
-        matches!(failure.kind(),StoreErrorKind::Denied { verb: "commit", pattern } if pattern == REFERENCE)
+        matches!(
+            failure.kind(),
+            StoreErrorKind::Invalid(crate::store::InvalidReason::MalformedRequest)
+        ),
+        "Legacy indexed publication refusal: {failure:?}"
     );
     assert_eq!(
         repository.coordinator().store().ref_get(REFERENCE).await?,
         None
     );
+    assert_eq!(
+        repository.coordinator().store().has(&offered).await?,
+        vec![false; offered.len()]
+    );
+    assert_eq!(
+        repository.coordinator().guard().semantic_selection(),
+        terrane_core::properties::selected::Selection::Legacy
+    );
+    {
+        let holder = SingleHeld::acquire(repository.coordinator().store()).await?;
+        let destination = holder.destination();
+        let observed = destination.observe_publication().await?;
+        assert_eq!(
+            destination.selected_lineage(&observed, REFERENCE).await?,
+            None
+        );
+        observed.revalidate().await?;
+    }
     drop(session);
     let mut ordinary_session = repository.begin(REFERENCE, &token(), "sdk").await?;
     let ordinary = repository
@@ -251,13 +367,22 @@ async fn native_active_completion_conflicting_same_view_selection_refuses() -> R
     let mut history = guard.verified_history(record.commit).await?;
     let actual = guard.verified_tree(record.commit).await?;
     let different = legacy.coordinator().guard().semantic_selection();
-    assert_ne!(guard.semantic_selection(), different);
+    let (property_selection, _) =
+        guard.selected_view_context_for_tests(record.commit, actual.evidence.root)?;
+    assert_eq!(
+        property_selection,
+        terrane_core::properties::selected::Selection::Recorded(
+            terrane_core::properties::semantics::RecordedContext::new(3, 3, &[])?,
+        )
+    );
+    assert_ne!(property_selection, different);
     assert!(matches!(
         history.insert_commit_selected(actual.commit.clone(), different),
         Err(terrane_core::provenance::Rejected)
     ));
     assert_eq!(history.commit(&record.commit), Some(&actual.commit));
-    history.insert_commit_selected(actual.commit, guard.semantic_selection())?;
+    history.insert_commit_selected(actual.commit.clone(), property_selection)?;
+    assert_eq!(history.commit(&record.commit), Some(&actual.commit));
     assert_eq!(
         active.coordinator().store().ref_get(REFERENCE).await?,
         Some(record)
@@ -275,7 +400,7 @@ fn store_failure(error: crate::repository::Error) -> StoreFailure {
 
 #[tokio::test]
 async fn native_active_completion_checks_each_signed_requirement_field() -> Result {
-    use crate::guard::{ConsumedResolver, HistoryObservation};
+    use crate::guard::{ConsumedResolver, Guard, HistoryObservation, ViewSelection};
     use crate::store::TokioClock;
 
     let repository = fixture(true).await?;
@@ -321,13 +446,27 @@ async fn native_active_completion_checks_each_signed_requirement_field() -> Resu
             Some(replace_requirement(source, name, value)?);
         let signed = sign_actual_scope(&repository, candidate)?;
         let identity = put_signed(&repository, &signed).await?;
+        // Each independently signed view needs its own operator-installed inputs.
+        // This ordinary association supplies neither Original nor completion.
+        let configured = Guard::new_active(
+            repository.coordinator().store().clone(),
+            TokioClock,
+            repository.coordinator().guard().keys().to_vec(),
+            repository.coordinator().guard().config().clone(),
+        )
+        .with_view_selections(vec![ViewSelection::new(
+            identity,
+            signed.commit().tree,
+            terrane_core::properties::selected::Selection::Recorded(
+                terrane_core::properties::semantics::RecordedContext::new(3, 3, &[])?,
+            ),
+            2,
+        )?])?;
+        configured.install_original_verifier(&authority).await?;
         let holder = SingleHeld::acquire(repository.coordinator().store()).await?;
         let destination = holder.destination();
         let observed = destination.observe_publication().await?;
-        let concrete = repository
-            .coordinator()
-            .guard()
-            .held_guard(holder.destination(), TokioClock)?;
+        let concrete = configured.held_guard(holder.destination(), TokioClock)?;
         let consumed = ConsumedResolver::new(&concrete, &authority)?;
         consumed.registration(&authority)?;
         let history = HistoryObservation::held(observed.identity()).tracked(&consumed);
@@ -647,7 +786,7 @@ async fn native_active_metadata_admits_index_roles_but_not_namespace_use() -> Re
         assert!(decode_node_for(bytes, true, 262144, TreeUse::Index).is_ok());
         assert!(decode_node_for(bytes, true, 262144, TreeUse::Ordinary).is_err());
     }
-    let wrong_role_bytes = {
+    let generic_index_bytes = {
         use terrane_core::tree_format::{Attribute, Entry, EntryKind, LeafItem};
         let tree = terrane_core::tree_builder::Tree::build(
             vec![LeafItem {
@@ -672,19 +811,42 @@ async fn native_active_metadata_admits_index_roles_but_not_namespace_use() -> Re
         )?;
         tree.nodes()
             .next()
-            .ok_or("missing wrong-role node")?
+            .ok_or("missing generic Index node")?
             .encoded()
             .to_vec()
     };
-    assert!(decode_node_for(&wrong_role_bytes, true, 262144, TreeUse::Index).is_ok());
-    let failure = validator
-        .validate_meta(&MetaUpload::new(IdentityKind::Node, &wrong_role_bytes)?)
-        .err()
-        .ok_or("unregistered index schema accepted")?;
-    assert!(matches!(
-        failure.kind(),
-        StoreErrorKind::Invalid(crate::store::InvalidReason::Upload { rule_id: "TREE-25" })
-    ));
+    // Generic retained Index metadata remains valid without an executable role.
+    // Each explicitly selected carrier role independently rejects this shape.
+    let generic_upload = MetaUpload::new(IdentityKind::Node, &generic_index_bytes)?;
+    validator.validate_meta(&generic_upload)?;
+    let stored = repository
+        .coordinator()
+        .store()
+        .put(ContentUpload::Meta(generic_upload))
+        .await?;
+    assert_eq!(
+        stored,
+        TERRANE_V1.calculate(IdentityKind::Node, &generic_index_bytes)?,
+    );
+    let generic_node = decode_node_for(&generic_index_bytes, true, 262144, TreeUse::Index)?;
+    assert!(decode_node_for(&generic_index_bytes, true, 262144, TreeUse::Ordinary).is_err());
+    {
+        use terrane_core::indexing::carrier::{Role, SemanticContext, validate_node};
+
+        let context = SemanticContext::new(3, 2, 1)?;
+        for role in [
+            Role::Primary,
+            Role::Gap,
+            Role::PresentRoute,
+            Role::MissingRoute,
+        ] {
+            assert_eq!(
+                validate_node(context, role, &generic_node, true),
+                Err(terrane_core::indexing::Error::Schema),
+                "generic Index accepted under {role:?}",
+            );
+        }
+    }
     let malformed = MetaUpload::new(IdentityKind::Node, &[0xff])?;
     let failure = validator
         .validate_meta(&malformed)
@@ -743,9 +905,7 @@ async fn native_active_completion_divergent_primary_never_promotes() -> Result {
 }
 
 #[tokio::test]
-async fn native_active_completion_missing_owner_binding_reports_exact_incomplete_cause() -> Result {
-    use core::error::Error;
-
+async fn native_active_completion_dropped_required_owner_binding_refuses_publication() -> Result {
     let repository = fixture(true).await?;
     let first_proposal = indexed(Vec::new(), false)?;
     let first_owner = first_proposal.owner;
@@ -768,6 +928,13 @@ async fn native_active_completion_missing_owner_binding_reports_exact_incomplete
     let proposal = support::missing_local_binding(vec![first.commit])?;
     let owner = proposal.owner;
     assert_ne!(owner, first_owner);
+    let proposed_evidence = crate::guard::TreeEvidence::load_tree(
+        repository.coordinator().store(),
+        owner,
+        &proposal.request.uploads,
+        262144,
+    )
+    .await?;
     let failure = store_failure(
         repository
             .commit_request(&mut session, proposal.request)
@@ -775,18 +942,24 @@ async fn native_active_completion_missing_owner_binding_reports_exact_incomplete
             .err()
             .ok_or("missing local binding completed publication")?,
     );
-    // Publication validation keeps STORE-30's closed outcome and exact rule.
-    // Direct immutable indexing retains its distinct typed incomplete outcome.
-    assert!(matches!(
+    // Writer maintenance refuses dropping a valid required binding before
+    // signed-history completion. Direct loading still reports the immutable
+    // missing association as incomplete rather than verifying an index.
+    assert_eq!(
         failure.kind(),
-        StoreErrorKind::Invalid(crate::store::InvalidReason::Upload { rule_id: "DRV-27" })
-    ));
-    let cause = failure
-        .source()
-        .and_then(|source| source.downcast_ref::<crate::indexing::Error>())
-        .ok_or("typed original index cause lost")?;
-    assert!(matches!(cause,crate::indexing::Error::MissingBinding(subject) if *subject == owner));
-    assert_eq!(cause.kind(), crate::indexing::ErrorKind::Incomplete);
+        &StoreErrorKind::Invalid(crate::store::InvalidReason::MalformedRequest),
+        "unexpected dropped-binding failure: {failure:?}",
+    );
+    let cause = repository
+        .coordinator()
+        .guard()
+        .dropped_index_binding_for_tests(&failure);
+    assert!(
+        cause.is_some(),
+        "unexpected dropped-binding cause: {failure:?}",
+    );
+    let cause = cause.ok_or("typed dropped-binding cause lost")?;
+    assert_eq!(cause, (owner, "uid"));
     assert_eq!(
         repository.coordinator().store().ref_get(REFERENCE).await?,
         Some(first)
@@ -819,7 +992,19 @@ async fn native_active_completion_missing_owner_binding_reports_exact_incomplete
             1
         );
     }
-    let failure = crate::indexing::load(&destination, owner, "uid", revisions, 262144)
+    assert_eq!(
+        destination
+            .has(&[TERRANE_V1.from_digest(IdentityKind::Node, &owner)?])
+            .await?,
+        vec![false],
+    );
+    // The rejected proposal remains ordinary immutable data. Check its exact
+    // missing binding without publishing it or changing the selected bucket.
+    let proposed_inputs = repository
+        .coordinator()
+        .guard()
+        .staged_index_inputs_for_tests(&proposed_evidence)?;
+    let failure = crate::indexing::load(&proposed_inputs, owner, "uid", revisions, 262144)
         .await
         .err()
         .ok_or("unbound owner became a verified index")?;

@@ -5,22 +5,12 @@
     "collector_timer_exposes_regression_and_dropped_sleep"
   ];
   selectors = map (name: "store::native_clock::tests::${name}") tests;
+  runCases = import ./_native-cases.nix {
+    label = "native-collector-clock";
+    inherit selectors;
+  };
 in
   sourceGate "native-collector-clock" ''
-    cd crates
-    cargo test --frozen --offline -p terrane --no-default-features \
-      --features tokio,surface-sdk --lib -- --list > "$TMPDIR/collector-clock-tests.txt"
-    python3 ../tests/terrane/check_native_gate.py inventory \
-      "$TMPDIR/collector-clock-tests.txt" '${builtins.toJSON selectors}'
-    for test_name in ${builtins.concatStringsSep " " selectors}; do
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
-        --features tokio,surface-sdk --lib "$test_name" -- --exact \
-        > "$TMPDIR/collector-clock-test.log" 2>&1; then
-        cat "$TMPDIR/collector-clock-test.log"
-        exit 1
-      fi
-      python3 ../tests/terrane/check_native_gate.py execution \
-        "$TMPDIR/collector-clock-test.log" "[\"$test_name\"]"
-    done
+    ${runCases}
     printf 'PASS: retained collector test clock (3 exact cases)\n' > "$out/result"
   ''

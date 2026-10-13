@@ -192,19 +192,30 @@ fn revision_read<'a>(
         .ok_or_else(corrupt)
 }
 
-/// Publishes fixed collector records and their exact consecutive selected revision.
+/// Captures the same actual selected controls for closed collector effect producers.
 ///
 /// # Errors
-/// Rejects changed lease/roots/state/preimages, missing genuine retained controls,
-/// unsafe metadata, failed final clock checks, or unavailable durable native effects.
-/// Failure after slot submission can leave selected progress awaiting recovery.
-pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
+/// Refuses unavailable exclusions, owner/pin mismatch, unsafe retained controls,
+/// different selected Guard bytes or failed actual preimage observations.
+pub(super) async fn retained_frame<F: LocalFs + BucketBinding>(
     fs: &F,
-    checked: &CheckedGcCheckpoint<'_, '_>,
-) -> Result<CheckedPublication, StoreFailure> {
-    let changes = validate(checked)?;
-    let observed = checked.observed();
-    let context = checked.effect_context();
+    observed: &super::SelectedObservation<'_>,
+    reads: &crate::selected_bridge::GcCheckpointReads,
+    context: &crate::selected_bridge::GcCheckpointEffectContext,
+) -> Result<(Frame, std::path::PathBuf), StoreFailure> {
+    retained_controls_frame(fs, observed, reads.guard(), context).await
+}
+
+/// Captures actual retained controls and the protected selected Guard for maintenance.
+///
+/// # Errors
+/// Preserves every holder, owner, pin, descriptor and original preimage check.
+pub(super) async fn retained_controls_frame<F: LocalFs + BucketBinding>(
+    fs: &F,
+    observed: &super::SelectedObservation<'_>,
+    guard_read: &crate::bucket::publication::receipts::RecordRead,
+    context: &crate::selected_bridge::GcCheckpointEffectContext,
+) -> Result<(Frame, std::path::PathBuf), StoreFailure> {
     let owner = observed.configured_operator_uid();
     if !observed.identity().writable() || context.controls().is_empty() {
         return Err(unsupported());
@@ -247,6 +258,7 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
     let mut frame = Frame {
         exclusions: exclusions.into(),
         names: Vec::new(),
+        pairs: Vec::new(),
         reads: Vec::new(),
         parents: BTreeMap::new(),
         writes: None,
@@ -275,6 +287,27 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
         }
     }
     let control = frame.observation(fs, observed, 0).await?;
+    let selected_guard = observed.state().guard.ok_or_else(corrupt)?;
+    let guard_bytes = guard_read.bytes().ok_or_else(corrupt)?;
+    if guard_read.path() != control.join(format!("publication/guards/{}", hex(&selected_guard)))
+        || digest(guard_bytes) != selected_guard
+        || guard_read.metadata().is_none()
+    {
+        return Err(corrupt());
+    }
+    terrane_core::gc::publication::evidence::GuardSnapshot::decode(guard_bytes)
+        .map_err(|_| corrupt())?;
+    // The selected Guard belongs to the actual control root. It must retain
+    // protected ownership, not the looser policy for namespace cache payloads.
+    frame
+        .observed_read(
+            fs,
+            guard_read.path(),
+            Some(guard_bytes),
+            guard_read.metadata(),
+            FencePolicy::ProtectedRecord { owner },
+        )
+        .await?;
     for (controls, descriptors) in context.controls().iter().zip(control_ranges) {
         let owner = controls.owner();
         let (directory, lock) = controls.identities();
@@ -321,6 +354,24 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
                 .await?;
         }
     }
+    Ok((frame, control))
+}
+
+/// Publishes fixed collector records and their exact consecutive selected revision.
+///
+/// # Errors
+/// Rejects changed lease/roots/state/preimages, missing genuine retained controls,
+/// unsafe metadata, failed final clock checks, or unavailable durable native effects.
+/// Failure after slot submission can leave selected progress awaiting recovery.
+pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
+    fs: &F,
+    checked: &CheckedGcCheckpoint<'_, '_>,
+) -> Result<CheckedPublication, StoreFailure> {
+    let changes = validate(checked)?;
+    let observed = checked.observed();
+    let (mut frame, control) =
+        retained_frame(fs, observed, checked.reads(), checked.effect_context()).await?;
+    let owner = frame.owner;
     if !checked.sources().is_empty() {
         return Err(unsupported());
     }
@@ -358,19 +409,12 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
             .await?;
     }
     for mark in checked.reads().marks() {
-        let (key, read) = match mark {
-            GcMarkRead::Revision {
-                shard,
-                revision,
-                record,
-            } => (
-                format!("gc/{}/mark/{shard}/{revision}", checked.roots().cycle),
-                record,
-            ),
-            GcMarkRead::Final { shard, record } => {
-                (format!("gc/{}/mark/{shard}", checked.roots().cycle), record)
-            }
-        };
+        let GcMarkRead::Revision {
+            shard,
+            revision,
+            record: read,
+        } = mark;
+        let key = format!("gc/{}/mark/{shard}/{revision}", checked.roots().cycle);
         if read.path() != observed.identity().root().join(key) {
             return Err(corrupt());
         }

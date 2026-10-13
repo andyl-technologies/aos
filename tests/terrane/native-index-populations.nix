@@ -65,6 +65,7 @@ in
             or sum(line.startswith(summary) for line in lines) != 1):
         raise SystemExit("capacity selector must execute exactly one passing, nonignored test")
     PY_EXECUTION
+      rm -rf -- "$case_tmp"
     done
     printf 'PASS: six growing native populations retain exact work and canonical-output checks\n' > "$out/result"
   ''

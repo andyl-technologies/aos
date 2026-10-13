@@ -23,6 +23,9 @@
     (map (name: "ref_advance::disclosure_tests::${name}") names);
 
   boundaryTests = [
+    "recorded::disclosure_recorded_authoring_survives_selected_ack_and_destination_only_reopen"
+    "recorded::disclosure_active_three_refuses_malformed_later_properties_before_effects"
+    "control_lock::disclosure_install_refuses_retained_original_reader_after_backend_release"
     "disclosure_boundary_reopens_after_source_and_signing_seed_erasure"
     "disclosure_boundary_rejects_whole_commit_receipt_and_projection_mutations"
     "disclosure_boundary_rejects_uncovered_siblings_attributes_and_unanchored_parents"
@@ -80,6 +83,8 @@ in {
       "domain::native_deletion_tests::domain_deletion_native_erases_generations_and_disables_surviving_and_reopened_routes"
       "domain::native_deletion_tests::domain_deletion_native_rejects_denied_roots_and_whole_inventory_races"
       "domain::native_deletion_tests::domain_deletion_native_erases_empty_registered_namespace_and_retains_pending_on_parent_sync_failure"
+      "domain::native_deletion_tests::domain_deletion_native_accepts_opaque_notes_in_target_and_audit_inventory"
+      "domain::native_deletion_tests::domain_deletion_native_fences_changed_or_absent_opaque_notes_after_intent"
     ]}
     ${nativeSuite "ref_advance::disclosure_tests::" [
       "disclosure_domain_reference_order_and_dedup_remain_scoped"
