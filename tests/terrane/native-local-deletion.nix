@@ -10,6 +10,7 @@
     "recovery::cancelled_waiter_retains_exclusion_until_worker_then_fresh_collector_finishes"
     "recovery::changed_current_fence_reconciles_retained_index_after_container_absence"
     "recovery::restore_durably_cancels_exact_local_owner_before_clearing_exclusion"
+    "recovery::restore_durably_cancels_authorized_only_local_intent_before_clearing_exclusion"
     "recovery::missing_trash_crash_requires_fresh_retirement_and_full_d_before_done"
   ];
   selectors = map (name: "gc::runner::tests::local_deletion::${name}") names;
@@ -22,5 +23,5 @@ in
   # ownership and copied retirement retain their separately specified protocol.
   sourceGate "native-local-deletion" ''
     ${runCases}
-    printf 'PASS: eleven exact ordinary local-v1 deletion and recovery cases\n' > "$out/result"
+    printf 'PASS: twelve exact ordinary local-v1 deletion and recovery cases\n' > "$out/result"
   ''
