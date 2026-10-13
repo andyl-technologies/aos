@@ -124,18 +124,59 @@ async fn issue(
         .begin(REFERENCE, destination.authority.token(), "sdk")
         .await
         .unwrap();
+    let previous = if target.record().is_some() {
+        Some(
+            destination
+                .coordinator()
+                .guard()
+                .read_snapshot(REFERENCE, destination.authority.token(), b"/", "sdk")
+                .await
+                .unwrap(),
+        )
+    } else {
+        None
+    };
+    // Carry the authenticated old entry, including its original-introducer
+    // attributes. Recreating equal plaintext would replace the certified entry
+    // and cannot preserve its historical disclosure boundary under PROV-28.
+    let mut entries = names
+        .iter()
+        .map(|name| {
+            let entry = if *name == destination_name {
+                file(PLAINTEXT)
+            } else {
+                let previous = previous.as_ref().unwrap();
+                assert_eq!(
+                    Some(previous.commit.identity()),
+                    target.record().map(|head| head.commit)
+                );
+                let (location, _) = previous
+                    .history
+                    .locate(previous.commit.identity(), name)
+                    .unwrap();
+                previous.history.entry(&location).unwrap()
+            };
+            LeafItem {
+                key: name.to_vec(),
+                entry,
+            }
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.key.cmp(&right.key));
+    let candidate = Tree::build(
+        entries,
+        materialization::properties(false),
+        262144,
+        TreeUse::Ordinary,
+    )
+    .unwrap();
     destination
         .coordinator()
         .advance_disclosure(
             source.coordinator().guard(),
             &mut target,
             DisclosureCommitRequest {
-                proposal: proposal(
-                    &destination.authority,
-                    parents,
-                    &tree(names, false),
-                    &[PLAINTEXT],
-                ),
+                proposal: proposal(&destination.authority, parents, &candidate, &[PLAINTEXT]),
                 selections: vec![DisclosureCommitSelection {
                     source_reference: source_reference.into(),
                     source_commit,
@@ -150,47 +191,72 @@ async fn issue(
         .commit
 }
 
-async fn certificate_keys(destination: &Factory, commit: [u8; 32]) -> Vec<[u8; 32]> {
+async fn certificate_keys(
+    destination: &Factory,
+    commit: [u8; 32],
+    expected: &[(&[u8], [u8; 32])],
+) -> Vec<[u8; 32]> {
     let guard = destination.coordinator().guard();
     let checked = guard
         .read_snapshot(REFERENCE, destination.authority.token(), b"/", "sdk")
         .await
         .unwrap();
+    assert_eq!(checked.commit.identity(), commit);
     let roles = guard.history_disclosure_roles().unwrap();
     let authorities = roles.iter().map(|role| role.view()).collect::<Vec<_>>();
-    let original = guard.original_commit(&commit).unwrap();
-    let baseline = original.baseline();
-    let owner = baseline
-        .authority()
-        .id()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let acl = baseline
-        .acl()
-        .iter()
-        .map(|(subject, verbs)| (subject.as_str(), *verbs))
-        .collect::<Vec<_>>();
-    let (_, batch) = DisclosureCandidate::new_with_bootstrap(
-        &checked.history,
-        commit,
-        &authorities,
-        guard.defaults_for(&checked.evidence),
-        &owner,
-        OriginalBootstrapPolicy {
-            authority: &owner,
-            reference: baseline.reference(),
-            writer_epoch: baseline.epoch(),
-            acl: &acl,
-        },
-    )
-    .and_then(|candidate| candidate.finish())
-    .unwrap();
-    batch
-        .boundaries()
-        .iter()
-        .map(|boundary| *boundary.authority_key())
-        .collect()
+    let mut keys = Vec::new();
+    // A carried entry inherits its public introducing commit's certificate;
+    // the current candidate batch contains only its own proof-bearing receipts.
+    for (path, expected_introducer) in expected {
+        let (current, _) = checked.history.locate(commit, path).unwrap();
+        let introducer = checked.history.introducing_commit(&current).unwrap();
+        assert_eq!(introducer, *expected_introducer);
+        if introducer != commit {
+            assert!(checked.commit.commit().parents.contains(&introducer));
+        }
+        let (target, _) = checked.history.locate(introducer, path).unwrap();
+        assert_eq!(
+            checked.history.entry(&current).unwrap(),
+            checked.history.entry(&target).unwrap()
+        );
+        let original = guard.original_commit(&introducer).unwrap();
+        let baseline = original.baseline();
+        let owner = baseline
+            .authority()
+            .id()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let acl = baseline
+            .acl()
+            .iter()
+            .map(|(subject, verbs)| (subject.as_str(), *verbs))
+            .collect::<Vec<_>>();
+        let (_, batch) = DisclosureCandidate::new_with_bootstrap(
+            &checked.history,
+            introducer,
+            &authorities,
+            guard.defaults_for(&checked.evidence),
+            &owner,
+            OriginalBootstrapPolicy {
+                authority: &owner,
+                reference: baseline.reference(),
+                writer_epoch: baseline.epoch(),
+                acl: &acl,
+            },
+        )
+        .and_then(|candidate| candidate.finish())
+        .unwrap();
+        let matching = batch
+            .boundaries()
+            .iter()
+            .filter(|boundary| boundary.target() == &target)
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0].target_domain(), "public");
+        keys.push(*matching[0].authority_key());
+    }
+    keys
 }
 
 /// Retains an actual old certificate beside a newly issued certificate after reopen.
@@ -238,7 +304,10 @@ pub(super) async fn retain_historical_and_issue_new() {
         .unwrap();
     assert_eq!(old_roles.len(), 1);
     let old_key = old_roles[0].public_key;
-    assert_eq!(certificate_keys(&destination, old).await, vec![old_key]);
+    assert_eq!(
+        certificate_keys(&destination, old, &[(b"old", old)]).await,
+        vec![old_key]
+    );
     let protected_before = control_snapshot(source.coordinator().store().root()).await;
     let source_head = source
         .coordinator()
@@ -312,7 +381,10 @@ pub(super) async fn retain_historical_and_issue_new() {
             .len(),
         2
     );
-    assert_eq!(certificate_keys(&destination, old).await, vec![old_key]);
+    assert_eq!(
+        certificate_keys(&destination, old, &[(b"old", old)]).await,
+        vec![old_key]
+    );
     // The immutable old import trust cannot be silently rewritten to the new
     // signer even though the old source Original remains genuinely readable.
     let retained_import = destination
@@ -397,7 +469,10 @@ pub(super) async fn retain_historical_and_issue_new() {
             .unwrap(),
         retained_import
     );
-    assert_eq!(certificate_keys(&destination, old).await, vec![old_key]);
+    assert_eq!(
+        certificate_keys(&destination, old, &[(b"old", old)]).await,
+        vec![old_key]
+    );
     let fresh = Factory::initialize(false).await;
     let imported = issue(
         &source,
@@ -409,7 +484,10 @@ pub(super) async fn retain_historical_and_issue_new() {
         Vec::new(),
     )
     .await;
-    assert_eq!(certificate_keys(&fresh, imported).await, vec![new_key]);
+    assert_eq!(
+        certificate_keys(&fresh, imported, &[(b"conflict", imported)]).await,
+        vec![new_key]
+    );
     let mut author = source
         .coordinator()
         .begin(NEW_REFERENCE, source.authority.token(), "sdk")
@@ -581,7 +659,12 @@ pub(super) async fn retain_historical_and_issue_new() {
         vec![old],
     )
     .await;
-    let keys = certificate_keys(&destination, published).await;
+    let keys = certificate_keys(
+        &destination,
+        published,
+        &[(b"old", old), (b"new", published)],
+    )
+    .await;
     assert!(keys.contains(&old_key));
     assert!(keys.contains(&new_key));
     assert_eq!(
@@ -607,7 +690,12 @@ pub(super) async fn retain_historical_and_issue_new() {
         assert!(!path.exists());
     }
     let destination = reopen(destination).await;
-    let keys = certificate_keys(&destination, published).await;
+    let keys = certificate_keys(
+        &destination,
+        published,
+        &[(b"old", old), (b"new", published)],
+    )
+    .await;
     assert!(keys.contains(&old_key));
     assert!(keys.contains(&new_key));
 }
