@@ -147,7 +147,7 @@ pub(crate) fn borrow(
         Ok(owner) => owner,
         Err(error) => return signed(error),
     };
-    let paging = match OrdinaryPagingCustody::retain(paging_owner, context.key() as u64, context) {
+    let paging = match OrdinaryPagingCustody::retain(paging_owner, context) {
         Ok(paging) => paging,
         Err(error) => return signed(error),
     };
@@ -217,7 +217,7 @@ pub(crate) fn borrow(
         5 => crate::paged_ram::source::SourceOperationClass::FingerprintUpdate,
         _ => return -libc::EPROTO,
     };
-    if let Err(error) = custody.paging.bind_original_class(class) {
+    if let Err(error) = custody.paging.bind_original(evidence.serial, class) {
         custody.failure = Some(error);
         return -libc::EPROTO;
     }

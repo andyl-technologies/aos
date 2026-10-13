@@ -21,15 +21,11 @@ impl OrdinaryPagingCustody {
     /// Retains existing allocations before fallible pause admission.
     ///
     /// # Errors
-    /// Refuses a missing/replaced live service or a zero actual holder identity.
+    /// Refuses a missing or replaced live service allocation.
     pub(crate) fn retain(
         owner: Arc<PausedPagingOwner>,
-        identity: u64,
         _native: &crate::runtime::FingerprintBorrowContext,
     ) -> Result<Self, RamError> {
-        if identity == 0 {
-            return Err(RamError::Invariant("ordinary capture holder is absent"));
-        }
         let service = owner
             .active
             .try_lock()
@@ -38,7 +34,7 @@ impl OrdinaryPagingCustody {
         let custody = Self {
             owner,
             service,
-            identity,
+            identity: 0,
             pause_requested: false,
             pages_held: false,
             original_class: None,
@@ -47,27 +43,34 @@ impl OrdinaryPagingCustody {
         Ok(custody)
     }
 
-    /// Retains the factual producing class of the already-borrowed Original.
+    /// Retains the serial and producing class of the already-borrowed Original.
     ///
     /// # Errors
-    /// Refuses non-fingerprint classes or a change to established provenance.
+    /// Refuses zero serials, non-fingerprint classes or changed provenance.
     /// This records no deadline and enters no operation.
-    pub(crate) fn bind_original_class(
+    pub(crate) fn bind_original(
         &mut self,
+        serial: u64,
         class: SourceOperationClass,
     ) -> Result<(), RamError> {
-        if !matches!(
-            class,
-            SourceOperationClass::FingerprintInitialization
-                | SourceOperationClass::FingerprintUpdate
-        ) || self
-            .original_class
-            .is_some_and(|previous| previous != class)
+        if serial == 0
+            || (self.identity != 0 && self.identity != serial)
+            || !matches!(
+                class,
+                SourceOperationClass::FingerprintInitialization
+                    | SourceOperationClass::FingerprintUpdate
+            )
+            || self
+                .original_class
+                .is_some_and(|previous| previous != class)
         {
             return Err(RamError::Invariant(
-                "ordinary capture Original class changed",
+                "ordinary capture Original identity changed",
             ));
         }
+        // The native loan address can be reused between captures. Source's
+        // operation serial distinguishes their pause requests and acknowledgments.
+        self.identity = serial;
         self.original_class = Some(class);
         Ok(())
     }
