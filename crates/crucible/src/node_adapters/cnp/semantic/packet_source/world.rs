@@ -28,10 +28,10 @@ impl PacketWorldSourceScope {
         budget::serialized_size(&coordinator, 65_536)?;
         let mut selected = None;
         for (index, peer) in coordinator.participants.iter().enumerate() {
-            if Self::matches_installation(installation, peer) {
-                if selected.replace(index).is_some() {
-                    return Err(refused("packet whole-world local source is duplicated"));
-                }
+            if Self::matches_installation(installation, peer)
+                && selected.replace(index).is_some()
+            {
+                return Err(refused("packet whole-world local source is duplicated"));
             }
         }
         let local = selected.ok_or_else(|| refused("packet whole-world local source absent"))?;
