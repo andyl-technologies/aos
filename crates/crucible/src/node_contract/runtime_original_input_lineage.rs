@@ -54,7 +54,7 @@ pub struct OriginalPublicationOrigin {
     pub owner_generation: U64,
     /// Names the original admitted operation.
     pub operation_id: Id,
-    /// Names the original admitted window.
+    /// Names the original native window or exact common operation grant.
     pub grant_id: Id,
     /// Retains the complete source observation body.
     pub observation_batch: ContentRef,
@@ -177,3 +177,6 @@ pub use restoration::{
     OriginalLineageJournal, OriginalLineageNativeScope, OriginalLineageOwnerMapping,
     OriginalLineageRestoration, OriginalLineageRestorationLimits,
 };
+
+#[path = "runtime_original_input_lineage/provenance.rs"]
+mod provenance;

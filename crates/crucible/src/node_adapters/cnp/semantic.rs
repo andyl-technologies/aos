@@ -29,7 +29,9 @@ pub use conformance::{
     InstalledCnpConformanceRole,
 };
 pub use world_provider::{
-    CnpSemanticConformanceWorldProvider, CnpSemanticWorldPreparationFailure,
+    CnpSemanticConformanceWorldProvider, CnpSemanticExactConformanceWorldProvider,
+    CnpSemanticExactWorldReservation, CnpSemanticExactWorldReservationFailure,
+    CnpSemanticWorldPreparationFailure,
     CnpSemanticWorldReservationFailure,
 };
 

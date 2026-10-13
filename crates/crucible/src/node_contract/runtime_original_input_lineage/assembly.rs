@@ -102,6 +102,19 @@ impl NodeRuntime {
             source
                 .validate_original_publication_lineage(admission, outcome, publication, &claim)
                 .map_err(RuntimePollFailure::Native)?;
+            if matches!(
+                admission.request(),
+                OperationRequest::ExactRun { .. } | OperationRequest::BoundarySettle { .. }
+            ) {
+                source
+                    .validate_exact_original_publication_lineage(
+                        admission,
+                        outcome,
+                        publication,
+                        &claim,
+                    )
+                    .map_err(RuntimePollFailure::Native)?;
+            }
             validate_original(&claim, admission, delivery, source_scope.as_ref())?;
             if let Some(scope) = &source_scope {
                 source
@@ -119,6 +132,19 @@ impl NodeRuntime {
             source
                 .validate_original_publication_lineage(admission, outcome, publication, &claim)
                 .map_err(RuntimePollFailure::Native)?;
+            if matches!(
+                admission.request(),
+                OperationRequest::ExactRun { .. } | OperationRequest::BoundarySettle { .. }
+            ) {
+                source
+                    .validate_exact_original_publication_lineage(
+                        admission,
+                        outcome,
+                        publication,
+                        &claim,
+                    )
+                    .map_err(RuntimePollFailure::Native)?;
+            }
             if let Some(scope) = &source_scope {
                 source
                     .validate_original_publication_target(
@@ -215,7 +241,17 @@ fn validate_original(
                     && origin.world_generation == source.generation
             },
         )
-        && matches!(admission.request(), OperationRequest::QuantumBegin { window, .. } if window == &origin.grant_id)
+        && match admission.request() {
+            OperationRequest::QuantumBegin { window, .. } => {
+                window == &origin.grant_id
+                    && event.causal_parent_ids.is_empty()
+                    && delivery.causal_parents.is_empty()
+            }
+            OperationRequest::ExactRun { .. } | OperationRequest::BoundarySettle { .. } => {
+                admission.token().operation() == &origin.grant_id
+            }
+            _ => false,
+        }
         && origin.measurement == delivery.provenance_ref
         && event.id == delivery.publication_id
         && event.source == delivery.producer_endpoint
@@ -226,8 +262,6 @@ fn validate_original(
         && event.provenance_ref == delivery.provenance_ref
         && event.stage == EventStage::Publication
         && event.delivery_position.is_none()
-        && event.causal_parent_ids.is_empty()
-        && delivery.causal_parents.is_empty()
         && event.extensions.is_empty()
         && event.validate().is_ok();
     if !valid {

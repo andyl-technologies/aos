@@ -33,6 +33,27 @@ impl NodeRuntime {
         &mut self,
         batch: RuntimeInputBatch,
     ) -> Result<ValidatedInputAcknowledgement, RuntimePollFailure> {
+        self.stage_inputs_for_source(batch, None)
+    }
+
+    pub(in crate::node_contract) fn stage_exact_inputs_with_lineage(
+        &mut self,
+        batch: RuntimeInputBatch,
+        source: &crate::node_contract::HostSchedulingSource,
+    ) -> Result<ValidatedInputAcknowledgement, RuntimePollFailure> {
+        self.authenticate_host_scheduling_source(source)
+            .map_err(RuntimePollFailure::Admission)?;
+        source
+            .authenticate_input_batch(&batch)
+            .map_err(RuntimePollFailure::Native)?;
+        self.stage_inputs_for_source(batch, Some(source))
+    }
+
+    fn stage_inputs_for_source(
+        &mut self,
+        batch: RuntimeInputBatch,
+        exact_source: Option<&crate::node_contract::HostSchedulingSource>,
+    ) -> Result<ValidatedInputAcknowledgement, RuntimePollFailure> {
         if self.terminal.is_some() || self.condition_fenced() {
             return Err(RuntimePollFailure::Admission(
                 RuntimeError::OutstandingObligations,
@@ -75,15 +96,25 @@ impl NodeRuntime {
                 operation: batch.stage_operation().clone(),
                 route: route.clone(),
             };
-            let provenance = self.prepare_input_provenance(&batch).inspect_err(|_| {
+            let mut provenance = self.prepare_input_provenance(&batch).inspect_err(|_| {
                 self.original_error_site = Some("input/producer-provenance");
             })?;
             let lineage = self.prepare_original_input_lineage(&batch).inspect_err(|_| {
                 self.original_error_site = Some("input/original-lineage");
             })?;
-            if lineage.is_some() && provenance.is_none() {
-                self.original_error_site = Some("input/lineage-without-provenance");
-                return Err(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt));
+            if let Some(lineage) = &lineage && provenance.is_none() {
+                if let Some(source) = exact_source {
+                    self.authenticate_host_scheduling_source(source)
+                        .map_err(RuntimePollFailure::Admission)?;
+                    provenance = Some(self.provenance_from_original_lineage(&batch, lineage)?);
+                    source.authenticate_input_batch(&batch)
+                        .map_err(RuntimePollFailure::Native)?;
+                    self.authenticate_host_scheduling_source(source)
+                        .map_err(RuntimePollFailure::Admission)?;
+                } else {
+                    self.original_error_site = Some("input/lineage-without-provenance");
+                    return Err(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt));
+                }
             }
             super::final_collection_scope(self.collecting.as_deref())
                 .map_err(RuntimePollFailure::Admission)?;

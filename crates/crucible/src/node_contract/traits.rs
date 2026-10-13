@@ -615,6 +615,28 @@ pub trait SimulationNode {
         })
     }
 
+    /// Validates exact-operation publication ancestry against its original native source.
+    ///
+    /// This additional conjunction is required for ExactRun and BoundarySettle
+    /// lineage. The source binds the full native Begin, common operation, event
+    /// ancestry and publication coordinates; the generic lineage validator
+    /// alone cannot widen a source's supported operation or parent semantics.
+    ///
+    /// # Errors
+    /// Refuses unsupported exact codecs, foreign operations or changed ancestry.
+    fn validate_exact_original_publication_lineage(
+        &self,
+        _original: &OperationAdmission,
+        _outcome: &OperationOutcome,
+        _publication: &crate::node_scheduling::NativePublication,
+        _claim: &super::OriginalPublicationClaim,
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "exact original source publication ancestry is unsupported".into(),
+        })
+    }
+
     /// Authenticates actual preserved native journals before a Runtime7 context exists.
     ///
     /// This read-only selected hook must check the complete signed source roster,

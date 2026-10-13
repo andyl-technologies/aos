@@ -42,7 +42,9 @@ pub use process::{
 pub use semantic::{
     CnpSemanticAcceptance, CnpSemanticAdmissionFailure, CnpSemanticAttachmentFailure,
     CnpSemanticConformanceAuthority, CnpSemanticConformanceNode, CnpSemanticConformanceProvider,
-    CnpSemanticConformanceWorldProvider, CnpSemanticInstallation, CnpSemanticLaunchFailure,
+    CnpSemanticConformanceWorldProvider, CnpSemanticExactConformanceWorldProvider,
+    CnpSemanticExactWorldReservation, CnpSemanticExactWorldReservationFailure,
+    CnpSemanticInstallation, CnpSemanticLaunchFailure,
     CnpSemanticLaunchGuard, CnpSemanticLaunchReservation, CnpSemanticNode, CnpSemanticPreparation,
     CnpSemanticPreparationFailure, CnpSemanticProcessCustody, CnpSemanticProcessSlot,
     CnpSemanticProvider, CnpSemanticProviderFailure, CnpSemanticRealizationScope,

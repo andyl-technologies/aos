@@ -17,6 +17,13 @@ use crate::{
 
 use super::{CnpSemanticConformanceNode, refused, unknown};
 
+mod exact_inputs;
+
+pub use exact_inputs::{
+    CnpSemanticExactConformanceWorldProvider, CnpSemanticExactWorldReservation,
+    CnpSemanticExactWorldReservationFailure,
+};
+
 const PARTICIPANTS: usize = 3;
 const ACTIVATION_BYTES: usize = 65_536;
 

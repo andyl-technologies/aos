@@ -49,6 +49,30 @@ impl PreparedHostSchedulingNode {
         }
     }
 
+    /// Authenticates this same factory-created inactive node before capsule transfer.
+    ///
+    /// The private source and node anchors must match; portable equal tuples do
+    /// not authorize another host node or activation.
+    pub(crate) fn authenticate_original_source(
+        &self,
+        source: &Rc<HostSchedulingSource>,
+        activation: &ActivationRecord,
+    ) -> Result<(), OperationFailure> {
+        source.authenticate_dispatch_source()?;
+        let witness = super::HostSchedulingNodeWitness::new(&self.source, &self.anchor);
+        if !witness.matches(source).map_err(failure)?
+            || &self.activation != activation
+            || self.ready.is_some()
+            || self.retired
+            || self.reclamation.is_some()
+        {
+            return Err(failure(
+                "original host node, activation or inactive custody differs",
+            ));
+        }
+        source.authenticate_dispatch_source()
+    }
+
     fn current(&self) -> Result<(), OperationFailure> {
         if self.retired {
             return Err(failure("original host scheduling node is retired"));

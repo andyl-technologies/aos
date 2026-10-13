@@ -543,9 +543,14 @@ impl HostSchedulingSource {
 
     pub(super) fn authenticate_closed_attachment(&self) -> Result<(), OperationFailure> {
         self.birth()?;
-        self.attached
-            .try_borrow()
-            .map_err(failure)?
+        let attached = self.attached.try_borrow().map_err(failure)?;
+        // An unattempted retired factory node never acquired scheduler storage.
+        // Attempted-but-absent attachment stays unresolved; it cannot release
+        // an unknown original slot or turn back into preparation authority.
+        if self.revoked.get() && !self.attachment_attempted.get() && attached.is_none() {
+            return Ok(());
+        }
+        attached
             .as_ref()
             .ok_or_else(|| failure("original closed host attachment absent"))?
             .authenticate_closed(&self.world)
@@ -790,6 +795,23 @@ mod tests {
                 .authenticate_preparation_source(source.world())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn host_unattached_retirement_does_not_release_an_unknown_attachment() {
+        let mut owner = source_owner();
+        let source = owner.source();
+        assert!(source.authenticate_closed_attachment().is_err());
+        owner.revoke();
+        assert!(source.authenticate_closed_attachment().is_ok());
+        assert!(source.authenticate_dispatch_source().is_err());
+
+        let mut owner = source_owner();
+        let source = owner.source();
+        source.begin_attachment().unwrap();
+        owner.revoke();
+        assert!(source.authenticate_closed_attachment().is_err());
+        assert!(source.authenticate_dispatch_source().is_err());
     }
 
     #[test]

@@ -152,7 +152,7 @@ impl ConformanceRuntime {
                 .map_err(scheduler_failure)?;
             return Err(error);
         }
-        let acknowledgement = self.runtime.stage_inputs(original)?;
+        let acknowledgement = self.runtime.stage_exact_inputs_with_lineage(original, &source)?;
         self.current().map_err(RuntimePollFailure::Admission)?;
         let commit = self.runtime.commit_input_acknowledgement(acknowledgement)?;
         self.current().map_err(RuntimePollFailure::Admission)?;

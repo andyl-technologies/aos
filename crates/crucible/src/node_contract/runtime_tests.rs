@@ -59,6 +59,8 @@ struct NativeState {
     lineage_invalid: bool,
     lineage_reads: usize,
     lineage_validations: usize,
+    exact_lineage_supported: bool,
+    exact_lineage_validations: usize,
     lineage_restoration_supported: bool,
     lineage_restoration_calls: usize,
     lineage_restoration_refuse: bool,
@@ -237,6 +239,37 @@ impl SimulationNode for TestNode {
             return Err(OperationFailure {
                 effects: EffectKnowledge::None,
                 reason: "model rejected original source claim".into(),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_exact_original_publication_lineage(
+        &self,
+        original: &OperationAdmission,
+        outcome: &OperationOutcome,
+        publication: &crate::node_scheduling::NativePublication,
+        claim: &OriginalPublicationClaim,
+    ) -> Result<(), OperationFailure> {
+        // This peer models a closed exact codec; it qualifies no native source.
+        let mut state = self.state.borrow_mut();
+        state.exact_lineage_validations += 1;
+        let expected_parents = if publication.causal_parents.is_empty() {
+            vec![]
+        } else {
+            vec![id("model-reaction")]
+        };
+        if !state.exact_lineage_supported
+            || !state.admission.as_ref().is_some_and(|admission|
+                admission.token().same_authority(original.token()))
+            || claim.origin.grant_id != *original.token().operation()
+            || claim.event.causal_parent_ids != expected_parents
+            || !outcome.scheduling.as_ref().is_some_and(|observation|
+                observation.publications.contains(publication))
+        {
+            return Err(OperationFailure {
+                effects: EffectKnowledge::None,
+                reason: "modeled exact original publication codec refused".into(),
             });
         }
         Ok(())
@@ -2014,3 +2047,6 @@ fn original_scheduling_views_cannot_reanchor_after_revocation_or_authority_loss(
     drop(runtime);
     assert!(fresh.authenticate_current(&world).is_err());
 }
+
+#[path = "runtime_original_exact_lineage_models.rs"]
+mod original_exact_lineage_models;
