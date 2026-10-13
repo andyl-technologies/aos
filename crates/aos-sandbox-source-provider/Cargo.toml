@@ -8,6 +8,7 @@ license.workspace = true
 aos-sandbox.workspace = true
 aos-sandbox-core.workspace = true
 aos-sandbox-linux.workspace = true
+aos-sandbox-protocol.workspace = true
 aos-sandbox-source-provider-protocol.workspace = true
 aos-sandbox-source-provider-ledger.workspace = true
 aos-sandbox-source-provider-security.workspace = true

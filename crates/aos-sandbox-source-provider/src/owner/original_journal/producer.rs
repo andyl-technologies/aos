@@ -89,6 +89,15 @@ pub(in crate::owner) enum OriginalProducerErrorV5 {
     SelectedArchivePostcheck,
 }
 
+// Capacity DATA failures retain the same Journal cause at each original `?`.
+impl From<aos_sandbox_protocol::domain_ledger::capacity_family::CapacityDataError>
+    for OriginalProducerErrorV5
+{
+    fn from(error: aos_sandbox_protocol::domain_ledger::capacity_family::CapacityDataError) -> Self {
+        Self::Journal(JournalError::from(error))
+    }
+}
+
 impl core::fmt::Debug for OriginalProducerErrorV5 {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter.write_str("OriginalProducerErrorV5([retained first cause])")

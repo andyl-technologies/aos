@@ -1406,6 +1406,7 @@ dependencies = [
  "aos-sandbox",
  "aos-sandbox-core",
  "aos-sandbox-linux",
+ "aos-sandbox-protocol",
  "aos-sandbox-source-provider-ledger",
  "aos-sandbox-source-provider-protocol",
  "aos-sandbox-source-provider-security",
