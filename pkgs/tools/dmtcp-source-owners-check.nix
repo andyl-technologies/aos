@@ -75,6 +75,23 @@ mkDerivation {
         ${coreutils}/bin/timeout 120 ./source-unselected-controls \
           ${dmtcp-selected-writer-park} "$PWD/source-unselected-probe" "$PWD/nonselected-launch"
 
+        # Exercise the source-selected shell, wait/signal statuses and real
+        # canceled-child retirement with one coherent source-built C++ runtime.
+        $CXX -std=c++17 -DHAVE_CONFIG_H -Wall -Wextra -Werror -pedantic -UNDEBUG -O2 \
+          -I./src -L${gcc-libs}/lib -Wl,-rpath,${gcc-libs}/lib -pthread -ldl \
+          ${./_dmtcp/source-command-controls.cpp} -o source-command-controls
+        mkdir source-command-control
+        ${coreutils}/bin/timeout 120 ./source-command-controls \
+          ${bash}/bin/bash ${coreutils}/bin/readlink "$PWD/source-command-control"
+
+        # The launcher must retain its copied-executable feature rather than
+        # call a worker-only public tmpdir stub or a host cp implementation.
+        cp source-unselected-probe source-setuid-probe
+        chmod 4755 source-setuid-probe
+        mkdir setuid-launch
+        ${coreutils}/bin/timeout 120 ./source-unselected-controls \
+          ${dmtcp-selected-writer-park} "$PWD/source-setuid-probe" "$PWD/setuid-launch"
+
         mkdir -p "$out/share/checks" "$out/share/licenses/dmtcp-source-owners-check"
         printf '%s\n' 'Source-owned thread/shared-area controls and actual selected launcher/library exec observation passed; no whole-node issuance or readiness.' \
           > "$out/share/checks/source-owners"

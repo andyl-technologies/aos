@@ -3066,8 +3066,12 @@ ownership controls pass. Nine inherited LLVM utility scripts still contain
 host interpreter shebangs; the installed compiler audit does not establish
 complete package interpreter-policy qualification.
 
-Matching normal and stopped-diagnostic QEMU, plugin and complete-source
-derivations evaluate successfully. Neither tuple has been realized. The next
+The current signed native source and its separate stopped-diagnostic variant
+have matching QEMU, plugin and complete-source derivations. Actual evaluation
+completes in 6.85 seconds; the 767-derivation graph query takes 0.34 seconds.
+Original clients are reaped and the serialized private-store writer lock is
+released. The current vendor fixed-output hash agrees with the admitted local
+source NAR. Neither tuple has been realized. The earlier
 ordinary LLVM18 build runs for 1,073.12 seconds before its disk monitor encounters
 a permission error and interrupts the build. No compiler failure is reported.
 All 3,179 observed process generations retire and the original host confirms
@@ -3083,10 +3087,40 @@ successfully in 4.13, 27.26 and 0.70 seconds. Its first startup fails before por
 publication. Correcting caller-owned console permissions progresses to later
 coordinator and application exit86 failures. A bounded exit-stack diagnostic
 identifies a selected thread-owner binding that receives a virtualized thread
-ID while its verifier compares the raw kernel ID. A source correction and
-noninstrumented startup controls remain pending. These diagnostics do not
-qualify the ordinary package, full production exec journal, native checkpoint
-issuer or two fresh whole-process restorations.
+ID while its verifier compares the raw kernel ID. The subsequent correction
+uses the kernel TID only for selected owner binding and preserves virtualized
+thread/PID behavior. Fresh complete-source build/install and noninstrumented
+selected cancellation/EOF controls pass; the ordinary unselected application
+and coordinator both exit zero. Earlier failures remain recorded separately.
+These diagnostics do not qualify the ordinary package, full production exec
+journal, native checkpoint issuer or two fresh whole-process restorations.
+
+## Source-selected DMTCP helper commands
+
+DMTCP helper commands use explicit AOS-built Bash and coreutils paths. A private
+libc dispatcher preserves encoded exits, signals, concurrent signal-disposition
+ownership and pthread cancellation. The launcher uses its initialized shared
+tmpdir for copied executables; command storage includes the complete configured
+copy-tool prefix. Explicit AOS C++ runtime search avoids the observed mixed
+static/shared forced-unwind failure without disabling hardening or cancellation.
+The package retains the dispatcher, generated paths, LGPL notices and required
+source-built controls in its corresponding-source output.
+
+Fresh complete-source configuration, build and installation pass in 4.04,
+27.00 and 0.91 seconds. Selected startup preserves its intentional cancellation
+and channel-EOF statuses; ordinary and copied-executable application/coordinator
+controls exit zero. The prefix-inclusive storage successor separately compiles
+the actual utility unit and passes normalized command/cancellation controls.
+The final recipe handles absent incoming linker flags; it has formatting and
+source review evidence, not an ordinary package realization. Earlier unwind,
+copy and tracing failures remain retained at their original revisions.
+
+Independent review verifies all source, recipe, dependency and execution pins.
+Generic helper cancellation retains libc system semantics and uses a numeric
+child PID; it is not an exclusive native identity or no-effect certificate.
+These results grant no whole-node cut, checkpoint issuer, restored adoption or
+readiness. Ordinary package qualification and genuine two-branch native state
+restoration remain required.
 
 ## Sealed Native5 source codec and complete copy admission
 

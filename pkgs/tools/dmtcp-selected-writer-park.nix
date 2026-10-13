@@ -51,7 +51,7 @@ in
     };
 
     buildDeps = [autoconf automake gnumake python3 coreutils findutils diffutils sed binutils grep patch];
-    runtimeDeps = [bash gzip readline ncurses gcc-libs];
+    runtimeDeps = [bash gzip coreutils readline ncurses gcc-libs];
     ac_cv_prog_HAS_GZIP = "yes";
 
     phases = [
@@ -74,6 +74,16 @@ in
           patch --fuzz=0 -p1 < ${./_dmtcp/selected-source-custody.patch}
           patch --fuzz=0 -p1 < ${./_dmtcp/selected-map-envelope.patch}
           patch --fuzz=0 -p1 < ${./_dmtcp/selected-source-owners.patch}
+          patch --fuzz=0 -p1 < ${./_dmtcp/source-command-dispatch.patch}
+          cat > src/dmtcp_source_command_paths.h <<'EOF'
+          // SPDX-License-Identifier: LGPL-3.0-or-later
+          // Copyright (c) 2026 Andyl, Inc.
+          #ifndef DMTCP_SOURCE_COMMAND_PATHS_H
+          #define DMTCP_SOURCE_COMMAND_PATHS_H
+          #define DMTCP_SOURCE_COMMAND_SHELL "${bash}/bin/bash"
+          #define DMTCP_SOURCE_COMMAND_COPY "${coreutils}/bin/cp"
+          #endif
+          EOF
           ${findutils}/bin/find . -type f -name '*.py' \
             -exec ${sed}/bin/sed -i "1s|^#!.*python.*$|#!${python3}/bin/python3|" {} +
           ${findutils}/bin/find . -type f -name '*.sh' \
@@ -123,6 +133,7 @@ in
           cp ${./_dmtcp/source-launch-controls.cpp} "$source/build/source-launch-controls.cpp"
           cp ${./_dmtcp/source-unselected-probe.cpp} "$source/build/source-unselected-probe.cpp"
           cp ${./_dmtcp/source-unselected-controls.cpp} "$source/build/source-unselected-controls.cpp"
+          cp ${./_dmtcp/source-command-controls.cpp} "$source/build/source-command-controls.cpp"
           cp ${./_dmtcp/source-launch-peer-controls.h} "$source/build/source-launch-peer-controls.h"
           cp ${./dmtcp-source-owners-check.nix} "$source/build/source-owners-check.nix"
           # Retain the actual tree after all patches and hermetic substitutions,
@@ -144,7 +155,10 @@ in
         name = "configure";
         script = ''
           # Source-owned thread banks require lock-free constexpr assertions.
-          CXXFLAGS="$CXXFLAGS -std=c++17" \
+          # Avoid mixing the bootstrap static C++ personality with the
+          # shared runtime used by libc's pthread cancellation unwinder.
+          LDFLAGS="''${LDFLAGS-} -L${gcc-libs}/lib -Wl,-rpath,${gcc-libs}/lib" \
+            CXXFLAGS="$CXXFLAGS -std=c++17" \
             $CONFIG_SHELL ./configure --prefix="$out" $configureFlags
           grep -q '^#define ELF_INTERPRETER "/nix/store/' include/config.h
         '';

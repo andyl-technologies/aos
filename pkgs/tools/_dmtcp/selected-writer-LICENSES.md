@@ -163,3 +163,22 @@ console per native producer and checks exact original cancellation and
 selected stream-EOF refusal statuses. Its ordinary inverse checks zero exits
 for the application and coordinator. These controls grant no whole-process
 closure, source-cut permit, checkpoint issuer, restored adoption or readiness.
+
+
+`source-command-dispatch.patch` preserves the original LGPL-3.0-or-later
+notice in `src/util_exec.cpp` and adds `src/dmtcp_source_command.h` under
+LGPL-3.0-or-later. The recipe generates and co-retains
+`src/dmtcp_source_command_paths.h` under the same license with explicit
+source-built shell/copy paths. No file is removed. The nonworker launcher
+uses its already-created SharedData tmpdir instead of a worker-only API stub;
+ordinary worker access remains equivalent.
+
+`source-command-controls.cpp` is an independently authored LGPL-3.0-or-later
+component source co-retained in the corresponding-source output. It observes
+the actual AOS shell ELF, encoded normal/signal/missing-shell outcomes,
+concurrent commands, restored signal dispositions/masks, and retirement of a
+real canceled helper. The check also retains normal and copied-executable
+application/coordinator zero-exit controls. Explicit source-built C++ runtime
+search prevents a bootstrap static/shared forced-unwind mismatch; existing
+hardening remains enabled. These results grant no native whole-node cut,
+checkpoint issuer, restored-account adoption or SourceReady authority.
