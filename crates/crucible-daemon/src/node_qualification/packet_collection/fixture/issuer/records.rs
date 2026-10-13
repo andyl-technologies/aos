@@ -173,7 +173,9 @@ pub(super) fn validate(
     })
 }
 
-fn validate_program(program: &PacketProgramDefinition) -> Result<(), QualificationError> {
+pub(in super::super) fn validate_program(
+    program: &PacketProgramDefinition,
+) -> Result<(), QualificationError> {
     if program.schema != "source-owned.packet-program.v1" || program.events.len() != 2 {
         return Err(refused());
     }
@@ -203,7 +205,7 @@ fn validate_program(program: &PacketProgramDefinition) -> Result<(), Qualificati
     Ok(())
 }
 
-fn validate_port(
+pub(in super::super) fn validate_port(
     policy: &PortPolicy,
     selected: &crucible::node_adapters::cnp::CnpSemanticInstallation,
 ) -> Result<(), QualificationError> {
@@ -310,7 +312,7 @@ fn validate_schemas(
     Ok(formats.clone())
 }
 
-pub(super) fn decode<T: DeserializeOwned>(
+pub(in super::super) fn decode<T: DeserializeOwned>(
     content: &BTreeMap<ContentRef, Vec<u8>>,
     reference: &ContentRef,
 ) -> Result<T, QualificationError> {

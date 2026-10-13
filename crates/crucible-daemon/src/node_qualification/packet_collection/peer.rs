@@ -36,7 +36,9 @@ use crucible_node_provider::{
     transport::write_frame,
 };
 
-use super::{InstalledPacketCollectionAuthority, QualificationError};
+use super::{
+    InstalledPacketCollectionAuthority, InstalledPacketWorldCollectionAuthority, QualificationError,
+};
 
 /// Retains independently configured private launch and actual handshake custody.
 pub struct PacketPeerLaunchRequest<V> {
@@ -110,7 +112,7 @@ pub struct PacketPeerLaunchFailure<'a, V> {
 /// successful guard still requires source realization and opaque graph admission.
 #[must_use = "retain original launch custody until actual native reclamation"]
 pub struct PreparedPacketCollectionPeer<'a, V> {
-    authority: &'a InstalledPacketCollectionAuthority,
+    authority: PeerAuthority<'a>,
     request: PeerSettings<V>,
     executable: ContentRef,
     directory_identity: DirectoryIdentity,
@@ -152,6 +154,69 @@ struct DirectoryIdentity {
     uid: u32,
 }
 
+#[derive(Clone, Copy)]
+enum PeerAuthority<'a> {
+    Singleton(&'a InstalledPacketCollectionAuthority),
+    World(&'a InstalledPacketWorldCollectionAuthority, usize),
+}
+
+impl PeerAuthority<'_> {
+    fn source(
+        &self,
+    ) -> Result<&Rc<crucible::node_adapters::cnp::PacketSemanticSource>, QualificationError> {
+        match self {
+            Self::Singleton(authority) => Ok(&authority.source),
+            Self::World(authority, member) => authority.source(*member),
+        }
+    }
+
+    fn edition(&self) -> u16 {
+        match self {
+            Self::Singleton(_) => 2,
+            Self::World(_, _) => 3,
+        }
+    }
+
+    fn current(&self) -> Result<(), QualificationError> {
+        match self {
+            Self::Singleton(authority) => authority.current(),
+            Self::World(authority, _) => authority.current(),
+        }
+    }
+
+    fn private_launch(
+        &self,
+        launch: &PacketSourceLaunch,
+        executable: &std::path::Path,
+        directory: &std::path::Path,
+        terminal: bool,
+    ) -> Result<(), QualificationError> {
+        match self {
+            Self::Singleton(authority) => {
+                if terminal {
+                    authority
+                        .installed
+                        .authenticate_packet_launch_current_scope(
+                            &authority.plan,
+                            launch,
+                            executable,
+                            directory,
+                        )
+                } else {
+                    authority.installed.authenticate_packet_private_launch(
+                        &authority.plan,
+                        launch,
+                        executable,
+                    )
+                }
+            }
+            Self::World(authority, member) => {
+                authority.private_launch(*member, launch, executable, directory)
+            }
+        }
+    }
+}
+
 impl InstalledPacketCollectionAuthority {
     /// Authenticates the exact private source and prepares transports before Child.
     ///
@@ -163,130 +228,159 @@ impl InstalledPacketCollectionAuthority {
         &self,
         request: PacketPeerLaunchRequest<V>,
     ) -> Result<Box<PreparedPacketCollectionPeer<'_, V>>, QualificationError> {
-        if request.budget.is_zero() || request.budget > Duration::from_secs(60) {
-            return Err(QualificationError::Refused(
-                "packet original launch deadline",
-            ));
-        }
-        request.launch.validate().map_err(native)?;
-        let directory_identity =
-            private_directory(&request.directory, request.launch.controller_uid.get())
-                .map_err(native)?;
-        let selected = self.source.installation();
-        if request.launch.schema_version != 2
-            || request.launch.selection.provider != selected.provider
-            || request.launch.selection.realization.descriptors
-                != std::slice::from_ref(&selected.descriptor)
-            || request.launch.selection.realization.bindings
-                != std::slice::from_ref(&selected.binding)
-            || request.launch.selection.realization.owner_bindings
-                != std::slice::from_ref(&selected.owner)
-        {
-            return Err(QualificationError::Refused(
-                "packet original private source differs",
-            ));
-        }
-        super::scope::encoded_size(
-            &(
-                &request.launch,
-                &request.launch,
-                &request.hello,
-                &request.hello,
-                &request.hello,
-            ),
-            8 * 1024 * 1024,
-        )?;
-        let frame_bytes = usize::try_from(request.launch.limits.frame_bytes.get())
-            .map_err(|_| QualificationError::Refused("packet original frame credit"))?;
-        let nesting = usize::try_from(request.launch.limits.nesting.get())
-            .map_err(|_| QualificationError::Refused("packet original nesting credit"))?;
-        let original_hello =
-            OriginalHelloJournal::reserve(&request.hello, frame_bytes, nesting).map_err(native)?;
-        self.current()?;
-        self.installed.authenticate_packet_private_launch(
-            &self.plan,
-            &request.launch,
-            &request.executable,
-        )?;
-        let actual = crucible_node_provider::conformance::measure_executable(&request.executable)
+        prepare_peer(PeerAuthority::Singleton(self), request)
+    }
+}
+
+impl InstalledPacketWorldCollectionAuthority {
+    /// Prepares one of the three peers under this SAME complete world authority.
+    ///
+    /// Callers reserve all 54 case tickets and prepare all three original capsules
+    /// before starting any Child. This method issues no activation or Ready.
+    ///
+    /// # Errors
+    /// Refuses a foreign member, revoked source/issuer, changed complete private
+    /// launch/directory, insufficient credit or unavailable original endpoints.
+    pub fn prepare_packet_peer<V: TrustedHandshakeVerifier>(
+        &self,
+        member: usize,
+        request: PacketPeerLaunchRequest<V>,
+    ) -> Result<Box<PreparedPacketCollectionPeer<'_, V>>, QualificationError> {
+        prepare_peer(PeerAuthority::World(self, member), request)
+    }
+}
+
+fn prepare_peer<'a, V: TrustedHandshakeVerifier>(
+    authority: PeerAuthority<'a>,
+    request: PacketPeerLaunchRequest<V>,
+) -> Result<Box<PreparedPacketCollectionPeer<'a, V>>, QualificationError> {
+    if request.budget.is_zero() || request.budget > Duration::from_secs(60) {
+        return Err(QualificationError::Refused(
+            "packet original launch deadline",
+        ));
+    }
+    request.launch.validate().map_err(native)?;
+    let directory_identity =
+        private_directory(&request.directory, request.launch.controller_uid.get())
             .map_err(native)?;
-        if !selected
-            .provider
-            .implementation
-            .artifacts
-            .iter()
-            .any(|artifact| artifact.role.as_str() == "executable" && artifact.content == actual)
-        {
-            return Err(QualificationError::Refused(
-                "packet actual selected peer bytes differ",
-            ));
-        }
-        let bootstrap =
-            std::os::unix::net::UnixStream::pair().map_err(|error| native(error.into()))?;
-        let launch_body = serde_json::to_value(&request.launch)
-            .map_err(crucible_node_contract::ContractError::from)?;
-        let controller_route = ControllerRoute {
-            node: selected.descriptor.id.clone(),
-            execution_owner: selected.owner.owner.id.clone(),
-        };
-        let PacketPeerLaunchRequest {
+    let selected = authority.source()?.installation();
+    if request.launch.schema_version != authority.edition()
+        || request.launch.selection.provider != selected.provider
+        || request.launch.selection.realization.descriptors
+            != std::slice::from_ref(&selected.descriptor)
+        || request.launch.selection.realization.bindings != std::slice::from_ref(&selected.binding)
+        || request.launch.selection.realization.owner_bindings
+            != std::slice::from_ref(&selected.owner)
+    {
+        return Err(QualificationError::Refused(
+            "packet original private source differs",
+        ));
+    }
+    super::scope::encoded_size(
+        &(
+            &request.launch,
+            &request.launch,
+            &request.hello,
+            &request.hello,
+            &request.hello,
+        ),
+        8 * 1024 * 1024,
+    )?;
+    let frame_bytes = usize::try_from(request.launch.limits.frame_bytes.get())
+        .map_err(|_| QualificationError::Refused("packet original frame credit"))?;
+    let nesting = usize::try_from(request.launch.limits.nesting.get())
+        .map_err(|_| QualificationError::Refused("packet original nesting credit"))?;
+    let original_hello =
+        OriginalHelloJournal::reserve(&request.hello, frame_bytes, nesting).map_err(native)?;
+    authority.current()?;
+    authority.private_launch(
+        &request.launch,
+        &request.executable,
+        &request.directory,
+        false,
+    )?;
+    let actual = crucible_node_provider::conformance::measure_executable(&request.executable)
+        .map_err(native)?;
+    if !selected
+        .provider
+        .implementation
+        .artifacts
+        .iter()
+        .any(|artifact| artifact.role.as_str() == "executable" && artifact.content == actual)
+    {
+        return Err(QualificationError::Refused(
+            "packet actual selected peer bytes differ",
+        ));
+    }
+    let bootstrap = std::os::unix::net::UnixStream::pair().map_err(|error| native(error.into()))?;
+    let launch_body = serde_json::to_value(&request.launch)
+        .map_err(crucible_node_contract::ContractError::from)?;
+    let controller_route = ControllerRoute {
+        node: selected.descriptor.id.clone(),
+        execution_owner: selected.owner.owner.id.clone(),
+    };
+    let PacketPeerLaunchRequest {
+        executable,
+        directory,
+        launch,
+        handshake,
+        verifier,
+        supervisor,
+        hello_schema,
+        hello,
+        connection,
+        content,
+        native_custody,
+        journal_custody,
+        budget,
+    } = request;
+    let native_reservation =
+        CnpSemanticLaunchReservation::reserve(directory.clone(), actual.clone(), native_custody);
+    // The owning failure capsule and complete private frame are allocated
+    // before the peer can exist. The secret stays in this private owner.
+    Ok(Box::new(PreparedPacketCollectionPeer {
+        authority,
+        request: PeerSettings {
             executable,
             directory,
             launch,
-            handshake,
             verifier,
             supervisor,
             hello_schema,
             hello,
             connection,
-            content,
-            native_custody,
-            journal_custody,
             budget,
-        } = request;
-        let native_reservation = CnpSemanticLaunchReservation::reserve(
-            directory.clone(),
-            actual.clone(),
-            native_custody,
-        );
-        // The owning failure capsule and complete private frame are allocated
-        // before the peer can exist. The secret stays in this private owner.
-        Ok(Box::new(PreparedPacketCollectionPeer {
-            authority: self,
-            request: PeerSettings {
-                executable,
-                directory,
-                launch,
-                verifier,
-                supervisor,
-                hello_schema,
-                hello,
-                connection,
-                budget,
-            },
-            executable: actual,
-            directory_identity,
-            launch_body,
-            original_hello: Some(original_hello),
-            journal_custody: Some(journal_custody),
-            controller: None,
-            pending_session: None,
-            controller_error: None,
-            controller_route: Some(controller_route),
-            bootstrap: Some(bootstrap),
-            native_reservation: Some(native_reservation),
-            content: Some(content),
-            handshake: Some(handshake),
-            guard: None,
-            failed_attachment: None,
-            attempted: false,
-        }))
-    }
+        },
+        executable: actual,
+        directory_identity,
+        launch_body,
+        original_hello: Some(original_hello),
+        journal_custody: Some(journal_custody),
+        controller: None,
+        pending_session: None,
+        controller_error: None,
+        controller_route: Some(controller_route),
+        bootstrap: Some(bootstrap),
+        native_reservation: Some(native_reservation),
+        content: Some(content),
+        handshake: Some(handshake),
+        guard: None,
+        failed_attachment: None,
+        attempted: false,
+    }))
 }
 
 impl<'a, V: TrustedHandshakeVerifier> PreparedPacketCollectionPeer<'a, V> {
     pub(super) fn has_authority(&self, authority: &InstalledPacketCollectionAuthority) -> bool {
-        std::ptr::eq(self.authority, authority)
+        matches!(self.authority, PeerAuthority::Singleton(original) if std::ptr::eq(original, authority))
+    }
+
+    pub(super) fn has_world_authority(
+        &self,
+        authority: &InstalledPacketWorldCollectionAuthority,
+        member: usize,
+    ) -> bool {
+        matches!(self.authority, PeerAuthority::World(original, selected) if std::ptr::eq(original, authority) && selected == member)
     }
 
     /// Launches, authenticates and attaches the same original peer exactly once.
@@ -331,11 +425,11 @@ impl<'a, V: TrustedHandshakeVerifier> PreparedPacketCollectionPeer<'a, V> {
             .current()
             .map_err(|_| ProviderError::Correlation("packet current launch revoked"))?;
         self.authority
-            .installed
-            .authenticate_packet_private_launch(
-                &self.authority.plan,
+            .private_launch(
                 &self.request.launch,
                 &self.request.executable,
+                &self.request.directory,
+                false,
             )
             .map_err(|_| ProviderError::Correlation("packet original private launch revoked"))?;
         let deadline = ExchangeDeadline::start(self.request.budget)?;
@@ -356,12 +450,11 @@ impl<'a, V: TrustedHandshakeVerifier> PreparedPacketCollectionPeer<'a, V> {
         // this source-owned terminal read. Only local ownership moves and spawn
         // follow it; the actual Child is separately authenticated before Hello.
         self.authority
-            .installed
-            .authenticate_packet_launch_current_scope(
-                &self.authority.plan,
+            .private_launch(
                 &self.request.launch,
                 &self.request.executable,
                 &directory,
+                true,
             )
             .map_err(|_| {
                 ProviderError::Correlation("packet final original launch scope revoked")
@@ -380,7 +473,7 @@ impl<'a, V: TrustedHandshakeVerifier> PreparedPacketCollectionPeer<'a, V> {
                 .arg(&socket)
                 .stdin(input)
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(Stdio::inherit())
                 .process_group(0),
         )?;
         let reservation = self
@@ -482,8 +575,19 @@ impl<'a, V: TrustedHandshakeVerifier> PreparedPacketCollectionPeer<'a, V> {
     }
 }
 
-impl<V> Drop for PreparedPacketCollectionPeer<'_, V> {
-    fn drop(&mut self) {
+impl<V> PreparedPacketCollectionPeer<'_, V> {
+    pub(super) fn retire_original(&mut self) {
+        if let Some(guard) = self.guard.as_mut() {
+            guard.retire_original();
+        }
+        if let Some(failure) = self.failed_attachment.as_mut() {
+            failure.retire_original();
+        }
+        drop(self.native_reservation.take());
+        self.return_original_journal();
+    }
+
+    fn return_original_journal(&mut self) {
         // Move every surviving original without allocation or public encoding.
         // The independently reserved mailbox outlives this launch capsule and
         // remains distinct from the native guard's actual cleanup proof.
@@ -501,6 +605,12 @@ impl<V> Drop for PreparedPacketCollectionPeer<'_, V> {
         if let Some(mut slot) = self.journal_custody.take() {
             slot.retain(original);
         }
+    }
+}
+
+impl<V> Drop for PreparedPacketCollectionPeer<'_, V> {
+    fn drop(&mut self) {
+        self.return_original_journal();
     }
 }
 

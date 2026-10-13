@@ -153,7 +153,19 @@ pub(super) fn accept(
     } else {
         None
     };
-    let ingress = if common.is_some() {
+    let world = if launch.schema_version == 3 {
+        Some(
+            super::super::coordinator::PacketWorldCoordinatorInstallation::decode(
+                launch.initial_coordinator.bytes.as_slice(),
+                &launch.selection,
+            )?,
+        )
+    } else {
+        None
+    };
+    let ingress = if world.is_some() {
+        super::super::contracts::world_ingress_contract()?
+    } else if common.is_some() {
         super::super::contracts::common_ingress_contract()?
     } else {
         super::super::contracts::installed_ingress_contract()?
@@ -163,6 +175,7 @@ pub(super) fn accept(
         coordinator: launch.initial_coordinator,
         definition: canonical::content_ref(&ingress, "application/json")?,
         common: common.clone(),
+        world: world.clone(),
     });
     let connection = Connection::new(
         stream,
@@ -174,10 +187,15 @@ pub(super) fn accept(
     let effect_socket = UnixDatagram::unbound()?;
     effect_socket.connect(&launch.effects)?;
     let program = PacketProgram::new(launch.program.events, effect_socket)?;
-    let mut native = PacketControl::new_immediate(launch.selection, program)?;
-    if let Some(common) = common {
-        native.install_common_coordinator(common)?;
-    }
+    let native = if let Some(world) = world {
+        PacketControl::new_world_immediate(launch.selection, program, world)?
+    } else {
+        let mut native = PacketControl::new_immediate(launch.selection, program)?;
+        if let Some(common) = common {
+            native.install_common_coordinator(common)?;
+        }
+        native
+    };
     let endpoint = match super::super::endpoint::PacketEndpoint::new(
         connection,
         native,

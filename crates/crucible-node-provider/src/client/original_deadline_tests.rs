@@ -52,3 +52,44 @@ fn original_cut_bounds_backpressured_bootstrap_transport() -> io::Result<()> {
     assert_eq!(prefix, [7; 8]);
     Ok(())
 }
+
+#[test]
+fn idle_readiness_preserves_bytes_and_does_not_renew_original_cut() -> io::Result<()> {
+    let (stream, mut peer) = UnixStream::pair()?;
+    let (mut original, deadline) = DeadlineStream::new(stream, Duration::from_secs(1))?;
+    deadline.0.set(OperationalDeadline::expired_fixture());
+    peer.write_all(&[0, 0, 0, 2, b'{', b'}'])?;
+
+    original.wait_for_request()?;
+
+    assert_eq!(
+        original.read(&mut [0]).unwrap_err().kind(),
+        io::ErrorKind::TimedOut
+    );
+    deadline.reset(Duration::from_secs(1))?;
+    let mut frame = [0; 6];
+    original.read_exact(&mut frame)?;
+    assert_eq!(frame, [0, 0, 0, 2, b'{', b'}']);
+    Ok(())
+}
+
+#[test]
+fn readable_partial_frame_keeps_one_absolute_cut_and_poisoned_reader() -> io::Result<()> {
+    let (stream, mut peer) = UnixStream::pair()?;
+    let (original, deadline) = DeadlineStream::new(stream, Duration::from_secs(1))?;
+    peer.write_all(&[0])?;
+    original.wait_for_request()?;
+    deadline.reset(Duration::from_millis(20))?;
+    let mut reader = crate::transport::FrameReader::new(original, 1024).unwrap();
+
+    let error = reader.read().unwrap_err();
+
+    assert!(matches!(error, crate::ProviderError::Io(error)
+        if matches!(error.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock)));
+    assert!(deadline.remaining().is_err());
+    assert!(matches!(
+        reader.read(),
+        Err(crate::ProviderError::Frame("connection already failed"))
+    ));
+    Ok(())
+}

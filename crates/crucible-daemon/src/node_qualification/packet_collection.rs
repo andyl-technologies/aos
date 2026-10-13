@@ -83,6 +83,11 @@ mod scope;
 mod supervision;
 mod template_execution;
 mod witness;
+mod world_actor;
+mod world_fixture;
+mod world_host;
+mod world_publication;
+mod world_stored_fixture;
 
 pub use host_invocation::{
     PacketHostCollection, PacketHostCollectionRequest, PacketHostFailure, PacketHostPhase,
@@ -91,11 +96,13 @@ pub use host_invocation::{
 
 pub use execution::{PacketCollectionExecution, PacketExecutionInstallationFailure};
 pub use fixture::{
-    InstalledPacketGraphPolicy, InstalledPacketMeasuredFixture, PacketFixtureArtifact,
-    PacketFixtureMeasurements, PacketFixturePrepareFailure, PacketFixturePrepareRequest,
-    PacketGraphCurrentScope, PacketGraphEvidence, PacketGraphPolicyTable, PacketGraphPredicate,
-    PacketIndependentGraphOwner, PacketIndependentGraphRequest, PacketMeasuredFixtureRequest,
-    packet_independent_graph_contract,
+    InstalledPacketGraphPolicy, InstalledPacketMeasuredFixture, InstalledPacketWorldGraphPolicy,
+    PacketFixtureArtifact, PacketFixtureMeasurements, PacketFixturePrepareFailure,
+    PacketFixturePrepareRequest, PacketGraphCurrentScope, PacketGraphEvidence,
+    PacketGraphPolicyTable, PacketGraphPredicate, PacketIndependentGraphOwner,
+    PacketIndependentGraphRequest, PacketMeasuredFixtureRequest, PacketWorldIndependentGraphOwner,
+    PacketWorldIndependentGraphRequest, PacketWorldPopulationRequest, PacketWorldWitnessPopulation,
+    packet_independent_graph_contract, packet_world_independent_graph_contract,
 };
 pub use lifecycle::{
     PacketCollectionFailure, PacketCollectionInstallationFailure, PacketCollectionLifecycle,
@@ -110,12 +117,18 @@ pub use preparation::{PacketOriginalRuntimeFailure, PacketOriginalRuntimeRequest
 pub use result_publication::StoredPacketResultPublisher;
 pub use supervision::{
     PacketHostSupervisor, PacketOriginalReservations, PacketSupervisionFailure,
-    PacketSupervisionObservation,
+    PacketSupervisionObservation, PacketWorldHostSupervisor, PacketWorldOriginalReservations,
+    PacketWorldSupervisionObservation,
 };
 
 pub use template_execution::{PacketTemplateExecution, PacketTemplateInstallationFailure};
 
 pub use witness::{PacketNativeCase, PacketNativeObservationStore, PacketNativeOracle};
+pub use world_actor::{
+    PacketWorldActor, PacketWorldActorFailure, PacketWorldActorPhase, PacketWorldCaseReservations,
+    PacketWorldGrant, PacketWorldReservationFailure, PacketWorldReservationRequest,
+    PacketWorldSchedule,
+};
 
 /// Installs the exact packet collection source and original grants independently.
 ///
@@ -346,3 +359,18 @@ fn operation_error(error: QualificationError) -> OperationFailure {
         reason: error.to_string(),
     }
 }
+
+// The world fixture keeps one independently measured authority for all peers.
+pub use world_fixture::{InstalledPacketWorldCollectionAuthority, PacketWorldFixtureRequest};
+
+pub use world_host::{
+    PacketWorldHost, PacketWorldHostFailure, PacketWorldHostPreparationFailure,
+    PacketWorldHostRequest,
+};
+
+pub use world_publication::{PacketWorldPublicationRequest, StoredPacketWorldResultPublisher};
+
+pub use world_stored_fixture::{
+    PacketWorldPeerTransport, PacketWorldStoredFixture, PacketWorldStoredFixtureFailure,
+    PacketWorldStoredFixtureRequest,
+};

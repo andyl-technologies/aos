@@ -31,6 +31,8 @@ mod issuer;
 mod measurement;
 mod policy;
 mod population;
+mod world_issuer;
+mod world_population;
 
 pub use graph_policy::{
     InstalledPacketGraphPolicy, PacketGraphCurrentScope, PacketGraphEvidence,
@@ -41,8 +43,30 @@ pub use issuer::{
     PacketIndependentGraphOwner, PacketIndependentGraphRequest, packet_independent_graph_contract,
 };
 pub use measurement::{PacketFixtureArtifact, PacketFixtureMeasurements};
+pub use world_issuer::{
+    InstalledPacketWorldGraphPolicy, PacketWorldIndependentGraphOwner,
+    PacketWorldIndependentGraphRequest, packet_world_independent_graph_contract,
+};
+
+pub use world_population::{PacketWorldPopulationRequest, PacketWorldWitnessPopulation};
 
 pub(super) type FixtureBodies = BTreeMap<ContentRef, Vec<u8>>;
+
+pub(super) fn world_fixture_kernel() -> Result<String, QualificationError> {
+    measurement::kernel()
+}
+
+pub(super) fn world_fixture_classes()
+-> std::collections::BTreeSet<crate::node_qualification::QualificationClass> {
+    population::classes()
+}
+
+pub(super) fn decode_world_program(
+    content: &FixtureBodies,
+    reference: &ContentRef,
+) -> Result<PacketProgramDefinition, QualificationError> {
+    issuer::records::decode(content, reference)
+}
 
 /// Borrows the complete independently selected singleton fixture before Child.
 ///

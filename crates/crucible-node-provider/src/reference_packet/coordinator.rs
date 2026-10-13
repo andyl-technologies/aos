@@ -16,6 +16,10 @@ use serde_json::{Value, json};
 use super::control::PacketControlSelection;
 use crate::{ProviderError, bodies::ActivateRequest};
 
+mod world;
+
+pub use world::PacketWorldCoordinatorInstallation;
+
 const LIMIT: usize = 65_536;
 const FIELDS: [&str; 17] = [
     "schema",

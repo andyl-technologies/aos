@@ -124,6 +124,7 @@ pub struct PacketControl {
     current_operation: Option<Id>,
     terminals: BTreeMap<Id, Map<String, Value>>,
     common_coordinator: Option<super::coordinator::PacketCoordinatorInstallation>,
+    world_coordinator: Option<super::coordinator::PacketWorldCoordinatorInstallation>,
 }
 
 impl PacketControl {
@@ -132,13 +133,28 @@ impl PacketControl {
         installed: super::coordinator::PacketCoordinatorInstallation,
     ) -> Result<(), ProviderError> {
         self.endpoint_scope()?;
-        if self.common_coordinator.is_some() {
+        if self.common_coordinator.is_some() || self.world_coordinator.is_some() {
             return Err(ProviderError::Correlation(
                 "packet coordinator already installed",
             ));
         }
         installed.validate(&self.selection)?;
         self.common_coordinator = Some(installed);
+        Ok(())
+    }
+
+    pub(super) fn install_world_coordinator(
+        &mut self,
+        installed: super::coordinator::PacketWorldCoordinatorInstallation,
+    ) -> Result<(), ProviderError> {
+        self.endpoint_scope()?;
+        if self.common_coordinator.is_some() || self.world_coordinator.is_some() {
+            return Err(ProviderError::Correlation(
+                "packet coordinator already installed",
+            ));
+        }
+        installed.validate(&self.selection)?;
+        self.world_coordinator = Some(installed);
         Ok(())
     }
 
@@ -201,6 +217,7 @@ impl PacketControl {
             current_operation: None,
             terminals: BTreeMap::new(),
             common_coordinator: None,
+            world_coordinator: None,
         })
     }
 
@@ -216,6 +233,32 @@ impl PacketControl {
     pub fn new_immediate(
         selection: PacketControlSelection,
         program: PacketProgram,
+    ) -> Result<Self, ProviderError> {
+        Self::new_immediate_profile(selection, program, "source-owned.packet-emitter/2")
+    }
+
+    /// Constructs the explicit immediate world dialect under its complete coordinator.
+    ///
+    /// # Errors
+    /// Refuses a foreign local source, incomplete world, wrong world profile or
+    /// changed native program. The original gate remains unopened throughout.
+    pub(super) fn new_world_immediate(
+        selection: PacketControlSelection,
+        program: PacketProgram,
+        world: super::coordinator::PacketWorldCoordinatorInstallation,
+    ) -> Result<Self, ProviderError> {
+        world.validate(&selection)?;
+        let mut native =
+            Self::new_immediate_profile(selection, program, "source-owned.packet-emitter-world/3")?;
+        native.install_world_coordinator(world)?;
+
+        Ok(native)
+    }
+
+    fn new_immediate_profile(
+        selection: PacketControlSelection,
+        program: PacketProgram,
+        profile_id: &str,
     ) -> Result<Self, ProviderError> {
         let definition = reference(&super::contracts::immediate_packet_contract()?)?;
         let configuration = program.definition();
@@ -233,7 +276,7 @@ impl PacketControl {
             })
             || selection.provider.supported_profiles.len() != 1
             || profile.is_none_or(|profile| {
-                profile.profile_id.as_str() != "source-owned.packet-emitter/2"
+                profile.profile_id.as_str() != profile_id
                     || profile.roles.len() != 1
                     || profile.roles[0].as_str() != "external_device"
                     || profile.configuration_schema.id.as_str() != "source-owned.packet-program/1"
@@ -690,7 +733,7 @@ impl PacketControl {
             || manifest.world_generation != activate.world_generation
             || manifest.gate_id != activate.gate_id
             || manifest.world_binding_hash != activate.world_binding_hash
-            || manifest.owners != [expected_owner]
+            || (self.world_coordinator.is_none() && manifest.owners != [expected_owner])
             || !self.content.contains_key(&manifest.coordinator_state_ref)
         {
             return Err(ProviderError::Correlation(
@@ -702,6 +745,18 @@ impl PacketControl {
                 ProviderError::Correlation("packet common coordinator absent"),
             )?;
             installed.authenticate_staged(coordinator, &self.selection, staged, ready)?;
+        }
+        if let Some(installed) = &self.world_coordinator {
+            let coordinator = self.content.get(&manifest.coordinator_state_ref).ok_or(
+                ProviderError::Correlation("packet full-world coordinator absent"),
+            )?;
+            installed.authenticate_staged(
+                coordinator,
+                &self.selection,
+                staged,
+                ready,
+                &manifest,
+            )?;
         }
         let mut inventory = self.program.inventory();
         inventory.gate_closed = false;
@@ -769,14 +824,26 @@ impl PacketControl {
                 .ok_or(ProviderError::Correlation(
                     "packet original common authorization absent",
                 ))?;
-        super::common::PacketCommonGrant::authenticate(
-            input,
-            &self.selection,
-            active,
-            operation,
-            &begin,
-            &arguments,
-        )?;
+        if let Some(installed) = &self.world_coordinator {
+            super::common::PacketCommonGrant::authenticate_world(
+                input,
+                &self.selection,
+                active,
+                operation,
+                &begin,
+                &arguments,
+                installed,
+            )?;
+        } else {
+            super::common::PacketCommonGrant::authenticate(
+                input,
+                &self.selection,
+                active,
+                operation,
+                &begin,
+                &arguments,
+            )?;
+        }
         self.current_operation = Some(operation.clone());
         self.begins.insert(operation.clone(), begin.clone());
         self.begin_requests.insert(

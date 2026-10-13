@@ -21,7 +21,7 @@ struct OriginalObject {
     handle: BlobHandle,
 }
 
-pub(super) struct PreparedPacketPlacement {
+pub(in super::super) struct PreparedPacketPlacement {
     blobs: Arc<dyn ImmutableBlobBackend>,
     refs: Arc<dyn MutableRefBackend>,
     reference: RefName,
@@ -31,7 +31,7 @@ pub(super) struct PreparedPacketPlacement {
 impl PreparedPacketPlacement {
     // This consumes already authenticated and precredited bodies, not vendor
     // records. Index three is the exact root; its immutable body binds 0..2.
-    pub(super) fn prepare(
+    pub(in super::super) fn prepare(
         blobs: Arc<dyn ImmutableBlobBackend>,
         refs: Arc<dyn MutableRefBackend>,
         reference: RefName,
@@ -77,7 +77,7 @@ impl PreparedPacketPlacement {
         })
     }
 
-    pub(super) fn publish(
+    pub(in super::super) fn publish(
         &self,
         current: impl Fn() -> Result<(), RuntimeError>,
     ) -> Result<PublicationStatus, RuntimeError> {
@@ -129,7 +129,7 @@ impl PreparedPacketPlacement {
         self.reconcile_under_guard(&current)
     }
 
-    pub(super) fn reconcile(
+    pub(in super::super) fn reconcile(
         &self,
         current: impl Fn() -> Result<(), RuntimeError>,
     ) -> Result<PublicationStatus, RuntimeError> {

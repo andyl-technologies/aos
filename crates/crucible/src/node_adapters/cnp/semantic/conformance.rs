@@ -100,6 +100,20 @@ pub struct InstalledCnpConformanceRole(pub(super) InstalledCnpSemanticRole);
 /// Retains the actual admitted collection node without an ordinary node conversion.
 pub struct CnpSemanticConformanceNode(pub(super) CnpSemanticNode);
 
+impl CnpSemanticConformanceNode {
+    /// Transfers original native custody while retaining this collecting node's metadata.
+    ///
+    /// This is containment only. It grants no ordinary graph, renewed collection
+    /// permission or native reclamation result.
+    ///
+    /// # Panics
+    /// The original trusted supervisor must retain incoming custody without
+    /// unwinding, as under the same native guard's Drop contract.
+    pub fn retire_original(&mut self) {
+        self.0.preparation.retire_original();
+    }
+}
+
 /// Supplies an actual original fixture to the common runtime for evidence collection.
 ///
 /// This separate provider reuses the native lifecycle and all original operation,

@@ -76,3 +76,17 @@ pub use packet_collection::{
     PacketTemplateInstallationFailure, PreparedPacketCollectionPeer, StoredPacketResultPublisher,
     packet_independent_graph_contract,
 };
+
+pub use packet_collection::{
+    InstalledPacketWorldCollectionAuthority, InstalledPacketWorldGraphPolicy, PacketWorldActor,
+    PacketWorldActorFailure, PacketWorldActorPhase, PacketWorldCaseReservations,
+    PacketWorldFixtureRequest, PacketWorldGrant, PacketWorldHost, PacketWorldHostFailure,
+    PacketWorldHostPreparationFailure, PacketWorldHostRequest, PacketWorldHostSupervisor,
+    PacketWorldIndependentGraphOwner, PacketWorldIndependentGraphRequest,
+    PacketWorldOriginalReservations, PacketWorldPeerTransport, PacketWorldPopulationRequest,
+    PacketWorldPublicationRequest, PacketWorldReservationFailure, PacketWorldReservationRequest,
+    PacketWorldSchedule, PacketWorldStoredFixture, PacketWorldStoredFixtureFailure,
+    PacketWorldStoredFixtureRequest, PacketWorldSupervisionObservation,
+    PacketWorldWitnessPopulation, StoredPacketWorldResultPublisher,
+    packet_world_independent_graph_contract,
+};

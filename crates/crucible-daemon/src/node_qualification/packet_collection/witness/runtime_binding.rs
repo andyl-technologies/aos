@@ -20,6 +20,7 @@ const MAXIMUM_ENTRY_BYTES: usize = 8192;
 pub(super) struct OriginalBindings {
     entries: RefCell<Vec<Option<Binding>>>,
     bytes: Cell<usize>,
+    maximum_bytes: usize,
 }
 
 struct Binding {
@@ -30,10 +31,26 @@ struct Binding {
 
 impl OriginalBindings {
     pub(super) fn reserve(cases: usize) -> Result<Self, QualificationError> {
+        Self::reserve_bounded(cases, MAXIMUM_BINDING_BYTES)
+    }
+
+    pub(super) fn reserve_collecting_world(cases: usize) -> Result<Self, QualificationError> {
+        if cases != 18 {
+            return Err(QualificationError::Refused(
+                "whole packet owner requires eighteen original cases",
+            ));
+        }
+        // Distinct world/3 has nine grants and two observations per grant.
+        // The legacy singleton64-KiB bound is unchanged. All eighteen future
+        // eight-KiB entries are reserved before any Child or token copying.
+        Self::reserve_bounded(cases, 18 * MAXIMUM_ENTRY_BYTES)
+    }
+
+    fn reserve_bounded(cases: usize, maximum_bytes: usize) -> Result<Self, QualificationError> {
         if cases == 0
             || cases
                 .checked_mul(MAXIMUM_ENTRY_BYTES)
-                .is_none_or(|size| size > MAXIMUM_BINDING_BYTES)
+                .is_none_or(|size| size > maximum_bytes)
         {
             return Err(QualificationError::Refused("packet original binding count"));
         }
@@ -45,6 +62,7 @@ impl OriginalBindings {
         Ok(Self {
             entries: RefCell::new(entries),
             bytes: Cell::new(0),
+            maximum_bytes,
         })
     }
 
@@ -96,7 +114,7 @@ impl OriginalBindings {
             .bytes
             .get()
             .checked_add(entry_bytes)
-            .filter(|size| *size <= MAXIMUM_BINDING_BYTES)
+            .filter(|size| *size <= self.maximum_bytes)
             .ok_or(QualificationError::Refused("packet original binding bytes"))?;
         entries[index] = Some(Binding {
             token: admission.token().clone(),

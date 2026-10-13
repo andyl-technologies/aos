@@ -25,7 +25,7 @@ use serde::Serialize;
 use super::InstalledPacketCollectionAuthority;
 use crate::node_qualification::CaseVerdict;
 
-mod placement;
+pub(super) mod placement;
 
 /// Owns one finite original packet publication and its actual durable backends.
 ///
@@ -358,7 +358,7 @@ struct ResultRoot<'a> {
 // This borrowed data encoding preserves every domain-separated CAS identity
 // field without adding serialization to live handles or allocating ID strings
 // ahead of the complete root precredit.
-fn serialize_content_ids<S: serde::Serializer>(
+pub(super) fn serialize_content_ids<S: serde::Serializer>(
     objects: &[ContentId; 3],
     serializer: S,
 ) -> Result<S::Ok, S::Error> {

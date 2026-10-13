@@ -348,6 +348,23 @@ impl CnpSemanticLaunchGuard {
             ))
     }
 
+    /// Transfers actual original native custody while retaining this guard shell.
+    ///
+    /// The original reserved supervisor receives the same complete native and
+    /// transport journals. No resource replacement or reclamation is implied.
+    ///
+    /// # Panics
+    /// The trusted preallocated slot must retain without unwinding. Violation
+    /// of that supervisor contract is outside callback containment, as on Drop.
+    pub fn retire_original(&mut self) {
+        if let Some(custody) = self.custody.take() {
+            custody.read_owner.revoke();
+            if custody.child.is_some() {
+                self.slot.retain(*custody);
+            }
+        }
+    }
+
     /// Returns the original host-issued finite reservation identity.
     pub fn supervision_id(&self) -> U64 {
         self.supervision_id
@@ -356,12 +373,7 @@ impl CnpSemanticLaunchGuard {
 
 impl Drop for CnpSemanticLaunchGuard {
     fn drop(&mut self) {
-        if let Some(custody) = self.custody.take() {
-            custody.read_owner.revoke();
-            if custody.child.is_some() {
-                self.slot.retain(*custody);
-            }
-        }
+        self.retire_original();
     }
 }
 
@@ -425,6 +437,15 @@ pub struct CnpSemanticAttachmentFailure {
 }
 
 impl CnpSemanticAttachmentFailure {
+    /// Transfers the same rejected native custody while retaining its original error.
+    ///
+    /// # Panics
+    /// The original trusted supervisor must retain without unwinding or dropping
+    /// incoming custody; violation remains outside this guard's containment.
+    pub fn retire_original(&mut self) {
+        self.guard.retire_original();
+    }
+
     /// Borrows the complete original native capsule without permitting reattachment.
     ///
     /// # Errors

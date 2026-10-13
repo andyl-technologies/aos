@@ -24,6 +24,12 @@ use crucible_node_provider::ProviderError;
 
 use super::{PacketPeerJournalCustody, PacketPeerJournalSlot, QualificationError};
 
+mod world;
+
+pub use world::{
+    PacketWorldHostSupervisor, PacketWorldOriginalReservations, PacketWorldSupervisionObservation,
+};
+
 struct Mailbox {
     reserved: Cell<bool>,
     expected: Cell<bool>,

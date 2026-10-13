@@ -241,10 +241,8 @@ impl PacketSemanticSource {
         root: &ContentRef,
         record: &PacketNativeRecord,
     ) -> Result<NativeSchedulingObservation, OperationFailure> {
-        if activation.record().world_binding_hash != self.installation.world_binding_hash
-            || activation.record().owners != [self.owner()]
-            || record.inventory.gate_closed
-        {
+        self.authenticate_activation_record(activation.record())?;
+        if record.inventory.gate_closed {
             return Err(refused(
                 "packet scheduling has foreign or unopened original activation",
             ));
@@ -272,14 +270,7 @@ impl PacketSemanticSource {
                 })
             })
             .collect::<Result<Vec<_>, OperationFailure>>()?;
-        let bound = record
-            .inventory
-            .pending
-            .iter()
-            .filter(|event| event.payload.is_some())
-            .map(|event| event.completion)
-            .min()
-            .unwrap_or(record.inventory.reached);
+        let bound = output_bound(&record.inventory);
         Ok(NativeSchedulingObservation {
             node: self.installation.descriptor.id.clone(),
             owners: vec![self.owner()],
@@ -287,7 +278,7 @@ impl PacketSemanticSource {
             closed_prefix: record.inventory.reached,
             bounds: vec![NativeProducerBound {
                 producer: self.installation.descriptor.id.clone(),
-                bound: NativeOutputBound::At(bound),
+                bound,
                 proof_ref: root.clone(),
             }],
             publications,
@@ -295,5 +286,81 @@ impl PacketSemanticSource {
             external_inputs: Vec::new(),
             proof_ref: root.clone(),
         })
+    }
+}
+
+/// Uses the complete source-authenticated future callback roster, never cursor phase.
+fn output_bound(
+    inventory: &crucible_node_provider::reference_packet::PacketInventory,
+) -> NativeOutputBound {
+    match inventory
+        .pending
+        .iter()
+        .filter(|event| event.payload.is_some())
+        .map(|event| event.completion)
+        .min()
+    {
+        Some(publication) => NativeOutputBound::At(publication),
+        // This fixed output-only program cannot create an unlisted callback or
+        // accept new inputs. An exhausted public roster closes the entire
+        // reached instant, including when its cursor is BoundaryControl or
+        // a private Reaction. Retained original output is acknowledged separately.
+        None => NativeOutputBound::AfterInstant(inventory.reached.time_ps),
+    }
+}
+
+// crucible-lint: allow panic-shortcut -- These output-closure controls assert independent expected bounds.
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crucible_node_provider::reference_packet::{PacketEvent, PacketInventory};
+
+    fn inventory(reached: Position, pending: Vec<PacketEvent>) -> PacketInventory {
+        PacketInventory {
+            reached,
+            gate_closed: false,
+            pending,
+            retained_outputs: Vec::new(),
+            private_mutations: U64::new(0),
+            packet_effects: U64::new(0),
+        }
+    }
+
+    #[test]
+    fn exhausted_output_roster_closes_boundary_and_private_reaction_instants() {
+        for phase in [Phase::BoundaryControl, Phase::Reaction] {
+            let reached = Position::new(U64::new(10), U64::new(0), phase);
+            assert_eq!(
+                output_bound(&inventory(reached, Vec::new())),
+                NativeOutputBound::AfterInstant(U64::new(10))
+            );
+        }
+    }
+
+    #[test]
+    fn only_public_callbacks_determine_the_earliest_future_publication() {
+        let reached = Position::new(U64::new(10), U64::new(0), Phase::BoundaryControl);
+        let private = PacketEvent {
+            id: Id::new("private").unwrap(),
+            evaluation: Position::new(U64::new(11), U64::new(0), Phase::Reaction),
+            completion: Position::new(U64::new(11), U64::new(0), Phase::Reaction),
+            payload: None,
+        };
+        assert_eq!(
+            output_bound(&inventory(reached, vec![private.clone()])),
+            NativeOutputBound::AfterInstant(U64::new(10))
+        );
+        let publication = Position::new(U64::new(12), U64::new(1), Phase::Publication);
+        let public = PacketEvent {
+            id: Id::new("public").unwrap(),
+            evaluation: Position::new(U64::new(12), U64::new(0), Phase::Reaction),
+            completion: publication,
+            payload: Some(Bytes::new(vec![1])),
+        };
+        assert_eq!(
+            output_bound(&inventory(reached, vec![private, public])),
+            NativeOutputBound::At(publication)
+        );
     }
 }

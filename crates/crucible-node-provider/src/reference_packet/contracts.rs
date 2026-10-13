@@ -132,3 +132,28 @@ pub fn common_ingress_contract() -> Result<Vec<u8>, ProviderError> {
         "authority":"No acceptance, Ready, ordinary admission, capture or activation authority follows from this grammar or decoding."
     }))?)
 }
+
+/// Encodes distinct three-owner static roster and post-Arm ingress edition 3.
+///
+/// Each native peer verifies its own original staged preparation. Full foreign
+/// owner authentication belongs to the independently installed host publisher;
+/// a portable preparation row or matching hash cannot establish native Ready.
+///
+/// # Errors
+/// Reports canonical encoding failure of the complete fixed specification.
+pub fn world_ingress_contract() -> Result<Vec<u8>, ProviderError> {
+    Ok(canonical::canonical_json(&serde_json::json!({
+        "schema":"source-owned.packet-ingress-contract/3",
+        "identifier":"source-owned.packet-ingress/3",
+        "encoding":"canonical application/json; separately selected closed union",
+        "ceiling":65536,
+        "static_installation":"source-owned.packet-common-coordinator-installation/2",
+        "participants":3,
+        "coordinator":"Complete immutable three-node/world/source roster is installed before Child; exactly three actual post-Arm preparation rows fill the body. Local Ready must equal the original retained native Arm. Host independently authenticates all three original owners before publication.",
+        "activation":"Complete CNP/1 ActivationManifest owners exactly equal all three complete prepared rows, local transaction/gate and original common world.",
+        "common_grant":"Distinct source-owned.packet-common-grant.v2 binds the complete installed three-owner activation and local original route under the unchanged8192-byte ceiling; only original admitted operation authority can grant native callbacks.",
+        "consumption":"Unchanged source-owned.packet-consumption.v1; exact original output population, no transport ACK substitution.",
+        "unsupported":"No capture, restart, external input, CPU/Clock promotion or partial/synthetic Ready.",
+        "authority":"This codec grants no class, admission, native Ready or execution authority. Independent installed source and actual host all-owner conjunction are mandatory."
+    }))?)
+}

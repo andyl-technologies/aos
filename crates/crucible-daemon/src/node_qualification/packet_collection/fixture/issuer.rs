@@ -29,7 +29,7 @@ use super::{
 };
 
 #[path = "issuer/records.rs"]
-mod records;
+pub(super) mod records;
 
 pub use records::packet_independent_graph_contract;
 
@@ -166,7 +166,7 @@ impl AdmissionEvidence for OriginalGraphEvidence {
         reference.verify(original).map_err(|error| EvidenceError {
             message: error.to_string(),
         })?;
-        Ok(original.clone())
+        super::current_files::current_answer(original.clone(), || self.current())
     }
 
     fn authenticate_implementation(
@@ -177,7 +177,7 @@ impl AdmissionEvidence for OriginalGraphEvidence {
         if implementation != &self.source.installation().provider.implementation {
             return Err(refused());
         }
-        Ok(())
+        self.current()
     }
 
     fn authenticate_authority(&self, binding: &NodeBinding) -> Result<(), EvidenceError> {
@@ -187,7 +187,7 @@ impl AdmissionEvidence for OriginalGraphEvidence {
         }
         // This authenticates only the exact source-installed prelaunch binding.
         // Original native realization/registrar/kernel checks remain outside it.
-        Ok(())
+        self.current()
     }
 
     fn authenticate_schema(&self, schema: &SchemaRef) -> Result<(), EvidenceError> {
@@ -195,7 +195,7 @@ impl AdmissionEvidence for OriginalGraphEvidence {
         if !self.schemas.contains(schema) {
             return Err(refused());
         }
-        Ok(())
+        self.current()
     }
 
     fn qualify_capability(
@@ -211,7 +211,7 @@ impl AdmissionEvidence for OriginalGraphEvidence {
         self.current()?;
         for predicate in &self.predicates {
             if predicate.matches(&claim, &self.world, &self.requirements, &self.source)? {
-                return Ok(());
+                return self.current();
             }
         }
         // Node, Connection and SameTimeClosure claims remain refused. The exact

@@ -33,6 +33,7 @@ use super::{
 
 mod credit;
 mod native;
+mod world;
 
 /// Authenticates the source-installed finite output-only packet implementation.
 ///
@@ -42,6 +43,7 @@ mod native;
 pub struct PacketSemanticSource {
     installation: CnpSemanticInstallation,
     program: PacketProgramDefinition,
+    world_scope: Option<world::PacketWorldSourceScope>,
     current_native: RefCell<Option<super::process::CnpSemanticSourceRead>>,
 }
 
@@ -74,6 +76,23 @@ impl PacketNativeWitness<'_> {
 }
 
 impl PacketSemanticSource {
+    /// Checks this original source's retained collecting-world installation.
+    ///
+    /// This compares the complete source-owned scope, not portable Ready or an
+    /// accepted qualification. Native/current registrar checks remain separate.
+    ///
+    /// # Errors
+    /// Refuses a singleton source, changed full roster or foreign coordinator.
+    pub fn authenticate_collecting_world_scope(
+        &self,
+        coordinator: &crucible_node_provider::reference_packet::coordinator::PacketWorldCoordinatorInstallation,
+    ) -> Result<(), OperationFailure> {
+        self.world_scope
+            .as_ref()
+            .ok_or_else(|| refused("packet collecting-world source absent"))?
+            .authenticate_installation(coordinator)
+    }
+
     /// Borrows one source-validated original native record and its complete body.
     ///
     /// Validation joins the current actual process and peer, the original CNP
@@ -124,6 +143,14 @@ impl PacketSemanticSource {
         installation: CnpSemanticInstallation,
         program: PacketProgramDefinition,
     ) -> Result<Self, OperationFailure> {
+        Self::new_selected(installation, program, "source-owned.packet-emitter/2")
+    }
+
+    fn new_selected(
+        installation: CnpSemanticInstallation,
+        program: PacketProgramDefinition,
+        profile: &str,
+    ) -> Result<Self, OperationFailure> {
         super::preparation::validate_installation(&installation)?;
         budget::serialized_size(&program, 8192)?;
         let bytes = canonical::canonical_json(&serde_json::to_value(&program).map_err(unknown)?)
@@ -136,7 +163,7 @@ impl PacketSemanticSource {
             canonical::content_ref(&contract_bytes, "application/json").map_err(unknown)?;
         let ports = &installation.descriptor.ports;
         if installation.receipt_schema.id.as_str() != "source-owned.packet-receipt/2"
-            || installation.profile.profile_id.as_str() != "source-owned.packet-emitter/2"
+            || installation.profile.profile_id.as_str() != profile
             || installation
                 .provider
                 .implementation
@@ -207,8 +234,64 @@ impl PacketSemanticSource {
         Ok(Self {
             installation,
             program,
+            world_scope: None,
             current_native: RefCell::new(None),
         })
+    }
+
+    /// Installs the distinct packet-emitter-world/3 collecting source roster.
+    ///
+    /// The static coordinator names all sources before launch and contains no
+    /// predicted Ready rows. Native realization, local Arm and the host's three
+    /// current original owners must still be authenticated independently. This
+    /// constructor grants no ordinary class acceptance or activation authority.
+    ///
+    /// # Errors
+    /// Refuses a foreign or incomplete roster, changed local source selection,
+    /// unsupported ingress edition or body exceeding the unchanged finite caps.
+    pub fn new_for_collecting_world(
+        installation: CnpSemanticInstallation,
+        program: PacketProgramDefinition,
+        coordinator: crucible_node_provider::reference_packet::coordinator::PacketWorldCoordinatorInstallation,
+    ) -> Result<Self, OperationFailure> {
+        let world_scope = world::PacketWorldSourceScope::new(&installation, coordinator)?;
+        let mut source =
+            Self::new_selected(installation, program, "source-owned.packet-emitter-world/3")?;
+        source.world_scope = Some(world_scope);
+        Ok(source)
+    }
+
+    fn authenticate_activation_record(
+        &self,
+        record: &ActivationRecord,
+    ) -> Result<(), OperationFailure> {
+        if let Some(world) = &self.world_scope {
+            world.authenticate_record(record)
+        } else if record.world_binding_hash == self.installation.world_binding_hash
+            && record.owners == [self.owner()]
+        {
+            Ok(())
+        } else {
+            Err(refused("packet original whole-world activation changed"))
+        }
+    }
+
+    fn grant_authorization(
+        &self,
+        original: &OperationAdmission,
+        watermark: U64,
+    ) -> Result<InputPayload, OperationFailure> {
+        if let Some(world) = &self.world_scope {
+            world.authenticate_record(original.activation().record())?;
+            super::packet_grant::packet_world_grant_authorization(
+                &self.installation,
+                original,
+                watermark,
+                world.owners(),
+            )
+        } else {
+            packet_common_grant_authorization(&self.installation, original, watermark)
+        }
     }
 
     /// Reads the first actual source-authenticated native capsule directly.
@@ -385,6 +468,9 @@ impl CnpSemanticSource for PacketSemanticSource {
         native: &CnpSemanticProcessCustody,
     ) -> Result<(), OperationFailure> {
         native.authenticate_process().map_err(unknown)?;
+        if self.world_scope.is_some() && native.conformance.is_none() {
+            return Err(refused("packet three-owner source is collecting-only"));
+        }
         let controller = native
             .controller()
             .ok_or_else(|| refused("packet actual native transport absent"))?;
@@ -394,7 +480,12 @@ impl CnpSemanticSource for PacketSemanticSource {
             .implementation
             .formats
             .iter()
-            .any(|format| format.id.as_str() == "source-owned.packet-ingress/2")
+            .any(|format| {
+                matches!(
+                    format.id.as_str(),
+                    "source-owned.packet-ingress/2" | "source-owned.packet-ingress/3"
+                )
+            })
             && !controller.has_packet_transport_schema()
         {
             return Err(refused(
@@ -472,6 +563,9 @@ impl CnpSemanticSource for PacketSemanticSource {
                 "packet native gate belongs to a different original Realize",
             ));
         }
+        if let Some(world) = &self.world_scope {
+            world.authenticate_realization(scope.realization)?;
+        }
         self.retain_current_native(scope.native)
     }
 
@@ -481,7 +575,7 @@ impl CnpSemanticSource for PacketSemanticSource {
         original: &OperationAdmission,
     ) -> Result<(), OperationFailure> {
         credit::Prefix::Operation.preflight(scope.controller)?;
-        packet_common_grant_authorization(&self.installation, original, U64::new(0))?;
+        self.grant_authorization(original, U64::new(0))?;
         self.authenticate_provider(scope.native)?;
         let current = self.latest(&scope)?;
         let (start, limit) = match original.request() {
@@ -566,8 +660,8 @@ impl CnpSemanticSource for PacketSemanticSource {
         let RequestBody::Activate(request) = request else {
             return Err(refused("packet readiness has no original Activate"));
         };
-        if record.owners != [self.owner()]
-            || record.world_binding_hash != self.installation.world_binding_hash
+        self.authenticate_activation_record(record)?;
+        if record.world_binding_hash != self.installation.world_binding_hash
             || record.boundary != native.inventory.reached
             || request.activation_id != record.activation_id
             || request.world_generation != record.generation
@@ -580,7 +674,7 @@ impl CnpSemanticSource for PacketSemanticSource {
             ));
         }
         Ok(ReadyAttestation {
-            owners: record.owners.clone(),
+            owners: vec![self.owner()],
             boundary: native.inventory.reached,
             state_inventory: response.activation_receipt.clone(),
             ready_receipt: response.activation_receipt.clone(),
@@ -594,8 +688,8 @@ impl CnpSemanticSource for PacketSemanticSource {
         ready: &ReadyAttestation,
     ) -> Result<(), OperationFailure> {
         let native = self.initial(&scope, &ready.ready_receipt)?;
+        self.authenticate_activation_record(record)?;
         if ready.owners != [self.owner()]
-            || ready.owners != record.owners
             || ready.boundary != record.boundary
             || ready.boundary != native.inventory.reached
             || ready.state_inventory != ready.ready_receipt
@@ -634,21 +728,25 @@ impl CnpSemanticSource for PacketSemanticSource {
         let coordinator = activation
             .coordinator_snapshot()
             .ok_or_else(|| refused("packet complete original coordinator bytes absent"))?;
-        if record.world_binding_hash != self.installation.world_binding_hash
-            || record.owners != [self.owner()]
-            || owners.len() != 1
-            || owners[0].owner_id != self.owner().owner
-            || owners[0].incarnation_id != self.owner().incarnation
-            || owners[0].owner_generation != self.owner().generation
-            || owners[0].binding_hashes
-                != [self.installation.binding.identity().map_err(unknown)?]
-            || owners[0].prepared_token != scope.realization.prepared_token
-        {
-            return Err(refused(
-                "packet complete original common preparation changed",
-            ));
-        }
-        let ready = self.initial(&scope, &owners[0].ready_receipt)?;
+        self.authenticate_activation_record(record)?;
+        let local = if let Some(world) = &self.world_scope {
+            world.authenticate_prepared(owners, scope.realization)?
+        } else {
+            if owners.len() != 1
+                || owners[0].owner_id != self.owner().owner
+                || owners[0].incarnation_id != self.owner().incarnation
+                || owners[0].owner_generation != self.owner().generation
+                || owners[0].binding_hashes
+                    != [self.installation.binding.identity().map_err(unknown)?]
+                || owners[0].prepared_token != scope.realization.prepared_token
+            {
+                return Err(refused(
+                    "packet complete original common preparation changed",
+                ));
+            }
+            &owners[0]
+        };
+        let ready = self.initial(&scope, &local.ready_receipt)?;
         let current = self.latest(&scope)?;
         if current.inventory != ready.inventory {
             return Err(refused(
@@ -659,6 +757,9 @@ impl CnpSemanticSource for PacketSemanticSource {
             .reference
             .verify(&coordinator.bytes)
             .map_err(unknown)?;
+        if let Some(world) = &self.world_scope {
+            world.authenticate_coordinator(&coordinator.bytes)?;
+        }
         let data = canonical::parse_json(&coordinator.bytes, 65_536).map_err(unknown)?;
         let saved: SavedRuntimeActivation = serde_json::from_value(
             data.get("activation")
@@ -673,7 +774,7 @@ impl CnpSemanticSource for PacketSemanticSource {
             || data
                 .get("nodes")
                 .and_then(serde_json::Value::as_array)
-                .is_none_or(|nodes| nodes.len() != 1)
+                .is_none_or(|nodes| nodes.len() != record.owners.len())
             || data
                 .get("connections")
                 .and_then(serde_json::Value::as_array)
@@ -716,6 +817,9 @@ impl CnpSemanticSource for PacketSemanticSource {
             .reference
             .verify(&coordinator.bytes)
             .map_err(unknown)?;
+        if let Some(world) = &self.world_scope {
+            world.authenticate_coordinator(&coordinator.bytes)?;
+        }
         let data = canonical::parse_json(&coordinator.bytes, 65_536).map_err(unknown)?;
         let saved: SavedRuntimeActivation = serde_json::from_value(
             data.get("activation")
@@ -723,6 +827,10 @@ impl CnpSemanticSource for PacketSemanticSource {
                 .ok_or_else(|| refused("packet original initial coordinator activation absent"))?,
         )
         .map_err(unknown)?;
+        self.authenticate_activation_record(activation.record())?;
+        if let Some(world) = &self.world_scope {
+            world.authenticate_prepared(owners, scope.realization)?;
+        }
         if data.get("schema").and_then(serde_json::Value::as_str)
             != Some("crucible/coordinator-initial/1")
             || saved != SavedRuntimeActivation::from(activation.record())
@@ -736,7 +844,6 @@ impl CnpSemanticSource for PacketSemanticSource {
                 .content(&coordinator.reference)
                 .map_err(unknown)?
                 != coordinator.bytes
-            || activation.record().owners != [self.owner()]
             || native.inventory.gate_closed
             || !native.inventory.retained_outputs.is_empty()
             || native.inventory.pending != self.program.events
@@ -766,7 +873,7 @@ impl CnpSemanticSource for PacketSemanticSource {
         _: CnpSemanticRealizationScope<'_>,
         original: &OperationAdmission,
     ) -> Result<BoundaryPolicy, OperationFailure> {
-        packet_common_grant_authorization(&self.installation, original, U64::new(0))?;
+        self.grant_authorization(original, U64::new(0))?;
         Ok(BoundaryPolicy::OrdinaryStop)
     }
 
@@ -776,7 +883,7 @@ impl CnpSemanticSource for PacketSemanticSource {
         original: &OperationAdmission,
         watermark: U64,
     ) -> Result<InputPayload, OperationFailure> {
-        packet_common_grant_authorization(&self.installation, original, watermark)
+        self.grant_authorization(original, watermark)
     }
 
     fn outcome(
@@ -849,7 +956,8 @@ impl CnpSemanticSource for PacketSemanticSource {
         references: &[ContentRef],
         maximum_bytes: usize,
     ) -> Result<Vec<InputPayload>, OperationFailure> {
-        if references.len() > 32 || activation.record().owners != [self.owner()] {
+        self.authenticate_activation_record(activation.record())?;
+        if references.len() > 32 {
             return Err(refused(
                 "packet evidence scope or association credit changed",
             ));

@@ -122,6 +122,24 @@ impl DeadlineStream {
         ))
     }
 
+    /// Waits for an idle socket without reading bytes or renewing an exchange.
+    ///
+    /// The source service starts its next absolute cut only after readiness.
+    /// The original authenticated socket remains the sole parser authority.
+    pub(crate) fn wait_for_request(&self) -> io::Result<()> {
+        let mut descriptors = [rustix::event::PollFd::new(
+            &self.stream,
+            rustix::event::PollFlags::IN,
+        )];
+        loop {
+            match rustix::event::poll(&mut descriptors, None) {
+                Err(rustix::io::Errno::INTR) => continue,
+                Ok(_) => return Ok(()),
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
     /// Clones native transport custody while preserving the same absolute cut.
     ///
     /// # Errors

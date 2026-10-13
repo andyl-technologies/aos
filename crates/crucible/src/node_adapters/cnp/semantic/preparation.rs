@@ -21,6 +21,16 @@ pub struct CnpSemanticPreparationFailure {
     pub guard: CnpSemanticLaunchGuard,
 }
 
+impl CnpSemanticPreparationFailure {
+    /// Transfers actual native custody without consuming its original refusal.
+    ///
+    /// # Panics
+    /// The original trusted native supervisor must retain without unwinding.
+    pub fn retire_original(&mut self) {
+        self.guard.retire_original();
+    }
+}
+
 /// Owns an original generic realized process beneath an authenticated closed gate.
 ///
 /// This capsule grants no common graph, Ready or execution authority. Actual
@@ -34,6 +44,14 @@ pub struct CnpSemanticPreparation {
 }
 
 impl CnpSemanticPreparation {
+    /// Transfers native custody while retaining original discovery and realization data.
+    ///
+    /// # Panics
+    /// The original trusted native supervisor must retain without unwinding.
+    pub fn retire_original(&mut self) {
+        self.guard.retire_original();
+    }
+
     /// Discovers and realizes the exact installed source selection without running it.
     ///
     /// The supervisor reservation and actual Child already exist. Both mandatory

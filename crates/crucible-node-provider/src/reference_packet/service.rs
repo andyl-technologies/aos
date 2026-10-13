@@ -31,7 +31,7 @@ mod server;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PacketSourceLaunch {
-    /// Selects exact preinstalled ingress 1 or actual post-Arm common ingress 2.
+    /// Selects exact preinstalled ingress 1, common ingress 2 or three-owner ingress 3.
     pub schema_version: u16,
     /// Binds the complete source-selected original realization and native gate.
     pub selection: PacketControlSelection,
@@ -58,6 +58,19 @@ pub struct PacketSourceLaunch {
 }
 
 impl PacketSourceLaunch {
+    /// Decodes the complete private launch through the bounded canonical parser.
+    ///
+    /// # Errors
+    /// Rejects oversized JSON, duplicate or unknown fields, invalid scalar
+    /// encodings and any original launch invariant checked by [`Self::validate`].
+    pub fn decode(bytes: &[u8], maximum_bytes: usize) -> Result<Self, ProviderError> {
+        let value = canonical::parse_json(bytes, maximum_bytes)?;
+        let launch: Self = serde_json::from_value(value).map_err(ContractError::from)?;
+        launch.validate()?;
+
+        Ok(launch)
+    }
+
     /// Checks complete source, private scope and finite input before realization.
     ///
     /// # Errors
@@ -80,6 +93,11 @@ impl PacketSourceLaunch {
                 2,
                 super::contracts::common_ingress_contract()?,
             ),
+            3 => (
+                "source-owned.packet-ingress/3",
+                3,
+                super::contracts::world_ingress_contract()?,
+            ),
             _ => return Err(ProviderError::Correlation("packet source launch edition")),
         };
         let definition = canonical::content_ref(&ingress, "application/json")?;
@@ -97,10 +115,11 @@ impl PacketSourceLaunch {
             || self.program.schema != "source-owned.packet-program.v1"
             || self.program.events.len() != 2
             || self.limits.frame_bytes.get() != 65_536
-            || self.limits.requests.get() != 64
+            || self.limits.requests.get() != if self.schema_version == 3 { 256 } else { 64 }
             || self.limits.nesting.get() != 64
             || self.limits.blob_chunk_bytes.get() != 4096
-            || self.limits.journal_entries.get() != 256
+            || self.limits.journal_entries.get()
+                != if self.schema_version == 3 { 1024 } else { 256 }
             || schema.is_none_or(|schema| {
                 schema.version != version
                     || schema.definition != definition
@@ -129,6 +148,12 @@ impl PacketSourceLaunch {
         }
         if self.schema_version == 2 {
             super::coordinator::PacketCoordinatorInstallation::decode(
+                coordinator.bytes.as_slice(),
+                &self.selection,
+            )?;
+        }
+        if self.schema_version == 3 {
+            super::coordinator::PacketWorldCoordinatorInstallation::decode(
                 coordinator.bytes.as_slice(),
                 &self.selection,
             )?;
@@ -162,7 +187,11 @@ impl PacketSourceService {
         server::accept(socket, launch)
     }
 
-    /// Drives the same original endpoint under its fixed operational deadline.
+    /// Drives one complete exchange after idle readiness on the original socket.
+    ///
+    /// Idle waiting has no native or simulation-time effect. Once request bytes
+    /// are available, the unchanged five-second absolute cut covers the whole
+    /// frame, validation, native callback, proof publication and acknowledgement.
     ///
     /// # Errors
     /// Returns the original held failure without releasing native custody or
@@ -171,6 +200,7 @@ impl PacketSourceService {
         if self.endpoint.is_held() {
             return self.endpoint.step();
         }
+        self.endpoint.wait_for_request()?;
         self.deadline.reset(std::time::Duration::from_secs(5))?;
         self.endpoint.step()
     }

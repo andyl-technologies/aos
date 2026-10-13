@@ -3,7 +3,7 @@
 use std::{
     fs::File,
     io::Read,
-    os::unix::fs::MetadataExt,
+    os::unix::fs::{FileExt, MetadataExt},
     path::{Path, PathBuf},
 };
 
@@ -29,7 +29,7 @@ const ROLES: [&str; 8] = [
 ///
 /// A content identity is a measurement target, never a certificate. The fixture
 /// constructor requires the exact closed role roster and remeasures each file.
-#[derive(Clone, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub struct PacketFixtureArtifact {
     /// Names one source-owned role from the complete eight-role roster.
     pub role: String,
@@ -43,7 +43,7 @@ pub struct PacketFixtureArtifact {
 ///
 /// This type has no decoder or authority implementation. Only explicit host
 /// installation can join these measured files to the native source and oracle.
-#[derive(Clone, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub struct PacketFixtureMeasurements {
     /// Names and pins the actual packet peer executable.
     pub peer: PacketFixtureArtifact,
@@ -110,6 +110,57 @@ pub(super) fn measure(path: &Path, expected: &ContentRef) -> Result<(), Qualific
 
 pub(super) fn measured_file(
     file: &mut File,
+    expected: &ContentRef,
+) -> Result<std::fs::Metadata, QualificationError> {
+    measured_reader(file, expected)
+}
+
+/// Hashes the complete original descriptor without changing its shared cursor.
+///
+/// # Errors
+/// Refuses nonfinite extents, complete byte drift, changed file revisions,
+/// unavailable reads, and invalid measured content.
+pub(super) fn measured_file_at(
+    file: &File,
+    expected: &ContentRef,
+) -> Result<std::fs::Metadata, QualificationError> {
+    measured_reader(&mut PositionalFile { file, offset: 0 }, expected)
+}
+
+trait MeasurementReader: Read {
+    fn metadata(&self) -> std::io::Result<std::fs::Metadata>;
+}
+
+impl MeasurementReader for File {
+    fn metadata(&self) -> std::io::Result<std::fs::Metadata> {
+        File::metadata(self)
+    }
+}
+
+struct PositionalFile<'a> {
+    file: &'a File,
+    offset: u64,
+}
+
+impl Read for PositionalFile<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let count = self.file.read_at(buffer, self.offset)?;
+        self.offset = self
+            .offset
+            .checked_add(count as u64)
+            .ok_or_else(|| std::io::Error::other("measured file offset overflow"))?;
+        Ok(count)
+    }
+}
+
+impl MeasurementReader for PositionalFile<'_> {
+    fn metadata(&self) -> std::io::Result<std::fs::Metadata> {
+        self.file.metadata()
+    }
+}
+
+fn measured_reader(
+    file: &mut impl MeasurementReader,
     expected: &ContentRef,
 ) -> Result<std::fs::Metadata, QualificationError> {
     expected.validate()?;

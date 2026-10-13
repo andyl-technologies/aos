@@ -62,6 +62,7 @@ pub struct PacketNativeObservationStore {
     source: Rc<PacketSemanticSource>,
     program: PacketProgramDefinition,
     expected_owner: crucible::node_contract::OwnerIdentity,
+    world_owners: Option<Vec<crucible::node_contract::OwnerIdentity>>,
     payload_reference: ContentRef,
     socket: UnixDatagram,
     observed: RefCell<Observations>,
@@ -118,6 +119,7 @@ impl PacketNativeObservationStore {
             source,
             program,
             expected_owner,
+            world_owners: None,
             payload_reference,
             socket,
             observed: RefCell::new(Observations {
@@ -129,6 +131,51 @@ impl PacketNativeObservationStore {
                 failed: false,
             }),
         }))
+    }
+
+    /// Reserves independent original observations for one member of a full world.
+    ///
+    /// The static roster is correlation only. Common activation and all original
+    /// native handles are separately authenticated before any native effects.
+    ///
+    /// # Errors
+    /// Refuses changed source/coordinator, incomplete owner roster, unsupported
+    /// programme, unavailable unique receiver or prospective observation credit.
+    pub fn install_collecting_world(
+        source: Rc<PacketSemanticSource>,
+        program: PacketProgramDefinition,
+        socket: UnixDatagram,
+        coordinator: &crucible_node_provider::reference_packet::coordinator::PacketWorldCoordinatorInstallation,
+    ) -> Result<Rc<Self>, QualificationError> {
+        source
+            .authenticate_collecting_world_scope(coordinator)
+            .map_err(|error| QualificationError::Evidence(error.reason))?;
+        super::scope::encoded_size(coordinator, 65_536)?;
+        let activation: crucible::node_contract::SavedRuntimeActivation =
+            serde_json::from_value(coordinator.template["activation"].clone())
+                .map_err(crucible_node_contract::ContractError::from)?;
+        if activation.owners.len() != 3 {
+            return Err(QualificationError::Refused(
+                "complete packet oracle owner roster",
+            ));
+        }
+        let mut original = Self::install(source, program, socket)?;
+        let store = Rc::get_mut(&mut original).ok_or(QualificationError::Refused(
+            "packet oracle original ownership",
+        ))?;
+        if activation
+            .owners
+            .iter()
+            .filter(|owner| **owner == store.expected_owner)
+            .count()
+            != 1
+        {
+            return Err(QualificationError::Refused(
+                "packet oracle local owner absent",
+            ));
+        }
+        store.world_owners = Some(activation.owners);
+        Ok(original)
     }
 
     pub(super) fn observe(
@@ -297,7 +344,11 @@ impl PacketNativeOracle {
                 ));
             }
         }
-        let original_bindings = runtime_binding::OriginalBindings::reserve(cases.len())?;
+        let original_bindings = if store.world_owners.is_some() {
+            runtime_binding::OriginalBindings::reserve_collecting_world(cases.len())?
+        } else {
+            runtime_binding::OriginalBindings::reserve(cases.len())?
+        };
         Ok(Rc::new(Self {
             store,
             plan: plan.clone(),
@@ -378,8 +429,12 @@ impl InstalledRuntimeWitnessOracle for PacketNativeOracle {
         if plan != &self.plan
             || admission.activation().record().world_binding_hash
                 != self.store.source.installation().world_binding_hash
-            || admission.activation().record().owners
-                != std::slice::from_ref(&self.store.expected_owner)
+            || admission.activation().record().owners.as_slice()
+                != self
+                    .store
+                    .world_owners
+                    .as_deref()
+                    .unwrap_or(std::slice::from_ref(&self.store.expected_owner))
             || admission.token().route().node != self.store.source.installation().descriptor.id
             || admission.token().route().owners != std::slice::from_ref(&self.store.expected_owner)
             || admission.token().operation() != &expected.operation

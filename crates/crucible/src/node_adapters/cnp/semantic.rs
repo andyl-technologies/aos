@@ -22,11 +22,17 @@ mod provider;
 mod registry;
 mod source;
 mod state;
+mod world_provider;
 
 pub use conformance::{
     CnpSemanticConformanceAuthority, CnpSemanticConformanceNode, CnpSemanticConformanceProvider,
     InstalledCnpConformanceRole,
 };
+pub use world_provider::{
+    CnpSemanticConformanceWorldProvider, CnpSemanticWorldPreparationFailure,
+    CnpSemanticWorldReservationFailure,
+};
+
 pub use node::{CnpSemanticAdmissionFailure, CnpSemanticNode};
 pub use packet_grant::packet_common_grant_authorization;
 pub use packet_source::{PacketNativeWitness, PacketSemanticSource};

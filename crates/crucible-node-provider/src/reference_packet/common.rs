@@ -132,6 +132,42 @@ impl PacketCommonGrant {
         begin: &BeginRequest,
         arguments: &ExactRunArguments,
     ) -> Result<Self, ProviderError> {
+        Self::authenticate_scope(bytes, selection, active, operation, begin, arguments, None)
+    }
+
+    pub(super) fn authenticate_world(
+        bytes: &[u8],
+        selection: &PacketControlSelection,
+        active: &WorldActivateRequest,
+        operation: &Id,
+        begin: &BeginRequest,
+        arguments: &ExactRunArguments,
+        installed: &super::coordinator::PacketWorldCoordinatorInstallation,
+    ) -> Result<Self, ProviderError> {
+        installed.validate(selection)?;
+        let owners: Vec<PacketCommonOwner> =
+            serde_json::from_value(installed.template["activation"]["owners"].clone())
+                .map_err(crucible_node_contract::ContractError::from)?;
+        Self::authenticate_scope(
+            bytes,
+            selection,
+            active,
+            operation,
+            begin,
+            arguments,
+            Some(&owners),
+        )
+    }
+
+    fn authenticate_scope(
+        bytes: &[u8],
+        selection: &PacketControlSelection,
+        active: &WorldActivateRequest,
+        operation: &Id,
+        begin: &BeginRequest,
+        arguments: &ExactRunArguments,
+        world_owners: Option<&[PacketCommonOwner]>,
+    ) -> Result<Self, ProviderError> {
         let original: Self = serde_json::from_value(canonical::parse_json(bytes, 8192)?)
             .map_err(crucible_node_contract::ContractError::from)?;
         if selection.realization.bindings.len() != 1
@@ -170,11 +206,17 @@ impl PacketCommonGrant {
         };
         start.validate()?;
         limit.validate()?;
-        if original.schema != "source-owned.packet-common-grant.v1"
+        let expected_schema = if world_owners.is_some() {
+            "source-owned.packet-common-grant.v2"
+        } else {
+            "source-owned.packet-common-grant.v1"
+        };
+        let local_owners = [owner.clone()];
+        if original.schema != expected_schema
             || original.operation != *operation
             || original.route.node != selection.realization.descriptors[0].id
             || original.route.owners != [owner.clone()]
-            || original.activation.owners != [owner]
+            || original.activation.owners.as_slice() != world_owners.unwrap_or(&local_owners)
             || original.activation.generation != active.world_generation
             || original.activation.activation_id != active.activation_id
             || original.activation.world_binding_hash != selection.world

@@ -23,6 +23,16 @@ pub struct CnpSemanticAdmissionFailure {
     pub preparation: Box<CnpSemanticPreparation>,
 }
 
+impl CnpSemanticAdmissionFailure {
+    /// Transfers actual native custody while retaining its exact admission refusal.
+    ///
+    /// # Panics
+    /// The original trusted native supervisor must retain without unwinding.
+    pub fn retire_original(&mut self) {
+        self.preparation.retire_original();
+    }
+}
+
 /// Owns one source-installed generic CNP role beneath actual common authority.
 ///
 /// The adapter never interprets vendor-defined native facts without its installed

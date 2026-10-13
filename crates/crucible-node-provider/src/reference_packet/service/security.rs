@@ -13,6 +13,7 @@ pub(super) struct Policy {
     pub(super) coordinator: crate::reference_service::InstalledContent,
     pub(super) definition: ContentRef,
     pub(super) common: Option<super::super::coordinator::PacketCoordinatorInstallation>,
+    pub(super) world: Option<super::super::coordinator::PacketWorldCoordinatorInstallation>,
 }
 
 impl super::super::endpoint::PacketEndpointPolicy for Policy {
@@ -29,7 +30,9 @@ impl super::super::endpoint::PacketEndpointPolicy for Policy {
         if selection != &self.selection
             || authority.session_id() != &binding.authority.session_id
             || authority.incarnation_id() != &binding.authority.incarnation_id
-            || authority.limits().requests.get() != 64
+            || authority.limits().requests.get() != if self.world.is_some() { 256 } else { 64 }
+            || authority.limits().journal_entries.get()
+                != if self.world.is_some() { 1024 } else { 256 }
         {
             return Err(ProviderError::Correlation(
                 "packet installed negotiated source changed",
@@ -76,8 +79,18 @@ impl BlobSchemaVerifier for Policy {
         {
             return common.validate_body(bytes);
         }
+        if value.get("schema").and_then(Value::as_str) == Some("crucible/coordinator-initial/1")
+            && let Some(world) = &self.world
+        {
+            return world.validate_body(bytes);
+        }
         match value.get("schema").and_then(Value::as_str) {
-            Some("source-owned.packet-common-grant.v1") => {
+            Some("source-owned.packet-common-grant.v2") if self.world.is_some() => {
+                let _: super::super::common::PacketCommonGrant =
+                    serde_json::from_value(value).map_err(ContractError::from)?;
+                Ok(())
+            }
+            Some("source-owned.packet-common-grant.v1") if self.world.is_none() => {
                 let _: super::super::common::PacketCommonGrant =
                     serde_json::from_value(value).map_err(ContractError::from)?;
                 Ok(())

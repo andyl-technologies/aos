@@ -49,6 +49,24 @@ pub fn packet_common_grant_authorization(
     original: &OperationAdmission,
     watermark: U64,
 ) -> Result<InputPayload, OperationFailure> {
+    encode_grant(installation, original, watermark, None)
+}
+
+pub(super) fn packet_world_grant_authorization(
+    installation: &CnpSemanticInstallation,
+    original: &OperationAdmission,
+    watermark: U64,
+    owners: &[crate::node_contract::OwnerIdentity],
+) -> Result<InputPayload, OperationFailure> {
+    encode_grant(installation, original, watermark, Some(owners))
+}
+
+fn encode_grant(
+    installation: &CnpSemanticInstallation,
+    original: &OperationAdmission,
+    watermark: U64,
+    world_owners: Option<&[crate::node_contract::OwnerIdentity]>,
+) -> Result<InputPayload, OperationFailure> {
     let token = original.token();
     let record = original.activation().record();
     let authority = &installation.binding.authority;
@@ -58,7 +76,7 @@ pub fn packet_common_grant_authorization(
         || route.owners[0].owner != installation.owner.owner.id
         || route.owners[0].incarnation != authority.incarnation_id
         || route.owners[0].generation != authority.owner_generation
-        || record.owners != route.owners
+        || record.owners.as_slice() != world_owners.unwrap_or(&route.owners)
         || record.world_binding_hash != installation.world_binding_hash
         || original.inputs().is_some()
         || watermark.get() != 0
@@ -88,7 +106,11 @@ pub fn packet_common_grant_authorization(
         _ => return Err(refused("packet unsupported original common grant")),
     }
     let body = OriginalGrant {
-        schema: "source-owned.packet-common-grant.v1",
+        schema: if world_owners.is_some() {
+            "source-owned.packet-common-grant.v2"
+        } else {
+            "source-owned.packet-common-grant.v1"
+        },
         operation: token.operation(),
         route,
         activation: OriginalActivation {

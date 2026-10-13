@@ -341,3 +341,23 @@ impl<S: ProviderStream> PacketEndpoint<S> {
         }
     }
 }
+
+impl PacketEndpoint<crate::client::DeadlineStream> {
+    /// Waits before a new exchange while preserving the original ledger and gate.
+    pub(super) fn wait_for_request(&mut self) -> Result<(), ProviderError> {
+        if self.held {
+            return Err(ProviderError::Conflict("packet endpoint held"));
+        }
+        let result = match self.transport.as_mut() {
+            Some(Transport::Connected(connection)) => connection.wait_for_request(),
+            _ => Err(ProviderError::Conflict(
+                "packet original exchange unavailable",
+            )),
+        };
+        if result.is_err() {
+            self.held = true;
+        }
+
+        result
+    }
+}

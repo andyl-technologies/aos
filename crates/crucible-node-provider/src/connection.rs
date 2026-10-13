@@ -403,6 +403,19 @@ impl<S: ProviderStream> Connection<S> {
     }
 }
 
+impl Connection<crate::client::DeadlineStream> {
+    /// Waits between exchanges on the same admitted socket without reading data.
+    pub(crate) fn wait_for_request(&mut self) -> Result<(), ProviderError> {
+        self.check_authority()?;
+        if let Err(error) = self.reader.stream_mut().wait_for_request() {
+            self.contain(ConnectionFailure::Read);
+            return Err(error.into());
+        }
+
+        Ok(())
+    }
+}
+
 impl<S: ProviderStream> Drop for Connection<S> {
     fn drop(&mut self) {
         self.contain(ConnectionFailure::Closed);

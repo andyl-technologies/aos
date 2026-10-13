@@ -62,6 +62,9 @@ impl PacketNativeOracle {
     ) -> Result<ExactCompletionCase, QualificationError> {
         let expected = self.template(case)?;
         let (start, limit) = self.whole_programme(expected)?;
+        if start.time_ps != U64::new(0) {
+            return self.expected_quiet_completion(expected, start, limit);
+        }
         self.store
             .source
             .authenticate_current_native()
@@ -123,9 +126,11 @@ impl PacketNativeOracle {
             port_id: &selected.descriptor.ports[0].id,
             lane_id: &selected.descriptor.ports[0].lanes[0].id,
         };
+        // The independently inspected complete native roster is empty above;
+        // no later public callback exists in this fixed output-only program.
         let bounds = [BorrowedBound {
             producer: &selected.descriptor.id,
-            bound: NativeOutputBound::At(limit),
+            bound: NativeOutputBound::AfterInstant(limit.time_ps),
             proof_ref: &seal.reference,
         }];
         let publications = [BorrowedPublication {
@@ -187,7 +192,7 @@ impl PacketNativeOracle {
                 closed_prefix: limit,
                 bounds: vec![NativeProducerBound {
                     producer: selected.descriptor.id.clone(),
-                    bound: NativeOutputBound::At(limit),
+                    bound: NativeOutputBound::AfterInstant(limit.time_ps),
                     proof_ref: proof.clone(),
                 }],
                 publications: vec![NativePublication {
@@ -241,6 +246,38 @@ impl PacketNativeOracle {
         )
     }
 
+    pub(in super::super) fn authenticate_world_case_pair(
+        &self,
+        node: &Id,
+        binding: &crucible_node_contract::HashRef,
+        operation: &Id,
+        request: &OperationRequest,
+        before: &str,
+        after: &str,
+    ) -> Result<(), QualificationError> {
+        let before = self.template(before)?;
+        let after = self.template(after)?;
+        let selected = self.store.source.installation();
+        if self.store.world_owners.is_none()
+            || node != &selected.descriptor.id
+            || binding != &selected.binding.compatibility.identity()?
+            || before.case == after.case
+            || before.acknowledged
+            || !after.acknowledged
+            || &before.operation != operation
+            || &after.operation != operation
+            || &before.request != request
+            || &after.request != request
+        {
+            return Err(refused());
+        }
+        // Both templates retain the same source-owned request; the only
+        // observation distinction is their actual original ACK disposition.
+        self.whole_programme(before)?;
+        self.whole_programme(after)?;
+        Ok(())
+    }
+
     pub(in super::super) fn template_oracle(
         &self,
         case: &str,
@@ -259,7 +296,11 @@ impl PacketNativeOracle {
         &self,
         expected: &PacketNativeCase,
     ) -> Result<(Position, Position), QualificationError> {
-        template_window(&self.store.program, expected)
+        if self.store.world_owners.is_some() {
+            world_window(&self.store.program, expected)
+        } else {
+            template_window(&self.store.program, expected)
+        }
     }
 }
 
@@ -384,3 +425,7 @@ struct BorrowedEndpoint<'a> {
 
 #[cfg(test)]
 mod tests;
+
+mod world;
+
+use world::world_window;
