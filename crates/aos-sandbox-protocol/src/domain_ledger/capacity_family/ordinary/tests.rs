@@ -5,25 +5,19 @@
 //! Tiny owner values in framing fixtures are deliberately opaque DATA, not
 //! maximal valid owner graphs or protected producer/settlement evidence.
 
+use crate::domain_ledger::capacity_family::{all_reservations_owned_by, capacity_record_has_legacy_purpose, decode_capacity_reservation_request_v1, validate_capacity_snapshot_data_v2};
+use crate::domain_ledger::capacity_family::family::{CanonicalCapacityFamily, accounting_reservation, require_legacy_owner, require_legacy_reservations, require_legacy_transaction};
+use crate::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3};
+use crate::domain_ledger::capacity_family::ordinary::{OrdinaryCapacityDataV4, OrdinaryCapacityKindV4, OrdinaryCapacityProfileV4, OrdinaryCapacityRecordV4};
+
 use std::collections::BTreeMap;
 
 use sha2::{Digest as _, Sha256};
 
-use super::super::family::{
-    CanonicalCapacityFamily, require_legacy_owner, require_legacy_transaction,
-};
-use super::super::native_held::{
-    NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3,
-};
-use super::super::{
-    GlobalCapacityReservationPurposeV1 as LegacyPurpose,
-    GlobalCapacityReservationRequestV1 as LegacyRequest, all_reservations_owned_by,
-    capacity_record_has_legacy_purpose, decode_capacity_record,
-    decode_capacity_reservation_request_v1, decode_reservation, encode_reservation,
-    require_legacy_reservations, reservation_id, validate_all_reservations,
-};
+use crate::domain_ledger::capacity::{GlobalCapacityReservationPurposeV1 as LegacyPurpose, GlobalCapacityReservationRequestV1 as LegacyRequest, decode_reservation, encode_reservation, reservation_id};
+
 use super::*;
-use crate::journal::{
+use crate::domain_ledger::transaction::{
     JournalLimits, JournalTransaction, encoded_transaction_append_bytes,
     encoded_transaction_record_bytes,
 };
@@ -166,7 +160,7 @@ fn shared_scalar_extraction_preserves_ordinary_error_precedence() {
 
         assert!(matches!(
             OrdinaryCapacityRecordV4::decode(&[], &value),
-            Err(JournalError::MalformedRecord(actual)) if actual == reason
+            Err(CapacityDataError::MalformedRecord(actual)) if actual == reason
         ));
     }
 
@@ -175,11 +169,11 @@ fn shared_scalar_extraction_preserves_ordinary_error_precedence() {
     value[13] = 0;
     assert!(matches!(
         OrdinaryCapacityRecordV4::decode(&[], &value),
-        Err(JournalError::MalformedRecord("unknown ordinary capacity kind"))
+        Err(CapacityDataError::MalformedRecord("unknown ordinary capacity kind"))
     ));
     assert!(matches!(
         floor_identity(&[0; 267]),
-        Err(JournalError::MalformedRecord("ordinary identity payload width"))
+        Err(CapacityDataError::MalformedRecord("ordinary identity payload width"))
     ));
 }
 
@@ -217,7 +211,7 @@ fn every_closed_kind_profile_and_count_is_checked() {
     for byte in [0, 11, 12, 255] {
         assert!(LegacyPurpose::from_byte(byte).is_err());
     }
-    assert_eq!(super::super::MAXIMUM_FUTURE_TRANSACTIONS, 3);
+    assert_eq!(crate::domain_ledger::capacity::MAXIMUM_FUTURE_TRANSACTIONS, 3);
 }
 
 #[test]
@@ -382,107 +376,6 @@ fn state(records: &[JournalRecord]) -> BTreeMap<(RecordNamespace, Vec<u8>), Vec<
 }
 
 #[test]
-fn mixed_families_account_without_becoming_legacy_grants() {
-    let ordinary = OrdinaryCapacityRecordV4::new(local_data())
-        .unwrap()
-        .to_journal_record();
-    let rows = vec![
-        legacy(LegacyPurpose::PublisherCompletion, 1, 10),
-        legacy(LegacyPurpose::ControllerProjectAdmission, 3, 11),
-        native(NativeHeldCapacityPurposeV3::Root, 7),
-        native(NativeHeldCapacityPurposeV3::Provider, 19),
-        ordinary.clone(),
-    ];
-    let state = state(&rows);
-    assert!(validate_all_reservations(&state).is_ok());
-    assert!(!all_reservations_owned_by(&state, RecordNamespace::MountSourceAcquisition).unwrap());
-    assert!(require_legacy_reservations(&state).is_err());
-
-    let totals = rows
-        .iter()
-        .map(|row| decode_capacity_record(row.key(), row.value().unwrap()).unwrap())
-        .fold((0, 0, 0), |(records, bytes, transactions), row| {
-            (
-                records + row.maximum_records,
-                bytes + row.maximum_bytes,
-                transactions + row.maximum_transactions,
-            )
-        });
-    assert_eq!(totals, (13, 8530, 31));
-
-    for row in &rows[2..] {
-        assert!(decode_reservation(row.value().unwrap()).is_err());
-        assert!(decode_capacity_reservation_request_v1(row).is_err());
-        assert!(
-            !capacity_record_has_legacy_purpose(row, LegacyPurpose::ControllerConsumerResource)
-                .unwrap()
-        );
-    }
-    assert!(matches!(
-        CanonicalCapacityFamily::decode(rows[0].key(), rows[0].value().unwrap()).unwrap(),
-        CanonicalCapacityFamily::Legacy1(_)
-    ));
-    assert!(matches!(
-        CanonicalCapacityFamily::decode(rows[1].key(), rows[1].value().unwrap()).unwrap(),
-        CanonicalCapacityFamily::Legacy2(_)
-    ));
-    assert_eq!(
-        super::super::legacy_capacity_ids_for_purpose(
-            &state,
-            LegacyPurpose::ControllerProjectAdmission
-        )
-        .unwrap(),
-        vec![reservation_id(
-            &decode_reservation(rows[1].value().unwrap()).unwrap().0,
-            [11; 16]
-        )]
-    );
-    assert!(
-        super::super::legacy_capacity_ids_for_purpose(
-            &state,
-            LegacyPurpose::RootSourceGenesisAnchor
-        )
-        .unwrap()
-        .is_empty()
-    );
-
-    let limits = JournalLimits {
-        maximum_journal_bytes: 8530,
-        maximum_materialized_bytes: 8530,
-        maximum_materialized_records: state.len() + 13,
-        maximum_transactions: 31,
-        ..JournalLimits::default()
-    };
-    assert!(
-        crate::journal::validate_reserved_capacity(&state, 0, &[], None, 0, 0, limits, None)
-            .is_ok()
-    );
-    for limit in [
-        JournalLimits {
-            maximum_journal_bytes: 8529,
-            ..limits
-        },
-        JournalLimits {
-            maximum_materialized_bytes: 8529,
-            ..limits
-        },
-        JournalLimits {
-            maximum_materialized_records: state.len() + 12,
-            ..limits
-        },
-        JournalLimits {
-            maximum_transactions: 30,
-            ..limits
-        },
-    ] {
-        assert!(
-            crate::journal::validate_reserved_capacity(&state, 0, &[], None, 0, 0, limit, None)
-                .is_err()
-        );
-    }
-}
-
-#[test]
 fn growth_projection_and_all_old_uncertain_floors_remain_independent() {
     let mut data = local_data();
     data.kind = OrdinaryCapacityKindV4::OrdinaryInventory;
@@ -502,11 +395,11 @@ fn growth_projection_and_all_old_uncertain_floors_remain_independent() {
         );
     }
     let state = state(&rows);
-    assert!(validate_all_reservations(&state).is_ok());
+    assert!(validate_capacity_snapshot_data_v2(&state).is_ok());
     assert!(all_reservations_owned_by(&state, RecordNamespace::MountSourceAcquisition).unwrap());
     let totals = rows
         .iter()
-        .map(|row| decode_capacity_record(row.key(), row.value().unwrap()).unwrap())
+        .map(|row| accounting_reservation(row.key(), row.value().unwrap()).unwrap())
         .fold((0, 0, 0), |(records, bytes, transactions), row| {
             (
                 records + row.maximum_records,
@@ -535,17 +428,17 @@ fn unknown_or_malformed_rows_are_never_hidden_by_foreign_ownership_or_prior_matc
         malformed,
     ));
     let state = state(&rows);
-    assert!(validate_all_reservations(&state).is_err());
+    assert!(validate_capacity_snapshot_data_v2(&state).is_err());
     assert!(all_reservations_owned_by(&state, RecordNamespace::Effect).is_err());
     assert!(require_legacy_owner(&state, RecordNamespace::Effect).is_err());
     let matches = rows.iter().try_fold(false, |found, row| {
         let matches =
             capacity_record_has_legacy_purpose(row, LegacyPurpose::ControllerConsumerResource)?;
-        Ok::<_, JournalError>(found || matches)
+        Ok::<_, CapacityDataError>(found || matches)
     });
     assert!(matches.is_err());
     assert!(
-        super::super::legacy_capacity_ids_for_purpose(
+        crate::domain_ledger::capacity_family::legacy_capacity_ids_for_purpose(
             &state,
             LegacyPurpose::ControllerConsumerResource
         )
@@ -569,14 +462,14 @@ fn every_known_family_has_canonical_key_validation_before_selection() {
         let invalid =
             JournalRecord::put(row.namespace(), invalid_key, row.value().unwrap().to_vec());
         let malformed = state(&[invalid.clone()]);
-        assert!(validate_all_reservations(&malformed).is_err());
+        assert!(validate_capacity_snapshot_data_v2(&malformed).is_err());
         assert!(all_reservations_owned_by(&malformed, RecordNamespace::Effect).is_err());
         assert!(
             capacity_record_has_legacy_purpose(&invalid, LegacyPurpose::ControllerConsumerResource)
                 .is_err()
         );
         assert!(
-            super::super::legacy_capacity_ids_for_purpose(
+            crate::domain_ledger::capacity_family::legacy_capacity_ids_for_purpose(
                 &malformed,
                 LegacyPurpose::ControllerProjectAdmission
             )

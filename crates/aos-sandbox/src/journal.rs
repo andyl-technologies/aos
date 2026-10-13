@@ -196,14 +196,14 @@ mod source_project_admission_challenge;
 pub(crate) mod source_tree_genesis;
 pub use cache_policy_hold::CachePolicyHoldV1;
 pub(crate) use cache_policy_hold::NAME as CACHE_POLICY_HOLD_JOURNAL;
-pub(crate) use capacity_reservation::capacity_record_has_legacy_purpose;
+
 pub(crate) use capacity_reservation::capacity_reservation_identity_is_exact_v1;
 pub(crate) use capacity_reservation::{
     first_source_successor_capacity_delete_v2, first_source_successor_capacity_identity_v2,
     first_source_successor_capacity_record_v2,
 };
 pub(crate) use source_tree_successor::FirstSourceSuccessorNativePhaseV2;
-pub use capacity_reservation::decode_capacity_reservation_request_v1;
+
 pub use capacity_reservation::{
     GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRecoveryBindingV1,
     GlobalCapacityReservationRequestV1, GlobalCapacityReservationV1,
@@ -562,6 +562,22 @@ impl From<aos_sandbox_protocol::domain_ledger::ProtectedHistoryDataErrorV1> for 
             aos_sandbox_protocol::domain_ledger::ProtectedHistoryDataErrorV1::Malformed => {
                 Self::ProtectedBoundary
             }
+        }
+    }
+}
+
+impl From<aos_sandbox_protocol::domain_ledger::capacity_family::CapacityDataError> for JournalError {
+    fn from(error: aos_sandbox_protocol::domain_ledger::capacity_family::CapacityDataError) -> Self {
+        use aos_sandbox_protocol::domain_ledger::capacity_family::CapacityDataError;
+
+        match error {
+            CapacityDataError::MalformedRecord(reason) => Self::MalformedRecord(reason),
+            CapacityDataError::LimitExceeded(bound) => Self::LimitExceeded(bound),
+            CapacityDataError::JournalTooLarge => Self::JournalTooLarge,
+            CapacityDataError::InvalidTransaction => Self::InvalidTransaction,
+            CapacityDataError::ForeignAuthorityNamespace => Self::ForeignAuthorityNamespace,
+            CapacityDataError::ProtectedBoundary => Self::ProtectedBoundary,
+            CapacityDataError::Transaction(error) => Self::from(error),
         }
     }
 }
@@ -1151,7 +1167,7 @@ impl Journal {
         {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
-        capacity_reservation::require_legacy_reservations(self.native.state())?;
+        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_reservations(self.native.state()).map_err(JournalError::from)?;
         let has_foreign_history = self.native.committed_namespaces().iter().any(|committed_namespace| {
             *committed_namespace != namespace
                 && *committed_namespace != RecordNamespace::GlobalCapacityReservation
@@ -1162,7 +1178,7 @@ impl Journal {
         });
         if has_foreign_history
             || has_foreign_state
-            || !capacity_reservation::all_reservations_owned_by(self.native.state(), namespace)?
+            || !aos_sandbox_protocol::domain_ledger::capacity_family::all_reservations_owned_by(self.native.state(), namespace).map_err(JournalError::from)?
         {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
@@ -1178,7 +1194,7 @@ impl Journal {
         &mut self,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
-        native_held::require_legacy_owner(self.native.state(), RecordNamespace::MountSourceAcquisition)?;
+        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_owner(self.native.state(), RecordNamespace::MountSourceAcquisition).map_err(JournalError::from)?;
         Ok(ProtectedJournalAuthority {
             journal: self,
             namespace: RecordNamespace::MountSourceAcquisition,
@@ -1202,7 +1218,7 @@ impl Journal {
         &mut self,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
-        native_held::require_legacy_owner(self.native.state(), RecordNamespace::MountSourceAcquisition)?;
+        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_owner(self.native.state(), RecordNamespace::MountSourceAcquisition).map_err(JournalError::from)?;
         Ok(ProtectedJournalAuthority {
             journal: self,
             namespace: RecordNamespace::MountSourceAcquisition,
@@ -1226,7 +1242,7 @@ impl Journal {
         &mut self,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
-        native_held::require_legacy_owner(self.native.state(), RecordNamespace::MountSourceAcquisition)?;
+        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_owner(self.native.state(), RecordNamespace::MountSourceAcquisition).map_err(JournalError::from)?;
         Ok(ProtectedJournalAuthority {
             journal: self,
             namespace: RecordNamespace::MountManagerStartupAuthority,
@@ -1254,7 +1270,7 @@ impl Journal {
         if purpose.is_first_source_successor() {
             return Err(JournalError::ProtectedBoundary);
         }
-        capacity_reservation::require_legacy_reservations(self.native.state())?;
+        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_reservations(self.native.state()).map_err(JournalError::from)?;
 
         Ok(ProtectedJournalAuthority {
             journal: self,
@@ -1276,7 +1292,7 @@ impl Journal {
         &mut self,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
-        capacity_reservation::require_legacy_reservations(self.native.state())?;
+        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_reservations(self.native.state()).map_err(JournalError::from)?;
         let namespace = RecordNamespace::SourceProviderAuthority;
         let has_foreign_history = self.native.committed_namespaces().iter().any(|committed_namespace| {
             *committed_namespace != namespace
@@ -1289,7 +1305,7 @@ impl Journal {
         // Deleted foreign rows still taint this generation until compaction.
         if has_foreign_history
             || has_foreign_state
-            || !capacity_reservation::all_reservations_owned_by(self.native.state(), namespace)?
+            || !aos_sandbox_protocol::domain_ledger::capacity_family::all_reservations_owned_by(self.native.state(), namespace).map_err(JournalError::from)?
         {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
@@ -2956,7 +2972,7 @@ impl ProtectedJournalAuthority<'_> {
         expected: &BTreeSet<[u8; 32]>,
     ) -> Result<(), JournalError> {
         let purpose = self.validate_capacity_authority()?;
-        capacity_reservation::require_legacy_reservations(self.journal.native.state())?;
+        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_reservations(self.journal.native.state()).map_err(JournalError::from)?;
         let mut retained = BTreeSet::new();
         for (key, value) in self
             .journal
@@ -4548,7 +4564,7 @@ fn validate_reserved_capacity(
     limits: JournalLimits,
     root_local_edge: Option<RootOwnerEdge>,
 ) -> Result<(), JournalError> {
-    let mut reservations = capacity_reservation::accounting_reservations(state)?;
+    let mut reservations = aos_sandbox_protocol::domain_ledger::capacity_family::family::accounting_reservations(state).map_err(JournalError::from)?;
     for record in records {
         if record.namespace() != RecordNamespace::GlobalCapacityReservation {
             continue;
@@ -4558,9 +4574,9 @@ fn validate_reserved_capacity(
                 let decoded = if root_local_edge.is_some() {
                     // Only a closed private local edge has passed whole-owner
                     // validation above. Generic and legacy callers stay strict.
-                    capacity_reservation::accounting_reservation(record.key(), value)?
+                    aos_sandbox_protocol::domain_ledger::capacity_family::family::accounting_reservation(record.key(), value).map_err(JournalError::from)?
                 } else {
-                    capacity_reservation::decode_capacity_record(record.key(), value)?
+                    aos_sandbox_protocol::domain_ledger::capacity_family::family::accounting_reservation(record.key(), value).map_err(JournalError::from)?
                 };
                 if reservations
                     .insert(decoded.reservation_id, decoded)
@@ -4573,7 +4589,7 @@ fn validate_reserved_capacity(
                 let identifier = if matches!(root_local_edge, Some(RootOwnerEdge::SourceOriginal)) {
                     let value = state.get(&(record.namespace(), record.key().to_vec()))
                         .ok_or(JournalError::ProtectedBoundary)?;
-                    capacity_reservation::accounting_reservation(record.key(), value)?
+                    aos_sandbox_protocol::domain_ledger::capacity_family::family::accounting_reservation(record.key(), value).map_err(JournalError::from)?
                         .reservation_id
                 } else {
                     settling_reservation.ok_or(JournalError::ProtectedBoundary)?

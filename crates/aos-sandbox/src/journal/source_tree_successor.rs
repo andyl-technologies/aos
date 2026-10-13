@@ -14,6 +14,8 @@
 //! Root stored floor = logical floor688 | complete original intent1248 or1424
 //! ```
 
+use aos_sandbox_protocol::domain_ledger::capacity_family::family::{accounting_reservations};
+
 use crate::journal::semantic_append::{AppendScope, PreflightScope};
 
 use std::collections::BTreeMap;
@@ -23,11 +25,7 @@ use aos_sandbox_core::bounded_codec::checked_byte_region;
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use sha2::{Digest as _, Sha256};
 
-use super::capacity_reservation::{
-    accounting_reservations, first_source_successor_capacity_delete_v2,
-    first_source_successor_capacity_identity_v2, first_source_successor_capacity_record_v2,
-    reservation_key,
-};
+use super::capacity_reservation::{first_source_successor_capacity_delete_v2, first_source_successor_capacity_identity_v2, first_source_successor_capacity_record_v2, reservation_key};
 use super::{
     CacheMutationGateV1, CommitResult, GlobalCapacityReservationPurposeV1,
     GlobalCapacityReservationRequestV1, Journal, JournalError, JournalRecord, JournalTransaction,
@@ -1197,11 +1195,11 @@ pub(super) fn validate_replayed_transaction(
             {
                 continue;
             }
-            let (request, admission, _) = super::decode_capacity_reservation_request_v1(record)?;
+            let (request, admission, _) = aos_sandbox_protocol::domain_ledger::capacity_family::decode_capacity_reservation_request_v1(record)?;
             if !request.purpose.is_first_source_successor() || &admission != transaction.id() {
                 return Err(JournalError::ProtectedBoundary);
             }
-            super::capacity_reservation::validate_request_with_limits(&request, limits)?;
+            aos_sandbox_protocol::domain_ledger::capacity_family::validate_request_with_limits(&request, limits)?;
         }
     }
     super::controller_source_successor_issuance::require_no_mutation(
@@ -1289,7 +1287,7 @@ pub(crate) fn touches_capacity_purpose(
         })
             .ok_or(JournalError::ProtectedBoundary)?;
         let put = JournalRecord::put(record.namespace(), record.key().to_vec(), value.to_vec());
-        touches |= super::capacity_reservation::capacity_record_has_legacy_purpose(&put, purpose)?;
+        touches |= aos_sandbox_protocol::domain_ledger::capacity_family::capacity_record_has_legacy_purpose(&put, purpose)?;
     }
     Ok(touches)
 }
@@ -1299,14 +1297,14 @@ pub(crate) fn require_exact_capacity_family(
     purpose: GlobalCapacityReservationPurposeV1,
     count: usize,
 ) -> Result<(), JournalError> {
-    super::capacity_reservation::validate_all_reservations(state)?;
+    aos_sandbox_protocol::domain_ledger::capacity_family::validate_capacity_snapshot_data_v2(state)?;
     let mut actual = 0_usize;
     for ((namespace, key), value) in state {
         if *namespace != RecordNamespace::GlobalCapacityReservation {
             continue;
         }
         let record = JournalRecord::put(*namespace, key.clone(), value.clone());
-        if super::capacity_reservation::capacity_record_has_legacy_purpose(&record, purpose)? {
+        if aos_sandbox_protocol::domain_ledger::capacity_family::capacity_record_has_legacy_purpose(&record, purpose)? {
             actual = actual.checked_add(1).ok_or(JournalError::ProtectedBoundary)?;
         }
     }
@@ -1401,7 +1399,7 @@ impl Journal {
         if intent_record.value() != Some(intent.as_bytes()) {
             return Err(JournalError::AuthorityPreflightMismatch);
         }
-        let (_, admission, capacity_id) = super::decode_capacity_reservation_request_v1(reservation)?;
+        let (_, admission, capacity_id) = aos_sandbox_protocol::domain_ledger::capacity_family::decode_capacity_reservation_request_v1(reservation)?;
         if &admission != prepared.id() {
             return Err(JournalError::AuthorityPreflightMismatch);
         }

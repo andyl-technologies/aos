@@ -4,6 +4,8 @@
 //! reruns existing Ledger owner comparisons and the sole Sandbox union fold.
 //! Current markers, inverse floor identities and caller DATA never create history.
 
+use aos_sandbox_protocol::domain_ledger::capacity_family::family::{CanonicalCapacityFamily};
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -211,10 +213,10 @@ impl SourceOriginalReplayCacheV5 {
             && transaction.records().last().is_some_and(|record| {
                 record.namespace() == RecordNamespace::GlobalCapacityReservation
                     && record.value().is_some_and(|value| {
-                        super::super::capacity_reservation::family::CanonicalCapacityFamily::decode(
+                        aos_sandbox_protocol::domain_ledger::capacity_family::family::CanonicalCapacityFamily::decode(
                             record.key(), value,
-                        ).is_ok_and(|family| matches!(family,
-                            super::super::capacity_reservation::family::CanonicalCapacityFamily::OriginalSource5(
+                        ).map_err(JournalError::from).is_ok_and(|family| matches!(family,
+                            aos_sandbox_protocol::domain_ledger::capacity_family::family::CanonicalCapacityFamily::OriginalSource5(
                                 floor
                             ) if floor.request().future_transactions == 20))
                     })
@@ -324,10 +326,10 @@ impl SourceOriginalReplayCacheV5 {
             && transaction.records().iter().any(|record| {
                 record.namespace() == RecordNamespace::GlobalCapacityReservation
                     && record.value().is_some_and(|value| value.get(8..10) == Some(&5_u16.to_be_bytes()))
-                    && super::super::capacity_reservation::family::CanonicalCapacityFamily::decode(
+                    && aos_sandbox_protocol::domain_ledger::capacity_family::family::CanonicalCapacityFamily::decode(
                         record.key(), record.value().unwrap_or_default(),
-                    ).is_ok_and(|family| matches!(family,
-                        super::super::capacity_reservation::family::CanonicalCapacityFamily::OriginalSource5(_)))
+                    ).map_err(JournalError::from).is_ok_and(|family| matches!(family,
+                        aos_sandbox_protocol::domain_ledger::capacity_family::family::CanonicalCapacityFamily::OriginalSource5(_)))
             });
         let mut admission = if added {
             let admission_payload = admission_payload_bound(state, transaction)?;
@@ -677,9 +679,9 @@ fn is_original_row(namespace: RecordNamespace, key: &[u8], value: &[u8]) -> bool
 
     // Root5 shares a version number, not Source ownership. The existing
     // canonical family decoder remains the discriminator for floor rows.
-    use super::super::capacity_reservation::family::CanonicalCapacityFamily;
+
     matches!(
-        CanonicalCapacityFamily::decode(key, value),
+        CanonicalCapacityFamily::decode(key, value).map_err(JournalError::from),
         Ok(CanonicalCapacityFamily::OriginalSource5(_))
     )
 }

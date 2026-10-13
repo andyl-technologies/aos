@@ -6,7 +6,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::super::{JournalError, JournalTransaction, RecordNamespace};
+use aos_sandbox_core::RecordNamespace;
+use crate::domain_ledger::transaction::JournalTransaction;
+use super::CapacityDataError;
 use super::native_held::{
     NativeHeldCapacityRecordV3, OriginalRootCapacityRecordV5, OriginalSourceCapacityRecordV5,
 };
@@ -21,13 +23,20 @@ type State = BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
 type LegacyData = (GlobalCapacityReservationRequestV1, [u8; 16], [u8; 32]);
 
 /// Keeps canonical family classification separate from any legacy authority.
-pub(in crate::journal) enum CanonicalCapacityFamily {
+pub enum CanonicalCapacityFamily {
+    /// Retains the complete canonical count-one legacy tuple.
     Legacy1(LegacyData),
+    /// Retains the complete canonical explicit-count legacy tuple.
     Legacy2(LegacyData),
+    /// Retains the closed Root/Provider V3 floor DATA.
     Native3(NativeHeldCapacityRecordV3),
+    /// Retains the closed ordinary kind and profile DATA.
     Ordinary4(OrdinaryCapacityRecordV4),
+    /// Retains original Root preparation and complete cut DATA.
     OriginalRoot5(OriginalRootCapacityRecordV5),
+    /// Retains original Source budgets and typed provenance DATA.
     OriginalSource5(OriginalSourceCapacityRecordV5),
+    /// Retains the distinct original Root Inventory profile DATA.
     Query6(QueryCapacityRecordV6),
 }
 
@@ -37,10 +46,10 @@ impl CanonicalCapacityFamily {
     /// # Errors
     ///
     /// Rejects unknown versions or any selected codec/key/identity violation.
-    pub(in crate::journal) fn decode(key: &[u8], value: &[u8]) -> Result<Self, JournalError> {
+    pub fn decode(key: &[u8], value: &[u8]) -> Result<Self, CapacityDataError> {
         let version = value
             .get(8..10)
-            .ok_or(JournalError::MalformedRecord("capacity family header"))?;
+            .ok_or(CapacityDataError::MalformedRecord("capacity family header"))?;
         match version {
             [0, 1] | [0, 2] => {
                 let legacy @ (request, admission, identifier) = decode_reservation(value)?;
@@ -48,7 +57,7 @@ impl CanonicalCapacityFamily {
                     || reservation_id(&request, admission) != identifier
                     || request.owner_namespace != request.purpose.owner_namespace()
                 {
-                    return Err(JournalError::MalformedRecord(
+                    return Err(CapacityDataError::MalformedRecord(
                         "capacity reservation key or digest is invalid",
                     ));
                 }
@@ -71,19 +80,19 @@ impl CanonicalCapacityFamily {
                 Some([0, 5, 41, 11, 0, 0]) => Ok(Self::OriginalSource5(
                     OriginalSourceCapacityRecordV5::decode(key, value)?,
                 )),
-                _ => Err(JournalError::MalformedRecord(
+                _ => Err(CapacityDataError::MalformedRecord(
                     "unknown original capacity family tuple",
                 )),
             },
             [0, 6] => Ok(Self::Query6(QueryCapacityRecordV6::decode(key, value)?)),
-            _ => Err(JournalError::MalformedRecord(
+            _ => Err(CapacityDataError::MalformedRecord(
                 "unknown capacity family version",
             )),
         }
     }
 
     /// Selects legacy DATA only after full canonical family validation.
-    pub(super) fn legacy(&self) -> Option<LegacyData> {
+    pub fn legacy(&self) -> Option<LegacyData> {
         match self {
             Self::Legacy1(data) | Self::Legacy2(data) => Some(*data),
             Self::Native3(_)
@@ -99,12 +108,12 @@ impl CanonicalCapacityFamily {
     /// # Errors
     ///
     /// Rejects native and ordinary families with the protected boundary error.
-    pub(super) fn require_legacy(&self) -> Result<LegacyData, JournalError> {
-        self.legacy().ok_or(JournalError::ProtectedBoundary)
+    pub fn require_legacy(&self) -> Result<LegacyData, CapacityDataError> {
+        self.legacy().ok_or(CapacityDataError::ProtectedBoundary)
     }
 
     /// Returns the DATA owner without granting a journal scope.
-    pub(super) fn owner_namespace(&self) -> RecordNamespace {
+    pub fn owner_namespace(&self) -> RecordNamespace {
         match self {
             Self::Legacy1((request, _, _)) | Self::Legacy2((request, _, _)) => {
                 request.owner_namespace
@@ -133,7 +142,7 @@ impl CanonicalCapacityFamily {
     /// # Errors
     ///
     /// Rejects counts that cannot be represented on this host.
-    pub(super) fn accounting(&self) -> Result<DecodedCapacityReservationV1, JournalError> {
+    pub fn accounting(&self) -> Result<DecodedCapacityReservationV1, CapacityDataError> {
         let (records, bytes, transactions) = match self {
             Self::Legacy1((request, _, _)) | Self::Legacy2((request, _, _)) => (
                 request.terminal_records.max(request.poison_records),
@@ -186,10 +195,10 @@ impl CanonicalCapacityFamily {
         Ok(DecodedCapacityReservationV1 {
             reservation_id: self.identity(),
             maximum_records: usize::try_from(records)
-                .map_err(|_| JournalError::LimitExceeded("reserved record count"))?,
+                .map_err(|_| CapacityDataError::LimitExceeded("reserved record count"))?,
             maximum_bytes: bytes,
             maximum_transactions: usize::try_from(transactions)
-                .map_err(|_| JournalError::LimitExceeded("reserved transaction count"))?,
+                .map_err(|_| CapacityDataError::LimitExceeded("reserved transaction count"))?,
         })
     }
 }
@@ -199,9 +208,9 @@ impl CanonicalCapacityFamily {
 /// # Errors
 ///
 /// Rejects any malformed/unknown row or duplicate canonical identity.
-pub(in crate::journal) fn canonical_reservations(
+pub fn canonical_reservations(
     state: &State,
-) -> Result<Vec<CanonicalCapacityFamily>, JournalError> {
+) -> Result<Vec<CanonicalCapacityFamily>, CapacityDataError> {
     canonical_reservation_rows(state.iter().filter_map(|((namespace, key), value)| {
         (*namespace == RecordNamespace::GlobalCapacityReservation)
             .then_some((key.as_slice(), value.as_slice()))
@@ -215,10 +224,10 @@ pub(in crate::journal) fn canonical_reservations(
 ///
 /// # Errors
 /// Rejects any malformed/unknown projected row or duplicate canonical identity.
-pub(in crate::journal) fn canonical_reservations_after(
+pub fn canonical_reservations_after(
     state: &State,
     transaction: &JournalTransaction,
-) -> Result<Vec<CanonicalCapacityFamily>, JournalError> {
+) -> Result<Vec<CanonicalCapacityFamily>, CapacityDataError> {
     let mut rows: BTreeMap<&[u8], &[u8]> = state
         .iter()
         .filter_map(|((namespace, key), value)| {
@@ -247,13 +256,13 @@ pub(in crate::journal) fn canonical_reservations_after(
 // every row before a caller selects any family, including after an early Query.
 fn canonical_reservation_rows<'rows>(
     rows: impl IntoIterator<Item = (&'rows [u8], &'rows [u8])>,
-) -> Result<Vec<CanonicalCapacityFamily>, JournalError> {
+) -> Result<Vec<CanonicalCapacityFamily>, CapacityDataError> {
     let mut families = Vec::new();
     let mut identities = BTreeSet::new();
     for (key, value) in rows {
         let family = CanonicalCapacityFamily::decode(key, value)?;
         if !identities.insert(family.identity()) {
-            return Err(JournalError::MalformedRecord(
+            return Err(CapacityDataError::MalformedRecord(
                 "duplicate global capacity reservation",
             ));
         }
@@ -263,9 +272,13 @@ fn canonical_reservation_rows<'rows>(
 }
 
 /// Projects every canonical family before any purpose-specific mutation.
-pub(in crate::journal) fn accounting_reservations(
+///
+/// # Errors
+///
+/// Rejects malformed family DATA or unrepresentable accounting counts.
+pub fn accounting_reservations(
     state: &State,
-) -> Result<BTreeMap<[u8; 32], DecodedCapacityReservationV1>, JournalError> {
+) -> Result<BTreeMap<[u8; 32], DecodedCapacityReservationV1>, CapacityDataError> {
     canonical_reservations(state)?
         .into_iter()
         .map(|family| {
@@ -276,10 +289,14 @@ pub(in crate::journal) fn accounting_reservations(
 }
 
 /// Projects one already-selected canonical floor without producing a grant.
-pub(in crate::journal) fn accounting_reservation(
+///
+/// # Errors
+///
+/// Rejects malformed family DATA or unrepresentable accounting counts.
+pub fn accounting_reservation(
     key: &[u8],
     value: &[u8],
-) -> Result<DecodedCapacityReservationV1, JournalError> {
+) -> Result<DecodedCapacityReservationV1, CapacityDataError> {
     CanonicalCapacityFamily::decode(key, value)?.accounting()
 }
 
@@ -288,10 +305,10 @@ pub(in crate::journal) fn accounting_reservation(
 /// # Errors
 ///
 /// Rejects malformed state and every retained native or ordinary floor.
-pub(in crate::journal) fn require_legacy_reservations(state: &State) -> Result<(), JournalError> {
+pub fn require_legacy_reservations(state: &State) -> Result<(), CapacityDataError> {
     let families = canonical_reservations(state)?;
     if families.iter().any(|family| family.legacy().is_none()) {
-        return Err(JournalError::ProtectedBoundary);
+        return Err(CapacityDataError::ProtectedBoundary);
     }
     Ok(())
 }
@@ -301,16 +318,16 @@ pub(in crate::journal) fn require_legacy_reservations(state: &State) -> Result<(
 /// # Errors
 ///
 /// Rejects malformed state or a nonlegacy floor owned by this namespace.
-pub(in crate::journal) fn require_legacy_owner(
+pub fn require_legacy_owner(
     state: &State,
     namespace: RecordNamespace,
-) -> Result<(), JournalError> {
+) -> Result<(), CapacityDataError> {
     let families = canonical_reservations(state)?;
     if families
         .iter()
         .any(|family| family.legacy().is_none() && family.owner_namespace() == namespace)
     {
-        return Err(JournalError::ProtectedBoundary);
+        return Err(CapacityDataError::ProtectedBoundary);
     }
     Ok(())
 }
@@ -321,10 +338,10 @@ pub(in crate::journal) fn require_legacy_owner(
 ///
 /// Rejects malformed retained/touched capacity rows, nonlegacy floor writes or
 /// deletion/overwrite, and writes in the corresponding nonlegacy owner namespace.
-pub(in crate::journal) fn require_legacy_transaction(
+pub fn require_legacy_transaction(
     state: &State,
     transaction: &JournalTransaction,
-) -> Result<(), JournalError> {
+) -> Result<(), CapacityDataError> {
     let families = canonical_reservations(state)?;
     let changed_namespaces: BTreeSet<_> = transaction
         .records()
@@ -353,7 +370,7 @@ pub(in crate::journal) fn require_legacy_transaction(
             family.legacy().is_none() && changed_namespaces.contains(&family.owner_namespace())
         })
     {
-        return Err(JournalError::ProtectedBoundary);
+        return Err(CapacityDataError::ProtectedBoundary);
     }
     Ok(())
 }

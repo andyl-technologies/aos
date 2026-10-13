@@ -17,6 +17,7 @@ aos-sandbox-journal = { path = "../aos-sandbox-journal" }
 aos-sandbox-agent = { path = "../aos-sandbox-agent" }
 aos-sandbox-broker-session-protocol = { path = "../aos-sandbox-broker-session-protocol" }
 aos-sandbox-source-provider-protocol = { path = "../aos-sandbox-source-provider-protocol" }
+aos-sandbox-source-provider-ledger = { path = "../aos-sandbox-source-provider-ledger" }
 buffa.workspace = true
 ed25519-dalek.workspace = true
 serde.workspace = true

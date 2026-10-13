@@ -1333,6 +1333,7 @@ dependencies = [
  "aos-sandbox-journal",
  "aos-sandbox-ownership-protocol",
  "aos-sandbox-policy",
+ "aos-sandbox-source-provider-ledger",
  "aos-sandbox-source-provider-protocol",
  "buffa",
  "ed25519-dalek",

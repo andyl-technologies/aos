@@ -4,21 +4,17 @@
 //! Provider edges remain syntactic until the Source owner validates its sealed
 //! proposal. Both profiles measure the unchanged version3 namespace46 format.
 
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3};
+
 use std::collections::BTreeSet;
 
 use aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::{
     RootNativeDataClassV2, RootNativeTransitionKindV2,
 };
 
-use super::super::{
-    NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3, invalid, root_v2::RootCapacityEdgeV2,
-};
-use super::{
-    JournalError, JournalLimits, JournalRecord, JournalTransaction, MeasurementAppend,
-    NativeHeldCapacityChangeV3, NativeHeldCapacityGeometryV3, NativeHeldCapacityPathV3,
-    NativeHeldCapacityPurposeV3, NativeHeldCapacityStepV3, closed_path_shape, measure_appends,
-    normal_successor, require_changes, require_owner_shape,
-};
+use super::super::invalid;
+use super::super::root_v2::RootCapacityEdgeV2;
+use super::{JournalError, JournalLimits, JournalRecord, JournalTransaction, MeasurementAppend, NativeHeldCapacityChangeV3, NativeHeldCapacityGeometryV3, NativeHeldCapacityPathV3, NativeHeldCapacityStepV3, closed_path_shape, measure_appends, normal_successor, require_changes, require_owner_shape};
 
 /// Names an actual Root V2 edge or the existing Provider append schedule as DATA.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -241,7 +237,7 @@ impl<'graph> NativeHeldCapacitySuffixV2<'graph> {
         &self,
         limits: JournalLimits,
     ) -> Result<NativeHeldCapacityGeometryV3, JournalError> {
-        self.measure_with_floor_value_bytes(limits, super::NATIVE_HELD_CAPACITY_VALUE_BYTES_V3)
+        self.measure_with_floor_value_bytes(limits, aos_sandbox_protocol::domain_ledger::capacity_family::native_held::NATIVE_HELD_CAPACITY_VALUE_BYTES_V3)
     }
 
     // The original Source adapter derives this width from its canonical codec.
@@ -344,69 +340,67 @@ fn require_provider_chain(
     Ok(())
 }
 
-impl NativeHeldCapacityRecordV3 {
-    /// Derives unchanged V3 wire DATA from both complete named V2 continuations.
-    ///
-    /// This measures the supplied complete alternatives; it does not prove they
-    /// attain every legal branch maximum. A future protected original producer
-    /// must derive all relevant alternatives and whole-snapshot headroom before
-    /// escape. DATA path labels and these measurements grant no admission.
-    ///
-    /// # Errors
-    ///
-    /// Rejects foreign classes/bindings, different Root starting graphs, count
-    /// underfunding, malformed suffixes or unchanged journal ceiling violations.
-    pub fn from_suffixes_v2(
-        mut request: NativeHeldCapacityRequestV3,
-        admission: [u8; 16],
-        normal: &NativeHeldCapacitySuffixV2<'_>,
-        closed_or_recovery: &NativeHeldCapacitySuffixV2<'_>,
-        limits: JournalLimits,
-    ) -> Result<Self, JournalError> {
-        if normal.purpose != request.purpose
-            || closed_or_recovery.purpose != request.purpose
-            || normal.path != NativeHeldCapacityPathV3::Normal
-            || closed_or_recovery.path == NativeHeldCapacityPathV3::Normal
-        {
-            return Err(invalid("native V2 capacity continuation classes"));
-        }
-        let terminal = normal.measure(limits)?;
-        let poison = closed_or_recovery.measure(limits)?;
-        request.future_transactions = terminal.transactions.max(poison.transactions);
-        request.terminal_records = terminal.records;
-        request.terminal_bytes = terminal.append_bytes;
-        request.poison_records = poison.records;
-        request.poison_bytes = poison.append_bytes;
-        if request.purpose == NativeHeldCapacityPurposeV3::Root {
-            let first = normal
-                .root_start()
-                .ok_or(invalid("native V2 normal Root start absent"))?;
-            let cold = closed_or_recovery
-                .root_start()
-                .ok_or(invalid("native V2 cold Root start absent"))?;
-            if first.before.canonical_records() != cold.before.canonical_records()
-                || first.original.canonical_records() != cold.original.canonical_records()
-                || first.binding != cold.binding
-                || request.future_transactions != first.before_remaining
-            {
-                return Err(invalid("native V2 complete Root alternatives or count"));
-            }
-            let attempt = first.binding.mount_attempt();
-            let original_phase0 = first
-                .before
-                .sidecars()
-                .get(&attempt)
-                .is_some_and(|sidecar| sidecar.suffix().phase() == 0)
-                && first.before.data_class(attempt) == Some(RootNativeDataClassV2::LiveOriginal);
-            if original_phase0 && !closed_or_recovery.has_cold_root_edge() {
-                return Err(invalid(
-                    "native V2 original admission lacks an actual cold alternative",
-                ));
-            }
-            first.binding.require_request(request, admission)?;
-        }
-        Self::new(request, admission)
+/// Derives unchanged V3 wire DATA from both complete named V2 continuations.
+///
+/// This measures the supplied complete alternatives; it does not prove they
+/// attain every legal branch maximum. A future protected original producer
+/// must derive all relevant alternatives and whole-snapshot headroom before
+/// escape. DATA path labels and these measurements grant no admission.
+///
+/// # Errors
+///
+/// Rejects foreign classes/bindings, different Root starting graphs, count
+/// underfunding, malformed suffixes or unchanged journal ceiling violations.
+pub fn capacity_record_from_suffixes_v2(
+    mut request: NativeHeldCapacityRequestV3,
+    admission: [u8; 16],
+    normal: &NativeHeldCapacitySuffixV2<'_>,
+    closed_or_recovery: &NativeHeldCapacitySuffixV2<'_>,
+    limits: JournalLimits,
+) -> Result<NativeHeldCapacityRecordV3, JournalError> {
+    if normal.purpose != request.purpose
+        || closed_or_recovery.purpose != request.purpose
+        || normal.path != NativeHeldCapacityPathV3::Normal
+        || closed_or_recovery.path == NativeHeldCapacityPathV3::Normal
+    {
+        return Err(invalid("native V2 capacity continuation classes"));
     }
+    let terminal = normal.measure(limits)?;
+    let poison = closed_or_recovery.measure(limits)?;
+    request.future_transactions = terminal.transactions.max(poison.transactions);
+    request.terminal_records = terminal.records;
+    request.terminal_bytes = terminal.append_bytes;
+    request.poison_records = poison.records;
+    request.poison_bytes = poison.append_bytes;
+    if request.purpose == NativeHeldCapacityPurposeV3::Root {
+        let first = normal
+            .root_start()
+            .ok_or(invalid("native V2 normal Root start absent"))?;
+        let cold = closed_or_recovery
+            .root_start()
+            .ok_or(invalid("native V2 cold Root start absent"))?;
+        if first.before.canonical_records() != cold.before.canonical_records()
+            || first.original.canonical_records() != cold.original.canonical_records()
+            || first.binding != cold.binding
+            || request.future_transactions != first.before_remaining
+        {
+            return Err(invalid("native V2 complete Root alternatives or count"));
+        }
+        let attempt = first.binding.mount_attempt();
+        let original_phase0 = first
+            .before
+            .sidecars()
+            .get(&attempt)
+            .is_some_and(|sidecar| sidecar.suffix().phase() == 0)
+            && first.before.data_class(attempt) == Some(RootNativeDataClassV2::LiveOriginal);
+        if original_phase0 && !closed_or_recovery.has_cold_root_edge() {
+            return Err(invalid(
+                "native V2 original admission lacks an actual cold alternative",
+            ));
+        }
+        first.binding.require_request(request, admission)?;
+    }
+    NativeHeldCapacityRecordV3::new(request, admission).map_err(JournalError::from)
 }
 
 /// Frames a Provider V2 DATA edge with its complete measured V3 successor floor.
@@ -438,7 +432,7 @@ pub fn provider_native_capacity_transition_v2(
     }
     let next = remaining
         .map(|(normal, cold)| {
-            NativeHeldCapacityRecordV3::from_suffixes_v2(
+            capacity_record_from_suffixes_v2(
                 old.request(),
                 old.admission_transaction_id(),
                 normal,

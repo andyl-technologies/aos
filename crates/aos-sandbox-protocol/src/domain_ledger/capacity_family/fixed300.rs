@@ -9,7 +9,7 @@
 
 use sha2::{Digest as _, Sha256};
 
-use super::super::JournalError;
+use super::CapacityDataError;
 use super::take;
 
 pub(super) const VALUE_BYTES: usize = 300;
@@ -83,12 +83,12 @@ pub(super) fn floor_identity(
     payload: &[u8],
     domain: &[u8],
     width_error: &'static str,
-) -> Result<[u8; 32], JournalError> {
+) -> Result<[u8; 32], CapacityDataError> {
     if payload.len() != IDENTITY_PAYLOAD_BYTES {
-        return Err(JournalError::MalformedRecord(width_error));
+        return Err(CapacityDataError::MalformedRecord(width_error));
     }
 
-    let length = u32::try_from(payload.len()).map_err(|_| JournalError::JournalTooLarge)?;
+    let length = u32::try_from(payload.len()).map_err(|_| CapacityDataError::JournalTooLarge)?;
     let mut digest = Sha256::new();
     digest.update(domain);
     digest.update(length.to_be_bytes());

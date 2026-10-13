@@ -3,11 +3,12 @@
 //! No test opens a protected journal, mints a receipt, samples a clock/nonce,
 //! signs through current custody, or qualifies executable funding.
 
+use crate::journal::JournalError;
+
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, OriginalSourceCapacityBudgetsV5, OriginalSourceCapacityRecordV5};
+
 use super::*;
-use super::super::capacity_reservation::native_held::{
-    NativeHeldCapacityAppendV2, NativeHeldCapacityChangeV3, NativeHeldCapacityPathV3,
-    NativeHeldCapacityRecordV3, NativeHeldCapacityStepV3, OriginalSourceCapacityBudgetsV5,
-};
+use super::super::capacity_reservation::native_held::{NativeHeldCapacityAppendV2, NativeHeldCapacityChangeV3, NativeHeldCapacityPathV3, NativeHeldCapacityStepV3};
 use super::super::{encoded_transaction_append_bytes, encoded_transaction_record_bytes};
 use aos_sandbox_source_provider_ledger::ledger::{
     format,
@@ -66,14 +67,14 @@ fn replace_applying_floor(
 
 fn changed_floor(
     original: &OriginalSourceCapacityRecordV5,
-    request: super::super::capacity_reservation::native_held::NativeHeldCapacityRequestV3,
+    request: aos_sandbox_protocol::domain_ledger::capacity_family::native_held::NativeHeldCapacityRequestV3,
 ) -> OriginalSourceCapacityRecordV5 {
     OriginalSourceCapacityRecordV5::new(
         request,
         original.admission_transaction_id(),
         original.origin_budgets(),
         original.original_provenance().clone(),
-    )
+    ).map_err(JournalError::from)
     .unwrap()
 }
 
@@ -272,7 +273,7 @@ fn binding_substitutions_with_refreshed_floor_identity_are_rejected() {
     for request in [owner_digest, operation] {
         let changed = changed_floor(initial, request);
         let transaction = replace_applying_floor(&fixture, &changed);
-        OriginalSourceCapacityRecordV5::from_journal_record(&transaction.records()[4]).unwrap();
+        OriginalSourceCapacityRecordV5::from_journal_record(&transaction.records()[4]).map_err(JournalError::from).unwrap();
 
         let comparison = compare_original_source_applying_transaction_v5(
             &fixture.before,
@@ -303,7 +304,7 @@ fn applying_comparison_does_not_claim_future_funding_from_scalar_budgets() {
             poison_bytes: 1,
         },
         fixture.initial_floor.original_provenance().clone(),
-    )
+    ).map_err(JournalError::from)
     .unwrap();
 
     // Exact DATA can compare even with an envelope too small for Requested.
@@ -334,7 +335,7 @@ fn requested_origin_count_and_transfer_budget_substitutions_are_rejected() {
     let admission = compare_applying(&fixture);
     let next = OriginalSourceCapacityRecordV5::from_journal_record(
         &fixture.requested.records()[2],
-    )
+    ).map_err(JournalError::from)
     .unwrap();
     let mut wrong_count = next.request();
     wrong_count.future_transactions = 18;
@@ -366,7 +367,7 @@ fn changed_origin_archive_is_not_repaired_by_reproducing_a_self_id() {
     let admission = compare_applying(&fixture);
     let next = OriginalSourceCapacityRecordV5::from_journal_record(
         &fixture.requested.records()[2],
-    )
+    ).map_err(JournalError::from)
     .unwrap();
     let mut claims = next.original_provenance().claims().clone();
     claims.journal_sequence += 1;
@@ -376,11 +377,11 @@ fn changed_origin_archive_is_not_repaired_by_reproducing_a_self_id() {
         next.admission_transaction_id(),
         next.origin_budgets(),
         provenance,
-    )
+    ).map_err(JournalError::from)
     .unwrap();
 
     assert_ne!(
-        changed.origin_reservation_id().unwrap(),
+        changed.origin_reservation_id().map_err(JournalError::from).unwrap(),
         admission.floor.reservation_id(),
     );
     assert!(compare_origin_floor_data(&admission, &changed).is_err());
@@ -546,7 +547,7 @@ fn shared_width_factor_preserves_old_266_and_owner_only_growth() {
 
     assert!(NativeHeldCapacityRecordV3::new(
         fixture.initial_floor.request(), [30; 16],
-    )
+    ).map_err(JournalError::from)
     .is_err());
     assert_eq!(NativeHeldCapacityPurposeV3::Provider.maximum_future_transactions(), 19);
 }

@@ -1,11 +1,13 @@
 //! UNRUN replay payload/routing vectors; actual protected origin fixtures remain missing.
 
+use crate::journal::JournalError;
+
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{OriginalSourceCapacityRecordV5};
+
 use super::*;
 use aos_sandbox_source_provider_ledger::ledger::native_held_completion::
     derive_original_source_continuations_v5;
-use crate::journal::capacity_reservation::native_held::{
-    OriginalSourceCapacityRecordV5, OriginalSourceGeometryDataV5,
-};
+use crate::journal::capacity_reservation::native_held::OriginalSourceGeometryDataV5;
 
 fn canonical_admission() -> (State, JournalTransaction, JournalTransaction, SourceOriginalAdmissionDataV5) {
     let (before, applying, requested) = super::super::tests::original_replay_fixture_v5();
@@ -34,7 +36,7 @@ fn canonical_admission() -> (State, JournalTransaction, JournalTransaction, Sour
     initial.poison_bytes = budgets.poison_bytes;
     let floor = OriginalSourceCapacityRecordV5::new(
         initial, *applying.id(), budgets, provenance.clone(),
-    ).unwrap();
+    ).map_err(JournalError::from).unwrap();
     let floor_record = floor.to_journal_record().unwrap();
     let mut applying_records = applying.records().to_vec();
     applying_records[4] = floor_record.clone();
@@ -65,7 +67,7 @@ fn canonical_admission() -> (State, JournalTransaction, JournalTransaction, Sour
     let successor = OriginalSourceCapacityRecordV5::new(
         geometry.remaining_request().unwrap(), *applying.id(), budgets,
         floor.original_provenance().clone(),
-    ).unwrap();
+    ).map_err(JournalError::from).unwrap();
     let requested = JournalTransaction::new(*requested.id(), vec![
         requested.records()[0].clone(),
         crate::journal::JournalRecord::delete(

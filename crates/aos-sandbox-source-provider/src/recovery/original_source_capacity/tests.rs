@@ -4,8 +4,12 @@
 //! actual complete owner graphs. The five named full-comparator vectors below
 //! are intentionally non-`#[test]`: no configuration factory or authority exists.
 
+use aos_sandbox::journal::JournalError;
+
+use aos_sandbox_protocol::domain_ledger::capacity_family::{validate_capacity_snapshot_data_v2};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, ORIGINAL_SOURCE_CAPACITY_MAXIMUM_VALUE_BYTES_V5, OriginalSourceCapacityBudgetsV5, OriginalSourceCapacityRecordV5};
+
 use super::*;
-use aos_sandbox::journal::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3};
 
 mod fixtures;
 
@@ -116,7 +120,7 @@ fn selected_floor_matches_canonical_recollection_at_each_edge_count() {
         let row = floor.to_journal_record().unwrap();
         let state = state_with(&[row.clone(), legacy.clone()]);
         let inventory = Floors::collect_original_source_comparison(capacity_rows(&state)).unwrap();
-        let canonical = OriginalSourceCapacityRecordV5::from_journal_record(&row).unwrap();
+        let canonical = OriginalSourceCapacityRecordV5::from_journal_record(&row).map_err(JournalError::from).unwrap();
 
         let selected = selected_floor(&inventory, &admission).unwrap().unwrap();
 
@@ -132,7 +136,7 @@ fn selected_floor_is_absent_without_the_typed_original_source_row() {
     let (_, legacy) = fixtures::legacy_row(44);
     let mut native_request = admission.initial_floor.request();
     native_request.future_transactions = 19;
-    let native = NativeHeldCapacityRecordV3::new(native_request, [45; 16])
+    let native = NativeHeldCapacityRecordV3::new(native_request, [45; 16]).map_err(JournalError::from)
         .unwrap()
         .to_journal_record();
     let inventories = [
@@ -176,7 +180,7 @@ fn foreign_native_unknown_and_duplicate_families_fail_closed() {
     let mut foreign = floor.request();
     foreign.purpose = NativeHeldCapacityPurposeV3::Root;
     foreign.future_transactions = 1;
-    let foreign = NativeHeldCapacityRecordV3::new(foreign, [14; 16]).unwrap().to_journal_record();
+    let foreign = NativeHeldCapacityRecordV3::new(foreign, [14; 16]).map_err(JournalError::from).unwrap().to_journal_record();
     let mut unknown = row.value().unwrap().to_vec();
     unknown[8..10].copy_from_slice(&6_u16.to_be_bytes());
     let unknown = JournalRecord::put(row.namespace(), row.key().to_vec(), unknown);
@@ -191,7 +195,7 @@ fn foreign_native_unknown_and_duplicate_families_fail_closed() {
 fn canonical_data_does_not_establish_an_original_owner_or_admission() {
     let floor = fixtures::floor();
     let row = floor.to_journal_record().unwrap();
-    validate_capacity_snapshot_data_v2(&state_with(&[row.clone()])).unwrap();
+    validate_capacity_snapshot_data_v2(&state_with(&[row.clone()])).map_err(JournalError::from).unwrap();
     assert!(classify_original_source_owner_v5(
         std::iter::empty::<(&[u8], &[u8])>(),
         floor.original_provenance(),
@@ -215,19 +219,18 @@ fn immutable_origin_and_successor_no_growth_are_independent_checks() {
     let reduced = OriginalSourceCapacityRecordV5::new(
         reduced, next.admission_transaction_id(), next.origin_budgets(),
         next.original_provenance().clone(),
-    ).unwrap();
+    ).map_err(JournalError::from).unwrap();
 
     require_retained_floor(&reduced, &floor).unwrap();
     assert!(require_no_budget_growth(&reduced, &next).is_err());
     let changed = OriginalSourceCapacityRecordV5::new(
         next.request(), [15; 16], next.origin_budgets(), next.original_provenance().clone(),
-    ).unwrap();
+    ).map_err(JournalError::from).unwrap();
     assert!(require_retained_floor(&changed, &floor).is_err());
 }
 
 #[test]
 fn tiny_canonical_origin_remains_data_and_legacy_decode_stays_closed() {
-    use aos_sandbox::journal::native_held::OriginalSourceCapacityBudgetsV5;
 
     let floor = fixtures::floor();
     let mut request = floor.request();
@@ -245,11 +248,11 @@ fn tiny_canonical_origin_remains_data_and_legacy_decode_stays_closed() {
             poison_bytes: 1,
         },
         floor.original_provenance().clone(),
-    ).unwrap();
+    ).map_err(JournalError::from).unwrap();
     let row = tiny.to_journal_record().unwrap();
 
-    validate_capacity_snapshot_data_v2(&state_with(&[row.clone()])).unwrap();
-    assert!(aos_sandbox::journal::decode_capacity_reservation_request_v1(&row).is_err());
+    validate_capacity_snapshot_data_v2(&state_with(&[row.clone()])).map_err(JournalError::from).unwrap();
+    assert!(aos_sandbox_protocol::domain_ledger::capacity_family::decode_capacity_reservation_request_v1(&row).map_err(JournalError::from).is_err());
     assert_eq!(tiny.request().terminal_bytes, 1);
     // No comparison helper promotes this syntactic budget to whole-journal funding.
 }
@@ -310,7 +313,7 @@ fn exact_legacy_obligations_match_once_or_refuse_missing_ambiguous_and_changed_b
     let (_, second) = fixtures::legacy_row(36);
     let source = fixtures::floor().to_journal_record().unwrap();
     let one = Floors::collect_original_source_comparison(vec![source, first.clone()]).unwrap();
-    let (_, admission, identifier) = aos_sandbox::journal::decode_capacity_reservation_request_v1(&first).unwrap();
+    let (_, admission, identifier) = aos_sandbox_protocol::domain_ledger::capacity_family::decode_capacity_reservation_request_v1(&first).map_err(JournalError::from).unwrap();
     assert_eq!(admission, [35; 16]);
     assert_eq!(one.exact_legacy(request).unwrap(), identifier);
     let mut changed = request;

@@ -5,6 +5,8 @@
 //! readback. Source independently authenticates archived/current configurations
 //! and every retained signature before calling these private-owner operations.
 
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRequestV3, OriginalSourceCapacityRecordV5};
+
 use crate::journal::PreflightTransactionViewV1;
 use crate::journal::semantic_append::{AppendScope, PreflightScope};
 
@@ -27,10 +29,7 @@ use aos_sandbox_source_provider_ledger::ledger::{
     source_capacity::derive_source_capacity_owner_data_v1,
 };
 use aos_sandbox_source_provider_protocol::SignedStorageNativeAcquireRequestV2;
-use super::super::native_held::{
-    NativeHeldCapacityPurposeV3, NativeHeldCapacityRequestV3, OriginalSourceCapacityRecordV5,
-    OriginalSourceGeometryDataV5, derive_original_source_geometry_v5,
-};
+use super::super::native_held::{OriginalSourceGeometryDataV5, derive_original_source_geometry_v5};
 
 /// Retains one exact attempted transaction and complete candidate before errors.
 ///
@@ -847,8 +846,8 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             .find(|origin| origin.admission_comparison().original().acquisition_id == acquisition)
             .ok_or(invalid("original Source completion origin missing"))?;
         let mut selected = None;
-        for family in super::super::capacity_reservation::family::canonical_reservations(journal.native.state())? {
-            if let super::super::capacity_reservation::family::CanonicalCapacityFamily::OriginalSource5(floor) = family
+        for family in aos_sandbox_protocol::domain_ledger::capacity_family::family::canonical_reservations(journal.native.state())? {
+            if let aos_sandbox_protocol::domain_ledger::capacity_family::family::CanonicalCapacityFamily::OriginalSource5(floor) = family
                 && floor.original_provenance().claims().claims.provider_acquisition().1 == acquisition
                 && selected.replace(floor).is_some()
             {
@@ -1046,8 +1045,8 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             .find(|origin| origin.admission_comparison().original().acquisition_id == acquisition)
             .ok_or(invalid("original Source transfer origin missing"))?;
         let mut selected = None;
-        for family in super::super::capacity_reservation::family::canonical_reservations(journal.native.state())? {
-            if let super::super::capacity_reservation::family::CanonicalCapacityFamily::OriginalSource5(floor)
+        for family in aos_sandbox_protocol::domain_ledger::capacity_family::family::canonical_reservations(journal.native.state())? {
+            if let aos_sandbox_protocol::domain_ledger::capacity_family::family::CanonicalCapacityFamily::OriginalSource5(floor)
                 = family
                 && floor.original_provenance().claims().claims.provider_acquisition().1 == acquisition
             {

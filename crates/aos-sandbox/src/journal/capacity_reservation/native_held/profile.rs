@@ -4,6 +4,8 @@
 //! closed step names bound the native append schedule; no measurement proves
 //! that a writer cut, original descriptor, or protected claim is retained.
 
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NATIVE_HELD_CAPACITY_VALUE_BYTES_V3, NativeHeldCapacityPurposeV3};
+
 use aos_sandbox_journal::native_suffix::{
     NativeBeforeAfterRef, NativeRecordExtentRef, NativeSuffixError, NativeSuffixMeasurement,
     NativeSuffixPrefix,
@@ -14,7 +16,7 @@ use super::super::super::{
     encoded_transaction_append_bytes, validate_transaction,
 };
 use super::super::reservation_key;
-use super::{NATIVE_HELD_CAPACITY_VALUE_BYTES_V3, NativeHeldCapacityPurposeV3, invalid};
+use super::invalid;
 
 mod original_source;
 mod v2;
@@ -23,6 +25,8 @@ pub(in crate::journal) use original_source::{
     OriginalSourceGeometryDataV5, OriginalSourceMeasuredAlternativeV5,
     check_original_source_candidate_spend_v5, derive_original_source_geometry_v5,
 };
+
+pub(in crate::journal::capacity_reservation::native_held) use v2::capacity_record_from_suffixes_v2;
 
 pub use v2::{
     NativeHeldCapacityAppendV2, NativeHeldCapacityStepV2, NativeHeldCapacitySuffixV2,

@@ -1,7 +1,8 @@
 //! Canonical legacy capacity-reservation DATA and closed purpose layouts.
 //!
 //! These values and hash identities carry no reserved capacity or owner custody.
-//! Complete family selection, accounting, and protected admission remain upper.
+//! [`super::capacity_family`] owns complete family selection and accounting;
+//! protected admission remains with the actual Native writer.
 //!
 //! ```text
 //! AOSJCR01 | version:u16be=1/2 | namespace:u8 | purpose:u8 | reserved:2 |
@@ -382,7 +383,7 @@ pub fn valid_future_transactions(purpose: GlobalCapacityReservationPurposeV1, co
     }
 }
 
-fn take<const N: usize>(value: &[u8], offset: &mut usize) -> [u8; N] {
+pub(super) fn take<const N: usize>(value: &[u8], offset: &mut usize) -> [u8; N] {
     let mut bytes = [0; N];
     bytes.copy_from_slice(&value[*offset..*offset + N]);
     *offset += N;

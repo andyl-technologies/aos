@@ -3,6 +3,9 @@
 //! Synthetic signatures and witness claims are format fixtures only. No test
 //! creates a protected admission, authenticated clock, Source writer, or route.
 
+use crate::domain_ledger::capacity_family::family::{CanonicalCapacityFamily, canonical_reservations, require_legacy_owner, require_legacy_reservations};
+use crate::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3, ORIGINAL_SOURCE_CAPACITY_MAXIMUM_VALUE_BYTES_V5, OriginalRootCapacityRecordV5, OriginalSourceCapacityBudgetsV5, OriginalSourceCapacityRecordV5};
+
 use std::collections::BTreeMap;
 
 use aos_sandbox_core::{ObjectDigest, RawClockProvenance, RawPairedClockSample};
@@ -22,13 +25,6 @@ use aos_sandbox_source_provider_protocol::{
 };
 
 use super::*;
-use crate::journal::capacity_reservation::family::{
-    CanonicalCapacityFamily, canonical_reservations, require_legacy_owner,
-    require_legacy_reservations,
-};
-use crate::journal::capacity_reservation::native_held::{
-    NativeHeldCapacityRecordV3, OriginalRootCapacityRecordV5,
-};
 
 fn digest(byte: u8) -> ObjectDigest {
     ObjectDigest::from_bytes([byte; 32])
@@ -383,7 +379,7 @@ fn source5_tuple_substitution_and_all_row_legacy_gates_fail_closed() {
     );
     assert!(matches!(
         family.require_legacy(),
-        Err(JournalError::ProtectedBoundary),
+        Err(CapacityDataError::ProtectedBoundary),
     ));
     assert_eq!(family.accounting().unwrap().maximum_transactions, 20);
     let mut state = BTreeMap::from([(
@@ -393,11 +389,11 @@ fn source5_tuple_substitution_and_all_row_legacy_gates_fail_closed() {
     assert!(canonical_reservations(&state).is_ok());
     assert!(matches!(
         require_legacy_reservations(&state),
-        Err(JournalError::ProtectedBoundary),
+        Err(CapacityDataError::ProtectedBoundary),
     ));
     assert!(matches!(
         require_legacy_owner(&state, RecordNamespace::SourceProviderAuthority),
-        Err(JournalError::ProtectedBoundary),
+        Err(CapacityDataError::ProtectedBoundary),
     ));
     state.insert(
         (RecordNamespace::GlobalCapacityReservation, vec![0xff]),
@@ -405,7 +401,7 @@ fn source5_tuple_substitution_and_all_row_legacy_gates_fail_closed() {
     );
     assert!(matches!(
         require_legacy_reservations(&state),
-        Err(JournalError::MalformedRecord(_)),
+        Err(CapacityDataError::MalformedRecord(_)),
     ));
 
     for (offset, replacement) in [(10, 40), (11, 9), (12, 1), (13, 1), (8, 1)] {

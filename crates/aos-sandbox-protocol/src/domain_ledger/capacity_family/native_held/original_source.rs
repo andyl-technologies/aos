@@ -9,12 +9,15 @@
 //! writer must validate actual original rows, transaction membership, the whole
 //! current owner graph and every branch's opened-limit geometry independently.
 
+use crate::domain_ledger::capacity_family::{CapacityDataError};
+
 use aos_sandbox_source_provider_ledger::ledger::native_completion::{
     MAXIMUM_ORIGINAL_SOURCE_PROVENANCE_BYTES_V5, OriginalSourceProvenanceV5,
 };
 use sha2::{Digest as _, Sha256};
 
-use super::super::super::{JournalError, JournalRecord, RecordNamespace};
+use aos_sandbox_core::RecordNamespace;
+use crate::domain_ledger::transaction::{JournalLimits, JournalRecord};
 use super::super::{reservation_key, take};
 use super::{
     NativeHeldCapacityPurposeV3, NativeHeldCapacityRequestV3, binding_bytes, decode_bindings,
@@ -88,7 +91,7 @@ impl OriginalSourceCapacityRecordV5 {
         admission: [u8; 16],
         origin: OriginalSourceCapacityBudgetsV5,
         provenance: OriginalSourceProvenanceV5,
-    ) -> Result<Self, JournalError> {
+    ) -> Result<Self, CapacityDataError> {
         request.validate_with_maximum(ORIGINAL_COUNT)?;
         let claims = provenance.claims();
         let (provider, acquisition) = claims.claims.provider_acquisition();
@@ -161,7 +164,7 @@ impl OriginalSourceCapacityRecordV5 {
     /// # Errors
     ///
     /// Rejects an impossible retained payload width or length representation.
-    pub fn origin_reservation_id(&self) -> Result<[u8; 32], JournalError> {
+    pub fn origin_reservation_id(&self) -> Result<[u8; 32], CapacityDataError> {
         let mut request = self.request;
         request.future_transactions = ORIGINAL_COUNT;
         request.terminal_records = self.origin.terminal_records;
@@ -176,7 +179,7 @@ impl OriginalSourceCapacityRecordV5 {
     /// # Errors
     ///
     /// Rejects an impossible retained payload width or identity representation.
-    pub fn to_journal_record(&self) -> Result<JournalRecord, JournalError> {
+    pub fn to_journal_record(&self) -> Result<JournalRecord, CapacityDataError> {
         let mut value = self.payload(self.request);
         if identity(&value)? != self.identity {
             return Err(invalid("original Source capacity identity"));
@@ -195,17 +198,17 @@ impl OriginalSourceCapacityRecordV5 {
     ///
     /// Rejects foreign namespace/deletion, wrong tuple/width, malformed archives,
     /// substituted identity/key, enlarged budgets or noncanonical bytes.
-    pub fn from_journal_record(record: &JournalRecord) -> Result<Self, JournalError> {
+    pub fn from_journal_record(record: &JournalRecord) -> Result<Self, CapacityDataError> {
         if record.namespace() != RecordNamespace::GlobalCapacityReservation {
-            return Err(JournalError::ForeignAuthorityNamespace);
+            return Err(CapacityDataError::ForeignAuthorityNamespace);
         }
         Self::decode(
             record.key(),
-            record.value().ok_or(JournalError::InvalidTransaction)?,
+            record.value().ok_or(CapacityDataError::InvalidTransaction)?,
         )
     }
 
-    pub(in crate::journal) fn decode(key: &[u8], bytes: &[u8]) -> Result<Self, JournalError> {
+    pub(in crate::domain_ledger::capacity_family) fn decode(key: &[u8], bytes: &[u8]) -> Result<Self, CapacityDataError> {
         // The lower bound protects the shared fixed 204 decoder and origin words.
         if !(907..=ORIGINAL_SOURCE_CAPACITY_MAXIMUM_VALUE_BYTES_V5).contains(&bytes.len())
             || &bytes[..8] != b"AOSJCR01"
@@ -252,7 +255,7 @@ impl OriginalSourceCapacityRecordV5 {
     }
 }
 
-fn identity(payload: &[u8]) -> Result<[u8; 32], JournalError> {
+fn identity(payload: &[u8]) -> Result<[u8; 32], CapacityDataError> {
     if payload.len() > ORIGINAL_SOURCE_CAPACITY_MAXIMUM_VALUE_BYTES_V5 - 32 {
         return Err(invalid("original Source capacity maximum width"));
     }

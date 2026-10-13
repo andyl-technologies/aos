@@ -4,10 +4,12 @@
 //! fabricated. Witness digests are synthetic; these fixtures test lower-level
 //! canonical inventories and immutable bindings, not whole-graph association.
 
+use aos_sandbox::journal::JournalError;
+
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRequestV3, OriginalSourceCapacityBudgetsV5, OriginalSourceCapacityRecordV5};
+
 use super::*;
-use aos_sandbox::journal::native_held::{
-    NativeHeldCapacityPurposeV3, NativeHeldCapacityRequestV3, OriginalSourceCapacityBudgetsV5,
-};
+
 use aos_sandbox_source_provider_ledger::ledger::{
     format,
     model::{AcquisitionKeyV1, AttemptKeyV1},
@@ -137,7 +139,7 @@ pub(super) fn floor() -> OriginalSourceCapacityRecordV5 {
             poison_bytes: request.poison_bytes,
         },
         provenance,
-    ).unwrap()
+    ).map_err(JournalError::from).unwrap()
 }
 
 pub(super) fn successor(original: &OriginalSourceCapacityRecordV5, count: u32) -> OriginalSourceCapacityRecordV5 {
@@ -146,7 +148,7 @@ pub(super) fn successor(original: &OriginalSourceCapacityRecordV5, count: u32) -
     OriginalSourceCapacityRecordV5::new(
         request, original.admission_transaction_id(), original.origin_budgets(),
         original.original_provenance().clone(),
-    ).unwrap()
+    ).map_err(JournalError::from).unwrap()
 }
 
 /// Returns floor-only canonical DATA, explicitly not a complete owner fixture.

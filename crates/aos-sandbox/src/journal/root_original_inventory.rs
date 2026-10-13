@@ -5,6 +5,10 @@
 //! only; they supply no received packet, Session, signer or hot owner factory.
 //! There is no count-one uncertain-debt release producer in this module.
 
+use aos_sandbox_protocol::domain_ledger::capacity_family::family::{CanonicalCapacityFamily, canonical_reservations, canonical_reservations_after};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{OriginalRootCapacityRecordV5};
+use aos_sandbox_protocol::domain_ledger::capacity_family::query::{QueryCapacityDataV6, QueryCapacityProfileV6, QueryCapacityRecordV6};
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use aos_sandbox_protocol::mount_source_acquisition_state::{
@@ -20,13 +24,6 @@ use aos_sandbox_protocol::mount_source_acquisition_state::{
 };
 use aos_sandbox_source_provider_protocol::native_held_completion::NativeHeldControlKindV1;
 
-use super::capacity_reservation::{
-    QueryCapacityDataV6, QueryCapacityProfileV6, QueryCapacityRecordV6,
-};
-use super::capacity_reservation::family::{
-    CanonicalCapacityFamily, canonical_reservations, canonical_reservations_after,
-};
-use super::native_held::OriginalRootCapacityRecordV5;
 use super::root_original_native::require_supported_funding_families as require_supported_families;
 use super::{
     JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace, RootOwnerEdge,
@@ -359,7 +356,7 @@ pub(super) fn replay_edge(
     } else {
         let floors: Vec<_> = transaction.records().iter()
             .filter(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation)
-            .map(QueryCapacityRecordV6::from_journal_record)
+            .map(|record| QueryCapacityRecordV6::from_journal_record(record).map_err(JournalError::from))
             .collect::<Result<_, _>>()?;
         let [floor] = floors.as_slice() else {
             return Err(invalid());
@@ -441,7 +438,7 @@ pub(super) fn preserve_other_owner(
 /// # Errors
 /// Rejects malformed floor accounting or checked physical-sequence overflow.
 pub(super) fn require_sequence_headroom(state: &State, next_sequence: u64) -> Result<(), JournalError> {
-    let future_frames = super::capacity_reservation::accounting_reservations(state)?.values()
+    let future_frames = aos_sandbox_protocol::domain_ledger::capacity_family::family::accounting_reservations(state)?.values()
         .try_fold(0_u64, |total, floor| {
             let records = u64::try_from(floor.maximum_records).map_err(|_| JournalError::SequenceExhausted)?;
             let transactions = u64::try_from(floor.maximum_transactions).map_err(|_| JournalError::SequenceExhausted)?;

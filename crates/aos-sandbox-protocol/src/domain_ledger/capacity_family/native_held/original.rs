@@ -10,7 +10,9 @@
 //! bytes. Retention provides replay provenance, not a physical-origin, current
 //! signer, hot-custody or append grant. Only the named held writer may admit it.
 
-use aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::{
+use crate::domain_ledger::capacity_family::{CapacityDataError};
+
+use crate::mount_source_acquisition_state::native_held_completion::{
     MAXIMUM_ROOT_NATIVE_CUT_BYTES_V1, MAXIMUM_ROOT_NATIVE_HELD_SIDECAR_BYTES_V2,
     RootNativeCutKindV1, RootNativeCutV1, RootNativeHeldGraphV2, original_root_remaining_v5,
     has_original_pending_closed_cut_v5, validate_original_root_preparation_v5,
@@ -20,7 +22,8 @@ use aos_sandbox_source_provider_protocol::native_held_completion::{
 };
 use sha2::{Digest as _, Sha256};
 
-use super::super::super::{JournalError, JournalLimits, JournalRecord, RecordNamespace};
+use aos_sandbox_core::RecordNamespace;
+use crate::domain_ledger::transaction::{JournalLimits, JournalRecord};
 use super::super::{reservation_key, take};
 use super::{
     NativeHeldCapacityPurposeV3, NativeHeldCapacityRequestV3, binding_bytes, decode_bindings,
@@ -50,10 +53,14 @@ pub struct OriginalRootCapacityRecordV5 {
 impl OriginalRootCapacityRecordV5 {
     /// Derives a distinct ordinary Release floor beside an exhausted original.
     ///
-    /// This private DATA recipe does not mint another native7 reservation. The
+    /// This passive DATA recipe does not mint another native7 reservation. The
     /// named writer must compare the complete proposal and all current floors
     /// before preflight, commit and physical readback.
-    pub(in crate::journal) fn release_floor_v1(
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed canonical owner joins, malformed DATA or unrepresentable budgets.
+    pub fn release_floor_v1(
         before: &RootNativeHeldGraphV2,
         after: &RootNativeHeldGraphV2,
         root_attempt: [u8; 32],
@@ -61,13 +68,13 @@ impl OriginalRootCapacityRecordV5 {
         transaction: [u8; 16],
         capacity_union: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
         limits: JournalLimits,
-    ) -> Result<super::super::OrdinaryCapacityRecordV4, JournalError> {
+    ) -> Result<super::super::OrdinaryCapacityRecordV4, CapacityDataError> {
         use super::super::{
             OrdinaryCapacityDataV4, OrdinaryCapacityKindV4, OrdinaryCapacityProfileV4,
             OrdinaryCapacityRecordV4,
         };
 
-        let proposal = aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::
+        let proposal = crate::mount_source_acquisition_state::native_held_completion::
             validate_original_release_transition_v1(
                 before, after, root_attempt, release_attempt, transaction,
             )
@@ -91,7 +98,7 @@ impl OriginalRootCapacityRecordV5 {
             || limits.maximum_records_per_transaction < 5
             || (limits.maximum_transaction_bytes as u64) < maximum_transaction
         {
-            return Err(JournalError::LimitExceeded("original Release complete suffix"));
+            return Err(CapacityDataError::LimitExceeded("original Release complete suffix"));
         }
 
         let mut before_hash = Sha256::new();
@@ -139,7 +146,11 @@ impl OriginalRootCapacityRecordV5 {
     }
 
     /// Transfers only the surviving negative-custody suffix after Pending.
-    pub(in crate::journal) fn release_status_floor_v1(
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed canonical owner joins, malformed DATA or unrepresentable budgets.
+    pub fn release_status_floor_v1(
         before: &RootNativeHeldGraphV2,
         after: &RootNativeHeldGraphV2,
         old: &super::super::OrdinaryCapacityRecordV4,
@@ -147,10 +158,10 @@ impl OriginalRootCapacityRecordV5 {
         release: [u8; 32],
         transaction: [u8; 16],
         limits: JournalLimits,
-    ) -> Result<super::super::OrdinaryCapacityRecordV4, JournalError> {
+    ) -> Result<super::super::OrdinaryCapacityRecordV4, CapacityDataError> {
         use super::super::{OrdinaryCapacityProfileV4, OrdinaryCapacityRecordV4};
 
-        let proposal = aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::
+        let proposal = crate::mount_source_acquisition_state::native_held_completion::
             validate_original_release_status_transition_v1(before, after, root, release, transaction)
             .map_err(|_| invalid("original Release Pending canonical owner edge"))?;
         if old.data().profile != OrdinaryCapacityProfileV4::ReleaseOutcomeAndNegativeCustody
@@ -161,7 +172,7 @@ impl OriginalRootCapacityRecordV5 {
             || (limits.maximum_transaction_bytes as u64)
                 < 3 * (7 + 75 + LEGACY_VALUE_BYTES) + 2 * (7 + 75) + 300
         {
-            return Err(JournalError::LimitExceeded("original Release Pending complete suffix"));
+            return Err(CapacityDataError::LimitExceeded("original Release Pending complete suffix"));
         }
         let frames = 2_u32;
         let append_bytes = 184 + u64::from(frames) * 72
@@ -187,9 +198,16 @@ impl OriginalRootCapacityRecordV5 {
         OrdinaryCapacityRecordV4::new(data)
     }
 
-    pub(in crate::journal) fn release_owner_digest_v1(
+    /// Hashes the supplied ordered Release owner rows under the fixed domain.
+    ///
+    /// This is a passive commitment recipe; the named writer validates the rows.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a key or value length that cannot be represented as u32.
+    pub fn release_owner_digest_v1(
         puts: &std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
-    ) -> Result<[u8; 32], JournalError> {
+    ) -> Result<[u8; 32], CapacityDataError> {
         let mut digest = Sha256::new();
         digest.update(b"aos.mount.original-release.owners.v1\0");
         hash_release_rows(&mut digest, puts)?;
@@ -207,7 +225,7 @@ impl OriginalRootCapacityRecordV5 {
         admission: [u8; 16],
         prepared: PreparedNativeHeldControlV1,
         cut: RootNativeCutV1,
-    ) -> Result<Self, JournalError> {
+    ) -> Result<Self, CapacityDataError> {
         request.validate()?;
         if request.purpose != NativeHeldCapacityPurposeV3::Root
             || admission == [0; 16]
@@ -250,7 +268,7 @@ impl OriginalRootCapacityRecordV5 {
         prepared: PreparedNativeHeldControlV1,
         cut: RootNativeCutV1,
         limits: JournalLimits,
-    ) -> Result<Self, JournalError> {
+    ) -> Result<Self, CapacityDataError> {
         let attempt = *prepared.scope().mount_attempt.as_bytes();
         validate_original_root_preparation_v5(graph, attempt, &prepared, &cut)
             .map_err(|_| invalid("original Root preparation/current graph join"))?;
@@ -313,7 +331,7 @@ impl OriginalRootCapacityRecordV5 {
         &self,
         graph: &RootNativeHeldGraphV2,
         limits: JournalLimits,
-    ) -> Result<(), JournalError> {
+    ) -> Result<(), CapacityDataError> {
         let derived = Self::for_graph(graph, self.prepared.clone(), self.cut.clone(), limits)?;
         if derived != *self {
             return Err(invalid(
@@ -333,7 +351,7 @@ impl OriginalRootCapacityRecordV5 {
     pub fn validate_preserved_graph(
         &self,
         graph: &RootNativeHeldGraphV2,
-    ) -> Result<(), JournalError> {
+    ) -> Result<(), CapacityDataError> {
         validate_original_root_preparation_v5(
             graph,
             self.request.owner_id,
@@ -385,7 +403,7 @@ impl OriginalRootCapacityRecordV5 {
     /// # Errors
     ///
     /// Rejects an impossible retained canonical encoding or width overflow.
-    pub fn to_journal_record(&self) -> Result<JournalRecord, JournalError> {
+    pub fn to_journal_record(&self) -> Result<JournalRecord, CapacityDataError> {
         let mut value = self.payload()?;
         value.extend_from_slice(&self.identity);
         Ok(JournalRecord::put(
@@ -401,17 +419,22 @@ impl OriginalRootCapacityRecordV5 {
     ///
     /// Rejects foreign namespace/deletion, malformed lengths, noncanonical nested
     /// data, unknown family, swapped originals or a substituted key/identity.
-    pub fn from_journal_record(record: &JournalRecord) -> Result<Self, JournalError> {
+    pub fn from_journal_record(record: &JournalRecord) -> Result<Self, CapacityDataError> {
         if record.namespace() != RecordNamespace::GlobalCapacityReservation {
-            return Err(JournalError::ForeignAuthorityNamespace);
+            return Err(CapacityDataError::ForeignAuthorityNamespace);
         }
         Self::decode(
             record.key(),
-            record.value().ok_or(JournalError::InvalidTransaction)?,
+            record.value().ok_or(CapacityDataError::InvalidTransaction)?,
         )
     }
 
-    pub(in crate::journal) fn decode(key: &[u8], bytes: &[u8]) -> Result<Self, JournalError> {
+    /// Decodes complete canonical family DATA with its self-bound key.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed framing, bindings, geometry, key or identity.
+    pub(in crate::domain_ledger::capacity_family) fn decode(key: &[u8], bytes: &[u8]) -> Result<Self, CapacityDataError> {
         if !(274 + ORIGINAL_ROOT_PREPARED_BYTES_V5..=ORIGINAL_ROOT_CAPACITY_MAXIMUM_VALUE_BYTES_V5)
             .contains(&bytes.len())
             || &bytes[..8] != b"AOSJCR01"
@@ -457,7 +480,7 @@ impl OriginalRootCapacityRecordV5 {
         Ok(decoded)
     }
 
-    fn payload(&self) -> Result<Vec<u8>, JournalError> {
+    fn payload(&self) -> Result<Vec<u8>, CapacityDataError> {
         let p = self.prepared.to_canonical_bytes();
         let c = self
             .cut
@@ -481,7 +504,7 @@ impl OriginalRootCapacityRecordV5 {
 fn hash_release_rows(
     digest: &mut Sha256,
     rows: &std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
-) -> Result<(), JournalError> {
+) -> Result<(), CapacityDataError> {
     for (key, value) in rows {
         hash_release_bytes(digest, key)?;
         hash_release_bytes(digest, value)?;
@@ -489,15 +512,15 @@ fn hash_release_rows(
     Ok(())
 }
 
-fn hash_release_bytes(digest: &mut Sha256, bytes: &[u8]) -> Result<(), JournalError> {
-    let length = u32::try_from(bytes.len()).map_err(|_| JournalError::JournalTooLarge)?;
+fn hash_release_bytes(digest: &mut Sha256, bytes: &[u8]) -> Result<(), CapacityDataError> {
+    let length = u32::try_from(bytes.len()).map_err(|_| CapacityDataError::JournalTooLarge)?;
     digest.update(length.to_be_bytes());
     digest.update(bytes);
     Ok(())
 }
 
-fn identity(payload: &[u8]) -> Result<[u8; 32], JournalError> {
-    let length = u32::try_from(payload.len()).map_err(|_| JournalError::JournalTooLarge)?;
+fn identity(payload: &[u8]) -> Result<[u8; 32], CapacityDataError> {
+    let length = u32::try_from(payload.len()).map_err(|_| CapacityDataError::JournalTooLarge)?;
     let mut digest = Sha256::new();
     digest.update(DOMAIN);
     digest.update(length.to_be_bytes());
@@ -511,7 +534,7 @@ fn envelope(
     p: usize,
     c: usize,
     limits: JournalLimits,
-) -> Result<(u32, u64), JournalError> {
+) -> Result<(u32, u64), CapacityDataError> {
     if !(1..=7).contains(&count) {
         return Err(invalid("original Root native count"));
     }
@@ -545,7 +568,7 @@ fn envelope(
         || limits.maximum_records_per_transaction < if extra_owners { 6 } else { 3 }
         || (limits.maximum_transaction_bytes as u64) < maximum_payload
     {
-        return Err(JournalError::LimitExceeded(
+        return Err(CapacityDataError::LimitExceeded(
             "original Root native branch geometry",
         ));
     }
@@ -593,8 +616,8 @@ mod tests {
 
     #[test]
     fn maximal_closed_store_encodes_three_records_and_transfers_the_full_native_two_debt() {
-        use crate::journal::{JournalTransaction, encoded_transaction_append_bytes};
-        use aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::
+        use crate::domain_ledger::transaction::{JournalTransaction, encoded_transaction_append_bytes};
+        use crate::mount_source_acquisition_state::native_held_completion::
             native_root_sidecar_key_v2;
 
         let limits = JournalLimits::default();
@@ -638,8 +661,8 @@ mod tests {
 
     #[test]
     fn maximal_pending_transaction_encodes_real_six_record_frames_without_double_reserve() {
-        use crate::journal::{JournalTransaction, encoded_transaction_append_bytes};
-        use aos_sandbox_protocol::mount_source_acquisition_state::{
+        use crate::domain_ledger::transaction::{JournalTransaction, encoded_transaction_append_bytes};
+        use crate::mount_source_acquisition_state::{
             acquisition_key, provider_attempt_key, provider_head_key,
             native_held_completion::native_root_sidecar_key_v2,
         };

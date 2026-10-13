@@ -4,6 +4,10 @@
 //! adapter retains its complete candidate before transfer/preflight postchecks;
 //! it never reconstructs Security's original receive or signing authority.
 
+use crate::journal::JournalError;
+
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{OriginalRootCapacityRecordV5};
+
 use aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::{
     has_original_pending_closed_cut_v5,
 };
@@ -145,7 +149,7 @@ fn root_closed_owners(
             native_root_sidecar_key_v2(attempt).map_err(|_| invalid())?,
             stored.to_canonical_bytes().map_err(|_| invalid())?,
         )],
-    ).map_err(crate::journal::JournalError::from)
+    ).map_err(JournalError::from)
 }
 
 fn store_transaction_id(

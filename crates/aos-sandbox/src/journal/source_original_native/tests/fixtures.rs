@@ -3,6 +3,10 @@
 //! Canonical sessions/catalogs/requests are built with public existing codecs.
 //! Synthetic signatures and clock claims establish no protected writer or origin.
 
+use crate::journal::JournalError;
+
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, OriginalSourceCapacityRecordV5};
+
 use super::*;
 use aos_sandbox_core::{RawClockProvenance, RawPairedClockSample};
 use aos_sandbox_source_provider_ledger::{
@@ -755,7 +759,7 @@ pub(super) fn fixture() -> Fixture {
         },
     )
     .unwrap();
-    let request = super::super::super::capacity_reservation::native_held::NativeHeldCapacityRequestV3 {
+    let request = aos_sandbox_protocol::domain_ledger::capacity_family::native_held::NativeHeldCapacityRequestV3 {
         purpose: NativeHeldCapacityPurposeV3::Provider,
         owner_id: Sha256::new()
             .chain_update(b"aos.sandbox.source-provider.native-dispatch-capacity-owner.v2\0")
@@ -778,14 +782,14 @@ pub(super) fn fixture() -> Fixture {
     let initial_floor = OriginalSourceCapacityRecordV5::new(
         request,
         [30; 16],
-        super::super::super::capacity_reservation::native_held::OriginalSourceCapacityBudgetsV5 {
+        aos_sandbox_protocol::domain_ledger::capacity_family::native_held::OriginalSourceCapacityBudgetsV5 {
             terminal_records: request.terminal_records,
             terminal_bytes: request.terminal_bytes,
             poison_records: request.poison_records,
             poison_bytes: request.poison_bytes,
         },
         provenance,
-    )
+    ).map_err(JournalError::from)
     .unwrap();
     let mut applying_records: Vec<_> = keys
         .iter()
@@ -828,7 +832,7 @@ pub(super) fn fixture() -> Fixture {
         [30; 16],
         initial_floor.origin_budgets(),
         initial_floor.original_provenance().clone(),
-    )
+    ).map_err(JournalError::from)
     .unwrap();
     let requested = JournalTransaction::new(
         [31; 16],

@@ -25,7 +25,7 @@ fn portable_production_graphs_have_no_linux_or_effect_owner() -> Result<(), Box<
 
     let metadata: Value = serde_json::from_slice(&output.stdout)?;
     let packages = metadata["packages"].as_array().ok_or("missing packages")?;
-    let roots: [(&str, &[&str]); 6] = [
+    let roots: [(&str, &[&str]); 7] = [
         ("aos-sandbox-core", &["aos-sandbox-core"]),
         // Generic Journal DATA/framing mechanics remain an independently closed foundation.
         ("aos-sandbox-journal", &["aos-sandbox-journal"]),
@@ -57,6 +57,15 @@ fn portable_production_graphs_have_no_linux_or_effect_owner() -> Result<(), Box<
                 "aos-proto",
                 "aos-sandbox-broker-session-protocol",
                 "aos-sandbox-source-provider-protocol",
+                "aos-sandbox-source-provider-ledger",
+            ],
+        ),
+        (
+            "aos-sandbox-source-provider-ledger",
+            &[
+                "aos-sandbox-source-provider-ledger",
+                "aos-sandbox-source-provider-protocol",
+                "aos-sandbox-core",
             ],
         ),
     ];

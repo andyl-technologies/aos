@@ -14,15 +14,14 @@
 //! ACK: cold9 PUT | Source5 DELETE
 //! ```
 
+use aos_sandbox::journal::JournalError;
+
+use aos_sandbox_protocol::domain_ledger::capacity_family::{validate_capacity_snapshot_data_v2};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{ORIGINAL_SOURCE_CAPACITY_MAXIMUM_VALUE_BYTES_V5, OriginalSourceCapacityRecordV5};
+
 use std::collections::{BTreeMap, BTreeSet};
 
-use aos_sandbox::{
-    JournalRecord, JournalTransaction, RecordNamespace,
-    journal::native_held::{
-        ORIGINAL_SOURCE_CAPACITY_MAXIMUM_VALUE_BYTES_V5, OriginalSourceCapacityRecordV5,
-        validate_capacity_snapshot_data_v2,
-    },
-};
+use aos_sandbox::{JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_ledger::{
     collect_bounded_records,
@@ -248,9 +247,9 @@ fn compare_original_source_floor_union_transaction_v5(
     bound_state(before)?;
     bound_state(after)?;
     bound_transaction(transaction, edge.shape().0)?;
-    validate_capacity_snapshot_data_v2(original.original_before)?;
-    validate_capacity_snapshot_data_v2(before)?;
-    validate_capacity_snapshot_data_v2(after)?;
+    validate_capacity_snapshot_data_v2(original.original_before).map_err(JournalError::from)?;
+    validate_capacity_snapshot_data_v2(before).map_err(JournalError::from)?;
+    validate_capacity_snapshot_data_v2(after).map_err(JournalError::from)?;
 
     let limits = aos_sandbox::JournalLimits::default();
     let admission = aos_sandbox::journal::compare_source_original_admission_data_v5(
@@ -315,13 +314,13 @@ fn validate_original_admission(
     transaction: &JournalTransaction,
 ) -> Result<ValidatedAdmission, ProviderLedgerError> {
     bound_state(before)?;
-    validate_capacity_snapshot_data_v2(before)?;
+    validate_capacity_snapshot_data_v2(before).map_err(JournalError::from)?;
     bound_transaction(transaction, 5)?;
     let records = transaction.records();
-    let floor = OriginalSourceCapacityRecordV5::from_journal_record(&records[4])?;
+    let floor = OriginalSourceCapacityRecordV5::from_journal_record(&records[4]).map_err(JournalError::from)?;
     if floor.request().future_transactions != 20
         || floor.admission_transaction_id() != *transaction.id()
-        || floor.origin_reservation_id()? != floor.reservation_id()
+        || floor.origin_reservation_id().map_err(JournalError::from)? != floor.reservation_id()
     {
         return Err(corrupt("original Source initial admission floor"));
     }
@@ -337,7 +336,7 @@ fn validate_original_admission(
     require_owner_binding(&floor, proposed.data())?;
 
     let after = apply_transaction(before, transaction)?;
-    validate_capacity_snapshot_data_v2(&after)?;
+    validate_capacity_snapshot_data_v2(&after).map_err(JournalError::from)?;
     Ok(ValidatedAdmission {
         after,
         initial_floor: floor,
@@ -372,7 +371,7 @@ fn validate_edge(
         require_retained_floor(old, floor)?;
         let expected = JournalRecord::delete(
             RecordNamespace::GlobalCapacityReservation,
-            old.to_journal_record()?.key().to_vec(),
+            old.to_journal_record().map_err(JournalError::from)?.key().to_vec(),
         );
         if records[owner_count] != expected {
             return Err(corrupt("original Source ordered floor DELETE"));
@@ -380,7 +379,7 @@ fn validate_edge(
     }
     if let Some(next) = next {
         require_retained_floor(next, floor)?;
-        if records[record_count - 1] != next.to_journal_record()? {
+        if records[record_count - 1] != next.to_journal_record().map_err(JournalError::from)? {
             return Err(corrupt("original Source ordered floor PUT"));
         }
         if let Some(old) = old {
@@ -459,7 +458,7 @@ fn associate_cut(
     configuration: &ProtectedProviderConfigurationV1,
 ) -> Result<Floors, ProviderLedgerError> {
     bound_state(state)?;
-    validate_capacity_snapshot_data_v2(state)?;
+    validate_capacity_snapshot_data_v2(state).map_err(JournalError::from)?;
     let records = collect_bounded_records(owner_views(state))
         .map_err(crate::transaction::map_pure_ledger_error)?;
     validate_native_held_records_v1(
@@ -610,7 +609,7 @@ fn require_cold_origin(
     admission: &ValidatedAdmission,
 ) -> Result<(), ProviderLedgerError> {
     let initial = &admission.initial_floor;
-    let row = initial.to_journal_record()?;
+    let row = initial.to_journal_record().map_err(JournalError::from)?;
     let claims = archive.prepared().claims();
     let owner = &admission.owner;
     let staged = initial.original_provenance().claims().claims.to_canonical_bytes();
@@ -658,7 +657,7 @@ fn require_retained_floor(
         || current.admission_transaction_id() != original.admission_transaction_id()
         || current.origin_budgets() != original.origin_budgets()
         || current.original_provenance() != original.original_provenance()
-        || current.origin_reservation_id()? != original.reservation_id()
+        || current.origin_reservation_id().map_err(JournalError::from)? != original.reservation_id()
     {
         return Err(corrupt("original Source retained floor bindings"));
     }

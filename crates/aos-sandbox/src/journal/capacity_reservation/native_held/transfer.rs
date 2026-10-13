@@ -3,11 +3,12 @@
 //! Owner adapters retain their binding, count and final-path validation. This
 //! helper only frames an already selected exact edge and checks its full spend.
 
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3};
+
 use super::super::super::{
     JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
     encoded_transaction_append_bytes, validate_transaction,
 };
-use super::{NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3};
 
 pub(super) fn frame_transfer(
     transaction_id: [u8; 16],

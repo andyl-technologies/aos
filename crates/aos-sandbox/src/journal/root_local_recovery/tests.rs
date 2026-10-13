@@ -3,6 +3,11 @@
 //! These vectors borrow the existing signed fixture, not protected custody. No
 //! live Security, fixed writer or private Mount installation is manufactured.
 
+use crate::journal::JournalError;
+
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3};
+use aos_sandbox_protocol::domain_ledger::capacity_family::ordinary::{OrdinaryCapacityRecordV4};
+
 use aos_sandbox_protocol as protocol;
 use protocol::mount_source_acquisition_state::format::death_digest;
 use protocol::mount_source_acquisition_state::*;
@@ -99,11 +104,9 @@ fn apply(state: &mut State, transaction: &JournalTransaction) {
 }
 
 fn native_floor(
-    purpose: super::super::capacity_reservation::native_held::NativeHeldCapacityPurposeV3,
+    purpose: aos_sandbox_protocol::domain_ledger::capacity_family::native_held::NativeHeldCapacityPurposeV3,
 ) -> JournalRecord {
-    use super::super::capacity_reservation::native_held::{
-        NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3,
-    };
+
     NativeHeldCapacityRecordV3::new(
         NativeHeldCapacityRequestV3 {
             purpose,
@@ -120,14 +123,14 @@ fn native_floor(
             poison_bytes: 338,
         },
         [77; 16],
-    )
+    ).map_err(JournalError::from)
     .unwrap()
     .to_journal_record()
 }
 
 #[test]
 fn canonical_native_data_does_not_justify_original_root_debt() {
-    use super::super::capacity_reservation::native_held::NativeHeldCapacityPurposeV3;
+
     let (mut state, successor) = recovery();
     let floor = native_floor(NativeHeldCapacityPurposeV3::Root);
     state.insert(
@@ -142,7 +145,7 @@ fn canonical_native_data_does_not_justify_original_root_debt() {
 
 #[test]
 fn unrelated_native_floor_remains_byte_exact_and_is_counted() {
-    use super::super::capacity_reservation::native_held::NativeHeldCapacityPurposeV3;
+
     let (mut state, successor) = recovery();
     let unrelated = native_floor(NativeHeldCapacityPurposeV3::Provider);
     let key = (unrelated.namespace(), unrelated.key().to_vec());
@@ -246,7 +249,7 @@ fn unsupported_kind3_overlap_refuses_before_head_mutation() {
         .next()
         .copied()
         .unwrap();
-    let record = OrdinaryCapacityRecordV4::new(data)
+    let record = OrdinaryCapacityRecordV4::new(data).map_err(JournalError::from)
         .unwrap()
         .to_journal_record();
     state.insert(
@@ -309,7 +312,7 @@ fn kind5_wrong_death_or_original_native_debt_refuses_before_admission() {
     assert!(dead_replacement::prepare(&state, successor, death).is_err());
     let (_, successor, death) = reserved_dead();
     let floor = native_floor(
-        super::super::capacity_reservation::native_held::NativeHeldCapacityPurposeV3::Root,
+        aos_sandbox_protocol::domain_ledger::capacity_family::native_held::NativeHeldCapacityPurposeV3::Root,
     );
     state.insert(
         (floor.namespace(), floor.key().to_vec()),
@@ -323,7 +326,7 @@ fn kind5_wrong_death_or_original_native_debt_refuses_before_admission() {
 
 #[test]
 fn kind5_counts_new_floor_and_retains_unrelated_native_promises() {
-    use super::super::capacity_reservation::native_held::NativeHeldCapacityPurposeV3;
+
     let (mut state, successor, death) = reserved_dead();
     let unrelated = native_floor(NativeHeldCapacityPurposeV3::Provider);
     let key = (unrelated.namespace(), unrelated.key().to_vec());

@@ -26,18 +26,19 @@
 //! The named writer separately rejoins the canonical query and original rows;
 //! generic admission continues to refuse this family.
 
-use aos_sandbox_protocol::mount_source_acquisition_state::format::{
+use crate::mount_source_acquisition_state::format::{
     MAXIMUM_ACQUISITION_VALUE_BYTES, MAXIMUM_PROVIDER_ATTEMPT_VALUE_BYTES,
     MAXIMUM_PROVIDER_HEAD_VALUE_BYTES,
 };
-use aos_sandbox_protocol::mount_source_acquisition_state::{
+use crate::mount_source_acquisition_state::{
     acquisition_key, provider_attempt_key, provider_head_key,
 };
 
-use super::super::{
-    JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
-    encode_record, encoded_transaction_append_bytes,
+use aos_sandbox_core::RecordNamespace;
+use crate::domain_ledger::transaction::{
+    JournalLimits, JournalRecord, JournalTransaction, encode_record, encoded_transaction_append_bytes,
 };
+use super::CapacityDataError;
 use super::fixed300::{FixedCapacityBody, VALUE_BYTES, floor_identity};
 use super::{reservation_key, take};
 
@@ -48,7 +49,7 @@ const ORIGINAL_ROOT_INVENTORY_KIND: u8 = 7;
 /// Selects a closed conservative future suffix without admitting a producer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
-pub(in crate::journal) enum QueryCapacityProfileV6 {
+pub enum QueryCapacityProfileV6 {
     /// Reserves a response transfer and its retained uncertain suffix.
     StatusOrComplete = 1,
     /// Retains the original query's unresolved future suffix.
@@ -58,7 +59,7 @@ pub(in crate::journal) enum QueryCapacityProfileV6 {
 impl QueryCapacityProfileV6 {
     /// Returns the closed count, independent of the enum discriminator.
     #[must_use]
-    pub(in crate::journal) const fn remaining_transactions(self) -> u32 {
+    pub const fn remaining_transactions(self) -> u32 {
         match self {
             Self::StatusOrComplete => 2,
             Self::RetainedUncertain => 1,
@@ -67,7 +68,7 @@ impl QueryCapacityProfileV6 {
 
     /// Returns record frames only, excluding transaction Begin and Commit.
     #[must_use]
-    pub(in crate::journal) const fn remaining_record_frames(self) -> u32 {
+    pub const fn remaining_record_frames(self) -> u32 {
         match self {
             Self::StatusOrComplete => 9,
             Self::RetainedUncertain => 5,
@@ -84,7 +85,7 @@ impl QueryCapacityProfileV6 {
     /// # Errors
     ///
     /// Rejects an unrepresentable canonical key, framing, or aggregate bound.
-    pub(in crate::journal) fn remaining_append_bytes(self) -> Result<u64, JournalError> {
+    pub fn remaining_append_bytes(self) -> Result<u64, CapacityDataError> {
         let retained = retained_envelope()?;
         let retained_bytes = framed_envelope_bytes(
             &retained,
@@ -109,7 +110,7 @@ impl QueryCapacityProfileV6 {
                 )?;
                 status_bytes
                     .checked_add(retained_bytes)
-                    .ok_or(JournalError::JournalTooLarge)
+                    .ok_or(CapacityDataError::JournalTooLarge)
             }
         }
     }
@@ -119,7 +120,7 @@ impl QueryCapacityProfileV6 {
     /// # Errors
     /// Rejects opened key, payload, record-count or aggregate TX-byte limits
     /// below either required future envelope, including framing overflow.
-    pub(in crate::journal) fn validate_limits(self, limits: JournalLimits) -> Result<(), JournalError> {
+    pub fn validate_limits(self, limits: JournalLimits) -> Result<(), CapacityDataError> {
         validate_envelope_limits(
             &retained_envelope()?,
             &[
@@ -140,7 +141,7 @@ impl QueryCapacityProfileV6 {
         Ok(())
     }
 
-    fn from_byte(value: u8) -> Result<Self, JournalError> {
+    fn from_byte(value: u8) -> Result<Self, CapacityDataError> {
         match value {
             1 => Ok(Self::StatusOrComplete),
             2 => Ok(Self::RetainedUncertain),
@@ -151,7 +152,7 @@ impl QueryCapacityProfileV6 {
 
 /// Holds input commitments and closed conservative accounting as DATA only.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::journal) struct QueryCapacityDataV6 {
+pub struct QueryCapacityDataV6 {
     /// Closed remaining suffix discriminator; never a transaction count.
     pub profile: QueryCapacityProfileV6,
     /// Original Inventory query Attempt identity.
@@ -183,7 +184,7 @@ pub(in crate::journal) struct QueryCapacityDataV6 {
 }
 
 impl QueryCapacityDataV6 {
-    fn validate(&self) -> Result<(), JournalError> {
+    fn validate(&self) -> Result<(), CapacityDataError> {
         if self.owner_id == [0; 32]
             || self.original_owner_cut_digest == [0; 32]
             || self.operation_id == [0; 16]
@@ -236,7 +237,7 @@ impl QueryCapacityDataV6 {
 
 /// Retains self-bound query DATA without protected writer or settlement trust.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::journal) struct QueryCapacityRecordV6 {
+pub struct QueryCapacityRecordV6 {
     data: QueryCapacityDataV6,
     identity: [u8; 32],
 }
@@ -248,7 +249,7 @@ impl QueryCapacityRecordV6 {
     ///
     /// Rejects any zero binding, noncanonical count/framing/growth geometry,
     /// or unrepresentable profile envelope. Commitments remain opaque input.
-    pub(in crate::journal) fn new(data: QueryCapacityDataV6) -> Result<Self, JournalError> {
+    pub fn new(data: QueryCapacityDataV6) -> Result<Self, CapacityDataError> {
         data.validate()?;
         let identity = floor_identity(
             &data.identity_payload(),
@@ -260,13 +261,13 @@ impl QueryCapacityRecordV6 {
 
     /// Returns the exact DATA bindings without proving their preimages.
     #[must_use]
-    pub(in crate::journal) const fn data(&self) -> QueryCapacityDataV6 {
+    pub const fn data(&self) -> QueryCapacityDataV6 {
         self.data
     }
 
     /// Returns the version-6 domain-separated self-binding identity.
     #[must_use]
-    pub(in crate::journal) const fn reservation_id(&self) -> [u8; 32] {
+    pub const fn reservation_id(&self) -> [u8; 32] {
         self.identity
     }
 
@@ -275,7 +276,7 @@ impl QueryCapacityRecordV6 {
     /// Global family dispatch recognizes this DATA for accounting; named
     /// authority and owner/reference rejoin remain separately required.
     #[must_use]
-    pub(in crate::journal) fn to_journal_record(&self) -> JournalRecord {
+    pub fn to_journal_record(&self) -> JournalRecord {
         let mut value = self.data.identity_payload();
         value.extend_from_slice(&self.identity);
         JournalRecord::put(
@@ -292,15 +293,15 @@ impl QueryCapacityRecordV6 {
     /// Rejects a foreign namespace, DELETE, wrong header/width/reserved bytes,
     /// unknown kind/profile, zero binding, noncanonical geometry, or substituted
     /// key/domain/identity. Does not validate owner or request preimages.
-    pub(in crate::journal) fn from_journal_record(
+    pub fn from_journal_record(
         record: &JournalRecord,
-    ) -> Result<Self, JournalError> {
+    ) -> Result<Self, CapacityDataError> {
         if record.namespace() != RecordNamespace::GlobalCapacityReservation {
-            return Err(JournalError::ForeignAuthorityNamespace);
+            return Err(CapacityDataError::ForeignAuthorityNamespace);
         }
         Self::decode(
             record.key(),
-            record.value().ok_or(JournalError::InvalidTransaction)?,
+            record.value().ok_or(CapacityDataError::InvalidTransaction)?,
         )
     }
 
@@ -312,7 +313,7 @@ impl QueryCapacityRecordV6 {
     /// # Errors
     ///
     /// Rejects a wrong envelope, kind/profile, binding, geometry, or identity.
-    pub(in crate::journal) fn decode(key: &[u8], value: &[u8]) -> Result<Self, JournalError> {
+    pub fn decode(key: &[u8], value: &[u8]) -> Result<Self, CapacityDataError> {
         if value.len() != VALUE_BYTES
             || &value[..8] != b"AOSJCR01"
             || value[8..12] != [0, 6, 40, 10]
@@ -357,12 +358,12 @@ impl QueryCapacityRecordV6 {
 fn framed_envelope_bytes(
     transaction: &JournalTransaction,
     value_bounds: &[usize],
-) -> Result<u64, JournalError> {
+) -> Result<u64, CapacityDataError> {
     value_bounds.iter().try_fold(
         encoded_transaction_append_bytes(transaction)?,
         |total, bound| {
-            let bytes = u64::try_from(*bound).map_err(|_| JournalError::JournalTooLarge)?;
-            total.checked_add(bytes).ok_or(JournalError::JournalTooLarge)
+            let bytes = u64::try_from(*bound).map_err(|_| CapacityDataError::JournalTooLarge)?;
+            total.checked_add(bytes).ok_or(CapacityDataError::JournalTooLarge)
         },
     )
 }
@@ -371,9 +372,9 @@ fn validate_envelope_limits(
     transaction: &JournalTransaction,
     owner_bounds: &[usize],
     limits: JournalLimits,
-) -> Result<(), JournalError> {
+) -> Result<(), CapacityDataError> {
     if transaction.records().len() > limits.maximum_records_per_transaction {
-        return Err(JournalError::LimitExceeded("query promised records per transaction"));
+        return Err(CapacityDataError::LimitExceeded("query promised records per transaction"));
     }
     let mut bounds = owner_bounds.iter();
     let mut total = 0_usize;
@@ -384,14 +385,14 @@ fn validate_envelope_limits(
             0
         };
         let bytes = encode_record(record)?.len().checked_add(bound)
-            .ok_or(JournalError::JournalTooLarge)?;
+            .ok_or(CapacityDataError::JournalTooLarge)?;
         if record.key().len() > limits.maximum_key_bytes || bytes > limits.maximum_record_bytes {
-            return Err(JournalError::LimitExceeded("query promised record geometry"));
+            return Err(CapacityDataError::LimitExceeded("query promised record geometry"));
         }
-        total = total.checked_add(bytes).ok_or(JournalError::JournalTooLarge)?;
+        total = total.checked_add(bytes).ok_or(CapacityDataError::JournalTooLarge)?;
     }
     if bounds.next().is_some() || total > limits.maximum_transaction_bytes {
-        return Err(JournalError::LimitExceeded("query promised transaction geometry"));
+        return Err(CapacityDataError::LimitExceeded("query promised transaction geometry"));
     }
     Ok(())
 }
@@ -399,7 +400,7 @@ fn validate_envelope_limits(
 // These framing templates contain no canonical owner values or valid floor.
 // They describe the conservative promised DATA envelope only; they cannot be
 // submitted as a validated owner transaction or fund a real writer.
-fn status_envelope() -> Result<JournalTransaction, JournalError> {
+fn status_envelope() -> Result<JournalTransaction, CapacityDataError> {
     JournalTransaction::new(
         [1; 16],
         vec![
@@ -415,10 +416,10 @@ fn status_envelope() -> Result<JournalTransaction, JournalError> {
                 vec![0; VALUE_BYTES],
             ),
         ],
-    ).map_err(JournalError::from)
+    ).map_err(CapacityDataError::from)
 }
 
-fn retained_envelope() -> Result<JournalTransaction, JournalError> {
+fn retained_envelope() -> Result<JournalTransaction, CapacityDataError> {
     JournalTransaction::new(
         [2; 16],
         vec![
@@ -431,15 +432,15 @@ fn retained_envelope() -> Result<JournalTransaction, JournalError> {
                 reservation_key([5; 32]),
             ),
         ],
-    ).map_err(JournalError::from)
+    ).map_err(CapacityDataError::from)
 }
 
 fn owner_put(key: Vec<u8>) -> JournalRecord {
     JournalRecord::put(RecordNamespace::MountSourceAcquisition, key, Vec::new())
 }
 
-fn invalid(reason: &'static str) -> JournalError {
-    JournalError::MalformedRecord(reason)
+fn invalid(reason: &'static str) -> CapacityDataError {
+    CapacityDataError::MalformedRecord(reason)
 }
 
 #[cfg(test)]

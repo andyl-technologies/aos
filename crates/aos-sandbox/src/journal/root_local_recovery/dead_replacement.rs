@@ -4,6 +4,8 @@
 //! full graph and fixed physical writer supply currentness; no old Head inverse
 //! or caller-nominated reference map is reconstructed here.
 
+use aos_sandbox_protocol::domain_ledger::capacity_family::ordinary::{OrdinaryCapacityRecordV4};
+
 use aos_sandbox_protocol::mount_source_acquisition_state::{
     DeadProviderExecutionProjectionV2, ProviderIntentV2, RecordRefV2, prepare_dead_replacement_v2,
 };

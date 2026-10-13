@@ -140,7 +140,7 @@ pub(super) fn validate_current_authority(
             value,
             RecordNamespace::SourceProviderAuthority | RecordNamespace::GlobalCapacityReservation
         )
-    }) || !capacity_reservation::all_reservations_owned_by(journal.native.state(), namespace)?
+    }) || !aos_sandbox_protocol::domain_ledger::capacity_family::all_reservations_owned_by(journal.native.state(), namespace)?
     {
         return Err(JournalError::ForeignAuthorityNamespace);
     }

@@ -3,6 +3,8 @@
 //! Marker values are not canonical owners. These tests create no Journal,
 //! protected IO, admission receipt, ordinary association or funding authority.
 
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRequestV3};
+
 use super::*;
 use super::super::{measure_appends, reservation_key};
 

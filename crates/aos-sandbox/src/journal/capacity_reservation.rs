@@ -13,6 +13,9 @@
 //! other kinds remain opaque to protected producers. Generic append gates stay
 //! closed, and no original native admission follows from canonical floor DATA.
 
+use aos_sandbox_protocol::domain_ledger::capacity_family::{decode_capacity_reservation_request_v1, legacy_capacity_ids_for_purpose, validate_capacity_snapshot_data_v2, validate_request_with_limits};
+use aos_sandbox_protocol::domain_ledger::capacity_family::family::{CanonicalCapacityFamily, accounting_reservation, canonical_reservations};
+
 use crate::journal::CacheMutationGateV1;
 use crate::journal::semantic_append::AppendScope;
 
@@ -28,25 +31,7 @@ use super::{
     CommitResult, Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace,
 };
 
-pub(super) mod family;
-mod fixed300;
 pub mod native_held;
-mod ordinary;
-mod query;
-
-pub(in crate::journal) use ordinary::{
-    OrdinaryCapacityDataV4, OrdinaryCapacityKindV4, OrdinaryCapacityProfileV4,
-    OrdinaryCapacityRecordV4,
-};
-
-pub(in crate::journal) use query::{
-    QueryCapacityDataV6, QueryCapacityProfileV6, QueryCapacityRecordV6,
-};
-
-use family::{CanonicalCapacityFamily, canonical_reservations};
-pub(in crate::journal) use family::{
-    accounting_reservation, accounting_reservations, require_legacy_reservations,
-};
 
 pub use aos_sandbox_protocol::domain_ledger::capacity::{
     GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRecoveryBindingV1,
@@ -78,14 +63,6 @@ pub struct GlobalCapacityReservationV1 {
     pub(super) admission_transaction_id: [u8; 16],
     pub(super) reservation_id: [u8; 32],
     pub(super) record_digest: [u8; 32],
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct DecodedCapacityReservationV1 {
-    pub reservation_id: [u8; 32],
-    pub maximum_records: usize,
-    pub maximum_bytes: u64,
-    pub maximum_transactions: usize,
 }
 
 impl PreparedGlobalCapacityReservationV1 {
@@ -190,7 +167,7 @@ impl Journal {
         legacy_capacity_ids_for_purpose(
             self.native.state(),
             GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor,
-        )
+        ).map_err(JournalError::from)
     }
 
     /// Lists only canonical Controller-history capacity identities for replay.
@@ -199,7 +176,7 @@ impl Journal {
         legacy_capacity_ids_for_purpose(
             self.native.state(),
             GlobalCapacityReservationPurposeV1::ControllerProjectAdmission,
-        )
+        ).map_err(JournalError::from)
     }
 
     /// Transfers Root's two-slot intent to its exact one-slot history suffix.
@@ -452,7 +429,7 @@ impl Journal {
         expected_reservation_id: [u8; 32],
     ) -> Result<Option<GlobalCapacityReservationV1>, JournalError> {
         self.ensure_healthy()?;
-        validate_all_reservations(self.native.state())?;
+        validate_capacity_snapshot_data_v2(self.native.state())?;
         let Some(value) = self.native.state().get(&(
             RecordNamespace::GlobalCapacityReservation,
             reservation_key(expected_reservation_id),
@@ -628,127 +605,11 @@ pub(super) fn validate_settlement_shape(
     Ok(())
 }
 
-pub(super) fn decode_capacity_record(
-    key: &[u8],
-    value: &[u8],
-) -> Result<DecodedCapacityReservationV1, JournalError> {
-    CanonicalCapacityFamily::decode(key, value)?.accounting()
-}
-
-/// Decodes one canonical legacy capacity request as nonauthorizing data.
-///
-/// The returned tuple contains the request, admission transaction ID and
-/// reservation ID. This checks only the supplied record, not the complete floor
-/// snapshot, an owner graph or journal currentness. Callers must validate every
-/// retained floor before selecting a record. These values cannot construct a
-/// protected reservation or settlement grant.
-///
-/// # Errors
-///
-/// Rejects another namespace, deletion, malformed or unknown framing, a changed
-/// key or identity, and valid native or ordinary records from other families.
-pub fn decode_capacity_reservation_request_v1(
-    record: &JournalRecord,
-) -> Result<(GlobalCapacityReservationRequestV1, [u8; 16], [u8; 32]), JournalError> {
-    if record.namespace() != RecordNamespace::GlobalCapacityReservation {
-        return Err(JournalError::ForeignAuthorityNamespace);
-    }
-    let value = record.value().ok_or(JournalError::InvalidTransaction)?;
-    CanonicalCapacityFamily::decode(record.key(), value)?.require_legacy()
-}
-
-/// Validates a touched capacity row before selecting one legacy purpose.
-///
-/// # Errors
-///
-/// Rejects a foreign namespace, deletion, or malformed/unknown family. Valid
-/// native and ordinary DATA rows return false without becoming legacy grants.
-pub(crate) fn capacity_record_has_legacy_purpose(
-    record: &JournalRecord,
-    purpose: GlobalCapacityReservationPurposeV1,
-) -> Result<bool, JournalError> {
-    if record.namespace() != RecordNamespace::GlobalCapacityReservation {
-        return Err(JournalError::ForeignAuthorityNamespace);
-    }
-    let value = record.value().ok_or(JournalError::InvalidTransaction)?;
-    let family = CanonicalCapacityFamily::decode(record.key(), value)?;
-    Ok(family
-        .legacy()
-        .is_some_and(|(request, _, _)| request.purpose == purpose))
-}
-
-pub(super) fn all_reservations_owned_by(
-    state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
-    namespace: RecordNamespace,
-) -> Result<bool, JournalError> {
-    let families = canonical_reservations(state)?;
-    Ok(families
-        .iter()
-        .all(|family| family.owner_namespace() == namespace))
-}
-
-pub(super) fn validate_all_reservations(
-    state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
-) -> Result<(), JournalError> {
-    canonical_reservations(state)?;
-    Ok(())
-}
-
-fn legacy_capacity_ids_for_purpose(
-    state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
-    purpose: GlobalCapacityReservationPurposeV1,
-) -> Result<Vec<[u8; 32]>, JournalError> {
-    let families = canonical_reservations(state)?;
-    Ok(families
-        .iter()
-        .filter_map(|family| {
-            let (request, _, identity) = family.legacy()?;
-            (request.purpose == purpose).then_some(identity)
-        })
-        .collect())
-}
-
 fn validate_request(
     request: &GlobalCapacityReservationRequestV1,
     journal: &Journal,
 ) -> Result<(), JournalError> {
-    validate_request_with_limits(request, journal.native.limits())
-}
-
-pub(super) fn validate_request_with_limits(
-    request: &GlobalCapacityReservationRequestV1,
-    limits: super::JournalLimits,
-) -> Result<(), JournalError> {
-    let records = request.terminal_records.max(request.poison_records);
-    let bytes = request.terminal_bytes.max(request.poison_bytes);
-    if request.owner_namespace != request.purpose.owner_namespace()
-        || request.owner_id == [0; 32]
-        || request.owner_digest == [0; 32]
-        || request.operation_id == [0; 16]
-        || request.artifact_digest == [0; 32]
-        || request.checkpoint_digest == [0; 32]
-        || request.chain_head_digest == [0; 32]
-        || request.future_transactions == 0
-        || request.future_transactions > MAXIMUM_FUTURE_TRANSACTIONS
-        || !valid_future_transactions(request.purpose, request.future_transactions)
-        || request.terminal_records == 0
-        || request.poison_records == 0
-        || request.terminal_bytes == 0
-        || request.poison_bytes == 0
-        || usize::try_from(records).ok().is_none_or(|value| {
-            value > limits.maximum_records_per_transaction
-                || value > limits.maximum_materialized_records
-        })
-        || bytes
-            > limits
-                .maximum_journal_bytes
-                .min(limits.maximum_transaction_bytes as u64)
-    {
-        return Err(JournalError::LimitExceeded(
-            "invalid global capacity reservation",
-        ));
-    }
-    Ok(())
+    validate_request_with_limits(request, journal.native.limits()).map_err(JournalError::from)
 }
 
 /// Constructs fixed reservation DATA without conferring named-owner custody.
@@ -854,13 +715,6 @@ impl Journal {
         super::source_tree_successor::require_capacity_owner(self, request.purpose)?;
         first_source_successor_capacity_delete_v2(self.native.state(), request, admission)
     }
-}
-
-fn take<const N: usize>(value: &[u8], offset: &mut usize) -> [u8; N] {
-    let mut bytes = [0; N];
-    bytes.copy_from_slice(&value[*offset..*offset + N]);
-    *offset += N;
-    bytes
 }
 
 pub(in crate::journal) fn digest_bytes(value: &[u8]) -> [u8; 32] {
@@ -978,7 +832,7 @@ mod purpose_tests {
             decode_reservation(&value).unwrap(),
             (request, admission, id)
         );
-        assert!(decode_capacity_record(&reservation_key(id), &value).is_ok());
+        assert!(accounting_reservation(&reservation_key(id), &value).map_err(JournalError::from).is_ok());
         assert!(request.purpose.permits(RecordNamespace::DesiredState));
         assert!(
             !request
@@ -1002,7 +856,7 @@ mod purpose_tests {
         assert_eq!(value[11], 3);
         assert_ne!(id, reservation_id(&root, admission));
         assert_eq!(decode_reservation(&value).unwrap(), (source, admission, id));
-        assert!(decode_capacity_record(&reservation_key(id), &value).is_ok());
+        assert!(accounting_reservation(&reservation_key(id), &value).map_err(JournalError::from).is_ok());
         assert!(
             source
                 .purpose
@@ -1028,7 +882,7 @@ mod purpose_tests {
         ] {
             let id = reservation_id(&foreign, admission);
             let value = encode_reservation(&foreign, admission, id);
-            assert!(decode_capacity_record(&reservation_key(id), &value).is_err());
+            assert!(accounting_reservation(&reservation_key(id), &value).map_err(JournalError::from).is_err());
         }
     }
 
@@ -1049,7 +903,7 @@ mod purpose_tests {
         let id: [u8; 32] = digest.finalize().into();
         value[VALUE_BYTES_V1 - 32..].copy_from_slice(&id);
 
-        assert!(decode_capacity_record(&reservation_key(id), &value).is_err());
+        assert!(accounting_reservation(&reservation_key(id), &value).map_err(JournalError::from).is_err());
     }
 
     #[test]
@@ -1080,7 +934,7 @@ mod purpose_tests {
             record_digest: digest_bytes(&value),
         };
 
-        assert!(decode_capacity_record(&reservation_key(id), &value).is_ok());
+        assert!(accounting_reservation(&reservation_key(id), &value).map_err(JournalError::from).is_ok());
         assert!(!reservation.matches_recovery_binding(&binding));
     }
 
@@ -1113,7 +967,7 @@ mod purpose_tests {
                     decode_reservation(&bytes).unwrap(),
                     (request, admission, identifier)
                 );
-                assert!(decode_capacity_record(&reservation_key(identifier), &bytes).is_ok());
+                assert!(accounting_reservation(&reservation_key(identifier), &bytes).map_err(JournalError::from).is_ok());
                 assert_eq!(
                     bytes.len(),
                     if uses_v2(&request) {
@@ -1198,7 +1052,7 @@ mod purpose_tests {
         assert_eq!(bytes.len(), VALUE_BYTES_V1);
         assert_eq!(bytes[11], 7);
         assert_eq!(decode_reservation(&bytes).unwrap().0, request);
-        assert!(decode_capacity_record(&reservation_key(identifier), &bytes).is_ok());
+        assert!(accounting_reservation(&reservation_key(identifier), &bytes).map_err(JournalError::from).is_ok());
         assert!(
             request
                 .purpose
@@ -1242,3 +1096,11 @@ mod purpose_tests {
         assert_ne!(reservation_id(&wider, admission), identifier);
     }
 }
+
+#[cfg(test)]
+#[path = "capacity_reservation/tests/ordinary.rs"]
+mod ordinary_tests;
+
+#[cfg(test)]
+#[path = "capacity_reservation/tests/query.rs"]
+mod query_tests;

@@ -5,6 +5,9 @@
 //! original bindings with the exact old namespace-46 record; it cannot replace
 //! the Source graph validator or supply original protected admission provenance.
 
+use aos_sandbox_protocol::domain_ledger::capacity_family::{decode_capacity_reservation_request_v1};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3};
+
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
     SourceProviderAuthorityV1, native_export_fence::native_dispatch_backend_identity_v2,
@@ -15,11 +18,8 @@ use super::super::super::{
     JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
     validate_transaction,
 };
-use super::super::{GlobalCapacityReservationPurposeV1, decode_capacity_reservation_request_v1};
-use super::{
-    NativeHeldCapacityAppendV3, NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3,
-    NativeHeldCapacitySuffixV3, invalid,
-};
+use super::super::GlobalCapacityReservationPurposeV1;
+use super::{NativeHeldCapacityAppendV3, NativeHeldCapacitySuffixV3, invalid};
 
 const DISPATCH_OWNER_DOMAIN: &[u8] =
     b"aos.sandbox.source-provider.native-dispatch-capacity-owner.v2\0";
@@ -206,7 +206,7 @@ pub fn provider_native_capacity_transition_v3(
     }
     let next = remaining
         .map(|(normal, cold)| {
-            NativeHeldCapacityRecordV3::from_suffixes(
+            super::capacity_record_from_suffixes_v3(
                 old.request(),
                 old.admission_transaction_id(),
                 normal,

@@ -9,6 +9,8 @@
     reason = "Fixture setup and regression assertions intentionally panic."
 )]
 
+use crate::journal::JournalError;
+
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
 use aos_sandbox_core::model::{
@@ -697,7 +699,7 @@ fn actual_opened_journal_byte_ceiling_funds_the_full_quarantine_append() {
             panic!("fresh fixture must prepare a new comparison record");
         };
         let (capacity_request, _, _) =
-            crate::journal::decode_capacity_reservation_request_v1(capacity.record()).unwrap();
+            aos_sandbox_protocol::domain_ledger::capacity_family::decode_capacity_reservation_request_v1(capacity.record()).map_err(JournalError::from).unwrap();
         let admission_bytes =
             crate::journal::encoded_transaction_append_bytes(&transaction).unwrap();
         // Prepared and Quarantined values have the same fixed width. This is

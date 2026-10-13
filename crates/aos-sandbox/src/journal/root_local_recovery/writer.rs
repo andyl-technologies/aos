@@ -1,5 +1,7 @@
 //! Named kind2/kind5 physical writers sharing one private append/readback core.
 
+use aos_sandbox_protocol::domain_ledger::capacity_family::ordinary::{OrdinaryCapacityRecordV4};
+
 use crate::journal::PreflightTransactionViewV1;
 use crate::journal::semantic_append::{AppendScope, PreflightScope};
 
@@ -9,10 +11,7 @@ use aos_sandbox_protocol::mount_source_acquisition_state::{
     DeadProviderExecutionProjectionV2, MountSourceAcquisitionStateV2, SourceProviderSessionV2,
 };
 
-use super::{
-    Edge, Kind, OrdinaryCapacityRecordV4, dead_replacement, graph, pending, prepare, rejoin,
-    settlement,
-};
+use super::{Edge, Kind, dead_replacement, graph, pending, prepare, rejoin, settlement};
 use crate::journal::{
     CacheMutationGateV1, CommitResult, Journal, JournalError, JournalTransaction,
     ProtectedAuthorityScope, ProtectedJournalAuthority, ProtectedJournalSnapshot, RecordNamespace,

@@ -6,6 +6,8 @@
 //! publication form one ordered recipe. Opening, replay, selector DATA and
 //! domain authority admission remain in the parent and their existing owners.
 
+use aos_sandbox_protocol::domain_ledger::capacity_family::{capacity_record_has_legacy_purpose};
+
 use std::collections::BTreeMap;
 
 use aos_sandbox_journal::materialized::RecordMutationRef;
@@ -28,8 +30,6 @@ use super::{
     validate_idempotency_changes, validate_materialized_change, validate_reserved_capacity,
     validate_transaction,
 };
-#[cfg(not(target_os = "linux"))]
-use super::capacity_record_has_legacy_purpose;
 #[cfg(target_os = "linux")]
 use super::{
     CacheQ04TransactionRecipesV1, ControllerQ04TransitionV1, GlobalCapacityReservationV1,
@@ -1003,7 +1003,7 @@ impl Journal {
             root_original_inventory::require_generic_transaction(
                 self.native.state(), transaction, self.native.limits(),
             )?;
-            native_held::require_legacy_transaction(self.native.state(), transaction)?;
+            aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_transaction(self.native.state(), transaction)?;
             settling_reservation
         };
         #[cfg(target_os = "linux")]
@@ -1459,7 +1459,7 @@ impl Journal {
                 root_original_inventory::require_generic_transaction(
                     &state, transaction, self.native.limits(),
                 )?;
-                native_held::require_legacy_transaction(&state, transaction)?;
+                aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_transaction(&state, transaction)?;
                 settling_reservation
             };
             #[cfg(target_os = "linux")]

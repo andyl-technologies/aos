@@ -18,7 +18,10 @@
 //! retained references, installation, settlement, signer, or effect authority.
 //! There is no ordinary producer or append exception in this module.
 
-use super::super::{JournalError, JournalRecord, RecordNamespace};
+use crate::domain_ledger::capacity_family::{CapacityDataError};
+
+use aos_sandbox_core::RecordNamespace;
+use crate::domain_ledger::transaction::{JournalLimits, JournalRecord};
 use super::fixed300::{FixedCapacityBody, floor_identity as fixed_floor_identity};
 use super::{reservation_key, take};
 
@@ -58,7 +61,7 @@ pub enum OrdinaryCapacityKindV4 {
 }
 
 impl OrdinaryCapacityKindV4 {
-    fn from_byte(value: u8) -> Result<Self, JournalError> {
+    fn from_byte(value: u8) -> Result<Self, CapacityDataError> {
         match value {
             1 => Ok(Self::IdleReplacement),
             2 => Ok(Self::BarrierIdleReplacement),
@@ -126,7 +129,7 @@ impl OrdinaryCapacityProfileV4 {
         }
     }
 
-    fn from_byte(value: u8) -> Result<Self, JournalError> {
+    fn from_byte(value: u8) -> Result<Self, CapacityDataError> {
         match value {
             1 => Ok(Self::LocalCommittedReadback),
             2 => Ok(Self::InventoryResponse),
@@ -173,7 +176,7 @@ pub struct OrdinaryCapacityDataV4 {
 }
 
 impl OrdinaryCapacityDataV4 {
-    fn validate(&self) -> Result<(), JournalError> {
+    fn validate(&self) -> Result<(), CapacityDataError> {
         if !self.kind.permits(self.profile)
             || self.remaining_transactions != self.profile.remaining_transactions()
             || self.owner_id == [0; 32]
@@ -269,7 +272,7 @@ impl OrdinaryCapacityRecordV4 {
     ///
     /// Rejects sentinel bindings, an illegal kind/profile/count, local TX mismatch,
     /// or impossible framing geometry. Does not validate the owner commitments.
-    pub fn new(data: OrdinaryCapacityDataV4) -> Result<Self, JournalError> {
+    pub fn new(data: OrdinaryCapacityDataV4) -> Result<Self, CapacityDataError> {
         data.validate()?;
         let identity = floor_identity(&data.identity_payload())?;
         Ok(Self { data, identity })
@@ -306,17 +309,22 @@ impl OrdinaryCapacityRecordV4 {
     /// Rejects foreign namespace, DELETE, wrong width/version/purpose/owner,
     /// padding/tail, unknown kind/profile, sentinel bindings, invalid geometry,
     /// or substituted key/domain/identity.
-    pub fn from_journal_record(record: &JournalRecord) -> Result<Self, JournalError> {
+    pub fn from_journal_record(record: &JournalRecord) -> Result<Self, CapacityDataError> {
         if record.namespace() != RecordNamespace::GlobalCapacityReservation {
-            return Err(JournalError::ForeignAuthorityNamespace);
+            return Err(CapacityDataError::ForeignAuthorityNamespace);
         }
         Self::decode(
             record.key(),
-            record.value().ok_or(JournalError::InvalidTransaction)?,
+            record.value().ok_or(CapacityDataError::InvalidTransaction)?,
         )
     }
 
-    pub(in crate::journal) fn decode(key: &[u8], value: &[u8]) -> Result<Self, JournalError> {
+    /// Decodes complete canonical family DATA with its self-bound key.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed framing, bindings, geometry, key or identity.
+    pub fn decode(key: &[u8], value: &[u8]) -> Result<Self, CapacityDataError> {
         if value.len() != ORDINARY_CAPACITY_VALUE_BYTES_V4
             || &value[..8] != b"AOSJCR01"
             || value[8..12] != [0, 4, 40, 10]
@@ -356,12 +364,12 @@ impl OrdinaryCapacityRecordV4 {
     }
 }
 
-fn floor_identity(payload: &[u8]) -> Result<[u8; 32], JournalError> {
+fn floor_identity(payload: &[u8]) -> Result<[u8; 32], CapacityDataError> {
     fixed_floor_identity(payload, IDENTITY_DOMAIN, "ordinary identity payload width")
 }
 
-fn invalid(reason: &'static str) -> JournalError {
-    JournalError::MalformedRecord(reason)
+fn invalid(reason: &'static str) -> CapacityDataError {
+    CapacityDataError::MalformedRecord(reason)
 }
 
 #[cfg(test)]

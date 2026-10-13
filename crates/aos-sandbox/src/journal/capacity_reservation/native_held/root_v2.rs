@@ -5,6 +5,8 @@
 //! longer retains it. Current graphs are independently checked by Protocol;
 //! exact original cut/scope joins never substitute historical rows for them.
 
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3};
+
 use aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::{
     RootNativeDataClassV2, RootNativeHeldGraphV2, RootNativeHeldTransitionV2,
     RootNativeNoInterestTerminalV1, RootNativeTransitionKindV2 as Kind,
@@ -17,10 +19,7 @@ use super::super::super::{
     validate_transaction,
 };
 use super::super::digest_bytes;
-use super::{
-    NativeHeldCapacityAppendV2, NativeHeldCapacityChangeV3, NativeHeldCapacityPurposeV3,
-    NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3, NativeHeldCapacitySuffixV2, invalid,
-};
+use super::{NativeHeldCapacityAppendV2, NativeHeldCapacityChangeV3, NativeHeldCapacitySuffixV2, invalid};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct RootCapacityBindingV2 {
@@ -117,7 +116,7 @@ pub fn root_native_capacity_admission_v2(
         || cold
             .root_start()
             .is_none_or(|edge| edge.before.canonical_records() != after.canonical_records())
-        || NativeHeldCapacityRecordV3::from_suffixes_v2(
+        || super::profile::capacity_record_from_suffixes_v2(
             capacity.request(),
             transaction_id,
             normal,

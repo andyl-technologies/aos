@@ -4,19 +4,14 @@
 //! original admission and intermediate complete remaining geometry are unresolved;
 //! it must never enter a Ready ledger or produce signing/effect/backend custody.
 
+use aos_sandbox::journal::JournalError;
+
+use aos_sandbox_protocol::domain_ledger::capacity_family::{decode_capacity_reservation_request_v1, validate_capacity_snapshot_data_v2};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3, OriginalSourceCapacityRecordV5};
+
 use std::collections::{BTreeMap, BTreeSet};
 
-use aos_sandbox::{
-    GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRequestV1, JournalRecord,
-    SourceProviderHeldReadOnlyJournalAuthorityV1,
-    journal::{
-        decode_capacity_reservation_request_v1,
-        native_held::{
-            NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, OriginalSourceCapacityRecordV5,
-            validate_capacity_snapshot_data_v2,
-        },
-    },
-};
+use aos_sandbox::{GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRequestV1, JournalRecord, SourceProviderHeldReadOnlyJournalAuthorityV1};
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_ledger::{
     collect_bounded_records,
@@ -164,7 +159,7 @@ impl Floors {
                     .ok_or(ProviderLedgerError::Corrupt("capacity observation DELETE"))
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
-        validate_capacity_snapshot_data_v2(&complete)?;
+        validate_capacity_snapshot_data_v2(&complete).map_err(JournalError::from)?;
         let mut floors = BTreeMap::new();
         for row in records {
             let value = row
@@ -173,7 +168,7 @@ impl Floors {
             let (identifier, admission_transaction_id, floor) = if value.get(8..10)
                 == Some(&3_u16.to_be_bytes())
             {
-                let native = NativeHeldCapacityRecordV3::from_journal_record(&row)?;
+                let native = NativeHeldCapacityRecordV3::from_journal_record(&row).map_err(JournalError::from)?;
                 if matches!(kind, InventoryKind::OriginalSourceComparison)
                     && native.request().purpose != NativeHeldCapacityPurposeV3::Provider
                 {
@@ -187,7 +182,7 @@ impl Floors {
             } else if matches!(kind, InventoryKind::OriginalSourceComparison)
                 && value.get(8..10) == Some(&5_u16.to_be_bytes())
             {
-                let original = OriginalSourceCapacityRecordV5::from_journal_record(&row)?;
+                let original = OriginalSourceCapacityRecordV5::from_journal_record(&row).map_err(JournalError::from)?;
                 (
                     original.reservation_id(),
                     original.admission_transaction_id(),
@@ -204,7 +199,7 @@ impl Floors {
                     ));
                 }
                 let (request, admission, identifier) =
-                    decode_capacity_reservation_request_v1(&row)?;
+                    decode_capacity_reservation_request_v1(&row).map_err(JournalError::from)?;
                 if matches!(kind, InventoryKind::OriginalSourceComparison)
                     && request.purpose
                         != GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal
@@ -317,7 +312,6 @@ impl Floors {
 mod tests {
     //! Canonical floor DATA vectors, not a qualified mixed runtime fixture.
 
-    use aos_sandbox::journal::native_held::NativeHeldCapacityRequestV3;
     use aos_sandbox::{
         GlobalCapacityReservationPurposeV1, Journal, JournalLimits, RecordNamespace,
     };
@@ -380,7 +374,7 @@ mod tests {
                 poison_bytes: 4096,
             },
             [17; 16],
-        )
+        ).map_err(JournalError::from)
         .unwrap()
         .to_journal_record()
     }

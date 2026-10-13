@@ -10,6 +10,11 @@
 //! SHA256(Query6 domain || typed suffix || NUL || u32be(payload length) || payload)
 //! ```
 
+use crate::journal::JournalError;
+
+use aos_sandbox_protocol::domain_ledger::capacity_family::family::{canonical_reservations};
+use aos_sandbox_protocol::domain_ledger::capacity_family::query::{QueryCapacityDataV6, QueryCapacityProfileV6, QueryCapacityRecordV6};
+
 use aos_sandbox_protocol::mount_source_acquisition_state::{
     MutationTagV2, OwnerPredecessorWitnessV2, ProviderHeadPredecessorWitnessV2, ProviderIntentV2,
     ProviderQueryOwnerV2, SourceProviderHeadV2, SourceProviderQueryAttemptV2, StoredRecordV2,
@@ -326,7 +331,7 @@ pub(super) fn admission_floor(
     data.remaining_profile_digest = profile_digest(
         state, after, proposal.root_attempt, data, &references,
     )?;
-    QueryCapacityRecordV6::new(data)
+    QueryCapacityRecordV6::new(data).map_err(JournalError::from)
 }
 
 /// Includes all actual native rows and every canonical current floor preimage.
@@ -365,7 +370,7 @@ pub(super) fn successor_floor(
     data.remaining_append_bytes = profile.remaining_append_bytes()?;
     data.maximum_retained_growth_bytes = data.remaining_append_bytes;
     data.remaining_profile_digest = profile_digest(state, checked, root, data, &references)?;
-    QueryCapacityRecordV6::new(data)
+    QueryCapacityRecordV6::new(data).map_err(JournalError::from)
 }
 
 /// Derives the exact root association from concrete rows and a typed profile.

@@ -73,7 +73,7 @@ pub(crate) fn require_mutation(
     if capacities.next().is_some() {
         return Err(JournalError::ProtectedBoundary);
     }
-    let (request, _, _) = crate::journal::decode_capacity_reservation_request_v1(record)?;
+    let (request, _, _) = aos_sandbox_protocol::domain_ledger::capacity_family::decode_capacity_reservation_request_v1(record).map_err(JournalError::from)?;
     validate_admission(journal, transaction, &request)
 }
 

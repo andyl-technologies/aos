@@ -3,6 +3,10 @@
 //! These use canonical signed DATA and the actual pure funded edge. They do not
 //! construct a protected writer, run journal I/O or prove runtime qualification.
 
+use crate::journal::JournalError;
+
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{OriginalRootCapacityRecordV5};
+
 use aos_sandbox_protocol as protocol;
 use aos_sandbox_source_provider_protocol::native_held_completion::frame::NativeHeldSectionV1;
 
@@ -23,7 +27,7 @@ pub(in crate::journal::root_original_native) fn funded_state(
         prepared,
         graph.sidecars()[&attempt].admission_cut().clone(),
         JournalLimits::default(),
-    )
+    ).map_err(JournalError::from)
     .unwrap()
     .to_journal_record()
     .unwrap();
@@ -184,7 +188,7 @@ fn pending_floor_does_not_reserve_consumed_owners_again_after_head_record_moveme
         original.prepared(),
         sidecar.admission_cut().clone(),
         JournalLimits::default(),
-    )
+    ).map_err(JournalError::from)
     .unwrap();
 
     assert_eq!(floor.request().future_transactions, 3);

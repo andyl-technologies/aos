@@ -2,7 +2,8 @@
 //!
 //! [`transaction`] owns closed namespace records, Idempotency DATA, limits,
 //! native encoding, and bounded preparation. [`capacity`] owns the canonical
-//! legacy reservation schema and identities. [`records`] owns schema-bound
+//! legacy reservation schema and identities. [`capacity_family`] owns all seven
+//! complete codecs, shared accounting and full-state selection. [`records`] owns schema-bound
 //! envelopes, durable members, and borrowed semantic replay. None seals a
 //! current cut, grants capacity, or manufactures a postcommit capability.
 //! The generic Journal dependency supplies framing and checked mechanics;
@@ -32,6 +33,7 @@
 //! replay, co-issuance and terminal history. Native resource loans stay upper.
 
 pub mod capacity;
+pub mod capacity_family;
 pub mod create_q04_history;
 pub mod delete_batch;
 pub mod effect_history;

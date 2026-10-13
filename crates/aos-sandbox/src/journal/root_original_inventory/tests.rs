@@ -3,6 +3,10 @@
 //! The existing phase11 and Protocol signer fixtures supply signed DATA only.
 //! No protected Journal, snapshot, Live owner, carrier, guard or I/O is created.
 
+use crate::journal::JournalError;
+
+use aos_sandbox_protocol::domain_ledger::capacity_family::query::{QueryCapacityRecordV6};
+
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_protocol as protocol;
 use aos_sandbox_source_provider_protocol::{
@@ -448,7 +452,7 @@ fn every_floor_is_checked_before_selection_and_duplicate_query_owners_refuse() {
 
     let mut data = admission.floor.as_ref().unwrap().data();
     data.admission_transaction = [177; 16];
-    let duplicate = QueryCapacityRecordV6::new(data).unwrap().to_journal_record();
+    let duplicate = QueryCapacityRecordV6::new(data).map_err(JournalError::from).unwrap().to_journal_record();
     let mut duplicate_state = state.clone();
     duplicate_state.insert((duplicate.namespace(), duplicate.key().to_vec()), duplicate.value().unwrap().to_vec());
     assert!(pending(&duplicate_state, JournalLimits::default()).is_err());
@@ -493,7 +497,7 @@ fn actual_admission_replay_rejects_forged_historical_commitments_and_tx() {
             3 => data.remaining_profile_digest = [184; 32],
             _ => unreachable!(),
         }
-        let forged_floor = QueryCapacityRecordV6::new(data).unwrap().to_journal_record();
+        let forged_floor = QueryCapacityRecordV6::new(data).map_err(JournalError::from).unwrap().to_journal_record();
         let mut records = admission.transaction.records().to_vec();
         let last = records.last_mut().unwrap();
         assert_eq!(last.namespace(), RecordNamespace::GlobalCapacityReservation);
@@ -514,7 +518,7 @@ fn actual_admission_replay_rejects_forged_historical_commitments_and_tx() {
 fn an_independent_append_cannot_spend_future_debt_then_hide_it_with_complete() {
     let (state, _, _, _) = admitted();
     let materialized: usize = state.iter().map(|((_, key), value)| key.len() + value.len()).sum();
-    let future_bytes: u64 = super::super::capacity_reservation::accounting_reservations(&state)
+    let future_bytes: u64 = aos_sandbox_protocol::domain_ledger::capacity_family::family::accounting_reservations(&state).map_err(JournalError::from)
         .unwrap().values().map(|floor| floor.maximum_bytes).sum();
     let physical_bytes = 100_000;
     let limits = JournalLimits {

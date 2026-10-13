@@ -14,6 +14,9 @@
 //! Requested: held8 PUT | old Source5 DELETE | successor Source5 PUT
 //! ```
 
+use aos_sandbox_protocol::domain_ledger::capacity_family::family::{CanonicalCapacityFamily, canonical_reservations};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, OriginalSourceCapacityRecordV5};
+
 use std::collections::BTreeMap;
 
 use aos_sandbox_core::ObjectDigest;
@@ -22,11 +25,7 @@ use aos_sandbox_source_provider_ledger::ledger::native_completion::{
     propose_original_source_applying_v5, propose_original_source_requested_v5,
 };
 
-use super::capacity_reservation::family::{CanonicalCapacityFamily, canonical_reservations};
-use super::capacity_reservation::native_held::{
-    NativeHeldCapacityGeometryV3, NativeHeldCapacityPurposeV3, NativeHeldCapacitySuffixV2,
-    OriginalSourceCapacityRecordV5, check_transfer,
-};
+use super::capacity_reservation::native_held::{NativeHeldCapacityGeometryV3, NativeHeldCapacitySuffixV2, check_transfer};
 use super::{
     JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
     validate_materialized_change, validate_transaction,

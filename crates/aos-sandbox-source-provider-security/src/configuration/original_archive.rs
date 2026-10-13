@@ -16,14 +16,14 @@
 //! current Session binding | observed-query-length:u32be | actual query bytes
 //! ```
 
+use aos_sandbox::journal::JournalError;
+
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{ORIGINAL_SOURCE_CAPACITY_MAXIMUM_VALUE_BYTES_V5, OriginalSourceCapacityRecordV5};
+
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use aos_sandbox::journal::{
-    SourceOriginalAdmissionDataV5, SourceOriginalAppendSubjectV5, SourceOriginalPhysicalCutV5,
-    SourceOriginalChallengeHistoryViewV5,
-    native_held::{OriginalSourceCapacityRecordV5, ORIGINAL_SOURCE_CAPACITY_MAXIMUM_VALUE_BYTES_V5},
-};
+use aos_sandbox::journal::{SourceOriginalAdmissionDataV5, SourceOriginalAppendSubjectV5, SourceOriginalPhysicalCutV5, SourceOriginalChallengeHistoryViewV5};
 use aos_sandbox::{JournalRecord, RecordNamespace};
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_ledger::limits::MAXIMUM_LEDGER_GRAPH_BYTES;
@@ -307,7 +307,7 @@ impl ProtectedOriginalConfigurationArchiveV5 {
         if owner.configuration_digest != deployment.configuration {
             return Err(SourceProviderSecurityError::Currentness);
         }
-        let floor = original.initial_floor().to_journal_record()
+        let floor = original.initial_floor().to_journal_record().map_err(JournalError::from)
             .map_err(|_| SourceProviderSecurityError::Currentness)?;
         let value = floor.value().ok_or(SourceProviderSecurityError::Currentness)?;
         let size = ORIGIN_HEADER.checked_add(floor.key().len())
@@ -378,7 +378,7 @@ impl ProtectedOriginalConfigurationArchiveV5 {
             parts[0].to_vec(),
             parts[1].to_vec(),
         );
-        let decoded = OriginalSourceCapacityRecordV5::from_journal_record(&floor)
+        let decoded = OriginalSourceCapacityRecordV5::from_journal_record(&floor).map_err(JournalError::from)
             .map_err(|_| SourceProviderSecurityError::Currentness)?;
         if &decoded != original.initial_floor() || parts[2].is_empty() {
             return Err(SourceProviderSecurityError::Currentness);

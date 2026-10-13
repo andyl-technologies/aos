@@ -16,6 +16,8 @@
 //!           || postimage reads || retained reference map || local DELETE budget
 //! ```
 
+use aos_sandbox_protocol::domain_ledger::capacity_family::ordinary::{OrdinaryCapacityDataV4, OrdinaryCapacityKindV4 as Kind, OrdinaryCapacityProfileV4 as Profile, OrdinaryCapacityRecordV4};
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use aos_sandbox_protocol::mount_source_acquisition_state::{
@@ -28,10 +30,6 @@ use aos_sandbox_protocol::mount_source_acquisition_state::{
 };
 use sha2::{Digest as _, Sha256};
 
-use super::capacity_reservation::{
-    OrdinaryCapacityDataV4, OrdinaryCapacityKindV4 as Kind, OrdinaryCapacityProfileV4 as Profile,
-    OrdinaryCapacityRecordV4,
-};
 use super::{JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 
 type State = BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
@@ -405,7 +403,7 @@ fn fenced_floors(state: &State) -> Result<FencedFloors, JournalError> {
 }
 
 fn local_floors(state: &State) -> Result<Vec<OrdinaryCapacityRecordV4>, JournalError> {
-    super::capacity_reservation::accounting_reservations(state)?;
+    aos_sandbox_protocol::domain_ledger::capacity_family::family::accounting_reservations(state)?;
     let floors = state
         .iter()
         .filter(|((namespace, _), value)| {

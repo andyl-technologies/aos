@@ -584,7 +584,7 @@ pub(super) fn require_transition(
         };
         // Decode each row before combining matches: a preceding purpose-7
         // match must not hide a later malformed or unknown capacity family.
-        let matches = crate::journal::capacity_record_has_legacy_purpose(capacity, PURPOSE)?;
+        let matches = aos_sandbox_protocol::domain_ledger::capacity_family::capacity_record_has_legacy_purpose(capacity, PURPOSE).map_err(JournalError::from)?;
         Ok(found || matches)
     })?;
     if resources.is_empty() && !touches_our_capacity {
@@ -612,7 +612,7 @@ pub(super) fn require_transition(
                     return Err(ConsumerResourceErrorV1::Changed);
                 }
                 let (request, admission, reservation) =
-                    crate::journal::decode_capacity_reservation_request_v1(capacities[0])?;
+                    aos_sandbox_protocol::domain_ledger::capacity_family::decode_capacity_reservation_request_v1(capacities[0]).map_err(JournalError::from)?;
                 if admission != transaction_id(1, record.request)
                     || transaction.id() != &admission
                     || reservation != record.reservation

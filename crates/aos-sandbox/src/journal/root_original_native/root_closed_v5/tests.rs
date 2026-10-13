@@ -3,6 +3,10 @@
 //! Existing P fixtures supply signed DATA only. No protected writer, received
 //! token, original clock/guard or carrier is constructed by this module.
 
+use crate::journal::JournalError;
+
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{OriginalRootCapacityRecordV5};
+
 use aos_sandbox_source_provider_protocol::native_held_completion::{
     NativeHeldSectionTagV1 as Tag,
     frame::NativeHeldSectionV1,
@@ -263,7 +267,7 @@ fn a_valid_historical_pending_cut_with_changed_current_head_cannot_store_hot8() 
         data.floor.original_prepared().clone(),
         data.floor.admission_cut().clone(),
         JournalLimits::default(),
-    )
+    ).map_err(JournalError::from)
     .unwrap();
 
     assert!(has_original_pending_closed_cut_v5(&moved, &moved.sidecars()[&data.attempt]).unwrap());

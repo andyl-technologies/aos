@@ -3,6 +3,9 @@
 //! Ledger owns real owner eligibility. This adapter owns Journal family codecs,
 //! framing and exact complete-union accounting; no request DATA grants custody.
 
+use aos_sandbox_protocol::domain_ledger::capacity_family::family::{CanonicalCapacityFamily, accounting_reservations, canonical_reservations};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, OriginalSourceCapacityRecordV5};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -34,17 +37,8 @@ use aos_sandbox_source_provider_ledger::ledger::{
 };
 use aos_sandbox_source_provider_protocol::native_held_completion::NativeHeldControlKindV1;
 
-use crate::journal::{
-    GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRequestV1, RecordNamespace,
-    JournalError, JournalLimits, JournalRecord, JournalTransaction,
-    capacity_reservation::family::{
-        CanonicalCapacityFamily, accounting_reservations, canonical_reservations,
-    },
-    native_held::{
-        NativeHeldCapacityPurposeV3, OriginalSourceCapacityRecordV5,
-        OriginalSourceGeometryDataV5, check_bounded_transfer,
-    },
-};
+use crate::journal::{GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRequestV1, RecordNamespace, JournalError, JournalLimits, JournalRecord, JournalTransaction};
+use crate::journal::native_held::{OriginalSourceGeometryDataV5, check_bounded_transfer};
 
 use super::{State, bounded_snapshot_bytes, invalid, owner_views, prospective_state};
 
