@@ -153,6 +153,32 @@ this is not a passing full focus run. Both failed fixtures have reviewed
 corrections awaiting qualification on a fresh composition. Core renewal,
 all six growth populations and the complete current T1 floor remain pending.
 
+The next preparation `fcf229ee3358` is held before any formatter, compiler or
+runtime command: independent review identifies cancellation staging files that
+the new operation lookup would reject after a finite sync failure. A reviewed
+correction distinguishes only the native temporary names after protected
+nofollow capture; their bytes grant no authority. The corrected frozen tree
+`ac122d206f4f` passes the exact formatter pair, then strict SDK Clippy fails
+with two E0599 errors in the new preservation fixture. Its projected property
+selection is already the ordinary enum. Both calls are corrected to compare
+that enum directly. Compilation, actual inventory, focused runtime, Core and
+growth qualification remain unstarted in this failed packet; a new frozen
+composition must qualify the corrected source. No task or milestone advances.
+
+The corrected frozen tree `f008d9cf1fa7` passes the exact formatter pair,
+strict SDK all-target Clippy, all-target test compilation and the default
+native build. Its actual inventory contains 1,116 tests across three AOS
+executables, with none ignored. Six focused cases pass before issuer rotation
+fails its old-key assertion. The fixture recreates retained entries from
+plaintext instead of carrying their authenticated provenance; its correction
+and the historical-certificate oracle remain under review. A separate sealed
+continuation fails the repeated-producer case with an exact source-free Commit
+denial. Its refusal phase is being investigated independently. The remaining
+sixteen selectors may run once in another sealed continuation on the unchanged
+executables. These separate diagnostics do not qualify the complete focused
+set. Core renewal, growth populations, owning Nix gates and the complete current
+T1 floor remain pending; no task or milestone advances.
+
 The earlier frozen payload-sharing tree `ee7171fa88a7` passes native build,
 strict all-target SDK and Core Clippy, all-target test compilation and the exact
 formatter pair. Its inventories contain 1,101 SDK tests and 764 no-default Core
