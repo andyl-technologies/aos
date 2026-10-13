@@ -2366,6 +2366,9 @@ Snapshot preflight counts borrowed state against its byte limit before copying.
 The final component source passes strict all-target, all-feature Clippy and 43
 focused controls. A separate preceding executable passes 324 scheduler, runtime
 and restoration controls; those executions retain their original source scope.
+Thirty additional terminal and condition/debug controls pass on the retained
+final scheduler executable. Positive runtime condition-stop/resume integration
+has not been executed by that unit-test cohort.
 The daemon caller cohort passes all-target, all-feature typing in its recorded
 source composition. Its original compiler logs and source bodies are retained;
 the historical daemon dependency files were overwritten by later checks and
@@ -2391,6 +2394,24 @@ and retirement controls. Strict all-target, all-feature checks pass. The retaine
 executable and dependency files bind all 14 changed source paths. Production
 Source2/4 codecs and complete connected native execution require separate
 qualification; this stage confers no native readiness or capture guarantee.
+
+## KVM constructor descriptor
+
+The permissive protocol now decodes a distinct bounded KVM descriptor before
+accelerator construction. Its version and domain separate it from SIM Launch2.
+It validates complete asset and argument geometry, reserved fields, requested
+clock policy, capability shapes, individual and aggregate output limits, and
+checked retained-byte totals. Both native and provider history limits must
+cover the complete selected output capacity, readiness traffic and descriptor.
+
+All 225 protocol controls pass, with one existing ignored test, and strict
+all-target Clippy passes. Five constructor controls include truncation,
+changed backend/domain, aggregate zero and overflow, insufficient history
+credit, malformed arguments and image extents. Source, executable, dependency
+files and actual consumed module bodies were independently checked. The small
+binary fixture tests framing; its assets and abbreviated arguments represent
+no actual launch. Native constructor issuance, kernel and clock enforcement,
+physical quantum stop, output closure and readiness remain required.
 
 ## Performance evidence
 
