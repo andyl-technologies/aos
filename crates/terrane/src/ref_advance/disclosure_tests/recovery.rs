@@ -1,9 +1,10 @@
 //! Checks a genuine interrupted paired import and strict ordinary reopening.
 
 use super::{CommitTiming, Coordinator, FileBucket, Guard, TokioClock, TokioLocalFs, Validator};
-use crate::ref_advance::{DisclosureCommitRequest, DisclosureCommitSelection};
+use crate::ref_advance::{AdvanceError, DisclosureCommitRequest, DisclosureCommitSelection};
 use crate::repository::{Error, Repository};
-use crate::store::{LocalFs, RefStore, StoreErrorKind};
+use crate::store::{InvalidReason, LocalFs, RefStore, StoreErrorKind};
+use std::error::Error as _;
 use std::os::unix::fs::MetadataExt;
 use std::time::Duration;
 use terrane_core::auth::{Attenuation, Grant, Token, Verb, Verbs};
@@ -118,6 +119,8 @@ pub(super) async fn recover_cached_transition() {
         _ => panic!("ordinary reopen must refuse the interrupted import snapshot"),
     }
 
+    let before_denial = super::witness_support::physical_snapshot(destination.store().root()).await;
+
     let source_denied = restricted_token(
         source_authority.token(),
         &source_terminal_secret,
@@ -134,13 +137,27 @@ pub(super) async fn recover_cached_transition() {
     );
     let mut denied_request = request();
     denied_request.selections[0].source_token = source_denied;
-    assert!(
-        destination
-            .advance_disclosure(source.guard(), &mut session, denied_request)
-            .await
-            .is_err()
+    let failure = destination
+        .advance_disclosure(source.guard(), &mut session, denied_request)
+        .await
+        .unwrap_err();
+    let AdvanceError::Store(failure) = failure else {
+        panic!("expected current read denial: {failure:?}");
+    };
+    assert_eq!(
+        failure.kind(),
+        &StoreErrorKind::Denied {
+            verb: "read",
+            pattern: reference.into(),
+        },
     );
+    assert!(failure.source().is_none());
     assert!(session.record().is_none());
+    assert_eq!(destination.store().ref_get(reference).await.unwrap(), None);
+    assert_eq!(
+        super::witness_support::physical_snapshot(destination.store().root()).await,
+        before_denial,
+    );
 
     let mut denied_request = request();
     denied_request.proposal.token = restricted_token(
@@ -157,13 +174,27 @@ pub(super) async fn recover_cached_transition() {
             )
             .is_ok()
     );
-    assert!(
-        destination
-            .advance_disclosure(source.guard(), &mut session, denied_request)
-            .await
-            .is_err()
+    let failure = destination
+        .advance_disclosure(source.guard(), &mut session, denied_request)
+        .await
+        .unwrap_err();
+    let AdvanceError::Store(failure) = failure else {
+        panic!("expected current commit denial: {failure:?}");
+    };
+    assert_eq!(
+        failure.kind(),
+        &StoreErrorKind::Denied {
+            verb: "commit",
+            pattern: reference.into(),
+        },
     );
+    assert!(failure.source().is_none());
     assert!(session.record().is_none());
+    assert_eq!(destination.store().ref_get(reference).await.unwrap(), None);
+    assert_eq!(
+        super::witness_support::physical_snapshot(destination.store().root()).await,
+        before_denial,
+    );
 
     // A still well-formed historical trust row with a changed validity window
     // must not become this pair's expected row merely because labels agree.
@@ -376,22 +407,33 @@ pub(super) async fn refuse_cross_kind_pair() {
         .begin(reference, destination_authority.token(), "sdk")
         .await
         .unwrap();
-    assert!(
-        destination
-            .advance_disclosure(
-                source.guard(),
-                &mut session,
-                paired_request(
-                    &source_authority,
-                    &destination_authority,
-                    reference,
-                    head.commit,
-                    Vec::new(),
-                    bytes,
-                ),
-            )
-            .await
-            .is_err()
+    let before = super::witness_support::physical_snapshot(destination.store().root()).await;
+    let failure = destination
+        .advance_disclosure(
+            source.guard(),
+            &mut session,
+            paired_request(
+                &source_authority,
+                &destination_authority,
+                reference,
+                head.commit,
+                Vec::new(),
+                bytes,
+            ),
+        )
+        .await
+        .unwrap_err();
+    let AdvanceError::Store(failure) = failure else {
+        panic!("expected cross-kind pair refusal: {failure:?}");
+    };
+    assert_eq!(
+        failure.kind(),
+        &StoreErrorKind::Invalid(InvalidReason::MalformedRequest),
+    );
+    assert!(failure.source().is_none());
+    assert_eq!(
+        super::witness_support::physical_snapshot(destination.store().root()).await,
+        before,
     );
     assert!(session.record().is_none());
     assert!(destination.guard().original_commit(&head.commit).is_err());
