@@ -4,6 +4,7 @@ use aos_sandbox_core::{
     AssignmentEpoch, ObjectDigest, ResourceId, Revision, SandboxId, SnapshotId,
     model::snapshot::RetentionClaim,
 };
+use aos_sandbox_protocol::domain_ledger::delete_batch::LifecycleDeleteBatchRecordV1;
 use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
     LifecycleDependencyEdgeV1, LifecycleModelError, LifecycleResourceV1,
     dependency_postorder_is_complete,
@@ -886,7 +887,7 @@ pub enum LifecycleSemanticCommitFactV1 {
         /// Canonical Source reservation facts.
         reservations: Vec<LifecycleReservationCommitFactV1>,
         /// Immutable state2 batch payload, not physical retirement.
-        batch: super::LifecycleDeleteBatchRecordV1,
+        batch: LifecycleDeleteBatchRecordV1,
     },
 }
 

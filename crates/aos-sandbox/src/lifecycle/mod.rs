@@ -16,7 +16,8 @@ mod codec;
 mod coordination;
 mod create_placement_join;
 mod deletion;
-pub(crate) mod delete_batch;
+#[cfg(test)]
+mod delete_batch_tests;
 mod digest;
 mod durable;
 mod evidence;
@@ -104,7 +105,6 @@ pub use deletion::{
     LifecycleDeletionActionV1, LifecycleDeletionObservationV1, LifecycleDeletionPlanV1,
     LifecycleDeletionReceiptV1,
 };
-pub use delete_batch::{LifecycleDeleteBatchRecordV1, LifecycleDeleteBatchV1};
 pub(crate) use durable::decode_lifecycle_auxiliary_record_from_protected_envelope_v1;
 pub use durable::{
     LifecycleAtomicJoinDigestV1, LifecycleAuxiliaryCheckpointV1, LifecycleAuxiliaryHistoryV1,

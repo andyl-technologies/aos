@@ -11,6 +11,7 @@
 //!                || optional project metadata/Q04 subgate
 //! ```
 
+use aos_sandbox_protocol::domain_ledger::delete_batch::DeleteBatchViewV1;
 use sha2::{Digest as _, Sha256};
 
 use super::super::delete_gate_history::DeleteGateHistoryV1;
@@ -997,7 +998,7 @@ pub(crate) fn validate_delete_effect_record(
     gate: &Option<DeleteGateHistoryV1>,
     operation_id: OperationId,
     step: u32,
-    batch: crate::lifecycle::delete_batch::DeleteBatchViewV1<'_>,
+    batch: DeleteBatchViewV1<'_>,
     root: &[u8],
     delete_effects: &mut usize,
 ) -> Result<(), ReconcilerError> {

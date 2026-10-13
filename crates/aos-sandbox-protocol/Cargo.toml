@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
+[features]
+# Supplies passive synthetic codec DATA for dependent crate tests only.
+test-fixtures = []
+
 [dependencies]
 aos-sandbox-ownership-protocol = { path = "../aos-sandbox-ownership-protocol" }
 aos-proto = { path = "../aos-proto" }

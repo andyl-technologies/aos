@@ -5,6 +5,7 @@
 //! receive a Result; it does not activate ownership or grant an effect.
 
 use aos_sandbox_core::OperationId;
+use aos_sandbox_protocol::domain_ledger::delete_batch::DeleteBatchViewV1;
 use aos_sandbox_protocol::domain_ledger::ownership_gate::{
     OwnershipGateStatusV1, decode_ownership_gate, encode_ownership_gate,
 };
@@ -23,7 +24,7 @@ pub(crate) struct DeleteGateHistoryV1(pub(super) OwnershipGateStatusV1);
 pub(crate) fn decode_delete_gate(
     gate_row: &crate::journal::JournalRecord,
     operation_id: OperationId,
-    batch: crate::lifecycle::delete_batch::DeleteBatchViewV1<'_>,
+    batch: DeleteBatchViewV1<'_>,
     idempotency: &crate::journal::JournalRecord,
 ) -> Result<DeleteGateHistoryV1, ReconcilerError> {
     use crate::journal::RecordNamespace;

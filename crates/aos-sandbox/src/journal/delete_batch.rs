@@ -12,7 +12,7 @@ use aos_sandbox_protocol::domain_ledger::operation::{
 use aos_sandbox_protocol::domain_ledger::public_operation::{
     OperationState, PublicOperationAuthorizationV1,
 };
-use crate::lifecycle::delete_batch::{self as codec, DeleteBatchViewV1};
+use aos_sandbox_protocol::domain_ledger::delete_batch::{self as codec, DeleteBatchViewV1};
 
 pub(super) fn has_dependencies(state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>) -> bool {
     state.keys().any(|(namespace, key)| {
@@ -430,7 +430,7 @@ impl Journal {
 /// Returns typed ledger/codec errors for a malformed, reordered or mismatched
 /// recipe; runtime-authority rows remain explicitly unsupported here.
 fn validate_delete_batch_admission_records_v1(
-    batch: crate::lifecycle::delete_batch::DeleteBatchViewV1<'_>,
+    batch: DeleteBatchViewV1<'_>,
     transaction: &JournalTransaction,
     local_start: usize,
     effects_start: usize,
@@ -484,7 +484,7 @@ fn validate_delete_batch_admission_records_v1(
         || operation.effect_count() as usize != records.len() - effects_start
         || operation.effect_count() == 0
         || public.method() != PublicOperationMethodV1::DeleteSandbox
-        || public.accepted_generation() != crate::lifecycle::delete_batch::raw64(&root_row[60..68])
+        || public.accepted_generation() != codec::raw64(&root_row[60..68])
         || idempotency_value[..32] != batch.request_digest()
         || idempotency_value[32..] != operation_id.as_bytes()[..]
     {

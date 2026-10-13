@@ -16,6 +16,9 @@ use aos_sandbox_core::{
     AssignmentEpoch, DesiredGeneration, IncarnationId, NamespaceGeneration, ObjectDigest,
     OperationId, ResourceId, Revision, SandboxId, SnapshotId,
 };
+use aos_sandbox_protocol::domain_ledger::delete_batch::{
+    DeleteBatchViewV1, LifecycleDeleteBatchRecordV1,
+};
 use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
     LifecycleDependencyEdgeV1, LifecycleModelError, LifecycleResourceV1,
 };
@@ -333,7 +336,7 @@ pub(super) fn preflight_semantic_fact_with_layout(
             if header[0] != 2 || header[1..4] != [0; 3] {
                 return Err(LifecycleModelError::CorruptEncoding);
             }
-            super::delete_batch::DeleteBatchViewV1::decode(&rest[..length])?;
+            DeleteBatchViewV1::decode(&rest[..length])?;
         }
         1 => {}
         2 => {
@@ -397,7 +400,7 @@ pub(super) fn decode_semantic_fact_with_layout(
             .map(u32::from_be_bytes)
             .and_then(|length| (length as usize).checked_add(72))
             .ok_or(LifecycleModelError::CorruptEncoding)?;
-        Some(super::LifecycleDeleteBatchRecordV1::from_bytes(take_slice(&mut remaining, length)?)?)
+        Some(LifecycleDeleteBatchRecordV1::from_bytes(take_slice(&mut remaining, length)?)?)
     } else {
         None
     };

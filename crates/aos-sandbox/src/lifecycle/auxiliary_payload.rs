@@ -15,6 +15,7 @@ use aos_sandbox_core::{
     AssignmentEpoch, DesiredGeneration, IncarnationId, NamespaceGeneration, ObjectDigest,
     OperationId, PrincipalId, ProjectId, ResourceId, Revision, SandboxId,
 };
+use aos_sandbox_protocol::domain_ledger::delete_batch::LifecycleDeleteBatchRecordV1;
 use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
     LifecycleDependencyEdgeV1, LifecycleModelError, LifecycleResourceV1,
 };
@@ -65,7 +66,7 @@ pub enum LifecycleAuxiliaryPayloadV1 {
     /// Stores one stable cancellation-idempotency resolution.
     Cancellation(LifecycleCancellationRecordV1),
     /// Stores the immutable selected native batch/outcome DATA.
-    DeleteBatch(super::LifecycleDeleteBatchRecordV1),
+    DeleteBatch(LifecycleDeleteBatchRecordV1),
 }
 
 impl LifecycleAuxiliaryPayloadV1 {
@@ -392,7 +393,7 @@ pub(crate) fn decode_lifecycle_auxiliary_payload_with_layout_v1(
                 return Err(LifecycleModelError::CorruptEncoding);
             }
             bytes = &[];
-            LifecycleAuxiliaryPayloadV1::DeleteBatch(super::LifecycleDeleteBatchRecordV1::from_bytes(encoded)?)
+            LifecycleAuxiliaryPayloadV1::DeleteBatch(LifecycleDeleteBatchRecordV1::from_bytes(encoded)?)
         }
         LifecycleAuxiliaryKindV1::Operation => {
             let length = read_length(&mut bytes)?;
