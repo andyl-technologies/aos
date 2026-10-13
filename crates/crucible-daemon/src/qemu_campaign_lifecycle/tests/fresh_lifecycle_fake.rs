@@ -152,6 +152,8 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
             .lock()
             .expect("fresh lifecycle order")
             .push("append");
+        // Like the production scheduler, the branch append is one quantum.
+        self.completed_quanta += 1;
         Ok((branch.selected().clone(), Vec::new()))
     }
 

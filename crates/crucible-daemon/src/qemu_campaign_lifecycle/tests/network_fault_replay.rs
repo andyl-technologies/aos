@@ -221,6 +221,8 @@ fn start_replay_crosses_a_recorded_network_fault_branch_at_the_joined_park() {
     let park = lifecycle.network_park.as_ref().expect("network park");
     assert_eq!(park.released.len(), vm_count);
     assert_eq!(replay.frontier, at);
+    assert_eq!(replay.completed_quanta, lifecycle.completed_quanta);
+    assert_eq!(replay.completed_quanta, 2);
     assert_eq!(replay.restored_configuration.as_ref(), Some(&target));
 }
 

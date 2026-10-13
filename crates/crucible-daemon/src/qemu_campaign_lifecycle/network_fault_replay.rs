@@ -39,8 +39,8 @@ pub(super) fn park_replayed_network_fault_markers<F, D>(
 ///
 /// Returns the branch quantum's event-log entries, or none when `current` is
 /// not a recorded branch parent or some VM has not yet parked for its phase.
-/// On success `current` names the selected configuration and the replay
-/// frontier names the joined boundary.
+/// On success `current` names the selected configuration, and the replay's
+/// quantum coordinate and frontier name the committed branch boundary.
 ///
 /// # Errors
 ///
@@ -101,7 +101,10 @@ pub(super) fn cross_replayed_network_fault_boundary<F, D>(
             .map_err(map_start_replay_scheduler_failure)?;
     }
 
+    // The branch append is a scheduler quantum of its own; the driver
+    // requires the replayed coordinate to match the live one exactly.
     *current = selected;
+    replay.completed_quanta = lifecycle.completed_quanta();
     replay.frontier = frontier;
     Ok(entries)
 }
