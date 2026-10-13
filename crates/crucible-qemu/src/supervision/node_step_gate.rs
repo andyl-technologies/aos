@@ -250,6 +250,11 @@ impl QemuLiveNodeStepGateConfig {
         } else if self.runtime_determinism_trace {
             requirements = requirements
                 .with_diagnostic_trace_bytes(self.runtime_determinism_trace_budget_bytes);
+            if self.apic_origin_trace {
+                // The host retains a full raw copy before any cross-run test.
+                requirements = requirements
+                    .with_diagnostic_trace_bytes(self.runtime_determinism_trace_budget_bytes);
+            }
         } else if self.runtime_liveness_trace {
             requirements = requirements.with_diagnostic_trace_bytes(
                 crate::launch::MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES,

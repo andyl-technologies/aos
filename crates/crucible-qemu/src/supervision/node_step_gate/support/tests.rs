@@ -324,11 +324,36 @@ fn runtime_trace_capacity_is_present_in_pre_directory_admission() {
         command.resource_requirements()
     );
 
+    let origin = config
+        .clone()
+        .with_runtime_determinism_trace_budget(256 * mebibyte)
+        .unwrap_or_else(|error| panic!("origin trace budget should validate: {error}"))
+        .with_apic_origin_trace();
+    let origin_vm = vm_launch_config(&origin, "vm-a");
+    let origin_plugin = live_node_plugin_config(&origin, &profile, &origin_vm, "vm-a", None)
+        .unwrap_or_else(|error| panic!("origin plugin profile should validate: {error}"));
+    let origin_command = whitebox_probe_command(&origin, &profile, &origin_vm, origin_plugin)
+        .unwrap_or_else(|error| panic!("origin probe command should validate: {error}"));
+
+    assert_eq!(
+        origin.resource_requirements().minimum_writable_bytes(),
+        (128 + 512 + 2 * 256) * mebibyte
+    );
+    assert_eq!(
+        origin.resource_requirements(),
+        origin_command.resource_requirements()
+    );
+
     let ordinary = config.clone().with_rr_control_boundary_trace();
     assert_ne!(
         ordinary.resource_requirements(),
         command.resource_requirements(),
         "a differently reserved command must remain an admission mismatch"
+    );
+    assert_ne!(
+        config.resource_requirements(),
+        origin_command.resource_requirements(),
+        "a single trace reservation must not admit the raw-copy command"
     );
 }
 

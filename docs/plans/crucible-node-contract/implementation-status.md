@@ -2099,6 +2099,16 @@ provider, and all 37 source-quality checks. These checks establish collection
 and transport behavior. Complete native qualification and the registered
 application-target, ABI and license gates remain separate requirements.
 
+## APIC diagnostic resource admission
+
+The first fresh four-vCPU diagnostic VM refused launch before its timer
+comparison: configuration reserved one trace extent while the command builder
+required both normalized and raw copies. Configuration now reserves both.
+The real four-vCPU command/admission control passes and preserves refusal for
+differently reserved commands; all `crucible-qemu` targets compile on that
+frozen successor. New production outputs and the original VM comparison remain
+separate validation. The earlier timer divergence is unresolved.
+
 ## Staged whole-operation control framing
 
 The portable whole-operation protocol separates retained input stages from
