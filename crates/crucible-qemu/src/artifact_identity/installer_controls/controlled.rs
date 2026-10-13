@@ -28,8 +28,8 @@ pub(crate) enum ControlledInstallerIdentityError {
     Original(#[from] HostSupervisionError),
     #[error("installed artifact authentication refused: {0}")]
     Artifact(#[from] InstallerControlIdentityError),
-    #[error("standing constructor artifact refused: {0}")]
-    Standing(#[from] super::super::standing_constructor::StandingConstructorReadError),
+    #[error("native constructor artifact refused: {0}")]
+    Constructor(#[from] super::super::native_constructor::NativeConstructorReadError),
     #[error("actual Source verifier funding refused: {0}")]
     Funding(#[from] crucible_linux_resource::host_services::process_birth::ServiceBirthError),
 }
@@ -99,8 +99,8 @@ fn authenticate_original_paths(
     )?;
     validate_markers(&qemu_marker[..qemu_length], &plugin_marker[..plugin_length])?;
     let final_qemu = qemu_package.file_follow_selected()?;
-    let standing =
-        super::super::standing_constructor::authenticate_final_elf(&final_qemu, original)?;
+    let constructors =
+        super::super::native_constructor::authenticate_final_elf(&final_qemu, original)?;
     drop(final_qemu);
     drop(qemu_package);
 
@@ -126,7 +126,7 @@ fn authenticate_original_paths(
     authenticate_plugin(&mut source, &identity, original)?;
     original.wait_slice()?;
     identity.path_binding = Some(super::path_binding(qemu, plugin));
-    identity.standing_constructor = Some(standing);
+    identity.native_constructor = Some(constructors);
     Ok(identity)
 }
 

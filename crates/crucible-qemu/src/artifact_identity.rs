@@ -13,7 +13,10 @@ use thiserror::Error;
 mod installer_controls;
 
 #[cfg(target_os = "linux")]
-mod standing_constructor;
+mod native_constructor;
+
+#[cfg(target_os = "linux")]
+pub(crate) use native_constructor::UserfaultfdConstructorRequest;
 
 #[cfg(target_os = "linux")]
 pub(crate) use installer_controls::installer_verifier_extent;

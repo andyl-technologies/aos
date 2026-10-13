@@ -80,7 +80,7 @@ pub struct InstallerControlIdentity {
     launch_binding: Option<[u8; 32]>,
     path_binding: Option<[u8; 32]>,
     #[cfg(target_os = "linux")]
-    standing_constructor: Option<super::standing_constructor::StandingConstructorArtifact>,
+    native_constructor: Option<super::native_constructor::NativeConstructorArtifact>,
 }
 
 impl InstallerControlIdentity {
@@ -117,9 +117,30 @@ impl InstallerControlIdentity {
     pub(crate) fn native_preinit_requested_bytes(
         &self,
     ) -> Result<u64, InstallerControlIdentityError> {
-        self.standing_constructor
+        self.native_constructor
             .as_ref()
-            .and_then(super::standing_constructor::StandingConstructorArtifact::requested_bytes)
+            .and_then(super::native_constructor::NativeConstructorArtifact::requested_bytes)
+            .ok_or(InstallerControlIdentityError::Unavailable)
+    }
+
+    /// Borrows the whole kernel endpoint request authenticated in the final QEMU.
+    ///
+    /// The observation issues no storage, descriptor, constructor or operation
+    /// authority. Its interior event must not be charged separately.
+    ///
+    /// # Errors
+    /// Refuses absent immutable-file provenance and missing, duplicate, malformed
+    /// or unknown request declarations. Completed startup and copied geometry
+    /// cannot substitute for a lender.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn native_userfaultfd_request(
+        &self,
+    ) -> Result<&super::UserfaultfdConstructorRequest, InstallerControlIdentityError> {
+        self.native_constructor
+            .as_ref()
+            .ok_or(InstallerControlIdentityError::Unavailable)?
+            .userfaultfd()
+            .map_err(InstallerControlIdentityError::Invalid)?
             .ok_or(InstallerControlIdentityError::Unavailable)
     }
 
@@ -249,7 +270,7 @@ fn parse(
         launch_binding: None,
         path_binding: None,
         #[cfg(target_os = "linux")]
-        standing_constructor: None,
+        native_constructor: None,
     };
     identity.plugin_sha256.copy_from_slice(&bytes[248..280]);
     for (index, allocation) in identity.allocations.iter_mut().enumerate() {
