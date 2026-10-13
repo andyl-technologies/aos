@@ -219,8 +219,8 @@ impl SharedOwnedSetupMapping {
     /// Lends the unique ordinary mapping for stopped callback construction.
     ///
     /// The caller reserves owning retention and authenticates its native
-    /// preparation before entering this
-    /// closure. It constructs registered queue handles from this same mapping,
+    /// preparation before entering this closure. It constructs registered
+    /// queue handles from this same mapping,
     /// then ends the loan before native setters or HOLD. No mapping reference
     /// can escape. The helper creates no native preparation or execution grant.
     /// Per-method ordinary mutation gates remain active; no backing-domain
@@ -230,8 +230,9 @@ impl SharedOwnedSetupMapping {
     ///
     /// Refuses foreign PID before inherited locks, intent, selection, sticky
     /// failure, unprepared retention, busy or poisoned ownership, or another
-    /// strong mapping owner. Current-generation error or panic sticks refusal. Concurrent whole intent makes
-    /// the result unavailable even when the callback itself succeeds.
+    /// strong mapping owner. Current-generation error or panic sticks refusal.
+    /// Concurrent whole intent makes the result unavailable even when the
+    /// callback itself succeeds.
     pub fn with_ordinary_preparation<T, E>(
         &self,
         callback: impl FnOnce(&mut MappedSetupRegion) -> Result<T, E>,
