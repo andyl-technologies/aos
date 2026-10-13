@@ -679,6 +679,48 @@ pub trait SimulationNode {
         })
     }
 
+    /// Commits the coordinator's original staged buffer custody to the consumer.
+    ///
+    /// The runtime retains its staging reservation until this hook succeeds.
+    /// Socket consumers must retain the same original commit across partial
+    /// writes and wait for its exact source-consumed acknowledgement. No modeled
+    /// input may be delivered while completing this administrative exchange.
+    /// Synchronous consumers explicitly authenticate their retained full transfer;
+    /// the default refuses because staging alone cannot prove commitment.
+    ///
+    /// # Errors
+    /// Returns incomplete original commit transmission, unavailable consumed
+    /// acknowledgement, changed staging custody or a native failure. Refusal
+    /// retains the original coordinator commit and owner reservation for retry.
+    fn commit_input_custody(
+        &mut self,
+        _commit: &crate::node_scheduling::InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "source-consumed input commitment is unsupported".into(),
+        })
+    }
+
+    /// Authenticates source-consumed staging commitment against original custody.
+    ///
+    /// Supporting socket consumers check the retained original consumed commit,
+    /// including after restoration. The default refuses because an independently authenticated staging ACK
+    /// does not prove that a consumer accepted a later custody commit.
+    ///
+    /// # Errors
+    /// Refuses unsupported consumed-state authentication, a pending original
+    /// exchange, foreign coordinator authority or changed native journals.
+    fn validate_input_custody_commit(
+        &self,
+        _commit: &crate::node_scheduling::InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "source-consumed input commitment is unsupported".into(),
+        })
+    }
+
     /// Arms validated owner readiness while withholding semantic execution.
     ///
     /// # Errors

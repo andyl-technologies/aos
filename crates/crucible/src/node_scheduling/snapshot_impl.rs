@@ -291,6 +291,8 @@ impl CausalScheduler {
                     deliveries: state.batch.deliveries.clone(),
                     payloads: state.batch.payloads.clone(),
                     acknowledgement: state.acknowledgement.clone(),
+                    custody_edition: Some(1),
+                    consumer_committed: state.consumer_committed,
                     activated_by: state.activated_by.clone(),
                     consumed: state.consumed.clone(),
                 })
@@ -381,6 +383,7 @@ impl CausalScheduler {
                 InputBatchState {
                     batch,
                     acknowledgement,
+                    consumer_committed: saved.consumer_committed,
                     activated_by: saved.activated_by,
                     consumed: saved.consumed,
                 },

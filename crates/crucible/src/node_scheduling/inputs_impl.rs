@@ -123,6 +123,7 @@ impl CausalScheduler {
             InputBatchState {
                 batch: prepared.retained_copy(),
                 acknowledgement: None,
+                consumer_committed: false,
                 activated_by: None,
                 consumed: Vec::new(),
             },
@@ -174,6 +175,36 @@ impl CausalScheduler {
         Ok(commit)
     }
 
+    // Only the retaining runtime calls this after the same consumer has
+    // authenticated its exact original source-consumed commit. A portable ACK
+    // or restored boolean alone never authorizes new native staging effects.
+    pub(crate) fn commit_input_custody(
+        &mut self,
+        commit: &InputCustodyCommit,
+    ) -> Result<(), SchedulingError> {
+        if !self.activation.same_authority(commit.activation()) {
+            return Err(SchedulingError::ForeignActivation);
+        }
+        let owner = self.owner_id(commit.node())?.clone();
+        let state = self
+            .input_batches
+            .get_mut(&owner)
+            .ok_or(SchedulingError::InvalidReceipt)?;
+        let batch = &state.batch;
+        if state.acknowledgement.is_none()
+            || batch.node() != commit.node()
+            || batch.stage_operation() != commit.stage_operation()
+            || batch.batch() != commit.batch()
+            || batch.inventory() != commit.inventory()
+            || batch.cutoff() != commit.cutoff()
+            || state.activated_by.is_some()
+        {
+            return Err(SchedulingError::InvalidReceipt);
+        }
+        state.consumer_committed = true;
+        Ok(())
+    }
+
     /// Abandons an original immutable cut that was never handed to native staging.
     ///
     /// # Errors
@@ -217,7 +248,10 @@ impl CausalScheduler {
             .input_batches
             .get(owner)
             .ok_or(SchedulingError::MissingObservation)?;
-        if state.acknowledgement.is_none() || state.activated_by.is_some() {
+        if state.acknowledgement.is_none()
+            || !state.consumer_committed
+            || state.activated_by.is_some()
+        {
             return Err(SchedulingError::MissingObservation);
         }
         Ok(state)
@@ -246,6 +280,7 @@ impl CausalScheduler {
             .get_mut(owner)
             .ok_or(SchedulingError::MissingObservation)?;
         if state.acknowledgement.is_none()
+            || !state.consumer_committed
             || state.batch.batch != *batch
             || state.activated_by.is_some()
         {

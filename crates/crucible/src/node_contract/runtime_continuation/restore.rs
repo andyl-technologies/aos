@@ -438,6 +438,12 @@ impl PreparedRuntimeRestore {
                         .validate_input_acknowledgement(&input.batch, acknowledgement)
                         .map_err(|_| RuntimeError::InvalidReceipt)?;
                 }
+                if input.committed {
+                    let commit = input.commit.as_ref().ok_or(RuntimeError::InvalidReceipt)?;
+                    native
+                        .validate_input_custody_commit(commit)
+                        .map_err(|_| RuntimeError::InvalidReceipt)?;
+                }
             }
         }
 
@@ -604,6 +610,8 @@ fn validate_snapshot(
             || input.deliveries != batch.deliveries
             || input.payloads != batch.payloads
             || input.acknowledgement != batch.acknowledgement
+            || input.committed != batch.consumer_committed
+            || batch.custody_edition != Some(1)
         {
             return Err(RuntimeError::InvalidReceipt);
         }

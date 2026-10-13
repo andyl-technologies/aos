@@ -177,6 +177,19 @@ pub struct SavedInputBatch {
     /// Retains original native staging evidence, or explicit null before staging.
     #[serde(deserialize_with = "required_nullable")]
     pub acknowledgement: Option<NativeInputAcknowledgement>,
+    /// Selects the explicit consumer-commit knowledge codec.
+    ///
+    /// Edition one preserves pending and source-consumed commitment separately
+    /// from staging ACK. Legacy records omit this tag and cannot restore staged
+    /// input authority under the new codec.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custody_edition: Option<u16>,
+    /// Retains whether the original consumer authenticated its consumed commit.
+    ///
+    /// False is omitted without upgrading an older acknowledgement to consumed
+    /// state. This datum remains inert until native continuation authentication.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub consumer_committed: bool,
     /// Retains the original unresolved activation, or explicit null between runs.
     #[serde(deserialize_with = "required_nullable")]
     pub activated_by: Option<Id>,
@@ -245,4 +258,8 @@ where
     T: Deserialize<'de>,
 {
     Option::<T>::deserialize(deserializer)
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }

@@ -64,6 +64,7 @@ struct OwnerSchedule {
 struct InputBatchState {
     batch: super::RuntimeInputBatch,
     acknowledgement: Option<super::NativeInputAcknowledgement>,
+    consumer_committed: bool,
     activated_by: Option<Id>,
     consumed: Vec<super::InputIdentity>,
 }

@@ -2127,6 +2127,22 @@ remains edition two; the staged selection uses an explicit edition three.
 Actual plugin producers, callback integration and complete native readiness
 remain unqualified by these codec checks.
 
+The runtime now requires an authenticated consumer commitment before releasing
+input ownership or issuing execution grants. Both new adapter hooks refuse by
+default. In-process adapters explicitly validate their retained original input;
+socket adapters remain closed until their consumed-commit journal is integrated.
+Pending retries preserve the original stage, commit and ownership reservation.
+Snapshots distinguish pending from consumed commitment with an explicit custody
+edition and refuse legacy staged records rather than upgrading an old ACK.
+
+All core targets compile and strict Clippy passes on the frozen successor.
+Focused input, scheduler, replay, host-model and reference-device controls pass
+(10, 48, 29, 21 and one respectively), alongside 80 runtime regression controls.
+The existing ignored reference control remains ignored. Independent review
+verifies the 15 affected source bodies and emitted test executable. Test-support
+fixtures, complete application gates and native continuation qualification
+remain separate requirements.
+
 ## Process-private shared-memory ownership
 
 Setup mappings retain their original ownership metadata across forks. A child

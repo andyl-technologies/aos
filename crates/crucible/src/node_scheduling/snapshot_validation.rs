@@ -722,6 +722,17 @@ fn validate_delivery_lineage(delivery: &Delivery, cap: U64) -> Result<(), Schedu
 
 pub(crate) fn validate_structure(snapshot: &SchedulingSnapshot) -> Result<(), SchedulingError> {
     snapshot.world_binding_hash.validate()?;
+    // The nested input custody edition is independent of fault and condition
+    // snapshot editions. Legacy ACK-only staged archives are incompatible;
+    // absence never manufactures a source-consumed native commit.
+    if snapshot.input_batches.iter().any(|batch| {
+        batch.custody_edition != Some(1)
+            || (batch.consumer_committed && batch.acknowledgement.is_none())
+            || (!batch.consumer_committed
+                && (batch.activated_by.is_some() || !batch.consumed.is_empty()))
+    }) {
+        return Err(SchedulingError::InvalidSnapshot);
+    }
     let fault_permission = snapshot.reservations.iter().any(|reservation| {
         matches!(
             reservation.permission,

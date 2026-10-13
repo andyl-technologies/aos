@@ -365,6 +365,38 @@ impl NodeRuntime {
         }) {
             return Err(RuntimePollFailure::Admission(RuntimeError::OwnerBusy));
         }
+        // A native socket consumer must consume this exact original commit
+        // before the coordinator releases locks or can issue an execution grant.
+        // A pending exchange keeps the retained commit and reservation unchanged.
+        let consumer_commit = self
+            .nodes
+            .get_mut(commit.node())
+            .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?
+            .commit_input_custody(commit)
+            .and_then(|()| {
+                self.nodes
+                    .get(commit.node())
+                    .ok_or(OperationFailure {
+                        effects: EffectKnowledge::Unknown,
+                        reason: "original input consumer disappeared during commitment".into(),
+                    })?
+                    .validate_input_custody_commit(commit)
+            });
+        if let Err(failure) = consumer_commit {
+            if failure.effects != EffectKnowledge::None {
+                self.contain_roster(&route);
+            }
+            return Err(RuntimePollFailure::Native(failure));
+        }
+
+        // Grant issuance itself remains closed until the original native
+        // consumer's commit has succeeded, independently of dispatch checks.
+        if let Some(scheduler) = &mut self.scheduler {
+            scheduler.commit_input_custody(commit).map_err(|error| {
+                RuntimePollFailure::Admission(RuntimeError::SchedulerRefused(error.to_string()))
+            })?;
+        }
+
         let token = OperationToken {
             authority: Rc::clone(&self.authority),
             operation: commit.stage_operation().clone(),

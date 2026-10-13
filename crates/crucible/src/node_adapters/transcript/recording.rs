@@ -716,6 +716,20 @@ impl SimulationNode for RecordingNode {
             .validate_original_publication_lineage(original, outcome, publication, claim)
     }
 
+    fn commit_input_custody(
+        &mut self,
+        commit: &InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        self.inner.commit_input_custody(commit)
+    }
+
+    fn validate_input_custody_commit(
+        &self,
+        commit: &InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        self.inner.validate_input_custody_commit(commit)
+    }
+
     fn validate_input_acknowledgement(
         &self,
         batch: &RuntimeInputBatch,

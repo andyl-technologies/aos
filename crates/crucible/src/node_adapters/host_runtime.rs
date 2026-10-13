@@ -522,6 +522,41 @@ impl SimulationNode for HostModelNode {
         )
     }
 
+    // This in-process adapter already owns the complete original immutable
+    // buffers. Commitment validates that actual retained transfer and never
+    // infers a consumed socket exchange from a staging acknowledgement.
+    fn commit_input_custody(
+        &mut self,
+        commit: &crate::node_scheduling::InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        self.validate_input_custody_commit(commit)
+    }
+
+    fn validate_input_custody_commit(
+        &self,
+        commit: &crate::node_scheduling::InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        let staged = self
+            .staged
+            .as_ref()
+            .filter(|input| input.original.stage_operation() == commit.stage_operation())
+            .or_else(|| self.input_history.get(commit.stage_operation()))
+            .ok_or_else(|| failure("host original input custody is absent"))?;
+        self.validate_staged_inputs(&staged.original, &staged.acknowledgement)?;
+        let original = &staged.original;
+        if !original.activation().same_authority(commit.activation())
+            || original.node() != commit.node()
+            || original.batch() != commit.batch()
+            || original.inventory() != commit.inventory()
+            || original.cutoff() != commit.cutoff()
+        {
+            return Err(failure(
+                "host synchronous custody commit changed original input",
+            ));
+        }
+        Ok(())
+    }
+
     fn validate_input_acknowledgement(
         &self,
         batch: &crate::node_scheduling::RuntimeInputBatch,

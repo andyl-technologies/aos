@@ -781,12 +781,13 @@ fn stage_empty_quantum(scheduler: &mut CausalScheduler, name: &str) {
         inventory: batch.inventory.clone(),
         proof_ref: reference(),
     };
-    scheduler
+    let consumer_commit = scheduler
         .accept_input_acknowledgement(crate::node_scheduling::ValidatedInputAcknowledgement::new(
             scheduler.activation.clone(),
             ack,
         ))
         .unwrap();
+    scheduler.commit_input_custody(&consumer_commit).unwrap();
 }
 
 fn empty_quantum_observation(
@@ -955,12 +956,13 @@ fn frozen_input_staging_does_not_consume_until_authenticated_semantic_receipt() 
         inventory: batch.inventory.clone(),
         proof_ref: reference(),
     };
-    scheduler
+    let consumer_commit = scheduler
         .accept_input_acknowledgement(ValidatedInputAcknowledgement::new(
             scheduler.activation.clone(),
             ack,
         ))
         .unwrap();
+    scheduler.commit_input_custody(&consumer_commit).unwrap();
     assert_eq!(scheduler.pending.len(), 1);
     let grant = scheduler
         .admit_exact(&id("A"), id("run/input"), U64::new(100))
@@ -1413,3 +1415,62 @@ mod future_birth;
 
 #[path = "tests/terminal.rs"]
 mod terminal;
+
+#[test]
+fn captured_input_commit_state_survives_restore_without_upgrading_an_ack() {
+    let mut source = fixture(exact(ExactCeiling::StrictPredecessor), 1, None);
+    let batch = source
+        .prepare_input_batch(
+            &id("A"),
+            id("stage/commit-restore"),
+            id("batch/commit-restore"),
+            position(1, 0, Phase::BoundaryControl),
+        )
+        .unwrap();
+    let acknowledgement = crate::node_scheduling::NativeInputAcknowledgement {
+        stage_operation: batch.stage_operation().clone(),
+        batch: batch.batch().clone(),
+        node: batch.node().clone(),
+        owners: batch.owners().to_vec(),
+        cutoff: batch.cutoff(),
+        inventory: batch.inventory().clone(),
+        proof_ref: reference(),
+    };
+    let commit = source
+        .accept_input_acknowledgement(crate::node_scheduling::ValidatedInputAcknowledgement::new(
+            source.activation.clone(),
+            acknowledgement,
+        ))
+        .unwrap();
+    let cut = position(0, 0, Phase::BoundaryControl);
+    let pending = source.snapshot(cut, 1.into()).unwrap();
+    super::snapshot_impl::validate_structure(&pending).unwrap();
+    let pending: crate::node_scheduling::SchedulingSnapshot =
+        serde_json::from_slice(&serde_json::to_vec(&pending).unwrap()).unwrap();
+    assert!(!pending.input_batches[0].consumer_committed);
+    let mut restored = fixture(exact(ExactCeiling::StrictPredecessor), 1, None);
+    restored.load_snapshot(pending).unwrap();
+    assert!(
+        restored
+            .admit_exact(&id("A"), id("run/restored-before-commit"), 10.into())
+            .is_err()
+    );
+
+    // The private runtime call models genuine synchronous consumer validation;
+    // deserializing the preceding ACK cannot invoke it or change this state.
+    source.commit_input_custody(&commit).unwrap();
+    let consumed = source.snapshot(cut, 2.into()).unwrap();
+    super::snapshot_impl::validate_structure(&consumed).unwrap();
+    let consumed: crate::node_scheduling::SchedulingSnapshot =
+        serde_json::from_slice(&serde_json::to_vec(&consumed).unwrap()).unwrap();
+    assert!(consumed.input_batches[0].consumer_committed);
+    let mut restored = fixture(exact(ExactCeiling::StrictPredecessor), 1, None);
+    restored.load_snapshot(consumed.clone()).unwrap();
+    restored
+        .admit_exact(&id("A"), id("run/restored-consumed"), 10.into())
+        .unwrap();
+
+    let mut legacy = consumed;
+    legacy.input_batches[0].custody_edition = None;
+    assert!(super::snapshot_impl::validate_structure(&legacy).is_err());
+}

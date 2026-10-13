@@ -19,6 +19,8 @@ enum Behavior {
     NoEffect,
     Uncertain,
     WrongAcknowledgement,
+    CommitPending,
+    StagingOnly,
 }
 
 #[derive(Default)]
@@ -26,6 +28,9 @@ struct Buffer {
     calls: usize,
     original: Option<RuntimeInputBatch>,
     acknowledgement: Option<NativeInputAcknowledgement>,
+    commit_calls: usize,
+    original_commit: Option<crate::node_scheduling::InputCustodyCommit>,
+    native_commit_consumed: bool,
 }
 
 struct InputNode {
@@ -152,6 +157,60 @@ impl SimulationNode for InputNode {
         Ok(acknowledgement)
     }
 
+    fn commit_input_custody(
+        &mut self,
+        commit: &crate::node_scheduling::InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        if !matches!(self.behavior, Behavior::CommitPending) {
+            return Ok(());
+        }
+        let mut buffer = self.buffer.borrow_mut();
+        buffer.commit_calls += 1;
+        if let Some(original) = &buffer.original_commit {
+            assert!(original.activation().same_authority(commit.activation()));
+            assert_eq!(original.node(), commit.node());
+            assert_eq!(original.stage_operation(), commit.stage_operation());
+            assert_eq!(original.batch(), commit.batch());
+            assert_eq!(original.inventory(), commit.inventory());
+            assert_eq!(original.cutoff(), commit.cutoff());
+        } else {
+            buffer.original_commit = Some(commit.retained_copy());
+        }
+        if !buffer.native_commit_consumed {
+            return Err(OperationFailure {
+                effects: EffectKnowledge::None,
+                reason: "same original native commit acknowledgement remains pending".into(),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_input_custody_commit(
+        &self,
+        commit: &crate::node_scheduling::InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        if !matches!(self.behavior, Behavior::CommitPending) {
+            return Ok(());
+        }
+        let buffer = self.buffer.borrow();
+        if !buffer.native_commit_consumed
+            || buffer.original_commit.as_ref().is_none_or(|original| {
+                !original.activation().same_authority(commit.activation())
+                    || original.node() != commit.node()
+                    || original.stage_operation() != commit.stage_operation()
+                    || original.batch() != commit.batch()
+                    || original.inventory() != commit.inventory()
+                    || original.cutoff() != commit.cutoff()
+            })
+        {
+            return Err(OperationFailure {
+                effects: EffectKnowledge::None,
+                reason: "original native consumed-commit journal is unavailable".into(),
+            });
+        }
+        Ok(())
+    }
+
     fn validate_input_acknowledgement(
         &self,
         batch: &RuntimeInputBatch,
@@ -188,19 +247,122 @@ impl ActivationPublisher for Publisher {
     }
 }
 
+// An external adapter can prove retained staging without implementing the
+// separate commit transition. Both new trait defaults must keep it closed.
+struct StagingOnlyNode(InputNode);
+
+impl SimulationNode for StagingOnlyNode {
+    fn descriptor(&self) -> &NodeDescriptor {
+        self.0.descriptor()
+    }
+    fn binding(&self) -> &NodeBinding {
+        self.0.binding()
+    }
+    fn route(&self) -> &NodeRoute {
+        self.0.route()
+    }
+    fn thread_affinity(&self) -> ThreadAffinity {
+        self.0.thread_affinity()
+    }
+    fn facets(&self) -> &[FacetKind] {
+        self.0.facets()
+    }
+    fn status(&mut self) -> Result<NodeStatus, OperationFailure> {
+        self.0.status()
+    }
+    fn arm(&mut self, record: &ActivationRecord) -> Result<ReadyAttestation, OperationFailure> {
+        self.0.arm(record)
+    }
+    fn validate_readiness(
+        &self,
+        record: &ActivationRecord,
+        ready: &ReadyAttestation,
+    ) -> Result<(), OperationFailure> {
+        self.0.validate_readiness(record, ready)
+    }
+    fn begin_operation(&mut self, operation: &OperationAdmission) -> Submission {
+        self.0.begin_operation(operation)
+    }
+    fn poll_operation(
+        &mut self,
+        token: &OperationToken,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<OperationOutcome, OperationFailure>> {
+        self.0.poll_operation(token, context)
+    }
+    fn validate_outcome(
+        &self,
+        original: &OperationAdmission,
+        outcome: &OperationOutcome,
+    ) -> Result<(), OperationFailure> {
+        self.0.validate_outcome(original, outcome)
+    }
+    fn request_cancel(&mut self, token: &OperationToken) -> Result<CancelStatus, OperationFailure> {
+        self.0.request_cancel(token)
+    }
+    fn close_quantum(&mut self, original: &OperationAdmission) -> Submission {
+        self.0.close_quantum(original)
+    }
+    fn acknowledge_publication(
+        &mut self,
+        token: &OperationToken,
+        outputs: &[Id],
+    ) -> Result<(), OperationFailure> {
+        self.0.acknowledge_publication(token, outputs)
+    }
+    fn facet(&mut self, kind: FacetKind) -> Result<NodeFacet<'_>, Refusal> {
+        self.0.facet(kind)
+    }
+    fn quarantine_resources(&mut self) {
+        self.0.quarantine_resources();
+    }
+    fn poll_reclamation(
+        &mut self,
+        owner: &OwnerIdentity,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<NativeReclamationReceipt, OperationFailure>> {
+        self.0.poll_reclamation(owner, context)
+    }
+    fn validate_reclamation(
+        &self,
+        receipt: &NativeReclamationReceipt,
+    ) -> Result<(), OperationFailure> {
+        self.0.validate_reclamation(receipt)
+    }
+
+    fn stage_inputs(
+        &mut self,
+        batch: &RuntimeInputBatch,
+    ) -> Result<NativeInputAcknowledgement, OperationFailure> {
+        self.0.stage_inputs(batch)
+    }
+
+    fn validate_input_acknowledgement(
+        &self,
+        batch: &RuntimeInputBatch,
+        acknowledgement: &NativeInputAcknowledgement,
+    ) -> Result<(), OperationFailure> {
+        self.0
+            .validate_input_acknowledgement(batch, acknowledgement)
+    }
+}
+
 fn fixture(behavior: Behavior) -> (super::NodeRuntime, WorldActivation, Rc<RefCell<Buffer>>) {
     let (graph, _) = crate::node_admission::test_fixture_isolated_execution(false);
     let mut nodes = crate::node_contract::test_nodes(&graph);
     let buffer = Rc::new(RefCell::new(Buffer::default()));
     let original = nodes.remove(0);
-    nodes.insert(
-        0,
-        Box::new(InputNode {
-            inner: original,
-            buffer: Rc::clone(&buffer),
-            behavior,
-        }),
-    );
+    let input = InputNode {
+        inner: original,
+        buffer: Rc::clone(&buffer),
+        behavior,
+    };
+    let input: Box<dyn SimulationNode> = if matches!(behavior, Behavior::StagingOnly) {
+        Box::new(StagingOnlyNode(input))
+    } else {
+        Box::new(input)
+    };
+    nodes.insert(0, input);
     let owners = nodes
         .iter()
         .flat_map(|node| node.route().owners.clone())
@@ -453,4 +615,244 @@ fn wrong_cut_or_lost_native_buffer_cannot_release_staging_custody() {
         Ok(Some("input/recovered-native-acknowledgement"))
     );
     assert_eq!(buffer.borrow().calls, 1);
+}
+
+#[test]
+fn source_consumed_commit_blocks_grant_and_retry_preserves_original_stage() {
+    let (graph, _) = crate::node_admission::test_fixture_isolated_execution(false);
+    let (mut runtime, activation, buffer) = fixture(Behavior::CommitPending);
+    let node = Id::new("a").unwrap();
+    let stage = Id::new("stage/native-commit").unwrap();
+    let batch = runtime
+        .scheduler(&graph, &activation)
+        .unwrap()
+        .prepare_input_batch(
+            &node,
+            stage.clone(),
+            Id::new("batch/native-commit").unwrap(),
+            Position::new(1.into(), 0.into(), Phase::BoundaryControl),
+        )
+        .unwrap();
+    let acknowledgement = runtime.stage_inputs(batch).unwrap();
+    let commit = runtime
+        .commit_input_acknowledgement(acknowledgement)
+        .unwrap();
+
+    assert!(
+        runtime
+            .scheduler(&graph, &activation)
+            .unwrap()
+            .admit_exact(&node, Id::new("run/before-commit").unwrap(), 10.into())
+            .is_err()
+    );
+    assert!(matches!(
+        runtime.commit_input_staging(&commit),
+        Err(RuntimePollFailure::Native(OperationFailure {
+            effects: EffectKnowledge::None,
+            ..
+        }))
+    ));
+    assert!(!runtime.input_batches[&stage].committed);
+    assert_eq!(
+        runtime.owners[&Id::new("owner/a").unwrap()]
+            .operation
+            .as_ref(),
+        Some(&stage)
+    );
+    assert_eq!(buffer.borrow().calls, 1);
+    assert_eq!(buffer.borrow().commit_calls, 1);
+    assert!(
+        runtime
+            .scheduler(&graph, &activation)
+            .unwrap()
+            .admit_exact(&node, Id::new("run/pending-commit").unwrap(), 10.into())
+            .is_err()
+    );
+
+    buffer.borrow_mut().native_commit_consumed = true;
+    runtime.commit_input_staging(&commit).unwrap();
+    runtime.commit_input_staging(&commit).unwrap();
+    assert!(runtime.input_batches[&stage].committed);
+    assert!(
+        runtime.owners[&Id::new("owner/a").unwrap()]
+            .operation
+            .is_none()
+    );
+    assert_eq!(buffer.borrow().calls, 1);
+    assert_eq!(buffer.borrow().commit_calls, 2);
+    let grant = runtime
+        .scheduler(&graph, &activation)
+        .unwrap()
+        .admit_exact(&node, Id::new("run/after-commit").unwrap(), 10.into())
+        .unwrap();
+    assert!(runtime.begin_admitted(grant).is_ok());
+}
+
+#[test]
+fn capture_preserves_pending_and_consumed_commit_and_rejects_cross_state_restore() {
+    let (graph, _) = crate::node_admission::test_fixture_isolated_execution(false);
+    let (mut runtime, activation, buffer) = fixture(Behavior::CommitPending);
+    let node = Id::new("a").unwrap();
+    let stage = Id::new("stage/capture-commit").unwrap();
+    let batch = runtime
+        .scheduler(&graph, &activation)
+        .unwrap()
+        .prepare_input_batch(
+            &node,
+            stage.clone(),
+            Id::new("batch/capture-commit").unwrap(),
+            Position::new(1.into(), 0.into(), Phase::BoundaryControl),
+        )
+        .unwrap();
+    let acknowledgement = runtime.stage_inputs(batch).unwrap();
+    let commit = runtime
+        .commit_input_acknowledgement(acknowledgement)
+        .unwrap();
+    assert!(runtime.commit_input_staging(&commit).is_err());
+    let cut = Position::new(0.into(), 0.into(), Phase::BoundaryControl);
+    let pending_runtime = runtime
+        .runtime_snapshot(cut, 1.into(), 1024 * 1024)
+        .unwrap();
+    let pending_scheduler = runtime
+        .scheduler(&graph, &activation)
+        .unwrap()
+        .snapshot(cut, 1.into())
+        .unwrap();
+    assert_eq!(pending_scheduler.input_batches[0].custody_edition, Some(1));
+    assert!(!pending_scheduler.input_batches[0].consumer_committed);
+    PreparedRuntimeRestore::validate_source(
+        &graph,
+        &pending_scheduler,
+        &pending_runtime,
+        RuntimeLimits::default(),
+        1024 * 1024,
+    )
+    .unwrap();
+
+    // A source-consumed bit is historical data, never proof. Source preflight
+    // requires runtime and scheduler knowledge to agree before native install.
+    let mut forged = pending_scheduler.clone();
+    forged.input_batches[0].consumer_committed = true;
+    assert!(
+        PreparedRuntimeRestore::validate_source(
+            &graph,
+            &forged,
+            &pending_runtime,
+            RuntimeLimits::default(),
+            1024 * 1024
+        )
+        .is_err()
+    );
+
+    buffer.borrow_mut().native_commit_consumed = true;
+    runtime.commit_input_staging(&commit).unwrap();
+    let consumed_runtime = runtime
+        .runtime_snapshot(cut, 2.into(), 1024 * 1024)
+        .unwrap();
+    let consumed_scheduler = runtime
+        .scheduler(&graph, &activation)
+        .unwrap()
+        .snapshot(cut, 2.into())
+        .unwrap();
+    assert!(consumed_scheduler.input_batches[0].consumer_committed);
+    PreparedRuntimeRestore::validate_source(
+        &graph,
+        &consumed_scheduler,
+        &consumed_runtime,
+        RuntimeLimits::default(),
+        1024 * 1024,
+    )
+    .unwrap();
+    let mut forgotten = consumed_scheduler.clone();
+    forgotten.input_batches[0].consumer_committed = false;
+    assert!(
+        PreparedRuntimeRestore::validate_source(
+            &graph,
+            &forgotten,
+            &consumed_runtime,
+            RuntimeLimits::default(),
+            1024 * 1024
+        )
+        .is_err()
+    );
+    let mut legacy = consumed_scheduler;
+    legacy.input_batches[0].custody_edition = None;
+    assert!(crate::node_scheduling::validate_saved_source(&graph, &legacy).is_err());
+
+    assert_eq!(buffer.borrow().calls, 1);
+    assert_eq!(buffer.borrow().commit_calls, 2);
+}
+
+#[test]
+fn authenticated_staging_ack_without_commit_implementation_cannot_grant_or_capture_consumed() {
+    let (graph, _) = crate::node_admission::test_fixture_isolated_execution(false);
+    let (mut runtime, activation, buffer) = fixture(Behavior::StagingOnly);
+    let node = Id::new("a").unwrap();
+    let stage = Id::new("stage/unimplemented-commit").unwrap();
+    let batch = runtime
+        .scheduler(&graph, &activation)
+        .unwrap()
+        .prepare_input_batch(
+            &node,
+            stage.clone(),
+            Id::new("batch/unimplemented-commit").unwrap(),
+            Position::new(1.into(), 0.into(), Phase::BoundaryControl),
+        )
+        .unwrap();
+    let acknowledgement = runtime.stage_inputs(batch).unwrap();
+    let commit = runtime
+        .commit_input_acknowledgement(acknowledgement)
+        .unwrap();
+
+    assert!(
+        runtime.nodes[&node]
+            .validate_input_custody_commit(&commit)
+            .is_err()
+    );
+    assert!(matches!(
+        runtime.commit_input_staging(&commit),
+        Err(RuntimePollFailure::Native(OperationFailure {
+            effects: EffectKnowledge::None,
+            ..
+        }))
+    ));
+    assert!(
+        runtime
+            .scheduler(&graph, &activation)
+            .unwrap()
+            .admit_exact(
+                &node,
+                Id::new("run/unimplemented-commit").unwrap(),
+                10.into()
+            )
+            .is_err()
+    );
+    assert!(!runtime.input_batches[&stage].committed);
+    assert_eq!(
+        runtime.owners[&Id::new("owner/a").unwrap()]
+            .operation
+            .as_ref(),
+        Some(&stage)
+    );
+    assert_eq!(buffer.borrow().calls, 1);
+    assert_eq!(buffer.borrow().commit_calls, 0);
+
+    let cut = Position::new(0.into(), 0.into(), Phase::BoundaryControl);
+    let saved_runtime = runtime
+        .runtime_snapshot(cut, 1.into(), 1024 * 1024)
+        .unwrap();
+    let saved_scheduler = runtime
+        .scheduler(&graph, &activation)
+        .unwrap()
+        .snapshot(cut, 1.into())
+        .unwrap();
+    assert!(!saved_scheduler.input_batches[0].consumer_committed);
+    PreparedRuntimeRestore::validate_source(
+        &graph,
+        &saved_scheduler,
+        &saved_runtime,
+        RuntimeLimits::default(),
+        1024 * 1024,
+    )
+    .unwrap();
 }

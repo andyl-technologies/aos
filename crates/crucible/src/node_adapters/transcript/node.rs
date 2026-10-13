@@ -967,6 +967,41 @@ impl SimulationNode for TranscriptReplayNode {
         self.next_request().and_then(|request|serde_json::from_slice::<ControlRequest>(&request.bytes).ok()).is_some_and(|request|matches!(request,ControlRequest::Stage {input} if input.provenance.is_some())) && batch.node()==&self.route.node
     }
 
+    // This in-process adapter already owns the complete original immutable
+    // buffers. Commitment validates that actual retained transfer and never
+    // infers a consumed socket exchange from a staging acknowledgement.
+    fn commit_input_custody(
+        &mut self,
+        commit: &crate::node_scheduling::InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        self.validate_input_custody_commit(commit)
+    }
+
+    fn validate_input_custody_commit(
+        &self,
+        commit: &crate::node_scheduling::InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        let (original, acknowledgement) = self.inputs.get(commit.batch()).ok_or_else(|| {
+            failure(
+                "replay original input custody is absent",
+                EffectKnowledge::None,
+            )
+        })?;
+        self.validate_input_acknowledgement(original, acknowledgement)?;
+        if !original.activation().same_authority(commit.activation())
+            || original.node() != commit.node()
+            || original.stage_operation() != commit.stage_operation()
+            || original.inventory() != commit.inventory()
+            || original.cutoff() != commit.cutoff()
+        {
+            return Err(failure(
+                "replay synchronous custody commit changed original input",
+                EffectKnowledge::None,
+            ));
+        }
+        Ok(())
+    }
+
     fn validate_input_acknowledgement(
         &self,
         batch: &RuntimeInputBatch,

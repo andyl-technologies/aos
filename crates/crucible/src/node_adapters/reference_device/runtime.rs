@@ -206,6 +206,40 @@ impl<C: ControlledReference> SimulationNode for ControlledReferenceNode<C> {
         self.stage_inputs_inner(batch, Some(provenance), Some(lineage))
     }
 
+    // This in-process adapter already owns the complete original immutable
+    // buffers. Commitment validates that actual retained transfer and never
+    // infers a consumed socket exchange from a staging acknowledgement.
+    fn commit_input_custody(
+        &mut self,
+        commit: &crate::node_scheduling::InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        self.validate_input_custody_commit(commit)
+    }
+
+    fn validate_input_custody_commit(
+        &self,
+        commit: &crate::node_scheduling::InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        let staged = self
+            .staged
+            .as_ref()
+            .ok_or_else(|| no_effect("reference original input custody is absent"))?;
+        self.validate_input_acknowledgement(&staged.original, &staged.acknowledgement)?;
+        let original = &staged.original;
+        if !original.activation().same_authority(commit.activation())
+            || original.node() != commit.node()
+            || original.stage_operation() != commit.stage_operation()
+            || original.batch() != commit.batch()
+            || original.inventory() != commit.inventory()
+            || original.cutoff() != commit.cutoff()
+        {
+            return Err(no_effect(
+                "reference synchronous custody commit changed original input",
+            ));
+        }
+        Ok(())
+    }
+
     fn validate_input_acknowledgement(
         &self,
         batch: &RuntimeInputBatch,

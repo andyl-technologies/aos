@@ -22,6 +22,7 @@ impl CausalScheduler {
                         InputBatchState {
                             batch: state.batch.retained_copy(),
                             acknowledgement: state.acknowledgement.clone(),
+                            consumer_committed: state.consumer_committed,
                             activated_by: state.activated_by.clone(),
                             consumed: state.consumed.clone(),
                         },
