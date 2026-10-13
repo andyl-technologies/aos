@@ -28,7 +28,6 @@ use crucible_shmem::{
 };
 
 use crate::QemuVmSnapshot;
-use crate::node::CAMPAIGN_BOUNDARY_MARKERS;
 #[cfg(target_os = "linux")]
 use crate::{
     QemuHotForkTemplateIdentity, QemuHotForkTemplatePreparer, QemuLaunchResourceRequirements,
@@ -539,6 +538,41 @@ impl QemuCampaignMarkerBoundaryDiagnostic {
     }
 }
 
+const CAMPAIGN_BOUNDARY_MARKERS: [&str; 2] = ["fault.transport.ready", "fault.followup.ready"];
+
+/// How a campaign marker that does not prove the observed stop is treated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UnprovenCampaignMarker {
+    /// An early pause beside a campaign marker must be that marker's stop.
+    Refuse,
+    /// A horizon stop is a campaign park only when a marker proves it.
+    Admit,
+}
+
+/// Returns whether `event` is one of `node`'s campaign boundary markers.
+fn is_campaign_boundary_marker(node: &NodeId, event: &ObservableEvent) -> bool {
+    matches!(
+        event.payload(),
+        ObservableEventPayload::GuestMarker { node: marker_node, marker, .. }
+            if marker_node == node && CAMPAIGN_BOUNDARY_MARKERS.contains(&marker.name.as_str())
+    )
+}
+
+/// Applies `unproven` to the exact campaign-marker proof of one stop.
+fn campaign_marker_stop(
+    node: &NodeId,
+    physical_icount: Icount,
+    calibration: QemuLogicalTimeCalibration,
+    events: &[ObservableEvent],
+    unproven: UnprovenCampaignMarker,
+) -> Result<Option<QemuParkedCampaignMarker>, BackendError> {
+    let proof = campaign_marker_parked_at(node, physical_icount, calibration, events);
+    match unproven {
+        UnprovenCampaignMarker::Refuse => proof,
+        UnprovenCampaignMarker::Admit => Ok(proof.ok().flatten()),
+    }
+}
+
 fn campaign_marker_parked_at(
     node: &NodeId,
     physical_icount: Icount,
@@ -624,35 +658,6 @@ fn campaign_marker_parked_at(
         });
     }
     Ok(matched)
-}
-
-/// Proves a physical pause against fresh or carried campaign markers.
-///
-/// Markers drained at this pause keep the fail-closed proof. When none is
-/// present, a quantum may have ended between the marker and its deferred
-/// VMStop, so the marker drained with that quantum is tried; one that does
-/// not exactly prove this stop is stale and proves nothing.
-fn campaign_marker_stop(
-    node: &NodeId,
-    physical_icount: Icount,
-    calibration: QemuLogicalTimeCalibration,
-    fresh: &[ObservableEvent],
-    carried: Option<&ObservableEvent>,
-) -> Result<Option<QemuParkedCampaignMarker>, BackendError> {
-    let matched = campaign_marker_parked_at(node, physical_icount, calibration, fresh)?;
-    if matched.is_some() {
-        return Ok(matched);
-    }
-    Ok(carried.and_then(|carried| {
-        campaign_marker_parked_at(
-            node,
-            physical_icount,
-            calibration,
-            std::slice::from_ref(carried),
-        )
-        .ok()
-        .flatten()
-    }))
 }
 
 #[cfg(test)]
@@ -1283,19 +1288,21 @@ impl QemuNodeSet {
         &mut self,
         node: &NodeId,
         physical_icount: Icount,
+        unproven: UnprovenCampaignMarker,
     ) -> Result<bool, BackendError> {
         let backend = self.node_mut(node)?;
-        let calibration = backend.boundary_logical_time_calibration()?;
         let events = backend.drain_observable_events()?;
-        let matched = campaign_marker_stop(
-            node,
-            physical_icount,
-            calibration,
-            &events,
-            backend.carried_campaign_marker(),
-        )?;
-        // Either this stop consumed the marker or the carried one is stale.
-        backend.forget_carried_campaign_marker();
+        // Horizon steps reach this check every quantum; only a step that
+        // retired a campaign marker needs the stopped-slot calibration.
+        let matched = if events
+            .iter()
+            .any(|event| is_campaign_boundary_marker(node, event))
+        {
+            let calibration = backend.boundary_logical_time_calibration()?;
+            campaign_marker_stop(node, physical_icount, calibration, &events, unproven)?
+        } else {
+            None
+        };
         self.retained_observable_events.extend(events);
         if let Some(parked) = matched {
             self.parked_campaign_markers.insert(node.clone(), parked);
@@ -2246,8 +2253,33 @@ impl QemuNodeSet {
                     }
                     PendingSelectableRetention::Absent => {}
                 }
-                if self.retain_campaign_marker_if_paused(node, at)? {
+                if self.retain_campaign_marker_if_paused(
+                    node,
+                    at,
+                    UnprovenCampaignMarker::Refuse,
+                )? {
                     observation.reached = VirtualTime { ticks: at.retired };
+                    observation.physical_stop = BackendPhysicalStop::CampaignMarker;
+                    return Ok(observation);
+                }
+            }
+            if matches!(
+                observation.outcome,
+                crucible::AdvanceOutcome::ReachedHorizon
+            ) && observation.physical_stop == BackendPhysicalStop::Horizon
+            {
+                // The plugin claims a deferred campaign stop at the first
+                // publication after its marker. When that publication is the
+                // quantum ceiling, the stopped node reports the horizon, so the
+                // exact marker proof must run here too; otherwise the next
+                // quantum would wait on a VM that can no longer execute. A
+                // launch without marker parking retires the same markers with
+                // no stop, so only an exact proof changes this step.
+                let at = Icount {
+                    retired: observation.reached.ticks,
+                };
+                if self.retain_campaign_marker_if_paused(node, at, UnprovenCampaignMarker::Admit)? {
+                    observation.outcome = crucible::AdvanceOutcome::Paused { at };
                     observation.physical_stop = BackendPhysicalStop::CampaignMarker;
                     return Ok(observation);
                 }

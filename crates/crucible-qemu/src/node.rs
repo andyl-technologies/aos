@@ -41,8 +41,6 @@ use crucible_shmem::{
 };
 
 mod boundary_observation;
-mod campaign_marker_carry;
-pub(crate) use campaign_marker_carry::CAMPAIGN_BOUNDARY_MARKERS;
 mod channels;
 pub(crate) use channels::QemuQmpMachineControlChannel;
 pub use channels::{QemuNodePendingQuantum, QemuPluginIpcControlChannel, QemuShmemHotPathChannel};
@@ -556,8 +554,6 @@ pub struct QemuNode {
     pending_network_outputs: Vec<QemuNodeEmittedFrame>,
     pending_priming_observations: Vec<ObservableEvent>,
     next_network_output_sequence: u64,
-    // A campaign marker drained before the deferred VMStop that proves it.
-    carried_campaign_marker: Option<ObservableEvent>,
     #[cfg(target_os = "linux")]
     native_console: Option<native_console::QemuNativeConsoleObservation>,
     #[cfg(target_os = "linux")]
@@ -826,7 +822,6 @@ impl QemuNode {
             pending_network_outputs: Vec::new(),
             pending_priming_observations: Vec::new(),
             next_network_output_sequence: 0,
-            carried_campaign_marker: None,
             #[cfg(target_os = "linux")]
             native_console: None,
             #[cfg(target_os = "linux")]
@@ -2640,7 +2635,6 @@ impl SimulationBackend for QemuNode {
         let mut events = self
             .drain_scheduler_observable_events()
             .map_err(BackendError::from)?;
-        self.carry_campaign_markers(&events);
         #[cfg(target_os = "linux")]
         if let Some(console) = &self.native_console {
             events.extend(console.drain_observations()?);

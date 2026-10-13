@@ -175,43 +175,57 @@ fn production_hot_fork_marker_coordinates_prove_the_stop() {
     );
 }
 
-/// A quantum can end between a marker and its deferred VMStop. The marker
-/// drained with that quantum still proves the stop; a stale one proves
-/// nothing and fails nothing, while a fresh non-proving marker stays fatal.
+/// A deferred stop claimed at the quantum ceiling reports the horizon. Only an
+/// exact proof parks that step, and an unproven marker beside a horizon stop is
+/// ordinary output, while beside an early pause it stays fatal.
 #[test]
-fn carried_marker_proves_only_its_own_deferred_stop() {
+fn horizon_stop_parks_only_on_an_exact_marker_proof() {
     let node = NodeId {
         name: "router-a".to_owned(),
     };
-    let stopped_at = Icount { retired: 2_100 };
+    let ceiling = Icount { retired: 2_100 };
     let calibration = QemuLogicalTimeCalibration {
         logical_icount: 2_100,
         raw_icount: 42,
     };
-    let carried = transport_marker(&node, 2_050);
-    let stale = transport_marker(&node, 1_050);
+    let proving = transport_marker(&node, 2_050);
+    let earlier = transport_marker(&node, 1_050);
 
-    let parked = campaign_marker_stop(&node, stopped_at, calibration, &[], Some(&carried));
-    assert_eq!(
-        parked.map(|parked| parked.map(|parked| parked.marker_tick)),
-        Ok(Some(Icount { retired: 2_050 }))
-    );
+    for unproven in [
+        UnprovenCampaignMarker::Admit,
+        UnprovenCampaignMarker::Refuse,
+    ] {
+        let parked = campaign_marker_stop(
+            &node,
+            ceiling,
+            calibration,
+            std::slice::from_ref(&proving),
+            unproven,
+        );
+        assert_eq!(
+            parked.map(|parked| parked.map(|parked| parked.marker_tick)),
+            Ok(Some(Icount { retired: 2_050 }))
+        );
+    }
 
+    let unproven = std::slice::from_ref(&earlier);
     assert_eq!(
-        campaign_marker_stop(&node, stopped_at, calibration, &[], Some(&stale)),
-        Ok(None)
-    );
-    assert_eq!(
-        campaign_marker_stop(&node, stopped_at, calibration, &[], None),
+        campaign_marker_stop(
+            &node,
+            ceiling,
+            calibration,
+            unproven,
+            UnprovenCampaignMarker::Admit
+        ),
         Ok(None)
     );
     assert!(
         campaign_marker_stop(
             &node,
-            stopped_at,
+            ceiling,
             calibration,
-            std::slice::from_ref(&stale),
-            Some(&carried)
+            unproven,
+            UnprovenCampaignMarker::Refuse
         )
         .is_err()
     );
