@@ -272,6 +272,11 @@ paths, matching the frozen composition's modes and blobs while preserving
 this progress plan. The original task branch histories remain separate and
 unchanged. This source preparation advances no task; each formal merge still
 requires its task gates and the complete floor on the actual trunk candidate.
+The shared workspace source filter now excludes this plan alone from compilation
+inputs; `registry-complete` retains the actual plan as a separate explicit input.
+The focused source-identity evaluation and actual registry build remain pending
+through the coordinated check lane. This preparation changes no Rust, normative
+specification, manifest or dependency and accepts no task.
 A separate reviewed private handoff correction carries each native reader's
 actual caller configuration; it is not established as this failure's cause.
 Growing populations, full SDK and owning Nix qualification remain pending.
