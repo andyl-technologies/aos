@@ -40,10 +40,19 @@ pub fn fixture_batch_v1(key: &[u8], before: &[u8], sequence: u64) -> Vec<u8> {
         let empty = &bytes[0..0];
         let view = DeleteBatchViewV1 {
             bytes: &bytes,
-            sections: [&bytes[608..write_end], empty, empty, empty, &bytes[write_end..write_end + 17]],
+            sections: [
+                &bytes[608..write_end],
+                empty,
+                empty,
+                empty,
+                &bytes[write_end..write_end + 17],
+            ],
             counts: [1, 0, 0, 0, 1],
         };
-        (view.graph_digest(), native_value_digest(&tombstone(view, &bytes[608..write_end])))
+        (
+            view.graph_digest(),
+            native_value_digest(&tombstone(view, &bytes[608..write_end])),
+        )
     };
     bytes[264..296].copy_from_slice(&graph);
     bytes[676..708].copy_from_slice(&after);

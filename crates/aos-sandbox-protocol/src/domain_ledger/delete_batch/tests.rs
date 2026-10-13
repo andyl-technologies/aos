@@ -76,7 +76,9 @@ fn handoff_is_exact_non_authorizing_dependency_data() {
     for offset in [10, 11, 16, 48, 64, 96] {
         let mut wrong = marker;
         wrong[offset] = if offset == 11 { 1 } else { 0 };
-        if offset == 96 { wrong[96..128].fill(0); }
+        if offset == 96 {
+            wrong[96..128].fill(0);
+        }
         seal(&mut wrong, HANDOFF_DOMAIN);
         assert!(validate_handoff(&wrong, batch).is_err());
     }
@@ -92,8 +94,14 @@ fn canonical_ready_order_does_not_accept_caller_tie_order() {
         LifecycleDependencyEdgeV1::new(second, root).unwrap(),
     ];
 
-    assert!(canonical_dependency_postorder_is_complete(&edges, &[first, second, root]));
-    assert!(!canonical_dependency_postorder_is_complete(&edges, &[second, first, root]));
+    assert!(canonical_dependency_postorder_is_complete(
+        &edges,
+        &[first, second, root]
+    ));
+    assert!(!canonical_dependency_postorder_is_complete(
+        &edges,
+        &[second, first, root]
+    ));
 }
 
 #[test]
@@ -102,17 +110,42 @@ fn collection_fold_keeps_tombstone_data_but_excludes_native_metadata_and_own_has
     let owner = LifecycleResourceV1::Sandbox(SandboxId::from_bytes([7; 16]));
     let key = tombstone_key(project, &[1; 17]);
     let members = [DeleteCollectionMemberV1 {
-        owner: 7, namespace: 1, key: &key, value: b"complete pending overlay",
+        owner: 7,
+        namespace: 1,
+        key: &key,
+        value: b"complete pending overlay",
     }];
     let populated = collection_root(project, owner, 1, &members).unwrap();
 
     assert_ne!(populated, collection_root(project, owner, 1, &[]).unwrap());
     for namespace in 2..=4 {
-        assert!(collection_root(project, owner, 1, &[DeleteCollectionMemberV1 {
-            owner: 7, namespace, key: b"metadata", value: b"value",
-        }]).is_err());
+        assert!(
+            collection_root(
+                project,
+                owner,
+                1,
+                &[DeleteCollectionMemberV1 {
+                    owner: 7,
+                    namespace,
+                    key: b"metadata",
+                    value: b"value",
+                }]
+            )
+            .is_err()
+        );
     }
-    assert!(collection_root(project, owner, 1, &[DeleteCollectionMemberV1 {
-        owner: 7, namespace: 1, key: COLLECTION_PREFIX, value: b"own root",
-    }]).is_err());
+    assert!(
+        collection_root(
+            project,
+            owner,
+            1,
+            &[DeleteCollectionMemberV1 {
+                owner: 7,
+                namespace: 1,
+                key: COLLECTION_PREFIX,
+                value: b"own root",
+            }]
+        )
+        .is_err()
+    );
 }

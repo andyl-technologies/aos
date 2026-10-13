@@ -6,13 +6,13 @@
 
 use super::*;
 use crate::reconciler::ReconcilerError;
+use aos_sandbox_protocol::domain_ledger::delete_batch::{self as codec, DeleteBatchViewV1};
 use aos_sandbox_protocol::domain_ledger::operation::{
     MAXIMUM_EFFECTS, OPERATION_RECORD_V2_BYTES, decode_operation, effect_key,
 };
 use aos_sandbox_protocol::domain_ledger::public_operation::{
     OperationState, PublicOperationAuthorizationV1,
 };
-use aos_sandbox_protocol::domain_ledger::delete_batch::{self as codec, DeleteBatchViewV1};
 
 pub(super) fn has_dependencies(state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>) -> bool {
     state.keys().any(|(namespace, key)| {
