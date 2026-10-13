@@ -25,6 +25,9 @@ pub mod selection;
 #[path = "staged/launch.rs"]
 pub mod launch;
 
+#[path = "staged/administrative.rs"]
+pub mod administrative;
+
 #[cfg(test)]
 #[path = "staged/tests.rs"]
 pub(crate) mod tests;
@@ -101,14 +104,18 @@ impl StagedControlProfile {
         let history = self.minimum_wire_history_bytes()?;
         let operations = u64::from(self.compute.operation_capacity);
         let stages = u64::from(self.input_stage_limit);
-        let read_attempts = operations * 2 + stages * 2 + 1;
-        let write_attempts = operations * 2 + stages * 2 + 1;
+        // The fixed initial handshake uses two prefix/body read pairs. Each
+        // staged receive also retains its header before reading the body.
+        let read_attempts = 2 * (operations * 2 + stages * 2 + 1) + 4;
+        let write_attempts = operations * 2 + stages * 2 + 1 + 2;
         let read_bytes = operations * (256 + 8 + 128 + 2 * 24)
             + stages * (STAGE_HEADER_BYTES + 8 + 4 + 128 + 2 * 24) as u64
-            + (128 + 24);
+            + (128 + 24)
+            + 34;
         let write_bytes = operations * (336 + 8 + 128 + 2 * 24)
             + stages * (256 + 128 + 2 * 24)
-            + (QUEUE_PLAN_HEADER_BYTES + 24) as u64;
+            + (QUEUE_PLAN_HEADER_BYTES + 24) as u64
+            + 34;
 
         if self.compute.native_history_byte_limit < history
             || self.compute.provider_history_byte_limit < history

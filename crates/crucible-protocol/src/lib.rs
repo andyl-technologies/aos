@@ -57,6 +57,9 @@ pub mod guest_introspection_doorbell;
 pub mod node_control;
 pub mod plugin_setup_plan;
 pub mod whole_control;
+
+#[cfg(target_os = "linux")]
+pub mod bounded_setup;
 mod preemption;
 mod selectable;
 pub mod selectable_catalog_plan;

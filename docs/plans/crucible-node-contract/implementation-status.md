@@ -2127,6 +2127,15 @@ remains edition two; the staged selection uses an explicit edition three.
 Actual plugin producers, callback integration and complete native readiness
 remain unqualified by these codec checks.
 
+The Linux setup helpers retain the complete original 13-byte frame and three
+descriptors across partial nonblocking transfers. One physical syscall runs per
+step, with no hidden retry or descriptor duplication. A lifetime administrative
+budget spans initial setup and staged control; failed attempts and offered write
+bytes cannot be refunded. Malformed and foreign transfers retain their received
+material. All 211 portable protocol controls pass, with one existing ignored
+test; strict compilation and Clippy pass. These helpers still require integration
+with the original host and plugin actors before native readiness is qualified.
+
 The runtime now requires an authenticated consumer commitment before releasing
 input ownership or issuing execution grants. Both new adapter hooks refuse by
 default. In-process adapters explicitly validate their retained original input;
