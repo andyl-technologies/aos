@@ -2142,6 +2142,16 @@ material. All 211 portable protocol controls pass, with one existing ignored
 test; strict compilation and Clippy pass. These helpers still require integration
 with the original host and plugin actors before native readiness is qualified.
 
+Explicit Launch2 provenance adds a separate 256-byte prefix for the original
+CPU arguments, SIM quantum, fixed RTC, run seed and four image/entropy resources.
+The codec preserves Launch1 and reserves the future bounded readiness exchange
+within the same lifetime administrative budget. It does not issue readiness.
+All 213 portable controls pass with one existing ignored test, alongside strict
+compilation and Clippy. Independently reviewed C/Rust vectors match at 625 bytes
+for launch and 1,004 bytes for complete setup; the incomplete 876-byte setup
+remains a negative fixture. Native component tests use modeled board peers and
+do not qualify actual constructors, installed producers or Linux execution.
+
 The runtime now requires an authenticated consumer commitment before releasing
 input ownership or issuing execution grants. Both new adapter hooks refuse by
 default. Host-owned adapters explicitly validate their retained original input;

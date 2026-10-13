@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! CWHLSEL\0, format3:u32, extent:u32, Profile168,
-//! role_count:u32, reserved0:u32, launch_extent:u32, launch_version1:u32,
+//! role_count:u32, reserved0:u32, launch_extent:u32, launch_version:u32,
 //! complete_launch[L], role_names[count]
 //! role_names: role:u16, reserved0:u16, node/port/lane_bytes:u16,
 //!             reserved0:u16, node[N], port[P], lane[L]
@@ -16,6 +16,7 @@
 use super::{
     StagedControlProfile,
     launch::{LAUNCH_SELECTION_MAX_BYTES, LaunchSelection},
+    launch2::LaunchSelection2,
 };
 use crate::whole_control::{WholeControlError, inventory::WholeQueueRole, put_u32, read_u32};
 
@@ -53,13 +54,35 @@ impl WholeConstructorSelection {
         launch: &LaunchSelection<'_>,
         roles: &[LogicalQueueRole<'_>],
     ) -> Result<Self, WholeControlError> {
+        Self::encode_original(profile, 1, launch.body(), roles)
+    }
+
+    /// Builds an explicit version-two launch selection before publication.
+    ///
+    /// # Errors
+    /// Rejects malformed profiles, role names, duplicate roles, overflowing
+    /// complete constructor extents or allocation failure.
+    pub fn new2(
+        profile: StagedControlProfile,
+        launch: &LaunchSelection2<'_>,
+        roles: &[LogicalQueueRole<'_>],
+    ) -> Result<Self, WholeControlError> {
+        Self::encode_original(profile, 2, launch.body(), roles)
+    }
+
+    fn encode_original(
+        profile: StagedControlProfile,
+        launch_version: u32,
+        launch: &[u8],
+        roles: &[LogicalQueueRole<'_>],
+    ) -> Result<Self, WholeControlError> {
         profile.validate()?;
         if !(1..=6).contains(&roles.len()) {
             return Err(WholeControlError::Body);
         }
         let extent = roles
             .iter()
-            .try_fold(200 + launch.body().len(), |total, role| {
+            .try_fold(200 + launch.len(), |total, role| {
                 [role.node, role.port, role.lane]
                     .into_iter()
                     .try_fold(total.checked_add(12)?, |sum, id| sum.checked_add(id.len()))
@@ -77,10 +100,10 @@ impl WholeConstructorSelection {
         put_u32(&mut body, 12, extent as u32);
         body[16..184].copy_from_slice(&profile.encode()?);
         put_u32(&mut body, 184, roles.len() as u32);
-        put_u32(&mut body, 192, launch.body().len() as u32);
-        put_u32(&mut body, 196, 1);
-        body[200..200 + launch.body().len()].copy_from_slice(launch.body());
-        let mut offset = 200 + launch.body().len();
+        put_u32(&mut body, 192, launch.len() as u32);
+        put_u32(&mut body, 196, launch_version);
+        body[200..200 + launch.len()].copy_from_slice(launch);
+        let mut offset = 200 + launch.len();
         for role in roles {
             let ids = [role.node, role.port, role.lane];
             if ids.iter().any(|id| !(1..=128).contains(&id.len())) {
@@ -111,7 +134,7 @@ impl WholeConstructorSelection {
             || read_u32(&body, 12) as usize != body.len()
             || !(1..=6).contains(&read_u32(&body, 184))
             || read_u32(&body, 188) != 0
-            || read_u32(&body, 196) != 1
+            || !matches!(read_u32(&body, 196), 1 | 2)
         {
             return Err(WholeControlError::Body);
         }
@@ -120,7 +143,16 @@ impl WholeConstructorSelection {
             .checked_add(read_u32(&body, 192) as usize)
             .filter(|end| *end <= body.len())
             .ok_or(WholeControlError::Body)?;
-        LaunchSelection::decode(&body[200..launch_end])?;
+        match read_u32(&body, 196) {
+            1 => {
+                LaunchSelection::decode(&body[200..launch_end])?;
+            }
+            2 => {
+                LaunchSelection2::decode(&body[200..launch_end])?;
+                profile.validate_ready_exchange_capacity()?;
+            }
+            _ => return Err(WholeControlError::Body),
+        }
         let mut remaining = &body[launch_end..];
         let mut mask = 0u8;
         let mut node = None;
@@ -156,8 +188,29 @@ impl WholeConstructorSelection {
     /// Rejects invalid retained launch bytes. Native source ownership and original
     /// descriptor enrollment remain independent of these portable correlations.
     pub fn launch(&self) -> Result<LaunchSelection<'_>, WholeControlError> {
+        if self.launch_version() != 1 {
+            return Err(WholeControlError::Body);
+        }
         let end = 200 + read_u32(&self.body, 192) as usize;
         LaunchSelection::decode(&self.body[200..end])
+    }
+
+    /// Returns the explicitly retained launch format version.
+    pub fn launch_version(&self) -> u32 {
+        read_u32(&self.body, 196)
+    }
+
+    /// Borrows complete version-two provenance without changing its original bytes.
+    ///
+    /// # Errors
+    /// Rejects another launch version or malformed retained launch bytes. Native
+    /// source enrollment remains independent of these portable correlations.
+    pub fn launch2(&self) -> Result<LaunchSelection2<'_>, WholeControlError> {
+        if self.launch_version() != 2 {
+            return Err(WholeControlError::Body);
+        }
+        let end = 200 + read_u32(&self.body, 192) as usize;
+        LaunchSelection2::decode(&self.body[200..end])
     }
 
     /// Iterates original logical names without constructing a physical roster.

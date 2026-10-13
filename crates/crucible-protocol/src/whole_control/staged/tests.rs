@@ -584,3 +584,82 @@ fn actual_native_stage_plan_receipt_commit_and_references_match_complete_bytes()
     parts.encode_into(&mut encoded).unwrap();
     assert_eq!(&encoded, stage_body);
 }
+
+#[test]
+fn native_launch2_bytes_match_portable_encoder_and_complete_public_setup() {
+    use super::launch2::{LaunchSelection2, LaunchSelection2Parts};
+    use crate::plugin_setup_plan::PluginSetupPlan;
+
+    let native = include_bytes!("../testdata/native-launch2.bin");
+    let launch = LaunchSelection2::decode(native).unwrap();
+    let parts = LaunchSelection2Parts {
+        architecture: launch.architecture,
+        kernel_command_line: launch.kernel_command_line,
+        ram_byte_length: launch.ram_byte_length,
+        ram_backing_kind: launch.ram_backing_kind,
+        ram_inherited_fd: launch.ram_inherited_fd,
+        ram_backing_offset: launch.ram_backing_offset,
+        run_seed: launch.run_seed,
+        rr_switch_quantum: launch.rr_switch_quantum,
+        assets: launch.assets,
+    };
+    let mut encoded = vec![0; parts.encoded_len().unwrap()];
+    parts.encode_into(&mut encoded).unwrap();
+    assert_eq!(encoded, native);
+
+    // The independent native emitter's initial model omitted nested public
+    // headers. The actual host-typed complete composite preserves those bytes.
+    assert!(
+        PluginSetupPlan::decode(include_bytes!(
+            "../testdata/native-setup-launch2-partial.bin"
+        ))
+        .is_err()
+    );
+    let complete = include_bytes!("../testdata/host-setup-launch2-complete.bin");
+    let setup = PluginSetupPlan::decode(complete).unwrap();
+    assert_eq!(setup.encode().unwrap(), complete);
+    let (_, _, selection) = setup.into_parts();
+    let selection = selection.unwrap();
+    assert_eq!(selection.launch_version(), 2);
+    assert_eq!(selection.launch2().unwrap().body(), native);
+    assert!(selection.launch().is_err());
+}
+
+#[test]
+fn explicit_launch2_refuses_changed_arguments_and_unreserved_ready_credit() {
+    use super::launch2::LaunchSelection2;
+    use crate::plugin_setup_plan::PluginSetupPlan;
+
+    let original = include_bytes!("../testdata/native-launch2.bin");
+    for offset in [
+        28, 68, 104, 120, 136, 144, 148, 152, 156, 160, 164, 168, 184, 188, 192, 200, 204, 255,
+    ] {
+        let mut changed = original.to_vec();
+        changed[offset] ^= 0x80;
+        assert!(
+            LaunchSelection2::decode(&changed).is_err(),
+            "offset {offset}"
+        );
+    }
+    let mut changed = original.to_vec();
+    put_u64(&mut changed, 136, 0);
+    assert!(LaunchSelection2::decode(&changed).is_err());
+
+    let setup = PluginSetupPlan::decode(include_bytes!(
+        "../testdata/host-setup-launch2-complete.bin"
+    ))
+    .unwrap();
+    let (_, _, selection) = setup.into_parts();
+    let selection = selection.unwrap();
+    let mut profile = selection.profile().clone();
+    profile.compute.administrative_read_attempt_limit = 2
+        * (2 * u64::from(profile.compute.operation_capacity)
+            + 2 * u64::from(profile.input_stage_limit)
+            + 1)
+        + 4;
+    assert!(profile.validate().is_ok());
+    assert_eq!(
+        profile.validate_ready_exchange_capacity(),
+        Err(WholeControlError::Budget)
+    );
+}

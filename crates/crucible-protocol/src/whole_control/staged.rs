@@ -25,6 +25,9 @@ pub mod selection;
 #[path = "staged/launch.rs"]
 pub mod launch;
 
+#[path = "staged/launch2.rs"]
+pub mod launch2;
+
 #[path = "staged/administrative.rs"]
 pub mod administrative;
 
@@ -102,6 +105,54 @@ impl StagedControlProfile {
         }
 
         let history = self.minimum_wire_history_bytes()?;
+        let (read_attempts, write_attempts, read_bytes, write_bytes) =
+            self.minimum_administrative_io();
+
+        if self.compute.native_history_byte_limit < history
+            || self.compute.provider_history_byte_limit < history
+            || self.compute.administrative_read_attempt_limit < read_attempts
+            || self.compute.administrative_write_attempt_limit < write_attempts
+            || self.compute.administrative_read_byte_limit < read_bytes
+            || self.compute.administrative_write_byte_limit < write_bytes
+        {
+            return Err(WholeControlError::Budget);
+        }
+        Ok(())
+    }
+
+    /// Checks one preowned source-readiness exchange for explicit Launch2.
+    ///
+    /// The constructor reserves a body at its selected compute ceiling, two
+    /// acknowledgements and three frame headers. This capacity check neither
+    /// defines a receipt nor supplies source ownership or readiness authority.
+    /// Historical Launch1 profiles retain their original capacity rules.
+    ///
+    /// # Errors
+    /// Rejects malformed profiles or insufficient nonrenewing administrative
+    /// credit and full retained history backing for the additional exchange.
+    pub fn validate_ready_exchange_capacity(&self) -> Result<(), WholeControlError> {
+        self.validate()?;
+        let body = u64::from(self.compute.body_byte_limit);
+        let history = self
+            .minimum_wire_history_bytes()?
+            .checked_add(body + 2 * 128 + 3 * 24)
+            .ok_or(WholeControlError::Budget)?;
+        let (read_attempts, write_attempts, read_bytes, write_bytes) =
+            self.minimum_administrative_io();
+        let direction_bytes = body + 128 + 2 * 24;
+        if self.compute.native_history_byte_limit < history
+            || self.compute.provider_history_byte_limit < history
+            || self.compute.administrative_read_attempt_limit < read_attempts + 4
+            || self.compute.administrative_write_attempt_limit < write_attempts + 2
+            || self.compute.administrative_read_byte_limit < read_bytes + direction_bytes
+            || self.compute.administrative_write_byte_limit < write_bytes + direction_bytes
+        {
+            return Err(WholeControlError::Budget);
+        }
+        Ok(())
+    }
+
+    fn minimum_administrative_io(&self) -> (u64, u64, u64, u64) {
         let operations = u64::from(self.compute.operation_capacity);
         let stages = u64::from(self.input_stage_limit);
         // The fixed initial handshake uses two prefix/body read pairs. Each
@@ -117,16 +168,7 @@ impl StagedControlProfile {
             + (QUEUE_PLAN_HEADER_BYTES + 24) as u64
             + 34;
 
-        if self.compute.native_history_byte_limit < history
-            || self.compute.provider_history_byte_limit < history
-            || self.compute.administrative_read_attempt_limit < read_attempts
-            || self.compute.administrative_write_attempt_limit < write_attempts
-            || self.compute.administrative_read_byte_limit < read_bytes
-            || self.compute.administrative_write_byte_limit < write_bytes
-        {
-            return Err(WholeControlError::Budget);
-        }
-        Ok(())
+        (read_attempts, write_attempts, read_bytes, write_bytes)
     }
 
     /// Counts full public histories, the original plan and parser scratch.
