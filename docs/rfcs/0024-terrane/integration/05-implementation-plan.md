@@ -207,11 +207,14 @@ completion stages remain unstarted. Its test-only error context preserves
 the actual requests and error chain. Source review identifies a transition
 ordering conflict: an imported trust role enters the actual resolver before
 the selected Guard snapshot changes. Strict snapshot equality remains required.
-A closed private paired-transition purpose is being implemented with genuine
-source and destination retention, full owning-history authorization and native
-final checks. An occupied-destination, same-factory interrupted-import recovery
-case is separately registered in both owning provenance gates; ordinary reopen
-must continue to refuse the pending mismatch.
+A closed private paired-transition purpose passes complete source review with
+genuine source and destination retention, full owning-history authorization and
+native final checks. Its occupied-destination, same-factory interrupted-import
+recovery case also passes source review and is required in both owning
+provenance gates; ordinary reopen continues to require refusal of the pending
+mismatch. The first two qualification attempts stop at formatting: child-module
+resolution, then declaration ordering. Both have reviewed corrections; neither
+attempt reaches compilation or runtime, and acceptance remains pending.
 A separate reviewed private handoff correction carries each native reader's
 actual caller configuration; it is not established as this failure's cause.
 Growing populations, full SDK and owning Nix qualification remain pending.
