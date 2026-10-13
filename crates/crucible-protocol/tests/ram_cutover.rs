@@ -51,7 +51,7 @@ impl Write for Transcript {
 }
 
 fn host_config() -> HostHandshakeConfig {
-    assert_eq!(CONTROL_PROTOCOL_VERSION, 7);
+    assert_eq!(CONTROL_PROTOCOL_VERSION, 8);
     HostHandshakeConfig {
         proto_version: CONTROL_PROTOCOL_VERSION,
         abi_version: CURRENT_SHMEM_ABI,

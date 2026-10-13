@@ -32,7 +32,7 @@ fn closed_tag_registry_matches_wire_contract() {
             ControlTag::HelloAck,
         ]
     );
-    assert_eq!(TAG_SETUP, 0x14);
+    assert_eq!(TAG_SETUP, 0x15);
     assert_eq!(TAG_SETUP_ACK, 0x02);
     assert_eq!(TAG_QUIT, 0x12);
     assert_eq!(TAG_HELLO, 0xF0);
@@ -86,7 +86,7 @@ fn setup_workspace_uses_current_fixed_payload_and_refuses_the_old_flag() {
     };
     let mut frame = crucible_protocol::control_encode_host_msg(&message);
     assert_eq!(frame.len(), 61);
-    assert_eq!(&frame[..5], &[0, 0, 0, 57, 0x14]);
+    assert_eq!(&frame[..5], &[0, 0, 0, 57, 0x15]);
     assert_eq!(&frame[13..17], &1_u32.to_be_bytes());
     assert_eq!(&frame[17..21], &2_u32.to_be_bytes());
     assert_eq!(

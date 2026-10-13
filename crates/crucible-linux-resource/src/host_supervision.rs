@@ -17,8 +17,10 @@ use self::deadline::{OperationDecision, decide_operation, operation_status_from_
 mod bootstrap;
 mod deadline;
 mod quiescence;
+mod source_publication;
 mod startup;
 pub use quiescence::OriginalQuiescenceStartError;
+pub use source_publication::{SourceSupervisionPublisher, SourceSupervisionSnapshot};
 
 pub use bootstrap::HostSupervisionBootstrap;
 
@@ -372,6 +374,7 @@ struct SupervisionState {
 
 #[derive(Debug)]
 struct Shared {
+    source_publisher: Mutex<Option<Weak<dyn SourceSupervisionPublisher>>>,
     started: Instant,
     #[cfg(feature = "private-measurement-domain")]
     measurement_clock: Option<crate::measurement_origin::MeasurementClock>,
@@ -461,6 +464,7 @@ impl HostOperationSupervisor {
     ) -> Result<Self, HostSupervisionError> {
         let supervisor = Self {
             shared: Arc::new(Shared {
+                source_publisher: Mutex::new(None),
                 started,
                 #[cfg(feature = "private-measurement-domain")]
                 measurement_clock: None,
@@ -547,17 +551,34 @@ impl HostOperationSupervisor {
         Ok(supervisor)
     }
 
+    // A poisoned shared cap invalidates every existing native observation.
+    // Recovering the guard is solely for bounded invalidation, never issuance.
+    fn lock_outer(&self) -> Result<MutexGuard<'_, OuterAuthority>, HostSupervisionError> {
+        self.shared.outer.lock().map_err(|poisoned| {
+            drop(poisoned);
+            source_publication::invalidate_sources(&self.shared);
+            HostSupervisionError::Unavailable
+        })
+    }
+
     fn lock(&self) -> Result<MutexGuard<'_, SupervisionState>, HostSupervisionError> {
-        let mut state = self
-            .shared
-            .state
-            .lock()
-            .map_err(|_| HostSupervisionError::Unavailable)?;
-        let mut outer = self
-            .shared
-            .outer
-            .lock()
-            .map_err(|_| HostSupervisionError::Unavailable)?;
+        let mut state = match self.shared.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => {
+                drop(poisoned);
+                source_publication::invalidate_sources(&self.shared);
+                return Err(HostSupervisionError::Unavailable);
+            }
+        };
+        let mut outer = match self.shared.outer.lock() {
+            Ok(outer) => outer,
+            Err(poisoned) => {
+                drop(poisoned);
+                drop(state);
+                source_publication::invalidate_sources(&self.shared);
+                return Err(HostSupervisionError::Unavailable);
+            }
+        };
         #[cfg(feature = "private-measurement-domain")]
         self.require_measurement_interval(&mut state, &mut outer)?;
         if outer.state == HostOperationState::Running
@@ -615,11 +636,7 @@ impl HostOperationSupervisor {
             });
         }
         budgets.validate(state.cap_allowance.is_some())?;
-        let mut outer = self
-            .shared
-            .outer
-            .lock()
-            .map_err(|_| HostSupervisionError::Unavailable)?;
+        let mut outer = self.lock_outer()?;
         if outer.state == HostOperationState::Running
             && outer
                 .allowance
@@ -642,6 +659,7 @@ impl HostOperationSupervisor {
             .checked_add(1)
             .ok_or(HostSupervisionError::IdentityExhausted)?;
         let shared = Arc::new(Shared {
+            source_publisher: Mutex::new(None),
             started: self.shared.started,
             #[cfg(feature = "private-measurement-domain")]
             measurement_clock: self.shared.measurement_clock,
@@ -683,11 +701,11 @@ impl HostOperationSupervisor {
         mut visited: impl FnMut(u64),
     ) -> Result<(), HostSupervisionError> {
         let final_owner = {
-            let outer = self
-                .shared
-                .outer
-                .lock()
-                .map_err(|_| HostSupervisionError::Unavailable)?;
+            let outer = self.shared.outer.lock().map_err(|poisoned| {
+                drop(poisoned);
+                source_publication::invalidate_sources(&self.shared);
+                HostSupervisionError::Unavailable
+            })?;
             outer.root_wakeup.notify_all();
             outer.rosters.last_key_value().map(|(&id, _)| id)
         };
@@ -700,11 +718,11 @@ impl HostOperationSupervisor {
             // Release the outer lock before the owner's operation lock. All
             // mutation/decision paths acquire these locks in the other order.
             let next = {
-                let outer = self
-                    .shared
-                    .outer
-                    .lock()
-                    .map_err(|_| HostSupervisionError::Unavailable)?;
+                let outer = self.shared.outer.lock().map_err(|poisoned| {
+                    drop(poisoned);
+                    source_publication::invalidate_sources(&self.shared);
+                    HostSupervisionError::Unavailable
+                })?;
                 let bounds = (
                     cursor.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
                     std::ops::Bound::Included(final_owner),
@@ -724,6 +742,10 @@ impl HostOperationSupervisor {
             visited(id);
             if let Some(owner) = owner {
                 owner.changed.notify_all();
+                let published = source_publication::publish_owner(&owner);
+                if failure.is_none() {
+                    failure = published.err();
+                }
                 let revoked = startup::revoke_setup_operations(&owner);
                 if failure.is_none() {
                     failure = revoked.err();
@@ -898,11 +920,7 @@ impl HostOperationSupervisor {
         budgets: HostOperationBudgets,
     ) -> Result<u64, HostSupervisionError> {
         let mut state = self.lock()?;
-        let mut outer = self
-            .shared
-            .outer
-            .lock()
-            .map_err(|_| HostSupervisionError::Unavailable)?;
+        let mut outer = self.lock_outer()?;
         state.cap_allowance = outer.allowance;
         state.cap_state = outer.state;
         refresh_cap(&mut state, self.elapsed());
@@ -948,11 +966,7 @@ impl HostOperationSupervisor {
         allowance: Option<Duration>,
     ) -> Result<u64, HostSupervisionError> {
         let mut state = self.lock()?;
-        let mut outer = self
-            .shared
-            .outer
-            .lock()
-            .map_err(|_| HostSupervisionError::Unavailable)?;
+        let mut outer = self.lock_outer()?;
         state.cap_revision = outer.revision;
         state.cap_allowance = outer.allowance;
         state.cap_state = outer.state;
@@ -1017,11 +1031,7 @@ impl HostOperationSupervisor {
     /// Refuses uncertain ownership or an original cap that is no longer running.
     pub fn verify_original_live(&self) -> Result<(), HostSupervisionError> {
         let mut state = self.lock()?;
-        let mut outer = self
-            .shared
-            .outer
-            .lock()
-            .map_err(|_| HostSupervisionError::Unavailable)?;
+        let mut outer = self.lock_outer()?;
         state.cap_revision = outer.revision;
         state.cap_allowance = outer.allowance;
         state.cap_state = outer.state;
@@ -1080,10 +1090,7 @@ impl HostOperationSupervisor {
 
     fn check_active_work(&self) -> Result<(), HostSupervisionError> {
         let owners: Vec<Self> = self
-            .shared
-            .outer
-            .lock()
-            .map_err(|_| HostSupervisionError::Unavailable)?
+            .lock_outer()?
             .rosters
             .values()
             .filter_map(|(_, owner)| owner.as_ref().and_then(Weak::upgrade))
@@ -1163,11 +1170,7 @@ impl HostOperationSupervisor {
     ) -> Result<(HostOuterCapStatus, Duration, Vec<HostOperationStatus>), HostSupervisionError>
     {
         let mut state = self.lock()?;
-        let mut outer = self
-            .shared
-            .outer
-            .lock()
-            .map_err(|_| HostSupervisionError::Unavailable)?;
+        let mut outer = self.lock_outer()?;
         #[cfg(feature = "private-measurement-domain")]
         self.require_measurement_interval(&mut state, &mut outer)?;
         let elapsed = self.elapsed();
@@ -1219,11 +1222,7 @@ impl HostOperationSupervisor {
     /// Returns an error when synchronization ownership is uncertain.
     pub fn cancel(&self) -> Result<(), HostSupervisionError> {
         let mut state = self.lock()?;
-        let mut outer = self
-            .shared
-            .outer
-            .lock()
-            .map_err(|_| HostSupervisionError::Unavailable)?;
+        let mut outer = self.lock_outer()?;
         if outer.state == HostOperationState::Running {
             outer.state = if outer
                 .allowance
@@ -1248,11 +1247,7 @@ impl HostOperationSupervisor {
     /// Returns terminal failure when expiry or cancellation wins completion.
     pub fn complete(&self) -> Result<(), HostSupervisionError> {
         let mut state = self.lock()?;
-        let mut outer = self
-            .shared
-            .outer
-            .lock()
-            .map_err(|_| HostSupervisionError::Unavailable)?;
+        let mut outer = self.lock_outer()?;
         state.cap_state = outer.state;
         state.cap_allowance = outer.allowance;
         refresh_cap(&mut state, self.elapsed());
@@ -1280,11 +1275,7 @@ impl HostOperationSupervisor {
         state: &mut SupervisionState,
         id: u64,
     ) -> Result<HostOperationStatus, HostSupervisionError> {
-        let mut outer = self
-            .shared
-            .outer
-            .lock()
-            .map_err(|_| HostSupervisionError::Unavailable)?;
+        let mut outer = self.lock_outer()?;
         #[cfg(feature = "private-measurement-domain")]
         self.require_measurement_interval(state, &mut outer)?;
         state.cap_revision = outer.revision;
@@ -1300,11 +1291,7 @@ impl HostOperationSupervisor {
         state: &mut SupervisionState,
         id: u64,
     ) -> Result<OperationDecision, HostSupervisionError> {
-        let mut outer = self
-            .shared
-            .outer
-            .lock()
-            .map_err(|_| HostSupervisionError::Unavailable)?;
+        let mut outer = self.lock_outer()?;
         #[cfg(feature = "private-measurement-domain")]
         self.require_measurement_interval(state, &mut outer)?;
         state.cap_revision = outer.revision;

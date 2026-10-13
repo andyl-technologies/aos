@@ -8,7 +8,7 @@ use std::os::unix::net::UnixStream;
 struct Fixture {
     control: UnixStream,
     _peer: UnixStream,
-    owners: [File; 4],
+    owners: [File; 6],
     frame: [u8; 61],
 }
 
@@ -17,7 +17,7 @@ impl Fixture {
         let (control, peer) = UnixStream::pair().unwrap();
         let mut frame = [0; 61];
         frame[..4].copy_from_slice(&57_u32.to_be_bytes());
-        frame[4] = 0x14;
+        frame[4] = 0x15;
         frame[5..13].copy_from_slice(&4096_u64.to_be_bytes());
         frame[21..29].copy_from_slice(&3_u64.to_be_bytes());
         Self {
@@ -28,7 +28,7 @@ impl Fixture {
         }
     }
 
-    fn descriptors(&self) -> [i32; 4] {
+    fn descriptors(&self) -> [i32; 6] {
         std::array::from_fn(|index| self.owners[index].as_raw_fd())
     }
 
@@ -50,7 +50,7 @@ impl Fixture {
 fn borrowed_keeper_drop_preserves_every_native_role_and_control() {
     let fixture = Fixture::new();
     let descriptors = fixture.descriptors();
-    let output = fixture.output(&descriptors[..3]);
+    let output = fixture.output(&descriptors[..5]);
     let keeper = validate_output(&output).unwrap();
     let role = keeper.role(2).unwrap();
     assert!(role.into_owned().is_none());
@@ -66,7 +66,7 @@ fn borrowed_keeper_drop_preserves_every_native_role_and_control() {
 fn borrow_refuses_wrong_edition_reserved_count_and_alias_overlap() {
     let fixture = Fixture::new();
     let mut descriptors = fixture.descriptors();
-    let mut output = fixture.output(&descriptors[..3]);
+    let mut output = fixture.output(&descriptors[..5]);
     output.schema_version = 2;
     assert!(validate_output(&output).is_err());
     output.schema_version = 3;
@@ -75,7 +75,7 @@ fn borrow_refuses_wrong_edition_reserved_count_and_alias_overlap() {
     output.reserved = 0;
     output.descriptor_count = 2;
     assert!(validate_output(&output).is_err());
-    output.descriptor_count = 3;
+    output.descriptor_count = 5;
     descriptors[1] = descriptors[0];
     assert!(validate_output(&output).is_err());
     descriptors[1] = fixture.control.as_raw_fd();
@@ -86,15 +86,15 @@ fn borrow_refuses_wrong_edition_reserved_count_and_alias_overlap() {
 fn selected_frame_refuses_legacy_tag_and_partial_workspace_binding() {
     let mut fixture = Fixture::new();
     let descriptors = fixture.descriptors();
-    let keeper = validate_output(&fixture.output(&descriptors[..3])).unwrap();
+    let keeper = validate_output(&fixture.output(&descriptors[..5])).unwrap();
     assert!(crate::setup::SetupPreparationInput::from_native_setup(&keeper).is_ok());
     fixture.frame[4] = 0x13;
-    let keeper = validate_output(&fixture.output(&descriptors[..3])).unwrap();
+    let keeper = validate_output(&fixture.output(&descriptors[..5])).unwrap();
     assert!(crate::setup::SetupPreparationInput::from_native_setup(&keeper).is_err());
     fixture.frame[4] = 1;
-    let keeper = validate_output(&fixture.output(&descriptors[..3])).unwrap();
+    let keeper = validate_output(&fixture.output(&descriptors[..5])).unwrap();
     assert!(crate::setup::SetupPreparationInput::from_native_setup(&keeper).is_err());
-    fixture.frame[4] = 0x14;
+    fixture.frame[4] = 0x15;
     let keeper = validate_output(&fixture.output(&descriptors)).unwrap();
     assert!(crate::setup::SetupPreparationInput::from_native_setup(&keeper).is_err());
 }

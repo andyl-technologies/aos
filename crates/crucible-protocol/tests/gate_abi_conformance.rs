@@ -360,17 +360,17 @@ fn protocol_golden_vectors_freeze_literal_frame_bytes() {
 }
 
 fn assert_version_bump_regenerates_vectors() {
-    assert_vector_bytes("hello", &[0, 0, 0, 9, 0xF0, 0, 0, 0, 7, 0, 0, 0, 1]);
+    assert_vector_bytes("hello", &[0, 0, 0, 9, 0xF0, 0, 0, 0, 8, 0, 0, 0, 1]);
     assert_vector_bytes(
         "hello-ack",
         &[
-            0, 0, 0, 17, 0xF1, 0, 0, 0, 7, 0, 0, 0, 1, 0, 0, 0, 7, 0, 0, 0, 32,
+            0, 0, 0, 17, 0xF1, 0, 0, 0, 8, 0, 0, 0, 1, 0, 0, 0, 7, 0, 0, 0, 32,
         ],
     );
     assert_vector_bytes(
         "setup-payload",
         &[
-            0, 0, 0, 57, 0x14, 0, 0, 0, 0, 0, 6, 224, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 57, 0x15, 0, 0, 0, 0, 0, 6, 224, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0,
         ],

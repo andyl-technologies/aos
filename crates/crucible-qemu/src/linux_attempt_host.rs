@@ -56,8 +56,9 @@ pub use original_node::{InstalledNodeLaunchIssuer, OriginalNativeFreshLaunchErro
 pub(crate) use original_roster::TargetWatcherOriginal;
 pub(crate) use original_roster::device_digest::AllocationWorkspaceRecord;
 pub(crate) use original_roster::{
-    InstalledIncarnationRetirement, InstalledProcessPurposeError, NativeAccountAttempt,
-    OriginalDeviceDigestWorkspacePurpose, OriginalNativeNodeBinding,
+    InstalledIncarnationRetirement, InstalledProcessPurposeError, InstalledSourceAdmission,
+    InstalledSourceSubject, NativeAccountAttempt, OriginalDeviceDigestWorkspacePurpose,
+    OriginalNativeNodeBinding,
 };
 pub use original_roster::{OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster};
 use std::sync::atomic::{AtomicU8, Ordering};

@@ -1,19 +1,20 @@
 //! Owns the original Setup operation across the real plugin handshake.
 //!
-//! Registered ordinary and private launches use the already-admitted world
-//! service account. The same process-contract event survives exec under its
-//! explicit descriptor role; no pager, later operation or replacement event
-//! supplies startup authority. Native Source and complete allocation-peak
-//! qualification remain separate from this host custody splice. Registered
-//! startup requires the same issued process-purpose keeper before host Setup.
-//! A matched prequeued native purpose receiver remains a separate pre-spawn
-//! requirement; the existing late setup transport cannot substitute for it.
+//! Ordinary initial Source launches borrow the actual Main-funded Source
+//! admission independently of RAM-controller registration. Setup keeps its
+//! original operation and process-contract event; the separate standing owner
+//! retains live policy and cancellation after Setup completes. No pager or
+//! replacement operation supplies either authority. The matched native Source
+//! receiver and complete allocation-peak qualification remain required before
+//! selected process birth; a late setup frame cannot substitute for them.
 
 use std::fmt::{self, Write as _};
 use std::fs::File;
 use std::io::{self, Read};
 
-use crucible_linux_resource::host_services::{HostServiceError, HostServiceLease};
+use crucible_linux_resource::host_services::process_birth::{
+    ServiceBirthError, SourceHostControlLease,
+};
 use crucible_linux_resource::host_supervision::{
     HostOperationClass, HostOperationGuard, HostOperationSupervisor, HostSupervisionError,
 };
@@ -30,14 +31,17 @@ const FDINFO_BYTES: usize = 4096;
 pub(crate) struct OriginalPluginStartup {
     // The initialized body and its allocation close before this external loan.
     body: Box<Option<PluginStartupState>>,
-    _control: HostServiceLease,
+    _control: SourceHostControlLease,
 }
 
 #[derive(Debug)]
 struct PluginStartupState {
     #[cfg(target_os = "linux")]
     workspace: Option<super::OriginalDeviceDigestWorkspace>,
-    services: crucible_linux_resource::host_services::HostServiceAllocator,
+    #[cfg(target_os = "linux")]
+    source: crate::linux_attempt_host::InstalledSourceAdmission,
+    #[cfg(target_os = "linux")]
+    standing: super::source_supervision::OriginalSourceSupervision,
     original: HostOperationGuard,
     record: StartupOperation,
 }
@@ -54,8 +58,11 @@ pub(crate) enum PluginStartupCause {
     #[cfg(target_os = "linux")]
     #[error("device workspace issuance refused: {0}")]
     Workspace(#[source] super::DeviceDigestWorkspaceIssueError),
-    #[error("original startup host-service admission refused: {0}")]
-    Account(#[source] HostServiceError),
+    #[cfg(target_os = "linux")]
+    #[error("standing Source supervision refused: {0}")]
+    Standing(#[source] super::source_supervision::SourceSupervisionError),
+    #[error("original Source host control refused: {0}")]
+    SourceHost(#[source] ServiceBirthError),
     #[error("original startup operation refused: {0}")]
     Original(#[source] HostSupervisionError),
     #[error("original startup cancellation role failed: {0}")]
@@ -73,16 +80,27 @@ pub struct PluginStartupError {
     #[source]
     source: PluginStartupCause,
     original_after: Option<HostSupervisionError>,
-    _control: Option<HostServiceLease>,
+    _control: Option<SourceHostControlLease>,
 }
 
 impl OriginalPluginStartup {
-    /// Reports this target's hosted startup bodies and cancellation control.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn admission_refusal(
+        source: crate::linux_attempt_host::InstalledProcessPurposeError,
+    ) -> PluginStartupError {
+        PluginStartupError {
+            source: PluginStartupCause::Purpose(source),
+            original_after: None,
+            _control: None,
+        }
+    }
+
+    /// Reports the Source's hosted startup bodies and Setup cancellation control.
     ///
-    /// The same original slot reserves this outside-process extent before the
-    /// family ceiling is refined. Actual births still debit the registered
-    /// host-service account; this request neither issues credit nor includes
-    /// native constructors, workers, transport frames or descriptor aliases.
+    /// The actual containing Main reserves this peak before Source admission.
+    /// Physical startup borrows a disjoint piece of that same retained payer;
+    /// no RAM registration is required. Standing publication, preexec aliases
+    /// and native construction peaks are accounted independently.
     ///
     /// # Errors
     /// Returns a geometry refusal if a target extent or checked sum overflows.
@@ -105,17 +123,22 @@ impl OriginalPluginStartup {
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PluginStartupState>()))
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PluginStartupError>()))
             .and_then(|bytes| u64::try_from(bytes).ok())
-            .and_then(|bytes| bytes.checked_add(HostServiceLease::metadata_bytes()))
+            .and_then(|bytes| {
+                bytes.checked_add(std::mem::size_of::<SourceHostControlLease>() as u64)
+            })
             .and_then(|bytes| bytes.checked_add((FDINFO_BYTES + 1) as u64))
     }
 
     pub(crate) fn prepare(
         supervisor: &HostOperationSupervisor,
         contract: &QemuChildProcessContract,
-        registration: &crate::ram_control::RamControlRegistration,
+        registration: Option<&crate::ram_control::RamControlRegistration>,
         process_generation: u64,
         #[cfg(target_os = "linux")] binding: Option<
             &crate::linux_attempt_host::OriginalNativeNodeBinding,
+        >,
+        #[cfg(target_os = "linux")] admission: Option<
+            &crate::linux_attempt_host::InstalledSourceAdmission,
         >,
     ) -> Result<Self, PluginStartupError> {
         let refuse_before = |source| PluginStartupError {
@@ -126,15 +149,25 @@ impl OriginalPluginStartup {
         // The node keeper borrows its actual issued family assignment. No
         // supervisor, configured ceiling or artifact label can mint this loan.
         #[cfg(target_os = "linux")]
+        let source = admission
+            .ok_or_else(|| refuse_before(PluginStartupCause::InstalledProfileUnavailable))?;
+        #[cfg(target_os = "linux")]
         binding
             .ok_or_else(|| refuse_before(PluginStartupCause::InstalledProfileUnavailable))?
-            .verify_installed_process_purpose(
-                contract,
-                supervisor,
-                registration,
-                process_generation,
-            )
-            .map_err(|source| refuse_before(PluginStartupCause::Purpose(source)))?;
+            .verify_source_admission(contract, supervisor, source, process_generation)
+            .map_err(|error| refuse_before(PluginStartupCause::Purpose(error)))?;
+        #[cfg(target_os = "linux")]
+        if let Some(registration) = registration {
+            binding
+                .ok_or_else(|| refuse_before(PluginStartupCause::InstalledProfileUnavailable))?
+                .verify_installed_process_purpose(
+                    contract,
+                    supervisor,
+                    registration,
+                    process_generation,
+                )
+                .map_err(|error| refuse_before(PluginStartupCause::Purpose(error)))?;
+        }
         #[cfg(not(target_os = "linux"))]
         require_installed_process_purpose().map_err(refuse_before)?;
 
@@ -143,13 +176,29 @@ impl OriginalPluginStartup {
         // this loan does not substitute for its transitive Source/control proof.
         let bytes = Self::control_allocation_extent()
             .ok_or_else(|| refuse_before(PluginStartupCause::Geometry))?;
-        let control = registration
-            .host_services
-            .reserve_resources(0, 1, bytes)
-            .map_err(|source| refuse_before(PluginStartupCause::Account(source)))?;
+        #[cfg(target_os = "linux")]
+        let control = source
+            .host_purpose()
+            .reserve_controls(1, bytes)
+            .map_err(|source| refuse_before(PluginStartupCause::SourceHost(source)))?;
+        #[cfg(not(target_os = "linux"))]
+        let control: SourceHostControlLease = return Err(refuse_before(
+            PluginStartupCause::InstalledProfileUnavailable,
+        ));
         // The fixed body is admitted and allocated before any startup operation
         // or descriptor effect. Its temporary live state is included above.
         let mut body = Box::new(None);
+        #[cfg(target_os = "linux")]
+        let standing = match super::source_supervision::OriginalSourceSupervision::prepare(source) {
+            Ok(standing) => standing,
+            Err(error) => {
+                return Err(PluginStartupError {
+                    source: PluginStartupCause::Standing(error),
+                    original_after: None,
+                    _control: Some(control),
+                });
+            }
+        };
         let original = match supervisor.begin_control(HostOperationClass::Setup) {
             Ok(original) => original,
             Err(source) => {
@@ -167,21 +216,21 @@ impl OriginalPluginStartup {
                 .map_err(PluginStartupCause::Kernel)?;
             // The temporary fdinfo owner is already physically closed. The
             // persistent subscriber has a distinct prepaid FD/control loan.
-            let subscriber = registration
-                .host_services
-                .reserve_resources(
-                    0,
-                    1,
-                    HostOperationGuard::original_setup_cancellation_bytes(),
-                )
-                .map_err(PluginStartupCause::Account)?;
+            #[cfg(target_os = "linux")]
+            let subscriber = source
+                .host_purpose()
+                .reserve_controls(1, HostOperationGuard::original_setup_cancellation_bytes())
+                .map_err(PluginStartupCause::SourceHost)?;
+            #[cfg(not(target_os = "linux"))]
+            let subscriber: SourceHostControlLease =
+                return Err(PluginStartupCause::InstalledProfileUnavailable);
             let descriptor = rustix::io::fcntl_dupfd_cloexec(
                 &contract.cancellation_event,
                 super::CHILD_SOURCE_FD_MIN,
             )
             .map_err(|error| PluginStartupCause::Kernel(error.into()))?;
             original
-                .retain_original_setup_cancellation(descriptor, subscriber)
+                .retain_source_setup_cancellation(descriptor, subscriber)
                 .map_err(PluginStartupCause::Original)?;
             let basis = original
                 .serialize_original_setup_basis()
@@ -200,7 +249,16 @@ impl OriginalPluginStartup {
                 absolute_end_ns: u64_at(64),
                 poll_ns: u64_at(72),
                 process_generation,
-                original_total_metadata_bytes: registration.resources.metadata_bytes,
+                original_total_metadata_bytes: {
+                    #[cfg(target_os = "linux")]
+                    {
+                        source.original_metadata_bytes()
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        0
+                    }
+                },
                 cancellation_device: metadata.st_dev,
                 cancellation_inode: metadata.st_ino,
                 cancellation_event_id: event_id,
@@ -218,7 +276,10 @@ impl OriginalPluginStartup {
         match (observed, after) {
             (Ok(record), None) => {
                 *body = Some(PluginStartupState {
-                    services: registration.host_services.clone(),
+                    #[cfg(target_os = "linux")]
+                    source: source.clone(),
+                    #[cfg(target_os = "linux")]
+                    standing,
                     #[cfg(target_os = "linux")]
                     workspace: None,
                     original,
@@ -359,6 +420,24 @@ impl OriginalPluginStartup {
         })
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn standing(
+        &self,
+    ) -> Result<&super::source_supervision::OriginalSourceSupervision, PluginStartupError> {
+        self.state()
+            .map(|state| &state.standing)
+            .map_err(Self::state_refusal)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn admission(
+        &self,
+    ) -> Result<&crate::linux_attempt_host::InstalledSourceAdmission, PluginStartupError> {
+        self.state()
+            .map(|state| &state.source)
+            .map_err(Self::state_refusal)
+    }
+
     pub(crate) fn record(&self) -> Result<StartupOperation, PluginStartupError> {
         self.state()
             .map(|state| state.record)
@@ -369,23 +448,31 @@ impl OriginalPluginStartup {
         self.state()?.original.check_original_setup_cancellation()
     }
 
-    /// Admits the actual encoded-plan and alias owners from the registered account.
+    /// Admits encoded-plan and alias owners from the same actual Source payer.
     pub(super) fn reserve_preexec(
         &self,
         descriptors: u64,
         bytes: u64,
-    ) -> Result<HostServiceLease, PluginStartupError> {
+    ) -> Result<SourceHostControlLease, PluginStartupError> {
         let state = self.state().map_err(Self::state_refusal)?;
         state
             .original
             .check_original_setup_cancellation()
             .map_err(Self::state_refusal)?;
-        let result = state.services.reserve_resources(0, descriptors, bytes);
+        #[cfg(target_os = "linux")]
+        let result = state
+            .source
+            .host_purpose()
+            .reserve_controls(descriptors, bytes);
+        #[cfg(not(target_os = "linux"))]
+        let result: Result<SourceHostControlLease, ServiceBirthError> = Err(
+            ServiceBirthError::policy("Source host payer is unavailable"),
+        );
         let after = state.original.wait_slice().err();
         match (result, after) {
             (Ok(control), None) => Ok(control),
             (Err(source), original_after) => Err(PluginStartupError {
-                source: PluginStartupCause::Account(source),
+                source: PluginStartupCause::SourceHost(source),
                 original_after,
                 _control: None,
             }),
@@ -425,7 +512,7 @@ impl OriginalPluginStartup {
     }
 }
 
-use std::os::fd::AsRawFd as _;
+use std::os::fd::{AsRawFd as _, OwnedFd};
 
 struct DescriptorPath {
     bytes: [u8; 40],
@@ -446,7 +533,7 @@ fn invalid_event() -> io::Error {
     io::Error::from_raw_os_error(libc::EINVAL)
 }
 
-fn event_identity(descriptor: i32) -> io::Result<u64> {
+pub(super) fn event_identity(descriptor: i32) -> io::Result<u64> {
     let mut path = DescriptorPath {
         bytes: [0; 40],
         len: 0,
@@ -496,3 +583,19 @@ fn require_installed_process_purpose() -> Result<(), PluginStartupCause> {
 
 #[cfg(test)]
 mod tests;
+
+/// Reopens only the real retained publication's read-only open file description.
+pub(super) fn reopen_readonly(descriptor: i32) -> io::Result<OwnedFd> {
+    let mut path = DescriptorPath {
+        bytes: [0; 40],
+        len: 0,
+    };
+    write!(path, "/proc/self/fd/{descriptor}").map_err(|_| invalid_event())?;
+    let path = std::str::from_utf8(&path.bytes[..path.len]).map_err(|_| invalid_event())?;
+    rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(Into::into)
+}

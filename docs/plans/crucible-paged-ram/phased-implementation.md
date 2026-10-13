@@ -14,6 +14,44 @@ in reviewable work packages with explicit evidence. Staging phases are not a
 backward-compatibility program: old and new incompatible contracts are never
 accepted together by the deployed runtime. The final cutover is coordinated.
 
+### Current host integration (informative)
+
+The host implementation retains the actual Main's Source admission and node
+supervisor before Source birth in both resident and controller-managed launches.
+The same owner funds the fixed descriptor window and metadata overlap. Controller
+endpoints, spill resources and workspace remain conditional; their absence does
+not create another bank, clock or resident-only timing roster.
+
+The current transport source contracts are:
+
+| Surface | Current contract |
+| --- | --- |
+| Plugin control | Version 8; noncurrent peers are refused. |
+| Selected pre-exec Setup | Edition 5, selector `QEMU_CRUCIBLE_PREEXEC_SETUP=5`, tag `0x15`, 61-byte frame (4-byte length, 1-byte tag, 56-byte payload). |
+| Setup descriptor roster | Five mandatory roles, in order: shared region, wake event, sealed plan, read-only standing publication, distinct standing cancellation event. An optional device workspace is sixth. |
+| Sealed plan | `CRUCSUP7`, schema 7, containing one `CRUCPUR7` process purpose of 1624 bytes. |
+| Standing publication | 608-byte shared file: one 8-byte sequence followed by a 600-byte observation, accessed as atomic big-endian 64-bit words. The host alone holds the writable mapping; the transmitted file role is read-only. |
+| Sealed standing corroboration | The purpose's 624-byte tail binds the retained publication file identity/extent and its initial 600-byte observation. Copied fields issue no authority. |
+| Standing cancellation | A separate nonblocking eventfd, with kernel event identity encoded as raw ID plus one. It is distinct from the wake event and Setup amendment event. |
+| Operational durations | One exact-nanosecond roster under RAM schema 11; Host operational frames use schema 4. Configured values are positive and checked; observed expiry may be zero. |
+
+Source publication preserves the same cap, original monotonic origin and nominal
+Source subject across policy revisions. Publication commits through odd/even
+atomic sequence transitions; terminal invalidation cannot be replaced by a later
+live sequence. Ordinary policy changes publish new revisions without signaling
+terminal cancellation. Completing Setup retains these physical owners for the
+Source lifetime. Only actual child wait/reap and proven physical cleanup permit
+retirement; kill, copied process identifiers and local uniqueness do not.
+
+These are guarded host source contracts, not an enabled runtime combination.
+The host receiver refuses before execution until the authentic matching native
+constructor, role lender and installed-artifact proof are joined. Native kernel
+and participant custody, the controller's standing-owner consumption and the
+whole-Source Root adapter remain incomplete or unqualified. Source review and
+local evaluation do not establish Rust integration compilation, live native or
+VM behavior, physical resource floors, or CPU/elapsed-time parity. The package
+exit criteria and coordinated release gates below remain required.
+
 The dependency graph below distinguishes foundations from separately enabled
 capabilities. `A -> B` means B requires A's accepted contract and evidence.
 

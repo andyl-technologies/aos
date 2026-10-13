@@ -6,16 +6,16 @@
 //! launch cleanup owner until actual child and transport retirement.
 //!
 //! ```text
-//! sealed plan: CRUCSUP6, schema 6, header 40, unchanged aggregate byte cap
-//! nested purpose: CRUCPUR6, schema 6, 1000 bytes
-//! frame: BEu32(57), tag 0x14, 56-byte selected Setup payload
-//! SCM roles: shared memory, wake event, sealed plan, optional workspace
+//! sealed plan: CRUCSUP7, schema 7, header 40, unchanged aggregate byte cap
+//! nested purpose: CRUCPUR7, schema 7, 1624 bytes
+//! frame: BEu32(57), tag 0x15, 56-byte selected Setup payload
+//! SCM roles: shared memory, wake event, sealed plan, standing publication, standing cancellation, optional workspace
 //! ```
 // SPDX-License-Identifier: Apache-2.0
 
 use std::os::fd::{AsRawFd, IntoRawFd, OwnedFd};
 
-use crucible_linux_resource::host_services::HostServiceLease;
+use crucible_linux_resource::host_services::process_birth::SourceHostControlLease;
 use crucible_linux_resource::host_supervision::{HostOperationSupervisor, HostSupervisionError};
 use crucible_protocol::plugin_setup_plan::{
     PLUGIN_SETUP_PLAN_MAX_BYTES, PROCESS_PURPOSE_BYTES, PluginSetupPlan,
@@ -34,18 +34,18 @@ pub(crate) struct BorrowedPreexecSetup<'a> {
     pub(crate) startup: &'a OriginalPluginStartup,
     pub(crate) binding: &'a OriginalNativeNodeBinding,
     pub(crate) supervisor: &'a HostOperationSupervisor,
-    pub(crate) registration: &'a RamControlRegistration,
+    pub(crate) registration: Option<&'a RamControlRegistration>,
     pub(crate) region_config: crucible_shmem::RegionConfig,
 }
 
 /// Owns the actual local and queued descriptor history before its credit.
 #[derive(Debug)]
 pub(crate) struct PreparedPreexecSetup {
-    aliases: [Option<OwnedFd>; 4],
+    aliases: [Option<OwnedFd>; 6],
     frame: [u8; FRAME_BYTES],
     queued: bool,
     receipt: Option<crucible_protocol::PreexecSetupHandover>,
-    control: Option<HostServiceLease>,
+    control: Option<SourceHostControlLease>,
     cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
 }
 
@@ -66,7 +66,9 @@ enum PreexecSetupCause {
     #[error("retained startup refused: {0}")]
     Startup(#[source] super::PluginStartupError),
     #[error("issued process material refused: {0}")]
-    Purpose(#[source] crate::linux_attempt_host::InstalledProcessPurposeError),
+    Purpose(#[source] super::source_supervision::SourceEmissionError),
+    #[error("standing Source publication refused: {0}")]
+    Standing(#[source] super::source_supervision::SourceSupervisionError),
     #[error("canonical shared region layout refused: {0}")]
     RegionLayout(#[source] crucible_shmem::RegionLayoutError),
     #[error("canonical shared region serialization refused: {0}")]
@@ -113,12 +115,12 @@ impl PreparedPreexecSetup {
             )?;
         u64::try_from(dynamic.checked_add(fixed)?)
             .ok()?
-            .checked_add(HostServiceLease::metadata_bytes())
+            .checked_add(std::mem::size_of::<SourceHostControlLease>() as u64)
     }
 
-    /// Counts both four local aliases and their independently retained queue copies.
+    /// Counts both six local aliases and their independently retained queue copies.
     pub(crate) const fn descriptor_peak() -> u64 {
-        8
+        12
     }
 
     /// Admits one physical owner before socket, endpoint borrower, or plan birth.
@@ -169,7 +171,7 @@ impl PreparedPreexecSetup {
         binding: &OriginalNativeNodeBinding,
         contract: &QemuChildProcessContract,
         supervisor: &HostOperationSupervisor,
-        registration: &RamControlRegistration,
+        registration: Option<&RamControlRegistration>,
         ram_endpoint: Option<&super::ram_endpoint_binding::IssuedRamControlEndpoint<'_>>,
         plan: &PluginSetupPlan,
         region_len: u64,
@@ -228,6 +230,8 @@ impl PreparedPreexecSetup {
                     contract,
                     supervisor,
                     registration,
+                    startup.admission().map_err(PreexecSetupCause::Startup)?,
+                    startup.standing().map_err(PreexecSetupCause::Startup)?,
                     startup_record.fields().process_generation,
                     ram_endpoint,
                     |record| *record,
@@ -296,9 +300,16 @@ impl PreparedPreexecSetup {
                         .map_err(PreexecSetupCause::Kernel)?,
                 );
             }
+            let [publication, cancellation] = startup
+                .standing()
+                .map_err(PreexecSetupCause::Startup)?
+                .duplicate_roles()
+                .map_err(PreexecSetupCause::Kernel)?;
+            self.aliases[3] = Some(publication);
+            self.aliases[4] = Some(cancellation);
             if let Some(workspace) = workspace.as_ref() {
                 startup.check().map_err(PreexecSetupCause::Original)?;
-                self.aliases[3] = Some(
+                self.aliases[5] = Some(
                     workspace
                         .duplicate_for_preexec()
                         .map_err(|_| PreexecSetupCause::WorkspaceUnavailable)?,
@@ -340,7 +351,7 @@ impl PreparedPreexecSetup {
             }
             // A failing or partial syscall may still retain queue aliases.
             self.queued = true;
-            let mut descriptors = [-1; 4];
+            let mut descriptors = [-1; 6];
             for (index, alias) in self.aliases.iter().enumerate() {
                 if let Some(alias) = alias {
                     descriptors[index] = alias.as_raw_fd();
@@ -349,7 +360,7 @@ impl PreparedPreexecSetup {
             let receipt = crucible_protocol::send_preexec_setup_frame_with_descriptors(
                 socket.as_raw_fd(),
                 &self.frame,
-                &descriptors[..if self.aliases[3].is_some() { 4 } else { 3 }],
+                &descriptors[..if self.aliases[5].is_some() { 6 } else { 5 }],
             )
             .map_err(PreexecSetupCause::Handover)?;
             self.receipt = Some(receipt);

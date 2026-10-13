@@ -29,7 +29,7 @@ type Borrow = extern "C" fn(u64, *mut NativeBorrow) -> i32;
 pub(crate) struct NativeSetupBorrow {
     frame: [u8; 61],
     control: BorrowedFd<'static>,
-    roles: [Option<BorrowedFd<'static>>; 4],
+    roles: [Option<BorrowedFd<'static>>; 6],
 }
 
 impl NativeSetupBorrow {
@@ -37,7 +37,7 @@ impl NativeSetupBorrow {
     pub(super) fn from_model(
         frame: &[u8; 61],
         control: i32,
-        roles: &[i32; 3],
+        roles: &[i32; 5],
     ) -> Result<Self, StartupSourceError> {
         validate_output(&NativeBorrow {
             schema_version: 3,
@@ -71,7 +71,7 @@ impl NativeSetupBorrow {
     }
 
     pub(crate) fn has_workspace(&self) -> bool {
-        self.roles[3].is_some()
+        self.roles[5].is_some()
     }
 }
 
@@ -87,7 +87,7 @@ pub(crate) fn selected() -> Result<bool, StartupSourceError> {
         return Ok(false);
     }
     // SAFETY: getenv returned the process environment's NUL-terminated value.
-    if unsafe { CStr::from_ptr(value) }.to_bytes() != b"3" {
+    if unsafe { CStr::from_ptr(value) }.to_bytes() != b"5" {
         return Err(StartupSourceError::Ownership {
             reason: "native setup edition differs",
         });
@@ -187,7 +187,7 @@ fn validate_output(output: &NativeBorrow) -> Result<NativeSetupBorrow, StartupSo
         || output.reserved != 0
         || output.control_fd < 0
         || output.frame_bytes != 61
-        || !matches!(output.descriptor_count, 3 | 4)
+        || !matches!(output.descriptor_count, 5 | 6)
         || output.frame.is_null()
         || output.descriptors.is_null()
         || !output.descriptors.is_aligned()
@@ -211,7 +211,7 @@ fn validate_output(output: &NativeBorrow) -> Result<NativeSetupBorrow, StartupSo
             reason: "native setup alias roster differs",
         });
     }
-    let mut roles = [None; 4];
+    let mut roles = [None; 6];
     for (index, fd) in descriptors.iter().copied().enumerate() {
         // SAFETY: the sole native owner retains this exact alias until process
         // retirement. No Rust view closes, replaces, duplicates or owns it.

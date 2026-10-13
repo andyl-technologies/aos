@@ -25,11 +25,11 @@ fn setup_workspace_is_fixed_big_endian_56_bytes_under_the_unchanged_cap() {
     let expected = enabled_setup();
     let frame = control_encode_host_msg(&expected);
 
-    assert_eq!(CONTROL_PROTOCOL_VERSION, 7);
+    assert_eq!(CONTROL_PROTOCOL_VERSION, 8);
     assert_eq!(MAX_FRAME_SIZE, 64);
     assert_eq!(MAX_PAYLOAD_SIZE, 63);
     assert_eq!(frame.len(), 61);
-    assert_eq!(&frame[..5], &[0, 0, 0, 57, 0x14]);
+    assert_eq!(&frame[..5], &[0, 0, 0, 57, 0x15]);
     assert_eq!(&frame[13..17], &1_u32.to_be_bytes());
     assert_eq!(&frame[17..21], &2_u32.to_be_bytes());
     assert_eq!(&frame[21..29], &3_u64.to_be_bytes());

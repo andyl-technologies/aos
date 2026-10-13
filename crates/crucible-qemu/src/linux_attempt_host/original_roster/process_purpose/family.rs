@@ -195,6 +195,14 @@ impl InstalledProcessFamily {
         Ok(())
     }
 
+    pub(super) fn source_identity(&self) -> ([u8; 32], [u8; 32], u64) {
+        (
+            self.containing_identity,
+            self.reservations[0].identity,
+            self.account_generation,
+        )
+    }
+
     /// Emits only the reservations retained by this actual containing owner.
     pub(super) fn encode_corroboration(&self) -> [u8; 256] {
         let mut bytes = [0; 256];

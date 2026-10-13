@@ -20,12 +20,19 @@ use std::os::fd::OwnedFd;
 
 use super::{HostOperationClass, HostOperationGuard, HostOperationState, HostSupervisionError};
 use crate::host_services::HostServiceLease;
+use crate::host_services::process_birth::SourceHostControlLease;
 
 #[derive(Debug)]
 pub(super) struct SetupCancellation {
     descriptor: OwnedFd,
     // Physical descriptor destruction precedes the admitted subscription loan.
-    _credit: HostServiceLease,
+    _credit: CancellationCredit,
+}
+
+#[derive(Debug)]
+enum CancellationCredit {
+    Service { _credit: HostServiceLease },
+    Source { _credit: SourceHostControlLease },
 }
 
 impl SetupCancellation {
@@ -119,6 +126,39 @@ impl HostOperationGuard {
         class: HostOperationClass,
         descriptor: OwnedFd,
         credit: HostServiceLease,
+    ) -> Result<(), HostSupervisionError> {
+        self.retain_cancellation(
+            class,
+            descriptor,
+            CancellationCredit::Service { _credit: credit },
+        )
+    }
+
+    /// Retains the same Setup event with its genuine containing Main Source loan.
+    ///
+    /// # Errors
+    /// Refuses another supervisor, terminal Setup, duplicate subscription,
+    /// invalid descriptor flags or uncertain retained custody.
+    pub fn retain_source_setup_cancellation(
+        &self,
+        descriptor: OwnedFd,
+        credit: SourceHostControlLease,
+    ) -> Result<(), HostSupervisionError> {
+        credit
+            .verify_supervisor(&self.supervisor)
+            .map_err(|_| HostSupervisionError::Unavailable)?;
+        self.retain_cancellation(
+            HostOperationClass::Setup,
+            descriptor,
+            CancellationCredit::Source { _credit: credit },
+        )
+    }
+
+    fn retain_cancellation(
+        &self,
+        class: HostOperationClass,
+        descriptor: OwnedFd,
+        credit: CancellationCredit,
     ) -> Result<(), HostSupervisionError> {
         let cancellation = SetupCancellation {
             descriptor,

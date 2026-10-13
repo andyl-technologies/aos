@@ -1,7 +1,7 @@
 //! Encodes one issued incarnation subdivision for its once-owned native carrier.
 //!
 //! ```text
-//! CRUCPUR6 | BE schema 6 | BE length 1000
+//! CRUCPUR7 | BE schema 7 | BE length 1624
 //! 16..144: original/family/outside/lineage/effective-limit u64 fields
 //! 144..184: final plugin SHA-256, ELF machine, seven allocation roles
 //! 184..248: containing Preparation cap, operation, start, end, poll
@@ -12,9 +12,10 @@
 //! 552..568: child UID/GID assigned by this same configured contract
 //! 568..744: actual paid RAM endpoint identity, session and complete target
 //! 744..1000: fixed reservations retained by the same actual Main issuer
+//! 1000..1624: retained standing publication file and initial observation
 //!
 //! The private prebirth allocation prefix occupies 568 bytes. Only sealing
-//! after actual socketpair birth can emit the complete 1000-byte carrier.
+//! after actual socketpair birth can emit the complete 1624-byte carrier.
 //! ```
 //!
 //! Only a checked borrow from the retained slot can invoke the encoder. The
@@ -93,9 +94,9 @@ impl IssuedInstalledProcessMaterial<'_> {
         }
 
         let mut bytes = [0; ISSUED_PROCESS_ALLOCATION_PREFIX_BYTES];
-        bytes[..8].copy_from_slice(b"CRUCPUR6");
-        bytes[8..12].copy_from_slice(&6_u32.to_be_bytes());
-        bytes[12..16].copy_from_slice(&1000_u32.to_be_bytes());
+        bytes[..8].copy_from_slice(b"CRUCPUR7");
+        bytes[8..12].copy_from_slice(&7_u32.to_be_bytes());
+        bytes[12..16].copy_from_slice(&1624_u32.to_be_bytes());
         for (offset, value) in [
             (16, self.original_total_metadata_bytes),
             (24, self.effective_process_bytes),
@@ -159,6 +160,7 @@ impl IssuedInstalledProcessRecord {
     pub(crate) fn with_ram_endpoint(
         &self,
         endpoint: Option<&crate::spawn::ram_endpoint_binding::IssuedRamControlEndpoint<'_>>,
+        standing: &[u8; crate::spawn::source_supervision::SOURCE_CORROBORATION_BYTES],
     ) -> [u8; ISSUED_PROCESS_RECORD_BYTES] {
         let mut bytes = [0; ISSUED_PROCESS_RECORD_BYTES];
         bytes[..ISSUED_PROCESS_ALLOCATION_PREFIX_BYTES].copy_from_slice(&self.bytes);
@@ -166,7 +168,8 @@ impl IssuedInstalledProcessRecord {
             bytes[ISSUED_PROCESS_ALLOCATION_PREFIX_BYTES..744]
                 .copy_from_slice(&endpoint.corroboration_bytes());
         }
-        bytes[744..].copy_from_slice(&self.family);
+        bytes[744..1000].copy_from_slice(&self.family);
+        bytes[1000..].copy_from_slice(standing);
         bytes
     }
 }

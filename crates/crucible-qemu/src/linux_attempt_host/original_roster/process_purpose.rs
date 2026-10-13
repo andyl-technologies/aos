@@ -25,6 +25,9 @@ use family::InstalledProcessFamily;
 mod incarnation;
 use incarnation::IncarnationJournal;
 
+mod source_admission;
+pub(crate) use source_admission::{InstalledSourceAdmission, InstalledSourceSubject};
+
 mod record;
 mod target;
 
@@ -845,31 +848,45 @@ impl OriginalNativeNodeBinding {
         &self,
         contract: &QemuChildProcessContract,
         supervisor: &HostOperationSupervisor,
-        registration: &crate::ram_control::RamControlRegistration,
+        registration: Option<&crate::ram_control::RamControlRegistration>,
+        admission: &InstalledSourceAdmission,
+        standing: &crate::spawn::source_supervision::OriginalSourceSupervision,
         process_generation: u64,
         ram_endpoint: Option<&crate::spawn::ram_endpoint_binding::IssuedRamControlEndpoint<'_>>,
         borrow: impl FnOnce(&[u8; record::ISSUED_PROCESS_RECORD_BYTES]) -> T,
-    ) -> Result<T, InstalledProcessPurposeError> {
+    ) -> Result<T, crate::spawn::source_supervision::SourceEmissionError> {
         // Initial preexec has only Source custody. Target's historical prefix
         // remains private until its distinct native creator is implemented.
         self.installed_process
             .as_ref()
             .filter(|loan| loan.subdivision_index == 0)
             .ok_or(InstalledProcessPurposeError::Identity)?;
-        self.verify_installed_process_purpose(
-            contract,
-            supervisor,
-            registration,
-            process_generation,
-        )?;
+        self.verify_source_admission(contract, supervisor, admission, process_generation)?;
+        if let Some(registration) = registration {
+            self.verify_installed_process_purpose(
+                contract,
+                supervisor,
+                registration,
+                process_generation,
+            )?;
+        }
         let record = self
             .issued_process_record
             .as_ref()
             .ok_or(InstalledProcessPurposeError::Identity)?;
         if let Some(endpoint) = ram_endpoint {
-            endpoint.verify_for(self, supervisor, registration, process_generation)?;
+            endpoint.verify_for(
+                self,
+                supervisor,
+                registration.ok_or(InstalledProcessPurposeError::Identity)?,
+                process_generation,
+            )?;
         }
-        let bytes = record.with_ram_endpoint(ram_endpoint);
+        if !standing.belongs_to(admission) {
+            return Err(InstalledProcessPurposeError::Identity.into());
+        }
+        let corroboration = standing.corroboration()?;
+        let bytes = record.with_ram_endpoint(ram_endpoint, &corroboration);
         Ok(borrow(&bytes))
     }
 

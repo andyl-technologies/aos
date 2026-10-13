@@ -15,7 +15,8 @@ pub(super) struct HostDescriptorPartition {
     host: u64,
     ready: bool,
     _remainder: Option<HostServiceLease>,
-    target_window: Option<u64>,
+    target_window: Option<(u64, u64)>,
+    source_window: Option<(u64, u64)>,
     next_window: u64,
     dispatcher_claimed: bool,
 }
@@ -41,6 +42,7 @@ impl HostDescriptorPartition {
             ready: false,
             _remainder: remainder,
             target_window: None,
+            source_window: None,
             next_window: 0,
             dispatcher_claimed: false,
         })
@@ -66,8 +68,10 @@ impl HostDescriptorPartition {
                 ServiceBirthError::policy("Target host window has no authentic descriptor payer")
             })?;
         let observed = census_count(self.host, self.original, original)?;
+        let held_source = self.source_window.map_or(0, |(_, peak)| peak);
         if observed
-            .checked_add(peak)
+            .checked_add(held_source)
+            .and_then(|count| count.checked_add(peak))
             .is_none_or(|needed| needed > self.host)
         {
             return Err(ServiceBirthError::policy(
@@ -79,14 +83,71 @@ impl HostDescriptorPartition {
         })?;
         let loan = paid.clone();
         self.next_window = epoch;
-        self.target_window = Some(epoch);
+        self.target_window = Some((epoch, peak));
         self.dispatcher_claimed = true;
         Ok((epoch, loan))
     }
 
+    /// Reserves Source landing from the same paid Main table remainder.
+    pub(super) fn reserve_source_window(
+        &mut self,
+        peak: u64,
+        original: &HostOperationGuard,
+    ) -> Result<(u64, HostServiceLease), ServiceBirthError> {
+        self.check()?;
+        if self.source_window.is_some() || peak == 0 || peak >= self.host {
+            return Err(ServiceBirthError::policy(
+                "Source host window is occupied or invalid",
+            ));
+        }
+        let paid = self
+            ._remainder
+            .as_ref()
+            .filter(|paid| paid.file_descriptors() >= peak)
+            .ok_or_else(|| ServiceBirthError::policy("Source host window has no actual payer"))?;
+        let observed = census_count(self.host, self.original, original)?;
+        let held_target = self.target_window.map_or(0, |(_, peak)| peak);
+        if observed
+            .checked_add(held_target)
+            .and_then(|count| count.checked_add(peak))
+            .is_none_or(|needed| needed > self.host)
+        {
+            return Err(ServiceBirthError::policy(
+                "Source and Target landing exceed Main table",
+            ));
+        }
+        let epoch = self
+            .next_window
+            .checked_add(1)
+            .ok_or_else(|| ServiceBirthError::policy("Source host window epoch is exhausted"))?;
+        self.next_window = epoch;
+        self.source_window = Some((epoch, peak));
+        Ok((epoch, paid.clone()))
+    }
+
+    pub(super) fn check_source_window(&self, epoch: u64) -> Result<(), ServiceBirthError> {
+        self.check()?;
+        if !self
+            .source_window
+            .is_some_and(|(current, _)| current == epoch)
+        {
+            return Err(ServiceBirthError::policy("Source host window is stale"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn close_source_window(&mut self, epoch: u64) -> Result<(), ServiceBirthError> {
+        self.check_source_window(epoch)?;
+        self.source_window = None;
+        Ok(())
+    }
+
     pub(super) fn check_target_window(&self, epoch: u64) -> Result<(), ServiceBirthError> {
         self.check()?;
-        if self.target_window != Some(epoch) {
+        if !self
+            .target_window
+            .is_some_and(|(current, _)| current == epoch)
+        {
             return Err(ServiceBirthError::policy(
                 "Target descriptor window is stale",
             ));

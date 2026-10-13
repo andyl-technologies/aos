@@ -70,6 +70,7 @@ pub mod ram_transfer;
 mod selectable;
 pub mod selectable_catalog_plan;
 pub mod selectable_transport;
+pub mod source_supervision;
 
 use std::io::{ErrorKind, Read, Write};
 #[cfg(unix)]
@@ -222,7 +223,7 @@ pub enum ControlDirection {
 #[repr(u8)]
 pub enum ControlTag {
     /// Host-to-plugin setup frame carrying the shared-memory region length.
-    Setup = 0x14,
+    Setup = 0x15,
     /// Plugin-to-host setup acknowledgement frame.
     SetupAck = 0x02,
     /// Host-to-plugin graceful shutdown request.
@@ -340,10 +341,10 @@ pub enum HostMsg {
 
 /// Number of file descriptors attached to a `Setup` frame.
 #[cfg(unix)]
-pub const SETUP_DESCRIPTOR_COUNT: usize = 3;
+pub const SETUP_DESCRIPTOR_COUNT: usize = 5;
 /// Exact descriptor count when the device digest workspace is present.
 #[cfg(unix)]
-pub const SETUP_WORKSPACE_DESCRIPTOR_COUNT: usize = 4;
+pub const SETUP_WORKSPACE_DESCRIPTOR_COUNT: usize = 6;
 /// `SetupAck.status` value meaning the plugin is ready to run via shared memory.
 pub const SETUP_ACK_STATUS_READY: u8 = 0;
 /// Generic `SetupAck.status` value for setup failures without a narrower code.
@@ -359,9 +360,13 @@ pub struct SetupDescriptorFds {
     pub wake_fd: RawFd,
     /// Sealed current-version composite plugin-plan descriptor, sent third.
     pub plugin_setup_plan_fd: RawFd,
+    /// Read-only live standing Source publication, sent fourth.
+    pub source_supervision_fd: RawFd,
+    /// Independent standing cancellation event, sent fifth.
+    pub source_cancellation_fd: RawFd,
     /// Actual native process generation derived from the retained launch owner.
     pub process_generation: u64,
-    /// Writable digest workspace, sent fourth only when sampling is enabled.
+    /// Writable digest workspace, sent sixth only when sampling is enabled.
     pub device_digest_workspace: Option<SetupDeviceDigestWorkspaceFd>,
 }
 
@@ -375,7 +380,11 @@ pub struct ReceivedSetupDescriptors {
     pub wake_fd: OwnedFd,
     /// Sealed current-version composite plugin-plan descriptor received third.
     pub plugin_setup_plan_fd: OwnedFd,
-    /// Writable digest workspace received fourth, when present.
+    /// Read-only live standing Source publication received fourth.
+    pub source_supervision_fd: OwnedFd,
+    /// Independent standing cancellation event received fifth.
+    pub source_cancellation_fd: OwnedFd,
+    /// Writable digest workspace received sixth, when present.
     pub device_digest_workspace: Option<OwnedFd>,
 }
 
@@ -1168,8 +1177,9 @@ pub fn host_validate_setup_ack(
 ///
 /// The descriptors are attached as `SCM_RIGHTS` ancillary data using
 /// `sendmsg`, in the fixed order
-/// `[shmem_fd, wake_fd, plugin_setup_plan_fd]`. Sampling appends the digest
-/// workspace descriptor fourth and records its presence in the setup frame.
+/// `[shmem_fd, wake_fd, plugin_setup_plan_fd, source_supervision_fd,
+/// source_cancellation_fd]`. Sampling appends the digest
+/// workspace descriptor sixth and records its presence in the setup frame.
 ///
 /// # Errors
 ///
@@ -1195,6 +1205,8 @@ pub fn send_setup_with_descriptors(
         descriptors.shmem_fd,
         descriptors.wake_fd,
         descriptors.plugin_setup_plan_fd,
+        descriptors.source_supervision_fd,
+        descriptors.source_cancellation_fd,
         descriptors
             .device_digest_workspace
             .map_or(-1, |workspace| workspace.fd),
@@ -1270,9 +1282,9 @@ pub fn send_preexec_setup_frame_with_descriptors(
         || frame[4] != TAG_SETUP
         || frame[5..13] == [0; 8]
         || frame[21..29] == [0; 8]
-        || !matches!(descriptors.len(), 3 | 4)
+        || !matches!(descriptors.len(), 5 | 6)
         || descriptors.iter().any(|descriptor| *descriptor < 0)
-        || workspace != (descriptors.len() == 4)
+        || workspace != (descriptors.len() == 6)
         || (!workspace && frame[13..21] != [0; 8])
         || (!workspace && frame[29..61] != [0; 32])
         || (workspace && frame[17..21] != 2_u32.to_be_bytes())
@@ -1288,10 +1300,10 @@ pub fn send_preexec_setup_frame_with_descriptors(
 
 /// Receives a `Setup` frame and its fixed-order descriptors from a Unix socket.
 ///
-/// The frame carries exactly three descriptors without sampling or four with
+/// The frame carries exactly five descriptors without sampling or six with
 /// a digest workspace. The returned descriptors are owned, marked close-on-exec,
 /// and ordered as shared memory, wake, immutable current-version plan, then the
-/// optional workspace. Descriptor count must match the decoded workspace presence.
+/// standing publication, standing cancellation, then optional workspace. Descriptor count must match the decoded workspace presence.
 ///
 /// # Errors
 ///
@@ -1704,9 +1716,18 @@ fn setup_descriptors_from_raw_fds(
             return Err(error);
         }
     }
-    let (shmem_fd, wake_fd, plugin_setup_plan_fd, workspace_fd) = match fds.as_slice() {
-        [shmem, wake, plan] => (*shmem, *wake, *plan, None),
-        [shmem, wake, plan, workspace] => (*shmem, *wake, *plan, Some(*workspace)),
+    let (
+        shmem_fd,
+        wake_fd,
+        plugin_setup_plan_fd,
+        source_supervision_fd,
+        source_cancellation_fd,
+        workspace_fd,
+    ) = match fds.as_slice() {
+        [shmem, wake, plan, source, cancel] => (*shmem, *wake, *plan, *source, *cancel, None),
+        [shmem, wake, plan, source, cancel, workspace] => {
+            (*shmem, *wake, *plan, *source, *cancel, Some(*workspace))
+        }
         _ => {
             let count = fds.len();
             close_raw_fds(fds);
@@ -1721,6 +1742,8 @@ fn setup_descriptors_from_raw_fds(
             shmem_fd: OwnedFd::from_raw_fd(shmem_fd),
             wake_fd: OwnedFd::from_raw_fd(wake_fd),
             plugin_setup_plan_fd: OwnedFd::from_raw_fd(plugin_setup_plan_fd),
+            source_supervision_fd: OwnedFd::from_raw_fd(source_supervision_fd),
+            source_cancellation_fd: OwnedFd::from_raw_fd(source_cancellation_fd),
             device_digest_workspace: workspace_fd.map(|fd| OwnedFd::from_raw_fd(fd)),
         }
     };

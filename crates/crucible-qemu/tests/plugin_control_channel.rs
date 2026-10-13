@@ -84,6 +84,8 @@ fn running_host_lifecycle_stream(
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
             plugin_setup_plan_fd: shmem.as_raw_fd(),
+            source_supervision_fd: shmem.as_raw_fd(),
+            source_cancellation_fd: shmem.as_raw_fd(),
             process_generation: 1,
             device_digest_workspace: None,
         },

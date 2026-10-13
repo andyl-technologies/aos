@@ -6,7 +6,6 @@
 //! keeping per-quantum timing and frame traffic on the shared-memory channel.
 
 use std::any::Any;
-#[cfg(target_os = "linux")]
 use std::process::Child;
 use std::time::Duration;
 
@@ -44,6 +43,7 @@ mod channels;
 mod guarded_reset;
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 mod readonly_backing;
+mod source_child;
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 pub use readonly_backing::QemuReadOnlyBackingError;
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
@@ -56,15 +56,13 @@ pub use channels::{QemuNodePendingQuantum, QemuPluginIpcControlChannel, QemuShme
 #[cfg(target_os = "linux")]
 pub use receiving_transfer::QemuStoppedTransferError;
 mod error;
-pub(crate) mod exact_snapshot;
+mod exact_snapshot;
 #[path = "node/host_policy.rs"]
 mod host_policy;
 mod network_output;
 #[cfg(target_os = "linux")]
-pub use exact_snapshot::{
-    CheckpointArmLoan, CheckpointOriginalCause, CheckpointOriginalError, CheckpointOriginalLoan,
-    CheckpointTransportCause, QemuCheckpointDeviceReader,
-};
+#[cfg(target_os = "linux")]
+pub use exact_snapshot::{CheckpointOriginalLoan, QemuCheckpointDeviceReader};
 
 pub use exact_snapshot::{
     CaptureReadError, QemuCapturedRamPage, QemuExactCheckpointCaptureAdmission,
@@ -320,7 +318,7 @@ impl QemuLogicalTimeCalibration {
 /// The one QEMU child process owned by a [`QemuNode`].
 #[derive(Debug)]
 pub struct QemuNodeChild {
-    child: Child,
+    child: source_child::OwnedNodeChild,
     reaped: bool,
     #[cfg(target_os = "linux")]
     ram_source: Option<Box<crate::ram_source::QemuRamSourceService>>,
@@ -350,7 +348,7 @@ impl QemuNodeChild {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) const fn new(child: Child) -> Self {
         Self {
-            child,
+            child: source_child::OwnedNodeChild::Ordinary(child),
             reaped: false,
             #[cfg(target_os = "linux")]
             ram_source: None,
@@ -361,6 +359,21 @@ impl QemuNodeChild {
             #[cfg(target_os = "linux")]
             preexec_setup: None,
             #[cfg(target_os = "linux")]
+            checkpoint_original: None,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn from_authenticated_source(
+        child: crucible_linux_resource::host_services::process_birth::AuthenticatedSourceChild,
+    ) -> Self {
+        Self {
+            child: source_child::OwnedNodeChild::Source(child),
+            reaped: false,
+            ram_source: None,
+            launch_cleanup: None,
+            original_plugin_startup: None,
+            preexec_setup: None,
             checkpoint_original: None,
         }
     }

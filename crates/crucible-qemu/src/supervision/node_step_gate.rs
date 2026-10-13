@@ -101,7 +101,6 @@ pub use error::QemuLiveNodeStepGateError;
 mod exact_snapshot;
 mod paused_launch;
 mod plugin_resources;
-mod source_supervision;
 pub use exact_snapshot::{
     QemuLiveHotForkChildReport, QemuLiveHotForkChildStressReport,
     run_qemu_live_hot_fork_child_gate, run_qemu_live_hot_fork_child_stress_gate,
@@ -1267,32 +1266,10 @@ fn prepare_paused_live_node<'a>(
     if config.fingerprint == QemuLaunchPluginSwitch::On && !has_workspace {
         return Err(QemuLiveNodeStepGateError::DeviceDigestWorkspaceUnavailable);
     }
-    // Declare custody first so launch locals close before its final owner.
-    let launch_cleanup = config
-        .ram_control_registration
-        .as_ref()
-        .map(crate::launch_cleanup::LaunchCleanup::new);
-    #[cfg(target_os = "linux")]
-    if let Some(binding) = &original_native_binding {
-        let cleanup =
-            launch_cleanup
-                .as_ref()
-                .ok_or(QemuLiveNodeStepGateError::OriginalNativeAccount {
-                    source: crate::linux_attempt_host::OriginalActorAccountError::Unavailable,
-                })?;
-        binding
-            .retain_launch_cleanup(cleanup)
-            .map_err(|source| QemuLiveNodeStepGateError::OriginalNativeAccount { source })?;
-    }
-    let operation_supervisor = match &config.host_operation_supervisor {
-        Some(supervisor) => match &config.ram_control_registration {
-            Some(registration) => supervisor
-                .new_budget_owner(registration.initial_policy.latency)
-                .map_err(|source| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                    reason: format!("create independent node operation budget owner: {source}"),
-                })?,
-            None => supervisor.clone(),
-        },
+    // Keep the final cleanup declaration outside all later physical owners.
+    let mut launch_cleanup = None;
+    let enclosing_supervisor = match &config.host_operation_supervisor {
+        Some(supervisor) => supervisor.clone(),
         None => {
             use crucible_linux_resource::host_supervision::{
                 HostOperationBudget, HostOperationBudgets, HostOperationClass,
@@ -1312,23 +1289,81 @@ fn prepare_paused_live_node<'a>(
             })?
         }
     };
-    // Registered ResidentRequired and paged modes use the same host owner.
-    // Bare component launches have no native entitlement and issue no token.
-    let mut original_plugin_startup = config
-        .ram_control_registration
+    let budgets = match config.ram_control_registration.as_ref() {
+        Some(registration) => registration.initial_policy.latency,
+        None => {
+            enclosing_supervisor
+                .budgets()
+                .map_err(|source| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+                    reason: format!("observe original resident node budgets: {source}"),
+                })?
+                .1
+        }
+    };
+    #[cfg(target_os = "linux")]
+    let source_admission = original_native_binding
         .as_ref()
-        .map(|registration| {
+        .map(|binding| {
+            binding.prepare_source_admission(
+                process_contract,
+                &enclosing_supervisor,
+                config.process_generation,
+                budgets,
+            )
+        })
+        .transpose()
+        .map_err(|source| {
+            QemuLiveNodeStepGateError::PluginStartup(
+                crate::spawn::OriginalPluginStartup::admission_refusal(source),
+            )
+        })?;
+    #[cfg(target_os = "linux")]
+    let operation_supervisor = source_admission.as_ref().map_or_else(
+        || enclosing_supervisor.clone(),
+        |source| source.supervisor().clone(),
+    );
+    #[cfg(not(target_os = "linux"))]
+    let operation_supervisor = enclosing_supervisor;
+    #[cfg(target_os = "linux")]
+    if let Some(admission) = source_admission.as_ref() {
+        launch_cleanup = Some(
+            crate::launch_cleanup::LaunchCleanup::new_source(
+                config.ram_control_registration.as_ref(),
+                admission,
+            )
+            .map_err(|source| QemuLiveNodeStepGateError::OriginalNativeAccount { source })?,
+        );
+        original_native_binding
+            .as_ref()
+            .ok_or(QemuLiveNodeStepGateError::DeviceDigestWorkspaceUnavailable)?
+            .retain_launch_cleanup(
+                launch_cleanup
+                    .as_ref()
+                    .ok_or(QemuLiveNodeStepGateError::DeviceDigestWorkspaceUnavailable)?,
+            )
+            .map_err(|source| QemuLiveNodeStepGateError::OriginalNativeAccount { source })?;
+    } else if let Some(registration) = config.ram_control_registration.as_ref() {
+        launch_cleanup = Some(crate::launch_cleanup::LaunchCleanup::new(registration));
+    }
+    // Selected initial Source uses its actual admission in every RAM mode.
+    // Component launches retain their ordinary supervision and issue no token.
+    #[cfg(target_os = "linux")]
+    let mut original_plugin_startup = source_admission
+        .as_ref()
+        .map(|admission| {
             crate::spawn::OriginalPluginStartup::prepare(
                 &operation_supervisor,
                 process_contract,
-                registration,
+                config.ram_control_registration.as_ref(),
                 config.process_generation,
-                #[cfg(target_os = "linux")]
                 original_native_binding.as_ref(),
+                Some(admission),
             )
         })
         .transpose()
         .map_err(QemuLiveNodeStepGateError::PluginStartup)?;
+    #[cfg(not(target_os = "linux"))]
+    let mut original_plugin_startup: Option<crate::spawn::OriginalPluginStartup> = None;
     #[cfg(target_os = "linux")]
     if let Some(workspace) = original_workspace {
         let startup = original_plugin_startup
@@ -1414,7 +1449,6 @@ fn prepare_paused_live_node<'a>(
     if let Some(startup) = &original_plugin_startup {
         plugin = plugin.with_original_startup(startup)?;
     }
-    plugin = source_supervision::publish(plugin, &operation_supervisor)?;
     if let Some(registration) = &config.ram_control_registration {
         use std::io::Read;
         let mut session = [0; 32];
@@ -1522,7 +1556,7 @@ fn prepare_paused_live_node<'a>(
         original_native_binding.as_ref(),
         config.ram_control_registration.as_ref(),
     ) {
-        (Some(startup), Some(binding), Some(registration)) => {
+        (Some(startup), Some(binding), registration) => {
             Some(crate::spawn::preexec_setup::BorrowedPreexecSetup {
                 startup,
                 binding,

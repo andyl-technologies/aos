@@ -1,8 +1,8 @@
 //! Decodes plan data from the single selected pre-exec carrier edition.
 //!
 //! ```text
-//! CRUCSUP6 | BE schema6/header40/total/A/S/W/Startup128/Purpose1000
-//! body: AppRandom | Selectable | optional CRUCWSP2[128] | Startup | CRUCPUR6
+//! CRUCSUP7 | BE schema7/header40/total/A/S/W/Startup128/Purpose1624
+//! body: AppRandom | Selectable | optional CRUCWSP2[128] | Startup | CRUCPUR7
 //! Purpose tail (big-endian integers):
 //! 568..592: child socket device, inode, and SO_COOKIE (u64 each)
 //! 592..624: session[32]
@@ -35,8 +35,8 @@ pub(super) fn decode_parts(
         });
     }
     if bytes.len() < HEADER
-        || bytes[..8] != *b"CRUCSUP6"
-        || read_u32(bytes, 8)? != 6
+        || bytes[..8] != *b"CRUCSUP7"
+        || read_u32(bytes, 8)? != 7
         || read_u32(bytes, 12)? != HEADER as u32
     {
         return Err(invalid("outer"));
@@ -104,8 +104,8 @@ pub(super) fn validate_binding(
     {
         return Err(invalid("lengths"));
     }
-    if purpose[..8] != *b"CRUCPUR6"
-        || read_u32(purpose, 8)? != 6
+    if purpose[..8] != *b"CRUCPUR7"
+        || read_u32(purpose, 8)? != 7
         || read_u32(purpose, 12)? as usize != PURPOSE
         || purpose[16..24] != startup.fields().original_total_metadata_bytes.to_be_bytes()
         || purpose[96..104] != startup.fields().process_generation.to_be_bytes()
@@ -121,6 +121,7 @@ pub(super) fn validate_binding(
     }
     validate_ram_endpoint(purpose)?;
     family::validate(purpose)?;
+    validate_standing_source(purpose)?;
 
     if let Some(workspace) = workspace {
         if workspace[..8] != *b"CRUCWSP2"
@@ -173,3 +174,25 @@ fn validate_ram_endpoint(purpose: &[u8]) -> Result<(), PluginSetupPlanError> {
 
 #[cfg(test)]
 mod tests;
+
+fn validate_standing_source(purpose: &[u8]) -> Result<(), PluginSetupPlanError> {
+    let invalid = || PluginSetupPlanError::InvalidPreexecSection {
+        section: "standing Source",
+    };
+    let tail = purpose.get(1000..1624).ok_or_else(invalid)?;
+    if read_u64(tail, 8)? == 0 || read_u64(tail, 16)? != 608 {
+        return Err(invalid());
+    }
+    let source = crate::source_supervision::decode_source_supervision_payload(&tail[24..])
+        .map_err(|_| invalid())?;
+    if source.cap != purpose[184..216]
+        || source.cap != purpose[760..792]
+        || source.account_generation != read_u64(purpose, 88)?
+        || source.process_generation != read_u64(purpose, 96)?
+        || source.reservation != purpose[816..848]
+        || source.artifact != purpose[144..176]
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}

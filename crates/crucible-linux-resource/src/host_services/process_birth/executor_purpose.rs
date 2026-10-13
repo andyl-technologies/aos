@@ -17,6 +17,11 @@ use crate::host_supervision::{
 };
 use crate::ram_policy::HostResourceVector;
 
+mod source_host;
+pub use source_host::{
+    AuthenticatedSourceChild, AuthenticatedSourceHostPurpose, SourceHostControlLease,
+};
+
 mod host_descriptors;
 mod target_dispatcher;
 pub use target_dispatcher::AuthenticatedTargetDispatcherPurpose;

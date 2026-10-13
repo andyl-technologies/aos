@@ -45,6 +45,7 @@ pub(crate) mod preexec_setup;
 pub(crate) mod ram_endpoint_binding;
 mod ram_spill;
 mod run_directory;
+pub(crate) mod source_supervision;
 mod worker_stack_profile;
 
 #[cfg(target_os = "linux")]
@@ -926,6 +927,22 @@ impl QemuSpawnedChild {
 /// Errors returned while preparing or spawning a QEMU child.
 #[derive(Debug, Error)]
 pub enum QemuSpawnError {
+    /// The real Source host owner refused custody before or after process birth.
+    #[error("authenticated Source custody refused: {source}")]
+    SourceHost {
+        /// Actual Main resource or kernel-custody cause.
+        #[source]
+        source: crucible_linux_resource::host_services::process_birth::ServiceBirthError,
+        /// Same spawned child retained for physical containment after refusal.
+        child: Option<Box<QemuNodeChild>>,
+    },
+    /// The actual Source spawn control reservation refused before any socket birth.
+    #[error("Source spawn admission refused: {source}")]
+    SourceAdmission {
+        /// The actual initiating nominal account refusal.
+        #[source]
+        source: crate::linux_attempt_host::OriginalActorAccountError,
+    },
     /// The active original configuration account refused before allocation.
     #[error("QEMU configuration admission refused: {0}")]
     ConfigurationAdmission(#[source] crucible::owned_decode::DecodeAdmissionError),
@@ -1348,6 +1365,28 @@ pub(crate) fn spawn_prepared_qemu_child_with_preexec(
         .map(|services| services.reserve_resources(0, 16, 0))
         .transpose()
         .map_err(|source| QemuSpawnError::HostServices { source })?;
+    if let Some(selected) = preexec.as_ref() {
+        launch_cleanup
+            .as_ref()
+            .ok_or(QemuSpawnError::RegionLengthZero)?
+            .reserve_source_spawn_controls(
+                selected
+                    .startup
+                    .admission()
+                    .map_err(|source| QemuSpawnError::PluginStartup { source })?,
+            )
+            .map_err(|source| QemuSpawnError::SourceAdmission { source })?;
+    }
+    let source_purpose = preexec
+        .as_ref()
+        .map(|selected| {
+            selected
+                .startup
+                .admission()
+                .map(|admission| admission.host_purpose().clone())
+        })
+        .transpose()
+        .map_err(|source| QemuSpawnError::PluginStartup { source })?;
     let image_pins = GuardedLaunchImagePins::new(run_directory)?;
     let launch_args = guarded_launch_args(
         command.args(),
@@ -1406,6 +1445,14 @@ pub(crate) fn spawn_prepared_qemu_child_with_preexec(
             cleanup.child_started();
         }
     }
+    if let Some(purpose) = source_purpose.as_ref() {
+        purpose
+            .begin_birth()
+            .map_err(|source| QemuSpawnError::SourceHost {
+                source,
+                child: None,
+            })?;
+    }
     let child = spawn_process_with_resources(
         command.executable(),
         &launch_args,
@@ -1419,7 +1466,25 @@ pub(crate) fn spawn_prepared_qemu_child_with_preexec(
             selected_preexec,
         }),
     )?;
-    let mut child = QemuNodeChild::new(child);
+    let mut child = match source_purpose.as_ref() {
+        Some(purpose) => match purpose.retain_child(child) {
+            Ok(child) => QemuNodeChild::from_authenticated_source(child),
+            Err((child, source)) => {
+                let mut child = QemuNodeChild::new(child);
+                if let Some(cleanup) = launch_cleanup {
+                    child.retain_launch_cleanup(cleanup);
+                }
+                if let Some(owner) = prepared_preexec.take() {
+                    child.retain_preexec_setup(owner);
+                }
+                return Err(QemuSpawnError::SourceHost {
+                    source,
+                    child: Some(Box::new(child)),
+                });
+            }
+        },
+        None => QemuNodeChild::new(child),
+    };
     if let Some(owner) = prepared_preexec.take() {
         child.retain_preexec_setup(owner);
     }
@@ -1570,8 +1635,8 @@ pub(crate) fn prepare_test_preexec_setup(
         original_total_metadata_bytes: 4096,
     })?;
     let mut purpose = [0_u8; crucible_protocol::plugin_setup_plan::PROCESS_PURPOSE_BYTES];
-    purpose[..8].copy_from_slice(b"CRUCPUR6");
-    purpose[8..12].copy_from_slice(&6_u32.to_be_bytes());
+    purpose[..8].copy_from_slice(b"CRUCPUR7");
+    purpose[8..12].copy_from_slice(&7_u32.to_be_bytes());
     purpose[12..16].copy_from_slice(
         &(crucible_protocol::plugin_setup_plan::PROCESS_PURPOSE_BYTES as u32).to_be_bytes(),
     );
@@ -1628,6 +1693,35 @@ pub(crate) fn prepare_test_preexec_setup(
         }
     }
     purpose[744..1000].copy_from_slice(&family);
+    // Fixed syntax-only standing observation; no kernel owner is issued.
+    for (offset, value) in [(1000, 1_u64), (1008, 29), (1016, 608)] {
+        purpose[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
+    }
+    let mut standing = [0_u8; 600];
+    standing[..8].copy_from_slice(b"CRUCSRV1");
+    standing[8..12].copy_from_slice(&1_u32.to_be_bytes());
+    standing[12..16].copy_from_slice(&600_u32.to_be_bytes());
+    standing[16..48].copy_from_slice(&purpose[184..216]);
+    standing[88..120].copy_from_slice(&purpose[184..216]);
+    standing[120..152].copy_from_slice(&purpose[816..848]);
+    standing[200..232].copy_from_slice(&purpose[144..176]);
+    standing[72..80].copy_from_slice(&purpose[88..96]);
+    standing[80..88].copy_from_slice(&purpose[96..104]);
+    for (offset, value) in [(48, 1_u64), (160, 1), (168, 2), (176, 1)] {
+        standing[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
+    }
+    // Independently authored schema11 literal roster: fourteen 1ns polls,
+    // absent progress and 500us total bounds, with canonical zero padding.
+    standing[192..196].copy_from_slice(&256_u32.to_be_bytes());
+    standing[232..236].copy_from_slice(&11_u32.to_be_bytes());
+    for index in 0..14 {
+        let offset = 236 + index * 18;
+        standing[offset..offset + 8].copy_from_slice(&1_u64.to_be_bytes());
+        standing[offset + 9] = 1;
+        standing[offset + 10..offset + 18].copy_from_slice(&500_000_u64.to_be_bytes());
+    }
+    purpose[1024..1624].copy_from_slice(&standing);
+
     let selectable = crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan::new(
         crucible_protocol::selectable_catalog_plan::SelectablePlanLimits::new(1, 1, 1)?,
         Vec::new(),
@@ -1657,6 +1751,13 @@ pub(crate) fn prepare_test_preexec_setup(
         })
         .try_into()
         .map_err(|_| "fixture current setup frame size differs")?;
+    // Physical transport fixtures provide each mandatory owned role. They
+    // establish no standing Source, Main payer or native constructor authority.
+    let source_publication = fs::File::open("/dev/null")?;
+    let source_cancellation = rustix::event::eventfd(
+        0,
+        rustix::event::EventfdFlags::CLOEXEC | rustix::event::EventfdFlags::NONBLOCK,
+    )?;
     resources.preexec_receipt = Some(
         crucible_protocol::send_preexec_setup_frame_with_descriptors(
             resources.control_socket.as_raw_fd(),
@@ -1665,6 +1766,8 @@ pub(crate) fn prepare_test_preexec_setup(
                 resources.shmem_fd.as_raw_fd(),
                 resources.wake_fd.as_raw_fd(),
                 plan.as_raw_fd(),
+                source_publication.as_raw_fd(),
+                source_cancellation.as_raw_fd(),
             ],
         )?,
     );
@@ -1732,7 +1835,7 @@ fn spawn_process_with_resources(
 
     let mut command = guarded_qemu_process_command(executable, args, envs);
     if selected_preexec {
-        command.env("QEMU_CRUCIBLE_PREEXEC_SETUP", "4");
+        command.env("QEMU_CRUCIBLE_PREEXEC_SETUP", "5");
     }
 
     // SAFETY: the closure only calls async-signal-safe syscalls between fork

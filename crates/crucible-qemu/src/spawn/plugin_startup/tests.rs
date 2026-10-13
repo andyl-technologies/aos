@@ -81,9 +81,11 @@ fn missing_installed_profile_refuses_before_setup_or_service_reservation()
     let refusal = OriginalPluginStartup::prepare(
         &supervisor,
         &contract,
-        &registration,
+        Some(&registration),
         1,
-        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        #[cfg(target_os = "linux")]
+        None,
+        #[cfg(target_os = "linux")]
         None,
     )
     .err()
@@ -107,9 +109,11 @@ fn missing_installed_profile_refuses_before_setup_or_service_reservation()
     let with_capacity = OriginalPluginStartup::prepare(
         &supervisor,
         &contract,
-        &registration,
+        Some(&registration),
         1,
-        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        #[cfg(target_os = "linux")]
+        None,
+        #[cfg(target_os = "linux")]
         None,
     )
     .err()

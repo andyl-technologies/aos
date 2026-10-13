@@ -54,6 +54,9 @@ impl QemuSpawnChildResources {
             }
             return Ok(None);
         };
+        let registration = preexec
+            .registration
+            .ok_or_else(|| endpoint_refusal("RAM endpoint has no actual registration"))?;
         preexec
             .startup
             .check()
@@ -66,7 +69,7 @@ impl QemuSpawnChildResources {
         if resources.ram_control != Some(launch)
             || resources.process_generation != generation
             || launch.target.owner_generation != generation
-            || launch.target != crate::ram_control::target_to_wire(preexec.registration.target)
+            || launch.target != crate::ram_control::target_to_wire(registration.target)
         {
             return Err(endpoint_refusal(
                 "RAM endpoint differs from the issued launch target",
@@ -77,7 +80,7 @@ impl QemuSpawnChildResources {
             .verify_installed_process_purpose(
                 contract,
                 preexec.supervisor,
-                preexec.registration,
+                registration,
                 generation,
             )
             .map_err(|source| QemuSpawnError::Io {
@@ -111,7 +114,7 @@ impl QemuSpawnChildResources {
             identity,
             launch,
             binding: preexec.binding,
-            registration: preexec.registration,
+            registration,
             supervisor: preexec.supervisor,
             _pair_lease: pair_lease,
         }))

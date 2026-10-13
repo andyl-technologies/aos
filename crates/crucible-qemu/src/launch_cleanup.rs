@@ -55,7 +55,7 @@ impl QemuRamLaunchCustody {
     }
 
     pub(crate) fn validates(&self, registration: &RamControlRegistration) -> bool {
-        self.cleanup.inner.target == registration.target
+        self.cleanup.inner.target == Some(registration.target)
             && self.cleanup.inner.authority.lock().is_ok_and(|authority| {
                 !authority.published
                     && authority.resources == registration.resources
@@ -109,14 +109,27 @@ struct CleanupAuthority {
 }
 
 struct CleanupRecord {
-    target: HostRamTarget,
+    target: Option<HostRamTarget>,
     authority: Mutex<CleanupAuthority>,
+    #[cfg(target_os = "linux")]
+    source_purpose: Mutex<
+        Option<
+            crucible_linux_resource::host_services::process_birth::AuthenticatedSourceHostPurpose,
+        >,
+    >,
+    #[cfg(target_os = "linux")]
+    source_control:
+        Option<crucible_linux_resource::host_services::process_birth::SourceHostControlLease>,
     #[cfg(target_os = "linux")]
     installed_incarnation: Mutex<Option<crate::linux_attempt_host::InstalledIncarnationRetirement>>,
     #[cfg(target_os = "linux")]
     target_binding: Mutex<Option<crate::linux_attempt_host::OriginalNativeNodeBinding>>,
     #[cfg(target_os = "linux")]
     target_workspace: Mutex<Option<crate::spawn::OriginalDeviceDigestWorkspace>>,
+    #[cfg(target_os = "linux")]
+    source_spawn_control: Mutex<
+        Option<crucible_linux_resource::host_services::process_birth::SourceHostControlLease>,
+    >,
     child_started: AtomicBool,
     child_reaped: AtomicBool,
     pending_joins: AtomicUsize,
@@ -148,7 +161,7 @@ impl LaunchCleanup {
     pub(crate) fn new(registration: &RamControlRegistration) -> Self {
         Self {
             inner: Arc::new(CleanupRecord {
-                target: registration.target,
+                target: Some(registration.target),
                 authority: Mutex::new(CleanupAuthority {
                     registrar: Some(Arc::clone(&registration.registrar)),
                     published_retirement: None,
@@ -156,11 +169,17 @@ impl LaunchCleanup {
                     resources: registration.resources,
                 }),
                 #[cfg(target_os = "linux")]
+                source_purpose: Mutex::new(None),
+                #[cfg(target_os = "linux")]
+                source_control: None,
+                #[cfg(target_os = "linux")]
                 installed_incarnation: Mutex::new(None),
                 #[cfg(target_os = "linux")]
                 target_binding: Mutex::new(None),
                 #[cfg(target_os = "linux")]
                 target_workspace: Mutex::new(None),
+                #[cfg(target_os = "linux")]
+                source_spawn_control: Mutex::new(None),
                 child_started: AtomicBool::new(false),
                 child_reaped: AtomicBool::new(false),
                 pending_joins: AtomicUsize::new(0),
@@ -169,6 +188,88 @@ impl LaunchCleanup {
                 external_basis: Mutex::new(None),
             }),
         }
+    }
+
+    /// Keeps the genuine Source payer before the shared cleanup body is born.
+    ///
+    /// RAM registration remains optional. Its absence supplies no authority:
+    /// the actual installed Source admission retains the same Main charge.
+    ///
+    /// # Errors
+    /// Refuses changed Source custody or exhausted actual control capacity.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn new_source(
+        registration: Option<&RamControlRegistration>,
+        admission: &crate::linux_attempt_host::InstalledSourceAdmission,
+    ) -> Result<Self, crate::linux_attempt_host::OriginalActorAccountError> {
+        admission.check()?;
+        let bytes = Self::retained_control_bytes()
+            .ok_or(crate::linux_attempt_host::OriginalActorAccountError::Unavailable)?;
+        let control = admission
+            .host_purpose()
+            .reserve_controls(0, bytes)
+            .map_err(crate::linux_attempt_host::OriginalActorAccountError::from)?;
+        Ok(Self {
+            inner: Arc::new(CleanupRecord {
+                target: registration.map(|registration| registration.target),
+                authority: Mutex::new(CleanupAuthority {
+                    registrar: registration.map(|registration| Arc::clone(&registration.registrar)),
+                    published_retirement: None,
+                    published: false,
+                    resources: registration
+                        .map_or(admission.resources(), |registration| registration.resources),
+                }),
+                source_purpose: Mutex::new(Some(admission.host_purpose().clone())),
+                source_control: Some(control),
+                installed_incarnation: Mutex::new(None),
+                target_binding: Mutex::new(None),
+                target_workspace: Mutex::new(None),
+                #[cfg(target_os = "linux")]
+                source_spawn_control: Mutex::new(None),
+                child_started: AtomicBool::new(false),
+                child_reaped: AtomicBool::new(false),
+                pending_joins: AtomicUsize::new(0),
+                pending_imports: AtomicUsize::new(0),
+                external_basis: Mutex::new(None),
+            }),
+        })
+    }
+
+    /// Prepays the real spawn descriptor overlap before pair construction.
+    ///
+    /// # Errors
+    /// Refuses another Source owner, repeated publication or uncertain funding.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn reserve_source_spawn_controls(
+        &self,
+        admission: &crate::linux_attempt_host::InstalledSourceAdmission,
+    ) -> Result<(), crate::linux_attempt_host::OriginalActorAccountError> {
+        let held = self
+            .inner
+            .source_purpose
+            .lock()
+            .map_err(|_| crate::linux_attempt_host::OriginalActorAccountError::Unavailable)?;
+        if !held
+            .as_ref()
+            .is_some_and(|purpose| purpose.same_owner(admission.host_purpose()))
+        {
+            return Err(crate::linux_attempt_host::OriginalActorAccountError::Unavailable);
+        }
+        let mut controls = self
+            .inner
+            .source_spawn_control
+            .lock()
+            .map_err(|_| crate::linux_attempt_host::OriginalActorAccountError::Unavailable)?;
+        if controls.is_some() || self.inner.child_started.load(Ordering::Acquire) {
+            return Err(crate::linux_attempt_host::OriginalActorAccountError::Unavailable);
+        }
+        *controls = Some(
+            admission
+                .host_purpose()
+                .reserve_controls(16, 0)
+                .map_err(crate::linux_attempt_host::OriginalActorAccountError::from)?,
+        );
+        Ok(())
     }
 
     #[cfg(target_os = "linux")]
@@ -377,8 +478,9 @@ impl LaunchCleanup {
     pub(crate) fn quarantine(&self) {
         if let Ok(authority) = self.inner.authority.lock()
             && let Some(registrar) = &authority.registrar
+            && let Some(target) = self.inner.target
         {
-            let _ = registrar.quarantine_unpublished(self.inner.target, authority.resources);
+            let _ = registrar.quarantine_unpublished(target, authority.resources);
         }
     }
 
@@ -397,7 +499,11 @@ impl LaunchCleanup {
             .registrar
             .as_ref()
             .ok_or(RamControlError::AuthorityMismatch)?;
-        let retirement = registrar.retirement_authority(self.inner.target)?;
+        let retirement = registrar.retirement_authority(
+            self.inner
+                .target
+                .ok_or(RamControlError::AuthorityMismatch)?,
+        )?;
         authority.published_retirement = Some(retirement);
         let registrar = authority.registrar.take();
         authority.published = true;
@@ -467,6 +573,10 @@ impl Drop for CleanupRecord {
         let Ok(authority) = self.authority.get_mut() else {
             #[cfg(target_os = "linux")]
             retain_unproven_target_workspace(&mut self.target_workspace);
+            #[cfg(target_os = "linux")]
+            retain_unproven_source(&mut self.source_purpose, &mut self.source_control);
+            #[cfg(target_os = "linux")]
+            retain_unproven_spawn_controls(&mut self.source_spawn_control);
             return;
         };
         let reaped = !self.child_started.load(Ordering::Acquire)
@@ -490,17 +600,31 @@ impl Drop for CleanupRecord {
                 }
                 None => false,
             }
-        } else if let Some(registrar) = authority.registrar.take() {
+        } else if let (Some(registrar), Some(target)) = (authority.registrar.take(), self.target) {
             let released = proven
                 && registrar
-                    .retire_unpublished_after_cleanup(self.target, authority.resources)
+                    .retire_unpublished_after_cleanup(target, authority.resources)
                     .is_ok();
             if !released {
-                let _ = registrar.quarantine_unpublished(self.target, authority.resources);
+                let _ = registrar.quarantine_unpublished(target, authority.resources);
             }
             released
         } else {
-            false
+            // Only an actual nominal Source holder supplies native-only cleanup.
+            // Missing RAM registration is never interpreted as blanket success.
+            #[cfg(target_os = "linux")]
+            {
+                proven
+                    && self.target.is_none()
+                    && self
+                        .source_purpose
+                        .get_mut()
+                        .is_ok_and(|held| held.is_some())
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                false
+            }
         };
 
         #[cfg(target_os = "linux")]
@@ -514,6 +638,9 @@ impl Drop for CleanupRecord {
         #[cfg(target_os = "linux")]
         if !released {
             retain_unproven_target_workspace(&mut self.target_workspace);
+            retain_unproven_source(&mut self.source_purpose, &mut self.source_control);
+            #[cfg(target_os = "linux")]
+            retain_unproven_spawn_controls(&mut self.source_spawn_control);
         }
 
         // This is the last cleanup Arc: physical process, source/import aliases
@@ -531,3 +658,40 @@ impl Drop for CleanupRecord {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests;
+
+/// Preserves the same Main charge when real final-close evidence is absent.
+#[cfg(target_os = "linux")]
+fn retain_unproven_source(
+    purpose: &mut Mutex<
+        Option<
+            crucible_linux_resource::host_services::process_birth::AuthenticatedSourceHostPurpose,
+        >,
+    >,
+    control: &mut Option<
+        crucible_linux_resource::host_services::process_birth::SourceHostControlLease,
+    >,
+) {
+    let held = purpose
+        .get_mut()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(purpose) = held.take() {
+        std::mem::forget(purpose);
+    }
+    if let Some(control) = control.take() {
+        std::mem::forget(control);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn retain_unproven_spawn_controls(
+    controls: &mut Mutex<
+        Option<crucible_linux_resource::host_services::process_birth::SourceHostControlLease>,
+    >,
+) {
+    let held = controls
+        .get_mut()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(control) = held.take() {
+        std::mem::forget(control);
+    }
+}

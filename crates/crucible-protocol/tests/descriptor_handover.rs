@@ -17,11 +17,12 @@ use crucible_protocol::{
 };
 
 #[test]
-fn setup_handover_transfers_three_descriptors_in_fixed_order() -> Result<(), Box<dyn Error>> {
+fn setup_handover_transfers_five_descriptors_in_fixed_order() -> Result<(), Box<dyn Error>> {
     let (host, plugin) = UnixStream::pair()?;
     let shmem = File::open("/dev/null")?;
     let wake = File::open("/dev/zero")?;
     let branch_plan = File::open("/dev/null")?;
+    let (publication, cancellation) = distinct_standing_transport_roles()?;
 
     send_setup_with_descriptors(
         host.as_raw_fd(),
@@ -32,6 +33,8 @@ fn setup_handover_transfers_three_descriptors_in_fixed_order() -> Result<(), Box
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
             plugin_setup_plan_fd: branch_plan.as_raw_fd(),
+            source_supervision_fd: publication.as_raw_fd(),
+            source_cancellation_fd: cancellation.as_raw_fd(),
         },
     )?;
 
@@ -45,6 +48,8 @@ fn setup_handover_transfers_three_descriptors_in_fixed_order() -> Result<(), Box
                 shmem_fd,
                 wake_fd,
                 plugin_setup_plan_fd,
+                source_supervision_fd,
+                source_cancellation_fd,
             },
     } = recv_setup_with_descriptors(plugin.as_raw_fd())?;
     assert_eq!(region_len, 450_560);
@@ -53,6 +58,7 @@ fn setup_handover_transfers_three_descriptors_in_fixed_order() -> Result<(), Box
     assert_close_on_exec(plugin_setup_plan_fd.as_raw_fd())?;
 
     assert_received_fd_order(shmem_fd, wake_fd, plugin_setup_plan_fd)?;
+    assert_standing_transport_order(source_supervision_fd, source_cancellation_fd)?;
 
     Ok(())
 }
@@ -64,6 +70,7 @@ fn setup_handover_accepts_split_descriptor_control_messages() -> Result<(), Box<
     let shmem = File::open("/dev/null")?;
     let wake = File::open("/dev/zero")?;
     let branch_plan = File::open("/dev/null")?;
+    let (publication, cancellation) = distinct_standing_transport_roles()?;
     let frame = control_encode_host_msg(&HostMsg::Setup {
         process_generation: 1,
         device_digest_workspace: None,
@@ -73,7 +80,13 @@ fn setup_handover_accepts_split_descriptor_control_messages() -> Result<(), Box<
     send_setup_with_split_descriptor_cmsgs(
         host.as_raw_fd(),
         &frame,
-        [shmem.as_raw_fd(), wake.as_raw_fd(), branch_plan.as_raw_fd()],
+        [
+            shmem.as_raw_fd(),
+            wake.as_raw_fd(),
+            branch_plan.as_raw_fd(),
+            publication.as_raw_fd(),
+            cancellation.as_raw_fd(),
+        ],
     )?;
 
     let ReceivedSetup {
@@ -86,10 +99,13 @@ fn setup_handover_accepts_split_descriptor_control_messages() -> Result<(), Box<
                 shmem_fd,
                 wake_fd,
                 plugin_setup_plan_fd,
+                source_supervision_fd,
+                source_cancellation_fd,
             },
     } = recv_setup_with_descriptors(plugin.as_raw_fd())?;
     assert_eq!(region_len, 8192);
     assert_received_fd_order(shmem_fd, wake_fd, plugin_setup_plan_fd)?;
+    assert_standing_transport_order(source_supervision_fd, source_cancellation_fd)?;
 
     Ok(())
 }
@@ -111,11 +127,46 @@ fn setup_handover_reports_closed_peer_on_send() -> Result<(), Box<dyn Error>> {
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
             plugin_setup_plan_fd: branch_plan.as_raw_fd(),
+            source_supervision_fd: branch_plan.as_raw_fd(),
+            source_cancellation_fd: branch_plan.as_raw_fd(),
         },
     );
 
     assert!(matches!(error, Err(DescriptorHandoverError::Io { .. })));
 
+    Ok(())
+}
+
+// Socket markers distinguish role order without constructing Source authority.
+fn distinct_standing_transport_roles() -> Result<(File, File), Box<dyn Error>> {
+    let (mut publication_writer, publication) = UnixStream::pair()?;
+    let (mut cancellation_writer, cancellation) = UnixStream::pair()?;
+    publication_writer.write_all(&[0x51])?;
+    cancellation_writer.write_all(&[0xc3])?;
+    Ok((
+        File::from(OwnedFd::from(publication)),
+        File::from(OwnedFd::from(cancellation)),
+    ))
+}
+
+fn assert_standing_transport_order(
+    publication: OwnedFd,
+    cancellation: OwnedFd,
+) -> Result<(), Box<dyn Error>> {
+    assert_close_on_exec(publication.as_raw_fd())?;
+    assert_close_on_exec(cancellation.as_raw_fd())?;
+    let mut publication = File::from(publication);
+    let mut cancellation = File::from(cancellation);
+    let mut marker = [0];
+
+    publication.read_exact(&mut marker)?;
+    assert_eq!(marker, [0x51]);
+    cancellation.read_exact(&mut marker)?;
+    assert_eq!(marker, [0xc3]);
+    assert_ne!(
+        publication.metadata()?.ino(),
+        cancellation.metadata()?.ino()
+    );
     Ok(())
 }
 
@@ -160,7 +211,7 @@ fn setup_handover_rejects_wrong_descriptor_count() -> Result<(), Box<dyn Error>>
 }
 
 #[test]
-fn setup_handover_transfers_workspace_as_the_fourth_owned_cloexec_descriptor()
+fn setup_handover_transfers_workspace_as_the_sixth_owned_cloexec_descriptor()
 -> Result<(), Box<dyn Error>> {
     let (host, plugin) = UnixStream::pair()?;
     let shmem = File::open("/dev/null")?;
@@ -183,6 +234,8 @@ fn setup_handover_transfers_workspace_as_the_fourth_owned_cloexec_descriptor()
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
             plugin_setup_plan_fd: plan.as_raw_fd(),
+            source_supervision_fd: plan.as_raw_fd(),
+            source_cancellation_fd: plan.as_raw_fd(),
             process_generation: 1,
             device_digest_workspace: Some(SetupDeviceDigestWorkspaceFd {
                 fd: workspace.as_raw_fd(),
@@ -210,7 +263,8 @@ fn setup_handover_transfers_workspace_as_the_fourth_owned_cloexec_descriptor()
 
 #[test]
 #[cfg(any(target_os = "android", target_os = "linux"))]
-fn setup_handover_refuses_a_fifth_descriptor_under_the_fixed_cap() -> Result<(), Box<dyn Error>> {
+fn setup_handover_refuses_workspace_presence_with_only_five_descriptors()
+-> Result<(), Box<dyn Error>> {
     let (host, plugin) = UnixStream::pair()?;
     let descriptor = File::open("/dev/null")?;
     let frame = control_encode_host_msg(&HostMsg::Setup {
@@ -259,8 +313,8 @@ fn setup_handover_refuses_workspace_presence_with_only_three_descriptors()
 
 #[test]
 #[cfg(any(target_os = "android", target_os = "linux"))]
-fn setup_handover_refuses_a_fourth_descriptor_when_workspace_is_absent()
--> Result<(), Box<dyn Error>> {
+fn setup_handover_refuses_a_sixth_descriptor_when_workspace_is_absent() -> Result<(), Box<dyn Error>>
+{
     let (host, plugin) = UnixStream::pair()?;
     let descriptor = File::open("/dev/null")?;
     let frame = control_encode_host_msg(&HostMsg::Setup {
@@ -268,11 +322,11 @@ fn setup_handover_refuses_a_fourth_descriptor_when_workspace_is_absent()
         process_generation: 1,
         device_digest_workspace: None,
     });
-    send_setup_with_split_descriptor_cmsgs(host.as_raw_fd(), &frame, [descriptor.as_raw_fd(); 4])?;
+    send_setup_with_split_descriptor_cmsgs(host.as_raw_fd(), &frame, [descriptor.as_raw_fd(); 6])?;
 
     assert!(matches!(
         recv_setup_with_descriptors(plugin.as_raw_fd()),
-        Err(DescriptorHandoverError::WrongDescriptorCount { count: 4 })
+        Err(DescriptorHandoverError::WrongDescriptorCount { count: 6 })
     ));
     Ok(())
 }
@@ -283,7 +337,7 @@ fn send_setup_with_split_descriptor_cmsgs<const N: usize>(
     frame: &[u8],
     fds: [RawFd; N],
 ) -> Result<(), Box<dyn Error>> {
-    assert!((3..=5).contains(&N));
+    assert!((3..=7).contains(&N));
     let mut iov = libc::iovec {
         iov_base: frame.as_ptr().cast::<libc::c_void>().cast_mut(),
         iov_len: frame.len(),
@@ -301,7 +355,7 @@ fn send_setup_with_split_descriptor_cmsgs<const N: usize>(
         msg_flags: 0,
     };
 
-    // SAFETY: the fixed storage holds at least five split one-FD headers.
+    // SAFETY: the fixed storage holds at least seven split one-FD headers.
     let mut cmsg = unsafe { libc::CMSG_FIRSTHDR(&message) };
     for (index, fd) in fds.iter().enumerate() {
         assert!(!cmsg.is_null());

@@ -13,8 +13,8 @@ mod executor_family;
 mod executor_purpose;
 pub use executor_family::AuthenticatedServiceFamily;
 pub use executor_purpose::{
-    AuthenticatedNativeSlotPurpose, AuthenticatedNativeSubdivision,
-    AuthenticatedTargetDispatcherPurpose,
+    AuthenticatedNativeSlotPurpose, AuthenticatedNativeSubdivision, AuthenticatedSourceChild,
+    AuthenticatedSourceHostPurpose, AuthenticatedTargetDispatcherPurpose, SourceHostControlLease,
 };
 
 use super::{

@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! offset  size  field
-//! 0       8     magic = "CRUCSUP6"
+//! 0       8     magic = "CRUCSUP7"
 //! 8       4     schema version = 6, big-endian
 //! 12      4     header length = 40, big-endian
 //! 16      4     total byte length, big-endian
@@ -15,7 +15,7 @@
 //! 24      4     selectable catalog plan byte length, big-endian
 //! 28      4     device-digest purpose length (0 or 128), big-endian
 //! 32      4     original startup length (0 or 128), big-endian
-//! 36      4     process purpose length (0 for assembly, 1000 when issued)
+//! 36      4     process purpose length (0 for assembly, 1624 when issued)
 //! 40      A     canonical AppRandomBranchPlanV1 body
 //! 40+A    S     canonical SelectableCatalogPlanV4 body
 //! 40+A+S  W     fixed workspace record, when issued
@@ -36,7 +36,7 @@ pub const DEVICE_DIGEST_PURPOSE_BYTES: usize = 128;
 /// Its optional RAM endpoint tail names the existing paid socket incarnation;
 /// its fixed family tail names two reservations occupied by the same issuer.
 /// The record supplies no descriptor ownership or native service credit.
-pub const PROCESS_PURPOSE_BYTES: usize = 1000;
+pub const PROCESS_PURPOSE_BYTES: usize = 1624;
 
 pub use startup_operation::{
     STARTUP_OPERATION_BYTES, StartupOperation, StartupOperationError, StartupOperationFields,
@@ -52,9 +52,9 @@ use crate::{
 };
 
 /// Frozen magic at the start of every composite plugin setup plan.
-pub const PLUGIN_SETUP_PLAN_MAGIC: [u8; 8] = *b"CRUCSUP6";
+pub const PLUGIN_SETUP_PLAN_MAGIC: [u8; 8] = *b"CRUCSUP7";
 /// Canonical composite setup-plan schema version.
-pub const PLUGIN_SETUP_PLAN_VERSION: u32 = 6;
+pub const PLUGIN_SETUP_PLAN_VERSION: u32 = 7;
 /// Fixed composite setup-plan header bytes.
 pub const PLUGIN_SETUP_PLAN_HEADER_BYTES: usize = 40;
 /// Maximum canonical bytes in one composite plugin setup plan.
@@ -476,8 +476,8 @@ mod tests {
         let bytes = plan
             .encode()
             .unwrap_or_else(|error| panic!("setup plan must encode: {error}"));
-        assert_eq!(&bytes[..8], b"CRUCSUP6");
-        assert_eq!(&bytes[8..12], &[0, 0, 0, 6]);
+        assert_eq!(&bytes[..8], b"CRUCSUP7");
+        assert_eq!(&bytes[8..12], &[0, 0, 0, 7]);
         assert_eq!(&bytes[12..16], &[0, 0, 0, 40]);
         assert_eq!(&bytes[16..20], &[0, 0, 0, 192]);
         assert_eq!(&bytes[20..24], &[0, 0, 0, 16]);

@@ -403,14 +403,25 @@ where
     }
 }
 
+/// Borrows an actual owned kernel wait handle; process identifiers are insufficient.
+pub(crate) trait OwnedChildWait {
+    fn try_wait_owned(&mut self) -> std::io::Result<Option<std::process::ExitStatus>>;
+}
+
+impl OwnedChildWait for Child {
+    fn try_wait_owned(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.try_wait()
+    }
+}
+
 pub(crate) fn wait_child(
-    child: &mut Child,
+    child: &mut impl OwnedChildWait,
     timeout: Duration,
 ) -> Result<QemuChildWait, QemuShutdownTargetError> {
     let step = Duration::from_millis(1);
     let mut waited = Duration::ZERO;
     loop {
-        match child.try_wait() {
+        match child.try_wait_owned() {
             Ok(Some(_status)) => return Ok(QemuChildWait::Exited),
             Ok(None) if waited >= timeout => return Ok(QemuChildWait::StillRunning),
             Ok(None) => {

@@ -614,7 +614,7 @@ impl SetupPreparationInput {
             wake_fd: setup.role(1)?,
             workspace_binding,
             workspace_fd: if setup.has_workspace() {
-                Some(setup.role(3)?)
+                Some(setup.role(5)?)
             } else {
                 None
             },
@@ -1128,8 +1128,8 @@ pub(crate) fn test_plugin_setup_plan_fd() -> OwnedFd {
     )
     .unwrap();
     let mut purpose = [0; crucible_protocol::plugin_setup_plan::PROCESS_PURPOSE_BYTES];
-    purpose[..8].copy_from_slice(b"CRUCPUR6");
-    purpose[8..12].copy_from_slice(&6_u32.to_be_bytes());
+    purpose[..8].copy_from_slice(b"CRUCPUR7");
+    purpose[8..12].copy_from_slice(&7_u32.to_be_bytes());
     purpose[12..16].copy_from_slice(
         &(crucible_protocol::plugin_setup_plan::PROCESS_PURPOSE_BYTES as u32).to_be_bytes(),
     );
@@ -1187,6 +1187,35 @@ pub(crate) fn test_plugin_setup_plan_fd() -> OwnedFd {
         }
     }
     purpose[744..1000].copy_from_slice(&family);
+    // Fixed syntax-only standing observation; no kernel owner is issued.
+    for (offset, value) in [(1000, 1_u64), (1008, 29), (1016, 608)] {
+        purpose[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
+    }
+    let mut standing = [0_u8; 600];
+    standing[..8].copy_from_slice(b"CRUCSRV1");
+    standing[8..12].copy_from_slice(&1_u32.to_be_bytes());
+    standing[12..16].copy_from_slice(&600_u32.to_be_bytes());
+    standing[16..48].copy_from_slice(&purpose[184..216]);
+    standing[88..120].copy_from_slice(&purpose[184..216]);
+    standing[120..152].copy_from_slice(&purpose[816..848]);
+    standing[200..232].copy_from_slice(&purpose[144..176]);
+    standing[72..80].copy_from_slice(&purpose[88..96]);
+    standing[80..88].copy_from_slice(&purpose[96..104]);
+    for (offset, value) in [(48, 1_u64), (160, 1), (168, 2), (176, 1)] {
+        standing[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
+    }
+    // Independently authored schema11 literal roster: fourteen 1ns polls,
+    // absent progress and 500us total bounds, with canonical zero padding.
+    standing[192..196].copy_from_slice(&256_u32.to_be_bytes());
+    standing[232..236].copy_from_slice(&11_u32.to_be_bytes());
+    for index in 0..14 {
+        let offset = 236 + index * 18;
+        standing[offset..offset + 8].copy_from_slice(&1_u64.to_be_bytes());
+        standing[offset + 9] = 1;
+        standing[offset + 10..offset + 18].copy_from_slice(&500_000_u64.to_be_bytes());
+    }
+    purpose[1024..1624].copy_from_slice(&standing);
+
     let bytes = PluginSetupPlan::new(AppRandomBranchPlan::default(), selectable)
         .with_startup_operation(startup)
         .encode_preexec(&purpose, None)

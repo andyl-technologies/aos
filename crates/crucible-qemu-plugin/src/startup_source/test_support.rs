@@ -81,6 +81,8 @@ pub(crate) struct ModelSetupOwners {
     pub(crate) shmem: File,
     pub(crate) wake: File,
     pub(crate) plan: OwnedFd,
+    pub(crate) source_publication: OwnedFd,
+    pub(crate) source_cancellation: OwnedFd,
     pub(crate) _wake_peer: Option<File>,
 }
 
@@ -111,6 +113,8 @@ impl ModelSetup {
             self.owners.shmem.as_raw_fd(),
             self.owners.wake.as_raw_fd(),
             self.owners.plan.as_raw_fd(),
+            self.owners.source_publication.as_raw_fd(),
+            self.owners.source_cancellation.as_raw_fd(),
         ];
         NativeSetupBorrow::from_model(&self.frame, self.owners.control.as_raw_fd(), &roles)
     }

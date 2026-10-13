@@ -114,14 +114,14 @@ maximum_paging_io_in_flight = 16
 prefetch = "none"                 # none or bounded-on-increase
 
 [host_ram.latency.quantum]
-poll_interval_ms = 50
-progress_timeout_ms = 120000
-total_timeout_ms = 600000
+poll_interval_ns = 50_000_000
+progress_timeout_ns = 120_000_000_000
+total_timeout_ns = 600_000_000_000
 
 [host_ram.latency.checkpoint_capture]
-poll_interval_ms = 50
-progress_timeout_ms = 120000
-total_timeout_ms = 1800000
+poll_interval_ns = 50_000_000
+progress_timeout_ns = 120_000_000_000
+total_timeout_ns = 1_800_000_000_000
 ```
 
 The eviction preference selects the manager's treatment of cold pages and
@@ -141,9 +141,12 @@ be observed, not inferred from successful acceptance of a control request.
 The proposed schema below defines required semantic fields. The final codec must
 use bounded, canonical, language-neutral encodings with explicit tags, integer
 widths, and lengths; the compact notation does not authorize Rust-native layout.
-Durations are unsigned host monotonic allowances. `OptionalDuration` has explicit
-`Absent` and `Milliseconds(u64)` alternatives; configured present allowances
-must be nonzero, while observed remaining time may be zero after expiry.
+Durations are exact unsigned host monotonic nanoseconds. `OptionalDuration` has
+explicit `Absent` and `Nanoseconds(u64)` alternatives. Configured present
+allowances and poll intervals range from 1 through `i64::MAX`; observed remaining
+time ranges from 0 through `i64::MAX`, with zero denoting expiry. Conversion and
+monotonic deadline arithmetic MUST be checked. Unrepresentable values MUST be
+refused without rounding, truncation, saturation, or a replacement clock.
 Policies contain a fixed roster of operation classes, not arbitrary names.
 Integers use big-endian encoding; enum tags are one byte. Strings use a `u32`
 byte length followed by UTF-8, and fixed identifiers use their declared canonical
@@ -435,9 +438,9 @@ The proposed budget tuple is:
 
 ```text
 OperationBudgetV1 = {
-  poll_interval_ms: u64,              // nonzero; responsiveness only
-  progress_timeout_ms: OptionalDuration,
-  total_timeout_ms: OptionalDuration
+  poll_interval_ns: u64,              // nonzero; responsiveness only
+  progress_timeout_ns: OptionalDuration,
+  total_timeout_ns: OptionalDuration
 }
 
 OperationStatusV1 = {
@@ -453,7 +456,7 @@ OperationStatusV1 = {
 }
 
 EffectiveDeadlineStatusV1 = {
-  remaining_ms: u64,                 // zero if elapsed; original clocks retained
+  remaining_ns: u64,                 // zero if elapsed; original clocks retained
   limiting_sources: BoundedDeadlineSourceList
 }
 
@@ -466,11 +469,11 @@ OuterCapStatusV1 = {
   cap_class: Assignment | Preparation | ServiceShutdown | Operator,
   cap_revision: u64,
   allowance: OptionalDuration,
-  remaining_ms: OptionalRemainingTimeV1,
+  remaining_ns: OptionalRemainingTimeV1,
   state: Armed | Expired | Canceled | Completed
 }
 
-OptionalRemainingTimeV1 = Absent | Milliseconds(u64)
+OptionalRemainingTimeV1 = Absent | Nanoseconds(u64)
 ```
 
 The fixed budget roster follows the operation-class order in the table below,
@@ -482,13 +485,12 @@ MUST reject allocation requests beyond their schema ceilings. Invalid or
 unrepresentable host durations are refused rather than saturated into accidental
 infinite waits.
 
-`remaining_ms` in `OuterCapStatusV1` uses a distinct status type: `Absent`
-means no deadline and `Milliseconds(0)` means elapsed. The nonzero rule applies
+`remaining_ns` in `OuterCapStatusV1` uses a distinct status type: `Absent`
+means no deadline and `Nanoseconds(0)` means elapsed. The nonzero rule applies
 to configured allowances, not observed remaining time. Its tags are zero and
-one, respectively, with the same big-endian `u64` payload convention. Positive
-remaining time is rounded up to milliseconds so zero denotes expiry rather
-than rounding. Effective-deadline status
-binds the coherent policy/cap revisions used in evaluation and names every
+one, respectively, with the same big-endian `u64` payload convention. Remaining
+time is represented exactly, without rounding to a larger unit. Effective-deadline
+status binds the coherent policy/cap revisions used in evaluation and names every
 limiting source when deadlines tie. Counts and aggregate status size remain
 bounded by the public codec; admission refuses a supervision topology that
 cannot be represented. Status does not expose host-native clock structures.
@@ -648,9 +650,9 @@ hashing, fork placement/rearm barriers, remote preparation/restore, materializer
 publication, transport exchanges, shutdown escalation, and process reap. An
 internal fallback MUST NOT silently defeat the selected operation budget.
 
-The current production constructors sometimes copy one remaining assignment
-watchdog into every async policy field. Those constructors must be replaced by
-composition of class policy and outer caps. The GPL-side fork implementation's
+At the historical source baseline, production constructors sometimes copy one
+remaining assignment watchdog into every async policy field. Those constructors
+must be replaced by composition of class policy and outer caps. The GPL-side fork implementation's
 internal child-placement timeout must receive an explicit applicable budget.
 Finite transport framing limits can remain short when exchanges acknowledge
 long operations asynchronously; a synchronous response blocked behind RAM work
@@ -673,7 +675,7 @@ Fork lifecycle coordination must retain this service without relying on inherite
 AIO, RCU, or plugin worker threads that are parked or absent in the child.
 
 Strict placement completion has a bounded, revision-bound receipt on pager
-control schema version 6. Its enclosing authenticated frame identifies the
+control schema version 11. Its enclosing authenticated frame identifies the
 owner and arena incarnations. The receipt identifies the applied policy
 revision, immutable topology generation, and nonreused placement epoch. A
 pending transition advances the requested revision without advancing the

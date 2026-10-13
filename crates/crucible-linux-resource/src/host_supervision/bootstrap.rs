@@ -239,6 +239,7 @@ impl HostSupervisionBootstrap {
         let changed = Arc::new(Condvar::new());
         let supervisor = HostOperationSupervisor {
             shared: Arc::new(Shared {
+                source_publisher: Mutex::new(None),
                 started: self.started,
                 #[cfg(feature = "private-measurement-domain")]
                 measurement_clock,

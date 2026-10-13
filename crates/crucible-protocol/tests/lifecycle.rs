@@ -152,6 +152,8 @@ fn lifecycle_stream_wires_real_frames_setup_descriptors_and_run_silence()
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
             plugin_setup_plan_fd: shmem.as_raw_fd(),
+            source_supervision_fd: shmem.as_raw_fd(),
+            source_cancellation_fd: shmem.as_raw_fd(),
         },
     )?;
     let ReceivedSetup {
@@ -530,6 +532,8 @@ fn host_running_lifecycle_stream(
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
             plugin_setup_plan_fd: shmem.as_raw_fd(),
+            source_supervision_fd: shmem.as_raw_fd(),
+            source_cancellation_fd: shmem.as_raw_fd(),
         },
     )?;
     let _ = crucible_protocol::recv_setup_with_descriptors(peer.as_raw_fd())?;
@@ -587,6 +591,8 @@ fn plugin_setup_lifecycle_stream(
             shmem_fd: shmem.as_raw_fd(),
             wake_fd: wake.as_raw_fd(),
             plugin_setup_plan_fd: shmem.as_raw_fd(),
+            source_supervision_fd: shmem.as_raw_fd(),
+            source_cancellation_fd: shmem.as_raw_fd(),
         },
     )?;
     let _ = plugin.plugin_recv_setup_with_descriptors()?;
@@ -622,7 +628,7 @@ fn preexec_ack_stream(
 fn selected_preexec_frame() -> [u8; 61] {
     let mut frame = [0; 61];
     frame[..4].copy_from_slice(&57_u32.to_be_bytes());
-    frame[4] = 0x14;
+    frame[4] = 0x15;
     frame[5..13].copy_from_slice(&4096_u64.to_be_bytes());
     frame[21..29].copy_from_slice(&1_u64.to_be_bytes());
     frame

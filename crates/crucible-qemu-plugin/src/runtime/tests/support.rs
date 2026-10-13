@@ -77,6 +77,8 @@ impl LiveInstallFixture {
                 control: plugin,
                 shmem: region_file,
                 wake: wake_file,
+                source_publication: File::open("/dev/null").unwrap().into(),
+                source_cancellation: File::open("/dev/zero").unwrap().into(),
                 plan: crate::setup::test_plugin_setup_plan_fd(),
                 _wake_peer: wake_peer,
             }),
@@ -135,7 +137,7 @@ impl LiveInstallFixture {
     pub(super) fn model_setup(&self) -> crate::startup_source::test_support::ModelSetup {
         let mut frame = [0; 61];
         frame[..4].copy_from_slice(&57_u32.to_be_bytes());
-        frame[4] = 0x14;
+        frame[4] = 0x15;
         frame[5..13].copy_from_slice(&self.region_len.to_be_bytes());
         frame[21..29].copy_from_slice(&1_u64.to_be_bytes());
         crate::startup_source::test_support::ModelSetup::new(self.owners.clone(), frame)
