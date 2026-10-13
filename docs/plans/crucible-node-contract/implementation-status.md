@@ -2944,6 +2944,27 @@ and extension dispatch remain present in the reviewed joins. Full selected
 codec/budget validation, unchanged model-generation proof, incoming native Hello,
 complete native settlement and fresh adoption remain separate unfinished steps.
 
+## Native-authenticated six-ring callback
+
+The GPL callback authenticates the distinct 144-byte native mapping window and
+original 88-byte status destination before borrowing the engine or mapping. Its
+fixed journal retains the original tuple, six-ring snapshot and prepared status
+before the effect. Every Rust guard ends before the second identical native
+read and status publication. Failed source recapture retains the held mapping
+and publishes no success. Mapping status edition 7 reserves worker and callback
+fields as zero and supplies only the six-ring/exclusion observations.
+
+Strict all-target checks and fresh unit compilation pass. Two actual C/Rust/Linux
+controls exercise the frozen native request, dispatch, getter, status-pointer
+check, read-slot consumption and revocation across the same Rust mapping helper.
+Success observes six held headers; source loss after HOLD retains those headers
+and emits no status. Broader constructor, QOM, BQL, clock and module certificates
+are modeled. Seven prior Rust/Linux controls retain their separate revision.
+Independent reviews verify the current seven source paths and actual compiled
+inputs. The absent native capability remains closed and preparation with the
+previous native source stays compatible. Installed-pair qualification, complete
+worker/device HOLD, source readiness and current ABI/license gates remain pending.
+
 ## Native Hello and original Capture transport
 
 The provider SDK retains literal incoming native Hello bytes and the same

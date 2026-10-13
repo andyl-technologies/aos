@@ -10,6 +10,7 @@ use std::ffi::{c_int, c_void};
 use std::sync::OnceLock;
 
 mod return_observation;
+mod mapping_hold;
 
 use super::{Arc, Ordering, SharedCallbackCustody, callback_process_current, current_tid};
 use crate::runtime::live_callbacks::LiveDirectedRingPair;
@@ -75,6 +76,7 @@ pub(super) struct PreparationApis {
     read: ReadPreparation,
     bind: BindPrepared,
     read_return: return_observation::ReadPreparationReturn,
+    mapping_hold: Option<mapping_hold::MappingHoldApis>,
     network: crate::QemuRegisterNetTxCbFn,
     block: crate::QemuRegisterBlkCbFn,
     block_event: crate::QemuRegisterBlkEventCbFn,
@@ -117,6 +119,7 @@ impl PreparationApis {
                     read_return,
                 )
             },
+            mapping_hold: mapping_hold::MappingHoldApis::resolve(),
             network: capabilities.register_net_tx?,
             block: capabilities.register_block?,
             block_event: capabilities.register_block_event?,
@@ -288,13 +291,28 @@ fn prepare_engine(
     Ok(())
 }
 
+/// Dispatches only the separate source-authenticated original mapping HOLD.
+pub(super) fn hold_on_rr(
+    action: u32,
+    status: *mut crate::QemuPluginHotForkBarrierStatus,
+    userdata: *mut c_void,
+) -> c_int {
+    mapping_hold::hold_on_rr(action, status, userdata)
+}
+
+#[cfg(test)]
+pub(super) fn mapping_failure_control_requested() -> bool {
+    mapping_hold::tests::failure_control_requested()
+}
+
 /// Retains real original queue adapters and stable handles, without service permission.
 struct EndpointEngine {
     native_visible: bool,
     registered_families: u32,
     _original: Arc<SharedCallbackCustody>,
     _birth: NativePreparation,
-    _mapping_roster: crucible_shmem::PreparedDirectedRingRoster,
+    mapping_roster: crucible_shmem::PreparedDirectedRingRoster,
+    mapping_hold_journal: mapping_hold::MappingHoldJournal,
     _network_tx: crate::PluginNetworkTx,
     _network_rx: crate::PluginNetworkRx,
     _network_rings: LiveDirectedRingPair,
@@ -350,7 +368,8 @@ impl EndpointEngine {
             registered_families: 0,
             _original: Arc::clone(original),
             _birth: birth,
-            _mapping_roster: mapping_roster,
+            mapping_roster,
+            mapping_hold_journal: mapping_hold::MappingHoldJournal::default(),
             _network_tx: crate::PluginNetworkTx::from_directed_ring_with_sequence(
                 slot,
                 network_out,

@@ -320,6 +320,26 @@ impl PluginSetupCompletion {
         self.mapped_region.with_ordinary_preparation(construct)
     }
 
+    /// Holds the same six source-prepared directed headers without releasing them.
+    ///
+    /// The caller authenticates the distinct native HOLD getter and original
+    /// status destination before entry. This short Rust loan returns only
+    /// mapped ring/exclusion facts; it does not create an epoch or native grant.
+    ///
+    /// # Errors
+    ///
+    /// Refuses foreign, changed, busy, repeated or incomplete original custody.
+    /// Partial failure retains the armed mapping ticket and closed alias fence.
+    pub(crate) fn hold_whole_prepared_directed_rings(
+        &self,
+        roster: &mut crucible_shmem::PreparedDirectedRingRoster,
+    ) -> Result<
+        crucible_shmem::PreparedDirectedRingHoldSnapshot,
+        crucible_shmem::PreparedDirectedRingHoldError,
+    > {
+        self.mapped_region.hold_prepared_directed_rings(roster)
+    }
+
     /// Fences ordinary aliases before observing the real native constructor.
     ///
     /// The literal source callback establishes native HOLD first, then calls

@@ -805,14 +805,13 @@ extern "C" fn closed_control_boundary(_cpu: u32, _raw: u64, userdata: *mut c_voi
     refuse_original(userdata, 0, std::ptr::null_mut());
 }
 
-/// Retains the same setup owner while genuine whole HOLD remains unavailable.
+/// Holds only the original six-ring mapping in its separate native source window.
 extern "C" fn closed_barrier(
-    _action: u32,
-    _status: *mut crate::QemuPluginHotForkBarrierStatus,
+    action: u32,
+    status: *mut crate::QemuPluginHotForkBarrierStatus,
     userdata: *mut c_void,
 ) -> c_int {
-    refuse_original(userdata, 0, std::ptr::null_mut());
-    -libc::ENOTSUP
+    preparation::hold_on_rr(action, status, userdata)
 }
 
 // This installed preparation table has no positive execution implementation.
@@ -1207,7 +1206,7 @@ mod tests {
         // Actual fork controls hold the inherited TLS borrow while callbacks
         // receive invalid userdata. The birth-PID fence must terminate before
         // even attempting that borrow, without invoking native peers or logs.
-        for callback_kind in 0..4 {
+        for callback_kind in 0..5 {
             ORIGINAL.with(|slot| {
                 let _borrow = slot.borrow_mut();
                 // SAFETY: The child performs only the selected callback's PID
@@ -1221,8 +1220,11 @@ mod tests {
                         0 => observe_preparing_vcpu(0, invalid),
                         1 => closed_control_boundary(0, 0, invalid),
                         2 => refuse(invalid, 1, 1, invalid),
-                        _ => {
+                        3 => {
                             let _ = crucible_qemu_plugin_preparing_observation_v1(0, invalid);
+                        }
+                        _ => {
+                            let _ = closed_barrier(1, invalid.cast(), invalid);
                         }
                     }
                     // SAFETY: Returning would make the control fail without
@@ -1277,6 +1279,17 @@ mod tests {
         });
         let shared = Arc::clone(ORIGINAL_CALLBACK.get().unwrap());
         preparation::exercise_preparation(Arc::clone(&shared));
+        if preparation::mapping_failure_control_requested() {
+            assert!(shared.failed.load(Ordering::Acquire));
+            assert!(!super::super::active_runtime_is_published());
+            drop(host);
+            drop(sender);
+            ORIGINAL.with(|slot| {
+                let _original = slot.borrow_mut().take();
+            });
+            std::fs::remove_file(path).unwrap();
+            return;
+        }
         std::thread::spawn(move || {
             let setup = shared.setup.get().unwrap();
             let mapping = setup.mapped_region().unwrap();
@@ -1323,8 +1336,8 @@ mod tests {
                 assert!(!compute.is_uncertain());
             });
 
-            // A scalar callback fence does not select/fail the original mapping
-            // owner or revoke its constructor-prepared retention ticket.
+            // The earlier mapping-only HOLD remains retained. Later scalar
+            // callback refusal cannot revoke its original retention ticket.
             assert!(setup.prepare_whole_mapping_intent_retention().is_ok());
             assert!(mapping.region_len() > 0);
         })

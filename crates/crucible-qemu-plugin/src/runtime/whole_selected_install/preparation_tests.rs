@@ -145,6 +145,7 @@ pub(super) fn modeled_apis() -> PreparationApis {
         read,
         bind,
         read_return,
+        mapping_hold: Some(mapping_hold::tests::modeled_apis()),
         network,
         block,
         block_event: event,
@@ -283,6 +284,7 @@ pub(super) fn exercise_preparation(original: Arc<SharedCallbackCustody>) {
             assert_eq!(engine._block.next_request_id(), 0);
             assert_eq!(engine._ninep.next_request_id(), 0);
         });
+        mapping_hold::tests::exercise(&original, birth);
     })
     .join()
     .unwrap();
@@ -375,4 +377,8 @@ fn return_observation_rejects_changed_revoked_source_context_before_engine_acces
         );
         STATUS.set(0);
     });
+}
+
+pub(super) fn bound_engine_for_mapping_control() -> *mut c_void {
+    BOUND.get() as *mut c_void
 }
