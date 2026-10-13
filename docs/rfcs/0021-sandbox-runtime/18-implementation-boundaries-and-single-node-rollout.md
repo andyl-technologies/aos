@@ -324,8 +324,13 @@ protected currentness stay with original owners, not this DATA API.
 
 ### Native continuations and local authority
 
-The complete ordinary/Q04 Effect history codec and semantic/hash helpers stay
-in a private descendant of Native Effect, with original fields/factory scopes.
+Protocol's `domain_ledger::effect_history` owns the complete V2-V6 Effect history
+codec, model, context and dispatch DATA. Native Effect retains signed/current
+and Guardian factories, private history enclosures and receipt validation;
+Native Reconciler retains full capacity-transfer and Delete relations. Actual
+Journal, descriptor, writer and clock loans remain with their original owners.
+Consumers use the canonical DATA owner directly; obsolete Native DATA exports
+and historical decoders are retired. Passive history DATA conveys no authority.
 Protocol's `domain_ledger::ownership_gate` owns the complete Gate plan/state,
 V1 codec and immutable Claim/Draft context validation, using existing lower DATA.
 Native Delete retains its original batch/Gate relation and Reconciler error
@@ -342,7 +347,7 @@ Domain Journal owns whole capacity-transfer, settlement and Delete recipes, with
 fixed original row/error frontiers and opaque Effect/Gate histories
 that do not expose Native plans/drafts. Current admission, activation, clocks,
 Journal custody and current-authority recipes remain with their genuine owners;
-there are no aggregate recipe callbacks or portable Effect/Gate closure.
+there are no aggregate recipe callbacks or portable Effect/Gate authority closure.
 
 Private `journal::semantic_append` retains complete ordinary/closed append,
 paired advisory preflight, Q04 adapter and append-only-guard inherent recipes on
