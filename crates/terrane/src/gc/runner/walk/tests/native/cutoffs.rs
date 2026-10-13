@@ -9,23 +9,49 @@ use terrane_core::refs::{RefPolicy, Retention};
 async fn publish_cutoffs(
     fixture: &Fixture,
     repository: &RepositoryWithIndexes,
-) -> (Digest, Digest, Digest) {
-    let plaintext = b"count-retained manifest";
-    let chunk = digest(IdentityKind::Chunk, plaintext);
+) -> (Digest, Digest, Digest, [Digest; 2]) {
+    let profile = &fixture.config.chunk_profile;
+    let mut plaintext = vec![19; profile.maximum() + 1];
+    let first_end = profile.boundaries(&plaintext)[0].end;
+    plaintext.truncate(first_end + 1);
+    let first = &plaintext[..first_end];
+    let last = &plaintext[first_end..];
+    // TREE-8 requires a Manifest above the actual minimum. These bytes use an
+    // actual profile boundary rather than inventing a nonfinal chunk length.
+    assert!(plaintext.len() > profile.minimum());
+    assert!(profile.valid_nonfinal_chunk(first));
+    assert_eq!(last.len(), 1);
+    assert_eq!(
+        profile.boundaries(&plaintext),
+        vec![0..first_end, first_end..first_end + 1]
+    );
+    let chunks = [
+        digest(IdentityKind::Chunk, first),
+        digest(IdentityKind::Chunk, last),
+    ];
     let manifest = Manifest {
         size: plaintext.len() as u64,
-        chunks: vec![ChunkRef {
-            digest: chunk,
-            length: plaintext.len() as u64,
-        }],
-        hashes: BTreeMap::from([("blake3".into(), blake3::hash(plaintext).as_bytes().to_vec())]),
+        chunks: vec![
+            ChunkRef {
+                digest: chunks[0],
+                length: first.len() as u64,
+            },
+            ChunkRef {
+                digest: chunks[1],
+                length: last.len() as u64,
+            },
+        ],
+        hashes: BTreeMap::from([(
+            "blake3".into(),
+            blake3::hash(&plaintext).as_bytes().to_vec(),
+        )]),
         media_type: None,
     };
     let bytes = manifest
         .encode(&fixture.config.chunk_profile)
         .assert_success();
     let manifest_hash = digest(IdentityKind::Manifest, &bytes);
-    let mut file = entry(plaintext);
+    let mut file = entry(&plaintext);
     file.kind = EntryKind::File {
         mode: 0o644,
         size: plaintext.len() as u64,
@@ -55,7 +81,7 @@ async fn publish_cutoffs(
         TreeUse::Ordinary,
     )
     .assert_success();
-    let mut request = proposal(fixture, &tree, None, &[plaintext]).await;
+    let mut request = proposal(fixture, &tree, None, &[first, last]).await;
     request.uploads.push(StagedUpload::Meta {
         kind: IdentityKind::Manifest,
         bytes,
@@ -99,7 +125,7 @@ async fn publish_cutoffs(
         .await
         .assert_success();
     assert_eq!(forever.commit, count.commit);
-    (count.commit, tree.root_identity(), manifest_hash)
+    (count.commit, tree.root_identity(), manifest_hash, chunks)
 }
 
 /// Checks actual read work and newly eligible parents under a held current root set.
@@ -109,7 +135,7 @@ async fn publish_cutoffs(
 pub(super) async fn broader_cutoff_reuses_full_occurrence_expansion() {
     let fixture = Fixture::new().await;
     let repository = production_repository(&fixture).await;
-    let (commit, root, manifest) = publish_cutoffs(&fixture, &repository).await;
+    let (commit, root, manifest, chunks) = publish_cutoffs(&fixture, &repository).await;
     let guard = repository.coordinator().guard();
     let collection = Collection::start(
         guard,
@@ -207,7 +233,9 @@ pub(super) async fn broader_cutoff_reuses_full_occurrence_expansion() {
     .assert_success();
 
     assert!(marks.contains(&manifest));
-    assert!(marks.contains(&digest(IdentityKind::Chunk, b"count-retained manifest")));
+    for chunk in chunks {
+        assert!(marks.contains(&chunk));
+    }
     assert_eq!(
         adapted
             .store()
