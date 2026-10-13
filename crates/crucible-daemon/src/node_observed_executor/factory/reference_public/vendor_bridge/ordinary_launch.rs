@@ -202,7 +202,10 @@ pub(super) fn prepare(
             provider_limits: bootstrap.limits,
             required_schemas: Vec::new(),
             required_guarantees: binding.compatibility.guarantees_ref,
-            envelope_extension_features: BTreeMap::new(),
+            envelope_extension_features: BTreeMap::from([(
+                crucible_node_provider::input_commit::INPUT_COMMIT_FEATURE.into(),
+                Id::new(crucible_node_provider::input_commit::INPUT_COMMIT_FEATURE)?,
+            )]),
         },
     )?;
     let journal = ClientCustody::new(4096, ClientContent::new(CONTENT_BYTES, 4096, 16_384)?)?;

@@ -26,11 +26,7 @@ impl BodySchemaVerifier for SchemaVerifier {
         envelope: &Envelope,
         body: &ReceivedBody,
     ) -> Result<(), ProviderError> {
-        if !envelope.extensions.is_empty() {
-            return Err(ProviderError::Frame(
-                "reference envelope extensions unsupported",
-            ));
-        }
+        crate::input_commit::verify_envelope(authority, envelope, body)?;
         if let Some(definition) = &self.reader
             && definition
                 .declaration()
@@ -141,6 +137,11 @@ impl NativeScopeVerifier<Resources> for NativeVerifier {
                         "reference quantum differs from admitted native window",
                     ));
                 }
+                resources.require_input_commit(Position::new(
+                    grant.from_ps,
+                    U64::new(0),
+                    Phase::BoundaryControl,
+                ))?;
                 let input = resources.input.as_ref().ok_or(ProviderError::Correlation(
                     "reference quantum lacks original input custody",
                 ))?;

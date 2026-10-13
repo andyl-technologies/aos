@@ -19,6 +19,7 @@ pub mod connection;
 pub mod envelope;
 pub mod gem5;
 pub mod handshake;
+pub mod input_commit;
 pub mod journal;
 pub mod native_journal;
 pub mod reference_device;

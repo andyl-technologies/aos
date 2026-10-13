@@ -83,16 +83,16 @@ struct InstalledSchemas;
 impl BodySchemaVerifier for InstalledSchemas {
     fn verify(
         &self,
-        _: &ConnectionAuthority,
+        authority: &ConnectionAuthority,
         envelope: &Envelope,
-        _: &ReceivedBody,
+        body: &ReceivedBody,
     ) -> Result<(), ProviderError> {
-        if !envelope.extensions.is_empty()
-            || envelope
-                .body
-                .get("extensions")
-                .and_then(serde_json::Value::as_object)
-                .is_none_or(|extensions| !extensions.is_empty())
+        crucible_node_provider::input_commit::verify_envelope(authority, envelope, body)?;
+        if envelope
+            .body
+            .get("extensions")
+            .and_then(serde_json::Value::as_object)
+            .is_none_or(|extensions| !extensions.is_empty())
         {
             return Err(ProviderError::Frame(
                 "public reference selected an unsupported extension",
@@ -292,7 +292,10 @@ pub(super) fn launch(
             provider_limits: bootstrap.limits,
             required_schemas: Vec::new(),
             required_guarantees: binding.compatibility.guarantees_ref,
-            envelope_extension_features: BTreeMap::new(),
+            envelope_extension_features: BTreeMap::from([(
+                crucible_node_provider::input_commit::INPUT_COMMIT_FEATURE.into(),
+                Id::new(crucible_node_provider::input_commit::INPUT_COMMIT_FEATURE)?,
+            )]),
         },
     )?;
     let peer = ClientPeer {

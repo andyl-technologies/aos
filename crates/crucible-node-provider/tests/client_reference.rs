@@ -104,16 +104,16 @@ struct Schemas;
 impl BodySchemaVerifier for Schemas {
     fn verify(
         &self,
-        _: &ConnectionAuthority,
+        authority: &ConnectionAuthority,
         envelope: &Envelope,
-        _: &ReceivedBody,
+        received: &ReceivedBody,
     ) -> Result<(), ProviderError> {
-        if !envelope.extensions.is_empty()
-            || envelope
-                .body
-                .get("extensions")
-                .and_then(Value::as_object)
-                .is_none_or(|value| !value.is_empty())
+        crucible_node_provider::input_commit::verify_envelope(authority, envelope, received)?;
+        if envelope
+            .body
+            .get("extensions")
+            .and_then(Value::as_object)
+            .is_none_or(|value| !value.is_empty())
         {
             return Err(ProviderError::Frame("fixture extension unavailable"));
         }
@@ -417,3 +417,6 @@ fn run_native_client(installed_qualification: bool) {
     assert!(!Path::new(&format!("/proc/{}", native_pid.get())).exists());
     controller.fence();
 }
+
+#[path = "client_reference/input_commit.rs"]
+mod input_commit;

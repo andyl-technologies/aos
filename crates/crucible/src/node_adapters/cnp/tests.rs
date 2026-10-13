@@ -158,16 +158,16 @@ struct Schemas;
 impl BodySchemaVerifier for Schemas {
     fn verify(
         &self,
-        _: &ConnectionAuthority,
+        authority: &ConnectionAuthority,
         envelope: &Envelope,
-        _: &ReceivedBody,
+        body: &ReceivedBody,
     ) -> Result<(), ProviderError> {
-        if !envelope.extensions.is_empty()
-            || envelope
-                .body
-                .get("extensions")
-                .and_then(serde_json::Value::as_object)
-                .is_none_or(|extensions| !extensions.is_empty())
+        crucible_node_provider::input_commit::verify_envelope(authority, envelope, body)?;
+        if envelope
+            .body
+            .get("extensions")
+            .and_then(serde_json::Value::as_object)
+            .is_none_or(|extensions| !extensions.is_empty())
         {
             return Err(ProviderError::Frame("uninstalled fixture extension"));
         }
@@ -284,7 +284,11 @@ fn original_control(
     schemas: Rc<dyn BodySchemaVerifier>,
 ) -> (ReferenceController, Handshake) {
     let bootstrap = installed.bootstrap.clone();
-    let features = vec![id("cnp.control-evidence/1"), id("cnp.core/1")];
+    let features = vec![
+        id("cnp.control-evidence/1"),
+        id("cnp.core/1"),
+        id(crucible_node_provider::input_commit::INPUT_COMMIT_FEATURE),
+    ];
     let (binding, _) = installed
         .profile
         .bind_qualified(bootstrap.authority.clone(), &installed.qualifications)
@@ -305,7 +309,10 @@ fn original_control(
             provider_limits: bootstrap.limits,
             required_schemas: Vec::new(),
             required_guarantees: binding.compatibility.guarantees_ref,
-            envelope_extension_features: BTreeMap::new(),
+            envelope_extension_features: BTreeMap::from([(
+                crucible_node_provider::input_commit::INPUT_COMMIT_FEATURE.into(),
+                id(crucible_node_provider::input_commit::INPUT_COMMIT_FEATURE),
+            )]),
         },
     )
     .unwrap();

@@ -176,6 +176,7 @@ pub(super) struct Resources {
     pub(super) lineage_input_rows: Option<super::input_reader_rows::InputReaderRows>,
     pub(super) input_bytes: Vec<u8>,
     pub(super) input_custody: Option<ContentRef>,
+    pub(super) input_commits: BTreeMap<Id, super::input_commit::NativeInputCommit>,
     pub(super) next_quantum: U64,
     pub(super) next_observation: U64,
     pub(super) window: Option<Window>,

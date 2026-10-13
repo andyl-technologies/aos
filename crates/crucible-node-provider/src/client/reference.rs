@@ -231,7 +231,14 @@ impl ReferenceController {
         body: impl serde::Serialize,
     ) -> Result<ResponseBody, ProviderError> {
         let attempt = self.observer.as_ref().map(|observer| observer.attempt());
-        let result = self.call_original(request_id, operation_id, method, owned, body);
+        let result = self.call_original(
+            request_id,
+            operation_id,
+            method,
+            owned,
+            body,
+            Extensions::new(),
+        );
         if let Some(observer) = &self.observer {
             observer.record(self, &result);
         }
@@ -241,14 +248,62 @@ impl ReferenceController {
         result
     }
 
-    fn call_original(
+    /// Sends an immutable original request with explicitly selected envelope extensions.
+    ///
+    /// Uses the same transport, request journal, physical budget and evidence custody
+    /// as [`Self::call`]. Connection authority rejects unnegotiated extension keys.
+    ///
+    /// # Errors
+    /// Refuses unnegotiated extensions, changed originals, invalid bodies or uncertain transport.
+    pub fn call_with_extensions(
         &mut self,
         request_id: Id,
         operation_id: Option<Id>,
         method: Method,
         owned: bool,
         body: impl serde::Serialize,
+        extensions: Extensions,
     ) -> Result<ResponseBody, ProviderError> {
+        let attempt = self.observer.as_ref().map(|observer| observer.attempt());
+        let result = self.call_original(request_id, operation_id, method, owned, body, extensions);
+        if let Some(observer) = &self.observer {
+            observer.record(self, &result);
+        }
+        if let Some(attempt) = attempt {
+            attempt.finish();
+        }
+        result
+    }
+
+    /// Hashes the same immutable request projection used by the original call path.
+    ///
+    /// This read-only digest confers no effect or receipt authority.
+    ///
+    /// # Errors
+    /// Refuses invalid closed body schemas or malformed original envelope scope.
+    pub fn request_hash_with_extensions(
+        &self,
+        request_id: Id,
+        operation_id: Option<Id>,
+        method: Method,
+        owned: bool,
+        body: impl serde::Serialize,
+        extensions: Extensions,
+    ) -> Result<crucible_node_contract::HashRef, ProviderError> {
+        self.original_request(request_id, operation_id, method, owned, body, extensions)?
+            .1
+            .request_hash(crate::envelope::RequestOrigin::Controller)
+    }
+
+    fn original_request(
+        &self,
+        request_id: Id,
+        operation_id: Option<Id>,
+        method: Method,
+        owned: bool,
+        body: impl serde::Serialize,
+        extensions: Extensions,
+    ) -> Result<(crate::bodies::RequestBody, Envelope), ProviderError> {
         let body = object(body)?;
         let original = decode_request(method, &body)?;
         let request = Envelope {
@@ -264,8 +319,22 @@ impl ReferenceController {
             sequence: 2.into(),
             method,
             body,
-            extensions: Extensions::new(),
+            extensions,
         };
+        Ok((original, request))
+    }
+
+    fn call_original(
+        &mut self,
+        request_id: Id,
+        operation_id: Option<Id>,
+        method: Method,
+        owned: bool,
+        body: impl serde::Serialize,
+        extensions: Extensions,
+    ) -> Result<ResponseBody, ProviderError> {
+        let (original, request) =
+            self.original_request(request_id, operation_id, method, owned, body, extensions)?;
         let reply = self
             .session
             .exchange(&mut self.custody, request, self.budget)?;

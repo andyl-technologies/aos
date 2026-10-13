@@ -194,6 +194,7 @@ impl ReaderState {
             provenance: provenance.map(|closure| closure.retained_copy()),
             acknowledgement: None,
             bytes,
+            commitment: None,
         });
         self.next_input_sequence = successor;
         self.activate_world(original.activation())?;

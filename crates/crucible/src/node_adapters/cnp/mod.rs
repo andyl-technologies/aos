@@ -13,6 +13,7 @@ mod boundary;
 mod control;
 mod implementation;
 mod input;
+mod input_commit;
 mod lifecycle;
 mod lifecycle_resend;
 mod lineage;

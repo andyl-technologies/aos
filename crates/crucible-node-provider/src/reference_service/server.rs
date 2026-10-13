@@ -326,6 +326,7 @@ pub(super) fn serve_bound(
         input: None,
         input_bytes: Vec::new(),
         input_custody: None,
+        input_commits: BTreeMap::new(),
         next_quantum: U64::new(0),
         next_observation: U64::new(1),
         window: None,
@@ -404,7 +405,7 @@ pub(super) fn serve_bound(
         required_features.push(Id::new(EXTENSION_NEGOTIATION_V1)?);
         required_features.sort();
     }
-    let envelope_extension_features = if typed_negotiation {
+    let mut envelope_extension_features = if typed_negotiation {
         BTreeMap::from([(
             EXTENSION_NEGOTIATION_V1.into(),
             Id::new(EXTENSION_NEGOTIATION_V1)?,
@@ -412,6 +413,15 @@ pub(super) fn serve_bound(
     } else {
         BTreeMap::new()
     };
+    if supported_features
+        .iter()
+        .any(|feature| feature.as_str() == crate::input_commit::INPUT_COMMIT_FEATURE)
+    {
+        envelope_extension_features.insert(
+            crate::input_commit::INPUT_COMMIT_FEATURE.into(),
+            Id::new(crate::input_commit::INPUT_COMMIT_FEATURE)?,
+        );
+    }
     let handshake = Handshake::new(
         TrustedInstallation {
             session_id: bootstrap.authority.session_id.clone(),
@@ -529,6 +539,7 @@ pub(super) fn serve_bound(
             envelope.message = MessageKind::Response;
             envelope.sequence = sequence;
             envelope.body = response;
+            envelope.extensions = Extensions::new();
             sequence = sequence.checked_add(U64::new(1))?;
             if connection.send(envelope).is_err() {
                 break;
@@ -787,7 +798,10 @@ fn dispatch(
         let refused_code = if !matches!(request.kind, BeginKind::QuantumBegin | BeginKind::Shutdown)
         {
             Some("UNSUPPORTED_FEATURE")
-        } else if !journal.resources().active {
+        } else if !journal.resources().active
+            || (request.kind == BeginKind::QuantumBegin
+                && !super::input_commit::original_commit_completed(journal))
+        {
             Some("INVALID_STATE")
         } else {
             None
@@ -864,6 +878,12 @@ fn dispatch(
         };
     }
     if let RequestBody::Input(request) = body {
+        if envelope
+            .extensions
+            .contains_key(crate::input_commit::INPUT_COMMIT_FEATURE)
+        {
+            return super::input_commit::commit(journal, authority, envelope, request);
+        }
         return match journal.accept_input(authority, envelope, request, &verifier) {
             Ok(InputAcceptance::Accepted(result)) => completed(result),
             Ok(InputAcceptance::Original(original)) => {

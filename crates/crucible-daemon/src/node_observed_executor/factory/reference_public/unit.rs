@@ -436,5 +436,6 @@ pub(super) fn required_features() -> Result<IdSet, ProviderError> {
     Ok(vec![
         Id::new("cnp.control-evidence/1")?,
         Id::new("cnp.core/1")?,
+        Id::new(crucible_node_provider::input_commit::INPUT_COMMIT_FEATURE)?,
     ])
 }

@@ -32,6 +32,11 @@ impl Resources {
                 "quantum input custody disappeared",
             ))?
             .clone();
+        self.require_input_commit(Position::new(
+            arguments.from_ps,
+            U64::new(0),
+            Phase::BoundaryControl,
+        ))?;
         let publication = Position::new(arguments.until_ps, U64::new(0), Phase::Publication);
         let grant = DeviceGrant {
             owner_id: self.bootstrap.owner_id.clone(),

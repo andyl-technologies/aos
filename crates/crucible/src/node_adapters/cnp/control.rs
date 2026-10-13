@@ -23,6 +23,16 @@ pub(super) struct PreparedActivation {
     pub(super) owner: PreparedOwner,
 }
 
+pub(super) struct InputCommitAttempt {
+    pub(super) original: crate::node_scheduling::InputCustodyCommit,
+    pub(super) intent: crucible_node_provider::input_commit::InputCommitIntentV1,
+    pub(super) request: Id,
+    pub(super) request_hash: HashRef,
+    pub(super) inventory_bytes: Vec<u8>,
+    pub(super) receipt: Option<ContentRef>,
+    pub(super) record: Option<crucible_node_provider::input_commit::InputCommitRecordV1>,
+}
+
 pub(super) struct StagedInput {
     pub(super) original: RuntimeInputBatch,
     pub(super) public: InputBatch,
@@ -30,6 +40,7 @@ pub(super) struct StagedInput {
     pub(super) provenance: Option<crate::node_contract::InputProvenanceClosure>,
     pub(super) acknowledgement: Option<crate::node_scheduling::NativeInputAcknowledgement>,
     pub(super) bytes: Vec<u8>,
+    pub(super) commitment: Option<InputCommitAttempt>,
 }
 
 pub(super) struct PublicWindow {
@@ -53,6 +64,7 @@ pub(super) struct CnpRuntimeCustody {
     pub(super) prepared: Option<PreparedActivation>,
     pub(super) active: Option<ActivationRecord>,
     pub(super) input: Option<StagedInput>,
+    pub(super) input_commit_history: BTreeMap<Id, InputCommitAttempt>,
     pub(super) windows: BTreeMap<Id, PublicWindow>,
     pub(super) pending: Option<OperationAdmission>,
     pub(super) maximum_operations: usize,
@@ -174,6 +186,7 @@ pub struct CnpControlledReference {
     pub(super) prepared: Option<PreparedActivation>,
     pub(super) active: Option<ActivationRecord>,
     pub(super) input: Option<StagedInput>,
+    pub(super) input_commit_history: BTreeMap<Id, InputCommitAttempt>,
     pub(super) windows: BTreeMap<Id, PublicWindow>,
     pub(super) pending: Option<OperationAdmission>,
     pub(super) maximum_operations: usize,
@@ -199,6 +212,7 @@ impl Drop for CnpControlledReference {
                 prepared: self.prepared.take(),
                 active: self.active.take(),
                 input: self.input.take(),
+                input_commit_history: std::mem::take(&mut self.input_commit_history),
                 windows: std::mem::take(&mut self.windows),
                 pending: self.pending.take(),
                 maximum_operations: self.maximum_operations,
@@ -225,6 +239,7 @@ impl CnpControlledReference {
             prepared: None,
             active: None,
             input: None,
+            input_commit_history: BTreeMap::new(),
             windows: BTreeMap::new(),
             pending: None,
             maximum_operations,

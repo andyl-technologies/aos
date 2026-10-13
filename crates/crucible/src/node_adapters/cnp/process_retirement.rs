@@ -119,6 +119,25 @@ impl CnpPeerCustody {
                 )
             })
             .collect::<Vec<_>>();
+        let input_commits = runtime
+            .input_commit_history
+            .values()
+            .map(|attempt| {
+                (
+                    attempt.original.node(),
+                    attempt.original.stage_operation(),
+                    attempt.original.batch(),
+                    attempt.original.inventory(),
+                    attempt.original.cutoff(),
+                    &attempt.intent,
+                    &attempt.request,
+                    &attempt.request_hash,
+                    &attempt.inventory_bytes,
+                    &attempt.receipt,
+                    &attempt.record,
+                )
+            })
+            .collect::<Vec<_>>();
         let boundary = runtime.boundary_evidence.values().collect::<Vec<_>>();
         let dependencies = runtime.boundary_dependencies.iter().collect::<Vec<_>>();
         let prepared = runtime
@@ -143,6 +162,7 @@ impl CnpPeerCustody {
                 &runtime.gate,
                 prepared,
                 windows,
+                input_commits,
                 runtime.next_input_sequence,
                 runtime.checksum,
                 boundary,

@@ -737,6 +737,7 @@ impl ReferenceProfile {
                 vec![
                     id("cnp.control-evidence/1")?,
                     id("cnp.resume/1")?,
+                    id(crate::input_commit::INPUT_COMMIT_FEATURE)?,
                     id(if progress_latch {
                         "reference-device/quantized-progress-v1"
                     } else if public_lineage {

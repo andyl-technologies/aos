@@ -7,6 +7,7 @@
 mod bootstrap;
 mod control;
 mod effects;
+mod input_commit;
 mod input_reader;
 mod input_reader_rows;
 mod installed;

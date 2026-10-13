@@ -343,6 +343,7 @@ impl LineageControlledReference {
             prepared: None,
             active: None,
             input: None,
+            input_commit_history: BTreeMap::new(),
             windows: BTreeMap::new(),
             pending: None,
             maximum_operations,
