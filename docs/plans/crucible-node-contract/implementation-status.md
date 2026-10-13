@@ -2357,6 +2357,27 @@ Independent reconstruction checks the signed tree, DCO, license inventory and
 matching patch/source bundle. Complete ROM reset copying, physical backing,
 installed callback execution and readiness remain unqualified.
 
+The coherent stopped-initialization successor retains 62 native source changes
+and 32 newly licensed GPL files against that signed source. It combines complete
+cold KVM construction dependencies, original argv selection, stopped RR callback
+draining, module-bound after-return observation and mandatory fresh native
+context recapture. ROM joins preserve original callback cuts, physical writes
+and BIOS section correlation. Fixed caller-owned checksum state preserves exact
+whole-codec digests without a temporary checksum allocation.
+
+Fresh clean AOS configuration and complete x86_64/AArch64 compilation and linking
+pass. Independent readback checks 2,133 compiled objects, both linked executables,
+all 62 source preimages/postimages and the 32-file license inventory. Production
+warning flags are retained; this result makes no new global strict-warning
+claim. Full compilation exposed and corrected four dropped existing QAPI
+definitions and an architecture-specific reader dependency. Historical failed
+runs and component controls retain their original scopes. The matching signed
+native revision is `87c118c8ed955952fab3e4283b29c4662899d7d4`, with a reconstructible
+patch, source bundle and descriptor. Actual installed plugin participation,
+complete physical state ownership, package and boundary gates, Linux/device
+behavior and exact fresh restoration remain required. SourceReady and guest
+entry remain closed.
+
 The additive `qemu-firmware-x86` provider builds three BIOS images, nine VGA ROMs
 and four option ROMs from the original QEMU source archive. Its actual package
 and corresponding-source build passes in 32.47 seconds. Independent readback
