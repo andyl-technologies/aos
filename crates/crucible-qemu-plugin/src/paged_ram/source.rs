@@ -177,6 +177,8 @@ pub(crate) enum SourceOperationClass {
     PageIn,
     /// Preservation of an admitted page generation in immutable disk backing.
     Writeback,
+    /// First complete baseline under the native Source initialization Original.
+    FingerprintInitialization,
     /// Hydration of one immutable proof required for incremental fingerprinting.
     FingerprintUpdate,
 }
@@ -379,6 +381,17 @@ pub(super) fn with_observation_operation<T>(
     exchange: impl FnOnce(&dyn SourceOperation) -> Result<T, SourceFetchError>,
 ) -> Result<T, SourceFetchError> {
     let mut exchange = Some(exchange);
+    if let Some(result) = crate::ram_fingerprint::with_native_original_read(|operation| {
+        let exchange = exchange.take().ok_or_else(|| {
+            SourceFetchError::from(ObservationOperationError::Static {
+                kind: io::ErrorKind::Other,
+                message: "native Original exchange repeated",
+            })
+        })?;
+        exchange(operation)
+    }) {
+        return result;
+    }
     let mut result = None;
     let disposition = factory.with_fingerprint_operation(&mut |operation| {
         let Some(exchange) = exchange.take() else {

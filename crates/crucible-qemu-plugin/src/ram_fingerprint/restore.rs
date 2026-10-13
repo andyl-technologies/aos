@@ -132,6 +132,7 @@ impl RootCache {
 pub(crate) fn rebind_proof_source(
     replacement: Arc<dyn RamProofSource>,
 ) -> Result<Arc<dyn RamProofSource>, RamError> {
+    synchronize()?;
     observer()?
         .cache
         .try_lock()
@@ -156,6 +157,7 @@ pub(crate) fn capture_restore_inventory() -> Result<
     ),
     RamError,
 > {
+    synchronize()?;
     let observer = observer()?;
     let mut cache = observer
         .cache
@@ -210,6 +212,7 @@ pub(crate) fn prepare_restore(
             "RAM restore receipt has zero generation",
         ));
     }
+    synchronize()?;
     let observer = observer()?;
     let mut cache = observer
         .cache
@@ -308,6 +311,7 @@ impl PreparedRestoreCache {
         // The mapping owner has crossed its irreversible boundary. Failure must
         // retain the globally staged view and source; Drop cannot abort it.
         self.completed = true;
+        synchronize()?;
         let observer = observer()?;
         let mut cache = observer
             .cache
@@ -338,6 +342,7 @@ impl PreparedRestoreCache {
         if self.completed {
             return Ok(());
         }
+        synchronize()?;
         let observer = observer()?;
         let mut cache = observer
             .cache

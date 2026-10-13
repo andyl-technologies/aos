@@ -34,23 +34,6 @@ pub(crate) struct RetainedOperationalFailure {
 }
 
 impl PausedPagingOwner {
-    /// Moves the existing observation cause without formatting or new shared custody.
-    pub(in crate::paged_ram) fn retain_observation_failure(
-        &self,
-        error: super::super::source::ObservationOperationError,
-    ) {
-        let mut retained = None;
-        let cause = service::source_read_failure(error.into(), Some(&mut retained));
-        if let Some(retained) = retained {
-            self.retain_operational_source_failure(
-                SourceOperationClass::FingerprintUpdate,
-                retained,
-            );
-        } else {
-            self.retain_operational_failure_owned(SourceOperationClass::FingerprintUpdate, cause);
-        }
-    }
-
     /// Returns the retained typed cause without guest access or backing I/O.
     pub(crate) fn operational_failure(&self) -> Option<&RetainedOperationalFailure> {
         self.first_operational_failure.get()
@@ -155,7 +138,11 @@ impl RetainedOperationalFailure {
             SourceOperationClass::ForkRearm => RamControlFailureOperation::ForkRearm,
             SourceOperationClass::PageIn => RamControlFailureOperation::PageIn,
             SourceOperationClass::Writeback => RamControlFailureOperation::Writeback,
-            SourceOperationClass::FingerprintUpdate => {
+            // The existing wire category denotes coherent fingerprint
+            // observation. The retained producing class still distinguishes
+            // native initialization from later updates and their budgets.
+            SourceOperationClass::FingerprintInitialization
+            | SourceOperationClass::FingerprintUpdate => {
                 RamControlFailureOperation::FingerprintUpdate
             }
         };
@@ -560,6 +547,37 @@ mod tests {
         assert_eq!(
             report.cause,
             RamControlFailureCause::Io { errno: libc::EIO }
+        );
+    }
+}
+
+#[cfg(test)]
+mod initialization_projection_tests {
+    use super::*;
+
+    #[test]
+    fn initialization_cause_retains_producing_class_and_generic_wire_category() {
+        let retained = RetainedOperationalFailure {
+            class: SourceOperationClass::FingerprintInitialization,
+            policy_revision: 2,
+            topology_generation: 3,
+            error: RetainedCause::Io(std::io::Error::from_raw_os_error(libc::ETIMEDOUT)),
+        };
+        let projected = retained.to_wire();
+
+        assert_eq!(
+            retained.class,
+            SourceOperationClass::FingerprintInitialization
+        );
+        assert_eq!(
+            projected.operation,
+            crucible_protocol::ram_control::RamControlFailureOperation::FingerprintUpdate
+        );
+        assert_eq!(
+            projected.cause,
+            crucible_protocol::ram_control::RamControlFailureCause::Io {
+                errno: libc::ETIMEDOUT
+            }
         );
     }
 }

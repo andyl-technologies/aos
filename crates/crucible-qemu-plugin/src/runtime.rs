@@ -10,7 +10,9 @@
 
 pub(crate) mod callback_quiescence;
 mod checkpoint;
-pub(crate) use checkpoint::fingerprint::{FingerprintApi, FingerprintBorrowContext};
+pub(crate) use checkpoint::fingerprint::{
+    FingerprintApi, FingerprintBorrowContext, FingerprintLoan,
+};
 pub(crate) use checkpoint::reader::{
     CaptureLoan, HeldClaimCleanup, HeldReadContext, HeldReaderIdentity,
 };
@@ -375,6 +377,7 @@ pub(crate) struct OwnedCallbackRuntimeState {
     request_shutdown: QemuRequestShutdownFn,
     startup_failure: Option<crate::StartupSourceError>,
     plugin_id: Option<QemuPluginId>,
+    original_owner: Option<crate::ram_fingerprint::NativeOriginalOwner>,
     owner_process: u32,
     workspace_disarmed: bool,
     claimed_workspace_fd: i32,
@@ -451,6 +454,7 @@ impl OwnedCallbackRuntimeState {
             request_shutdown,
             startup_failure: None,
             plugin_id: None,
+            original_owner: None,
             owner_process: std::process::id(),
             workspace_disarmed: false,
             claimed_workspace_fd: -1,
@@ -496,6 +500,43 @@ impl OwnedCallbackRuntimeState {
         unsafe {
             self.get_unchecked_mut().allow_missing_fault_command_state = true;
         }
+    }
+
+    /// Initializes only the prepaid inline Source observer component.
+    ///
+    /// # Errors
+    /// Refuses missing runtime purpose, duplicate initialization or unmatched SDK.
+    fn prepare_original_owner(
+        self: Pin<&mut Self>,
+        plugin_id: QemuPluginId,
+    ) -> Result<crate::ram_fingerprint::NativeOriginalOwnerRef, crate::ram_error::RamError> {
+        // SAFETY: initialization occurs once under exclusive registration. The
+        // configured runtime Box layout includes the entire inline component;
+        // the actual Source reserved that layout before this Box was born.
+        let state = unsafe { self.get_unchecked_mut() };
+        state
+            .setup
+            .check_runtime_allocations()
+            .map_err(crate::startup_source::InstallerStartupSource::retained_ram_error)?;
+        if state.original_owner.is_some() {
+            return Err(crate::ram_error::RamError::Invariant(
+                "Original owner already initialized",
+            ));
+        }
+        let userdata = std::ptr::from_mut(state).cast();
+        state.original_owner = Some(crate::ram_fingerprint::NativeOriginalOwner::prepare(
+            plugin_id, userdata,
+        )?);
+        let owner = state
+            .original_owner
+            .as_ref()
+            .ok_or(crate::ram_error::RamError::Invariant(
+                "Original owner absent",
+            ))?;
+        // SAFETY: the registration guard retains this pinned Box after any
+        // published callback; RequiredOwnedCallbacksRegistered.state and the
+        // outer runtime resources are ManuallyDrop, including on refusal.
+        Ok(unsafe { crate::ram_fingerprint::NativeOriginalOwnerRef::from_retained_runtime(owner) })
     }
 
     /// Returns the stable opaque pointer supplied as QEMU callback userdata.

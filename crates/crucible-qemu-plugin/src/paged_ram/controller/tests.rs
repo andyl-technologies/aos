@@ -56,7 +56,6 @@ pub(super) fn controller() -> LivePagerController {
         child_runtime_ready: runtime_not_ready,
         spill: Mutex::new(None),
         spill_quota: 0,
-        fingerprint: Mutex::new(fingerprint::FingerprintState::default()),
         actor: Mutex::new(super::actor::ActorState::default()),
     }
 }

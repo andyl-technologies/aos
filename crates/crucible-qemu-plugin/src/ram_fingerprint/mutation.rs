@@ -34,6 +34,7 @@ pub(super) extern "C" fn observe_transaction(
         logical_bytes.write(0);
     }
     let result = std::panic::catch_unwind(|| -> Result<([u8; 32], u64), RamError> {
+        synchronize()?;
         let observer = observer()?;
         let mut cache = observer
             .cache

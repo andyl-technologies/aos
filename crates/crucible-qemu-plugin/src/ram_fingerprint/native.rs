@@ -87,7 +87,6 @@ pub(super) struct CaptureClaim {
     pub(super) header: CaptureHeader,
     pub(super) owner_token: u64,
     pub(super) finished: bool,
-    pub(super) close_notice: Option<crate::paged_ram::controller::FingerprintCloseNotice>,
 }
 
 impl CaptureClaim {
@@ -116,7 +115,39 @@ impl CaptureClaim {
             header,
             owner_token,
             finished: false,
-            close_notice: None,
+        })
+    }
+
+    /// Opens under the Original already entered by the native Root caller.
+    pub(super) fn open_logical(
+        apis: NativeApis,
+        original: &original::Call<'_>,
+        full: bool,
+    ) -> Result<Self, RamError> {
+        let header = original.begin(full, false)?;
+        Ok(Self {
+            apis,
+            header,
+            owner_token: 0,
+            finished: false,
+        })
+    }
+
+    /// Transfers old-capture cleanup to the native same-Original restart caller.
+    pub(super) fn restart_logical(
+        mut self,
+        original: &original::Call<'_>,
+    ) -> Result<Self, RamError> {
+        let opened = original.begin(true, true);
+        // The native restart owns the sole physical old-claim return attempt,
+        // including refusal/nonconsumption. Never retry it via numeric Drop.
+        self.finished = true;
+        let header = opened?;
+        Ok(Self {
+            apis: self.apis,
+            header,
+            owner_token: 0,
+            finished: false,
         })
     }
 
@@ -147,9 +178,6 @@ impl CaptureClaim {
             "commit RAM capture",
         )?;
         self.finished = true;
-        if let Some(notice) = self.close_notice.as_ref() {
-            notice.record_closed(self.header.capture_generation)?;
-        }
         Ok(())
     }
 
@@ -165,11 +193,6 @@ impl CaptureClaim {
         }
         let result = (self.apis.finish)(self.header.capture_generation, self.owner_token, 0);
         self.finished = true;
-        if result == 0 {
-            if let Some(notice) = self.close_notice.as_ref() {
-                let _ = notice.record_closed(self.header.capture_generation);
-            }
-        }
         Some(result)
     }
 }

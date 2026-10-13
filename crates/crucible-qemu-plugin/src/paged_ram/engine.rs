@@ -24,7 +24,7 @@ mod ordinary_capture;
 use admission::{ServiceConfiguration, prepare_service, prepare_service_for_inventory};
 pub(in crate::paged_ram) use checkpoint_owner::RetainedCheckpointService;
 pub(crate) use checkpoint_read::HeldCheckpointRead;
-pub(in crate::paged_ram) use ordinary_capture::OrdinaryPagingCustody;
+pub(crate) use ordinary_capture::OrdinaryPagingCustody;
 
 mod mutation;
 mod observation;

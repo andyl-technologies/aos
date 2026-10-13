@@ -656,6 +656,11 @@ fn read_operational_page<const ROOT_SCRATCH: bool>(
     hasher: Option<&NativePageHasher>,
 ) -> c_int {
     let read = |bytes: &mut [u8; PAGE_BYTES]| -> Result<(), RamError> {
+        // The current Native Root supplies its factual initialization/update
+        // class. Outside that borrowed view, this is the existing independent
+        // proof-hydration observation, not a baseline initialization issuer.
+        let class = crate::ram_fingerprint::borrowed_original_class()?
+            .unwrap_or(SourceOperationClass::FingerprintUpdate);
         let owner = OPERATIONAL_OWNER
             .get()
             .ok_or(RamError::Invariant("operational RAM owner absent"))?
@@ -712,15 +717,9 @@ fn read_operational_page<const ROOT_SCRATCH: bool>(
                             Ok(length) => length,
                             Err(error) => {
                                 if let Some(original) = source_failure {
-                                    owner.retain_operational_source_failure(
-                                        SourceOperationClass::FingerprintUpdate,
-                                        original,
-                                    );
+                                    owner.retain_operational_source_failure(class, original);
                                 } else {
-                                    owner.retain_operational_failure_owned(
-                                        SourceOperationClass::FingerprintUpdate,
-                                        error,
-                                    );
+                                    owner.retain_operational_failure_owned(class, error);
                                 }
                                 return Err(RamError::Invariant(
                                     "original root source failure is retained",

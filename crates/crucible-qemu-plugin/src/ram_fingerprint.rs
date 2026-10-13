@@ -24,11 +24,17 @@ mod candidate;
 mod held;
 mod native;
 mod ordinary;
+mod original;
 pub(crate) use admission::admitted_inventory;
 pub(crate) use candidate::CaptureClose;
 pub(crate) use held::{cleanup_held_claim, observe_held, retire_held_cache};
 use native::{CaptureClaim, NativeApis, symbol};
-pub(crate) use ordinary::FingerprintBaseline;
+pub(crate) use original::with_read_exchange as with_native_original_read;
+pub(crate) use original::{
+    Owner as NativeOriginalOwner, OwnerRef as NativeOriginalOwnerRef, borrowed_original_class,
+    synchronize,
+};
+pub(crate) use original::{borrow_retirement, check_retirement, end_retirement, rearm_retirement};
 mod mutation;
 use mutation::observe_transaction;
 mod restore;
@@ -151,6 +157,7 @@ struct RootCache {
 struct Observer {
     apis: NativeApis,
     cache: Mutex<RootCache>,
+    original: Option<original::OwnerRef>,
 }
 
 static OBSERVER: OnceLock<Observer> = OnceLock::new();
@@ -162,7 +169,8 @@ static INSTALL_RESULT: OnceLock<Result<(), RamError>> = OnceLock::new();
 ///
 /// Returns an error if a mandatory capture or registration export is missing.
 pub(crate) fn preflight() -> Result<(), RamError> {
-    NativeApis::resolve().map(|_| ())
+    NativeApis::resolve()?;
+    original::Apis::resolve().map(|_| ())
 }
 
 /// Registers the process-lifetime observer before guest execution is admitted.
@@ -171,7 +179,7 @@ pub(crate) fn preflight() -> Result<(), RamError> {
 ///
 /// Returns an error for missing native exports or rejected registration. A
 /// partially installed observer never authorizes execution with stale roots.
-pub(crate) fn install() -> Result<(), RamError> {
+pub(crate) fn install(original: Option<original::OwnerRef>) -> Result<(), RamError> {
     INSTALL_RESULT
         .get_or_init(|| {
             let apis = NativeApis::resolve()?;
@@ -179,6 +187,7 @@ pub(crate) fn install() -> Result<(), RamError> {
                 .set(Observer {
                     apis,
                     cache: Mutex::new(RootCache::default()),
+                    original,
                 })
                 .map_err(|_| RamError::Invariant("RAM observer already initialized"))?;
             status(
@@ -223,6 +232,9 @@ pub(crate) fn install() -> Result<(), RamError> {
                 status((apis.register_record)(None), "rollback RAM record observer")?;
                 return Err(error);
             }
+            if let Some(original) = original {
+                original.owner().enroll()?;
+            }
             Ok(())
         })
         .clone()
@@ -265,6 +277,7 @@ pub(crate) extern "C" fn observe_root(
     // its claim outside its own unwind boundary and closes it before returning.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
         || -> Result<([u8; 32], u64), RamError> {
+            original::synchronize_root()?;
             let observer = OBSERVER.get().ok_or("RAM observer is not installed")?;
             if owner_token == 0 {
                 return ordinary::observe_ordinary(observer, SCOPES[scope as usize])
@@ -318,7 +331,7 @@ impl RootCache {
     fn refresh(
         &mut self,
         apis: NativeApis,
-        outer: &mut crate::paged_ram::controller::FingerprintCall,
+        outer: &mut impl ordinary::RefreshAuthority,
     ) -> Result<(), RamError> {
         if self.ordinary_active
             || self.held.is_some()
@@ -330,30 +343,20 @@ impl RootCache {
                 "RAM mutation candidate owns observer admission",
             ));
         }
-        let full = self.view.is_none();
-        let mut claim = CaptureClaim::open(apis, full, 0)?;
-        claim.close_notice = Some(outer.close_notice());
-        outer.bind_capture(
-            claim.header.capture_generation,
-            claim.header.topology_generation,
-            claim.header.region_count,
-        )?;
+        let mut full = outer.require_full(self.view.is_none())?;
+        let mut claim = outer.open(apis, full)?;
         claim.validate_header()?;
-        if self
-            .view
-            .as_ref()
-            .is_some_and(|view| view.topology_generation != claim.header.topology_generation)
+        if !full
+            && self
+                .view
+                .as_ref()
+                .is_some_and(|view| view.topology_generation != claim.header.topology_generation)
         {
-            // The existing caller can close this exact claim, but a new
-            // inventory needs the same Original's authenticated restart loan.
-            // Retain a refused close rather than replacing its generation.
-            let close_status = claim
-                .close_without_ack()
-                .ok_or("topology restart lost its actual capture claim")?;
-            status(close_status, "close RAM capture before topology restart")?;
-            return Err(RamError::Invariant(
-                "RAM topology restart requires current Source inventory custody",
-            ));
+            // Native returns the exact old borrower and rebinds the other slot
+            // on this same Original, keeping its total start and progress.
+            claim = outer.restart(claim)?;
+            claim.validate_header()?;
+            full = true;
         }
 
         let mut observation_only = 0;
@@ -364,7 +367,7 @@ impl RootCache {
         if observation_only > 1 {
             return Err(RamError::Invariant("invalid ordinary observation mode"));
         }
-        outer.set_observation_mode(observation_only == 1)?;
+        outer.check_mode(observation_only == 1)?;
         let admitted = self.metadata_budget(claim.header.metadata_budget_bytes)?;
         let inventory_reservation = admitted
             .reserve_bytes(
@@ -414,8 +417,7 @@ impl RootCache {
         let (snapshot, changed) =
             consume_ordinary_pages(&claim, &regions, snapshot, full, source.as_deref(), outer)?;
         if !full && !changed {
-            outer.post_observation_only()?;
-            claim.commit()?;
+            let _ = outer.stage(claim, None)?;
             return Ok(());
         }
         let roots = [
@@ -440,11 +442,7 @@ impl RootCache {
         }
         let topology_generation = claim.header.topology_generation;
 
-        // Publish the complete immutable view before retiring its independent
-        // native dirty obligation. Observer exclusion retains the prior view
-        // until acknowledgment succeeds, permitting infallible rollback if the
-        // native source lost coherence; no reader can see the provisional view.
-        let prior = self.view.replace(CachedView {
+        let view = CachedView {
             topology_generation,
             budget,
             snapshot,
@@ -454,10 +452,11 @@ impl RootCache {
             records,
             source: if full { None } else { source },
             _inventory_reservation: inventory_reservation,
-        });
-        if let Err(error) = outer.post_observation_only().and_then(|_| claim.commit()) {
-            self.view = prior;
-            return Err(error);
+        };
+        // The production driver keeps the view in its prepaid runtime lane.
+        // Only the real later native publication journal may promote it.
+        if let Some(view) = outer.stage(claim, Some(view))? {
+            self.view = Some(view);
         }
         Ok(())
     }
@@ -532,7 +531,7 @@ fn consume_ordinary_pages(
     snapshot: RamSnapshot,
     full: bool,
     source: Option<&dyn RamProofSource>,
-    outer: &crate::paged_ram::controller::FingerprintCall,
+    outer: &impl ordinary::RefreshAuthority,
 ) -> Result<(RamSnapshot, bool), RamError> {
     consume_pages_with_progress(
         regions,
@@ -549,7 +548,7 @@ fn consume_ordinary_pages(
                 bytes.len(),
             )
         },
-        |units| outer.completed_units(units),
+        |units| outer.progress(units),
     )
 }
 
@@ -759,6 +758,7 @@ extern "C" fn observe_record(
         std::ptr::write_bytes(root, 0, 32);
     }
     let result = std::panic::catch_unwind(|| -> Result<(), c_int> {
+        synchronize().map_err(|_| -libc::EBUSY)?;
         let observer = OBSERVER.get().ok_or(-libc::ENODEV)?;
         let cache = observer.cache.try_lock().map_err(|_| -libc::EBUSY)?;
         if cache.ordinary_active
@@ -813,6 +813,7 @@ fn observer() -> Result<&'static Observer, RamError> {
 /// Refuses competing observer admission, an active mutation or restore, or a
 /// missing sealed metadata account.
 pub(crate) fn fork_metadata_budget() -> Result<MetadataBudget, RamError> {
+    synchronize()?;
     let cache = observer()?
         .cache
         .try_lock()
@@ -841,6 +842,7 @@ pub(crate) fn fork_metadata_budget() -> Result<MetadataBudget, RamError> {
 pub(crate) fn prepare_fork() -> Result<(), RamError> {
     let observer = observer()?;
     ordinary::observe_ordinary(observer, Scope::Exact)?;
+    synchronize()?;
     let mut cache = observer
         .cache
         .try_lock()
@@ -866,6 +868,7 @@ pub(crate) fn prepare_fork() -> Result<(), RamError> {
 ///
 /// Returns an error unless preparation froze a complete immutable view.
 pub(crate) fn final_seal() -> Result<(), RamError> {
+    synchronize()?;
     let cache = observer()?
         .cache
         .try_lock()
@@ -890,6 +893,7 @@ pub(crate) fn final_seal() -> Result<(), RamError> {
 ///
 /// Returns an error for an active or poisoned observer mutex.
 pub(crate) fn resume_parent() -> Result<(), RamError> {
+    synchronize()?;
     let mut cache = observer()?
         .cache
         .try_lock()
@@ -914,6 +918,7 @@ pub(crate) fn rebind_child() -> Result<(), RamError> {
 ///
 /// Returns an error for an active or poisoned observer mutex.
 pub(crate) fn abort_fork() -> Result<(), RamError> {
+    synchronize()?;
     resume_parent()
 }
 
@@ -928,8 +933,3 @@ mod capture_claim_tests;
 #[cfg(test)]
 #[path = "ram_fingerprint/candidate_tests.rs"]
 mod candidate_tests;
-
-#[cfg(test)]
-pub(crate) fn ordinary_fixture_baseline() -> FingerprintBaseline {
-    ordinary::FingerprintBaseline::fixture(&RootCache::default())
-}

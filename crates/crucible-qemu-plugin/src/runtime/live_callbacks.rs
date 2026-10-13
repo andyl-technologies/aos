@@ -216,7 +216,11 @@ pub(crate) struct LiveVcpuTimeCallbackRegistrar {
     execution_model: QemuPluginExecutionModel,
     target_architecture: QemuPluginTargetArchitecture,
     capabilities: LiveVcpuTimeCallbackCapabilities,
-    install_ram_observer: fn() -> Result<(), crate::ram_error::RamError>,
+    install_ram_observer: fn(
+        Option<crate::ram_fingerprint::NativeOriginalOwnerRef>,
+    ) -> Result<(), crate::ram_error::RamError>,
+    #[cfg(test)]
+    test_ram_observer_installer: Option<fn() -> Result<(), crate::ram_error::RamError>>,
     preflight_ram_observer: fn() -> Result<(), crate::ram_error::RamError>,
     install_ram_management: fn(
         &PluginArgs,
@@ -239,6 +243,8 @@ impl LiveVcpuTimeCallbackRegistrar {
             target_architecture,
             capabilities,
             install_ram_observer: crate::ram_fingerprint::install,
+            #[cfg(test)]
+            test_ram_observer_installer: None,
             preflight_ram_observer: crate::ram_fingerprint::preflight,
             install_ram_management,
         }
@@ -250,7 +256,7 @@ impl LiveVcpuTimeCallbackRegistrar {
         mut self,
         install: fn() -> Result<(), crate::ram_error::RamError>,
     ) -> Self {
-        self.install_ram_observer = install;
+        self.test_ram_observer_installer = Some(install);
         self.preflight_ram_observer = install;
         self.install_ram_management = |_, _, _, _| Ok(());
         self
@@ -402,6 +408,46 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
         let userdata = std::ptr::from_ref(state.as_ref().get_ref())
             .cast_mut()
             .cast();
+        #[cfg(not(test))]
+        let original = Some(
+            state
+                .as_mut()
+                .prepare_original_owner(self.plugin_id)
+                .map_err(|message| {
+                    live_callback_registration_error(LiveVcpuTimeCallbackError::RamObserverSetup {
+                        message,
+                    })
+                })?,
+        );
+        #[cfg(test)]
+        let original = if self.test_ram_observer_installer.is_some() {
+            None
+        } else {
+            Some(
+                state
+                    .as_mut()
+                    .prepare_original_owner(self.plugin_id)
+                    .map_err(|message| {
+                        live_callback_registration_error(
+                            LiveVcpuTimeCallbackError::RamObserverSetup { message },
+                        )
+                    })?,
+            )
+        };
+        #[cfg(not(test))]
+        let install_result = (self.install_ram_observer)(original);
+        #[cfg(test)]
+        let install_result = match self.test_ram_observer_installer {
+            Some(install) => install(),
+            None => (self.install_ram_observer)(original),
+        };
+        install_result.map_err(|message| {
+            live_callback_registration_error(LiveVcpuTimeCallbackError::RamObserverSetup {
+                message,
+            })
+        })?;
+        // The prepaid observer lane and its callbacks precede the sole RAM
+        // actor birth. Inventory admission happens later on its native caller.
         (self.install_ram_management)(
             args,
             self.plugin_id,
@@ -409,11 +455,6 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
             userdata,
         )
         .map_err(|message| {
-            live_callback_registration_error(LiveVcpuTimeCallbackError::RamObserverSetup {
-                message,
-            })
-        })?;
-        (self.install_ram_observer)().map_err(|message| {
             live_callback_registration_error(LiveVcpuTimeCallbackError::RamObserverSetup {
                 message,
             })

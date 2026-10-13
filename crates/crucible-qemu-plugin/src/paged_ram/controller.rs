@@ -28,13 +28,6 @@ use super::source::{
 use crate::PluginArgs;
 
 mod actor;
-mod fingerprint;
-#[cfg(test)]
-pub(crate) use fingerprint::fixture_fingerprint;
-pub(crate) use fingerprint::{
-    FingerprintCall, FingerprintCloseNotice, borrow_fingerprint, check_fingerprint,
-    end_fingerprint, prepare_fingerprint_entry, rearm_fingerprint,
-};
 mod prebirth;
 pub(crate) use prebirth::InstallerControlRequests;
 pub(super) use prebirth::configured_shared_allocation_layout;
@@ -112,7 +105,6 @@ struct LivePagerController {
     spill: Mutex<Option<File>>,
     spill_quota: u64,
     actor: Mutex<actor::ActorState>,
-    fingerprint: Mutex<fingerprint::FingerprintState>,
 }
 
 /// Returns only the admitted independent operation factory.
@@ -137,6 +129,38 @@ pub(crate) fn current_owner() -> Result<Option<Arc<PausedPagingOwner>>, RamError
         .map_err(|_| RamError::Invariant("RAM controller poisoned"))?
         .owner
         .clone();
+    Ok(owner)
+}
+
+/// Retains only the installed pager owner bound to this genuine runtime.
+///
+/// # Errors
+/// Refuses absent/replaced controller, native actor identity or paging ownership.
+pub(crate) fn registered_current_owner(
+    id: u64,
+    userdata: *mut c_void,
+) -> Result<Arc<PausedPagingOwner>, RamError> {
+    let controller = controller()?.ok_or("fingerprint controller absent")?;
+    let actor = controller
+        .actor
+        .try_lock()
+        .map_err(|_| "fingerprint actor relation busy")?;
+    if !actor.matches_runtime(id, userdata) {
+        return Err(RamError::Invariant(
+            "fingerprint runtime allocation changed",
+        ));
+    }
+    drop(actor);
+    let owner = controller
+        .state
+        .try_lock()
+        .map_err(|_| "fingerprint owner relation busy")?
+        .owner
+        .clone()
+        .ok_or("fingerprint paging owner absent")?;
+    if Arc::as_ptr(&owner.operations).cast::<()>() != Arc::as_ptr(&controller).cast::<()>() {
+        return Err(RamError::Invariant("fingerprint controller owner changed"));
+    }
     Ok(owner)
 }
 
@@ -236,7 +260,6 @@ pub(crate) fn install(
         spill: Mutex::new(Some(spill)),
         spill_quota,
         actor: Mutex::new(actor),
-        fingerprint: Mutex::new(fingerprint::FingerprintState::configured()?),
     });
     {
         let mut current = CONTROLLER
@@ -910,6 +933,7 @@ impl LivePagerController {
             SourceOperationClass::Cleanup => 13,
             SourceOperationClass::PageIn => 2,
             SourceOperationClass::Writeback => 3,
+            SourceOperationClass::FingerprintInitialization => 4,
             SourceOperationClass::FingerprintUpdate => 5,
             SourceOperationClass::Quiescence => 6,
             SourceOperationClass::ForkRearm => 10,
@@ -990,9 +1014,6 @@ impl SourceOperationFactory for LivePagerController {
         &self,
         exchange: &mut dyn FnMut(&dyn SourceOperation),
     ) -> Result<(), ObservationOperationError> {
-        if fingerprint::with_outer_exchange(self, exchange)? {
-            return Ok(());
-        }
         {
             let mut state = self
                 .state

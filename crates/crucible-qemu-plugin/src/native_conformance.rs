@@ -61,7 +61,7 @@ pub(crate) unsafe extern "C" fn install(
         ORACLE
             .set(full_root)
             .map_err(|_| "native conformance oracle already installed")?;
-        crate::ram_fingerprint::install()
+        crate::ram_fingerprint::install(None)
     });
     match result {
         Ok(Ok(())) => 0,

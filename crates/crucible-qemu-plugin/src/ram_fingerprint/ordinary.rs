@@ -7,122 +7,21 @@
 
 use super::*;
 
-/// Retains only immutable baseline evidence, without issuing native authority.
-#[derive(Clone)]
-pub(crate) struct FingerprintBaseline {
-    snapshot: Option<RamSnapshot>,
-    topology: u64,
-    publication: Option<u64>,
-}
-
-impl FingerprintBaseline {
-    #[cfg(test)]
-    pub(super) fn fixture(cache: &RootCache) -> Self {
-        Self {
-            snapshot: cache.view.as_ref().map(|view| view.snapshot.clone()),
-            topology: cache
-                .view
-                .as_ref()
-                .map_or(0, |view| view.topology_generation),
-            publication: cache.held_publication,
-        }
-    }
-
-    /// Checks retained historical lineage against this callback's actual loan.
-    ///
-    /// # Errors
-    /// Refuses a different accepted publication or incompatible baseline topology.
-    pub(crate) fn validate_publication(
-        &self,
-        generation: u64,
-        topology: u64,
-    ) -> Result<(), RamError> {
-        if generation != 0 && (self.publication != Some(generation) || self.topology != topology) {
-            return Err(RamError::Invariant("fingerprint accepted baseline changed"));
-        }
-        if self.snapshot.is_some() && self.topology != topology {
-            return Err(RamError::Invariant("fingerprint baseline topology changed"));
-        }
-        Ok(())
-    }
-
-    /// Returns the immutable baseline's known region count, if one exists.
-    pub(crate) fn region_count(&self) -> Option<usize> {
-        self.snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.topology().regions().len())
-    }
-
-    /// Checks actual native interval geometry against the retained inventory.
-    ///
-    /// # Errors
-    /// Refuses malformed extents or a different immutable region descriptor.
-    pub(crate) fn validate_region(
-        &self,
-        index: usize,
-        native: &CaptureRegion,
-        start: u64,
-        end: u64,
-    ) -> Result<(), RamError> {
-        let length = usize::try_from(native.id_length)
-            .map_err(|_| "fingerprint range ID length overflow")?;
-        if length == 0
-            || length >= native.id.len()
-            || native.reserved != 0
-            || start > end
-            || end > native.logical_length
-        {
-            return Err(RamError::Invariant("fingerprint native range is invalid"));
-        }
-        if let Some(snapshot) = self.snapshot.as_ref() {
-            let region = snapshot
-                .topology()
-                .regions()
-                .get(index)
-                .ok_or("fingerprint native region absent")?;
-            if &native.id[..length] != region.id().as_bytes()
-                || native.class != region.class() as u32
-                || native.mask != u32::from(region.coverage_mask())
-                || native.logical_length != region.logical_length()
-            {
-                return Err(RamError::Invariant("fingerprint native region changed"));
-            }
-        }
-        Ok(())
-    }
-}
-
-/// Executes cache work with no cache guard held over native owner callbacks.
+/// Runs one actual native Root without issuing a module-local operation.
 pub(super) fn observe_ordinary(
     observer: &Observer,
     scope: Scope,
 ) -> Result<(RamRootDigest, u64), RamError> {
-    // Context and old physical return are authenticated before new clock or
-    // cache admission, and with all actual RootCache/State/Slot guards released.
-    let mut entry = crate::paged_ram::controller::prepare_fingerprint_entry()?;
+    original::synchronize_root()?;
+    let owner = observer
+        .original
+        .ok_or("native Original runtime owner absent")?
+        .owner();
+    let mut call = owner.borrow(scope)?;
     let mut cache = observer
         .cache
         .try_lock()
         .map_err(|_| "ordinary fingerprint cache busy")?;
-    if entry.returned_old_cache() {
-        if !cache.ordinary_active
-            || cache.held.is_some()
-            || cache.held_accepted.is_some()
-            || cache.pending.is_some()
-            || cache.restore.is_some()
-        {
-            return Err(RamError::Invariant(
-                "fingerprint returned borrower cache journal disagrees",
-            ));
-        }
-        cache.ordinary_active = false;
-    }
-    // A consumed old borrower returns its cache journal even on negative
-    // semantic history; this same attempt still reports the signed refusal.
-    if let Some(error) = entry.take_return_failure() {
-        return Err(error);
-    }
-    let observed_mode = entry.observation_only;
     if cache.frozen
         || cache.ordinary_active
         || cache.held.is_some()
@@ -134,61 +33,97 @@ pub(super) fn observe_ordinary(
             "ordinary fingerprint admission is occupied",
         ));
     }
-    let evidence = FingerprintBaseline {
-        snapshot: cache.view.as_ref().map(|view| view.snapshot.clone()),
-        topology: cache
-            .view
-            .as_ref()
-            .map_or(0, |view| view.topology_generation),
-        publication: cache.held_publication,
-    };
     let mut work = std::mem::take(&mut *cache);
     cache.ordinary_active = true;
     drop(cache);
 
-    let mut call = match entry.enter(evidence) {
-        Ok(call) => call,
-        Err(error) => {
-            // The same Main owner returns its immutable baseline even when
-            // operation admission refuses before native begin. No handle dies.
-            let mut cache = observer
-                .cache
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            *cache = work;
-            return Err(error);
-        }
-    };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        call.check_before_begin()?;
         work.refresh(observer.apis, &mut call)?;
-        call.check_observed_mode(observed_mode)?;
+        let result = owner.staged_root(scope, work.view.as_ref())?;
         call.finish()?;
-        let view = work
-            .view
-            .as_ref()
-            .ok_or("ordinary fingerprint baseline absent")?;
-        let index = SCOPES
-            .iter()
-            .position(|candidate| *candidate == scope)
-            .ok_or("ordinary fingerprint scope absent")?;
-        Ok((view.roots[index], view.logical_bytes[index]))
+        Ok(result)
     }))
     .unwrap_or_else(|_| Err(RamError::Invariant("ordinary fingerprint capture panicked")));
-    let physical_returned = call.physically_returned();
-    // No native callback runs under this lock. Return the real cache even after
-    // poisoning rather than destroying its retained snapshots/source allocation.
+    // Dropping the same view still attempts identity-only return after failure
+    // or expiry. Its actual durable field survives every negative/refusal.
+    drop(call);
+    let pending = owner.has_retained_work();
     let mut cache = observer
         .cache
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let return_changed = !cache.ordinary_active || cache.view.is_some();
-    work.ordinary_active = !physical_returned || return_changed;
+        .unwrap_or_else(|error| error.into_inner());
+    let changed = !cache.ordinary_active || cache.view.is_some();
+    work.ordinary_active = pending || changed;
     *cache = work;
-    if return_changed {
+    if changed {
         return Err(RamError::Invariant(
             "ordinary fingerprint cache return changed",
         ));
     }
     result
+}
+
+/// Shares the pure Merkle traversal with existing isolated capture fixtures.
+///
+/// Production implements this only with a genuine native-entered Original.
+/// The private test adapter exercises tree bytes, never Source/native authority.
+pub(super) trait RefreshAuthority {
+    fn require_full(&self, missing_view: bool) -> Result<bool, RamError>;
+    fn open(&mut self, apis: NativeApis, full: bool) -> Result<CaptureClaim, RamError>;
+    fn restart(&mut self, claim: CaptureClaim) -> Result<CaptureClaim, RamError>;
+    fn check_mode(&mut self, observation_only: bool) -> Result<(), RamError>;
+    fn progress(&self, completed: u64) -> Result<(), RamError>;
+    fn stage(
+        &mut self,
+        claim: CaptureClaim,
+        view: Option<CachedView>,
+    ) -> Result<Option<CachedView>, RamError>;
+}
+
+impl RefreshAuthority for original::Call<'_> {
+    fn require_full(&self, missing_view: bool) -> Result<bool, RamError> {
+        let full = self.require_full()?;
+        if missing_view && !full {
+            return Err(RamError::Invariant(
+                "native accepted baseline lacks its module view",
+            ));
+        }
+        Ok(full)
+    }
+
+    fn open(&mut self, apis: NativeApis, full: bool) -> Result<CaptureClaim, RamError> {
+        CaptureClaim::open_logical(apis, self, full)
+    }
+
+    fn restart(&mut self, claim: CaptureClaim) -> Result<CaptureClaim, RamError> {
+        claim.restart_logical(self)
+    }
+
+    fn check_mode(&mut self, observation_only: bool) -> Result<(), RamError> {
+        if !observation_only {
+            return Err(RamError::Invariant(
+                "logical capture obtained physical ACK mode",
+            ));
+        }
+        self.check()
+    }
+
+    fn progress(&self, completed: u64) -> Result<(), RamError> {
+        if completed == 0 {
+            return Err(RamError::Invariant("empty logical hash batch"));
+        }
+        // Successful native page output already consumed its actual witness.
+        // Hash completion checks that SAME Original, never mints earlier credit.
+        self.check()
+    }
+
+    fn stage(
+        &mut self,
+        claim: CaptureClaim,
+        view: Option<CachedView>,
+    ) -> Result<Option<CachedView>, RamError> {
+        self.retain_stage(claim.header, view)?;
+        claim.commit()?;
+        Ok(None)
+    }
 }

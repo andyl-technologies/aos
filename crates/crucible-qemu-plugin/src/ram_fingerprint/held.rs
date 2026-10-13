@@ -424,6 +424,9 @@ pub(crate) fn observe_held(
     root: *mut u8,
     logical_bytes: *mut u64,
 ) -> c_int {
+    if synchronize().is_err() {
+        return -libc::EBUSY;
+    }
     let observer = match observer() {
         Ok(observer) => observer,
         Err(_) => return -libc::ENODEV,
@@ -507,6 +510,7 @@ pub(crate) fn observe_held(
 pub(crate) fn retire_held_cache(
     matches: impl Fn(&HeldReaderIdentity) -> bool,
 ) -> Result<(), RamError> {
+    synchronize()?;
     let Some(observer) = OBSERVER.get() else {
         return Ok(());
     };

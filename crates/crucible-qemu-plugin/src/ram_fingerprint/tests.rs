@@ -468,8 +468,8 @@ fn private_native_capture_layouts_are_fixed() {
 }
 
 // The private Merkle fixtures supply synthetic native byte streams only. Their
-// real local bounded operation exercises module post/rollback; it issues no
-// native Source, stopped boundary, loan, dirty ACK or readiness evidence.
+// driver exercises tree publication/rollback only; it issues no native Source,
+// stopped boundary, operation, loan, dirty ACK or readiness evidence.
 pub(super) extern "C" fn observation_only(
     _generation: u64,
     _owner: u64,
@@ -485,13 +485,57 @@ pub(super) extern "C" fn observation_only(
     0
 }
 
+// This driver exercises synthetic byte streams and Merkle transactions only.
+// It creates no Source operation, native loan, dirty authority or readiness.
+struct TreeTraversal;
+
+impl ordinary::RefreshAuthority for TreeTraversal {
+    fn require_full(&self, missing_view: bool) -> Result<bool, RamError> {
+        Ok(missing_view)
+    }
+
+    fn open(&mut self, apis: NativeApis, full: bool) -> Result<CaptureClaim, RamError> {
+        CaptureClaim::open(apis, full, 0)
+    }
+
+    fn restart(&mut self, mut claim: CaptureClaim) -> Result<CaptureClaim, RamError> {
+        let closed = claim
+            .close_without_ack()
+            .ok_or("fixture capture already closed")?;
+        status(closed, "fixture topology close")?;
+        Err(RamError::Invariant(
+            "RAM topology restart requires current Source inventory custody",
+        ))
+    }
+
+    fn check_mode(&mut self, observation_only: bool) -> Result<(), RamError> {
+        if observation_only {
+            Ok(())
+        } else {
+            Err(RamError::Invariant("fixture observation mode changed"))
+        }
+    }
+
+    fn progress(&self, completed: u64) -> Result<(), RamError> {
+        if completed != 0 {
+            Ok(())
+        } else {
+            Err(RamError::Invariant("empty fixture hash batch"))
+        }
+    }
+
+    fn stage(
+        &mut self,
+        claim: CaptureClaim,
+        view: Option<CachedView>,
+    ) -> Result<Option<CachedView>, RamError> {
+        claim.commit()?;
+        Ok(view)
+    }
+}
+
 fn refresh_fixture(cache: &mut RootCache) -> Result<(), RamError> {
-    let mut operation = crate::paged_ram::controller::fixture_fingerprint(
-        ordinary::FingerprintBaseline::fixture(cache),
-    )?;
-    operation.check_before_begin()?;
-    cache.refresh(apis(), &mut operation)?;
-    operation.finish()
+    cache.refresh(apis(), &mut TreeTraversal)
 }
 
 #[test]
