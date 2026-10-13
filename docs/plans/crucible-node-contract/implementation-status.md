@@ -3031,6 +3031,59 @@ review verifies the helper evidence and the compiled production dependencies.
 The native HOLD call, worker closure, source epoch, complete capture, readiness,
 installed package pair and ABI/license gates remain unfinished.
 
+## Canonical native directed-ring mapping call
+
+Signed QEMU source `3157f824133986b86b4386f09856583929b4fbaf` binds the
+mapping request to the original parked RR preparation invocation. Machine
+completion calls it immediately after successful stopped endpoint preparation.
+The native side authenticates the exact preowned status pointer before reading
+it, requires fresh source reads on entry and after callback return, and revokes
+callback permission before interpreting the result.
+
+Four complete affected translation units compile with warnings treated as
+errors. Two actual C/Rust/Linux coupled controls on the matching GPL callback
+cover successful six-ring HOLD and source loss after the effect; the latter
+retains the held mappings and publishes no success. Broader authority
+certificates in the native component controls are modeled. Neither these
+controls nor the canonical reconstruction establish full physical closure,
+worker or in-flight callback sealing, an installed pair, Ready or guest release.
+
+The canonical patch and bundle preserve the complete signed ancestor tree and
+change exactly eight existing files. Independent cumulative reconstruction from
+the sole upstream base produces tree `0001dd9eddbddcd7e836e53e3cf09e02b5f586df`.
+The license inventory is unchanged. Earlier complete emulator-link and package
+metadata results retain their original source identities; they are not new
+results for this source revision. Current ABI and license gates remain required.
+
+## Current compiler and native package prerequisites
+
+The corrected ordinary LLVM17 build completes in 976.15 seconds. Full output
+and runtime-closure audits and nine installed compiler controls pass, including
+X86 and AArch64 object generation. The earlier interrupted supervisor attempt
+remains a failure. The corrected supervisor preserves the original child's
+wait status while independently retiring descendants. Its six race and wait
+ownership controls pass. Nine inherited LLVM utility scripts still contain
+host interpreter shebangs; the installed compiler audit does not establish
+complete package interpreter-policy qualification.
+
+Matching normal and stopped-diagnostic QEMU, plugin and complete-source
+derivations evaluate successfully. Neither tuple has been realized. The next
+ordinary LLVM18 build runs for 1,073.12 seconds before its disk monitor encounters
+a permission error and interrupts the build. No compiler failure is reported.
+All 3,179 observed process generations retire and the original host confirms
+writer-lock release. The failed attempt remains retained; correcting the
+monitor and realizing the package tuples remain required.
+
+The direct selected DMTCP source diagnostic configures, builds and installs
+successfully in 4.13, 27.26 and 0.70 seconds. Its first startup fails before port
+publication. Correcting caller-owned console permissions progresses to later
+coordinator and application exit86 failures. A bounded exit-stack diagnostic
+identifies a selected thread-owner binding that receives a virtualized thread
+ID while its verifier compares the raw kernel ID. A source correction and
+noninstrumented startup controls remain pending. These diagnostics do not
+qualify the ordinary package, full production exec journal, native checkpoint
+issuer or two fresh whole-process restorations.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

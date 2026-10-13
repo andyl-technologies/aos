@@ -1,6 +1,6 @@
-From 6695f4ba0c893044c0d2c969a866fd0304b1fe78 Mon Sep 17 00:00:00 2001
+From 3157f824133986b86b4386f09856583929b4fbaf Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Tue, 13 Oct 2026 19:33:25 +0000
+Date: Tue, 13 Oct 2026 21:27:00 +0000
 Subject: [PATCH] Integrate deterministic execution and native effect ownership
 
 Keep small TCG invalidation page-lock sets in four caller-owned sorted
@@ -556,6 +556,12 @@ tree and applies exactly these five functional source changes.
 The192-byte stdout issuer and hook remain separate qualification
 changes. Installed pair, SourceHOLD, full physical closure, Ready,
 guest, package and release gates remain unqualified.
+
+Bind the selected GPL mapping callback to the original parked RR preparation invocation. Invoke its six-mapping HOLD immediately after successful stopped-RR preparation in machine completion. Authenticate the exact preowned 88-byte response pointer before dereference, require fresh nonrenewable native source reads on entry and after callback return, and revoke native callback permission before interpreting the returned mapping status.
+
+Four affected complete translation units compile with warnings treated as errors. Native mapping component controls retain explicitly modeled authority certificates. Two actual C/Rust/Linux coupled controls cover successful six-ring HOLD and post-effect source loss; the latter retains the held mapping and publishes no success. These are component results, not an installed pair or a new full emulator link. Earlier full-link evidence remains bound to its original source revision.
+
+Canonical reconstruction preserves the complete signed Git tree and changes exactly eight existing source files. No native source file is created or removed; the license inventory is unchanged. Worker and in-flight callback closure remain reserved. Installed pair, full physical HOLD, Ready, guest, package and release gates remain unqualified.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -19848,7 +19854,7 @@ index 0000000000000000000000000000000000000000..76140d303d1b89512472ebc4f0d0577a
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..763ae1720ca5e8b3d4b5527e4f84f726b6b33b8d 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..fb2911352c43b1c5340861176b98b4d27e5de628 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -24,48 +24,3118 @@
@@ -23561,7 +23567,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..763ae1720ca5e8b3d4b5527e4f84f726
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -197,48 +3763,266 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -197,48 +3763,267 @@ static void *rr_cpu_thread_fn(void *arg)
      cpu_thread_signal_created(cpu);
      qemu_guest_random_seed_thread_part2(cpu->random_seed);
  
@@ -23594,6 +23600,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..763ae1720ca5e8b3d4b5527e4f84f726
 +#ifdef CONFIG_PLUGIN
 +            current_cpu = first_cpu;
 +            plugin_crucible_whole_preparation_dispatch(first_cpu);
++            plugin_crucible_whole_mapping_hold_dispatch(first_cpu);
 +#endif
 +        }
 +    }
@@ -23852,7 +23859,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..763ae1720ca5e8b3d4b5527e4f84f726
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -252,13 +4036,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -252,13 +4037,34 @@ static void *rr_cpu_thread_fn(void *arg)
              icount_handle_deadline();
  
              cpu_budget = icount_percpu_budget(cpu_count);
@@ -23888,7 +23895,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..763ae1720ca5e8b3d4b5527e4f84f726
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +4081,123 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +4082,123 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -24027,7 +24034,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..763ae1720ca5e8b3d4b5527e4f84f726
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +4205,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +4206,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -24167,7 +24174,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..763ae1720ca5e8b3d4b5527e4f84f726
      }
  
      g_assert_not_reached();
-@@ -318,13 +4344,55 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +4345,55 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -94260,7 +94267,7 @@ index 9edfacf827caeecb4427f5dae5b8fbd037632ee2..d907377393e9faf1f63254ce7e56a0c4
      int link_down;
      QTAILQ_ENTRY(NetClientState) next;
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..8bf04fc60e76011cbab80a3924ba6a5d87c594eb 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..3f650678f753c5acf215ccb1380dc6bd13082381 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -94590,7 +94597,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..8bf04fc60e76011cbab80a3924ba6a5d
  /**
   * qemu_plugin_uninstall() - Uninstall a plugin
   * @id: this plugin's opaque ID
-@@ -827,544 +1147,4029 @@ QEMU_PLUGIN_API
+@@ -827,544 +1147,4083 @@ QEMU_PLUGIN_API
  void qemu_plugin_update_ns(const void *handle, int64_t time);
  
  /**
@@ -97037,68 +97044,103 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..8bf04fc60e76011cbab80a3924ba6a5d
 + *
 + * Returns one when a result is ready, zero when none is ready, or -EINVAL for
 + * an invalid pointer contract. This call never consumes or changes the result.
-  */
- QEMU_PLUGIN_API
--uint64_t qemu_plugin_start_code(void);
++ */
++QEMU_PLUGIN_API
 +int qemu_plugin_crucible_fault_peek(
 +    struct qemu_plugin_crucible_fault_result *result,
 +    size_t *payload_length);
- 
- /**
-- * qemu_plugin_end_code() - returns end of text segment
++
++/**
 + * qemu_plugin_crucible_fault_poll() - copy one completed result
 + * @result: fixed result destination
 + * @payload: result payload destination
 + * @payload_capacity: bytes available at @payload
 + * @payload_length: required/copied result payload bytes
-  *
-- * Returns the nominal end address of the main text segment in
-- * user-mode. Currently returns 0 for system emulation.
++ *
 + * Returns one when a result was consumed, zero when none is ready, -ENOSPC
 + * without consumption when the payload buffer is too small, or -EINVAL for an
 + * invalid pointer contract.
-  */
- QEMU_PLUGIN_API
--uint64_t qemu_plugin_end_code(void);
++ */
++QEMU_PLUGIN_API
 +int qemu_plugin_crucible_fault_poll(
 +    struct qemu_plugin_crucible_fault_result *result,
 +    uint8_t *payload, size_t payload_capacity, size_t *payload_length);
- 
- /**
-- * qemu_plugin_entry_code() - returns start address for module
++
++/**
 + * qemu_plugin_crucible_fault_event_peek() - inspect one occurrence
 + * @event: fixed event destination
 + * @payload_length: exact evidence payload byte count
-  *
-- * Returns the nominal entry address of the main text segment in
-- * user-mode. Currently returns 0 for system emulation.
++ *
 + * Returns one when an event is ready, zero when none is ready, or -EINVAL.
 + * The event is not consumed.
-  */
- QEMU_PLUGIN_API
--uint64_t qemu_plugin_entry_code(void);
++ */
++QEMU_PLUGIN_API
 +int qemu_plugin_crucible_fault_event_peek(
 +    struct qemu_plugin_crucible_fault_event *event, size_t *payload_length);
- 
--/** struct qemu_plugin_register - Opaque handle for register access */
--struct qemu_plugin_register;
++
 +/**
 + * qemu_plugin_crucible_fault_event_envelope_version() - event payload schema
 + *
 + * Returns the mandatory private event-envelope version. Version one carries
 + * the canonical originating node request and raw occurrence evidence so a
 + * fresh plugin process can validate events from restored VM state.
-+ */
-+QEMU_PLUGIN_API
+  */
+ QEMU_PLUGIN_API
+-uint64_t qemu_plugin_start_code(void);
 +int qemu_plugin_crucible_fault_event_envelope_version(void);
  
  /**
-- * typedef qemu_plugin_reg_descriptor - register descriptions
+- * qemu_plugin_end_code() - returns end of text segment
 + * qemu_plugin_crucible_fault_event_poll() - copy one occurrence
 + * @event: fixed event destination
 + * @payload: evidence destination
 + * @payload_capacity: bytes available at @payload
 + * @payload_length: required/copied evidence byte count
+  *
+- * Returns the nominal end address of the main text segment in
+- * user-mode. Currently returns 0 for system emulation.
++ * Returns one when consumed, zero when empty, -ENOSPC without consumption, or
++ * -EINVAL for an invalid pointer contract.
+  */
+ QEMU_PLUGIN_API
+-uint64_t qemu_plugin_end_code(void);
++int qemu_plugin_crucible_fault_event_poll(
++    struct qemu_plugin_crucible_fault_event *event, uint8_t *payload,
++    size_t payload_capacity, size_t *payload_length);
+ 
+ /**
+- * qemu_plugin_entry_code() - returns start address for module
++ * qemu_plugin_crucible_fault_dispatch_node_boundary() - commit due node faults
++ * @raw_icount: exact raw retired-instruction coordinate
+  *
+- * Returns the nominal entry address of the main text segment in
+- * user-mode. Currently returns 0 for system emulation.
++ * Commits every due node-boundary fault while the caller owns the BQL-held
++ * Crucible control-boundary scope. Returns zero on success and a negative errno
++ * when the scope or coordinate is invalid.
+  */
+ QEMU_PLUGIN_API
+-uint64_t qemu_plugin_entry_code(void);
++int qemu_plugin_crucible_fault_dispatch_node_boundary(uint64_t raw_icount);
+ 
+-/** struct qemu_plugin_register - Opaque handle for register access */
+-struct qemu_plugin_register;
++/**
++ * qemu_plugin_register_crucible_fault_completion_cb() - register completion
++ * @cb: callback invoked after each boundary-dispatched result, or NULL to clear
++ * @userdata: opaque pointer supplied to @cb
++ *
++ * Registering a callback lets a GPL-side controller complete a prepare/commit
++ * transaction without allowing the guest to retire another instruction.  A
++ * callback may poll and submit, but must not recursively dispatch boundaries.
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_register_crucible_fault_completion_cb(
++    qemu_plugin_crucible_fault_completion_cb_t cb, void *userdata);
+ 
+ /**
+- * typedef qemu_plugin_reg_descriptor - register descriptions
++ * qemu_plugin_scoreboard_new() - alloc a new scoreboard
   *
 - * @handle: opaque handle for retrieving value with qemu_plugin_read_register or
 - *          writing value with qemu_plugin_write_register
@@ -97106,8 +97148,10 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..8bf04fc60e76011cbab80a3924ba6a5d
 - * @feature: optional feature descriptor, can be NULL
 - * @is_readonly: true if the register cannot be written via
 - *               qemu_plugin_write_register
-+ * Returns one when consumed, zero when empty, -ENOSPC without consumption, or
-+ * -EINVAL for an invalid pointer contract.
++ * @element_size: size (in bytes) for one entry
++ *
++ * Returns a pointer to a new scoreboard. It must be freed using
++ * qemu_plugin_scoreboard_free.
   */
 -typedef struct {
 -    struct qemu_plugin_register *handle;
@@ -97116,62 +97160,10 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..8bf04fc60e76011cbab80a3924ba6a5d
 -    bool is_readonly;
 -} qemu_plugin_reg_descriptor;
 +QEMU_PLUGIN_API
-+int qemu_plugin_crucible_fault_event_poll(
-+    struct qemu_plugin_crucible_fault_event *event, uint8_t *payload,
-+    size_t payload_capacity, size_t *payload_length);
++struct qemu_plugin_scoreboard *qemu_plugin_scoreboard_new(size_t element_size);
  
  /**
 - * qemu_plugin_get_registers() - return register list for current vCPU
-+ * qemu_plugin_crucible_fault_dispatch_node_boundary() - commit due node faults
-+ * @raw_icount: exact raw retired-instruction coordinate
-  *
-- * Returns a potentially empty GArray of qemu_plugin_reg_descriptor.
-- * Caller frees the array (but not the const strings).
-+ * Commits every due node-boundary fault while the caller owns the BQL-held
-+ * Crucible control-boundary scope. Returns zero on success and a negative errno
-+ * when the scope or coordinate is invalid.
-+ */
-+QEMU_PLUGIN_API
-+int qemu_plugin_crucible_fault_dispatch_node_boundary(uint64_t raw_icount);
-+
-+/**
-+ * qemu_plugin_register_crucible_fault_completion_cb() - register completion
-+ * @cb: callback invoked after each boundary-dispatched result, or NULL to clear
-+ * @userdata: opaque pointer supplied to @cb
-  *
-- * Should be used from a qemu_plugin_register_vcpu_init_cb() callback
-- * after the vCPU is initialised, i.e. in the vCPU context.
-+ * Registering a callback lets a GPL-side controller complete a prepare/commit
-+ * transaction without allowing the guest to retire another instruction.  A
-+ * callback may poll and submit, but must not recursively dispatch boundaries.
-  */
- QEMU_PLUGIN_API
--GArray *qemu_plugin_get_registers(void);
-+void qemu_plugin_register_crucible_fault_completion_cb(
-+    qemu_plugin_crucible_fault_completion_cb_t cb, void *userdata);
- 
- /**
-- * qemu_plugin_read_register() - read register for current vCPU
-+ * qemu_plugin_scoreboard_new() - alloc a new scoreboard
-  *
-- * @handle: a @qemu_plugin_reg_handle handle
-- * @buf: A GByteArray for the data owned by the plugin
-+ * @element_size: size (in bytes) for one entry
-  *
-- * This function is only available in a context that register read access is
-- * explicitly requested via the QEMU_PLUGIN_CB_R_REGS flag, if called inside a
-- * callback that can be registered with a qemu_plugin_cb_flags argument. This
-- * function can also be used in any callback context that does not use a flags
-- * argument, such as in a callback registered with
-- * qemu_plugin_register_vcpu_init_cb(), except for callbacks registered with
-- * qemu_plugin_register_atexit_cb() and qemu_plugin_register_flush_cb().
-+ * Returns a pointer to a new scoreboard. It must be freed using
-+ * qemu_plugin_scoreboard_free.
-+ */
-+QEMU_PLUGIN_API
-+struct qemu_plugin_scoreboard *qemu_plugin_scoreboard_new(size_t element_size);
-+
-+/**
 + * qemu_plugin_scoreboard_free() - free a scoreboard
 + * @score: scoreboard to free
 + */
@@ -97182,7 +97174,9 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..8bf04fc60e76011cbab80a3924ba6a5d
 + * qemu_plugin_scoreboard_find() - get pointer to an entry of a scoreboard
 + * @score: scoreboard to query
 + * @vcpu_index: entry index
-+ *
+  *
+- * Returns a potentially empty GArray of qemu_plugin_reg_descriptor.
+- * Caller frees the array (but not the const strings).
 + * Returns address of entry of a scoreboard matching a given vcpu_index. This
 + * address can be modified later if scoreboard is resized.
 + */
@@ -97328,7 +97322,9 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..8bf04fc60e76011cbab80a3924ba6a5d
 + * @summary: receives the native source cut; zero on refusal
 + * @rows: receives original native IDs, per-CPU source order and scalar payloads
 + * @capacity: at most QEMU_PLUGIN_CRUCIBLE_NODE_INGRESS_MAX
-+ *
+  *
+- * Should be used from a qemu_plugin_register_vcpu_init_cb() callback
+- * after the vCPU is initialised, i.e. in the vCPU context.
 + * The query requires the actual BQL-held RR getter/stopped seam and an already
 + * retained writer HOLD. Rows remain Unknown-birth scalar observations; no
 + * callback/data pointers leave native custody. A source command digest authenticates only the actual
@@ -97337,18 +97333,22 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..8bf04fc60e76011cbab80a3924ba6a5d
 + * Summary flags are UnknownBirth1 and UnknownOtherProducers2; no full closure,
 + * readiness, capture, input staging or foreign-source containment is advertised.
 + * Returns zero, or a negative errno with a zero summary.
-+ */
-+QEMU_PLUGIN_API
+  */
+ QEMU_PLUGIN_API
+-GArray *qemu_plugin_get_registers(void);
 +int qemu_plugin_crucible_node_query_cpu_ingress(
 +    const uint8_t prepared_scope_hash[32], uint64_t expected_generation,
 +    QemuPluginCrucibleNodeIngressSummary *summary,
 +    QemuPluginCrucibleNodeIngressRow *rows, uint32_t capacity);
-+
-+/**
+ 
+ /**
+- * qemu_plugin_read_register() - read register for current vCPU
 + * qemu_plugin_crucible_node_query_source_fault() - read an immutable native source fault
 + * @prepared_scope_hash: exact scope authenticated by the original sealed V4 manifest
 + * @fault: receives the original fault; zero on refusal
-+ *
+  *
+- * @handle: a @qemu_plugin_reg_handle handle
+- * @buf: A GByteArray for the data owned by the plugin
 + * This observational query requires no BQL and is available to the independent
 + * GPL controller after the native source proof has been invalidated. The first original
 + * record is immutable. A fault is never a stopped/no-effects receipt, physical
@@ -97383,13 +97383,22 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..8bf04fc60e76011cbab80a3924ba6a5d
 + * qemu_plugin_crucible_node_query_cpu_park() - observe a prepared native CPU park
 + * @prepared_scope_hash: exact original scope bound to the sealed V4 manifest
 + * @facts: receives the actual CPU-only park observation
-+ *
+  *
+- * This function is only available in a context that register read access is
+- * explicitly requested via the QEMU_PLUGIN_CB_R_REGS flag, if called inside a
+- * callback that can be registered with a qemu_plugin_cb_flags argument. This
+- * function can also be used in any callback context that does not use a flags
+- * argument, such as in a callback registered with
+- * qemu_plugin_register_vcpu_init_cb(), except for callbacks registered with
+- * qemu_plugin_register_atexit_cb() and qemu_plugin_register_flush_cb().
 + * The query requires a finalized machine with a fully realized fixed CPU roster,
 + * and the BQL-held native RR command/stop callback seam outside guest execution.
 + * Every realized CPU must share that parked RR thread. An active original run
 + * command cannot produce these facts. The retained V4 socket identity and scope
 + * are checked again before publishing them.
-+ *
+  *
+- * Returns true on success, false on failure. The content of @buf is in target
+- * byte order.
 + * The observation reports CPU_PARK coverage only. It grants no lasting resource
 + * freeze, complete input epoch, queue closure, or readiness qualification.
 + * The roster hash is SHA-256 over the ASCII bytes
@@ -97401,8 +97410,10 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..8bf04fc60e76011cbab80a3924ba6a5d
 + * and pending_service_credit_ps is zero; this does not close the service source.
 + * It returns zero, or a negative errno-style status for invalid arguments,
 + * incomplete preparation, unsupported topology, context or original scope.
-+ */
-+QEMU_PLUGIN_API
+  */
+ QEMU_PLUGIN_API
+-bool qemu_plugin_read_register(struct qemu_plugin_register *handle,
+-                               GByteArray *buf);
 +int qemu_plugin_crucible_node_query_cpu_park(
 +    const uint8_t prepared_scope_hash[32],
 +    QemuPluginCrucibleNodeCpuParkFacts *facts);
@@ -98062,16 +98073,12 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..8bf04fc60e76011cbab80a3924ba6a5d
 +/**
 + * qemu_plugin_crucible_release_stopped_install_v1:
 + * @id: actual plugin currently executing its original installation
-  *
-- * Returns true on success, false on failure. The content of @buf is in target
-- * byte order.
++ *
 + * Authenticates only administrative installation return under original -S,
 + * SIM/raw-zero/Prelaunch custody. It grants no guest execution, source closure
 + * or common readiness. Returns zero once, or a negative errno on refusal.
-  */
- QEMU_PLUGIN_API
--bool qemu_plugin_read_register(struct qemu_plugin_register *handle,
--                               GByteArray *buf);
++ */
++QEMU_PLUGIN_API
 +int qemu_plugin_crucible_release_stopped_install_v1(qemu_plugin_id_t id);
  
  /**
@@ -98263,11 +98270,11 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..8bf04fc60e76011cbab80a3924ba6a5d
  
  /**
 - * qemu_plugin_write_memory_vaddr() - write to memory using a virtual address
-- *
-- * @addr: A virtual address to write to
-- * @data: A byte array containing the data to write
 + * struct qemu_plugin_crucible_whole_ops_v3 - retained operation retirement
   *
+- * @addr: A virtual address to write to
+- * @data: A byte array containing the data to write
+- *
 - * The contents of @data will be written to memory starting at the virtual
 - * address @addr.
 + * Version3 selects a bounded sequence of operations under one installed world.
@@ -98765,41 +98772,34 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..8bf04fc60e76011cbab80a3924ba6a5d
  
  /**
 - * qemu_plugin_scoreboard_new() - alloc a new scoreboard
-- *
-- * @element_size: size (in bytes) for one entry
 + * qemu_plugin_crucible_whole_read_preparation_v1() - read literal preparation
+  *
+- * @element_size: size (in bytes) for one entry
++ * Authenticates the original in-flight parked RR callback before inspecting a
++ * version/size initialized destination. Returns zero or negative errno.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_whole_read_preparation_v1(
++    struct qemu_plugin_crucible_whole_preparation_v1 *destination);
++
++/**
++ * qemu_plugin_crucible_whole_bind_prepared_userdata_v1() - pin local engine
   *
 - * Returns a pointer to a new scoreboard. It must be freed using
 - * qemu_plugin_scoreboard_free.
-+ * Authenticates the original in-flight parked RR callback before inspecting a
-+ * version/size initialized destination. Returns zero or negative errno.
-  */
- QEMU_PLUGIN_API
--struct qemu_plugin_scoreboard *qemu_plugin_scoreboard_new(size_t element_size);
-+int qemu_plugin_crucible_whole_read_preparation_v1(
-+    struct qemu_plugin_crucible_whole_preparation_v1 *destination);
- 
- /**
-- * qemu_plugin_scoreboard_free() - free a scoreboard
-- * @score: scoreboard to free
-+ * qemu_plugin_crucible_whole_bind_prepared_userdata_v1() - pin local engine
-+ *
 + * Binds one subordinate RR-local owner after authentic preparation readback.
 + * It does not dereference the supplied private address. Five subsequent native
 + * endpoint setters require this same owner, each exactly once.
   */
  QEMU_PLUGIN_API
--void qemu_plugin_scoreboard_free(struct qemu_plugin_scoreboard *score);
+-struct qemu_plugin_scoreboard *qemu_plugin_scoreboard_new(size_t element_size);
 +int qemu_plugin_crucible_whole_bind_prepared_userdata_v1(void *userdata);
  
  /**
-- * qemu_plugin_scoreboard_find() - get pointer to an entry of a scoreboard
-- * @score: scoreboard to query
-- * @vcpu_index: entry index
+- * qemu_plugin_scoreboard_free() - free a scoreboard
+- * @score: scoreboard to free
 + * struct qemu_plugin_crucible_whole_preparation_return_v1 - original post-return observation
-  *
-- * Returns address of entry of a scoreboard matching a given vcpu_index. This
-- * address can be modified later if scoreboard is resized.
++ *
 + * Private read-only source context. Bind, setters, HOLD and guest permissions
 + * remain revoked while the original module's retained observer runs.
   */
@@ -98825,16 +98825,76 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..8bf04fc60e76011cbab80a3924ba6a5d
 +};
 +
  QEMU_PLUGIN_API
--void *qemu_plugin_scoreboard_find(struct qemu_plugin_scoreboard *score,
--                                  unsigned int vcpu_index);
+-void qemu_plugin_scoreboard_free(struct qemu_plugin_scoreboard *score);
 +int qemu_plugin_crucible_whole_read_preparation_return_v1(
 +    struct qemu_plugin_crucible_whole_preparation_return_v1 *destination);
++
+ 
+ /**
+- * qemu_plugin_scoreboard_find() - get pointer to an entry of a scoreboard
+- * @score: scoreboard to query
+- * @vcpu_index: entry index
++ * struct qemu_plugin_crucible_whole_mapping_hold_v1 - original six-ring HOLD
+  *
+- * Returns address of entry of a scoreboard matching a given vcpu_index. This
+- * address can be modified later if scoreboard is resized.
++ * GPL-local source context for one parked-RR mapping callback. Its pointers
++ * never cross the process boundary. This permits the retained six-ring mapping
++ * operation only; it supplies no worker, epoch, device or guest permission.
++ */
++struct qemu_plugin_crucible_whole_mapping_hold_v1 {
++    uint32_t version;
++    uint32_t size;
++    uint32_t phase;
++    uint32_t cpu_index;
++    uint64_t plugin_id;
++    uint64_t original_pid;
++    uint64_t actual_tid;
++    uint64_t loader_tid;
++    uint64_t deadline_ns;
++    uintptr_t registered_callback;
++    void *registered_userdata;
++    const void *original_constructor;
++    void *original_cpu;
++    const void *original_permit;
++    void *prepared_engine;
++    uint32_t ring_count;
++    uint32_t action;
++    uint8_t setup_digest[32];
++};
++
++/* Separate from legacy status edition six: in_flight and all worker fields are reserved
++ * zero. Exact six-ring facts do not establish a full-world physical stop. */
++#define QEMU_PLUGIN_CRUCIBLE_DIRECTED_MAPPING_STATUS_VERSION 7U
++
++/**
++ * qemu_plugin_crucible_whole_read_mapping_hold_v1() - read original HOLD scope
++ *
++ * Authenticates the literal one-shot original barrier callback before reading
++ * the destination's version/size. Returns zero or negative errno. Failure
++ * grants no access to Rust TLS or mapped owners. User emulation is unsupported.
+  */
+ QEMU_PLUGIN_API
+-void *qemu_plugin_scoreboard_find(struct qemu_plugin_scoreboard *score,
+-                                  unsigned int vcpu_index);
++int qemu_plugin_crucible_whole_read_mapping_hold_v1(
++    struct qemu_plugin_crucible_whole_mapping_hold_v1 *destination);
  
 -/* Macros to define a qemu_plugin_u64 */
 -#define qemu_plugin_scoreboard_u64(score) \
 -    (qemu_plugin_u64) {score, 0}
 -#define qemu_plugin_scoreboard_u64_in_struct(score, type, member) \
 -    (qemu_plugin_u64) {score, offsetof(type, member)}
++/**
++ * qemu_plugin_crucible_whole_authenticate_mapping_status_v1() - check native journal
++ *
++ * Authenticates the literal HOLD scope and prior getter capture, then compares
++ * the supplied pointer to the original preowned status destination without
++ * dereferencing it. Returns zero or negative errno. No read slot is renewed.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_whole_authenticate_mapping_status_v1(
++    const struct qemu_plugin_crucible_hot_fork_barrier_status *destination);
  
  /**
 - * qemu_plugin_u64_add() - add a value to a qemu_plugin_u64 for a given vcpu
@@ -102889,10 +102949,10 @@ index 0000000000000000000000000000000000000000..e02b23826b8be7fc8136c473eec3e048
 +#endif
 diff --git a/include/qemu/crucible-whole-callback-origin.h b/include/qemu/crucible-whole-callback-origin.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..47925d8141aa7a78123d49a1f861b9cbb5ee5cd2
+index 0000000000000000000000000000000000000000..f44d45b6eeeadef42e280b4438b7bf63a07dbe71
 --- /dev/null
 +++ b/include/qemu/crucible-whole-callback-origin.h
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,41 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Source-private controller identity. This is never a process protocol. */
 +#ifndef QEMU_CRUCIBLE_WHOLE_CALLBACK_ORIGIN_H
@@ -102927,6 +102987,11 @@ index 0000000000000000000000000000000000000000..47925d8141aa7a78123d49a1f861b9cb
 +/* Only the retained original plugin context supplies its loaded module. */
 +void *plugin_crucible_whole_initializers_original_module(void);
 +bool plugin_crucible_whole_initializers_module_current(const void *module);
++
++/* Mapping-only source request; legacy barrier and worker custody are separate. */
++int plugin_crucible_whole_mapping_hold_request(void);
++int plugin_crucible_whole_mapping_hold_status(bool *complete);
++void plugin_crucible_whole_mapping_hold_dispatch(struct CPUState *cpu);
 +
 +#endif
 diff --git a/include/qemu/datadir.h b/include/qemu/datadir.h
@@ -107193,10 +107258,10 @@ index 0000000000000000000000000000000000000000..7fdbaf05a28166efade32274a1e3845b
 +#endif /* SYSTEM_CRUCIBLE_SIM_PREEMPTION_H */
 diff --git a/include/system/crucible-whole-early.h b/include/system/crucible-whole-early.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..584c9cbcb84168ceb4844a3413202704da44bb46
+index 0000000000000000000000000000000000000000..e6e99b9d89a5b41ad04d595baddf182afe2d44ef
 --- /dev/null
 +++ b/include/system/crucible-whole-early.h
-@@ -0,0 +1,227 @@
+@@ -0,0 +1,230 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Original native setup provenance. No declaration here is a wire layout. */
 +#ifndef SYSTEM_CRUCIBLE_WHOLE_EARLY_H
@@ -107402,6 +107467,9 @@ index 0000000000000000000000000000000000000000..584c9cbcb84168ceb4844a3413202704
 + * subordinate engine registration. Negative errno retains failed custody. */
 +bool crucible_whole_setup_preparation_current(void);
 +int crucible_whole_setup_stopped_rr_prepare(struct MachineState *machine);
++/* Read-only constructor correlation, not a mapping or guest effect permit. */
++bool crucible_whole_setup_mapping_hold_current(void);
++int crucible_whole_setup_stopped_rr_mapping_hold(struct MachineState *machine);
 +
 +struct MemoryRegionSection;
 +int qemu_memory_whole_system_section_readback(uint64_t address, uint64_t extent,
@@ -122390,10 +122458,10 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..ed879e681a5587ba069172d8e55b4b6a
 +
 +#include "stopped-install-system.inc.c"
 diff --git a/plugins/api-user.c b/plugins/api-user.c
-index 28704a89e89944890be3d824013ed3a9e7de2e43..b98ee1677874b812d2f9154825defdf1cd777f08 100644
+index 28704a89e89944890be3d824013ed3a9e7de2e43..ebfdf39a42a7695ec8a99a5a8d2c946dbdd0a6ab 100644
 --- a/plugins/api-user.c
 +++ b/plugins/api-user.c
-@@ -55,3 +55,124 @@ void qemu_plugin_update_ns(const void *handle, int64_t new_time)
+@@ -55,3 +55,136 @@ void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      qemu_log_mask(LOG_UNIMP, "user-mode can't control time");
  }
@@ -122509,6 +122577,18 @@ index 28704a89e89944890be3d824013ed3a9e7de2e43..b98ee1677874b812d2f9154825defdf1
 +}
 +
 +int qemu_plugin_crucible_whole_bind_prepared_userdata_v1(void *userdata)
++{
++    return -ENOTSUP;
++}
++
++int qemu_plugin_crucible_whole_authenticate_mapping_status_v1(
++    const struct qemu_plugin_crucible_hot_fork_barrier_status *destination)
++{
++    return -ENOTSUP;
++}
++
++int qemu_plugin_crucible_whole_read_mapping_hold_v1(
++    struct qemu_plugin_crucible_whole_mapping_hold_v1 *destination)
 +{
 +    return -ENOTSUP;
 +}
@@ -163753,10 +163833,10 @@ index 0000000000000000000000000000000000000000..29f77118bc7e6370f391e5d1c97de463
 +#endif
 diff --git a/plugins/whole-preparation.inc.c b/plugins/whole-preparation.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..040af2983ff162f92595bbd6d9f23885aaad34db
+index 0000000000000000000000000000000000000000..a001f5aa06fc5259bb19156ce333ebf65cabe29c
 --- /dev/null
 +++ b/plugins/whole-preparation.inc.c
-@@ -0,0 +1,517 @@
+@@ -0,0 +1,757 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Included by the system controller: one original parked-RR engine birth.
 + * The permit is local source custody, never a public protocol or Ready proof. */
@@ -163792,6 +163872,19 @@ index 0000000000000000000000000000000000000000..040af2983ff162f92595bbd6d9f23885
 +G_STATIC_ASSERT(offsetof(struct qemu_plugin_crucible_whole_preparation_return_v1,
 +                        setup_digest) == 112);
 +
++typedef enum WholeMappingHoldPhase {
++    WHOLE_MAPPING_HOLD_UNUSED,
++    WHOLE_MAPPING_HOLD_REQUESTED,
++    WHOLE_MAPPING_HOLD_DISPATCH,
++    WHOLE_MAPPING_HOLD_VERIFY,
++    WHOLE_MAPPING_HOLD_COMPLETE,
++    WHOLE_MAPPING_HOLD_REFUSED,
++} WholeMappingHoldPhase;
++
++G_STATIC_ASSERT(sizeof(struct qemu_plugin_crucible_whole_mapping_hold_v1) == 144);
++G_STATIC_ASSERT(offsetof(struct qemu_plugin_crucible_whole_mapping_hold_v1,
++                        setup_digest) == 112);
++
 +typedef struct WholePreparation {
 +    struct qemu_plugin_crucible_whole_preparation_v1 tuple;
 +    WholePreparationPhase phase;
@@ -163806,6 +163899,15 @@ index 0000000000000000000000000000000000000000..040af2983ff162f92595bbd6d9f23885
 +    uint32_t setter_mask;
 +    uintptr_t callbacks[5][4];
 +    bool read_observed;
++    /* This journal is precharged with the original constructor registration;
++     * failure and retirement retain its one attempted mapping lifetime. */
++    WholeMappingHoldPhase mapping_phase;
++    int mapping_status;
++    uint32_t mapping_reads;
++    uint64_t mapping_barrier_generation;
++    qemu_plugin_crucible_hot_fork_barrier_cb_t mapping_callback;
++    struct qemu_plugin_crucible_whole_mapping_hold_v1 mapping_tuple;
++    struct qemu_plugin_crucible_hot_fork_barrier_status mapping_result;
 +    int status;
 +    struct qemu_plugin_crucible_whole_native_endpoint_v1 endpoints[3];
 +} WholePreparation;
@@ -164218,7 +164320,225 @@ index 0000000000000000000000000000000000000000..040af2983ff162f92595bbd6d9f23885
 +    return original->status;
 +}
 +
++static int plugin_whole_mapping_hold_refuse(int status)
++{
++    whole_controller.failed = true;
++    if (whole_preparation) {
++        whole_preparation->mapping_phase = WHOLE_MAPPING_HOLD_REFUSED;
++        whole_preparation->mapping_status = status < 0 ? status : -EPROTO;
++    }
++    return status < 0 ? status : -EPROTO;
++}
++
++static bool plugin_whole_mapping_hold_original_current(WholePreparation *original)
++{
++    return original && original == plugin_whole_preparation_original() &&
++        original->phase == WHOLE_PREPARATION_COMPLETE &&
++        original->return_observation_valid && original->engine &&
++        original->setter_mask == 31 &&
++        crucible_whole_setup_mapping_hold_current() &&
++        plugin_whole_preparation_deadline_current(original->tuple.deadline_ns) &&
++        plugin_crucible_whole_initializers_module_current(original->module) &&
++        qemu_plugin_crucible_barrier_inventory.registered &&
++        qemu_plugin_crucible_barrier_inventory.plugin_id == original->tuple.plugin_id;
++}
++
++static bool plugin_whole_mapping_hold_dispatch_current(void)
++{
++    WholePreparation *original = plugin_whole_preparation_original();
++    CPUState *cpu;
++
++    if (!plugin_whole_mapping_hold_original_current(original) ||
++        original->mapping_phase != WHOLE_MAPPING_HOLD_DISPATCH ||
++        original->mapping_callback != whole_controller.barrier_cb ||
++        original->mapping_callback != qemu_plugin_crucible_barrier_cb ||
++        original->mapping_barrier_generation !=
++            qemu_plugin_crucible_barrier_inventory.generation) {
++        return false;
++    }
++    cpu = crucible_whole_setup_initializer_cpu(0);
++    return cpu && cpu == original->tuple.original_cpu &&
++        original->tuple.actual_tid == (uint64_t)qemu_get_thread_id() &&
++        rr_crucible_whole_preparation_dispatch_current(cpu);
++}
++
++int plugin_crucible_whole_mapping_hold_request(void)
++{
++    WholePreparation *original;
++
++    if (!crucible_whole_setup_constructor_current() ||
++        !rr_crucible_whole_initialization_drain_current()) {
++        return -ESTALE;
++    }
++    original = plugin_whole_preparation_original();
++    if (!plugin_whole_mapping_hold_original_current(original) ||
++        original->mapping_phase != WHOLE_MAPPING_HOLD_UNUSED) {
++        return plugin_whole_mapping_hold_refuse(-ESTALE);
++    }
++    /* An attempted mapping boundary is never refunded or renewed. */
++    original->mapping_phase = WHOLE_MAPPING_HOLD_REQUESTED;
++    original->mapping_callback = whole_controller.barrier_cb;
++    original->mapping_barrier_generation =
++        qemu_plugin_crucible_barrier_inventory.generation;
++    original->mapping_tuple = (struct qemu_plugin_crucible_whole_mapping_hold_v1) {
++        .version = 1,
++        .size = sizeof(original->mapping_tuple),
++        .phase = 1,
++        .cpu_index = 0,
++        .plugin_id = original->tuple.plugin_id,
++        .original_pid = original->tuple.original_pid,
++        .actual_tid = original->tuple.actual_tid,
++        .loader_tid = original->tuple.loader_tid,
++        .deadline_ns = original->tuple.deadline_ns,
++        .registered_callback = (uintptr_t)original->mapping_callback,
++        .registered_userdata = original->tuple.registered_userdata,
++        .original_constructor = original->tuple.original_constructor,
++        .original_cpu = original->tuple.original_cpu,
++        .original_permit = &original->mapping_tuple,
++        .prepared_engine = original->engine,
++        .ring_count = 6,
++        .action = QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD,
++    };
++    memcpy(original->mapping_tuple.setup_digest, original->tuple.setup_digest, 32);
++    return 0;
++}
++
++int qemu_plugin_crucible_whole_read_mapping_hold_v1(
++    struct qemu_plugin_crucible_whole_mapping_hold_v1 *destination)
++{
++    if (!plugin_whole_mapping_hold_dispatch_current()) {
++        return -ESTALE;
++    }
++    /* Exactly the entry and post-guard recaptures spend these observation
++     * slots. Neither read renews the mapping permit or authorizes a retry. */
++    if (whole_preparation->mapping_reads >= 2) {
++        return -ESTALE;
++    }
++    /* Source authentication precedes all caller-owned destination access. */
++    if (!destination || destination->version != 1 ||
++        destination->size != sizeof(*destination)) {
++        return -EINVAL;
++    }
++    *destination = whole_preparation->mapping_tuple;
++    whole_preparation->mapping_reads++;
++    return 0;
++}
++
++int qemu_plugin_crucible_whole_authenticate_mapping_status_v1(
++    const struct qemu_plugin_crucible_hot_fork_barrier_status *destination)
++{
++    if (!plugin_whole_mapping_hold_dispatch_current() ||
++        !whole_preparation->mapping_reads ||
++        destination != &whole_preparation->mapping_result) {
++        return -ESTALE;
++    }
++    return 0;
++}
++
++static bool plugin_whole_mapping_hold_result_current(WholePreparation *original)
++{
++    const struct qemu_plugin_crucible_hot_fork_barrier_status *result =
++        &original->mapping_result;
++
++    return result->schema_version ==
++            QEMU_PLUGIN_CRUCIBLE_DIRECTED_MAPPING_STATUS_VERSION &&
++        result->struct_size == sizeof(*result) && !result->reserved &&
++        result->flags == (QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_HELD |
++                         QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_MAPPING_DONTFORK) &&
++        !result->in_flight && result->ring_count == 6 && result->rings_held == 6 &&
++        !result->ring_producers_in_flight && !result->ring_consumers_in_flight &&
++        !result->worker_mask && !result->parked_worker_mask &&
++        !result->pending_worker_mask && !result->worker_operations_in_flight;
++}
++
++void plugin_crucible_whole_mapping_hold_dispatch(CPUState *cpu)
++{
++    WholePreparation *original;
++    int status;
++
++    if (!crucible_whole_setup_selected()) {
++        return;
++    }
++    if (!crucible_whole_setup_source_current()) {
++        _exit(125);
++    }
++    original = plugin_whole_preparation_original();
++    if (!original || original->mapping_phase != WHOLE_MAPPING_HOLD_REQUESTED) {
++        return;
++    }
++    if (!plugin_whole_mapping_hold_original_current(original) ||
++        cpu != original->tuple.original_cpu ||
++        !rr_crucible_whole_preparation_dispatch_current(cpu)) {
++        plugin_whole_mapping_hold_refuse(-ESTALE);
++        return;
++    }
++    original->mapping_phase = WHOLE_MAPPING_HOLD_DISPATCH;
++    if (!plugin_whole_mapping_hold_dispatch_current()) {
++        plugin_whole_mapping_hold_refuse(-ESTALE);
++        return;
++    }
++    status = original->mapping_callback(QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD,
++                                       &original->mapping_result,
++                                       original->mapping_tuple.registered_userdata);
++    /* Revoke the mapping permit before any fallible status or owner readback. */
++    original->mapping_phase = WHOLE_MAPPING_HOLD_VERIFY;
++    if (status || original->mapping_reads != 2 ||
++        !plugin_whole_mapping_hold_original_current(original) ||
++        original->mapping_callback != whole_controller.barrier_cb ||
++        original->mapping_barrier_generation !=
++            qemu_plugin_crucible_barrier_inventory.generation ||
++        !rr_crucible_whole_preparation_dispatch_current(cpu) ||
++        !plugin_whole_mapping_hold_result_current(original)) {
++        plugin_whole_mapping_hold_refuse(status ? status : -ESTALE);
++    } else {
++        original->mapping_phase = WHOLE_MAPPING_HOLD_COMPLETE;
++        original->mapping_status = 0;
++    }
++    qemu_cond_broadcast(cpu->halt_cond);
++}
++
++int plugin_crucible_whole_mapping_hold_status(bool *complete)
++{
++    WholePreparation *original;
++
++    if (!crucible_whole_setup_constructor_current()) {
++        return -ESTALE;
++    }
++    original = plugin_whole_preparation_original();
++    if (!original || !complete) {
++        return -ESTALE;
++    }
++    *complete = original->mapping_phase == WHOLE_MAPPING_HOLD_COMPLETE;
++    return original->mapping_status;
++}
++
 +#else
++int qemu_plugin_crucible_whole_authenticate_mapping_status_v1(
++    const struct qemu_plugin_crucible_hot_fork_barrier_status *destination)
++{
++    return -ENOTSUP;
++}
++
++int qemu_plugin_crucible_whole_read_mapping_hold_v1(
++    struct qemu_plugin_crucible_whole_mapping_hold_v1 *destination)
++{
++    return -ENOTSUP;
++}
++
++int plugin_crucible_whole_mapping_hold_request(void)
++{
++    return -ENOTSUP;
++}
++
++int plugin_crucible_whole_mapping_hold_status(bool *complete)
++{
++    return -ENOTSUP;
++}
++
++void plugin_crucible_whole_mapping_hold_dispatch(CPUState *cpu)
++{
++}
++
 +uint64_t plugin_crucible_whole_preparation_storage_bytes(void)
 +{
 +    return 0;
@@ -182216,10 +182536,10 @@ index 0000000000000000000000000000000000000000..cd0157b178d1371b5231e54a6d89ca40
 +}
 diff --git a/system/crucible-whole-early.inc.c b/system/crucible-whole-early.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..1861fc80c9e5cb128c8be46e1d1a9d152b8a9a73
+index 0000000000000000000000000000000000000000..d0a653cb909c2cd7d03d1978ff6689be99e66afe
 --- /dev/null
 +++ b/system/crucible-whole-early.inc.c
-@@ -0,0 +1,1773 @@
+@@ -0,0 +1,1868 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Source-owned sealed setup before subsystem, board and guest construction.
 + * A pinned descriptor is a request and original provenance, never Ready. */
@@ -182228,6 +182548,7 @@ index 0000000000000000000000000000000000000000..1861fc80c9e5cb128c8be46e1d1a9d15
 +#include "hw/i386/crucible-whole-linux-input.h"
 +#include "system/rng.h"
 +#include "system/rtc.h"
++#include "system/cpu-timers.h"
 +#include "qom/crucible-property-roots.h"
 +#include "qemu/crucible-endpoint-roots.h"
 +#include "qemu/crucible-whole-callback-origin.h"
@@ -182253,6 +182574,8 @@ index 0000000000000000000000000000000000000000..1861fc80c9e5cb128c8be46e1d1a9d15
 +    bool initializer_drain_complete;
 +    bool preparation_attempted;
 +    bool preparation_complete;
++    bool mapping_hold_attempted;
++    bool mapping_hold_complete;
 +    MachineState *machine;
 +    ObjectClass *machine_class;
 +    Object *ram_backend;
@@ -183957,6 +184280,98 @@ index 0000000000000000000000000000000000000000..1861fc80c9e5cb128c8be46e1d1a9d15
 +        }
 +        if (complete) {
 +            whole_setup_original.preparation_complete = true;
++            return 0;
++        }
++        first = crucible_whole_setup_initializer_cpu(0);
++        if (!first || first != first_cpu || !first->halt_cond) {
++            status = -ESTALE;
++            break;
++        }
++        remaining = deadline - now;
++        milliseconds = remaining / 1000000 + (remaining % 1000000 != 0);
++        qemu_cond_broadcast(first->halt_cond);
++        qemu_cond_timedwait_bql(first->halt_cond,
++                              MIN(milliseconds, (uint64_t)INT_MAX));
++    }
++    whole_setup_original.history_failed = true;
++    return status;
++#else
++    whole_setup_original.history_failed = true;
++    return -ENOTSUP;
++#endif
++}
++
++bool crucible_whole_setup_mapping_hold_current(void)
++{
++    if (!crucible_whole_setup_source_current() ||
++        !whole_setup_original.initializer_drain_complete ||
++        !whole_setup_original.preparation_complete ||
++        whole_setup_original.mapping_hold_complete ||
++        !cpu_crucible_whole_preparation_clock_stopped()) {
++        return false;
++    }
++    for (unsigned index = 0; index < ARRAY_SIZE(whole_setup_original.cpus); index++) {
++        CPUState *cpu = crucible_whole_setup_initializer_cpu(index);
++
++        if (!cpu || !DEVICE(cpu)->realized || !cpu->created ||
++            !cpu->stopped || cpu->running) {
++            return false;
++        }
++    }
++    return true;
++}
++
++int crucible_whole_setup_stopped_rr_mapping_hold(MachineState *machine)
++{
++    if (!whole_setup_original.attempted) {
++        return 0;
++    }
++#if defined(CONFIG_TCG) && defined(CONFIG_PLUGIN)
++    uint64_t deadline;
++    int status;
++
++    if (!crucible_whole_setup_constructor_current()) {
++        return -ESTALE;
++    }
++    if (!crucible_whole_setup_mapping_hold_current() ||
++        machine != whole_setup_original.machine ||
++        whole_setup_original.mapping_hold_attempted ||
++        !rr_crucible_whole_initialization_drain_current()) {
++        whole_setup_original.history_failed = true;
++        return -ESTALE;
++    }
++    whole_setup_original.mapping_hold_attempted = true;
++    deadline = ldq_be_p(whole_setup_original.profile + 104);
++    status = plugin_crucible_whole_mapping_hold_request();
++    while (!status) {
++        struct timespec monotonic;
++        uint64_t now, remaining, milliseconds;
++        bool complete;
++        CPUState *first;
++
++        if (!crucible_whole_setup_constructor_current() ||
++            !crucible_whole_setup_mapping_hold_current() ||
++            !rr_crucible_whole_initialization_drain_current()) {
++            status = -ESTALE;
++            break;
++        }
++        status = plugin_crucible_whole_mapping_hold_status(&complete);
++        if (status) {
++            break;
++        }
++        if (clock_gettime(CLOCK_MONOTONIC, &monotonic) || monotonic.tv_sec < 0 ||
++            __builtin_mul_overflow((uint64_t)monotonic.tv_sec,
++                                   UINT64_C(1000000000), &now) ||
++            __builtin_add_overflow(now, (uint64_t)monotonic.tv_nsec, &now)) {
++            status = -EOVERFLOW;
++            break;
++        }
++        if (now >= deadline) {
++            status = -ETIMEDOUT;
++            break;
++        }
++        if (complete) {
++            whole_setup_original.mapping_hold_complete = true;
 +            return 0;
 +        }
 +        first = crucible_whole_setup_initializer_cpu(0);
@@ -188314,7 +188729,7 @@ index 0000000000000000000000000000000000000000..85636f10abe77ea3c996b009e3ac271d
 +        qemu_get_thread_id() == stopped_startup_tid;
 +}
 diff --git a/system/vl.c b/system/vl.c
-index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..efc19fd6f441586a6109d7c7b6a60b127a653e8c 100644
+index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..1300920cf81da1bff6005918b16779943a0daa2c 100644
 --- a/system/vl.c
 +++ b/system/vl.c
 @@ -43,7 +43,9 @@
@@ -188647,7 +189062,7 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..efc19fd6f441586a6109d7c7b6a60b12
  
      /* Did we create any drives that we failed to create a device for? */
      drive_check_orphaned();
-@@ -2808,6 +3064,22 @@ static bool qemu_machine_creation_done(Error **errp)
+@@ -2808,6 +3064,29 @@ static bool qemu_machine_creation_done(Error **errp)
                      "type does not use that option; "
                      "No VGA device has been created");
      }
@@ -188667,10 +189082,17 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..efc19fd6f441586a6109d7c7b6a60b12
 +                         "Crucible stopped endpoint preparation failed");
 +        return false;
 +    }
++
++    status = crucible_whole_setup_stopped_rr_mapping_hold(machine);
++    if (status != 0) {
++        error_setg_errno(errp, status < 0 ? -status : EPROTO,
++                         "Crucible stopped directed-ring mapping hold failed");
++        return false;
++    }
      return true;
  }
  
-@@ -2820,6 +3092,27 @@ void qmp_x_exit_preconfig(Error **errp)
+@@ -2820,6 +3099,27 @@ void qmp_x_exit_preconfig(Error **errp)
  
      qemu_init_board();
      qemu_create_cli_devices();
@@ -188698,7 +189120,7 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..efc19fd6f441586a6109d7c7b6a60b12
      if (!qemu_machine_creation_done(errp)) {
          return;
      }
-@@ -2906,6 +3199,10 @@ void qemu_init(int argc, char **argv)
+@@ -2906,6 +3206,10 @@ void qemu_init(int argc, char **argv)
      module_init_info(qemu_modinfo);
      module_allow_arch(target_name());
  
@@ -188709,7 +189131,7 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..efc19fd6f441586a6109d7c7b6a60b12
      qemu_init_subsystems();
  
      /* first pass of option parsing */
-@@ -3173,6 +3470,9 @@ void qemu_init(int argc, char **argv)
+@@ -3173,6 +3477,9 @@ void qemu_init(int argc, char **argv)
                  break;
              case QEMU_OPTION_S:
                  autostart = 0;
@@ -188719,7 +189141,7 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..efc19fd6f441586a6109d7c7b6a60b12
                  break;
              case QEMU_OPTION_k:
                  keyboard_layout = optarg;
-@@ -3549,6 +3849,16 @@ void qemu_init(int argc, char **argv)
+@@ -3549,6 +3856,16 @@ void qemu_init(int argc, char **argv)
                      exit(1);
                  }
                  break;
@@ -188736,7 +189158,7 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..efc19fd6f441586a6109d7c7b6a60b12
              case QEMU_OPTION_icount:
                  icount_opts = qemu_opts_parse_noisily(qemu_find_opts("icount"),
                                                        optarg, true);
-@@ -3768,6 +4078,13 @@ void qemu_init(int argc, char **argv)
+@@ -3768,6 +4085,13 @@ void qemu_init(int argc, char **argv)
      trace_init_file();
  
      qemu_init_main_loop(&error_fatal);
