@@ -124,8 +124,8 @@ fn digest_device_material(
 /// The control callback captures this value at the quiesced exact boundary,
 /// then transfers it to the dedicated digest worker. Its buffers are immutable
 /// and detached from guest memory; the logical RAM root is already complete.
-/// The callback waits for ordered digest
-/// publication before acknowledging the boundary or resuming guest execution.
+/// The worker publishes the completed sample and then acknowledges its capture
+/// request. Enqueueing this value does not wait for digest completion.
 #[derive(Debug)]
 pub(crate) struct CapturedFingerprintSample {
     sample: FingerprintSample,
@@ -207,14 +207,16 @@ impl PluginFingerprintSampling {
     ///
     /// Register and RR-cursor introspection, the static schema digest, and the
     /// incremental logical RAM root and immutable device projection happen at
-    /// the boundary. The device SHA-256 operation does not; callers transfer the returned value and request
-    /// identity to the digest worker, which publishes and acknowledges the sample
-    /// after the boundary callback has released the vCPU thread.
+    /// the boundary. Callers transfer the returned value and request identity to
+    /// the digest worker for device hashing. The worker publishes and acknowledges
+    /// the sample after its digest completes, independently of callback return.
+    ///
     /// # Errors
     ///
     /// Returns [`FingerprintSamplerError`] when introspection or capture fails,
-    /// QEMU returns an invalid RAM identity or sealed device descriptor, the register set exceeds the fixed
-    /// slot capacity, or the sample metadata fails shared-memory validation.
+    /// QEMU returns an invalid RAM identity or sealed device descriptor, the
+    /// register set exceeds the fixed slot capacity, or the sample metadata fails
+    /// shared-memory validation.
     pub(crate) fn capture(
         &self,
         current_icount: u64,
