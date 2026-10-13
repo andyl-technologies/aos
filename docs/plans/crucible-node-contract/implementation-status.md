@@ -3084,6 +3084,33 @@ noninstrumented startup controls remain pending. These diagnostics do not
 qualify the ordinary package, full production exec journal, native checkpoint
 issuer or two fresh whole-process restorations.
 
+## Sealed Native5 source codec and complete copy admission
+
+The source-five service and controller retain an immutable typed codec policy
+with the same original frame bank. Installation validates the original unused
+endpoint, route and negotiated features before consuming the bank. Protocol
+snapshots include the complete private Handshake policy and phase. Full literal
+history-copy geometry is checked before issuer binding and encoding; a baseline
+reservation cannot silently omit that history. An origin-guarded getter exposes
+actual retained storage capacities as accounting data, without granting capture
+or restoration permission.
+
+Thirty focused component and actual Unix controls, all 355 enabled provider
+unit tests, and all-target, all-feature strict checks pass on the recorded
+source. Thirteen unit tests remain explicitly ignored. Legacy schema installers
+refuse replacement of an installed Native5 codec. A readonly check verifies the
+same installed verifier and current registration without repeating immutable
+policy hashing or allocation. The client fixture authenticates its expected
+executable before starting its unchanged two-second I/O deadline; independent
+peer authentication remains required. Earlier long socket-path and fixture-order
+failures stay recorded separately. Independent review verifies all 45 changed
+preimages, the full owned source roster and consumed local dependencies. The retained evidence covers local emitted artifacts;
+complete transitive binary-closure qualification is not claimed. The current
+service still uses a baseline snapshot reservation, so full Capture safely
+refuses until a genuine complete-capacity consumer is joined. Actual native
+child Capture, blob settlement, fresh installation, two independent world
+restorations and Ready remain unfinished.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

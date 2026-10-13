@@ -21,6 +21,10 @@ use super::{PacketProgramDefinition, control::PacketControlSelection};
 use crate::{ProviderError, handshake::Limits, reference_service::InstalledContent};
 
 mod connected;
+mod native5;
+mod native5_policy;
+pub use native5::{PacketNative5SourceLaunch, PacketNative5StorageLimits};
+pub(crate) use native5_policy::Native5Policy;
 mod security;
 mod server;
 
@@ -178,6 +182,18 @@ pub struct PacketSourceService {
 }
 
 impl PacketSourceService {
+    /// Installs a complete original native source after actual peer authentication.
+    ///
+    /// # Errors
+    /// Refuses changed launch/kernel/executable/Hello, invalid complete source,
+    /// unsupported immutable codec or exhausted selected original storage.
+    pub fn accept_complete(
+        socket: &std::path::Path,
+        launch: PacketNative5SourceLaunch,
+    ) -> Result<Self, ProviderError> {
+        server::accept_complete(socket, launch)
+    }
+
     /// Installs an original participant of the distinct connected packet world.
     ///
     /// # Errors
@@ -211,6 +227,7 @@ impl PacketSourceService {
     /// Returns the original held failure without releasing native custody or
     /// permitting another execution, connection or replacement operation.
     pub fn step(&mut self) -> Result<(), ProviderError> {
+        self.endpoint.ensure_complete_origin()?;
         if self.endpoint.is_held() {
             return self.endpoint.step();
         }
@@ -224,3 +241,6 @@ impl PacketSourceService {
         &self.endpoint
     }
 }
+
+#[cfg(test)]
+pub(crate) use native5_policy::controlled_native5_policy;

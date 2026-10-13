@@ -86,12 +86,74 @@ impl PacketConnectedCoordinatorInstallation {
     /// Verifies full static ownership and exact local source membership.
     ///
     /// # Errors
+    /// Refuses incomplete or changed static membership and exhausted bytes.
+    pub fn validate(&self, local: &PacketControlSelection) -> Result<(), ProviderError> {
+        self.view().validate(local)
+    }
+
+    /// Checks the full static body and complete preparation roster.
+    ///
+    /// # Errors
+    /// Refuses noncanonical bytes, changed static fields or incomplete rows.
+    pub fn validate_body(&self, bytes: &[u8]) -> Result<(), ProviderError> {
+        self.view().validate_body(bytes)
+    }
+
+    /// Joins complete preparation rows to this original staged receipt.
+    ///
+    /// # Errors
+    /// Refuses changed static scope or a foreign local Arm or activation.
+    pub fn authenticate_staged(
+        &self,
+        bytes: &[u8],
+        local: &PacketControlSelection,
+        staged: &ActivateRequest,
+        ready: &ContentRef,
+        manifest: &ActivationManifest,
+    ) -> Result<(), ProviderError> {
+        self.view()
+            .authenticate_staged(bytes, local, staged, ready, manifest)
+    }
+
+    fn view(&self) -> CoordinatorView<'_> {
+        CoordinatorView {
+            schema: &self.schema,
+            participants: &self.participants,
+            host: &self.host,
+            template: &self.template,
+            edition: CoordinatorEdition::ConnectedFour,
+        }
+    }
+}
+
+// The edition comes only from the distinct installed Rust type, never a parsed
+// request or normalized metadata. Both paths borrow the exact original tuple.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum CoordinatorEdition {
+    ConnectedFour,
+    CompleteFive,
+}
+
+#[derive(Serialize)]
+pub(super) struct CoordinatorView<'a> {
+    pub(super) schema: &'a str,
+    pub(super) participants: &'a [PacketControlSelection],
+    pub(super) host: &'a PacketConnectedHostSelection,
+    pub(super) template: &'a Value,
+    #[serde(skip)]
+    pub(super) edition: CoordinatorEdition,
+}
+
+impl CoordinatorView<'_> {
+    /// Verifies full static ownership and exact local source membership.
+    ///
+    /// # Errors
     /// Refuses predicted preparation, unsupported topology or initial state,
     /// omitted/duplicate nodes or owners, foreign local scope or exhausted bytes.
-    pub fn validate(&self, local: &PacketControlSelection) -> Result<(), ProviderError> {
+    pub(super) fn validate(&self, local: &PacketControlSelection) -> Result<(), ProviderError> {
         crate::connection::serialized_credit(self, PACKET_CONNECTED_COORDINATOR_BYTES)?;
         crate::connection::serialized_credit(local, LIMIT)?;
-        if self.schema != "source-owned.packet-connected-coordinator-installation/4"
+        if self.schema != self.edition.schema()
             || self.participants.len() != PARTICIPANTS
             || self
                 .participants
@@ -330,12 +392,15 @@ impl PacketConnectedCoordinatorInstallation {
                     != Some(&serde_json::to_value(descriptor).map_err(ContractError::from)?)
                 || node.get("binding")
                     != Some(&serde_json::to_value(binding).map_err(ContractError::from)?)
-                || node.get("facets") != Some(&json!(["exact-execution"]))
+                || node.get("facets") != Some(&self.edition.native_facets())
                 || node.get("native_thread_custody") != Some(&json!("owner-thread"))
                 || node.get("effective_repeatability")
                     != Some(&json!(Repeatability::Nondeterministic))
             {
                 return Err(refused());
+            }
+            if self.edition == CoordinatorEdition::CompleteFive {
+                super::continuation::validate_native(peer, &nodes[index])?;
             }
             verify_static_content(
                 &nodes[index]["guarantees"],
@@ -368,7 +433,7 @@ impl PacketConnectedCoordinatorInstallation {
             );
             conflicts.push(json!([owner.id, []]));
         }
-        let host = &self.host;
+        let host = self.host;
         host.descriptor.validate()?;
         host.binding.validate()?;
         host.owner.validate()?;
@@ -423,6 +488,9 @@ impl PacketConnectedCoordinatorInstallation {
         {
             return Err(refused());
         }
+        if self.edition == CoordinatorEdition::CompleteFive {
+            super::continuation::validate_host(host, self.template)?;
+        }
         verify_static_content(
             &initial["guarantees"],
             &binding.compatibility.guarantees_ref,
@@ -450,7 +518,7 @@ impl PacketConnectedCoordinatorInstallation {
     ///
     /// # Errors
     /// Refuses changed static fields, noncanonical bytes or incomplete rows.
-    pub fn validate_body(&self, bytes: &[u8]) -> Result<(), ProviderError> {
+    pub(super) fn validate_body(&self, bytes: &[u8]) -> Result<(), ProviderError> {
         let mut value = canonical::parse_json(bytes, PACKET_CONNECTED_COORDINATOR_BYTES)?;
         if canonical::canonical_json(&value)? != bytes {
             return Err(refused());
@@ -470,7 +538,7 @@ impl PacketConnectedCoordinatorInstallation {
             .as_object_mut()
             .ok_or_else(refused)?
             .insert("preparations".into(), json!([]));
-        if value != self.template {
+        if value != *self.template {
             return Err(refused());
         }
         Ok(())
@@ -484,7 +552,7 @@ impl PacketConnectedCoordinatorInstallation {
     /// # Errors
     /// Refuses a missing, duplicated or foreign owner, changed static scope,
     /// stale local Arm/Ready, or an activation manifest differing from the rows.
-    pub fn authenticate_staged(
+    pub(super) fn authenticate_staged(
         &self,
         bytes: &[u8],
         local: &PacketControlSelection,
@@ -535,7 +603,7 @@ impl PacketConnectedCoordinatorInstallation {
             }
             prepared.push(actual);
         }
-        let host = &self.host;
+        let host = self.host;
         let row = &rows[PARTICIPANTS];
         let receipt: ContentRef = serde_json::from_value(row["readiness"]["ready_receipt"].clone())
             .map_err(ContractError::from)?;
@@ -565,7 +633,7 @@ impl PacketConnectedCoordinatorInstallation {
             .ok_or_else(refused)?
             .insert("preparations".into(), json!([]));
         let activation = &self.template["activation"];
-        if body != self.template
+        if body != *self.template
             || manifest.owners != prepared
             || activation["activation_id"] != json!(staged.activation_id)
             || activation["generation"] != json!(staged.world_generation)
@@ -577,5 +645,23 @@ impl PacketConnectedCoordinatorInstallation {
             return Err(refused());
         }
         Ok(())
+    }
+}
+
+impl CoordinatorEdition {
+    fn schema(self) -> &'static str {
+        match self {
+            Self::ConnectedFour => "source-owned.packet-connected-coordinator-installation/4",
+            Self::CompleteFive => {
+                super::super::continuation_contracts::PACKET_NATIVE5_COORDINATOR_SCHEMA
+            }
+        }
+    }
+
+    fn native_facets(self) -> Value {
+        match self {
+            Self::ConnectedFour => json!(["exact-execution"]),
+            Self::CompleteFive => json!(["exact-execution", "preservation"]),
+        }
     }
 }

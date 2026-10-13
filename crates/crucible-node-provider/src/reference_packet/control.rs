@@ -20,7 +20,17 @@ use crate::{
 
 use super::{PacketGrant, PacketInventory, PacketProgram};
 
+mod capture;
+mod continuation;
+pub use capture::{PacketOriginalCaptureComponent, PacketOriginalCaptureReservation};
 mod input;
+mod native5;
+
+pub use native5::PacketNative5Record;
+
+pub use continuation::{
+    PacketDecodedControlSnapshot, PacketOriginalControlSnapshot, decode_packet_control_snapshot,
+};
 mod program;
 
 use program::NativeProgram;
@@ -114,6 +124,10 @@ impl ReplyPreparation<'_> {
 pub struct PacketControl {
     selection: PacketControlSelection,
     program: NativeProgram,
+    // These private lifetime facts authenticate the same capture owner. Fresh
+    // constructors create new anchors; portable snapshot data cannot mint one.
+    capture_creator: u32,
+    capture_identity: std::rc::Rc<()>,
     originals: BTreeMap<Id, (HashRef, PacketControlReply)>,
     begins: BTreeMap<Id, BeginRequest>,
     begin_requests: BTreeMap<Id, Id>,
@@ -131,6 +145,7 @@ pub struct PacketControl {
     common_coordinator: Option<super::coordinator::PacketCoordinatorInstallation>,
     world_coordinator: Option<super::coordinator::PacketWorldCoordinatorInstallation>,
     connected_coordinator: Option<super::coordinator::PacketConnectedCoordinatorInstallation>,
+    complete_coordinator: Option<super::coordinator::PacketNative5CoordinatorInstallation>,
 }
 
 impl PacketControl {
@@ -239,6 +254,8 @@ impl PacketControl {
         Ok(Self {
             selection,
             program,
+            capture_creator: std::process::id(),
+            capture_identity: std::rc::Rc::new(()),
             originals: BTreeMap::new(),
             begins: BTreeMap::new(),
             begin_requests: BTreeMap::new(),
@@ -256,6 +273,7 @@ impl PacketControl {
             common_coordinator: None,
             world_coordinator: None,
             connected_coordinator: None,
+            complete_coordinator: None,
         })
     }
 
@@ -461,7 +479,7 @@ impl PacketControl {
         object: ContentRef,
         bytes: &[u8],
     ) -> Result<(), ProviderError> {
-        if self.connected_coordinator.is_some()
+        if (self.connected_coordinator.is_some() || self.complete_coordinator.is_some())
             && bytes.len() > super::coordinator::PACKET_CONNECTED_COORDINATOR_BYTES
         {
             return Err(ProviderError::ResourceExhausted(
@@ -480,14 +498,15 @@ impl PacketControl {
             .content_bytes
             .checked_add(bytes.len())
             .ok_or(ProviderError::ResourceExhausted("packet content bytes"))?;
-        // Only the explicitly installed connected-four profile needs the larger
+        // Only explicitly installed connected-four/complete-five coordinators need the larger
         // complete coordinator object. Socket frames and old profiles stay fixed;
         // every byte remains charged to the same original total content ledger.
-        let maximum_object = if self.connected_coordinator.is_some() {
-            super::coordinator::PACKET_CONNECTED_COORDINATOR_BYTES
-        } else {
-            FRAME
-        };
+        let maximum_object =
+            if self.connected_coordinator.is_some() || self.complete_coordinator.is_some() {
+                super::coordinator::PACKET_CONNECTED_COORDINATOR_BYTES
+            } else {
+                FRAME
+            };
         if self.content.len() >= OBJECTS || total > CONTENT_BYTES || bytes.len() > maximum_object {
             return Err(ProviderError::ResourceExhausted(
                 "packet complete native content",
@@ -575,6 +594,11 @@ impl PacketControl {
         request: &Envelope,
         preparation: &mut ReplyPreparation<'_>,
     ) -> Result<&PacketControlReply, ProviderError> {
+        if self.capture_creator != std::process::id() {
+            return Err(ProviderError::Correlation(
+                "packet original dispatch foreign creator",
+            ));
+        }
         encode(request)?;
         request.validate()?;
         let id = request
@@ -731,9 +755,12 @@ impl PacketControl {
                 grant,
             })?
         };
-        let root = reference(&bytes)?;
-        self.install_content(root.clone(), &bytes)?;
-        Ok((root, bytes))
+        let raw = reference(&bytes)?;
+        self.install_content(raw.clone(), &bytes)?;
+        if self.complete_coordinator.is_some() {
+            return self.retain_complete_record(request, raw);
+        }
+        Ok((raw, bytes))
     }
 
     fn execute(
@@ -792,7 +819,7 @@ impl PacketControl {
                         prepared_token: self.selection.prepared_token.clone(),
                         closed_gate_receipt: proof.0.clone(),
                     },
-                    vec![proof],
+                    self.record_evidence(proof)?,
                 )
             }
             RequestBody::Admit(admit) => {
@@ -837,7 +864,7 @@ impl PacketControl {
                         staged_owner_ids: owners,
                         activation_receipt: proof.0.clone(),
                     },
-                    vec![proof],
+                    self.record_evidence(proof)?,
                 )
             }
             RequestBody::WorldActivate(activate) => {
@@ -898,6 +925,7 @@ impl PacketControl {
             || manifest.world_binding_hash != activate.world_binding_hash
             || (self.world_coordinator.is_none()
                 && self.connected_coordinator.is_none()
+                && self.complete_coordinator.is_none()
                 && manifest.owners != [expected_owner])
             || !self.content.contains_key(&manifest.coordinator_state_ref)
         {
@@ -935,6 +963,18 @@ impl PacketControl {
                 &manifest,
             )?;
         }
+        if let Some(installed) = &self.complete_coordinator {
+            let coordinator = self.content.get(&manifest.coordinator_state_ref).ok_or(
+                ProviderError::Correlation("native5 complete coordinator absent"),
+            )?;
+            installed.authenticate_staged(
+                coordinator,
+                &self.selection,
+                staged,
+                ready,
+                &manifest,
+            )?;
+        }
         let mut inventory = self.program.inventory()?;
         inventory.gate_closed = false;
         let proof = self.retain_record(request, inventory, None)?;
@@ -944,7 +984,7 @@ impl PacketControl {
                 gate_id: self.selection.gate.clone(),
                 activation_receipt: proof.0.clone(),
             },
-            vec![proof],
+            self.record_evidence(proof)?,
         )?;
         preparation.prepare(&response, &mut self.fenced)?;
         self.native_effect_attempted = true;
@@ -1001,7 +1041,45 @@ impl PacketControl {
                 .ok_or(ProviderError::Correlation(
                     "packet original common authorization absent",
                 ))?;
-        if let NativeProgram::Connected(program) = &self.program {
+        if let Some(installed) = &self.complete_coordinator {
+            let consumed =
+                match &self.program {
+                    NativeProgram::OutputOnly(_) => None,
+                    NativeProgram::Connected(program) => {
+                        let (record, reference) = program.committed_input()?;
+                        let consumed_id = record.original.request_id.0.as_ref().ok_or(
+                            ProviderError::Correlation("native5 original consumed request absent"),
+                        )?;
+                        let original =
+                            self.originals
+                                .get(consumed_id)
+                                .ok_or(ProviderError::Correlation(
+                                    "native5 original consumed response absent",
+                                ))?;
+                        let decoded =
+                            decode_request(record.original.method, &record.original.body)?;
+                        let response = decode_response(&decoded, &original.1.body)?;
+                        if !matches!(response.result, Some(MethodResult::Input(_))) {
+                            return Err(ProviderError::Correlation(
+                                "native5 input commitment not completed",
+                            ));
+                        }
+                        Some((record, reference))
+                    }
+                };
+            super::common::PacketNative5CommonGrant::authenticate_live(
+                super::common::LiveNative5Grant {
+                    bytes: input,
+                    selection: &self.selection,
+                    active,
+                    operation,
+                    begin: &begin,
+                    arguments: &arguments,
+                    installed,
+                    consumed,
+                },
+            )?;
+        } else if let NativeProgram::Connected(program) = &self.program {
             let installed =
                 self.connected_coordinator
                     .as_ref()
@@ -1140,7 +1218,7 @@ impl PacketControl {
         })?;
         let response = PacketControlReply {
             body: terminal.clone(),
-            evidence: vec![proof],
+            evidence: self.record_evidence(proof)?,
         };
         let native_operation = operation.clone();
         // Register every owned terminal/callback/body slot before the first
@@ -1261,7 +1339,7 @@ impl PacketControl {
                 observations: vec![],
                 next_observation_sequence: U64::new(1),
             },
-            vec![proof],
+            self.record_evidence(proof)?,
         )?;
         let native_operation = operation.clone();
         self.native_effect_attempted = true;
@@ -1331,7 +1409,7 @@ impl PacketControl {
                 complete: true,
                 inventory_hash: self.program.inventory_hash()?,
             },
-            vec![proof],
+            self.record_evidence(proof)?,
         )
     }
 

@@ -15,6 +15,9 @@ use crate::{ProviderError, bodies::InputResult, envelope::Envelope};
 use super::{PacketPublication, input::PacketInputCut};
 
 mod inputs;
+
+#[path = "continuation_models/connected.rs"]
+mod continuation;
 mod run;
 
 pub use inputs::causal_parent_ids;
@@ -199,7 +202,7 @@ pub struct PacketCommitRecord {
 }
 
 /// Retains an actual original native input response and its full proof closure.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PacketInputReply {
     /// Contains the unchanged baseline Input result.
     pub result: InputResult,
@@ -226,6 +229,8 @@ pub struct PacketConnectedNativeRecord {
     pub grant: Option<PacketConnectedGrant>,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct OriginalStage {
     record: PacketStageRecord,
     record_ref: ContentRef,
@@ -233,6 +238,8 @@ struct OriginalStage {
     commit: Option<OriginalCommit>,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct OriginalCommit {
     record: PacketCommitRecord,
     record_ref: ContentRef,

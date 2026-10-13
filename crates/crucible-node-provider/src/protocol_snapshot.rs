@@ -19,6 +19,36 @@ pub enum ProtocolCaptureCut {
     NativeIncomingCapture,
 }
 
+/// Reports retained allocation facts from one current installed native-five bank.
+///
+/// Numeric facts grant no source selection, capture, release or adoption right.
+/// The source factory must join actual native owners and its original budget.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct OriginalProtocolStorageFacts {
+    /// States the genuinely negotiated maximum encoded frame body length.
+    pub maximum_frame_bytes: usize,
+    /// Bounds shared literal bytes across both lifetime directions.
+    pub maximum_history_bytes: usize,
+    /// Bounds each direction's nonrenewing lifetime frame population.
+    pub maximum_frames_per_direction: usize,
+    /// Reports actual allocated byte capacity rather than logical usage.
+    pub byte_capacity: usize,
+    /// Reports actual allocated descriptor population across both directions.
+    pub descriptor_capacity: usize,
+    /// Reports actual descriptor allocation in bytes.
+    pub descriptor_bytes: usize,
+    /// Reports complete charged byte and descriptor allocation.
+    pub allocated_bytes: usize,
+    /// Counts literal bytes retained under the same original bank.
+    pub retained_bytes: usize,
+    /// Counts original incoming lifetime slots, including incomplete ones.
+    pub incoming_frames: usize,
+    /// Counts original outgoing lifetime slots, including incomplete ones.
+    pub outgoing_frames: usize,
+    /// Reports complete physical I/O for all retained slots, not semantic success.
+    pub all_io_complete: bool,
+}
+
 pub(crate) struct ProtocolCaptureOwner {
     pid: u32,
     thread: std::thread::ThreadId,
@@ -102,13 +132,24 @@ impl ProtocolSnapshotReservation {
         Ok(original)
     }
 
+    pub(crate) fn validate_literal_reservation(
+        &self,
+        original: &crate::transport::original_frames::OriginalFrameReservation,
+    ) -> Result<(), ProviderError> {
+        let target = self.literal.as_ref().ok_or(ProviderError::Correlation(
+            "complete snapshot requires precharged original literal copy",
+        ))?;
+        original.validate_empty_copy(target)
+    }
+
     pub(crate) fn retain_literal_history(
         &mut self,
         original: &crate::transport::original_frames::OriginalFrameReservation,
     ) -> Result<(), ProviderError> {
-        if let Some(target) = &mut self.literal
-            && let Err(error) = original.copy_into_empty(target)
-        {
+        let target = self.literal.as_mut().ok_or(ProviderError::Correlation(
+            "complete snapshot requires precharged original literal copy",
+        ))?;
+        if let Err(error) = original.copy_into_empty(target) {
             self.complete = false;
             return Err(error);
         }
@@ -546,5 +587,25 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+    #[test]
+    fn native5_original_snapshot_copy_geometry_refuses_before_issuer_or_encoding() {
+        let source =
+            crate::transport::original_frames::OriginalFrameReservation::reserve(1024, 2).unwrap();
+        let mut absent = ProtocolSnapshotReservation::reserve(4096).unwrap();
+        assert!(absent.validate_literal_reservation(&source).is_err());
+        assert!(absent.retain_literal_history(&source).is_err());
+        assert!(absent.issuer.is_none());
+        assert!(absent.bytes.is_empty());
+        assert!(!absent.complete);
+
+        let different = ProtocolSnapshotReservation::reserve_complete(4096, 2048, 2).unwrap();
+        assert!(different.validate_literal_reservation(&source).is_err());
+        assert!(different.issuer.is_none());
+        assert!(different.bytes.is_empty());
+        let exact = ProtocolSnapshotReservation::reserve_complete(4096, 1024, 2).unwrap();
+        exact.validate_literal_reservation(&source).unwrap();
+        assert!(exact.issuer.is_none());
+        assert_eq!(source.frames().count(), 0);
     }
 }

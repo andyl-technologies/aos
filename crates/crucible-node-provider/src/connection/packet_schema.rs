@@ -41,6 +41,16 @@ pub(super) struct ConnectedPacketSchema {
 }
 
 impl ConnectedPacketSchema {
+    pub(super) fn protocol_view(&self) -> impl serde::Serialize + '_ {
+        (
+            &self.node,
+            &self.execution_owner,
+            self.owner_generation,
+            &self.input_epoch,
+            &self.binding_hash,
+        )
+    }
+
     /// Binds a closed input grammar to original negotiated source records.
     ///
     /// # Errors

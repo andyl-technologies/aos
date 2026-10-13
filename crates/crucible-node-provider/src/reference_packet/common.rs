@@ -20,6 +20,9 @@ use crate::{ProviderError, bodies::*};
 use super::control::PacketControlSelection;
 
 mod connected;
+mod native5;
+pub(crate) use native5::LiveNative5Grant;
+pub use native5::PacketNative5CommonGrant;
 
 pub use connected::{PacketConnectedCommonGrant, PacketConnectedCommonInput};
 

@@ -594,3 +594,65 @@ pub(crate) fn controller_authority(
     )?;
     Ok((handshake, authority))
 }
+
+#[test]
+fn native5_original_negotiation_view_preserves_private_issuer_and_hello_history() {
+    let mut original = handshake();
+    let (request, response) = envelopes(&hello(), &result(), "original-hello/5");
+    let authority = original
+        .admit_envelopes(
+            &request,
+            &response,
+            id("view-connection"),
+            &mut Verifier::default(),
+        )
+        .unwrap();
+    let view = original.original_negotiation_view(&authority).unwrap();
+    let data = serde_json::to_value(&view).unwrap();
+
+    assert_eq!(data["installation"][0], "session");
+    assert_eq!(data["installation"][1], "incarnation");
+    assert_eq!(
+        data["installation"][4],
+        serde_json::to_value([7; 32]).unwrap()
+    );
+    assert_eq!(data["policy"][2], serde_json::to_value(limits()).unwrap());
+    assert_eq!(data["epoch"], authority.epoch().to_string());
+    assert_eq!(data["shared_epoch"], authority.epoch().to_string());
+    assert_eq!(data["current_connection"], "view-connection");
+    assert_eq!(
+        data["selected_features"],
+        serde_json::to_value(authority.selected_features()).unwrap()
+    );
+    assert_eq!(data["resume_token"], serde_json::to_value([9; 32]).unwrap());
+    assert_eq!(data["contained"], false);
+    assert_eq!(data["registration_gate_poisoned"], false);
+    assert_eq!(
+        data["hello_request_ids"],
+        serde_json::json!(["original-hello/5"])
+    );
+    drop(view);
+    authority.with_live(|| Ok(())).unwrap();
+    original.validate_registration(&authority).unwrap();
+}
+
+#[test]
+fn native5_original_negotiation_view_refuses_foreign_gate_and_revoked_original() {
+    let (mut original, authority) = authority();
+    let (_other, foreign) = authority_with_frame_limit(4096);
+    assert!(original.original_negotiation_view(&foreign).is_err());
+    authority.with_live(|| Ok(())).unwrap();
+    original.contain();
+    assert!(original.original_negotiation_view(&authority).is_err());
+}
+
+#[test]
+fn native5_original_negotiation_view_tiny_credit_keeps_same_live_issuer() {
+    let (original, authority) = authority();
+    let view = original.original_negotiation_view(&authority).unwrap();
+    let mut reserve = crate::protocol_snapshot::ProtocolSnapshotReservation::reserve(2).unwrap();
+    assert!(reserve.encode(&view).is_err());
+    drop(view);
+    authority.with_live(|| Ok(())).unwrap();
+    original.validate_registration(&authority).unwrap();
+}

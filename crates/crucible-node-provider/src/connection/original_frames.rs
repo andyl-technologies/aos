@@ -72,6 +72,7 @@ impl<S: ProviderStream> Connection<S> {
         deadline: &crate::client::ExchangeDeadline,
     ) -> Result<(), ProviderError> {
         self.protocol_capture_preflight(cut)?;
+        self.preflight_protocol_reservation(reservation)?;
         reservation.bind(
             &self.authority,
             &self.protocol_owner,
@@ -132,6 +133,7 @@ impl<S: ProviderStream> Connection<S> {
             ));
         }
         let original_blobs = blobs.original_protocol_view(&self.authority)?;
+        self.preflight_protocol_reservation(reservation)?;
         reservation.bind(
             &self.authority,
             &self.protocol_owner,
@@ -199,6 +201,34 @@ impl<S: ProviderStream> Connection<S> {
         )
     }
 
+    pub(crate) fn original_native5_storage_facts(
+        &mut self,
+    ) -> Result<crate::protocol_snapshot::OriginalProtocolStorageFacts, ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        let bank = self
+            .original_frames
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "native5 original literal bank absent",
+            ))?
+            .try_borrow()
+            .map_err(|_| ProviderError::Correlation("native5 literal bank is mutably borrowed"))?;
+        Ok(bank.storage_facts(allowance(self.authority.limits().frame_bytes.get())?))
+    }
+
+    pub(crate) fn preflight_protocol_reservation(
+        &self,
+        reservation: &crate::protocol_snapshot::ProtocolSnapshotReservation,
+    ) -> Result<(), ProviderError> {
+        let bank = self
+            .original_frames
+            .as_ref()
+            .ok_or(ProviderError::Correlation("original literal bank absent"))?
+            .try_borrow()
+            .map_err(|_| ProviderError::Correlation("original literal bank is mutably borrowed"))?;
+        reservation.validate_literal_reservation(&bank)
+    }
+
     pub(crate) fn retain_frozen_protocol_frames(
         &self,
         reservation: &mut crate::protocol_snapshot::ProtocolSnapshotReservation,
@@ -216,7 +246,10 @@ impl<S: ProviderStream> Connection<S> {
         cut: crate::protocol_snapshot::ProtocolCaptureCut,
     ) -> Result<(), ProviderError> {
         self.check_authority()?;
-        if !self.packet_schema
+        if let Some(codec) = &self.native5_codec {
+            codec.validate_installation(&self.authority)?;
+        }
+        if (!self.packet_schema && self.native5_codec.is_none())
             || self
                 .original_frames
                 .as_ref()
@@ -240,7 +273,7 @@ impl<S: ProviderStream> Connection<S> {
                     .as_ref()
                     .ok_or_else(|| serde::ser::Error::custom("original bank absent"))?
                     .borrow();
-                let mut state = serializer.serialize_struct("Native5Connection", 13)?;
+                let mut state = serializer.serialize_struct("Native5Connection", 14)?;
                 state.serialize_field("session", c.authority.session_id())?;
                 state.serialize_field("incarnation", c.authority.incarnation_id())?;
                 state.serialize_field("connection", c.authority.connection_id())?;
@@ -255,6 +288,10 @@ impl<S: ProviderStream> Connection<S> {
                 state.serialize_field("correlations", &c.guard.protocol_view())?;
                 state.serialize_field("frames", &bank.protocol_view())?;
                 state.serialize_field("packet_schema", &c.packet_schema)?;
+                state.serialize_field(
+                    "native5_codec",
+                    &c.native5_codec.as_ref().map(|codec| codec.protocol_view()),
+                )?;
                 state.serialize_field("fenced", &c.fenced)?;
                 state.serialize_field(
                     "role",
@@ -455,6 +492,7 @@ mod tests {
             .clone();
         let prepared = connection.prepare_send(request).unwrap();
         assert!(prepared.publish().is_err());
+        assert!(connection.authenticate_native5_source_codec().is_err());
         let bank = connection.original_frames.as_ref().unwrap().borrow();
         let original = bank.frames().next().unwrap();
         assert!(original.transferred > 4);
@@ -736,5 +774,30 @@ mod tests {
         assert!(reader.read().is_err());
         assert_eq!(reader.stream_mut().position(), 6);
         assert_eq!(bank.borrow().frames().count(), 1);
+    }
+    #[test]
+    fn native5_original_storage_facts_refuse_legacy_marker_without_consuming_bank() {
+        let (_handshake, authority) = crate::handshake::tests::authority();
+        let (stream, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut connection = Connection::new(
+            stream,
+            authority,
+            Rc::new(Supervisor),
+            Rc::new(Schemas),
+            EndpointRole::Controller,
+        )
+        .unwrap();
+        assert!(connection.authenticate_native5_source_codec().is_err());
+        assert!(connection.original_native5_storage_facts().is_err());
+        connection
+            .install_native5_frame_bank(OriginalFrameReservation::reserve(65536, 2).unwrap())
+            .unwrap();
+        assert!(connection.original_native5_storage_facts().is_err());
+        let bank = connection.original_frames.as_ref().unwrap().borrow();
+        assert_eq!(bank.frames().count(), 0);
+        assert_eq!(
+            bank.allocated_bytes(),
+            bank.storage_facts(65536).allocated_bytes
+        );
     }
 }

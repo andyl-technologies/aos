@@ -18,6 +18,8 @@ const MAXIMUM_PAYLOAD: usize = 1024;
 
 pub mod common;
 pub mod connected;
+pub mod continuation_models;
+pub mod continuation_transport;
 pub mod contracts;
 pub mod control;
 pub mod coordinator;
@@ -437,3 +439,7 @@ impl PacketProgram {
 #[cfg(test)]
 #[path = "reference_packet_tests.rs"]
 mod tests;
+
+pub mod continuation_contracts;
+
+pub(crate) use service::Native5Policy;

@@ -17,9 +17,12 @@ use crate::handshake::ConnectionAuthority;
 use crate::session::CorrelationGuard;
 use crate::transport::{FrameReader, write_frame_with_limits};
 
+mod capture_prefix;
 mod exchange;
+mod native5_codec;
 mod original_frames;
 mod packet_schema;
+
 mod prepared;
 pub(crate) use prepared::serialized_credit;
 
@@ -150,6 +153,7 @@ pub struct Connection<S: ProviderStream> {
     schemas: Rc<dyn BodySchemaVerifier>,
     protocol_owner: Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
     native5_blobs: Option<crate::blob::BlobProtocolOwner>,
+    native5_codec: Option<Rc<native5_codec::Native5CodecOwner>>,
     packet_schema: bool,
     original_frames: Option<
         std::rc::Rc<
@@ -163,6 +167,12 @@ pub struct Connection<S: ProviderStream> {
 
 impl<S: ProviderStream> Connection<S> {
     pub(crate) fn install_packet_schema(&mut self) -> Result<(), ProviderError> {
+        if self.native5_codec.is_some() {
+            self.protocol_owner.ensure_current()?;
+            return Err(ProviderError::Correlation(
+                "native5 immutable codec cannot be replaced",
+            ));
+        }
         self.check_authority()?;
         if self.connected_packet_schema {
             return Err(ProviderError::Correlation(
@@ -183,6 +193,12 @@ impl<S: ProviderStream> Connection<S> {
         binding: &crucible_node_contract::NodeBinding,
         owner: &crucible_node_contract::OwnerBinding,
     ) -> Result<(), ProviderError> {
+        if self.native5_codec.is_some() {
+            self.protocol_owner.ensure_current()?;
+            return Err(ProviderError::Correlation(
+                "native5 immutable codec cannot be replaced",
+            ));
+        }
         self.check_authority()?;
         if self.packet_schema || self.connected_packet_schema || !self.guard.unused() {
             return Err(ProviderError::Correlation(
@@ -262,6 +278,7 @@ impl<S: ProviderStream> Connection<S> {
             schemas,
             protocol_owner: Rc::new(crate::protocol_snapshot::ProtocolCaptureOwner::new()),
             native5_blobs: None,
+            native5_codec: None,
             packet_schema: false,
             original_frames: None,
             connected_packet_schema: false,

@@ -12,7 +12,8 @@ use crucible_node_contract::canonical;
 use crucible_node_provider::{
     ProviderError,
     reference_packet::service::{
-        PacketConnectedSourceLaunch, PacketSourceLaunch, PacketSourceService,
+        PacketConnectedSourceLaunch, PacketNative5SourceLaunch, PacketSourceLaunch,
+        PacketSourceService,
     },
     transport::FrameReader,
 };
@@ -35,16 +36,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .read()?
         .ok_or("private packet bootstrap unavailable")?;
     let bytes = canonical::canonical_json(&value)?;
-    let mut service = if value
+    let mut service = match value
         .get("schema_version")
         .and_then(serde_json::Value::as_u64)
-        == Some(4)
     {
-        let launch = PacketConnectedSourceLaunch::decode(&bytes, 1024 * 1024)?;
-        PacketSourceService::accept_connected(&socket, launch)?
-    } else {
-        let launch = PacketSourceLaunch::decode(&bytes, 1024 * 1024)?;
-        PacketSourceService::accept(&socket, launch)?
+        Some(5) => {
+            let launch = PacketNative5SourceLaunch::decode(&bytes, 1024 * 1024)?;
+            PacketSourceService::accept_complete(&socket, launch)?
+        }
+        Some(4) => {
+            let launch = PacketConnectedSourceLaunch::decode(&bytes, 1024 * 1024)?;
+            PacketSourceService::accept_connected(&socket, launch)?
+        }
+        _ => {
+            let launch = PacketSourceLaunch::decode(&bytes, 1024 * 1024)?;
+            PacketSourceService::accept(&socket, launch)?
+        }
     };
 
     loop {

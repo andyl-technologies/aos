@@ -27,6 +27,9 @@ use crate::{
     transport::{FrameReader, write_frame},
 };
 
+mod complete;
+pub(super) use complete::accept_complete;
+
 pub(super) fn accept(
     socket: &Path,
     launch: PacketSourceLaunch,

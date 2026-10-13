@@ -53,6 +53,46 @@ pub struct CnpController {
 }
 
 impl CnpController {
+    /// Authenticates this controller's actual immutable native-five codec.
+    ///
+    /// The borrowed predicate checks original process/thread, genuine current
+    /// registration and the same installed verifier owner without allocation.
+    /// It provides codec currentness only, not Capture or fresh-adoption rights.
+    ///
+    /// # Errors
+    /// Refuses another actor, fenced or revoked registration, mutable loss
+    /// callbacks, absent native-five codec or replaced verifier ownership.
+    pub fn authenticate_native5_source_codec(&self) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        if self.fenced {
+            return Err(ProviderError::Correlation(
+                "native5 codec controller fenced",
+            ));
+        }
+        self.session.authenticate_native5_source_codec()
+    }
+
+    /// Reports actual retained storage of this controller's sealed native-five codec.
+    ///
+    /// This origin-guarded getter allocates nothing and retains the same bank.
+    /// Baseline and connected-four markers cannot supply these complete-source
+    /// facts. Values are data; they do not authenticate native capture enrollment.
+    ///
+    /// # Errors
+    /// Refuses another process or thread, fenced or revoked authority, a mutable
+    /// loss callback, absent native-five codec or a concurrently borrowed bank.
+    pub fn original_native5_storage_facts(
+        &mut self,
+    ) -> Result<crate::protocol_snapshot::OriginalProtocolStorageFacts, ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        if self.fenced {
+            return Err(ProviderError::Correlation(
+                "native5 storage controller fenced",
+            ));
+        }
+        self.session.original_native5_storage_facts()
+    }
+
     /// Captures complete actual controller, correlation, content and literal frames.
     ///
     /// The caller supplies snapshot capacity charged before child construction.
@@ -71,6 +111,7 @@ impl CnpController {
             return Err(ProviderError::Correlation("captured controller fenced"));
         }
         self.session.protocol_capture_preflight(cut)?;
+        self.session.preflight_protocol_reservation(reservation)?;
         reservation.bind(
             self.session.authority(),
             &self.protocol_owner,
@@ -139,6 +180,38 @@ impl CnpController {
             ));
         }
         self.session.install_native5_frame_bank(reservation)
+    }
+
+    /// Installs the closed complete source-five grammar and original literal bank.
+    ///
+    /// The source factory supplies the same selected native realization and
+    /// coordinator after genuine Hello. It charges bank, full immutable policy
+    /// and temporary metadata before Child. This transports source grammar only;
+    /// complete semantic/native capture and fresh installation remain separate.
+    ///
+    /// # Errors
+    /// Refuses copied actor identities, used/fenced journals or banks, foreign
+    /// source routes, unnegotiated features, callback codecs or changed policy.
+    pub fn install_native5_source_codec(
+        &mut self,
+        bank: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        selection: crate::reference_packet::control::PacketControlSelection,
+        coordinator: crate::reference_service::InstalledContent,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        if self.fenced
+            || self.custody.originals().next().is_some()
+            || selection.realization.bindings.len() != 1
+            || selection.realization.owner_bindings.len() != 1
+            || self.route.node != selection.realization.bindings[0].compatibility.node_id
+            || self.route.execution_owner != selection.realization.owner_bindings[0].owner.id
+        {
+            return Err(ProviderError::Correlation(
+                "native5 codec requires original unused source controller",
+            ));
+        }
+        self.session
+            .install_native5_source_codec(bank, selection, coordinator)
     }
 
     /// Installs the original connected input codec and a precharged literal bank.

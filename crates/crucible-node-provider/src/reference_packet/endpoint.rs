@@ -15,6 +15,7 @@ use crate::{
     ProviderError, blob::*, bodies::*, connection::*, envelope::*, handshake::ConnectionAuthority,
 };
 
+mod complete;
 mod prefix;
 
 const EXCHANGES: usize = 256;
@@ -73,6 +74,7 @@ pub struct PacketEndpoint<S: ProviderStream> {
     next_sequence: u64,
     transport_credit: usize,
     held: bool,
+    complete: Option<complete::CompleteEndpointState>,
 }
 
 /// Returns the same original unopened connection and native owner on refusal.
@@ -131,7 +133,11 @@ impl<S: ProviderStream> PacketEndpoint<S> {
                 },
                 supervisor,
             )?;
-            Ok((authority.clone(), uploads))
+            let original_authority = authority.clone();
+            if native.is_complete_original_source() {
+                connection.bind_native5_blob_receiver(&uploads)?;
+            }
+            Ok((original_authority, uploads))
         };
         let (authority, uploads) = match prepare() {
             Ok(scope) => scope,
@@ -154,6 +160,7 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             next_sequence: 2,
             transport_credit: 0,
             held: false,
+            complete: None,
         })
     }
 
@@ -180,6 +187,15 @@ impl<S: ProviderStream> PacketEndpoint<S> {
         self.held
     }
 
+    // Original creator checks precede deadline locks, thread-local actor checks
+    // and all native or transport callbacks in inherited complete-source state.
+    pub(crate) fn ensure_complete_origin(&self) -> Result<(), ProviderError> {
+        if let Some(state) = &self.complete {
+            state.ensure_origin()?;
+        }
+        Ok(())
+    }
+
     /// Drives one original request and its complete prebuilt proof prefix.
     ///
     /// The operator invokes this method on the same retained owner outside its
@@ -192,6 +208,7 @@ impl<S: ProviderStream> PacketEndpoint<S> {
     /// Refuses held scope, exhausted whole ledger, malformed traffic, unavailable
     /// source content, native disagreement or incomplete original publication.
     pub fn step(&mut self) -> Result<(), ProviderError> {
+        self.ensure_complete_origin()?;
         if self.held {
             return Err(ProviderError::Conflict("packet endpoint held"));
         }

@@ -241,6 +241,35 @@ impl ClientSession {
         self.connection.protocol_capture_preflight(cut)
     }
 
+    pub(super) fn authenticate_native5_source_codec(&self) -> Result<(), ProviderError> {
+        if self.original_response_loss.is_some() {
+            return Err(ProviderError::Correlation(
+                "native5 codec proof refuses mutable loss callback",
+            ));
+        }
+        self.authority.ensure_live()?;
+        self.connection.authenticate_native5_source_codec()
+    }
+
+    pub(super) fn original_native5_storage_facts(
+        &mut self,
+    ) -> Result<crate::protocol_snapshot::OriginalProtocolStorageFacts, ProviderError> {
+        if self.original_response_loss.is_some() {
+            return Err(ProviderError::Correlation(
+                "native5 storage facts refuse mutable loss callback",
+            ));
+        }
+        self.authority.ensure_live()?;
+        self.connection.original_native5_storage_facts()
+    }
+
+    pub(super) fn preflight_protocol_reservation(
+        &self,
+        reservation: &crate::protocol_snapshot::ProtocolSnapshotReservation,
+    ) -> Result<(), ProviderError> {
+        self.connection.preflight_protocol_reservation(reservation)
+    }
+
     pub(super) fn retain_frozen_protocol_frames(
         &self,
         reservation: &mut crate::protocol_snapshot::ProtocolSnapshotReservation,
@@ -268,6 +297,21 @@ impl ClientSession {
             ));
         }
         self.connection.install_native5_frame_bank(reservation)
+    }
+
+    pub(super) fn install_native5_source_codec(
+        &mut self,
+        bank: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        selection: crate::reference_packet::control::PacketControlSelection,
+        coordinator: crate::reference_service::InstalledContent,
+    ) -> Result<(), ProviderError> {
+        if self.sequence.get() != 2 || self.original_response_loss.is_some() {
+            return Err(ProviderError::Correlation(
+                "native5 codec requires unused original session without callbacks",
+            ));
+        }
+        self.connection
+            .install_native5_controller_codec(bank, selection, coordinator)
     }
 
     pub(super) fn install_native5_connected_frame_bank(

@@ -104,7 +104,7 @@ impl OriginalFrameReservation {
         })
     }
 
-    pub(crate) fn copy_into_empty(&self, target: &mut Self) -> Result<(), ProviderError> {
+    pub(crate) fn validate_empty_copy(&self, target: &Self) -> Result<(), ProviderError> {
         if !target.bytes.is_empty()
             || !target.slots.is_empty()
             || target.incoming != 0
@@ -123,11 +123,36 @@ impl OriginalFrameReservation {
                 "complete original history reservation differs",
             ));
         }
+        Ok(())
+    }
+
+    pub(crate) fn copy_into_empty(&self, target: &mut Self) -> Result<(), ProviderError> {
+        self.validate_empty_copy(target)?;
         target.bytes.extend_from_slice(&self.bytes);
         target.slots.extend_from_slice(&self.slots);
         target.incoming = self.incoming;
         target.outgoing = self.outgoing;
         Ok(())
+    }
+
+    pub(crate) fn storage_facts(
+        &self,
+        maximum_frame_bytes: usize,
+    ) -> crate::protocol_snapshot::OriginalProtocolStorageFacts {
+        let descriptor_bytes = self.slots.capacity() * std::mem::size_of::<Slot>();
+        crate::protocol_snapshot::OriginalProtocolStorageFacts {
+            maximum_frame_bytes,
+            maximum_history_bytes: self.maximum_bytes,
+            maximum_frames_per_direction: self.maximum_frames,
+            byte_capacity: self.bytes.capacity(),
+            descriptor_capacity: self.slots.capacity(),
+            descriptor_bytes,
+            allocated_bytes: self.allocated_bytes(),
+            retained_bytes: self.bytes.len(),
+            incoming_frames: self.incoming,
+            outgoing_frames: self.outgoing,
+            all_io_complete: self.complete(),
+        }
     }
 
     pub(crate) fn complete(&self) -> bool {

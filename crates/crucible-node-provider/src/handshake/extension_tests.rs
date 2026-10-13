@@ -366,12 +366,8 @@ fn installed_typed_client_route_uses_actual_framed_peer_credentials() {
     let (request, response) = pair(false, "hello/socket");
     let original = serde_json::to_value(&request).unwrap();
     let response = serde_json::to_value(response).unwrap();
-    let server = std::thread::spawn(move || {
-        let mut reader =
-            FrameReader::with_limits(provider.try_clone().unwrap(), 65536, 64).unwrap();
-        assert_eq!(reader.read().unwrap(), Some(original));
-        write_frame_with_limits(&mut provider, &response, 65536, 64).unwrap();
-    });
+    // Authenticating the local fixture executable precedes the peer's I/O
+    // deadline. ClientSession still performs its own independent measurement.
     let executable =
         crate::conformance::measure_executable(&std::env::current_exe().unwrap()).unwrap();
     let peer = ClientPeer {
@@ -379,6 +375,12 @@ fn installed_typed_client_route_uses_actual_framed_peer_credentials() {
         uid: rustix::process::getuid().as_raw(),
         executable,
     };
+    let server = std::thread::spawn(move || {
+        let mut reader =
+            FrameReader::with_limits(provider.try_clone().unwrap(), 65536, 64).unwrap();
+        assert_eq!(reader.read().unwrap(), Some(original));
+        write_frame_with_limits(&mut provider, &response, 65536, 64).unwrap();
+    });
     let source = installed(false);
     let mut handshake = ExtensionHandshake::new(configured(), source.clone()).unwrap();
 

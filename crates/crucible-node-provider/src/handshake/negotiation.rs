@@ -2,6 +2,10 @@
 
 use super::*;
 
+#[path = "negotiation_snapshot.rs"]
+mod negotiation_snapshot;
+pub use negotiation_snapshot::OriginalNegotiationView;
+
 /// Binds non-wire host installation facts to one admitted launch.
 ///
 /// This configuration comes from the trusted broker, never from provider JSON.
