@@ -133,7 +133,7 @@ Workers retain disjoint file ownership and separate worktrees. Independent
 review remains separate. One coordinated compiler serves build and Nix requests.
 T2 and branch worklines remain deferred.
 
-Current qualification uses frozen head `d1071dc9e1a2` (tree `04b7bc9ff9a1`).
+The earlier qualification uses frozen head `d1071dc9e1a2` (tree `04b7bc9ff9a1`).
 The exact formatter pair, strict SDK all-target Clippy, SDK all-target
 compilation and default native build pass. Its actual inventory contains
 1,116 tests across three AOS executables, with none ignored. All 28 focused
@@ -160,8 +160,8 @@ Full SDK and Nix qualification remain pending. Full original task-diff
 review is complete for the 99 core-test, 58 ref-advance, 103 bucket and
 158 collector paths. Isolated presentation corrections add missing panic
 contracts, private ownership-field documentation and method separation,
-with unchanged function bodies. They remain queued until frozen growth
-qualification ends. All formal task acceptance remains pending.
+with unchanged function bodies. They are included in the later held-reader
+composition. All formal task acceptance remains pending.
 
 A separate native-component diagnostic observes five completed baseline-history
 walks between held control entry and candidate-evidence capture, spanning
@@ -175,20 +175,24 @@ regressions are registered in `integration.native-held-owner-history` and
 check. No store trait, identity, encoding, bucket key or dependency changes are
 required. The frozen diagnostic remains separate from this preparation.
 
-The held reader and four regression cases now pass complete source review;
-the first composition passes both formatters, strict SDK all-target Clippy,
-SDK all-target test compilation and the default build. Its actual inventory
-contains 1,120 nonignored tests across three executables; no test runs yet.
-Independent coverage review identifies
-and corrects a fixture that declined genuine native closing projections.
-It also identifies a missing submitted-closing cancellation witness: retaining
-the caller's locks during a scalar pause cannot establish worker ownership.
-A reviewed test-only projection-entry observer now runs inside the existing
-native worker, before its unchanged physical checks. The isolated regression
-workline will drop every caller hold and independently test both exclusions
-while that real worker is paused. These preparations advance no task, gate,
-milestone or freeze; existing import, trust, active-index and deadline suites
-remain required.
+The held reader and four regression cases pass complete source review. The
+composition `98bcdf0785bf` (tree `df1fda54d32a`) passes both formatters, strict
+default and SDK all-target Clippy, SDK all-target test compilation and the
+default build. Its actual inventory contains 1,120 nonignored tests across
+three executables. The first focused case fails in 5.960 seconds with
+`Unsupported`; the other three remain unstarted. Source review identifies a
+missing fixture implementation of native payload-range reads: the default
+returns no native record, which ordinary capture rejects. The reviewed fixture
+correction forwards genuine capture, read and check requests, counts actual
+DATA attempts and applies faults to real files. It also preserves ordinary
+configuration inputs separately from the genuine Original-authority factory.
+Fresh qualification uses `9eb165056748` (tree `fbb2974bc95e`); formatting and
+strict default Clippy pass, with SDK compilation and runtime still pending.
+The submitted-closing cancellation regression now drops every caller hold
+and independently tests both exclusions while the actual native worker is
+paused before its unchanged physical checks. These source preparations and
+scoped compiler results advance no task, gate, milestone or freeze; existing
+import, trust, active-index and deadline suites remain required.
 
 The renewed frozen composition `342f1cf7114b` (tree `90fb7240d717`) passes
 the exact formatter pair, strict SDK all-target Clippy, SDK all-target test
