@@ -745,7 +745,7 @@ async fn restore_durably_cancels_authorized_only_local_intent_before_clearing_ex
         requested.cycle,
         PackId::from_random_bytes(requested.pack_id)
     ));
-    let paths = std::fs::read_dir(directory)
+    let paths = std::fs::read_dir(&directory)
         .require()
         .map(|entry| entry.require().path())
         .collect::<Vec<_>>();
@@ -779,6 +779,33 @@ async fn restore_durably_cancels_authorized_only_local_intent_before_clearing_ex
     );
     fixture.fs.assert_consumed();
     assert_eq!(operation(&fixture, &key), authorized);
+    // The real pre-rename sync failure leaves cancellation staging beside the
+    // genuine operation. Reopen must retain it as private residue, not authority.
+    let staging = std::fs::read_dir(&directory)
+        .require()
+        .map(|entry| entry.require().path())
+        .filter(|path| {
+            path.file_name()
+                .require()
+                .to_str()
+                .require()
+                .starts_with(".cancel-")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(staging.len(), 1);
+    let staging_path = &staging[0];
+    let staging_name = staging_path.file_name().require().to_str().require();
+    let staging_nonce = staging_name.strip_prefix(".cancel-").require();
+    assert_eq!(staging_nonce.len(), 32);
+    assert!(
+        staging_nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    );
+    let staging_bytes = std::fs::read(staging_path).require();
+    let staged = terrane_core::gc::DeleteOperation::decode(&staging_bytes, &key).require();
+    assert_eq!(staged.phase, DeletePhase::Cancelled);
+    assert_eq!(staged.authorization, authorized.authorization);
     let refused = image(&fixture).await;
     assert_eq!(refused.manifest, selected.manifest);
     assert_eq!(refused.cap, selected.cap);
@@ -895,6 +922,7 @@ async fn restore_durably_cancels_authorized_only_local_intent_before_clearing_ex
         assert_eq!(creator.nonce, original.journals[index].nonce);
         assert_eq!(creator.state, JournalState::Invalidated);
     }
+    assert_eq!(std::fs::read(staging_path).require(), staging_bytes);
     assert_eq!(fixture.base.fs.data_body_read_attempts(), 0);
     drop(fresh);
     fixture.cleanup();
