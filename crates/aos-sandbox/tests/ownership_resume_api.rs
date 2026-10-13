@@ -1,8 +1,7 @@
 //! Verifies that ownership-gated admission is reachable through the public API.
 
 use aos_sandbox::{
-    AuthorityPublicationDraftV1, IdempotencyKey, OperationPlan,
-    OwnershipClaimV1, ReconcilerError,
+    AuthorityPublicationDraftV1, IdempotencyKey, OperationPlan, OwnershipClaimV1, ReconcilerError,
 };
 use aos_sandbox_core::OperationId;
 use aos_sandbox_protocol::publication::AuthorityBoundEffectPlanV1;

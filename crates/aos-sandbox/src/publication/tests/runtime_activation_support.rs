@@ -19,8 +19,8 @@ use crate::publication::{
 };
 use crate::runtime_authority::RuntimeAuthorityIntentV1;
 use crate::{
-    EffectFailure, EffectObservation, IdempotencyKey, Journal,
-    JournalLimits, OperationPlan, Reconciler, SingleNodeEffectExecutor,
+    EffectFailure, EffectObservation, IdempotencyKey, Journal, JournalLimits, OperationPlan,
+    Reconciler, SingleNodeEffectExecutor,
 };
 use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt};
 

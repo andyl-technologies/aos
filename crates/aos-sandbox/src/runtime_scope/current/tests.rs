@@ -87,15 +87,14 @@ fn activate_prepared(
         sandbox: draft.manifest().manifest().sandbox(),
         holder: PrincipalId::from_bytes([0x91; 16]),
     };
-    let effect =
-        aos_sandbox_protocol::publication::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).map_err(crate::publication::AuthorityPublicationError::from).unwrap();
-    let _activation_plan = runtime_activation_support::activate(
-        reconciler,
-        generation,
-        effect,
-        intent,
+    let effect = aos_sandbox_protocol::publication::bind_authority_publication_effect(
         &draft,
-        &prepared,
+        draft.templates()[0].digest(),
+    )
+    .map_err(crate::publication::AuthorityPublicationError::from)
+    .unwrap();
+    let _activation_plan = runtime_activation_support::activate(
+        reconciler, generation, effect, intent, &draft, &prepared,
     );
     selection
 }

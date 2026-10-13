@@ -134,9 +134,7 @@ impl AuthorityBoundEffectPlanV1 {
         operation_id: OperationId,
         step: u32,
     ) -> Result<EffectPlan, EffectHistoryDataError> {
-        self.plan
-            .bind_operation(operation_id, step)
-            ?;
+        self.plan.bind_operation(operation_id, step)?;
         Ok(self.plan)
     }
 }
@@ -234,8 +232,7 @@ mod tests {
 
         for reserved in [0, 5] {
             assert!(matches!(
-                crate::domain_ledger::effect_history::audience_from_code(reserved)
-                    ,
+                crate::domain_ledger::effect_history::audience_from_code(reserved),
                 Err(EffectHistoryDataError::CorruptLedger(
                     "unknown authority effect audience"
                 ))

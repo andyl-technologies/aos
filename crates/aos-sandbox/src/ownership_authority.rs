@@ -1960,9 +1960,12 @@ mod tests {
         };
 
         let operation_id = aos_sandbox_core::OperationId::from_bytes([0x81; 16]);
-        let effect =
-            aos_sandbox_protocol::publication::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).map_err(crate::publication::AuthorityPublicationError::from)
-                .unwrap();
+        let effect = aos_sandbox_protocol::publication::bind_authority_publication_effect(
+            &draft,
+            draft.templates()[0].digest(),
+        )
+        .map_err(crate::publication::AuthorityPublicationError::from)
+        .unwrap();
         let plan = OperationPlan::ownership_gated(
             operation_id,
             IdempotencyKey::new(b"controller-service-composition".to_vec()).unwrap(),
@@ -2060,7 +2063,8 @@ mod tests {
         let advance_effect = aos_sandbox_protocol::publication::bind_authority_publication_effect(
             &advanced_draft,
             advanced_draft.templates()[0].digest(),
-        ).map_err(crate::publication::AuthorityPublicationError::from)
+        )
+        .map_err(crate::publication::AuthorityPublicationError::from)
         .unwrap();
         let advance_plan = OperationPlan::ownership_gated(
             advance_operation,

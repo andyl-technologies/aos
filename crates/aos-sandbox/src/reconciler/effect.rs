@@ -37,9 +37,9 @@ use crate::BrokerDispatchAttemptV1;
 mod history;
 
 use aos_sandbox_protocol::domain_ledger::effect_history::{
-    BrokerDispatchAttemptHistoryV1, EffectDomain, EffectPlan,
-    EffectReceipt, PreparedAuthorityEffectHistoryV1, PublicMutationEffectHistoryV1,
-    MAXIMUM_REQUEST_BYTES, MAXIMUM_RECEIPT_BYTES, attempt_token_digest, effect_body_digest,
+    BrokerDispatchAttemptHistoryV1, EffectDomain, EffectPlan, EffectReceipt,
+    PreparedAuthorityEffectHistoryV1, PublicMutationEffectHistoryV1, MAXIMUM_REQUEST_BYTES,
+    MAXIMUM_RECEIPT_BYTES, attempt_token_digest, effect_body_digest,
 };
 pub(crate) use history::{
     compare_capacity_effect_history, decode_capacity_effect_history, validate_delete_effect_record,
@@ -914,7 +914,6 @@ mod tests {
             ))
         ));
     }
-
 }
 
 impl From<aos_sandbox_protocol::domain_ledger::effect_history::EffectHistoryDataError>

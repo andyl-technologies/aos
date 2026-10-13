@@ -86,9 +86,9 @@ pub(crate) use operator_repair_failure::{
     RECEIPT_DOMAIN as REPAIR_FAILURE_RECEIPT_DOMAIN,
 };
 pub use effect::{
-    AuthorityEffectAttemptTimingV1, AuthorityEffectObservationV1,
-    PreparedAuthorityBrokerRequestV1, PreparedAuthorityEffectV1, PublicMutationEffectV1,
-    ValidatedAuthorityEffectReceiptV1, ValidatedHostEffectReceiptV1,
+    AuthorityEffectAttemptTimingV1, AuthorityEffectObservationV1, PreparedAuthorityBrokerRequestV1,
+    PreparedAuthorityEffectV1, PublicMutationEffectV1, ValidatedAuthorityEffectReceiptV1,
+    ValidatedHostEffectReceiptV1,
 };
 use aos_sandbox_protocol::publication::AuthorityBoundEffectPlanV1;
 use aos_sandbox_protocol::domain_ledger::effect_history::{
@@ -442,7 +442,8 @@ impl OperationPlan {
             .into_iter()
             .enumerate()
             .map(|(step, effect)| {
-                effect.into_inner(operation_id, u32::try_from(step).unwrap_or(u32::MAX))
+                effect
+                    .into_inner(operation_id, u32::try_from(step).unwrap_or(u32::MAX))
                     .map_err(ReconcilerError::from)
             })
             .collect::<Result<_, _>>()?;
@@ -5003,9 +5004,12 @@ mod tests {
         crate::publication::PreparedAuthorityPublicationV1,
     ) {
         let (draft, prepared) = descriptor_free_activation_fixture(lease_generation);
-        let effect =
-            aos_sandbox_protocol::publication::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).map_err(crate::publication::AuthorityPublicationError::from)
-                .unwrap();
+        let effect = aos_sandbox_protocol::publication::bind_authority_publication_effect(
+            &draft,
+            draft.templates()[0].digest(),
+        )
+        .map_err(crate::publication::AuthorityPublicationError::from)
+        .unwrap();
         let plan = OperationPlan::ownership_gated(
             OperationId::from_bytes([0x31; 16]),
             IdempotencyKey::new(b"gated-request".to_vec()).unwrap(),
@@ -5032,9 +5036,12 @@ mod tests {
         crate::publication::PreparedAuthorityPublicationV1,
     ) {
         let (draft, prepared) = descriptor_free_launch_activation_fixture(lease_generation);
-        let effect =
-            aos_sandbox_protocol::publication::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).map_err(crate::publication::AuthorityPublicationError::from)
-                .unwrap();
+        let effect = aos_sandbox_protocol::publication::bind_authority_publication_effect(
+            &draft,
+            draft.templates()[0].digest(),
+        )
+        .map_err(crate::publication::AuthorityPublicationError::from)
+        .unwrap();
         let plan = OperationPlan::ownership_gated(
             OperationId::from_bytes([0x35; 16]),
             IdempotencyKey::new(b"guardian-gated-launch".to_vec()).unwrap(),
@@ -5839,8 +5846,12 @@ mod tests {
             b"same-sandbox".to_vec(),
             b"competing-holder".to_vec(),
             vec![
-                aos_sandbox_protocol::publication::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).map_err(crate::publication::AuthorityPublicationError::from)
-                    .unwrap(),
+                aos_sandbox_protocol::publication::bind_authority_publication_effect(
+                    &draft,
+                    draft.templates()[0].digest(),
+                )
+                .map_err(crate::publication::AuthorityPublicationError::from)
+                .unwrap(),
             ],
             activation_claim(&draft, 1),
             draft.clone(),
@@ -5907,8 +5918,12 @@ mod tests {
             b"runtime".to_vec(),
             b"stop".to_vec(),
             vec![
-                aos_sandbox_protocol::publication::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).map_err(crate::publication::AuthorityPublicationError::from)
-                    .unwrap(),
+                aos_sandbox_protocol::publication::bind_authority_publication_effect(
+                    &draft,
+                    draft.templates()[0].digest(),
+                )
+                .map_err(crate::publication::AuthorityPublicationError::from)
+                .unwrap(),
             ],
             activation_claim(&draft, 2),
             draft.clone(),
@@ -5982,9 +5997,12 @@ mod tests {
             RuntimeAction::RUNTIME_ACTION_STOP,
         ] {
             let (draft, _) = descriptor_free_control_activation_fixture(2, action);
-            let effect =
-                aos_sandbox_protocol::publication::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).map_err(crate::publication::AuthorityPublicationError::from)
-                    .unwrap();
+            let effect = aos_sandbox_protocol::publication::bind_authority_publication_effect(
+                &draft,
+                draft.templates()[0].digest(),
+            )
+            .map_err(crate::publication::AuthorityPublicationError::from)
+            .unwrap();
             let effects = if action == RuntimeAction::RUNTIME_ACTION_STOP {
                 vec![effect.clone(), effect]
             } else {
@@ -6045,7 +6063,8 @@ mod tests {
                 aos_sandbox_protocol::publication::bind_authority_publication_effect(
                     &replacement,
                     replacement.templates()[0].digest(),
-                ).map_err(crate::publication::AuthorityPublicationError::from)
+                )
+                .map_err(crate::publication::AuthorityPublicationError::from)
                 .unwrap(),
             ],
             activation_claim(&replacement, 2),
@@ -6125,8 +6144,12 @@ mod tests {
                 b"runtime".to_vec(),
                 vec![generation],
                 vec![
-                    aos_sandbox_protocol::publication::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).map_err(crate::publication::AuthorityPublicationError::from)
-                        .unwrap(),
+                    aos_sandbox_protocol::publication::bind_authority_publication_effect(
+                        &draft,
+                        draft.templates()[0].digest(),
+                    )
+                    .map_err(crate::publication::AuthorityPublicationError::from)
+                    .unwrap(),
                 ],
                 activation_claim(&draft, u64::from(generation)),
                 draft.clone(),
@@ -6449,9 +6472,12 @@ mod tests {
         let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
         let mut reconciler = Reconciler::new(journal, Executor::default());
         let (draft, _) = descriptor_free_activation_fixture(1);
-        let effect =
-            aos_sandbox_protocol::publication::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).map_err(crate::publication::AuthorityPublicationError::from)
-                .unwrap();
+        let effect = aos_sandbox_protocol::publication::bind_authority_publication_effect(
+            &draft,
+            draft.templates()[0].digest(),
+        )
+        .map_err(crate::publication::AuthorityPublicationError::from)
+        .unwrap();
         let operation_id = OperationId::from_bytes([0xc1; 16]);
         let plan = OperationPlan::ownership_gated(
             operation_id,
@@ -7254,9 +7280,12 @@ mod tests {
     #[test]
     fn descriptor_bearing_authority_effect_is_explicitly_blocked_before_io() {
         let (draft, _) = descriptor_host_activation_fixture(1);
-        let effect =
-            aos_sandbox_protocol::publication::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).map_err(crate::publication::AuthorityPublicationError::from)
-                .unwrap();
+        let effect = aos_sandbox_protocol::publication::bind_authority_publication_effect(
+            &draft,
+            draft.templates()[0].digest(),
+        )
+        .map_err(crate::publication::AuthorityPublicationError::from)
+        .unwrap();
         assert!(matches!(
             OperationPlan::ownership_gated(
                 OperationId::from_bytes([0xa1; 16]),
@@ -7275,9 +7304,12 @@ mod tests {
     #[test]
     fn descriptor_free_mount_authority_effect_is_admitted() {
         let (draft, _) = descriptor_free_mount_activation_fixture();
-        let effect =
-            aos_sandbox_protocol::publication::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).map_err(crate::publication::AuthorityPublicationError::from)
-                .unwrap();
+        let effect = aos_sandbox_protocol::publication::bind_authority_publication_effect(
+            &draft,
+            draft.templates()[0].digest(),
+        )
+        .map_err(crate::publication::AuthorityPublicationError::from)
+        .unwrap();
         let plan = OperationPlan::ownership_gated(
             OperationId::from_bytes([0xa3; 16]),
             IdempotencyKey::new(b"mount-gated".to_vec()).unwrap(),
@@ -8963,17 +8995,24 @@ mod tests {
                 ordinary.desired_key.clone(),
                 ordinary.desired_value.clone(),
                 vec![
-                    aos_sandbox_protocol::publication::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).map_err(crate::publication::AuthorityPublicationError::from)
-                        .unwrap()
+                    aos_sandbox_protocol::publication::bind_authority_publication_effect(
+                        &draft,
+                        draft.templates()[0].digest()
+                    )
+                    .map_err(crate::publication::AuthorityPublicationError::from)
+                    .unwrap()
                 ],
                 mismatched_claim,
                 draft.clone(),
             ),
             Err(ReconcilerError::InvalidPlan(_))
         ));
-        let effect =
-            aos_sandbox_protocol::publication::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).map_err(crate::publication::AuthorityPublicationError::from)
-                .unwrap();
+        let effect = aos_sandbox_protocol::publication::bind_authority_publication_effect(
+            &draft,
+            draft.templates()[0].digest(),
+        )
+        .map_err(crate::publication::AuthorityPublicationError::from)
+        .unwrap();
         assert!(matches!(
             OperationPlan::ownership_gated(
                 ordinary.operation_id,
