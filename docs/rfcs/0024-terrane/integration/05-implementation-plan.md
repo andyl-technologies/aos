@@ -197,8 +197,14 @@ not identify its unfinished await. Frozen `848dd4ec43eb` (tree `1db520d66f54`)
 passes the complete scoped compiler pipeline and all four exact held-history
 cases once, with unchanged source, compiler inputs, executables and original
 120-second limits. The one-case summaries are 6.396, 11.956, 39.157 and 6.703
-seconds. Fifteen independently reviewed owning regressions are next; growing
-populations, full SDK and owning Nix qualification remain pending.
+seconds. The first of fifteen independently reviewed owning regressions,
+`recorded_disclosure_completes_actual_history_and_context`, fails in 3.481
+seconds with `Invalid(MalformedRequest)` beneath a store-error wrapper; the
+other fourteen remain unstarted. Test-only error context will distinguish its
+actual publication and completion stages without changing requests or oracles.
+A separate reviewed private handoff correction carries each native reader's
+actual caller configuration; it is not established as this failure's cause.
+Growing populations, full SDK and owning Nix qualification remain pending.
 The submitted-closing cancellation regression now drops every caller hold
 and independently tests both exclusions while the actual native worker is
 paused before its unchanged physical checks. These source preparations and
