@@ -1,6 +1,6 @@
-From 2d578074117056de32caecc9c72cf2fd21b1a955 Mon Sep 17 00:00:00 2001
+From 64f1259d90b69a04777e00ffecdd982456e0918f Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Tue, 13 Oct 2026 17:36:34 +0000
+Date: Tue, 13 Oct 2026 18:45:52 +0000
 Subject: [PATCH] Integrate deterministic execution and native effect ownership
 
 Keep small TCG invalidation page-lock sets in four caller-owned sorted
@@ -514,6 +514,23 @@ explicitly modeled authority boundaries. Installed plugin preparation,
 HOLD, full physical/source seals, SourceReady, first guest clock,
 capture and continuation remain unqualified and refused. Package
 and ABI/license release gates remain separate.
+
+Retain original ACPI producer offers through a nonrenewing native RAM
+update journal. Authenticate original backing and callback context
+before resize, firmware directory length mutation, copy and dirty
+publication; expose the exact completed source phase for producer
+completion. Resolve selected builtin ROM files only from the distinct
+source-built firmware directory and retain ordinary lookup behavior.
+
+Fresh ordinary-feature configuration and Meson/QAPI regeneration,
+2482 directly recorded AOS Bash command dispatches, both system
+emulator links and qemu-img link pass. Four changed complete units
+pass with warnings treated as errors; three actual qcow2 helper
+controls and three coupled literal producer/native update controls
+pass with explicitly modeled authority certificates. Runtime remains
+refused by full source seals and guest-start gates. Installed pair,
+HOLD, full physical closure, SourceReady, first guest clock, capture,
+continuation, package and release gates remain unqualified.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -46598,10 +46615,10 @@ index 0000000000000000000000000000000000000000..3d8fb8c4d2f7e150f5c93c5241fbe506
 +}
 diff --git a/hw/core/crucible-whole-rom.inc.c b/hw/core/crucible-whole-rom.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..bd1322701cbe1aa2937b18dcf71d4731d59c1e87
+index 0000000000000000000000000000000000000000..1735ab8c52b3cac0e39a0fda104e75439b5677b8
 --- /dev/null
 +++ b/hw/core/crucible-whole-rom.inc.c
-@@ -0,0 +1,1026 @@
+@@ -0,0 +1,1044 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Source-born loader objects and payloads in the original finite arena. */
 +
@@ -46931,14 +46948,32 @@ index 0000000000000000000000000000000000000000..bd1322701cbe1aa2937b18dcf71d4731
 +
 +static char *rom_whole_file_path(Rom *rom, const char *file)
 +{
++    static const char directory[] = "crucible-source-built-x86/";
 +    WholeRomRow *row = rom_whole_row(rom);
++    char lookup[sizeof(directory) + sizeof("linuxboot_dma.bin") - 1];
 +    char *path;
++    const WholeRomBuiltin *builtin;
++    size_t name_extent;
 +
 +    if (!row || !row->builtin_kind) {
 +        return rom_whole_string(file);
 +    }
++    if (row->builtin_kind > ARRAY_SIZE(whole_rom_builtins)) {
++        rom_whole_fault("original builtin path intent changed");
++    }
++    builtin = &whole_rom_builtins[row->builtin_kind - 1];
++    name_extent = strlen(builtin->name);
++    if (!file || strcmp(file, builtin->name) ||
++        sizeof(directory) + name_extent > sizeof(lookup)) {
++        rom_whole_fault("original builtin path source changed");
++    }
++    /* The matching provider is co-installed separately from ordinary pc-bios.
++     * Only this literal selected birth uses it; full opened-FD/body pins remain
++     * mandatory, and an absent provider cannot fall back to upstream blobs. */
++    memcpy(lookup, directory, sizeof(directory) - 1);
++    memcpy(lookup + sizeof(directory) - 1, builtin->name, name_extent + 1);
 +    path = rom_whole_allocate(WHOLE_ROM_MAX_NAME + 1);
-+    if (qemu_find_file_into(QEMU_FILE_TYPE_BIOS, file, path,
++    if (qemu_find_file_into(QEMU_FILE_TYPE_BIOS, lookup, path,
 +                           WHOLE_ROM_MAX_NAME + 1)) {
 +        rom_whole_fault("original bounded option-ROM path resolution failed");
 +    }
@@ -53663,7 +53698,7 @@ index 51513e73fdec284abe0e068711c6397804b7fdd1..c4e4e37ada29e4d249a1d29aecbea486
          VMSTATE_PCI_DEVICE(dev, ICH9SMBState),
          VMSTATE_BOOL(irq_enabled, ICH9SMBState),
 diff --git a/hw/i386/acpi-build.c b/hw/i386/acpi-build.c
-index 8837b69687d13ede3c2a809f2cec7a1d5583384e..db1d746c54e73fd5870f7405b655d870bf9b4734 100644
+index 8837b69687d13ede3c2a809f2cec7a1d5583384e..6c60272ae11758f9f19309a2761c6c3f9bfe9575 100644
 --- a/hw/i386/acpi-build.c
 +++ b/hw/i386/acpi-build.c
 @@ -21,6 +21,7 @@
@@ -53879,7 +53914,7 @@ index 8837b69687d13ede3c2a809f2cec7a1d5583384e..db1d746c54e73fd5870f7405b655d870
      }
  
      /* RSDT is pointed to by RSDP */
-@@ -2216,13 +2228,18 @@ void acpi_build(AcpiBuildTables *tables, MachineState *machine)
+@@ -2216,13 +2228,22 @@ void acpi_build(AcpiBuildTables *tables, MachineState *machine)
      acpi_align_size(tables->linker->cmd_blob, ACPI_BUILD_ALIGN_SIZE);
  
      /* Cleanup memory that's no longer used. */
@@ -53892,14 +53927,18 @@ index 8837b69687d13ede3c2a809f2cec7a1d5583384e..db1d746c54e73fd5870f7405b655d870
  static void acpi_ram_update(MemoryRegion *mr, GArray *data)
  {
 +    if (crucible_whole_setup_selected()) {
-+        /* Original lazy rebuilding is preserved, but native resize, FW entry
-+         * mutation and copy tickets must join before selected RAM effects. */
-+        acpi_whole_fault();
++        acpi_whole_ram_update_offer(mr, data);
++        if (qemu_ram_whole_acpi_update(acpi_whole_producer.machine, mr,
++                                      data->data, data->len)) {
++            acpi_whole_fault();
++        }
++        acpi_whole_ram_update_complete(mr);
++        return;
 +    }
      uint32_t size = acpi_data_len(data);
  
      /* Make sure RAM size is correct - in case it got changed e.g. by migration */
-@@ -2234,11 +2251,14 @@ static void acpi_ram_update(MemoryRegion *mr, GArray *data)
+@@ -2234,11 +2255,14 @@ static void acpi_ram_update(MemoryRegion *mr, GArray *data)
  
  static void acpi_build_update(void *build_opaque)
  {
@@ -53914,7 +53953,15 @@ index 8837b69687d13ede3c2a809f2cec7a1d5583384e..db1d746c54e73fd5870f7405b655d870
          return;
      }
      build_state->patched = 1;
-@@ -2253,18 +2273,49 @@ static void acpi_build_update(void *build_opaque)
+@@ -2246,6 +2270,7 @@ static void acpi_build_update(void *build_opaque)
+     acpi_build_tables_init(&tables);
+ 
+     acpi_build(&tables, MACHINE(qdev_get_machine()));
++    acpi_whole_rebuilt_capture(&tables);
+ 
+     acpi_ram_update(build_state->table_mr, tables.table_data);
+ 
+@@ -2253,18 +2278,49 @@ static void acpi_build_update(void *build_opaque)
  
      acpi_ram_update(build_state->linker_mr, tables.linker->cmd_blob);
      acpi_build_tables_cleanup(&tables, true);
@@ -53964,7 +54011,7 @@ index 8837b69687d13ede3c2a809f2cec7a1d5583384e..db1d746c54e73fd5870f7405b655d870
      .fields = (const VMStateField[]) {
          VMSTATE_UINT8(patched, AcpiBuildState),
          VMSTATE_END_OF_LIST()
-@@ -2273,7 +2324,13 @@ static const VMStateDescription vmstate_acpi_build = {
+@@ -2273,7 +2329,13 @@ static const VMStateDescription vmstate_acpi_build = {
  
  void acpi_setup(void)
  {
@@ -53979,7 +54026,7 @@ index 8837b69687d13ede3c2a809f2cec7a1d5583384e..db1d746c54e73fd5870f7405b655d870
      X86MachineState *x86ms = X86_MACHINE(pcms);
      AcpiBuildTables tables;
      AcpiBuildState *build_state;
-@@ -2285,23 +2342,34 @@ void acpi_setup(void)
+@@ -2285,23 +2347,34 @@ void acpi_setup(void)
  
      if (!x86ms->fw_cfg) {
          ACPI_BUILD_DPRINTF("No fw cfg. Bailing out.\n");
@@ -54015,7 +54062,7 @@ index 8837b69687d13ede3c2a809f2cec7a1d5583384e..db1d746c54e73fd5870f7405b655d870
  
      /* Now expose it all to Guest */
      build_state->table_mr = acpi_add_rom_blob(acpi_build_update,
-@@ -2347,12 +2415,13 @@ void acpi_setup(void)
+@@ -2347,12 +2420,13 @@ void acpi_setup(void)
       * in build_state.
       */
      acpi_build_tables_cleanup(&tables, false);
@@ -54032,12 +54079,13 @@ index 8837b69687d13ede3c2a809f2cec7a1d5583384e..db1d746c54e73fd5870f7405b655d870
    return table;
 diff --git a/hw/i386/crucible-whole-acpi.inc.c b/hw/i386/crucible-whole-acpi.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..1600b6ff71f6d9d2ef206c7947aa0e1211202e97
+index 0000000000000000000000000000000000000000..6a0d6d8d7254d22088ba0650f349f2fd82a587b5
 --- /dev/null
 +++ b/hw/i386/crucible-whole-acpi.inc.c
-@@ -0,0 +1,362 @@
+@@ -0,0 +1,521 @@
 +/* Original lazy x86 ACPI producer; GPL-2.0-or-later. */
 +#include "system/crucible-whole-early.h"
++#include "system/crucible-whole-ram.h"
 +
 +static void acpi_build_update(void *opaque);
 +static void acpi_build_reset(void *opaque);
@@ -54046,12 +54094,22 @@ index 0000000000000000000000000000000000000000..1600b6ff71f6d9d2ef206c7947aa0e12
 +    GArray *array;
 +    const void *body;
 +    size_t initial_extent;
++    const void *published_body;
++    size_t published_extent;
 +    uint64_t maximum;
 +    MemoryRegion *region;
 +    bool offered;
 +    bool begun;
 +    bool published;
 +} AcpiWholeRom;
++
++typedef struct AcpiWholeRebuild {
++    GArray *arrays[3];
++    const void *bodies[3];
++    size_t extents[3];
++    unsigned completed;
++    AcpiWholeRom *offered;
++} AcpiWholeRebuild;
 +
 +typedef struct AcpiWholeProducer {
 +    pid_t process;
@@ -54065,6 +54123,7 @@ index 0000000000000000000000000000000000000000..1600b6ff71f6d9d2ef206c7947aa0e12
 +    bool failed;
 +    AcpiWholeRom roms[3];
 +    AcpiWholeRom *pending_rom;
++    AcpiWholeRebuild *rebuild;
 +} AcpiWholeProducer;
 +
 +static AcpiWholeProducer acpi_whole_producer;
@@ -54207,6 +54266,8 @@ index 0000000000000000000000000000000000000000..1600b6ff71f6d9d2ef206c7947aa0e12
 +            .array = array,
 +            .body = array->data,
 +            .initial_extent = array->len,
++            .published_body = array->data,
++            .published_extent = array->len,
 +            .maximum = maxima[index],
 +        };
 +    }
@@ -54334,7 +54395,133 @@ index 0000000000000000000000000000000000000000..1600b6ff71f6d9d2ef206c7947aa0e12
 +    if (acpi_whole_producer.state->patched != acpi_whole_producer.patched) {
 +        acpi_whole_fault();
 +    }
++    acpi_whole_producer.rebuild = NULL;
 +    acpi_whole_producer.building = true;
++}
++
++/* This capture follows the literal successful acpi_build return. Its record
++ * uses the same nonrenewing native bank; earlier build records remain retained. */
++static void acpi_whole_rebuilt_capture(AcpiBuildTables *tables)
++{
++    GArray *arrays[3];
++    AcpiWholeRebuild *rebuild;
++
++    if (!crucible_whole_setup_selected()) {
++        return;
++    }
++    if (!acpi_whole_allocation_context_current() ||
++        acpi_whole_producer.constructing || acpi_whole_producer.rebuild ||
++        acpi_whole_producer.state->patched != 1) {
++        acpi_whole_fault();
++    }
++    arrays[0] = tables->table_data;
++    arrays[1] = tables->linker->cmd_blob;
++    arrays[2] = tables->rsdp;
++    rebuild = acpi_whole_new0(sizeof(*rebuild));
++    for (unsigned index = 0; index < 3; index++) {
++        AcpiWholeRom *row = &acpi_whole_producer.roms[index];
++        GArray *array = arrays[index];
++
++        if (!row->published || !row->region ||
++            acpi_array_get_element_size(array) != 1 ||
++            !array->data || !array->len || array->len > row->maximum) {
++            acpi_whole_fault();
++        }
++        rebuild->arrays[index] = array;
++        rebuild->bodies[index] = array->data;
++        rebuild->extents[index] = array->len;
++    }
++    acpi_whole_producer.rebuild = rebuild;
++}
++
++static unsigned acpi_whole_rebuild_index(unsigned completed)
++{
++    /* Preserve the actual producer's table, RSDP, linker update order. */
++    static const unsigned order[3] = {0, 2, 1};
++
++    if (completed >= 3) {
++        acpi_whole_fault();
++    }
++    return order[completed];
++}
++
++static void acpi_whole_ram_update_offer(MemoryRegion *region, GArray *array)
++{
++    AcpiWholeRebuild *rebuild;
++    AcpiWholeRom *row;
++    unsigned index;
++
++    if (!acpi_whole_allocation_context_current() ||
++        acpi_whole_producer.constructing) {
++        acpi_whole_fault();
++    }
++    rebuild = acpi_whole_producer.rebuild;
++    if (!rebuild || rebuild->offered || rebuild->completed >= 3) {
++        acpi_whole_fault();
++    }
++    index = acpi_whole_rebuild_index(rebuild->completed);
++    row = &acpi_whole_producer.roms[index];
++    if (region != row->region || array != rebuild->arrays[index] ||
++        acpi_array_get_element_size(array) != 1 ||
++        array->data != rebuild->bodies[index] ||
++        array->len != rebuild->extents[index]) {
++        acpi_whole_fault();
++    }
++    rebuild->offered = row;
++}
++
++bool acpi_whole_ram_update_current(MachineState *machine, MemoryRegion *region,
++                                   const void *body, uint64_t extent)
++{
++    AcpiWholeRebuild *rebuild;
++    AcpiWholeRom *row;
++    GArray *array;
++    unsigned index;
++
++    if (!acpi_whole_allocation_context_current() ||
++        acpi_whole_producer.constructing ||
++        machine != acpi_whole_producer.machine) {
++        return false;
++    }
++    rebuild = acpi_whole_producer.rebuild;
++    if (!rebuild ||
++        !crucible_whole_setup_history_span_current(rebuild, sizeof(*rebuild)) ||
++        !rebuild->offered || rebuild->completed >= 3) {
++        return false;
++    }
++    index = acpi_whole_rebuild_index(rebuild->completed);
++    row = &acpi_whole_producer.roms[index];
++    if (rebuild->offered != row || region != row->region ||
++        body != rebuild->bodies[index] || extent != rebuild->extents[index] ||
++        !extent || extent > row->maximum) {
++        return false;
++    }
++    array = rebuild->arrays[index];
++    return acpi_array_get_element_size(array) == 1 &&
++        array->data == body && array->len == extent;
++}
++
++static void acpi_whole_ram_update_complete(MemoryRegion *region)
++{
++    AcpiWholeRebuild *rebuild = acpi_whole_producer.rebuild;
++    AcpiWholeRom *row;
++    unsigned index;
++
++    if (!acpi_whole_allocation_context_current() || !rebuild ||
++        !rebuild->offered || rebuild->completed >= 3) {
++        acpi_whole_fault();
++    }
++    index = acpi_whole_rebuild_index(rebuild->completed);
++    row = rebuild->offered;
++    if (row != &acpi_whole_producer.roms[index] || region != row->region ||
++        !qemu_ram_whole_acpi_update_published(acpi_whole_producer.machine,
++            region, rebuild->bodies[index], rebuild->extents[index])) {
++        acpi_whole_fault();
++    }
++    row->published_body = rebuild->bodies[index];
++    row->published_extent = rebuild->extents[index];
++    rebuild->offered = NULL;
++    rebuild->completed++;
 +}
 +
 +static void acpi_whole_update_leave(void)
@@ -54343,6 +54530,11 @@ index 0000000000000000000000000000000000000000..1600b6ff71f6d9d2ef206c7947aa0e12
 +        return;
 +    }
 +    if (!acpi_whole_allocation_context_current()) {
++        acpi_whole_fault();
++    }
++    if (acpi_whole_producer.rebuild &&
++        (acpi_whole_producer.rebuild->offered ||
++         acpi_whole_producer.rebuild->completed != 3)) {
 +        acpi_whole_fault();
 +    }
 +    acpi_whole_producer.patched = acpi_whole_producer.state->patched;
@@ -54373,8 +54565,9 @@ index 0000000000000000000000000000000000000000..1600b6ff71f6d9d2ef206c7947aa0e12
 +    if (!body || !extent || !acpi_whole_producer.state ||
 +        !crucible_whole_setup_history_span_current(acpi_whole_producer.state,
 +            sizeof(*acpi_whole_producer.state)) ||
-+        acpi_whole_producer.state->patched != acpi_whole_producer.patched ||
-+        acpi_whole_producer.patched || acpi_whole_producer.building) {
++        (acpi_whole_producer.state->patched != acpi_whole_producer.patched &&
++         !(acpi_whole_producer.building && !acpi_whole_producer.patched &&
++           acpi_whole_producer.state->patched == 1))) {
 +        return false;
 +    }
 +    for (unsigned index = 0; index < 3; index++) {
@@ -54383,9 +54576,22 @@ index 0000000000000000000000000000000000000000..1600b6ff71f6d9d2ef206c7947aa0e12
 +        void *backing;
 +        uint64_t maximum;
 +
-+        if (!row->begun || !row->region || extent != row->initial_extent ||
-+            !crucible_whole_setup_history_span_current(row->body,
-+                                                       row->initial_extent) ||
++        const void *published = row->published_body;
++        size_t published_extent = row->published_extent;
++        AcpiWholeRebuild *rebuild = acpi_whole_producer.rebuild;
++
++        /* Only the native writer's post-copy journal can advance observation
++         * before this producer's local completion. Byte equality cannot do it. */
++        if (acpi_whole_producer.building && rebuild &&
++            rebuild->offered == row &&
++            qemu_ram_whole_acpi_update_published(acpi_whole_producer.machine,
++                row->region, rebuild->bodies[index], rebuild->extents[index])) {
++            published = rebuild->bodies[index];
++            published_extent = rebuild->extents[index];
++        }
++        if (!row->begun || !row->region || extent != published_extent ||
++            !crucible_whole_setup_history_span_current(published,
++                                                       published_extent) ||
 +            qemu_ram_whole_backing_current(row->region, &block, &backing,
 +                                            &maximum) ||
 +            body != backing || maximum < row->maximum) {
@@ -54394,7 +54600,7 @@ index 0000000000000000000000000000000000000000..1600b6ff71f6d9d2ef206c7947aa0e12
 +        /* The native RAM ledger authenticates the original MR/block/base
 +         * before any bytes are read. This query never calls the FW callback
 +         * getter: native dispatch uses it to authenticate that callback. */
-+        return !memcmp(backing, row->body, extent);
++        return !memcmp(backing, published, extent);
 +    }
 +    return false;
 +}
@@ -70309,10 +70515,10 @@ index 43e3c916f73fa3bda638e170895ec0421fedfeef..da2b831f4822ba0424d76606dc9617b9
      uint32_t    conf_msix_qsize;
 diff --git a/hw/nvram/crucible-whole-fwcfg.inc.c b/hw/nvram/crucible-whole-fwcfg.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..5afe675061e1a38b796cd54c6aaf79419ad0a45d
+index 0000000000000000000000000000000000000000..fd5bdff98d334386e23291c1c76dd95ab1c27271
 --- /dev/null
 +++ b/hw/nvram/crucible-whole-fwcfg.inc.c
-@@ -0,0 +1,678 @@
+@@ -0,0 +1,841 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Original finite table allocations and pre-effect native entry history. */
 +
@@ -70360,7 +70566,9 @@ index 0000000000000000000000000000000000000000..5afe675061e1a38b796cd54c6aaf7941
 +    FWCfgState *owner;
 +    FWCfgEntry *entry;
 +    FWCfgEntry original;
++    FWCfgEntry expected;
 +    uint64_t thread;
++    uint64_t generation;
 +    unsigned arch;
 +    unsigned key;
 +    bool active;
@@ -70373,6 +70581,7 @@ index 0000000000000000000000000000000000000000..5afe675061e1a38b796cd54c6aaf7941
 +    bool failed;
 +    unsigned allocation_count;
 +    unsigned event_count;
++    uint64_t callback_generation;
 +    unsigned maximum;
 +    FWCfgState *owner;
 +    ObjectClass *owner_class;
@@ -70748,7 +70957,8 @@ index 0000000000000000000000000000000000000000..5afe675061e1a38b796cd54c6aaf7941
 +}
 +
 +static bool fwcfg_whole_acpi_entry_current(FWCfgState *owner, unsigned arch,
-+                                           unsigned key, const FWCfgEntry *entry)
++                                           unsigned key, const FWCfgEntry *entry,
++                                           bool observe_payload)
 +{
 +    if (!owner || owner != whole_fwcfg.owner || arch > 1 ||
 +        key >= whole_fwcfg.maximum ||
@@ -70770,8 +70980,9 @@ index 0000000000000000000000000000000000000000..5afe675061e1a38b796cd54c6aaf7941
 +                event->source_kind == WHOLE_FW_PAYLOAD_ACPI &&
 +                fwcfg_whole_entry_equal(entry, &event->intended) &&
 +                !entry->allow_write && !entry->write_cb && entry->select_cb &&
-+                whole_fwcfg.acpi_inputs(entry->data, entry->len,
-+                                        entry->select_cb, entry->callback_opaque);
++                (!observe_payload ||
++                 whole_fwcfg.acpi_inputs(entry->data, entry->len,
++                                         entry->select_cb, entry->callback_opaque));
 +        }
 +    }
 +    return false;
@@ -70785,13 +70996,15 @@ index 0000000000000000000000000000000000000000..5afe675061e1a38b796cd54c6aaf7941
 +        return;
 +    }
 +    if (!admitted || whole_fwcfg.callback_scope->active ||
++        whole_fwcfg.callback_generation == UINT64_MAX ||
 +        icount_crucible_whole_event_current() ||
-+        !fwcfg_whole_acpi_entry_current(owner, arch, key, entry)) {
++        !fwcfg_whole_acpi_entry_current(owner, arch, key, entry, true)) {
 +        fwcfg_whole_fault("selection callback has no original ACPI effect scope");
 +    }
 +    *whole_fwcfg.callback_scope = (WholeFwCallbackScope) {
-+        .owner = owner, .entry = entry, .original = *entry,
-+        .thread = qemu_get_thread_id(), .arch = arch, .key = key, .active = true,
++        .owner = owner, .entry = entry, .original = *entry, .expected = *entry,
++        .thread = qemu_get_thread_id(), .generation = ++whole_fwcfg.callback_generation,
++        .arch = arch, .key = key, .active = true,
 +    };
 +}
 +
@@ -70813,9 +71026,35 @@ index 0000000000000000000000000000000000000000..5afe675061e1a38b796cd54c6aaf7941
 +        opaque != scope->original.callback_opaque) {
 +        return false;
 +    }
++    /* Scope issuance checked the complete original payload. During lazy
++     * rebuilding, re-entering that reader would form a callback/allocation
++     * cycle and confuse old bytes with a pending native copy. Only an actual
++     * RAM resize notification below can advance this retained entry lineage. */
 +    return fwcfg_whole_acpi_entry_current(scope->owner, scope->arch, scope->key,
-+                                          scope->entry) &&
-+        fwcfg_whole_entry_equal(scope->entry, &scope->original);
++                                          scope->entry, false) &&
++        fwcfg_whole_entry_equal(scope->entry, &scope->expected);
++}
++
++int crucible_whole_fwcfg_acpi_update_context(FWCfgState *owner,
++    const void **original_context, uint64_t *generation)
++{
++    WholeFwCallbackScope *scope;
++
++    if (!fwcfg_whole_active() || owner != whole_fwcfg.owner) {
++        return -ESTALE;
++    }
++    scope = whole_fwcfg.callback_scope;
++    if (!scope || !scope->active || !scope->generation ||
++        !crucible_whole_fwcfg_acpi_callback_current(scope->original.select_cb,
++                                                    scope->original.callback_opaque)) {
++        return -ESTALE;
++    }
++    if (!original_context || !generation) {
++        return -EINVAL;
++    }
++    *original_context = scope;
++    *generation = scope->generation;
++    return 0;
 +}
 +
 +static void fwcfg_whole_callback_end(void)
@@ -70831,8 +71070,8 @@ index 0000000000000000000000000000000000000000..5afe675061e1a38b796cd54c6aaf7941
 +    if (!original.active || original.thread != qemu_get_thread_id() ||
 +        icount_crucible_whole_event_current() ||
 +        !fwcfg_whole_acpi_entry_current(original.owner, original.arch,
-+                                         original.key, original.entry) ||
-+        !fwcfg_whole_entry_equal(original.entry, &original.original)) {
++                                         original.key, original.entry, true) ||
++        !fwcfg_whole_entry_equal(original.entry, &original.expected)) {
 +        fwcfg_whole_fault("original ACPI callback changed before return");
 +    }
 +}
@@ -70968,6 +71207,136 @@ index 0000000000000000000000000000000000000000..5afe675061e1a38b796cd54c6aaf7941
 +    fwcfg_whole_directory_copy(owner, event->after_directory);
 +}
 +
++static void *fwcfg_whole_resize_archive_allocate(size_t extent)
++{
++    WholeFwAllocation *allocation;
++    void *backing;
++
++    if (!crucible_whole_fwcfg_acpi_callback_current(
++            whole_fwcfg.callback_scope->original.select_cb,
++            whole_fwcfg.callback_scope->original.callback_opaque) ||
++        !extent || whole_fwcfg.allocation_count == WHOLE_FWCFG_MAX_ALLOCATIONS ||
++        icount_crucible_whole_event_admit()) {
++        fwcfg_whole_fault("native resize archive has no original callback budget");
++    }
++    allocation = &whole_fwcfg.allocations[whole_fwcfg.allocation_count++];
++    allocation->extent = extent;
++    backing = crucible_whole_setup_history_allocate(extent);
++    if (!backing) {
++        fwcfg_whole_fault("native resize archive exhausted original backing");
++    }
++    allocation->backing = backing;
++    return backing;
++}
++
++static bool fwcfg_whole_allocation_span(const void *body, size_t extent)
++{
++    uintptr_t end;
++    uintptr_t address = (uintptr_t)body;
++
++    if (!body || !extent || __builtin_add_overflow(address, extent, &end)) {
++        return false;
++    }
++    for (unsigned index = 0; index < whole_fwcfg.allocation_count; index++) {
++        WholeFwAllocation *allocation = &whole_fwcfg.allocations[index];
++        uintptr_t allocation_end;
++
++        if (!allocation->retired && allocation->backing &&
++            !__builtin_add_overflow((uintptr_t)allocation->backing,
++                                    allocation->extent, &allocation_end) &&
++            address >= (uintptr_t)allocation->backing && end <= allocation_end) {
++            return true;
++        }
++    }
++    return false;
++}
++
++static bool fwcfg_whole_acpi_resize_file(FWCfgState *owner, const char *filename,
++                                         void *host, size_t extent, void **old)
++{
++    WholeFwCallbackScope *scope;
++    WholeFwEvent *directory, *event;
++    FWCfgEntry *entry;
++    unsigned count, index;
++    size_t archive_extent;
++
++    if (!fwcfg_whole_active() || crucible_whole_setup_constructor_current()) {
++        return false;
++    }
++    scope = whole_fwcfg.callback_scope;
++    if (!scope || !scope->active || owner != whole_fwcfg.owner ||
++        !crucible_whole_fwcfg_acpi_callback_current(scope->original.select_cb,
++                                                    scope->original.callback_opaque) ||
++        !qemu_ram_whole_acpi_resize_notification_current(owner, filename, host, extent)) {
++        fwcfg_whole_fault("file replacement is outside original RAM notification");
++    }
++    archive_extent = 2 * sizeof(FWCfgEntry) * whole_fwcfg.maximum +
++        sizeof(int) * whole_fwcfg.maximum + sizeof(uint32_t) +
++        sizeof(FWCfgFile) * owner->file_slots;
++    if (!owner->files || FW_CFG_FILE_FIRST + owner->file_slots != whole_fwcfg.maximum ||
++        !fwcfg_whole_allocation_span(owner->files,
++            sizeof(uint32_t) + sizeof(FWCfgFile) * owner->file_slots) ||
++        whole_fwcfg.event_count > WHOLE_FWCFG_MAX_EVENTS - 2 || extent >= UINT32_MAX) {
++        fwcfg_whole_fault("native resize directory or journal changed");
++    }
++    count = be32_to_cpu(owner->files->count);
++    if (count > owner->file_slots) {
++        fwcfg_whole_fault("native resize file population changed");
++    }
++    for (index = 0; index < count; index++) {
++        if (!memchr(owner->files->f[index].name, 0, sizeof(owner->files->f[index].name))) {
++            fwcfg_whole_fault("native resize file name is unterminated");
++        }
++        if (!strcmp(filename, owner->files->f[index].name)) {
++            break;
++        }
++    }
++    if (index == count ||
++        be16_to_cpu(owner->files->f[index].select) != FW_CFG_FILE_FIRST + index) {
++        fwcfg_whole_fault("native resize cannot create a firmware entry");
++    }
++    entry = &whole_fwcfg.tables[0][FW_CFG_FILE_FIRST + index];
++    if (!fwcfg_whole_acpi_entry_current(owner, 0, FW_CFG_FILE_FIRST + index,
++                                        entry, false) || entry->data != host ||
++        entry->select_cb != scope->original.select_cb ||
++        entry->callback_opaque != scope->original.callback_opaque) {
++        fwcfg_whole_fault("native resize replaced the original callback owner");
++    }
++    /* Own both population archives and both event slots before table/length
++     * mutation. Arena exhaustion retains attempted histories without effects. */
++    directory = &whole_fwcfg.events[whole_fwcfg.event_count++];
++    *directory = (WholeFwEvent) {
++        .owner = owner, .directory = true, .directory_extent = archive_extent,
++    };
++    directory->before_directory = fwcfg_whole_resize_archive_allocate(archive_extent);
++    directory->after_directory = fwcfg_whole_resize_archive_allocate(archive_extent);
++    fwcfg_whole_directory_copy(owner, directory->before_directory);
++    event = &whole_fwcfg.events[whole_fwcfg.event_count++];
++    *event = (WholeFwEvent) {
++        .owner = owner, .arch = 0, .key = FW_CFG_FILE_FIRST + index,
++        .before = *entry, .intended = *entry, .replacement = true,
++        .source_kind = WHOLE_FW_PAYLOAD_ACPI,
++    };
++    event->intended.len = extent;
++    if (icount_crucible_whole_event_admit()) {
++        fwcfg_whole_fault("native resize entry debit exhausted");
++    }
++    *old = entry->data;
++    entry->len = extent;
++    owner->files->f[index].size = cpu_to_be32(extent);
++    fw_cfg_acpi_mr_save(owner, filename, extent);
++    if (entry == scope->entry) {
++        scope->expected = *entry;
++    }
++    fwcfg_whole_directory_copy(owner, directory->after_directory);
++    if (!fwcfg_whole_entry_equal(entry, &event->intended) ||
++        !crucible_whole_fwcfg_acpi_callback_current(scope->original.select_cb,
++                                                    scope->original.callback_opaque)) {
++        fwcfg_whole_fault("native resize changed before callback return");
++    }
++    return true;
++}
++
 +int crucible_whole_fwcfg_current(void)
 +{
 +    if (!fwcfg_whole_active() || !whole_fwcfg.sealed || !whole_fwcfg.owner ||
@@ -70992,18 +71361,19 @@ index 0000000000000000000000000000000000000000..5afe675061e1a38b796cd54c6aaf7941
 +    return -ENOTSUP;
 +}
 diff --git a/hw/nvram/fw_cfg.c b/hw/nvram/fw_cfg.c
-index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e1d8f5e2a 100644
+index b057d870c004110fdfbe4b34da55719acbf69c7a..74bc6e80d07929cbd6557d00c9a736bf8584b7a7 100644
 --- a/hw/nvram/fw_cfg.c
 +++ b/hw/nvram/fw_cfg.c
-@@ -23,6 +23,7 @@
+@@ -23,6 +23,8 @@
   */
  
  #include "qemu/osdep.h"
++#include "system/crucible-whole-ram.h"
 +#include "qemu/crucible-memory-payload-roots.h"
  #include "qemu/datadir.h"
  #include "system/system.h"
  #include "system/dma.h"
-@@ -39,9 +40,14 @@
+@@ -39,9 +41,14 @@
  #include "qemu/option.h"
  #include "qemu/config-file.h"
  #include "qemu/cutils.h"
@@ -71018,7 +71388,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
  
  #define FW_CFG_FILE_SLOTS_DFLT 0x20
  
-@@ -57,6 +63,7 @@
+@@ -57,6 +64,7 @@
  #define FW_CFG_DMA_CTL_WRITE   0x10
  
  #define FW_CFG_DMA_SIGNATURE 0x51454d5520434647ULL /* "QEMU CFG" */
@@ -71026,12 +71396,13 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
  
  struct FWCfgEntry {
      uint32_t len;
-@@ -67,6 +74,211 @@ struct FWCfgEntry {
+@@ -67,6 +75,212 @@ struct FWCfgEntry {
      FWCfgWriteCallback write_cb;
  };
  
 +static void fw_cfg_reset(DeviceState *device);
 +
++static void fw_cfg_acpi_mr_save(FWCfgState *, const char *, size_t);
 +#include "crucible-whole-fwcfg.inc.c"
 +
 +G_STATIC_ASSERT(sizeof(FWCfgCrucibleRootInventory) == 104);
@@ -71238,7 +71609,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
  /**
   * key_name:
   *
-@@ -247,11 +459,14 @@ static void fw_cfg_reboot(FWCfgState *s)
+@@ -247,11 +461,14 @@ static void fw_cfg_reboot(FWCfgState *s)
      }
  
      rt_le32 = cpu_to_le32(rt_val);
@@ -71254,7 +71625,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
      /* nothing, write support removed in QEMU v2.4+ */
  }
  
-@@ -269,8 +484,11 @@ static inline uint32_t fw_cfg_max_entry(const FWCfgState *s)
+@@ -269,8 +486,11 @@ static inline uint32_t fw_cfg_max_entry(const FWCfgState *s)
  static int fw_cfg_select(FWCfgState *s, uint16_t key)
  {
      int arch, ret;
@@ -71266,7 +71637,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
      s->cur_offset = 0;
      if ((key & FW_CFG_ENTRY_MASK) >= fw_cfg_max_entry(s)) {
          s->cur_entry = FW_CFG_INVALID;
-@@ -282,7 +500,9 @@ static int fw_cfg_select(FWCfgState *s, uint16_t key)
+@@ -282,7 +502,9 @@ static int fw_cfg_select(FWCfgState *s, uint16_t key)
          arch = !!(key & FW_CFG_ARCH_LOCAL);
          e = &s->entries[arch][key & FW_CFG_ENTRY_MASK];
          if (e->select_cb) {
@@ -71276,7 +71647,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
          }
      }
  
-@@ -293,11 +513,15 @@ static int fw_cfg_select(FWCfgState *s, uint16_t key)
+@@ -293,11 +515,15 @@ static int fw_cfg_select(FWCfgState *s, uint16_t key)
  static uint64_t fw_cfg_data_read(void *opaque, hwaddr addr, unsigned size)
  {
      FWCfgState *s = opaque;
@@ -71295,7 +71666,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
      assert(size > 0 && size <= sizeof(value));
      if (s->cur_entry != FW_CFG_INVALID && e->data && s->cur_offset < e->len) {
          /* The least significant 'size' bytes of the return value are
-@@ -331,6 +555,173 @@ static void fw_cfg_data_mem_write(void *opaque, hwaddr addr,
+@@ -331,6 +557,173 @@ static void fw_cfg_data_mem_write(void *opaque, hwaddr addr,
      } while (i);
  }
  
@@ -71469,7 +71840,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
  static void fw_cfg_dma_transfer(FWCfgState *s)
  {
      dma_addr_t len;
-@@ -340,6 +731,8 @@ static void fw_cfg_dma_transfer(FWCfgState *s)
+@@ -340,6 +733,8 @@ static void fw_cfg_dma_transfer(FWCfgState *s)
      int read = 0, write = 0;
      dma_addr_t dma_addr;
  
@@ -71478,7 +71849,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
      /* Reset the address before the next access */
      dma_addr = s->dma_addr;
      s->dma_addr = 0;
-@@ -355,14 +748,6 @@ static void fw_cfg_dma_transfer(FWCfgState *s)
+@@ -355,14 +750,6 @@ static void fw_cfg_dma_transfer(FWCfgState *s)
      dma.length = be32_to_cpu(dma.length);
      dma.control = be32_to_cpu(dma.control);
  
@@ -71493,7 +71864,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
      if (dma.control & FW_CFG_DMA_CTL_READ) {
          read = 1;
          write = 0;
-@@ -376,6 +761,70 @@ static void fw_cfg_dma_transfer(FWCfgState *s)
+@@ -376,6 +763,70 @@ static void fw_cfg_dma_transfer(FWCfgState *s)
          dma.length = 0;
      }
  
@@ -71564,7 +71935,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
      dma.control = 0;
  
      while (dma.length > 0 && !(dma.control & FW_CFG_DMA_CTL_ERROR)) {
-@@ -450,6 +899,8 @@ static void fw_cfg_dma_mem_write(void *opaque, hwaddr addr,
+@@ -450,6 +901,8 @@ static void fw_cfg_dma_mem_write(void *opaque, hwaddr addr,
  {
      FWCfgState *s = opaque;
  
@@ -71573,18 +71944,18 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
      if (size == 4) {
          if (addr == 0) {
              /* FWCfgDmaAccess high address */
-@@ -554,8 +1005,18 @@ static const MemoryRegionOps fw_cfg_dma_mem_ops = {
+@@ -554,8 +1007,18 @@ static const MemoryRegionOps fw_cfg_dma_mem_ops = {
  
  static void fw_cfg_reset(DeviceState *d)
  {
 -    FWCfgState *s = FW_CFG(d);
 +    FWCfgState *s;
- 
++
 +    fwcfg_whole_active();
 +    s = FW_CFG(d);
 +    fwcfg_whole_effect_guard(s, true);
 +    fw_cfg_crucible_firmware_mutation_guard(s);
-+
+ 
 +    if (s->crucible_service_pending) {
 +        qemu_crucible_fault_fw_cfg_service_cancel(
 +            &s->crucible_service_ticket);
@@ -71593,7 +71964,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
      /* we never register a read callback for FW_CFG_SIGNATURE */
      fw_cfg_select(s, FW_CFG_SIGNATURE);
  }
-@@ -622,6 +1083,8 @@ static void fw_cfg_update_mr(FWCfgState *s, uint16_t key, size_t size)
+@@ -622,6 +1085,8 @@ static void fw_cfg_update_mr(FWCfgState *s, uint16_t key, size_t size)
      int arch = !!(key & FW_CFG_ARCH_LOCAL);
      void *ptr;
  
@@ -71602,7 +71973,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
      key &= FW_CFG_ENTRY_MASK;
      assert(key < fw_cfg_max_entry(s));
  
-@@ -636,6 +1099,9 @@ static int fw_cfg_acpi_mr_restore_post_load(void *opaque, int version_id)
+@@ -636,6 +1101,9 @@ static int fw_cfg_acpi_mr_restore_post_load(void *opaque, int version_id)
      FWCfgState *s = opaque;
      int i, index;
  
@@ -71612,7 +71983,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
      assert(s->files);
  
      index = be32_to_cpu(s->files->count);
-@@ -662,6 +1128,171 @@ static const VMStateDescription vmstate_fw_cfg_dma = {
+@@ -662,6 +1130,171 @@ static const VMStateDescription vmstate_fw_cfg_dma = {
      },
  };
  
@@ -71784,7 +72155,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
  static const VMStateDescription vmstate_fw_cfg_acpi_mr = {
      .name = "fw_cfg/acpi_mr",
      .version_id = 1,
-@@ -676,10 +1307,57 @@ static const VMStateDescription vmstate_fw_cfg_acpi_mr = {
+@@ -676,10 +1309,57 @@ static const VMStateDescription vmstate_fw_cfg_acpi_mr = {
      },
  };
  
@@ -71842,7 +72213,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
      .fields = (const VMStateField[]) {
          VMSTATE_UINT16(cur_entry, FWCfgState),
          VMSTATE_UINT16_HACK(cur_offset, FWCfgState, is_version_1),
-@@ -704,9 +1382,12 @@ static void fw_cfg_add_bytes_callback(FWCfgState *s, uint16_t key,
+@@ -704,9 +1384,12 @@ static void fw_cfg_add_bytes_callback(FWCfgState *s, uint16_t key,
  
      key &= FW_CFG_ENTRY_MASK;
  
@@ -71855,7 +72226,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
      s->entries[arch][key].data = data;
      s->entries[arch][key].len = (uint32_t)len;
      s->entries[arch][key].select_cb = select_cb;
-@@ -723,9 +1404,11 @@ static void *fw_cfg_modify_bytes_read(FWCfgState *s, uint16_t key,
+@@ -723,9 +1406,11 @@ static void *fw_cfg_modify_bytes_read(FWCfgState *s, uint16_t key,
  
      key &= FW_CFG_ENTRY_MASK;
  
@@ -71867,7 +72238,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
      ptr = s->entries[arch][key].data;
      s->entries[arch][key].data = data;
      s->entries[arch][key].len = len;
-@@ -736,32 +1419,41 @@ static void *fw_cfg_modify_bytes_read(FWCfgState *s, uint16_t key,
+@@ -736,32 +1421,41 @@ static void *fw_cfg_modify_bytes_read(FWCfgState *s, uint16_t key,
  
  void fw_cfg_add_bytes(FWCfgState *s, uint16_t key, void *data, size_t len)
  {
@@ -71915,7 +72286,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
      *copy = cpu_to_le16(value);
      trace_fw_cfg_add_i16(key, trace_key_name(key), value);
      fw_cfg_add_bytes(s, key, copy, sizeof(value));
-@@ -771,17 +1463,21 @@ void fw_cfg_modify_i16(FWCfgState *s, uint16_t key, uint16_t value)
+@@ -771,17 +1465,21 @@ void fw_cfg_modify_i16(FWCfgState *s, uint16_t key, uint16_t value)
  {
      uint16_t *copy, *old;
  
@@ -71940,7 +72311,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
      *copy = cpu_to_le32(value);
      trace_fw_cfg_add_i32(key, trace_key_name(key), value);
      fw_cfg_add_bytes(s, key, copy, sizeof(value));
-@@ -791,17 +1487,21 @@ void fw_cfg_modify_i32(FWCfgState *s, uint16_t key, uint32_t value)
+@@ -791,17 +1489,21 @@ void fw_cfg_modify_i32(FWCfgState *s, uint16_t key, uint32_t value)
  {
      uint32_t *copy, *old;
  
@@ -71965,7 +72336,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
      *copy = cpu_to_le64(value);
      trace_fw_cfg_add_i64(key, trace_key_name(key), value);
      fw_cfg_add_bytes(s, key, copy, sizeof(value));
-@@ -811,10 +1511,12 @@ void fw_cfg_modify_i64(FWCfgState *s, uint16_t key, uint64_t value)
+@@ -811,10 +1513,12 @@ void fw_cfg_modify_i64(FWCfgState *s, uint16_t key, uint64_t value)
  {
      uint64_t *copy, *old;
  
@@ -71980,7 +72351,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
  }
  
  /*
-@@ -843,10 +1545,15 @@ void fw_cfg_add_file_callback(FWCfgState *s,  const char *filename,
+@@ -843,10 +1547,15 @@ void fw_cfg_add_file_callback(FWCfgState *s,  const char *filename,
      int i, index, count;
      size_t dsize;
      int order = 0;
@@ -71997,7 +72368,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
          fw_cfg_add_bytes(s, FW_CFG_FILE_DIR, s->files, dsize);
      }
  
-@@ -899,6 +1606,7 @@ void fw_cfg_add_file_callback(FWCfgState *s,  const char *filename,
+@@ -899,6 +1608,7 @@ void fw_cfg_add_file_callback(FWCfgState *s,  const char *filename,
  
      s->files->count = cpu_to_be32(count+1);
      fw_cfg_acpi_mr_save(s, filename, len);
@@ -72005,10 +72376,13 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
  }
  
  void fw_cfg_add_file(FWCfgState *s,  const char *filename,
-@@ -913,16 +1621,20 @@ void *fw_cfg_modify_file(FWCfgState *s, const char *filename,
+@@ -913,16 +1623,23 @@ void *fw_cfg_modify_file(FWCfgState *s, const char *filename,
      int i, index;
      void *ptr = NULL;
  
++    if (fwcfg_whole_acpi_resize_file(s, filename, data, len, &ptr)) {
++        return ptr;
++    }
 +    fw_cfg_crucible_firmware_mutation_guard(s);
      assert(s->files);
  
@@ -72026,7 +72400,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
              return ptr;
          }
      }
-@@ -944,6 +1656,8 @@ bool fw_cfg_add_file_from_generator(FWCfgState *s,
+@@ -944,6 +1661,8 @@ bool fw_cfg_add_file_from_generator(FWCfgState *s,
      Object *obj;
      gsize size;
  
@@ -72035,7 +72409,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
      obj = object_resolve_path_component(parent, part);
      if (!obj) {
          error_setg(errp, "Cannot find object ID '%s'", part);
-@@ -972,19 +1686,26 @@ static void fw_cfg_machine_reset(void *opaque)
+@@ -972,19 +1691,26 @@ static void fw_cfg_machine_reset(void *opaque)
      size_t len;
      char *buf;
  
@@ -72065,7 +72439,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
  }
  
  static const Property fw_cfg_properties[] = {
-@@ -996,13 +1717,16 @@ static void fw_cfg_common_realize(DeviceState *dev, Error **errp)
+@@ -996,13 +1722,16 @@ static void fw_cfg_common_realize(DeviceState *dev, Error **errp)
      FWCfgState *s = FW_CFG(dev);
      MachineState *machine = MACHINE(qdev_get_machine());
      uint32_t version = FW_CFG_VERSION;
@@ -72083,7 +72457,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
      fw_cfg_add_bytes(s, FW_CFG_UUID, &qemu_uuid, 16);
      fw_cfg_add_i16(s, FW_CFG_NOGRAPHIC, (uint16_t)!machine->enable_graphics);
      fw_cfg_add_i16(s, FW_CFG_BOOT_MENU, (uint16_t)(machine->boot_config.has_menu && machine->boot_config.menu));
-@@ -1199,9 +1923,13 @@ static void fw_cfg_file_slots_allocate(FWCfgState *s, Error **errp)
+@@ -1199,9 +1928,13 @@ static void fw_cfg_file_slots_allocate(FWCfgState *s, Error **errp)
          return;
      }
  
@@ -72100,7 +72474,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e
  }
  
  static const Property fw_cfg_io_properties[] = {
-@@ -1317,6 +2045,23 @@ static void fw_cfg_register_types(void)
+@@ -1317,6 +2050,23 @@ static void fw_cfg_register_types(void)
      type_register_static(&fw_cfg_info);
      type_register_static(&fw_cfg_io_info);
      type_register_static(&fw_cfg_mem_info);
@@ -106995,10 +107369,10 @@ index 0000000000000000000000000000000000000000..584c9cbcb84168ceb4844a3413202704
 +#endif
 diff --git a/include/system/crucible-whole-ram.h b/include/system/crucible-whole-ram.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..7c264f676500629bfa482ebbe4bc084ea16abee3
+index 0000000000000000000000000000000000000000..02275a4be35ecf5aacafdbc6f5ac274d779cf98b
 --- /dev/null
 +++ b/include/system/crucible-whole-ram.h
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,62 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Source-owned RAM births. These declarations are not a process protocol. */
 +#ifndef SYSTEM_CRUCIBLE_WHOLE_RAM_H
@@ -107042,6 +107416,23 @@ index 0000000000000000000000000000000000000000..7c264f676500629bfa482ebbe4bc084e
 +char *qemu_ram_whole_region_name(struct MemoryRegion *region, const char *name);
 +bool qemu_ram_whole_region_name_retained(struct MemoryRegion *region,
 +                                         const char *name);
++
++/* Runtime offers are consumed only within the original admitted ACPI callback.
++ * The publication reader reports the exact native journal's completed copy;
++ * it does not mint a resize, callback or guest permit. */
++bool acpi_whole_ram_update_current(struct MachineState *, struct MemoryRegion *,
++                                   const void *, uint64_t);
++int qemu_ram_whole_acpi_update(struct MachineState *, struct MemoryRegion *,
++                               const void *, uint64_t);
++bool qemu_ram_whole_acpi_update_published(struct MachineState *,
++    struct MemoryRegion *, const void *, uint64_t);
++int crucible_whole_fwcfg_acpi_update_context(struct FWCfgState *,
++    const void **original_context, uint64_t *generation);
++bool qemu_ram_whole_acpi_resize_notification_current(struct FWCfgState *,
++    const char *, const void *, uint64_t);
++bool qemu_ram_whole_acpi_size_consume(struct MemoryRegion *, uint64_t);
++bool qemu_memory_whole_acpi_resize_topology_current(struct MemoryRegion *);
++bool qemu_memory_whole_acpi_set_size(struct MemoryRegion *, uint64_t);
 +
 +#endif
 diff --git a/include/system/dma.h b/include/system/dma.h
@@ -180507,10 +180898,10 @@ index 0000000000000000000000000000000000000000..6b0786a92a53aad8f9d1ed000f0f67fb
 +}
 diff --git a/system/crucible-memory-roots.inc.c b/system/crucible-memory-roots.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..ec07ef51e6db24a79829accaffca1384210f68de
+index 0000000000000000000000000000000000000000..6d61a8e98a6fcc1a0485e67f3922b6c97589b7b5
 --- /dev/null
 +++ b/system/crucible-memory-roots.inc.c
-@@ -0,0 +1,573 @@
+@@ -0,0 +1,616 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Included by memory.c to observe its actual AddressSpace owner list. */
 +
@@ -181083,6 +181474,49 @@ index 0000000000000000000000000000000000000000..ec07ef51e6db24a79829accaffca1384
 +#else
 +    return -ENOTSUP;
 +#endif
++}
++
++/* A source-owned ACPI bank is detached, including from every original
++ * AddressSpace root. No FlatView map/callback allocation is needed to change
++ * its size; mapped banks and unknown space births remain refused. */
++bool qemu_memory_whole_acpi_resize_topology_current(MemoryRegion *region)
++{
++    AddressSpace *space;
++    unsigned index = 0;
++
++    if (!crucible_whole_setup_source_current() ||
++        native_memory_roots.process != getpid() || !bql_locked() ||
++        native_memory_roots.observing || !native_memory_roots.enabled ||
++        !qatomic_load_acquire(&native_memory_roots.observed)) {
++        return false;
++    }
++    space = QTAILQ_FIRST(&address_spaces);
++    while (space) {
++        if (index == native_memory_roots.space_count ||
++            native_memory_roots.spaces[index].space != space) {
++            return false;
++        }
++        CrucibleMemorySpaceRoot *original = &native_memory_roots.spaces[index++];
++
++        if (space->root == region || space->root != original->original.root ||
++            space->current_map != original->original.current_map) {
++            return false;
++        }
++        space = QTAILQ_NEXT(space, address_spaces_link);
++    }
++    return index == native_memory_roots.space_count;
++}
++
++bool qemu_memory_whole_acpi_set_size(MemoryRegion *region, uint64_t size)
++{
++    if (!qemu_memory_whole_acpi_resize_topology_current(region) ||
++        !qemu_ram_whole_acpi_size_consume(region, size)) {
++        return false;
++    }
++    /* size_consume authenticates original region/backing before dereference
++     * and spends the one native resize write ticket before this mutation. */
++    region->size = int128_make64(size);
++    return true;
 +}
 diff --git a/system/crucible-prefix-coordinator.inc.c b/system/crucible-prefix-coordinator.inc.c
 new file mode 100644
@@ -184050,10 +184484,10 @@ index 0000000000000000000000000000000000000000..090737ccf7fa898c85f134ffa0573d5c
 +}
 diff --git a/system/crucible-whole-ram.inc.c b/system/crucible-whole-ram.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..03a09885017777847797385b97ba22693bc780ef
+index 0000000000000000000000000000000000000000..8a647b4c456927c98e400244e81170d6ef889475
 --- /dev/null
 +++ b/system/crucible-whole-ram.inc.c
-@@ -0,0 +1,758 @@
+@@ -0,0 +1,1003 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Included by physmem.c, beside the actual RAM and dirty-directory owners. */
 +
@@ -184069,6 +184503,7 @@ index 0000000000000000000000000000000000000000..03a09885017777847797385b97ba2269
 +#pragma weak acpi_whole_rom_source_maxima
 +#pragma weak crucible_whole_rom_acpi_region_birth
 +#pragma weak crucible_whole_rom_acpi_region_current
++#pragma weak acpi_whole_ram_update_current
 +
 +typedef enum WholeRamPhase {
 +    WHOLE_RAM_UNUSED,
@@ -184078,6 +184513,36 @@ index 0000000000000000000000000000000000000000..03a09885017777847797385b97ba2269
 +    WHOLE_RAM_RETIRED,
 +    WHOLE_RAM_FAILED,
 +} WholeRamPhase;
++
++typedef enum WholeRamUpdatePhase {
++    WHOLE_RAM_UPDATE_ATTEMPTED,
++    WHOLE_RAM_UPDATE_RESIZING,
++    WHOLE_RAM_UPDATE_NOTIFYING,
++    WHOLE_RAM_UPDATE_RESIZED,
++    WHOLE_RAM_UPDATE_COPIED,
++    WHOLE_RAM_UPDATE_PUBLISHED,
++    WHOLE_RAM_UPDATE_FAILED,
++} WholeRamUpdatePhase;
++
++struct WholeRamBirth;
++typedef struct WholeRamUpdate {
++    struct WholeRamUpdate *previous;
++    struct WholeRamBirth *birth;
++    MachineState *machine;
++    MemoryRegion *region;
++    RAMBlock *block;
++    const void *body;
++    uint64_t extent;
++    uint64_t rounded;
++    uint64_t thread;
++    const void *callback_context;
++    uint64_t callback_generation;
++    uint64_t before_used;
++    uint64_t before_size;
++    WholeRamUpdatePhase phase;
++    bool size_consumed;
++    bool resize_consumed;
++} WholeRamUpdate;
 +
 +typedef struct WholeRamBirth {
 +    WholeRamPhase phase;
@@ -184098,6 +184563,7 @@ index 0000000000000000000000000000000000000000..03a09885017777847797385b97ba2269
 +    char *name;
 +    size_t name_extent;
 +    uint32_t expected_flags;
++    WholeRamUpdate *latest_update;
 +    char original_name[256];
 +    char original_id[sizeof(((RAMBlock *)0)->idstr)];
 +} WholeRamBirth;
@@ -184121,6 +184587,7 @@ index 0000000000000000000000000000000000000000..03a09885017777847797385b97ba2269
 +
 +static pid_t whole_ram_process;
 +static WholeRamOwners *whole_ram_owners;
++static WholeRamUpdate *whole_ram_update;
 +
 +static void whole_ram_refuse(void)
 +{
@@ -184736,6 +185203,218 @@ index 0000000000000000000000000000000000000000..03a09885017777847797385b97ba2269
 +    return 0;
 +}
 +
++static bool whole_ram_update_owned(WholeRamUpdate *update)
++{
++    if (!whole_ram_selected() || !update ||
++        !crucible_whole_setup_history_span_current(update, sizeof(*update))) {
++        return false;
++    }
++    WholeRamBirth *birth = whole_ram_region(update->region);
++    RAMBlock *block;
++    void *host;
++    uint64_t maximum;
++
++    return birth == update->birth && birth->latest_update == update && birth->acpi &&
++        update->machine == birth->machine &&
++        qemu_ram_whole_backing_current(update->region, &block, &host, &maximum) == 0 &&
++        block == update->block && host == birth->host &&
++        maximum == birth->selected_extent && update->extent <= birth->maximum &&
++        update->rounded <= maximum &&
++        update->region->ram && update->region->readonly &&
++        !update->region->rom_device && !update->region->subpage &&
++        !update->region->container && !update->region->mapped_via_alias &&
++        !update->region->alias && QTAILQ_EMPTY(&update->region->subregions) &&
++        !update->region->is_iommu && !update->region->ram_device &&
++        !update->region->rdm && !update->region->ioeventfd_nb &&
++        QTAILQ_EMPTY(&update->region->coalesced) &&
++        QLIST_EMPTY(&ram_list.ramblock_notifiers) &&
++        QLIST_EMPTY(&update->block->ramblock_notifiers) &&
++        qemu_memory_whole_acpi_resize_topology_current(update->region);
++}
++
++
++static bool whole_ram_update_current(WholeRamUpdate *update)
++{
++    const void *context;
++    uint64_t generation;
++
++    return whole_ram_update_owned(update) &&
++        update->thread == qemu_get_thread_id() &&
++        crucible_whole_setup_guest_start_allowed() &&
++        icount_crucible_whole_event_current() == 0 &&
++        crucible_whole_fwcfg_acpi_update_context((FWCfgState *)update->birth->owner,
++            &context, &generation) == 0 && context == update->callback_context &&
++        generation == update->callback_generation;
++}
++
++bool qemu_ram_whole_acpi_resize_notification_current(FWCfgState *owner,
++    const char *filename, const void *host, uint64_t extent)
++{
++    WholeRamUpdate *update = whole_ram_update;
++
++    if (!whole_ram_update_current(update) ||
++        update->phase != WHOLE_RAM_UPDATE_NOTIFYING ||
++        owner != (FWCfgState *)update->birth->owner ||
++        filename != update->block->idstr + sizeof("/rom@") - 1 ||
++        host != update->birth->host || extent != update->extent) {
++        return false;
++    }
++    /* The native id was copied at its original registration and rechecked by
++     * backing_current. No filename supplied by an external caller is read. */
++    return !strncmp(update->block->idstr, "/rom@", sizeof("/rom@") - 1);
++}
++
++bool qemu_ram_whole_acpi_size_consume(MemoryRegion *region, uint64_t size)
++{
++    WholeRamUpdate *update = whole_ram_update;
++
++    if (!whole_ram_update_current(update) ||
++        update->phase != WHOLE_RAM_UPDATE_RESIZING || update->size_consumed ||
++        region != update->region || size != update->extent ||
++        icount_crucible_whole_event_admit()) {
++        return false;
++    }
++    update->size_consumed = true;
++    return true;
++}
++
++static int whole_ram_acpi_resize(RAMBlock *block, ram_addr_t size, Error **errp)
++{
++    WholeRamUpdate *update = whole_ram_update;
++
++    if (!whole_ram_update_current(update) ||
++        update->phase != WHOLE_RAM_UPDATE_RESIZING || update->resize_consumed ||
++        block != update->block || size != update->extent ||
++        icount_crucible_whole_event_admit()) {
++        /* Preserve the negative native status without allocating an Error on
++         * a refused hot path. The retained source caller owns diagnostics. */
++        return -ESTALE;
++    }
++    update->resize_consumed = true;
++    if (global_dirty_tracking & GLOBAL_DIRTY_CRUCIBLE_CHECKPOINT) {
++        qemu_crucible_checkpoint_dirty_generation_advance();
++    }
++    /* No backing is replaced: the actual source-advertised maximum was
++     * reserved at birth. Detached regions have no FlatView topology to alter.
++     * Unknown resize notifiers are refused before this mutation. */
++    if (block->used_length != update->rounded) {
++        ram_block_notify_resize(block->host, block->used_length, update->rounded);
++        physical_memory_clear_dirty_range(block->offset, block->used_length);
++        block->used_length = update->rounded;
++        update->birth->used_extent = update->rounded;
++        physical_memory_set_dirty_range(block->offset, block->used_length,
++                                         DIRTY_CLIENTS_ALL);
++    }
++    if (memory_region_size(block->mr) != size) {
++        memory_region_set_size(block->mr, size);
++        if (!update->size_consumed) {
++            return -ESTALE;
++        }
++        update->phase = WHOLE_RAM_UPDATE_NOTIFYING;
++        block->resized(block->idstr, size, block->host);
++        update->phase = WHOLE_RAM_UPDATE_RESIZING;
++    }
++    update->phase = WHOLE_RAM_UPDATE_RESIZED;
++    return whole_ram_update_current(update) ? 0 : -ESTALE;
++}
++
++int qemu_ram_whole_acpi_update(MachineState *machine, MemoryRegion *region,
++                               const void *body, uint64_t extent)
++{
++    WholeRamBirth *birth;
++    WholeRamUpdate *update;
++    RAMBlock *block;
++    void *host;
++    uint64_t maximum, rounded, callback_generation;
++    const void *callback_context;
++    Error *error = NULL;
++    int status;
++
++    if (!whole_ram_selected() || whole_ram_update ||
++        !acpi_whole_ram_update_current || !extent ||
++        !crucible_whole_setup_guest_start_allowed() ||
++        icount_crucible_whole_event_current()) {
++        return -ESTALE;
++    }
++    birth = whole_ram_region(region);
++    if (!birth || !birth->acpi || machine != birth->machine ||
++        extent > birth->maximum || !whole_ram_round(extent, &rounded) ||
++        !acpi_whole_ram_update_current(machine, region, body, extent) ||
++        !crucible_whole_setup_history_span_current(body, extent) ||
++        qemu_ram_whole_backing_current(region, &block, &host, &maximum) ||
++        rounded > maximum ||
++        crucible_whole_fwcfg_acpi_update_context((FWCfgState *)birth->owner,
++            &callback_context, &callback_generation) || icount_crucible_whole_event_admit()) {
++        return -ESTALE;
++    }
++    update = crucible_whole_setup_history_allocate(sizeof(*update));
++    if (!update) {
++        whole_ram_owners->failed = true;
++        return -ENOSPC;
++    }
++    *update = (WholeRamUpdate) {
++        .previous = birth->latest_update, .birth = birth, .machine = machine,
++        .region = region, .block = block, .body = body, .extent = extent,
++        .rounded = rounded, .thread = qemu_get_thread_id(),
++        .callback_context = callback_context, .callback_generation = callback_generation,
++        .before_used = block->used_length, .before_size = memory_region_size(region),
++        .phase = WHOLE_RAM_UPDATE_ATTEMPTED,
++    };
++    birth->latest_update = update;
++    whole_ram_update = update;
++    if (!whole_ram_update_current(update)) {
++        status = -ESTALE;
++        goto refuse;
++    }
++    update->phase = WHOLE_RAM_UPDATE_RESIZING;
++    status = qemu_ram_resize(block, extent, &error);
++    error_free(error);
++    if (status || update->phase != WHOLE_RAM_UPDATE_RESIZED ||
++        !whole_ram_update_current(update) ||
++        !acpi_whole_ram_update_current(machine, region, body, extent) ||
++        icount_crucible_whole_event_admit()) {
++        status = status ? status : -ESTALE;
++        goto refuse;
++    }
++    memcpy(host, body, extent);
++    update->phase = WHOLE_RAM_UPDATE_COPIED;
++    if (!whole_ram_update_current(update) || icount_crucible_whole_event_admit()) {
++        status = -ESTALE;
++        goto refuse;
++    }
++    memory_region_set_dirty(region, 0, extent);
++    if (!whole_ram_update_current(update)) {
++        status = -ESTALE;
++        goto refuse;
++    }
++    update->phase = WHOLE_RAM_UPDATE_PUBLISHED;
++    whole_ram_update = NULL;
++    return 0;
++
++refuse:
++    /* Revoke the effect window before returning. Attempted and failed records
++     * remain owned; partial effects never refund bytes or event admission. */
++    update->phase = WHOLE_RAM_UPDATE_FAILED;
++    whole_ram_update = NULL;
++    whole_ram_owners->failed = true;
++    return status;
++}
++
++bool qemu_ram_whole_acpi_update_published(MachineState *machine,
++    MemoryRegion *region, const void *body, uint64_t extent)
++{
++    if (!whole_ram_selected()) {
++        return false;
++    }
++    WholeRamBirth *birth = whole_ram_region(region);
++    WholeRamUpdate *update = birth ? birth->latest_update : NULL;
++
++    return whole_ram_update_owned(update) &&
++        update->phase == WHOLE_RAM_UPDATE_PUBLISHED &&
++        machine == update->machine && region == update->region &&
++        body == update->body && extent == update->extent;
++}
++
 +int qemu_ram_whole_reservation(uint64_t *resident, uint64_t *peak)
 +{
 +    if (!whole_ram_selected() || !resident || !peak || resident == peak) {
@@ -185060,7 +185739,7 @@ index b8f7157cc346a37095700d51f96b1a353d06b549..101f4d1e946aaec3a750ce9e3117488d
  
      /*
 diff --git a/system/memory.c b/system/memory.c
-index 5fc36708ec349d94605f0503c647d7f9d1475a2d..89b59c9da210717efae7cfc350b255b854193a6f 100644
+index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be0ec20bc3 100644
 --- a/system/memory.c
 +++ b/system/memory.c
 @@ -14,6 +14,11 @@
@@ -185421,16 +186100,19 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..89b59c9da210717efae7cfc350b255b8
      if (enabled == mr->enabled) {
          return;
      }
-@@ -2643,6 +2736,8 @@ void memory_region_set_enabled(MemoryRegion *mr, bool enabled)
+@@ -2643,6 +2736,11 @@ void memory_region_set_enabled(MemoryRegion *mr, bool enabled)
  
  void memory_region_set_size(MemoryRegion *mr, uint64_t size)
  {
++    if (crucible_whole_setup_selected() && qemu_memory_whole_acpi_set_size(mr, size)) {
++        return;
++    }
 +    qemu_memory_crucible_mapping_writer_guard("memory_region_set_size");
 +
      Int128 s = int128_make64(size);
  
      if (size == UINT64_MAX) {
-@@ -2673,6 +2768,8 @@ static void memory_region_readd_subregion(MemoryRegion *mr)
+@@ -2673,6 +2771,8 @@ static void memory_region_readd_subregion(MemoryRegion *mr)
  
  void memory_region_set_address(MemoryRegion *mr, hwaddr addr)
  {
@@ -185439,7 +186121,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..89b59c9da210717efae7cfc350b255b8
      if (addr != mr->addr) {
          mr->addr = addr;
          memory_region_readd_subregion(mr);
-@@ -2681,6 +2778,8 @@ void memory_region_set_address(MemoryRegion *mr, hwaddr addr)
+@@ -2681,6 +2781,8 @@ void memory_region_set_address(MemoryRegion *mr, hwaddr addr)
  
  void memory_region_set_alias_offset(MemoryRegion *mr, hwaddr offset)
  {
@@ -185448,7 +186130,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..89b59c9da210717efae7cfc350b255b8
      assert(mr->alias);
  
      if (offset == mr->alias_offset) {
-@@ -2695,6 +2794,8 @@ void memory_region_set_alias_offset(MemoryRegion *mr, hwaddr offset)
+@@ -2695,6 +2797,8 @@ void memory_region_set_alias_offset(MemoryRegion *mr, hwaddr offset)
  
  void memory_region_set_unmergeable(MemoryRegion *mr, bool unmergeable)
  {
@@ -185457,7 +186139,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..89b59c9da210717efae7cfc350b255b8
      if (unmergeable == mr->unmergeable) {
          return;
      }
-@@ -2782,6 +2883,37 @@ static MemoryRegionSection memory_region_find_rcu(MemoryRegion *mr,
+@@ -2782,6 +2886,37 @@ static MemoryRegionSection memory_region_find_rcu(MemoryRegion *mr,
      return ret;
  }
  
@@ -185495,7 +186177,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..89b59c9da210717efae7cfc350b255b8
  MemoryRegionSection memory_region_find(MemoryRegion *mr,
                                         hwaddr addr, uint64_t size)
  {
-@@ -2848,6 +2980,19 @@ static unsigned int postponed_stop_flags;
+@@ -2848,6 +2983,19 @@ static unsigned int postponed_stop_flags;
  static VMChangeStateEntry *vmstate_change;
  static void memory_global_dirty_log_stop_postponed_run(void);
  
@@ -185515,7 +186197,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..89b59c9da210717efae7cfc350b255b8
  static bool memory_global_dirty_log_do_start(Error **errp)
  {
      MemoryListener *listener;
-@@ -2873,7 +3018,10 @@ err:
+@@ -2873,7 +3021,10 @@ err:
  
  bool memory_global_dirty_log_start(unsigned int flags, Error **errp)
  {
@@ -185526,7 +186208,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..89b59c9da210717efae7cfc350b255b8
  
      assert(flags && !(flags & (~GLOBAL_DIRTY_MASK)));
  
-@@ -2889,6 +3037,7 @@ bool memory_global_dirty_log_start(unsigned int flags, Error **errp)
+@@ -2889,6 +3040,7 @@ bool memory_global_dirty_log_start(unsigned int flags, Error **errp)
      }
  
      old_flags = global_dirty_tracking;
@@ -185534,7 +186216,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..89b59c9da210717efae7cfc350b255b8
      global_dirty_tracking |= flags;
      trace_global_dirty_changed(global_dirty_tracking);
  
-@@ -2899,6 +3048,9 @@ bool memory_global_dirty_log_start(unsigned int flags, Error **errp)
+@@ -2899,6 +3051,9 @@ bool memory_global_dirty_log_start(unsigned int flags, Error **errp)
              return false;
          }
  
@@ -185544,7 +186226,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..89b59c9da210717efae7cfc350b255b8
          memory_region_transaction_begin();
          memory_region_update_pending = true;
          memory_region_transaction_commit();
-@@ -2908,16 +3060,22 @@ bool memory_global_dirty_log_start(unsigned int flags, Error **errp)
+@@ -2908,16 +3063,22 @@ bool memory_global_dirty_log_start(unsigned int flags, Error **errp)
  
  static void memory_global_dirty_log_do_stop(unsigned int flags)
  {
@@ -185568,7 +186250,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..89b59c9da210717efae7cfc350b255b8
          MEMORY_LISTENER_CALL_GLOBAL(log_global_stop, Reverse);
      }
  }
-@@ -2951,6 +3109,8 @@ static void memory_vm_change_state_handler(void *opaque, bool running,
+@@ -2951,6 +3112,8 @@ static void memory_vm_change_state_handler(void *opaque, bool running,
  
  void memory_global_dirty_log_stop(unsigned int flags)
  {
@@ -185577,7 +186259,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..89b59c9da210717efae7cfc350b255b8
      if (!runstate_is_running()) {
          /* Postpone the dirty log stop, e.g., to when VM starts again */
          if (vmstate_change) {
-@@ -3085,6 +3245,8 @@ static void listener_del_address_space(MemoryListener *listener,
+@@ -3085,6 +3248,8 @@ static void listener_del_address_space(MemoryListener *listener,
  
  void memory_listener_register(MemoryListener *listener, AddressSpace *as)
  {
@@ -185586,7 +186268,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..89b59c9da210717efae7cfc350b255b8
      MemoryListener *other = NULL;
  
      /* Only one of them can be defined for a listener */
-@@ -3124,6 +3286,8 @@ void memory_listener_register(MemoryListener *listener, AddressSpace *as)
+@@ -3124,6 +3289,8 @@ void memory_listener_register(MemoryListener *listener, AddressSpace *as)
  
  void memory_listener_unregister(MemoryListener *listener)
  {
@@ -185595,7 +186277,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..89b59c9da210717efae7cfc350b255b8
      if (!listener->address_space) {
          return;
      }
-@@ -3147,6 +3311,8 @@ void address_space_remove_listeners(const AddressSpace *as)
+@@ -3147,6 +3314,8 @@ void address_space_remove_listeners(const AddressSpace *as)
  
  void address_space_init(AddressSpace *as, MemoryRegion *root, const char *name)
  {
@@ -185604,7 +186286,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..89b59c9da210717efae7cfc350b255b8
      memory_region_ref(root);
      as->root = root;
      as->current_map = NULL;
-@@ -3203,12 +3369,16 @@ static void address_space_detach(AddressSpace *as)
+@@ -3203,12 +3372,16 @@ static void address_space_detach(AddressSpace *as)
  
  void address_space_destroy(AddressSpace *as)
  {
@@ -185621,7 +186303,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..89b59c9da210717efae7cfc350b255b8
      address_space_detach(as);
      call_rcu(as, do_address_space_destroy_free, rcu);
  }
-@@ -3735,3 +3905,7 @@ static void memory_register_types(void)
+@@ -3735,3 +3908,7 @@ static void memory_register_types(void)
  }
  
  type_init(memory_register_types)
@@ -185667,10 +186349,10 @@ index cd3193d170b2b5759cb34e4087a6d0ebfa805287..c9270db4087e6983acedb08d42183332
 +  ))
  endif
 diff --git a/system/physmem.c b/system/physmem.c
-index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e054394ced 100644
+index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0a14a8448 100644
 --- a/system/physmem.c
 +++ b/system/physmem.c
-@@ -18,6 +18,9 @@
+@@ -18,7 +18,11 @@
   */
  
  #include "qemu/osdep.h"
@@ -185678,9 +186360,11 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
 +#include "qemu/crucible-memory-roots.h"
 +#include "qom/crucible-constructor-retirement.h"
  #include "exec/page-vary.h"
++#include "exec/icount.h"
  #include "qapi/error.h"
  
-@@ -44,6 +47,8 @@
+ #include "qemu/cutils.h"
+@@ -44,6 +48,8 @@
  #include "system/tcg.h"
  #include "system/qtest.h"
  #include "system/physmem.h"
@@ -185689,7 +186373,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
  #include "system/ramblock.h"
  #include "qemu/timer.h"
  #include "qemu/config-file.h"
-@@ -80,6 +85,7 @@
+@@ -80,6 +86,7 @@
  #include "migration/vmstate.h"
  
  #include "qemu/range.h"
@@ -185697,10 +186381,11 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
  #ifndef _WIN32
  #include "qemu/mmap-alloc.h"
  #endif
-@@ -97,6 +103,84 @@
+@@ -97,6 +104,85 @@
   */
  RAMList ram_list = { .blocks = QLIST_HEAD_INITIALIZER(ram_list.blocks) };
  
++static void physical_memory_clear_dirty_range(ram_addr_t, ram_addr_t);
 +#include "crucible-whole-ram.inc.c"
 +
 +static __thread unsigned crucible_dma_depth;
@@ -185782,7 +186467,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
  static MemoryRegion *system_memory;
  static MemoryRegion *system_io;
  
-@@ -302,6 +386,8 @@ static void phys_page_compact(PhysPageEntry *lp, Node *nodes)
+@@ -302,6 +388,8 @@ static void phys_page_compact(PhysPageEntry *lp, Node *nodes)
  
  void address_space_dispatch_compact(AddressSpaceDispatch *d)
  {
@@ -185791,7 +186476,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      if (d->phys_map.skip) {
          phys_page_compact(&d->phys_map, d->map.nodes);
      }
-@@ -588,6 +674,58 @@ MemoryRegion *flatview_translate(FlatView *fv, hwaddr addr, hwaddr *xlat,
+@@ -588,6 +676,58 @@ MemoryRegion *flatview_translate(FlatView *fv, hwaddr addr, hwaddr *xlat,
      return mr;
  }
  
@@ -185850,7 +186535,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
  #ifdef CONFIG_TCG
  
  typedef struct TCGIOMMUNotifier {
-@@ -929,11 +1067,13 @@ bool physical_memory_get_dirty_flag(ram_addr_t addr, unsigned client)
+@@ -929,11 +1069,13 @@ bool physical_memory_get_dirty_flag(ram_addr_t addr, unsigned client)
  
  bool physical_memory_is_clean(ram_addr_t addr)
  {
@@ -185869,7 +186554,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
  }
  
  static bool physical_memory_all_dirty(ram_addr_t start, ram_addr_t length,
-@@ -1006,6 +1146,10 @@ void physical_memory_set_dirty_flag(ram_addr_t addr, unsigned client)
+@@ -1006,6 +1148,10 @@ void physical_memory_set_dirty_flag(ram_addr_t addr, unsigned client)
      blocks = qatomic_rcu_read(&ram_list.dirty_memory[client]);
  
      set_bit_atomic(offset, blocks->blocks[idx]);
@@ -185880,7 +186565,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
  }
  
  void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
-@@ -1016,6 +1160,10 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
+@@ -1016,6 +1162,10 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
      unsigned long idx, offset, base;
      int i;
  
@@ -185891,7 +186576,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      if (!mask && !xen_enabled()) {
          return;
      }
-@@ -1046,6 +1194,12 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
+@@ -1046,6 +1196,12 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
                  bitmap_set_atomic(blocks[DIRTY_MEMORY_CODE]->blocks[idx],
                                    offset, next - page);
              }
@@ -185904,7 +186589,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
  
              page = next;
              idx++;
-@@ -1248,7 +1402,8 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
+@@ -1248,7 +1404,8 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
                      nbits = ctpopl(temp);
                      qatomic_or(&blocks[DIRTY_MEMORY_VGA][idx][offset], temp);
  
@@ -185914,7 +186599,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
                          qatomic_or(
                                  &blocks[DIRTY_MEMORY_MIGRATION][idx][offset],
                                  temp);
-@@ -1257,6 +1412,14 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
+@@ -1257,6 +1414,14 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
                              total_dirty_pages += nbits;
                          }
                      }
@@ -185929,7 +186614,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
  
                      num_dirty += nbits;
  
-@@ -1280,9 +1443,12 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
+@@ -1280,9 +1445,12 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
          uint8_t clients = tcg_enabled() ? DIRTY_CLIENTS_ALL
                                          : DIRTY_CLIENTS_NOCODE;
  
@@ -185943,7 +186628,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
  
          /*
           * bitmap-traveling is faster than memory-traveling (for addr...)
-@@ -1329,6 +1495,10 @@ static uint16_t phys_section_add(PhysPageMap *map,
+@@ -1329,6 +1497,10 @@ static uint16_t phys_section_add(PhysPageMap *map,
      return map->sections_nb++;
  }
  
@@ -185954,7 +186639,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
  static void phys_section_destroy(MemoryRegion *mr)
  {
      bool have_sub_page = mr->subpage;
-@@ -1337,7 +1507,9 @@ static void phys_section_destroy(MemoryRegion *mr)
+@@ -1337,7 +1509,9 @@ static void phys_section_destroy(MemoryRegion *mr)
  
      if (have_sub_page) {
          subpage_t *subpage = container_of(mr, subpage_t, iomem);
@@ -185964,7 +186649,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
          g_free(subpage);
      }
  }
-@@ -1405,6 +1577,8 @@ static void register_multipage(FlatView *fv,
+@@ -1405,6 +1579,8 @@ static void register_multipage(FlatView *fv,
   */
  void flatview_add_to_dispatch(FlatView *fv, MemoryRegionSection *section)
  {
@@ -185973,7 +186658,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      MemoryRegionSection remain = *section;
      Int128 page_size = int128_make64(TARGET_PAGE_SIZE);
  
-@@ -1901,6 +2075,11 @@ bool qemu_ram_is_uf_zeroable(const RAMBlock *rb)
+@@ -1901,6 +2077,11 @@ bool qemu_ram_is_uf_zeroable(const RAMBlock *rb)
  
  void qemu_ram_set_uf_zeroable(RAMBlock *rb)
  {
@@ -185985,7 +186670,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      rb->flags |= RAM_UF_ZEROPAGE;
  }
  
-@@ -1911,11 +2090,17 @@ bool qemu_ram_is_migratable(const RAMBlock *rb)
+@@ -1911,11 +2092,17 @@ bool qemu_ram_is_migratable(const RAMBlock *rb)
  
  void qemu_ram_set_migratable(RAMBlock *rb)
  {
@@ -186003,7 +186688,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      rb->flags &= ~RAM_MIGRATABLE;
  }
  
-@@ -1932,6 +2117,9 @@ int qemu_ram_get_fd(const RAMBlock *rb)
+@@ -1932,6 +2119,9 @@ int qemu_ram_get_fd(const RAMBlock *rb)
  /* Called with the BQL held.  */
  void qemu_ram_set_idstr(RAMBlock *new_block, const char *name, DeviceState *dev)
  {
@@ -186013,7 +186698,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      RAMBlock *block;
  
      assert(new_block);
-@@ -1946,6 +2134,7 @@ void qemu_ram_set_idstr(RAMBlock *new_block, const char *name, DeviceState *dev)
+@@ -1946,6 +2136,7 @@ void qemu_ram_set_idstr(RAMBlock *new_block, const char *name, DeviceState *dev)
      }
      pstrcat(new_block->idstr, sizeof(new_block->idstr), name);
  
@@ -186021,7 +186706,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      RCU_READ_LOCK_GUARD();
      RAMBLOCK_FOREACH(block) {
          if (block != new_block &&
-@@ -1960,11 +2149,14 @@ void qemu_ram_set_idstr(RAMBlock *new_block, const char *name, DeviceState *dev)
+@@ -1960,11 +2151,14 @@ void qemu_ram_set_idstr(RAMBlock *new_block, const char *name, DeviceState *dev)
  /* Called with the BQL held.  */
  void qemu_ram_unset_idstr(RAMBlock *block)
  {
@@ -186036,19 +186721,19 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
          memset(block->idstr, 0, sizeof(block->idstr));
      }
  }
-@@ -2019,6 +2211,11 @@ static int memory_try_enable_merging(void *addr, size_t len)
+@@ -2019,6 +2213,11 @@ static int memory_try_enable_merging(void *addr, size_t len)
   */
  int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
  {
 +    if (crucible_whole_setup_selected()) {
-+        whole_ram_refuse();
++        return whole_ram_acpi_resize(block, newsize, errp);
 +    }
 +    qemu_memory_crucible_mapping_writer_guard("qemu_ram_resize");
 +
      const ram_addr_t oldsize = block->used_length;
      const ram_addr_t unaligned_size = newsize;
  
-@@ -2031,6 +2228,9 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
+@@ -2031,6 +2230,9 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
           * sizes), however, we have to notify if the unaligned size changed.
           */
          if (unaligned_size != memory_region_size(block->mr)) {
@@ -186058,7 +186743,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
              memory_region_set_size(block->mr, unaligned_size);
              if (block->resized) {
                  block->resized(block->idstr, unaligned_size, block->host);
-@@ -2118,6 +2318,10 @@ static void dirty_memory_extend(ram_addr_t new_ram_size)
+@@ -2118,6 +2320,10 @@ static void dirty_memory_extend(ram_addr_t new_ram_size)
          return;
      }
  
@@ -186069,7 +186754,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      for (i = 0; i < DIRTY_MEMORY_NUM; i++) {
          DirtyMemoryBlocks *old_blocks;
          DirtyMemoryBlocks *new_blocks;
-@@ -2301,6 +2505,11 @@ RAMBlock *qemu_ram_alloc_from_fd(ram_addr_t size, ram_addr_t max_size,
+@@ -2301,6 +2507,11 @@ RAMBlock *qemu_ram_alloc_from_fd(ram_addr_t size, ram_addr_t max_size,
                                   bool grow,
                                   Error **errp)
  {
@@ -186081,7 +186766,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      ERRP_GUARD();
      RAMBlock *new_block;
      Error *local_err = NULL;
-@@ -2461,10 +2670,17 @@ RAMBlock *qemu_ram_alloc_internal(ram_addr_t size, ram_addr_t max_size,
+@@ -2461,10 +2672,17 @@ RAMBlock *qemu_ram_alloc_internal(ram_addr_t size, ram_addr_t max_size,
                                    void *host, uint32_t ram_flags,
                                    MemoryRegion *mr, Error **errp)
  {
@@ -186099,7 +186784,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      share_flags = ram_flags & (RAM_PRIVATE | RAM_SHARED);
      assert(share_flags != (RAM_SHARED | RAM_PRIVATE));
      ram_flags &= ~RAM_PRIVATE;
-@@ -2524,7 +2740,10 @@ RAMBlock *qemu_ram_alloc_internal(ram_addr_t size, ram_addr_t max_size,
+@@ -2524,7 +2742,10 @@ RAMBlock *qemu_ram_alloc_internal(ram_addr_t size, ram_addr_t max_size,
      size = ROUND_UP(size, align);
      max_size = ROUND_UP(max_size, align);
  
@@ -186111,7 +186796,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      new_block->mr = mr;
      new_block->resized = resized;
      new_block->used_length = size;
-@@ -2536,10 +2755,14 @@ RAMBlock *qemu_ram_alloc_internal(ram_addr_t size, ram_addr_t max_size,
+@@ -2536,10 +2757,14 @@ RAMBlock *qemu_ram_alloc_internal(ram_addr_t size, ram_addr_t max_size,
      new_block->flags = ram_flags;
      ram_block_add(new_block, &local_err);
      if (local_err) {
@@ -186126,7 +186811,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      return new_block;
  }
  
-@@ -2568,6 +2791,10 @@ RAMBlock *qemu_ram_alloc_resizeable(ram_addr_t size, ram_addr_t maxsz,
+@@ -2568,6 +2793,10 @@ RAMBlock *qemu_ram_alloc_resizeable(ram_addr_t size, ram_addr_t maxsz,
  
  static void reclaim_ramblock(RAMBlock *block)
  {
@@ -186137,7 +186822,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      if (block->flags & RAM_PREALLOC) {
          ;
      } else if (xen_map_cache_enabled()) {
-@@ -2591,20 +2818,29 @@ static void reclaim_ramblock(RAMBlock *block)
+@@ -2591,20 +2820,29 @@ static void reclaim_ramblock(RAMBlock *block)
  
  void qemu_ram_free(RAMBlock *block)
  {
@@ -186169,7 +186854,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      QLIST_REMOVE_RCU(block, next);
      qatomic_set(&ram_list.mru_block, NULL);
      /* Write list before version */
-@@ -2647,6 +2883,11 @@ static int qemu_ram_remap_mmap(RAMBlock *block, uint64_t start, size_t length)
+@@ -2647,6 +2885,11 @@ static int qemu_ram_remap_mmap(RAMBlock *block, uint64_t start, size_t length)
   */
  void qemu_ram_remap(ram_addr_t addr)
  {
@@ -186181,7 +186866,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      RAMBlock *block;
      uint64_t offset;
      void *vaddr;
-@@ -2688,6 +2929,12 @@ void qemu_ram_remap(ram_addr_t addr)
+@@ -2688,6 +2931,12 @@ void qemu_ram_remap(ram_addr_t addr)
                  qemu_ram_setup_dump(vaddr, page_size);
              }
  
@@ -186194,7 +186879,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
              break;
          }
      }
-@@ -2952,6 +3199,8 @@ static const MemoryRegionOps subpage_ops = {
+@@ -2952,6 +3201,8 @@ static const MemoryRegionOps subpage_ops = {
      .endianness = DEVICE_NATIVE_ENDIAN,
  };
  
@@ -186203,7 +186888,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
  static int subpage_register(subpage_t *mmio, uint32_t start, uint32_t end,
                              uint16_t section)
  {
-@@ -2974,12 +3223,14 @@ static subpage_t *subpage_init(FlatView *fv, hwaddr base)
+@@ -2974,12 +3225,14 @@ static subpage_t *subpage_init(FlatView *fv, hwaddr base)
      subpage_t *mmio;
  
      /* mmio->sub_section is set to PHYS_SECTION_UNASSIGNED with g_malloc0 */
@@ -186218,7 +186903,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      trace_subpage_init(mmio, base, TARGET_PAGE_SIZE);
  
      return mmio;
-@@ -3023,6 +3274,8 @@ AddressSpaceDispatch *address_space_dispatch_new(FlatView *fv)
+@@ -3023,6 +3276,8 @@ AddressSpaceDispatch *address_space_dispatch_new(FlatView *fv)
  
  void address_space_dispatch_free(AddressSpaceDispatch *d)
  {
@@ -186227,7 +186912,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      phys_sections_free(&d->map);
      g_free(d);
  }
-@@ -3145,6 +3398,26 @@ static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
+@@ -3145,6 +3400,26 @@ static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
      physical_memory_set_dirty_range(addr, length, dirty_log_mask);
  }
  
@@ -186254,7 +186939,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
  void memory_region_flush_rom_device(MemoryRegion *mr, hwaddr addr, hwaddr size)
  {
      /*
-@@ -3230,7 +3503,8 @@ static bool flatview_access_allowed(MemoryRegion *mr, MemTxAttrs attrs,
+@@ -3230,7 +3505,8 @@ static bool flatview_access_allowed(MemoryRegion *mr, MemTxAttrs attrs,
  static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
                                                  const uint8_t *buf,
                                                  hwaddr len, hwaddr mr_addr,
@@ -186264,7 +186949,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
  {
      if (!flatview_access_allowed(mr, attrs, mr_addr, *l)) {
          return MEMTX_ACCESS_ERROR;
-@@ -3270,8 +3544,35 @@ static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
+@@ -3270,8 +3546,35 @@ static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
          uint8_t *ram_ptr = qemu_ram_ptr_length(mr->ram_block, mr_addr, l,
                                                 false, true);
  
@@ -186302,7 +186987,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
  
          return MEMTX_OK;
      }
-@@ -3282,14 +3583,15 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
+@@ -3282,14 +3585,15 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
                                             MemTxAttrs attrs,
                                             const void *ptr,
                                             hwaddr len, hwaddr mr_addr,
@@ -186321,7 +187006,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
  
          len -= l;
          buf += l;
-@@ -3300,7 +3602,8 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
+@@ -3300,7 +3604,8 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
          }
  
          l = len;
@@ -186331,7 +187016,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      }
  
      return result;
-@@ -3312,21 +3615,24 @@ static MemTxResult flatview_write(FlatView *fv, hwaddr addr, MemTxAttrs attrs,
+@@ -3312,21 +3617,24 @@ static MemTxResult flatview_write(FlatView *fv, hwaddr addr, MemTxAttrs attrs,
  {
      hwaddr l;
      hwaddr mr_addr;
@@ -186359,7 +187044,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
  {
      if (!flatview_access_allowed(mr, attrs, mr_addr, *l)) {
          return MEMTX_ACCESS_ERROR;
-@@ -3365,6 +3671,26 @@ static MemTxResult flatview_read_continue_step(MemTxAttrs attrs, uint8_t *buf,
+@@ -3365,6 +3673,26 @@ static MemTxResult flatview_read_continue_step(MemTxAttrs attrs, uint8_t *buf,
  
          memcpy(buf, ram_ptr, *l);
  
@@ -186386,7 +187071,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
          return MEMTX_OK;
      }
  }
-@@ -3377,10 +3703,18 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
+@@ -3377,10 +3705,18 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
  {
      MemTxResult result = MEMTX_OK;
      uint8_t *buf = ptr;
@@ -186406,7 +187091,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
  
          len -= l;
          buf += l;
-@@ -3391,7 +3725,8 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
+@@ -3391,7 +3727,8 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
          }
  
          l = len;
@@ -186416,7 +187101,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      }
  
      return result;
-@@ -3403,10 +3738,12 @@ static MemTxResult flatview_read(FlatView *fv, hwaddr addr,
+@@ -3403,10 +3740,12 @@ static MemTxResult flatview_read(FlatView *fv, hwaddr addr,
  {
      hwaddr l;
      hwaddr mr_addr;
@@ -186430,7 +187115,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      if (!flatview_access_allowed(mr, attrs, mr_addr, l)) {
          return MEMTX_ACCESS_ERROR;
      }
-@@ -3456,6 +3793,73 @@ MemTxResult address_space_rw(const AddressSpace *as, hwaddr addr,
+@@ -3456,6 +3795,73 @@ MemTxResult address_space_rw(const AddressSpace *as, hwaddr addr,
      }
  }
  
@@ -186504,7 +187189,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
  MemTxResult address_space_set(const AddressSpace *as, hwaddr addr,
                                uint8_t c, hwaddr len, MemTxAttrs attrs)
  {
-@@ -3487,11 +3891,65 @@ void physical_memory_write(hwaddr addr, const void *buf, hwaddr len)
+@@ -3487,11 +3893,65 @@ void physical_memory_write(hwaddr addr, const void *buf, hwaddr len)
                          MEMTXATTRS_UNSPECIFIED, buf, len);
  }
  
@@ -186570,7 +187255,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      RCU_READ_LOCK_GUARD();
      while (len > 0) {
          hwaddr addr1, l = len;
-@@ -3555,6 +4013,11 @@ typedef struct {
+@@ -3555,6 +4015,11 @@ typedef struct {
      MemoryRegion *mr;
      hwaddr addr;
      size_t len;
@@ -186582,7 +187267,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      uint8_t buffer[];
  } BounceBuffer;
  
-@@ -3578,6 +4041,8 @@ static void address_space_notify_map_clients_locked(const AddressSpace *as)
+@@ -3578,6 +4043,8 @@ static void address_space_notify_map_clients_locked(const AddressSpace *as)
  
  void address_space_register_map_client(AddressSpace *as, QEMUBH *bh)
  {
@@ -186591,7 +187276,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      AddressSpaceMapClient *client = g_malloc(sizeof(*client));
  
      QEMU_LOCK_GUARD(&as->map_client_list_lock);
-@@ -3607,6 +4072,8 @@ void machine_memory_init(void)
+@@ -3607,6 +4074,8 @@ void machine_memory_init(void)
  
  void address_space_unregister_map_client(AddressSpace *as, QEMUBH *bh)
  {
@@ -186600,7 +187285,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      AddressSpaceMapClient *client;
  
      QEMU_LOCK_GUARD(&as->map_client_list_lock);
-@@ -3708,6 +4175,8 @@ void *address_space_map(AddressSpace *as,
+@@ -3708,6 +4177,8 @@ void *address_space_map(AddressSpace *as,
                          bool is_write,
                          MemTxAttrs attrs)
  {
@@ -186609,7 +187294,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      hwaddr len = *plen;
      hwaddr l, xlat;
      MemoryRegion *mr;
-@@ -3724,7 +4193,8 @@ void *address_space_map(AddressSpace *as,
+@@ -3724,7 +4195,8 @@ void *address_space_map(AddressSpace *as,
      fv = address_space_to_flatview(as);
      mr = flatview_translate(fv, addr, &xlat, &l, is_write, attrs);
  
@@ -186619,7 +187304,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
          size_t used = qatomic_read(&as->bounce_buffer_size);
          for (;;) {
              hwaddr alloc = MIN(as->max_bounce_buffer_size - used, l);
-@@ -3749,10 +4219,47 @@ void *address_space_map(AddressSpace *as,
+@@ -3749,10 +4221,47 @@ void *address_space_map(AddressSpace *as,
          bounce->mr = mr;
          bounce->addr = addr;
          bounce->len = l;
@@ -186671,7 +187356,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
          }
  
          *plen = l;
-@@ -3793,8 +4300,43 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
+@@ -3793,8 +4302,43 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
      assert(bounce->magic == BOUNCE_BUFFER_MAGIC);
  
      if (is_write) {
@@ -186717,7 +187402,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      }
  
      qatomic_sub(&as->bounce_buffer_size, bounce->len);
-@@ -3839,6 +4381,10 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
+@@ -3839,6 +4383,10 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
  
      assert(len > 0);
  
@@ -186728,7 +187413,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
      l = len;
      cache->fv = address_space_get_flatview(as);
      d = flatview_to_dispatch(cache->fv);
-@@ -3874,6 +4420,66 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
+@@ -3874,6 +4422,66 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
      return l;
  }
  
@@ -186795,7 +187480,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
  void address_space_cache_invalidate(const MemoryRegionCache *cache,
                                      hwaddr addr,
                                      hwaddr access_len)
-@@ -3941,8 +4547,8 @@ static MemTxResult address_space_write_continue_cached(MemTxAttrs attrs,
+@@ -3941,8 +4549,8 @@ static MemTxResult address_space_write_continue_cached(MemTxAttrs attrs,
      const uint8_t *buf = ptr;
  
      for (;;) {
@@ -186806,7 +187491,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
  
          len -= l;
          buf += l;
-@@ -3968,7 +4574,8 @@ static MemTxResult address_space_read_continue_cached(MemTxAttrs attrs,
+@@ -3968,7 +4576,8 @@ static MemTxResult address_space_read_continue_cached(MemTxAttrs attrs,
      uint8_t *buf = ptr;
  
      for (;;) {
@@ -186816,7 +187501,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
          len -= l;
          buf += l;
          mr_addr += l;
-@@ -4070,6 +4677,36 @@ int cpu_memory_rw_debug(CPUState *cpu, vaddr addr,
+@@ -4070,6 +4679,36 @@ int cpu_memory_rw_debug(CPUState *cpu, vaddr addr,
      return 0;
  }
  
@@ -186853,7 +187538,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
  int qemu_ram_foreach_block(RAMBlockIterFunc func, void *opaque)
  {
      RAMBlock *block;
-@@ -4222,6 +4859,12 @@ int ram_block_discard_range(RAMBlock *rb, uint64_t offset, size_t length)
+@@ -4222,6 +4861,12 @@ int ram_block_discard_range(RAMBlock *rb, uint64_t offset, size_t length)
      if (rb->guest_memfd >= 0) {
          ret = ram_block_discard_guest_memfd_range(rb, offset, length);
      }
@@ -186866,7 +187551,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e0
  
      return ret;
  }
-@@ -4492,3 +5135,14 @@ void ram_block_del_cpr_blocker(RAMBlock *rb)
+@@ -4492,3 +5137,14 @@ void ram_block_del_cpr_blocker(RAMBlock *rb)
  {
      migrate_del_blocker(&rb->cpr_blocker);
  }

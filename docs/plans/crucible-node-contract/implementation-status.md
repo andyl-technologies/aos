@@ -2799,6 +2799,25 @@ all-target checks pass. Independent review verifies all 18 changed source
 roles and retained evidence. The installed singleton collector, remaining
 adverse cases and complete 382-obligation acceptance are still unfinished.
 
+## Original ACPI runtime update journal
+
+The signed canonical QEMU source now retains each original ACPI producer offer
+through a nonrenewing native RAM update journal. Resize, firmware directory
+length changes, copying and dirty publication validate the original backing,
+callback context and source generation before effects. Completed publication
+is exposed through a read-only source phase. Selected builtin ROMs resolve
+from the distinct source-built firmware directory; ordinary lookup remains
+unchanged. No new QEMU files are introduced by this step.
+
+A fresh ordinary-feature configuration regenerates Meson and QAPI, executes
+2,482 recorded AOS Bash commands, and links both system emulators and
+`qemu-img`. Four changed complete translation units pass with warnings treated
+as errors. Three actual qcow2 controls and three coupled producer/update
+controls pass; authority certificates in the latter controls are explicitly
+modeled. Independent review verifies all ten changed source paths and retained
+build dependencies. Installed plugin execution, complete physical/source
+closure, HOLD, readiness, guest execution and boundary gates remain pending.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
