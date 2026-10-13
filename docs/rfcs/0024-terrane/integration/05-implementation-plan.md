@@ -200,7 +200,16 @@ correction derives a larger gap from the unchanged commit bound and proves
 that the old role remains valid while the newest remains future before and
 after the exact sourced retention refusal. Production clock and signing
 behavior remain unchanged. A separate continuation on the same executables
-passes the repeated-producer case; its remaining selectors are still pending.
+passes nineteen cases, including the repeated-producer checks, both corrected
+GC fixtures, cancellation under its unchanged 120-second limit, and fresh and
+cached recovery retries. The principal-kind refusal then fails its full physical
+state oracle: genuine preliminary destination admission retains one authorized
+epoch bootstrap before comparing the paired principals. A reviewed fixture
+correction retains and independently verifies that setup before measuring the
+unchanged exact refusal and complete physical-state equality. A final separate
+recorded-context refusal case passes. Across these sealed diagnostics, twenty-six
+of the twenty-eight focused cases pass and two fail; the corrected composition
+still requires a fresh complete run.
 The complete original Core test diff has now been read, including all 99
 owned paths and independent literal carrier recurrences. Source review and
 separate diagnostics do not qualify the complete T1 floor or advance a task.
