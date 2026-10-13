@@ -6,10 +6,6 @@
 //! clock journal prevents a copied or expired manifest from becoming current
 //! merely because a process restarted or the wall clock moved backwards.
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleResourceV1,
-};
-
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -21,6 +17,7 @@ use aos_sandbox_core::model::CacheDomainKind;
 use aos_sandbox_core::{
     AttachmentId, ObjectDescriptor, ObjectDigest, OperationId, ProjectId, ViewId,
 };
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::LifecycleResourceV1;
 use sha2::{Digest as _, Sha256};
 
 use crate::journal::{

@@ -1,13 +1,8 @@
 //! Purpose-specific commitments used by lifecycle semantic facts.
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleModelError,
-};
-
 use aos_sandbox_core::{ObjectDigest, model::snapshot::RetentionClaim};
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::LifecycleModelError;
 use sha2::{Digest as _, Sha256};
-
-
 
 /// Commits a canonical snapshot manifest independently of object identity.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]

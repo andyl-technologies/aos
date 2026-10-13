@@ -4,10 +4,6 @@
 //! consume authenticated protected-session readbacks and never accept raw
 //! inventory callbacks, evidence rows, or effect authority.
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleResourceV1,
-};
-
 use std::marker::PhantomData;
 
 use aos_proto::aos::sandbox::local::v1::{
@@ -23,6 +19,7 @@ use aos_sandbox_core::bounded_codec::{BoundedReader, ReadError};
 use aos_sandbox_core::{
     AssignmentEpoch, NamespaceGeneration, ObjectDigest, OperationId, Revision, SandboxId,
 };
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::LifecycleResourceV1;
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodRequestV1,
     AuthenticatedBrokerMethodResultV1, AuthenticatedBrokerOutcomeDirectionV1,
@@ -34,10 +31,10 @@ use sha2::{Digest as _, Sha256};
 use super::{
     LifecycleAttemptStateV1, LifecycleBootInventoryV1, LifecycleEffectDirectionV1,
     LifecycleMethodV1, LifecycleOperationV1, LifecyclePhaseV1, LifecycleProtectedCoordinationV1,
-    LifecycleProtectedRetentionLedgerV1, LifecycleRecordDigestV1, 
-    LifecycleStepBodyDigestV1, LifecycleStepClassV1, LifecycleStepDomainV1,
-    LifecycleStepRequestDigestV1, LifecycleStepStateV1, LifecycleStepV1,
-    LifecycleSuspendObservationV1, LifecycleTerminalResultV1, LiveRuntimeFenceV1,
+    LifecycleProtectedRetentionLedgerV1, LifecycleRecordDigestV1, LifecycleStepBodyDigestV1,
+    LifecycleStepClassV1, LifecycleStepDomainV1, LifecycleStepRequestDigestV1,
+    LifecycleStepStateV1, LifecycleStepV1, LifecycleSuspendObservationV1,
+    LifecycleTerminalResultV1, LiveRuntimeFenceV1,
 };
 
 /// Reports a malformed or stale method-specific lifecycle transition.

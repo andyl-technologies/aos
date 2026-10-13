@@ -12,14 +12,12 @@
 //! Canonical bytes describe dependencies; neither a checksum nor a decoded
 //! inventory authenticates a current graph, an owner, a floor or retirement.
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleDependencyEdgeV1, LifecycleModelError, LifecycleResourceV1, canonical_dependency_postorder_is_complete,
-};
-
 use aos_sandbox_core::{OperationId, ProjectId};
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleDependencyEdgeV1, LifecycleModelError, LifecycleResourceV1,
+    canonical_dependency_postorder_is_complete,
+};
 use sha2::{Digest as _, Sha256};
-
-
 
 pub(crate) const BATCH_PREFIX: &[u8] = b"aos.delete.batch.v1\0";
 pub(crate) const TOMBSTONE_PREFIX: &[u8] = b"aos.delete.tombstone.v1\0";

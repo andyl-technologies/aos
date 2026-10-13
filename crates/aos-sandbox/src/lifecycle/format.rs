@@ -29,10 +29,6 @@
 //! commit. Its kind5 fact owns the separate batch/native DATA layout; the
 //! ordinary encoder still emits D3 and never infers D4 from Delete intent.
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleModelError, LifecycleResourceV1,
-};
-
 use super::attempt::{
     LifecycleAttemptStateV1, LifecycleEffectAttemptV1, LifecycleEffectDirectionV1,
     MAXIMUM_LIFECYCLE_ATTEMPTS_PER_STEP,
@@ -40,9 +36,9 @@ use super::attempt::{
 use super::codec::{take, take_slice, usize_from_u32};
 use super::intent::{
     DesiredStateCasV1, DesiredStateFenceV1, LifecycleFailureClassV1, LifecycleFailureV1,
-    LifecycleIntentV1, LifecycleResumeSourceV1, LifecycleRetryV1,
-    LifecycleStepClassV1, LifecycleStepDomainV1, LifecycleStepStateV1, LifecycleTargetFenceV1,
-    LifecycleTimeV1, LiveRuntimeFenceV1, ResourceExpectationV1, ResourceExpectedStateV1,
+    LifecycleIntentV1, LifecycleResumeSourceV1, LifecycleRetryV1, LifecycleStepClassV1,
+    LifecycleStepDomainV1, LifecycleStepStateV1, LifecycleTargetFenceV1, LifecycleTimeV1,
+    LiveRuntimeFenceV1, ResourceExpectationV1, ResourceExpectedStateV1,
 };
 use super::model::{
     DesiredStateCasDigestV1, DesiredStateDocumentDigestV1, LifecycleFailureDigestV1,
@@ -56,9 +52,9 @@ use super::model::{
 
 use super::semantic::{
     LifecycleAssignmentCommitFactV1, LifecycleCascadeTombstonePlanV1, LifecycleCommittedResourceV1,
-    LifecycleMethodSemanticCommitV1, LifecycleReadCommitFactV1,
-    LifecycleReservationCommitFactV1, LifecycleRetentionAcknowledgementV1,
-    LifecycleSemanticCommitFactV1, LifecycleSnapshotManifestDigestV1, LifecycleTransactionIdV1,
+    LifecycleMethodSemanticCommitV1, LifecycleReadCommitFactV1, LifecycleReservationCommitFactV1,
+    LifecycleRetentionAcknowledgementV1, LifecycleSemanticCommitFactV1,
+    LifecycleSnapshotManifestDigestV1, LifecycleTransactionIdV1,
 };
 use super::semantic_format::{
     LifecycleSemanticFactLayoutV1, decode_expected_resource, decode_semantic_fact_with_layout,
@@ -68,6 +64,9 @@ use super::semantic_format::{
 use aos_sandbox_core::{
     AssignmentEpoch, DesiredGeneration, ExecutionId, IncarnationId, NamespaceGeneration,
     ObjectDigest, OperationId, ResourceId, Revision, SandboxId, SnapshotId, ViewId,
+};
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleModelError, LifecycleResourceV1,
 };
 
 const LEGACY_MAGIC: &[u8; 8] = b"AOSLIF01";

@@ -3,19 +3,18 @@
 //! The types reserve a future shared-journal integration surface while keeping
 //! this source partition disconnected from the journal implementation.
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleDependencyEdgeV1, LifecycleModelError, LifecycleResourceV1,
-};
-
 use std::collections::BTreeMap;
 
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, ResourceId, Revision, SandboxId};
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleDependencyEdgeV1, LifecycleModelError, LifecycleResourceV1,
+};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    LifecycleControllerDependencySnapshotV1, 
-    LifecycleRecordDigestV1, LifecycleReplayVerificationV1, 
-    LifecycleRetentionLedgerDigestV1, LifecycleSnapshotManifestDigestV1, LiveRuntimeFenceV1,
+    LifecycleControllerDependencySnapshotV1, LifecycleRecordDigestV1,
+    LifecycleReplayVerificationV1, LifecycleRetentionLedgerDigestV1,
+    LifecycleSnapshotManifestDigestV1, LiveRuntimeFenceV1,
 };
 
 const MAGIC: &[u8; 8] = b"AOSLIFJ1";

@@ -1,15 +1,14 @@
 //! Cross-projection validation for compacted lifecycle replay.
 
+use aos_sandbox_core::{ProjectId, ResourceId, Revision};
 use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
     LifecycleModelError, LifecycleResourceV1,
 };
 
-use aos_sandbox_core::{ProjectId, ResourceId, Revision};
-
 use super::{
     LifecycleAuthoritativeSemanticCommitV1, LifecycleAuxiliaryHistoryV1, LifecycleAuxiliaryKindV1,
-    LifecycleAuxiliaryPayloadV1, LifecycleCoordinationRecordDigestV1, 
-    LifecycleOperationV1, LifecycleProtectedCoordinationV1, LifecycleProtectedRetentionLedgerV1,
+    LifecycleAuxiliaryPayloadV1, LifecycleCoordinationRecordDigestV1, LifecycleOperationV1,
+    LifecycleProtectedCoordinationV1, LifecycleProtectedRetentionLedgerV1,
     LifecycleRetentionLedgerDigestV1, LifecycleSemanticCommitFactV1,
 };
 

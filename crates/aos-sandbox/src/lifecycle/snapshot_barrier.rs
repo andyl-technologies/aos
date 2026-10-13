@@ -1,12 +1,9 @@
 //! LIFE-01 dependency-closure freeze and atomic snapshot orchestration.
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleResourceV1,
-};
-
 use std::collections::BTreeSet;
 
 use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId, SnapshotId};
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::LifecycleResourceV1;
 use sha2::{Digest as _, Sha256};
 
 use super::{
@@ -14,8 +11,8 @@ use super::{
     CurrentLifecycleRetentionLedgerV1, LifecycleControllerDependencySnapshotV1,
     LifecycleCoordinationPhaseV1, LifecycleCoordinationTransactionV1, LifecycleEffectDomainV1,
     LifecycleEffectObservationV1, LifecycleMethodV1, LifecyclePhase6EffectPlanV1,
-    LifecyclePhase6ErrorV1, LifecyclePhaseV1, LifecycleStepClassV1,
-    LifecycleStepV1, LifecycleStorageInventoryKindV1, lifecycle_phase6_planned_step_v1,
+    LifecyclePhase6ErrorV1, LifecyclePhaseV1, LifecycleStepClassV1, LifecycleStepV1,
+    LifecycleStorageInventoryKindV1, lifecycle_phase6_planned_step_v1,
 };
 
 #[path = "snapshot_barrier/atomic_snapshot_wire.rs"]

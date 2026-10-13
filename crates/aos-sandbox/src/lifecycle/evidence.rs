@@ -3,19 +3,18 @@
 //! These facts are canonical commitments to separately replayed coordination,
 //! retention, suspend, and boot records. They contain no live authority.
 
+use aos_sandbox_core::{ObjectDigest, Revision, SandboxId, SnapshotId};
 use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
     LifecycleModelError, LifecycleResourceV1,
 };
-
-use aos_sandbox_core::{ObjectDigest, Revision, SandboxId, SnapshotId};
 use sha2::{Digest as _, Sha256};
 
 use super::{
     LifecycleBootInventoryV1, LifecycleCoordinationPhaseV1, LifecycleCoordinationTransactionV1,
-    LifecycleDatasetTransactionDigestV1, LifecycleIntentV1, 
-    LifecycleQuiesceDigestV1, LifecycleRetentionLedgerV1, LifecycleSnapshotManifestDigestV1,
-    LifecycleSuspendObservationV1, LifecycleThawCompensationDigestV1, LifecycleTimeV1,
-    LifecycleTransactionIdV1, LifecycleWriterFenceDigestV1, LiveRuntimeFenceV1,
+    LifecycleDatasetTransactionDigestV1, LifecycleIntentV1, LifecycleQuiesceDigestV1,
+    LifecycleRetentionLedgerV1, LifecycleSnapshotManifestDigestV1, LifecycleSuspendObservationV1,
+    LifecycleThawCompensationDigestV1, LifecycleTimeV1, LifecycleTransactionIdV1,
+    LifecycleWriterFenceDigestV1, LiveRuntimeFenceV1,
 };
 
 macro_rules! evidence_digest {

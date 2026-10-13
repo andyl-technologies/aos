@@ -6,12 +6,9 @@
 //! operation can enter protected custody before late coordination records and
 //! complete lower-domain plans exist.
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleModelError,
-};
-
 use aos_proto::aos::sandbox::v1::MutationContext;
 use aos_sandbox_core::{OperationId, PrincipalId, ProjectId, Revision};
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::LifecycleModelError;
 
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 

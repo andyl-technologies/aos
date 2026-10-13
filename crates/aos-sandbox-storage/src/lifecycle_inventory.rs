@@ -6,19 +6,15 @@
 //! exact response body before broker-session signing. The installed service
 //! remains unchanged, and no public row or inventory constructor exists.
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleResourceV1,
-};
-
 use aos_proto::aos::sandbox::local::v1::{
     InventoryStorageResourcesResponse, StorageAtomicSnapshotCheckpoint,
     StorageLifecycleInventoryRecord, StorageLifecycleTransitionRecord,
 };
 use aos_sandbox::lifecycle::{
-    LifecyclePhase6ErrorV1, LifecycleStorageInventoryKindV1,
-    LifecycleStorageTransitionKindV1,
+    LifecyclePhase6ErrorV1, LifecycleStorageInventoryKindV1, LifecycleStorageTransitionKindV1,
 };
 use aos_sandbox_core::{ObjectDigest, OperationId, ResourceId, SandboxId, SnapshotId};
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::LifecycleResourceV1;
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 

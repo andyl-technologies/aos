@@ -1,19 +1,16 @@
 //! Bounded hostile replay for lifecycle operation snapshots.
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleModelError,
-};
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use aos_sandbox_core::{ObjectDigest, OperationId};
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::LifecycleModelError;
 use sha2::{Digest as _, Sha256};
 
 use super::format::{encode_retained_operation_record, record_digest};
 use super::{
     LifecycleCancelIdempotencyIndexV1, LifecycleCancelOutcomeV1, LifecycleCancelRequestV1,
-    LifecycleIdempotencyIndexV1, LifecycleOperationV1,
-    LifecycleRecordDigestV1, decode_operation_record_v1,
+    LifecycleIdempotencyIndexV1, LifecycleOperationV1, LifecycleRecordDigestV1,
+    decode_operation_record_v1,
 };
 
 /// Maximum records accepted by one replay.

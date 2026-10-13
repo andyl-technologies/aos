@@ -1,12 +1,11 @@
 //! Method-specific lifecycle intent, fences, expectations, and typed observations.
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleModelError, LifecycleResourceV1,
-};
-
 use aos_sandbox_core::{
     AssignmentEpoch, DesiredGeneration, ExecutionId, IncarnationId, NamespaceGeneration,
     ObjectDigest, ResourceId, Revision, SandboxId, SnapshotId, ViewId,
+};
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleModelError, LifecycleResourceV1,
 };
 
 use super::attempt::MAXIMUM_LIFECYCLE_ATTEMPTS;
@@ -14,7 +13,6 @@ use super::model::{
     DesiredStateCasDigestV1, DesiredStateDocumentDigestV1, LifecycleFailureDigestV1,
     LifecycleResourceStateDigestV1,
 };
-
 
 /// Stores a nonzero Unix timestamp in nanoseconds.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]

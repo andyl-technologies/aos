@@ -112,4 +112,3 @@ impl LifecycleTerminalProjectionV1 {
         self.semantic_commit
     }
 }
-

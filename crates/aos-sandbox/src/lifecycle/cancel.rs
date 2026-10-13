@@ -1,18 +1,14 @@
 //! Version-fenced, idempotent cancellation admission for lifecycle operations.
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleModelError,
-};
-
 use std::collections::BTreeMap;
 
 use aos_sandbox_core::{ObjectDigest, OperationId, PrincipalId, ProjectId, Revision};
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::LifecycleModelError;
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    LifecycleMethodSemanticCommitV1, LifecycleOperationV1,
-    LifecycleRecordDigestV1, LifecycleTerminalResultV1, LifecycleTimeV1,
-    encode_operation_record_v1,
+    LifecycleMethodSemanticCommitV1, LifecycleOperationV1, LifecycleRecordDigestV1,
+    LifecycleTerminalResultV1, LifecycleTimeV1, encode_operation_record_v1,
 };
 
 /// Maximum cancellation keys retained by one replay checkpoint.

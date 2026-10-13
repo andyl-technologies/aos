@@ -1,15 +1,12 @@
 //! LIFE-06 complete boot inventory aggregation and exact recovery planning.
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleResourceV1,
-};
-
 use aos_proto::aos::sandbox::local::v1::{
     ApplyAtomicStorageSnapshotRequest, BrokerMethod, InventoryRuntimeResponse,
     InventoryStorageResourcesResponse, RuntimeState, StorageAtomicSnapshotCheckpoint,
     StorageLifecycleInventoryRecord, StorageLifecycleTransitionRecord,
 };
 use aos_sandbox_core::{ObjectDigest, OperationId, ResourceId, SandboxId};
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::LifecycleResourceV1;
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
     AuthenticatedBrokerOutcomeDirectionV1,
@@ -32,7 +29,6 @@ use super::{
     CurrentLifecycleBootInventoryV1, CurrentLifecycleEffectV1, CurrentLifecycleOperationV1,
     LifecycleBootInventoryV1, LifecycleDeletionActionV1, LifecycleDeletionObservationV1,
     LifecycleEffectDomainV1, LifecycleEffectObservationV1, LifecyclePhase6ErrorV1,
-    
 };
 
 /// Names one mandatory LIFE-06 inventory domain.

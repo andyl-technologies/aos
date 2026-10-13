@@ -1,9 +1,5 @@
 //! LIFE-02 snapshot availability and resumable transfer joins.
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleResourceV1,
-};
-
 use std::marker::PhantomData;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,6 +10,7 @@ use aos_sandbox_core::{
     AssignmentEpoch, DecodeLimits, IncarnationId, ObjectDigest, OperationId, ProjectId, ResourceId,
     SandboxId, SnapshotId, TrustScopeId, ViewId, descriptor_for_bytes, verify_signature,
 };
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::LifecycleResourceV1;
 use aos_sandbox_linux::boot::KernelBootId;
 use sha2::{Digest as _, Sha256};
 
@@ -25,7 +22,7 @@ use crate::{
 use super::{
     CurrentLifecycleEffectV1, CurrentLifecycleOperationV1, CurrentLifecycleRetentionLedgerV1,
     LifecycleAuthenticatedBrokerEffectV1, LifecycleEffectDomainV1, LifecycleEffectObservationV1,
-    LifecyclePhase6ErrorV1, LifecycleProtectedRetentionAcknowledgementV1, 
+    LifecyclePhase6ErrorV1, LifecycleProtectedRetentionAcknowledgementV1,
     LifecycleRetentionAcknowledgementV1, LifecycleSnapshotManifestDigestV1,
     LifecycleValidatedSnapshotV1,
 };

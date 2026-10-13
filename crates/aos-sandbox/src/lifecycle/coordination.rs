@@ -3,16 +3,15 @@
 //! These records preserve transaction inputs and observations. They contain no
 //! live handle, credential, effect request, or permission to contact a guest.
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleDependencyEdgeV1, LifecycleModelError, LifecycleResourceV1, dependency_postorder_is_complete,
-};
-
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, ResourceId, Revision, SandboxId};
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleDependencyEdgeV1, LifecycleModelError, LifecycleResourceV1,
+    dependency_postorder_is_complete,
+};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    LifecycleRecordDigestV1, 
-    LifecycleRetentionLedgerDigestV1, LifecycleSnapshotManifestDigestV1,
+    LifecycleRecordDigestV1, LifecycleRetentionLedgerDigestV1, LifecycleSnapshotManifestDigestV1,
     LifecycleStepResultDigestV1, LifecycleTimeV1, LifecycleTransactionIdV1, LiveRuntimeFenceV1,
     MAXIMUM_LIFECYCLE_EXPECTATIONS,
 };

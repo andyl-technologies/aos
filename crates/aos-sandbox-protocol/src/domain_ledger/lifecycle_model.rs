@@ -195,7 +195,8 @@ pub fn canonical_dependency_postorder_is_complete(
         };
         *count += 1;
     }
-    let mut ready: BTreeSet<_> = incoming.iter()
+    let mut ready: BTreeSet<_> = incoming
+        .iter()
         .filter_map(|(item, count)| (*count == 0).then_some(*item))
         .collect();
 

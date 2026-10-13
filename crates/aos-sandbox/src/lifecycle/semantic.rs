@@ -1,12 +1,12 @@
 //! Exact method-family facts retained beside an irreversible semantic witness.
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleDependencyEdgeV1, LifecycleModelError, LifecycleResourceV1, dependency_postorder_is_complete,
-};
-
 use aos_sandbox_core::{
     AssignmentEpoch, ObjectDigest, ResourceId, Revision, SandboxId, SnapshotId,
     model::snapshot::RetentionClaim,
+};
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleDependencyEdgeV1, LifecycleModelError, LifecycleResourceV1,
+    dependency_postorder_is_complete,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -22,12 +22,11 @@ pub use super::semantic_digest::{
 
 use super::{
     DesiredStateCasDigestV1, DesiredStateCasV1, LifecycleCoordinationRecordDigestV1,
-    LifecycleDatasetTransactionDigestV1, LifecycleIntentV1, 
-    LifecycleProtectedCoordinationV1, LifecycleProtectedRetentionLedgerV1,
-    LifecycleResourceStateDigestV1, LifecycleRetentionCommitFactV1,
-    LifecycleRetentionLedgerDigestV1, LifecycleRetentionLedgerReceiptV1,
-    LifecycleRetentionLedgerV1, LifecycleSemanticCommitV1, MAXIMUM_LIFECYCLE_EXPECTATIONS,
-    ResourceExpectationV1, ResourceExpectedStateV1,
+    LifecycleDatasetTransactionDigestV1, LifecycleIntentV1, LifecycleProtectedCoordinationV1,
+    LifecycleProtectedRetentionLedgerV1, LifecycleResourceStateDigestV1,
+    LifecycleRetentionCommitFactV1, LifecycleRetentionLedgerDigestV1,
+    LifecycleRetentionLedgerReceiptV1, LifecycleRetentionLedgerV1, LifecycleSemanticCommitV1,
+    MAXIMUM_LIFECYCLE_EXPECTATIONS, ResourceExpectationV1, ResourceExpectedStateV1,
 };
 
 /// Identifies one atomic semantic transaction without granting authority.

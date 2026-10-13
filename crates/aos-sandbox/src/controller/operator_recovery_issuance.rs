@@ -18,10 +18,6 @@
 //! controller-key-generation:u64be | signed-intent[364]
 //! ```
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleResourceV1,
-};
-
 use aos_proto::aos::sandbox::v1::{OperatorRecoveryAction, OperatorRecoveryRequest};
 use aos_sandbox_core::operator_recovery_effect::{
     OPERATOR_RECOVERY_EFFECT_INTENT_BYTES, OperatorRecoveryEffectActionV1,
@@ -34,6 +30,7 @@ use aos_sandbox_core::operator_recovery_effect_v2::{
 use aos_sandbox_core::{
     CapabilityId, ObjectDigest, OperationId, ResourceId, ResourceKind, Selector,
 };
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::LifecycleResourceV1;
 use aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1;
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
 use buffa::Message as _;
@@ -53,9 +50,7 @@ use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use aos_sandbox_protocol::public_api::CheckedSandboxResourceV1;
 use aos_sandbox_protocol::public_api::projection::{PublicProjectionKindV1, PublicProjectionResourceV1};
 use crate::controller_service::public_projection::{PublicProjectionStoreV1};
-use crate::lifecycle::{
-    LifecycleAuthenticatedStorageInventoryV1, LifecycleStorageInventoryKindV1,
-};
+use crate::lifecycle::{LifecycleAuthenticatedStorageInventoryV1, LifecycleStorageInventoryKindV1};
 use crate::public_api_session::{PinnedOperatorRecoveryKeyV1, PublicApiPeer};
 use crate::{
     IdempotencyKey, IdempotencyOutcome, Journal, JournalRecord, JournalTransaction, RecordNamespace,

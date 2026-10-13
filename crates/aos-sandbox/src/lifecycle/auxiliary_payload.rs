@@ -11,13 +11,12 @@
 //! substitutes for omitted state, and every variable count/length is
 //! preflighted before allocation.
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleDependencyEdgeV1, LifecycleModelError, LifecycleResourceV1,
-};
-
 use aos_sandbox_core::{
     AssignmentEpoch, DesiredGeneration, IncarnationId, NamespaceGeneration, ObjectDigest,
     OperationId, PrincipalId, ProjectId, ResourceId, Revision, SandboxId,
+};
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleDependencyEdgeV1, LifecycleModelError, LifecycleResourceV1,
 };
 
 use super::codec::{take, take_slice};
@@ -25,14 +24,13 @@ use super::{
     DesiredStateFenceV1, LifecycleAuxiliaryKindV1, LifecycleBootInventoryDigestV1,
     LifecycleBootInventoryV1, LifecycleCancelIdempotencyDigestV1, LifecycleCancelOutcomeV1,
     LifecycleCancelRequestV1, LifecycleCancellationRecordV1, LifecycleCoordinationPhaseV1,
-    LifecycleCoordinationTransactionV1, LifecycleDatasetTransactionDigestV1, 
-    LifecycleOperationV1, LifecycleQuiesceDigestV1, LifecycleRecordDigestV1, 
-    LifecycleRetentionLedgerDigestV1, LifecycleRetentionLedgerEntryV1, LifecycleRetentionLedgerV1,
-    LifecycleSnapshotManifestDigestV1, LifecycleStepResultDigestV1,
-    LifecycleSuspendObservationDigestV1, LifecycleSuspendObservationV1,
-    LifecycleThawCompensationDigestV1, LifecycleTimeV1, LifecycleTransactionIdV1,
-    LifecycleWriterFenceDigestV1, LiveRuntimeFenceV1, MAXIMUM_LIFECYCLE_EXPECTATIONS,
-    decode_operation_record_v1, encode_operation_record_v1,
+    LifecycleCoordinationTransactionV1, LifecycleDatasetTransactionDigestV1, LifecycleOperationV1,
+    LifecycleQuiesceDigestV1, LifecycleRecordDigestV1, LifecycleRetentionLedgerDigestV1,
+    LifecycleRetentionLedgerEntryV1, LifecycleRetentionLedgerV1, LifecycleSnapshotManifestDigestV1,
+    LifecycleStepResultDigestV1, LifecycleSuspendObservationDigestV1,
+    LifecycleSuspendObservationV1, LifecycleThawCompensationDigestV1, LifecycleTimeV1,
+    LifecycleTransactionIdV1, LifecycleWriterFenceDigestV1, LiveRuntimeFenceV1,
+    MAXIMUM_LIFECYCLE_EXPECTATIONS, decode_operation_record_v1, encode_operation_record_v1,
 };
 
 /// Maximum canonical bytes retained by one auxiliary payload.

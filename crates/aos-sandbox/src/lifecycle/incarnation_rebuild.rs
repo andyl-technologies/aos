@@ -1,13 +1,10 @@
 //! LIFE-03 fork and restore planning with fresh identity and policy intersection.
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleResourceV1,
-};
-
 use aos_sandbox_core::{
     AssignmentEpoch, AttachmentId, DesiredGeneration, IncarnationId, NamespaceGeneration,
     ObjectDigest, ResourceId, SandboxId, SnapshotId,
 };
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::LifecycleResourceV1;
 use sha2::{Digest as _, Sha256};
 
 use super::{

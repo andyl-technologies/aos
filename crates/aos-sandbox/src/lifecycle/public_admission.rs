@@ -6,14 +6,13 @@
 //! request's already-validated predecessor version or the protected current
 //! runtime assignment; they are never inferred from a successor projection.
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleModelError, LifecycleResourceV1,
-};
-
 use aos_proto::aos::sandbox::v1::MutationContext;
 use aos_sandbox_core::{
     DesiredGeneration, ExecutionId, NodeId, OperationId, ProjectId, ResourceId, Revision,
     SandboxId, SnapshotId, ViewId,
+};
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleModelError, LifecycleResourceV1,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -28,12 +27,11 @@ use crate::controller_service::public_projection::{PublicProjectionStoreV1};
 use super::{
     DesiredStateCasV1, DesiredStateDocumentDigestV1, DesiredStateFenceV1,
     LifecycleCommittedResourceV1, LifecycleIntentV1, LifecycleJournalCommitDigestV1,
-    LifecycleMethodSemanticCommitV1, LifecycleOperationV1,
-    LifecycleReadCommitFactV1, LifecycleResourceStateDigestV1, 
-    LifecycleResumeSourceV1, LifecycleRuntimeAdmissionErrorV1, LifecycleRuntimeAdmissionFenceV1,
-    LifecycleSemanticCommitFactV1, LifecycleSemanticCommitV1, LifecycleSemanticEvidenceV1,
-    LifecycleTargetFenceV1, LifecycleTimeV1, ResourceExpectationV1, ResourceExpectedStateV1,
-    lifecycle_runtime_admission_fence_from_journal_v1,
+    LifecycleMethodSemanticCommitV1, LifecycleOperationV1, LifecycleReadCommitFactV1,
+    LifecycleResourceStateDigestV1, LifecycleResumeSourceV1, LifecycleRuntimeAdmissionErrorV1,
+    LifecycleRuntimeAdmissionFenceV1, LifecycleSemanticCommitFactV1, LifecycleSemanticCommitV1,
+    LifecycleSemanticEvidenceV1, LifecycleTargetFenceV1, LifecycleTimeV1, ResourceExpectationV1,
+    ResourceExpectedStateV1, lifecycle_runtime_admission_fence_from_journal_v1,
 };
 
 /// Retains one method-specific intent and its exact canonical expectations.

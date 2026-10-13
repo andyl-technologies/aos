@@ -1,14 +1,11 @@
 //! Bounded effect-attempt evidence and exact ambiguous recovery selectors.
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleModelError,
-};
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::LifecycleModelError;
 
 use super::{
-    LifecycleFailureClassV1, LifecycleFailureV1, LifecycleInventoryDigestV1, 
-    LifecycleRetryV1, LifecycleStepAdmissionDigestV1, LifecycleStepBodyDigestV1,
-    LifecycleStepPlanDigestV1, LifecycleStepRequestDigestV1, LifecycleStepResultDigestV1,
-    LifecycleTimeV1,
+    LifecycleFailureClassV1, LifecycleFailureV1, LifecycleInventoryDigestV1, LifecycleRetryV1,
+    LifecycleStepAdmissionDigestV1, LifecycleStepBodyDigestV1, LifecycleStepPlanDigestV1,
+    LifecycleStepRequestDigestV1, LifecycleStepResultDigestV1, LifecycleTimeV1,
 };
 
 /// Maximum attempts retained for one logical effect direction.

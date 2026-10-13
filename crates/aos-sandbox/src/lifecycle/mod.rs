@@ -133,10 +133,9 @@ pub use incarnation_rebuild::{
 };
 pub use intent::{
     DesiredStateCasV1, DesiredStateFenceV1, LifecycleFailureClassV1, LifecycleFailureV1,
-    LifecycleIntentV1, LifecycleMethodV1, LifecycleResumeSourceV1,
-    LifecycleRetryV1, LifecycleStepClassV1, LifecycleStepDomainV1, LifecycleStepStateV1,
-    LifecycleTargetFenceV1, LifecycleTimeV1, LiveRuntimeFenceV1, ResourceExpectationV1,
-    ResourceExpectedStateV1,
+    LifecycleIntentV1, LifecycleMethodV1, LifecycleResumeSourceV1, LifecycleRetryV1,
+    LifecycleStepClassV1, LifecycleStepDomainV1, LifecycleStepStateV1, LifecycleTargetFenceV1,
+    LifecycleTimeV1, LiveRuntimeFenceV1, ResourceExpectationV1, ResourceExpectedStateV1,
 };
 pub use journal::{
     LIFECYCLE_JOURNAL_NAMESPACE_V1, LifecycleJournalHistoryV1, LifecycleJournalOwnershipRecordV1,
@@ -165,9 +164,7 @@ pub use phase6::{
     lifecycle_phase6_effect_body_commitment_v2, lifecycle_phase6_plan_commitment_v1,
     lifecycle_phase6_planned_step_v1,
 };
-pub use projection::{
-    LifecycleOperationClaimV1, LifecycleTerminalProjectionV1,
-};
+pub use projection::{LifecycleOperationClaimV1, LifecycleTerminalProjectionV1};
 pub use protected_journal::{
     AppliedLifecycleJournalTransactionV1, LifecycleProtectedJournalErrorV1,
     LifecycleProtectedJournalKeyV1, LifecycleProtectedRecordKindV1, lifecycle_protected_key_v1,
@@ -194,8 +191,8 @@ pub use runtime_admission::{
 pub use semantic::{
     LifecycleAssignmentCommitFactV1, LifecycleAuthoritativeSemanticCommitV1,
     LifecycleCascadePlanDigestV1, LifecycleCascadeTombstonePlanV1, LifecycleCommittedResourceV1,
-    LifecycleMethodSemanticCommitDigestV1,
-    LifecycleMethodSemanticCommitV1, LifecycleReadCommitFactV1, LifecycleReservationCommitFactV1,
+    LifecycleMethodSemanticCommitDigestV1, LifecycleMethodSemanticCommitV1,
+    LifecycleReadCommitFactV1, LifecycleReservationCommitFactV1,
     LifecycleRetentionAcknowledgementV1, LifecycleRetentionClaimDigestV1,
     LifecycleSemanticCommitFactV1, LifecycleSnapshotManifestDigestV1,
     LifecycleSnapshotRetentionReleaseV1, LifecycleTransactionIdV1,

@@ -12,13 +12,12 @@
 //! exact manifest and post-retention ledger, suspend, boot, and initial-
 //! incarnation commitments.
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleDependencyEdgeV1, LifecycleModelError, LifecycleResourceV1,
-};
-
 use aos_sandbox_core::{
     AssignmentEpoch, DesiredGeneration, IncarnationId, NamespaceGeneration, ObjectDigest,
     OperationId, ResourceId, Revision, SandboxId, SnapshotId,
+};
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleDependencyEdgeV1, LifecycleModelError, LifecycleResourceV1,
 };
 
 use super::LifecycleTimeV1;
@@ -42,11 +41,11 @@ use super::model::{
 };
 use super::semantic::{
     LifecycleAssignmentCommitFactV1, LifecycleCascadePlanDigestV1, LifecycleCascadeTombstonePlanV1,
-    LifecycleCommittedResourceV1, LifecycleMethodSemanticCommitV1,
-    LifecycleReadCommitFactV1, LifecycleReservationCommitFactV1,
-    LifecycleRetentionAcknowledgementV1, LifecycleRetentionClaimDigestV1,
-    LifecycleSemanticCommitFactV1, LifecycleSnapshotManifestDigestV1,
-    LifecycleSnapshotRetentionReleaseV1, LifecycleTransactionIdV1,
+    LifecycleCommittedResourceV1, LifecycleMethodSemanticCommitV1, LifecycleReadCommitFactV1,
+    LifecycleReservationCommitFactV1, LifecycleRetentionAcknowledgementV1,
+    LifecycleRetentionClaimDigestV1, LifecycleSemanticCommitFactV1,
+    LifecycleSnapshotManifestDigestV1, LifecycleSnapshotRetentionReleaseV1,
+    LifecycleTransactionIdV1,
 };
 use super::snapshot::LifecycleSnapshotTombstoneDigestV1;
 

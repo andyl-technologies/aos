@@ -1,14 +1,10 @@
 //! Purpose-separated commitments used by lifecycle records.
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleModelError,
-};
-
 use aos_sandbox_core::{ObjectDigest, ResourceId, Revision, SnapshotId};
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::LifecycleModelError;
 use sha2::{Digest as _, Sha256};
 
 use super::evidence::LifecycleRetentionLedgerDigestV1;
-
 
 pub(super) fn snapshot_release_digest(
     snapshot: SnapshotId,

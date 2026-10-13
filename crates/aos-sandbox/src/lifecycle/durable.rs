@@ -15,13 +15,10 @@
 //! Selected Delete DATA uses `AOSLIFA5` version 3 and its own join domain;
 //! full Planned history remains retained and is not a current floor proof.
 
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
-    LifecycleModelError,
-};
-
 use std::collections::BTreeMap;
 
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, ResourceId, Revision};
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::LifecycleModelError;
 use sha2::{Digest as _, Sha256};
 
 use super::auxiliary_payload::{
