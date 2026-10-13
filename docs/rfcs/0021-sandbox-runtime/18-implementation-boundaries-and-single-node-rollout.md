@@ -362,6 +362,13 @@ append accounting, purpose and row-order checks, and protected COMMIT. Lower
 history comparisons preserve full Plan/State/dispatch and metadata equality;
 they cannot establish capacity, Root authority or full Project replay closure.
 The superseded Reconciler historical helper owners and exports are retired.
+Native `reconciler::project_admission::original_history` owns the complete
+retained/live/scoped original-Create revision chain, replay/projection/capacity
+joins, flight and terminal readbacks, and history-floor acceptance. Its opaque
+Controller Journal borrow remains beside the complete validated factory and
+Source ACK validation. Prepare, dispatch and Source outcome transitions remain
+with their Native owner; current publisher policy and clocks remain separate.
+Metadata aliases use Protocol directly; the superseded alias facade is retired.
 
 Private `journal::semantic_append` retains complete ordinary/closed append,
 paired advisory preflight, Q04 adapter and append-only-guard inherent recipes on
