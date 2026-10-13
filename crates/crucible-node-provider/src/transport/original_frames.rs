@@ -32,6 +32,7 @@ pub struct OriginalFrame<'a> {
     pub complete: bool,
 }
 
+#[derive(Clone)]
 struct Slot {
     direction: FrameDirection,
     start: usize,
@@ -101,6 +102,32 @@ impl OriginalFrameReservation {
             transferred: slot.transferred,
             complete: slot.complete,
         })
+    }
+
+    pub(crate) fn copy_into_empty(&self, target: &mut Self) -> Result<(), ProviderError> {
+        if !target.bytes.is_empty()
+            || !target.slots.is_empty()
+            || target.incoming != 0
+            || target.outgoing != 0
+        {
+            return Err(ProviderError::Conflict(
+                "original history target already used",
+            ));
+        }
+        if self.maximum_bytes != target.maximum_bytes
+            || self.maximum_frames != target.maximum_frames
+            || self.bytes.capacity() != target.bytes.capacity()
+            || self.slots.capacity() != target.slots.capacity()
+        {
+            return Err(ProviderError::ResourceExhausted(
+                "complete original history reservation differs",
+            ));
+        }
+        target.bytes.extend_from_slice(&self.bytes);
+        target.slots.extend_from_slice(&self.slots);
+        target.incoming = self.incoming;
+        target.outgoing = self.outgoing;
+        Ok(())
     }
 
     pub(crate) fn complete(&self) -> bool {

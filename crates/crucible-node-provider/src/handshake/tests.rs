@@ -205,6 +205,47 @@ pub(crate) fn authority_with_frame_limit(frame_bytes: u64) -> (Handshake, Connec
     (handshake, authority)
 }
 
+/// Builds a distinct registration through the real negotiation admission path.
+pub(crate) fn authority_with_scope(scope: &str) -> (Handshake, ConnectionAuthority) {
+    let mut request = hello();
+    let mut response = result();
+    let session = id(&format!("session/{scope}"));
+    let incarnation = id(&format!("incarnation/{scope}"));
+    request.session_id = session.clone();
+    response.session_id = session.clone();
+    response.incarnation_id = incarnation.clone();
+    let mut handshake = Handshake::new(
+        TrustedInstallation {
+            session_id: session,
+            incarnation_id: incarnation,
+            measured_implementation: manifest().implementation,
+            launch_receipt: reference(),
+            admission_token: [7; 32],
+        },
+        NegotiationPolicy {
+            supported_features: vec![id("cnp.core/1"), id("cnp.resume/1")],
+            required_features: vec![id("cnp.core/1")],
+            provider_limits: limits(),
+            required_schemas: Vec::new(),
+            required_guarantees: reference(),
+            envelope_extension_features: std::collections::BTreeMap::new(),
+        },
+    )
+    .unwrap();
+    let mut verifier = Verifier::default();
+    let authority = handshake
+        .admit_exchange(
+            &request,
+            &response,
+            id(&format!("connection/{scope}")),
+            &mut verifier,
+        )
+        .unwrap();
+    assert_eq!(verifier.authenticated, 1);
+    assert_eq!(verifier.contracts, 1);
+    (handshake, authority)
+}
+
 #[test]
 fn valid_hello_requires_actual_peer_and_contract_verification() {
     let mut handshake = handshake();

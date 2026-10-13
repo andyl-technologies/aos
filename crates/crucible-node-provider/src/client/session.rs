@@ -241,6 +241,13 @@ impl ClientSession {
         self.connection.protocol_capture_preflight(cut)
     }
 
+    pub(super) fn retain_frozen_protocol_frames(
+        &self,
+        reservation: &mut crate::protocol_snapshot::ProtocolSnapshotReservation,
+    ) -> Result<(), ProviderError> {
+        self.connection.retain_frozen_protocol_frames(reservation)
+    }
+
     pub(super) fn protocol_view(&self) -> impl serde::Serialize + '_ {
         (
             self.connection.protocol_view(),
@@ -261,6 +268,21 @@ impl ClientSession {
             ));
         }
         self.connection.install_native5_frame_bank(reservation)
+    }
+
+    pub(super) fn install_native5_connected_frame_bank(
+        &mut self,
+        reservation: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        binding: &crucible_node_contract::NodeBinding,
+        owner: &crucible_node_contract::OwnerBinding,
+    ) -> Result<(), ProviderError> {
+        if self.sequence.get() != 2 || self.original_response_loss.is_some() {
+            return Err(ProviderError::Correlation(
+                "connected archive requires unused session without loss callbacks",
+            ));
+        }
+        self.connection
+            .install_native5_connected_frame_bank(reservation, binding, owner)
     }
 
     pub(super) fn install_packet_schema(&mut self) -> Result<(), ProviderError> {

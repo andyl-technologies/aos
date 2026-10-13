@@ -639,6 +639,119 @@ mod tests {
     }
 
     #[test]
+    fn native5_original_connected_archive_preserves_actual_stage_commit_frames() {
+        let original = negotiated(true, true);
+        let (binding, owner) = binding();
+        let mut controller = Connection::new(
+            original.controller,
+            original.authority.clone(),
+            Rc::new(Supervisor::default()),
+            Rc::new(UninstalledSchemas),
+            EndpointRole::Controller,
+        )
+        .unwrap();
+        let mut provider = Connection::new(
+            original.provider,
+            original.authority,
+            Rc::new(Supervisor::default()),
+            Rc::new(UninstalledSchemas),
+            EndpointRole::Provider,
+        )
+        .unwrap();
+        let mut host_bank = Some(
+            crate::transport::original_frames::OriginalFrameReservation::reserve(262144, 8)
+                .unwrap(),
+        );
+        let mut native_bank = Some(
+            crate::transport::original_frames::OriginalFrameReservation::reserve(262144, 8)
+                .unwrap(),
+        );
+        controller
+            .install_native5_connected_frame_bank(&mut host_bank, &binding, &owner)
+            .unwrap();
+        provider
+            .install_native5_connected_frame_bank(&mut native_bank, &binding, &owner)
+            .unwrap();
+        assert!(host_bank.is_none() && native_bank.is_none());
+        assert!(controller.has_connected_packet_schema() && provider.has_connected_packet_schema());
+        assert!(!controller.has_packet_schema() && !provider.has_packet_schema());
+
+        for commit in [false, true] {
+            let sequence = if commit { 3 } else { 2 };
+            let request = input(&owner, sequence, commit);
+            controller.send(request.clone()).unwrap();
+            assert_eq!(provider.receive().unwrap().unwrap().envelope, request);
+            provider.send(refusal(&request, sequence)).unwrap();
+            controller.receive().unwrap().unwrap();
+        }
+        let host = controller.original_frames.as_ref().unwrap().borrow();
+        let native = provider.original_frames.as_ref().unwrap().borrow();
+        assert_eq!(host.frames().count(), 4);
+        assert_eq!(native.frames().count(), 4);
+        for (sent, received) in host.frames().zip(native.frames()) {
+            assert_eq!(sent.bytes, received.bytes);
+            assert!(sent.complete && received.complete);
+            assert_eq!(sent.transferred, sent.bytes.len());
+            assert_eq!(received.transferred, received.bytes.len());
+            assert_ne!(sent.direction, received.direction);
+        }
+        drop(host);
+        drop(native);
+        assert!(
+            controller
+                .protocol_capture_preflight(
+                    crate::protocol_snapshot::ProtocolCaptureCut::HostSettled
+                )
+                .is_err()
+        );
+        let mut replacement = Some(
+            crate::transport::original_frames::OriginalFrameReservation::reserve(262144, 8)
+                .unwrap(),
+        );
+        assert!(
+            controller
+                .install_native5_connected_frame_bank(&mut replacement, &binding, &owner)
+                .is_err()
+        );
+        assert_eq!(replacement.as_ref().unwrap().frames().count(), 0);
+        drop(original.handshake);
+    }
+
+    #[test]
+    fn native5_original_connected_archive_refusal_preserves_same_reserved_bank() {
+        let (binding, owner) = binding();
+        for (feature, mapped) in [(false, false), (true, false)] {
+            let original = negotiated(feature, mapped);
+            let mut connection = Connection::new(
+                original.provider,
+                original.authority,
+                Rc::new(Supervisor::default()),
+                Rc::new(UninstalledSchemas),
+                EndpointRole::Provider,
+            )
+            .unwrap();
+            let mut bank = Some(
+                crate::transport::original_frames::OriginalFrameReservation::reserve(262144, 8)
+                    .unwrap(),
+            );
+            let original_allocation = bank.as_ref().unwrap().allocated_bytes();
+            assert!(
+                connection
+                    .install_native5_connected_frame_bank(&mut bank, &binding, &owner)
+                    .is_err()
+            );
+            assert_eq!(
+                bank.as_ref().unwrap().allocated_bytes(),
+                original_allocation
+            );
+            assert_eq!(bank.as_ref().unwrap().frames().count(), 0);
+            assert!(connection.original_frames.is_none());
+            assert!(!connection.has_connected_packet_schema());
+            assert!(connection.guard.unused());
+        }
+    }
+
+    #[test]
     fn connected_packet_stage_and_commit_keep_full_cuts_on_actual_unix_frames() {
         let original = negotiated(true, true);
         let (binding, owner) = binding();

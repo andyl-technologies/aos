@@ -25,6 +25,38 @@ impl<S: ProviderStream> Connection<S> {
         Ok(())
     }
 
+    /// Installs one immutable connected input codec and its precharged archive.
+    ///
+    /// Binding, owner and negotiated Input4 features are checked on the same
+    /// unused original connection before taking the caller's bank. This selects
+    /// transport retention only; full Native5 codec capture remains separate.
+    pub(crate) fn install_native5_connected_frame_bank(
+        &mut self,
+        reservation: &mut Option<OriginalFrameReservation>,
+        binding: &crucible_node_contract::NodeBinding,
+        owner: &crucible_node_contract::OwnerBinding,
+    ) -> Result<(), ProviderError> {
+        self.check_authority()?;
+        if self.original_frames.is_some()
+            || !self.guard.unused()
+            || reservation
+                .as_ref()
+                .is_none_or(|bank| bank.frames().next().is_some())
+        {
+            return Err(ProviderError::Correlation(
+                "connected archive requires unused original bank and connection",
+            ));
+        }
+        self.install_connected_packet_schema(binding, owner)?;
+        let original = reservation
+            .take()
+            .ok_or(ProviderError::Correlation("connected original bank absent"))?;
+        let bank = Rc::new(std::cell::RefCell::new(original));
+        self.reader.install_originals(bank.clone());
+        self.original_frames = Some(bank);
+        Ok(())
+    }
+
     /// Captures the actual endpoint with its precharged source-owned buffer.
     ///
     /// The source retains literal Hello and semantic/native state separately.
@@ -46,7 +78,8 @@ impl<S: ProviderStream> Connection<S> {
             cut,
             deadline.original_cut(),
         )?;
-        reservation.encode(&self.protocol_view())
+        reservation.encode(&self.protocol_view())?;
+        self.retain_frozen_protocol_frames(reservation)
     }
 
     /// Binds the actual blob ledger before the endpoint's first control frame.
@@ -109,7 +142,8 @@ impl<S: ProviderStream> Connection<S> {
             "source-private.native-cnp/5",
             self.protocol_view(),
             original_blobs,
-        ))
+        ))?;
+        self.retain_frozen_protocol_frames(reservation)
     }
 
     /// Takes a completed capture issued by this exact endpoint and registration.
@@ -131,6 +165,50 @@ impl<S: ProviderStream> Connection<S> {
             .take()
             .ok_or(ProviderError::Correlation("original snapshot slot absent"))?;
         original.finish(&self.authority, &self.protocol_owner, cut)
+    }
+
+    /// Prepares actual new-scope registration mapping without installing state.
+    ///
+    /// A source factory must still join complete Wire/Scheduling/native state,
+    /// budgeted decoded fields and private pending-Capture settlement. No old
+    /// frame is submitted under this fresh connection by preparation.
+    ///
+    /// # Errors
+    /// Refuses used, unarchived, mutable-codec or revoked fresh connections,
+    /// unchanged scope IDs, foreign actor identities or missing frozen originals.
+    pub fn prepare_fresh_protocol_mapping(
+        &mut self,
+        original: &crate::protocol_snapshot::OriginalProtocolSnapshot,
+    ) -> Result<crate::protocol_snapshot::PreparedFreshProtocolMapping, ProviderError> {
+        self.check_authority()?;
+        if !self.guard.unused()
+            || !self.packet_schema
+            || self
+                .original_frames
+                .as_ref()
+                .is_none_or(|bank| bank.borrow().frames().next().is_some())
+        {
+            return Err(ProviderError::Correlation(
+                "fresh mapping requires original unused immutable archived connection",
+            ));
+        }
+        crate::protocol_snapshot::PreparedFreshProtocolMapping::prepare(
+            original,
+            &self.authority,
+            &self.protocol_owner,
+        )
+    }
+
+    pub(crate) fn retain_frozen_protocol_frames(
+        &self,
+        reservation: &mut crate::protocol_snapshot::ProtocolSnapshotReservation,
+    ) -> Result<(), ProviderError> {
+        let bank = self
+            .original_frames
+            .as_ref()
+            .ok_or(ProviderError::Correlation("original literal bank absent"))?
+            .borrow();
+        reservation.retain_literal_history(&bank)
     }
 
     pub(crate) fn protocol_capture_preflight(
@@ -432,7 +510,7 @@ mod tests {
             .unwrap();
         let deadline =
             crate::client::ExchangeDeadline::start(std::time::Duration::from_secs(2)).unwrap();
-        let mut reserve = ProtocolSnapshotReservation::reserve(65536).unwrap();
+        let mut reserve = ProtocolSnapshotReservation::reserve_complete(65536, 16384, 8).unwrap();
         connection
             .capture_native_protocol_state(&mut reserve, ProtocolCaptureCut::HostSettled, &deadline)
             .unwrap();
@@ -448,6 +526,116 @@ mod tests {
         assert_eq!(decoded["correlations"][3], "3");
         assert!(decoded["correlations"][5].as_object().unwrap().is_empty());
         assert_eq!(decoded["frames"][7].as_array().unwrap().len(), 2);
+        assert_eq!(snapshot.literal_frames().unwrap().count(), 2);
+
+        // Scope labels alone cannot turn another registration into a fresh one.
+        let (_same_handshake, same_authority) = crate::handshake::tests::authority();
+        let (same_stream, _same_peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut same_scope = Connection::new(
+            same_stream,
+            same_authority,
+            Rc::new(Supervisor),
+            Rc::new(Schemas),
+            EndpointRole::Controller,
+        )
+        .unwrap();
+        same_scope
+            .install_native5_frame_bank(OriginalFrameReservation::reserve(16384, 8).unwrap())
+            .unwrap();
+        assert!(
+            same_scope
+                .prepare_fresh_protocol_mapping(&snapshot)
+                .is_err()
+        );
+
+        let (fresh_handshake, fresh_authority) =
+            crate::handshake::tests::authority_with_scope("fresh");
+        let (fresh_stream, _fresh_peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut fresh = Connection::new(
+            fresh_stream,
+            fresh_authority.clone(),
+            Rc::new(Supervisor),
+            Rc::new(Schemas),
+            EndpointRole::Controller,
+        )
+        .unwrap();
+        fresh
+            .install_native5_frame_bank(OriginalFrameReservation::reserve(16384, 8).unwrap())
+            .unwrap();
+        let mapping = fresh.prepare_fresh_protocol_mapping(&snapshot).unwrap();
+        mapping.validate_original(&snapshot).unwrap();
+        assert_eq!(
+            fresh
+                .original_frames
+                .as_ref()
+                .unwrap()
+                .borrow()
+                .frames()
+                .count(),
+            0
+        );
+        assert_eq!(
+            serde_json::to_value(fresh.guard.protocol_view()).unwrap()[3],
+            "2"
+        );
+
+        // A different actor can issue bytes under the same registration; those
+        // bytes still cannot replace the retained original owner of this mapping.
+        let foreign_owner = Rc::new(crate::protocol_snapshot::ProtocolCaptureOwner::new());
+        let mut foreign_reserve =
+            ProtocolSnapshotReservation::reserve_complete(65536, 16384, 8).unwrap();
+        foreign_reserve
+            .bind(
+                &authority,
+                &foreign_owner,
+                ProtocolCaptureCut::HostSettled,
+                crate::operational_time::OperationalDeadline::after(
+                    std::time::Duration::from_secs(2),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        foreign_reserve
+            .encode(&serde_json::json!({"foreign":"owner"}))
+            .unwrap();
+        let foreign_snapshot = foreign_reserve
+            .finish(&authority, &foreign_owner, ProtocolCaptureCut::HostSettled)
+            .unwrap();
+        assert!(mapping.validate_original(&foreign_snapshot).is_err());
+
+        let mut fresh_request = request.clone();
+        fresh_request.session_id =
+            crate::envelope::Nullable(Some(fresh_authority.session_id().clone()));
+        fresh_request.incarnation_id =
+            crate::envelope::Nullable(Some(fresh_authority.incarnation_id().clone()));
+        fresh.send(fresh_request).unwrap();
+        assert!(fresh.prepare_fresh_protocol_mapping(&snapshot).is_err());
+        drop(fresh_handshake);
+        assert!(mapping.validate_original(&snapshot).is_err());
+
+        let mut fresh_history = OriginalFrameReservation::reserve(16384, 8).unwrap();
+        snapshot
+            .prepare_historical_frame_data(&mut fresh_history)
+            .unwrap();
+        assert_eq!(fresh_history.frames().count(), 2);
+        assert_eq!(
+            fresh_history.frames().next().unwrap().bytes,
+            snapshot.literal_frames().unwrap().next().unwrap().bytes
+        );
+        let duplicate_slot = fresh_history.begin(FrameDirection::Outgoing, 4).unwrap();
+        assert!(
+            fresh_history
+                .retain_request(duplicate_slot, request.request_id.0.as_ref().unwrap())
+                .is_err()
+        );
+        let mut insufficient = OriginalFrameReservation::reserve(8192, 8).unwrap();
+        assert!(
+            snapshot
+                .prepare_historical_frame_data(&mut insufficient)
+                .is_err()
+        );
+        assert_eq!(insufficient.frames().count(), 0);
+
         let sent_before = connection
             .original_frames
             .as_ref()
@@ -475,6 +663,7 @@ mod tests {
                 .count(),
             sent_before + 1
         );
+        assert_eq!(snapshot.literal_frames().unwrap().count(), 2);
     }
 
     #[test]

@@ -2944,6 +2944,25 @@ and extension dispatch remain present in the reviewed joins. Full selected
 codec/budget validation, unchanged model-generation proof, incoming native Hello,
 complete native settlement and fresh adoption remain separate unfinished steps.
 
+## Native Hello and original Capture transport
+
+The provider SDK retains literal incoming native Hello bytes and the same
+outgoing response cursor, including failed partial writes. Selected nesting and
+complete frame credit precede publication. A one-shot connected codec installer
+checks negotiated binding and ownership before taking the original framing bank.
+Administrative Capture uses the same controller with its capture owner and
+without an execution owner; complete borrowed-frame credit precedes argument
+decoding or journal effects.
+
+Twenty-three focused controls pass, including actual Unix framing, partial
+kernel prefixes, connected Stage/Commit, Capture blob/ACK history and oversized
+precredit refusal. Strict all-target/all-feature checks and independent source,
+ELF and dependency review pass on the recorded coherent SDK revision. Frozen
+history copies and fresh registration mappings remain data and resources;
+pending native Capture refuses adoption without private verified settlement.
+The complete Native5 codec, native capture, fresh-world adoption, readiness and
+current release gates remain unfinished.
+
 ## Selected checkpoint source owners
 
 The selected DMTCP source retains original shared-area creation and thread

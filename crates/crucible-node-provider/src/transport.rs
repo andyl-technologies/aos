@@ -95,6 +95,11 @@ impl<R: Read> FrameReader<R> {
         &mut self.stream
     }
 
+    /// Returns the same original stream; its separate journal retains all cuts.
+    pub(crate) fn into_inner(self) -> R {
+        self.stream
+    }
+
     pub(crate) fn original_slot(&self) -> Option<usize> {
         self.last_original_slot
     }

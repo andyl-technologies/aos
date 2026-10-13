@@ -22,6 +22,7 @@ pub mod handshake;
 pub mod input_commit;
 pub mod journal;
 pub mod native_journal;
+pub mod native_hello;
 pub mod reference_device;
 
 pub mod reference_lineage;

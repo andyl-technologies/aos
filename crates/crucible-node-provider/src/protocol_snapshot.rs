@@ -46,6 +46,7 @@ pub struct ProtocolSnapshotReservation {
     bytes: Vec<u8>,
     maximum: usize,
     complete: bool,
+    literal: Option<crate::transport::original_frames::OriginalFrameReservation>,
     issuer: Option<(
         ConnectionAuthority,
         Rc<ProtocolCaptureOwner>,
@@ -73,13 +74,54 @@ impl ProtocolSnapshotReservation {
             bytes,
             maximum,
             complete: false,
+            literal: None,
             issuer: None,
         })
+    }
+
+    /// Reserves the encoded snapshot and an independent complete literal copy.
+    ///
+    /// Both byte and descriptor banks precede child construction. The selected
+    /// source profile must charge these copies in addition to both endpoint
+    /// archives, prefix ownership and temporary decoding/metadata storage.
+    ///
+    /// # Errors
+    /// Refuses invalid limits or allocator failure without native effects.
+    pub fn reserve_complete(
+        maximum: usize,
+        history_bytes: usize,
+        lifetime_frames: usize,
+    ) -> Result<Self, ProviderError> {
+        let mut original = Self::reserve(maximum)?;
+        original.literal = Some(
+            crate::transport::original_frames::OriginalFrameReservation::reserve(
+                history_bytes,
+                lifetime_frames,
+            )?,
+        );
+        Ok(original)
+    }
+
+    pub(crate) fn retain_literal_history(
+        &mut self,
+        original: &crate::transport::original_frames::OriginalFrameReservation,
+    ) -> Result<(), ProviderError> {
+        if let Some(target) = &mut self.literal
+            && let Err(error) = original.copy_into_empty(target)
+        {
+            self.complete = false;
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Reports the actual snapshot allocation to its source-owned budget.
     pub fn allocated_bytes(&self) -> usize {
         self.bytes.capacity()
+            + self
+                .literal
+                .as_ref()
+                .map_or(0, |literal| literal.allocated_bytes())
     }
 
     pub(crate) fn encode(&mut self, state: &impl Serialize) -> Result<(), ProviderError> {
@@ -210,6 +252,7 @@ impl ProtocolSnapshotReservation {
             owner: issuer,
             cut,
             deadline,
+            literal: self.literal,
         })
     }
 }
@@ -225,6 +268,7 @@ pub struct OriginalProtocolSnapshot {
     owner: Rc<ProtocolCaptureOwner>,
     cut: ProtocolCaptureCut,
     deadline: crate::operational_time::OperationalDeadline,
+    literal: Option<crate::transport::original_frames::OriginalFrameReservation>,
 }
 
 impl OriginalProtocolSnapshot {
@@ -232,6 +276,41 @@ impl OriginalProtocolSnapshot {
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
+    /// Borrows the independently frozen original literal frames when reserved.
+    pub fn literal_frames(
+        &self,
+    ) -> Option<impl Iterator<Item = crate::transport::original_frames::OriginalFrame<'_>>> {
+        self.literal.as_ref().map(|literal| literal.frames())
+    }
+
+    /// Copies frozen historical frames into an empty precharged data bank.
+    ///
+    /// This preserves raw old-scope bytes, directional counts, lifetime IDs and
+    /// exact original byte/descriptor capacities. It does not install a stream,
+    /// rebind any envelope, replay a request or grant native adoption/readiness.
+    /// The source factory must separately install complete decoded state after
+    /// genuine fresh Hello and its private semantic/native settlement proof.
+    ///
+    /// # Errors
+    /// Refuses a copied process/thread owner, absent precharged original copy,
+    /// pending native Capture, a used target or differing complete allocation.
+    /// Refusal leaves both original snapshot and target history unchanged.
+    pub fn prepare_historical_frame_data(
+        &self,
+        target: &mut crate::transport::original_frames::OriginalFrameReservation,
+    ) -> Result<(), ProviderError> {
+        self.owner.ensure_current()?;
+        if self.cut != ProtocolCaptureCut::HostSettled {
+            return Err(ProviderError::Correlation(
+                "pending native Capture requires source-owned settlement",
+            ));
+        }
+        let literal = self.literal.as_ref().ok_or(ProviderError::Correlation(
+            "original snapshot literal copy was not reserved",
+        ))?;
+        literal.copy_into_empty(target)
+    }
+
     /// Reports the authenticated correlation cut used by the original capture.
     pub fn cut(&self) -> ProtocolCaptureCut {
         self.cut
@@ -249,6 +328,74 @@ impl OriginalProtocolSnapshot {
             && self.owner.ensure_current().is_ok()
             && Rc::ptr_eq(&self.owner, owner)
             && self.authority.same_registration(authority)
+    }
+}
+
+/// Retains actual old and fresh registrations for source-owned adoption checks.
+///
+/// Preparation validates two opaque original actors and genuine live fresh
+/// Hello registration at a settled host cut. Pending native Capture remains closed
+/// until the source factory supplies its private verified settlement.
+/// It installs no history, counter, native state or Ready
+/// permission. Source5 must join its complete verified settlement and models.
+pub struct PreparedFreshProtocolMapping {
+    original: ConnectionAuthority,
+    original_owner: Rc<ProtocolCaptureOwner>,
+    fresh: ConnectionAuthority,
+    fresh_owner: Rc<ProtocolCaptureOwner>,
+    cut: ProtocolCaptureCut,
+}
+
+impl PreparedFreshProtocolMapping {
+    pub(crate) fn prepare(
+        original: &OriginalProtocolSnapshot,
+        fresh: &ConnectionAuthority,
+        fresh_owner: &Rc<ProtocolCaptureOwner>,
+    ) -> Result<Self, ProviderError> {
+        original.owner.ensure_current()?;
+        fresh_owner.ensure_current()?;
+        fresh.ensure_live()?;
+        if original.authority.same_registration(fresh)
+            || original.authority.connection_id() == fresh.connection_id()
+            || original.authority.session_id() == fresh.session_id()
+            || original.authority.incarnation_id() == fresh.incarnation_id()
+            || original.literal.is_none()
+            || original.cut != ProtocolCaptureCut::HostSettled
+        {
+            return Err(ProviderError::Correlation(
+                "fresh protocol mapping requires new scope and settled frozen original history",
+            ));
+        }
+        Ok(Self {
+            original: original.authority.clone(),
+            original_owner: original.owner.clone(),
+            fresh: fresh.clone(),
+            fresh_owner: fresh_owner.clone(),
+            cut: original.cut,
+        })
+    }
+
+    /// Rechecks the same retained actual actors and fresh registration.
+    ///
+    /// # Errors
+    /// Refuses process/thread drift, revoked fresh Hello or substituted original
+    /// snapshot. This check supplies no semantic settlement or native permission.
+    pub fn validate_original(
+        &self,
+        original: &OriginalProtocolSnapshot,
+    ) -> Result<(), ProviderError> {
+        self.original_owner.ensure_current()?;
+        self.fresh_owner.ensure_current()?;
+        self.fresh.ensure_live()?;
+        if !self.original.same_registration(&original.authority)
+            || !Rc::ptr_eq(&self.original_owner, &original.owner)
+            || self.cut != original.cut
+        {
+            return Err(ProviderError::Correlation(
+                "fresh mapping original owner changed",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -274,6 +421,45 @@ where
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn native5_original_pending_capture_mapping_requires_source_owned_settlement() {
+        let (_old_handshake, old) = crate::handshake::tests::authority();
+        let (_fresh_handshake, fresh) =
+            crate::handshake::tests::authority_with_scope("pending-target");
+        let owner = Rc::new(ProtocolCaptureOwner::new());
+        let fresh_owner = Rc::new(ProtocolCaptureOwner::new());
+        let deadline =
+            crate::operational_time::OperationalDeadline::after(std::time::Duration::from_secs(2))
+                .unwrap();
+        let mut reserve = ProtocolSnapshotReservation::reserve_complete(1024, 1024, 2).unwrap();
+        reserve
+            .bind(
+                &old,
+                &owner,
+                ProtocolCaptureCut::NativeIncomingCapture,
+                deadline,
+            )
+            .unwrap();
+        reserve
+            .encode(&json!({"incoming":"original Capture"}))
+            .unwrap();
+        let snapshot = reserve
+            .finish(&old, &owner, ProtocolCaptureCut::NativeIncomingCapture)
+            .unwrap();
+
+        assert!(PreparedFreshProtocolMapping::prepare(&snapshot, &fresh, &fresh_owner).is_err());
+        let mut history =
+            crate::transport::original_frames::OriginalFrameReservation::reserve(1024, 2).unwrap();
+        assert!(
+            snapshot
+                .prepare_historical_frame_data(&mut history)
+                .is_err()
+        );
+        assert_eq!(history.frames().count(), 0);
+        assert!(fresh.ensure_live().is_ok());
+        assert!(!snapshot.bytes().is_empty());
+    }
 
     #[test]
     fn native5_original_snapshot_foreign_process_owner_refuses_before_issuer_or_copy() {

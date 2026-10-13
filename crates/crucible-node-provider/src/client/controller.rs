@@ -34,6 +34,10 @@ pub struct ControllerRoute {
     pub execution_owner: Id,
 }
 
+#[cfg(all(test, unix))]
+#[path = "controller/capture_tests.rs"]
+mod capture_tests;
+
 /// Retains a generic authenticated stream and its finite original journals.
 ///
 /// The caller retains actual native resources and the handshake registrar for
@@ -83,7 +87,8 @@ impl CnpController {
             self.session.protocol_view(),
             self.custody.protocol_view(),
         );
-        reservation.encode(&state)
+        reservation.encode(&state)?;
+        self.session.retain_frozen_protocol_frames(reservation)
     }
 
     /// Moves a completed original snapshot buffer into this actual owner's result.
@@ -134,6 +139,36 @@ impl CnpController {
             ));
         }
         self.session.install_native5_frame_bank(reservation)
+    }
+
+    /// Installs the original connected input codec and a precharged literal bank.
+    ///
+    /// The source charges the actual bank and schema metadata before Child.
+    /// This one-shot seam preserves the original route and negotiated Input4
+    /// schema without replacing it with the baseline no-extension codec. It
+    /// grants no complete Native5 capture, native adoption or readiness.
+    ///
+    /// # Errors
+    /// Refuses used/fenced journals, foreign routes, absent or used banks,
+    /// unnegotiated source features, schema replacement or mutable loss callbacks.
+    /// Validation refusal leaves the supplied original bank in its same slot.
+    pub fn install_native5_connected_frame_bank(
+        &mut self,
+        reservation: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        binding: &crucible_node_contract::NodeBinding,
+        owner: &crucible_node_contract::OwnerBinding,
+    ) -> Result<(), ProviderError> {
+        if self.fenced
+            || self.custody.originals().next().is_some()
+            || self.route.node != binding.compatibility.node_id
+            || self.route.execution_owner != owner.owner.id
+        {
+            return Err(ProviderError::Correlation(
+                "connected archive requires original unused source controller",
+            ));
+        }
+        self.session
+            .install_native5_connected_frame_bank(reservation, binding, owner)
     }
 
     /// Installs the immutable packet codec before any original control request.
@@ -457,6 +492,70 @@ impl CnpController {
         body: impl Serialize,
         extensions: Extensions,
     ) -> Result<ResponseBody, ProviderError> {
+        self.call_scoped(
+            request_id,
+            CallScope {
+                operation_id,
+                method,
+                owner_scoped,
+                capture_owner: None,
+            },
+            body,
+            extensions,
+        )
+    }
+
+    /// Sends one original administrative capture on the retained controller.
+    ///
+    /// The installed source independently authenticates the capture owner,
+    /// complete participants, cut and original runtime ticket. This method
+    /// retains the same original transport and request journal; it installs no
+    /// preservation capability and supplies no capture or restoration authority.
+    ///
+    /// # Errors
+    /// Refuses a non-Capture Begin body, an invalid complete request, exhausted
+    /// custody, changed originals, unavailable registration or uncertain I/O.
+    pub fn call_original_capture(
+        &mut self,
+        request_id: Id,
+        operation_id: Id,
+        capture_owner: Id,
+        request: BeginRequest,
+    ) -> Result<ResponseBody, ProviderError> {
+        // The ordinary call path counts the complete borrowed envelope before
+        // decoding arguments or allocating another body. Inspecting only this
+        // Copy discriminator avoids an unbounded precredit argument clone.
+        if request.kind != BeginKind::Capture {
+            return Err(ProviderError::Correlation(
+                "original capture requires Capture arguments",
+            ));
+        }
+        self.call_scoped(
+            request_id,
+            CallScope {
+                operation_id: Some(operation_id),
+                method: Method::Begin,
+                owner_scoped: true,
+                capture_owner: Some(capture_owner),
+            },
+            request,
+            Extensions::new(),
+        )
+    }
+
+    fn call_scoped(
+        &mut self,
+        request_id: Id,
+        scope: CallScope,
+        body: impl Serialize,
+        extensions: Extensions,
+    ) -> Result<ResponseBody, ProviderError> {
+        let CallScope {
+            operation_id,
+            method,
+            owner_scoped,
+            capture_owner,
+        } = scope;
         if self.fenced {
             return Err(ProviderError::Correlation(
                 "generic original controller is fenced",
@@ -465,7 +564,8 @@ impl CnpController {
         let session_id = self.session.authority().session_id().clone();
         let incarnation_id = self.session.authority().incarnation_id().clone();
         let node_id = owner_scoped.then(|| self.route.node.clone());
-        let execution_owner_id = owner_scoped.then(|| self.route.execution_owner.clone());
+        let execution_owner_id =
+            (owner_scoped && capture_owner.is_none()).then(|| self.route.execution_owner.clone());
         let wire = BorrowedEnvelope {
             protocol: "CNP/1",
             message: MessageKind::Request,
@@ -473,7 +573,7 @@ impl CnpController {
             incarnation_id: &incarnation_id,
             node_id: &node_id,
             execution_owner_id: &execution_owner_id,
-            capture_owner_id: None,
+            capture_owner_id: capture_owner.as_ref(),
             request_id: &request_id,
             operation_id: &operation_id,
             sequence: U64::new(u64::MAX),
@@ -496,7 +596,7 @@ impl CnpController {
             incarnation_id: Nullable(Some(incarnation_id)),
             node_id: Nullable(node_id),
             execution_owner_id: Nullable(execution_owner_id),
-            capture_owner_id: Nullable(None),
+            capture_owner_id: Nullable(capture_owner),
             request_id: Nullable(Some(request_id)),
             operation_id: Nullable(operation_id),
             sequence: U64::new(2),
@@ -633,6 +733,14 @@ impl CnpController {
         usize::try_from(self.session.authority().limits().frame_bytes.get())
             .map_err(|_| ProviderError::ResourceExhausted("generic platform frame ceiling"))
     }
+}
+
+// Scope is inert routing data; source and native checks remain mandatory.
+struct CallScope {
+    operation_id: Option<Id>,
+    method: Method,
+    owner_scoped: bool,
+    capture_owner: Option<Id>,
 }
 
 #[derive(Serialize)]
