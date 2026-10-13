@@ -2,8 +2,9 @@
 //!
 //! This module models controller intent without granting broker authority or
 //! dispatching effects. Protected transactions use the shared native domain owner;
-//! lifecycle schemas and recovery policy stay here. That source organization does
-//! not activate the controller, public protocol or readiness advertisement.
+//! Protocol owns shared resource/edge DATA, model errors and postorder rules;
+//! lifecycle admission and recovery policy stay here. This organization does not
+//! activate the controller, public protocol or readiness advertisement.
 
 mod atomic_snapshot_source;
 mod attempt;

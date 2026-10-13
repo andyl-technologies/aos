@@ -2,7 +2,8 @@
 //!
 //! The descendant uses the original parent models and private fields directly;
 //! it has no mirrored DATA representation or fresh/current authority factory.
-//! Gate canonical decoding remains with its complete operation-ledger owner.
+//! Protocol owns the complete canonical Gate DATA; the private Native Delete
+//! relation joins it to the whole validated Lifecycle batch.
 //!
 //! ```text
 //! Effect V2--V6 = version || domain || state || flags || lengths/method

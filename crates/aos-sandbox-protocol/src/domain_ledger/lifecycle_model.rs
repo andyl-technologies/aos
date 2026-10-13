@@ -1,4 +1,15 @@
-//! Shared passive Lifecycle resources, dependency rules and model errors.
+//! Owns passive lifecycle resource identity, dependency rules and model errors.
+//!
+//! Resource DATA retains the established typed identity and wire vocabulary:
+//!
+//! ```text
+//! resource := kind:u8 (1..9) | nonzero typed-id:16
+//! dependency := dependent-resource | dependency-resource
+//! ```
+//!
+//! The original completeness rule and deterministic ready-node refinement stay
+//! separate. Callers retain bounds, uniqueness, inventory and authenticated
+//! graph/currentness checks; these models do not grant admission or custody.
 
 use aos_sandbox_core::{ExecutionId, ProjectId, ResourceId, SandboxId, SnapshotId, ViewId};
 
@@ -46,6 +57,7 @@ pub enum LifecycleResourceV1 {
 }
 
 impl LifecycleResourceV1 {
+    /// Returns the established resource kind code.
     pub const fn code(self) -> u8 {
         match self {
             Self::Sandbox(_) => 1,
@@ -60,6 +72,12 @@ impl LifecycleResourceV1 {
         }
     }
 
+    /// Decodes the complete typed resource identity from its wire fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleModelError::CorruptEncoding`] for an unknown kind or
+    /// an all-zero identity.
     pub fn from_code(code: u8, bytes: [u8; 16]) -> Result<Self, LifecycleModelError> {
         let resource = match code {
             1 => Self::Sandbox(SandboxId::from_bytes(bytes)),
@@ -80,6 +98,7 @@ impl LifecycleResourceV1 {
         }
     }
 
+    /// Borrows the stored typed identity bytes without copying them.
     pub const fn as_bytes(&self) -> &[u8; 16] {
         match self {
             Self::Sandbox(v) => v.as_bytes(),
@@ -134,6 +153,10 @@ impl LifecycleDependencyEdgeV1 {
     }
 }
 
+/// Checks the original dependent-before-dependency completeness rule.
+///
+/// Callers separately enforce bounded counts, unique resources and a closed
+/// inventory. A successful topology check does not authenticate that inventory.
 pub fn dependency_postorder_is_complete(
     edges: &[LifecycleDependencyEdgeV1],
     postorder: &[LifecycleResourceV1],
@@ -175,8 +198,8 @@ pub fn dependency_postorder_is_complete(
 
 /// Adds deterministic ready-node ordering to the existing complete-graph check.
 ///
-/// Only the new batch codec selects this rule. Snapshot-bound kind3 keeps its
-/// original postorder contract and traversal. This is a topological tie check,
+/// The existing Delete batch codec selects this rule. Snapshot-bound kind3
+/// keeps its original postorder contract and traversal. This is a topological tie check,
 /// not a second reachability or graph-inventory engine.
 pub fn canonical_dependency_postorder_is_complete(
     edges: &[LifecycleDependencyEdgeV1],
