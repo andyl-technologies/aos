@@ -214,7 +214,17 @@ recovery case also passes source review and is required in both owning
 provenance gates; ordinary reopen continues to require refusal of the pending
 mismatch. The first two qualification attempts stop at formatting: child-module
 resolution, then declaration ordering. Both have reviewed corrections; neither
-attempt reaches compilation or runtime, and acceptance remains pending.
+attempt reaches compilation or runtime. A subsequent SDK Clippy attempt finds
+an invariant observation lifetime and an incompatible clock-error mapper.
+The reviewed correction erases only the private synchronous source-read
+borrow, preserves every original physical recipe and uses the canonical
+clock-error mapping. Frozen `c70fcf5e6edb` (tree `dcff9136ad57`) passes both
+formatters, strict default and SDK all-target Clippy, SDK all-target test
+compilation, the default build and actual inventory validation. Its 1,121
+tests across three AOS executables include all twenty-four exact focused
+selectors, with none ignored. Source, compiler inputs and original and
+archived executables remain unchanged. Focused runtime and acceptance remain
+pending; these compiler results qualify no owning gate.
 A separate reviewed private handoff correction carries each native reader's
 actual caller configuration; it is not established as this failure's cause.
 Growing populations, full SDK and owning Nix qualification remain pending.
