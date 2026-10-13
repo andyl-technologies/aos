@@ -2361,6 +2361,18 @@ source reference. All 25 prerequisite NARs, references and actual derivers remai
 unchanged. QEMU installation, guest behavior and the complete firmware roster
 remain unqualified.
 
+The additive iPXE provider retains the original eight PCI mappings and builds
+both BIOS and combined BIOS/x86-64 EFI images. Its recipe uses raw AOS GCC for
+freestanding firmware and the AOS compiler wrapper for hosted compression and
+the bundled EDK2 EfiRom tool. The matching source output retains the complete
+upstream archive, both source trees, configurations, compiler products,
+interpreter edits and licenses. Product validation checks PCI identities,
+image-chain extents, terminal indicators and legacy checksums. Source review,
+Python parsing and Nix formatting pass; metadata evaluation, actual compilation,
+installed-product auditing, QEMU integration and guest behavior remain required.
+Sixteen proposed products cover the fourteen existing iPXE blobs and preserve
+the complete original eight-target BIOS set.
+
 ## Selected plugin preparation and process fencing
 
 The selected plugin retains one original Unix socket, setup descriptor journal,
