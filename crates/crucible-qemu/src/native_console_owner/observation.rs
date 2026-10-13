@@ -31,8 +31,35 @@ impl ConsoleLaunchCustody {
         admission: &crucible::PreparedRunAdmission,
     ) -> Result<(), ConsoleOwnerError> {
         let mut owner = self.lock()?;
+        // One console lifetime never mixes the scheduler and node clocks.
+        if owner.standalone_projection {
+            return Err(NativeConsoleError::Binding.into());
+        }
         let lease = admission.retain_native_console_mapping(owner.logical_generation)?;
         owner.projection = ConsoleProjection::Run(Arc::new(lease));
+        Ok(())
+    }
+
+    /// Projects later bytes on the node's own clock for a scheduler-free harness.
+    ///
+    /// Adoption must precede any RUN projection. Bytes accepted before it keep
+    /// their boot projection and become visible at genesis.
+    pub(crate) fn adopt_standalone_projection(
+        &self,
+        node: &NodeId,
+        ready_counter: NodeCounter,
+    ) -> Result<(), ConsoleOwnerError> {
+        let mut owner = self.lock()?;
+        if owner.standalone_projection || owner.projection != ConsoleProjection::Boot {
+            return Err(NativeConsoleError::Binding.into());
+        }
+        let lease = NativeConsoleMappingLease::standalone(
+            node.clone(),
+            owner.logical_generation,
+            ready_counter,
+        );
+        owner.projection = ConsoleProjection::Run(Arc::new(lease));
+        owner.standalone_projection = true;
         Ok(())
     }
 

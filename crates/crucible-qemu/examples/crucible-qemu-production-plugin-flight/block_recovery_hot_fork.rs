@@ -99,6 +99,9 @@ pub(super) fn run(
             ),
         )?,
     )?;
+    // This subflight steps the node directly, outside any scheduler, and reads
+    // its readiness and completion markers from native console output.
+    node.adopt_standalone_native_console_projection()?;
 
     // Apply recovery only after the guest has opened the device. This makes
     // the recovery interval causal: the kernel's earlier probe traffic cannot
@@ -382,8 +385,13 @@ fn append_console_bytes(
     console: &mut Vec<u8>,
     events: &[crucible::ObservableEvent],
 ) -> Result<(), Box<dyn Error>> {
+    // Native console custody reports each architectural UART byte with its
+    // origin; a launch without it reports buffered console output instead.
     for bytes in events.iter().filter_map(|event| match event.payload() {
         ObservableEventPayload::ConsoleOutput { bytes, .. } => Some(bytes.as_slice()),
+        ObservableEventPayload::NativeConsoleByte { origin, .. } => {
+            Some(std::slice::from_ref(&origin.byte))
+        }
         _ => None,
     }) {
         if bytes.len() > MARKER_CONSOLE_BYTE_LIMIT.saturating_sub(console.len()) {

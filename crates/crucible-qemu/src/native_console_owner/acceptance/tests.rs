@@ -520,6 +520,44 @@ fn canonical_drain_keeps_boot_origin_and_original_run_map_after_rebase() -> Resu
     fixture.finish()
 }
 
+/// A scheduler-free harness projects bytes on the node clock: a boot byte at
+/// genesis and a later byte at its emitted picoseconds. Adoption happens once
+/// and never replaces a scheduler RUN projection.
+#[test]
+fn standalone_projection_drains_on_the_node_clock() -> Result<(), FixtureError> {
+    let fixture = LaunchFixture::cold(1)?;
+    let region = mapped(&fixture)?;
+    let mut channel = fixture.hot_path()?;
+    let custody = custody(&fixture)?;
+    let node = crucible::NodeId { name: "vm".into() };
+    let ready = crucible::NodeCounter { ticks: 100 };
+
+    start(&mut channel, 100)?;
+    let body = custody.authorization_snapshot()?;
+    stage(&region, body, 60, b"b")?;
+    settle_real_runtime(&fixture, &region, body, 100)?;
+    custody.adopt_standalone_projection(&node, ready)?;
+    assert!(custody.adopt_standalone_projection(&node, ready).is_err());
+
+    start(&mut channel, 200)?;
+    let body = custody.authorization_snapshot()?;
+    stage(&region, body, 160, b"r")?;
+    settle_real_runtime(&fixture, &region, body, 200)?;
+
+    let observations = custody.drain_observations(&node, ready)?;
+    let times = observations
+        .iter()
+        .map(|event| event.at().ticks)
+        .collect::<Vec<_>>();
+    assert_eq!(times, [0, 160]);
+    assert!(fixture.pending_origins()?.is_empty());
+
+    custody.lock()?.projection = checkpoint_projection(0)?;
+    custody.lock()?.standalone_projection = false;
+    assert!(custody.adopt_standalone_projection(&node, ready).is_err());
+    fixture.finish()
+}
+
 #[test]
 fn projection_refusal_keeps_whole_consumed_origin_queue() -> Result<(), FixtureError> {
     let fixture = LaunchFixture::cold(1)?;

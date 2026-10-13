@@ -117,6 +117,8 @@ struct HostConsoleOwner {
     control_observation: Option<crucible_protocol::native_console::NativeConsoleClamp>,
     accepted: acceptance::ConsoleAcceptedContinuation,
     projection: observation::ConsoleProjection,
+    /// Whether a directly stepped harness owns projection on the node clock.
+    standalone_projection: bool,
     pending_node_restore: Option<ConsoleOriginContinuation>,
 }
 
@@ -219,6 +221,7 @@ impl HostConsoleOwner {
             control_observation: None,
             accepted: acceptance::ConsoleAcceptedContinuation::new(plan)?,
             projection: observation::ConsoleProjection::Boot,
+            standalone_projection: false,
             pending_node_restore: None,
         })
     }

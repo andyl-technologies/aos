@@ -80,3 +80,33 @@ fn native_console_origin_changed_raw_or_logical_origin_changes_canonical_materia
     }
     Ok(())
 }
+
+/// A directly stepped node projects bytes on its own counter: RUN bytes at
+/// their emitted picoseconds and boot bytes at genesis.
+#[test]
+fn standalone_lease_projects_on_the_node_counter() -> Result<(), crate::SchedulerError> {
+    let node = crate::NodeId {
+        name: String::from("vm"),
+    };
+    let ready = crate::NodeCounter { ticks: 40 };
+    let lease = NativeConsoleMappingLease::standalone(node.clone(), 3, ready);
+
+    let mut run_byte = origin();
+    run_byte.emitted_ps = 90;
+    let boot_byte = NativeConsoleByteOrigin {
+        emitted_ps: 30,
+        ..origin()
+    };
+
+    let run_event = lease.project_origin(&node, &run_byte)?;
+    let boot_event = lease.project_boot_origin(&node, ready, &boot_byte)?;
+
+    assert_eq!(run_event.at().ticks, 90);
+    assert_eq!(boot_event.at().ticks, 0);
+    lease.validate_binding(&node, 3, ready)?;
+    assert_eq!(
+        NativeConsoleMappingLease::from_canonical_bytes(&lease.to_canonical_bytes()?)?,
+        lease
+    );
+    Ok(())
+}

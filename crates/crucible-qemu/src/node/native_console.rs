@@ -201,4 +201,36 @@ impl QemuNode {
         }
         Ok(())
     }
+
+    /// Projects native console output on this node's own clock.
+    ///
+    /// A harness that steps this node directly, outside any scheduler, calls
+    /// this once after launch and before its first step. Without it, accepted
+    /// output has no RUN projection and observation drain refuses it. A node
+    /// without native console custody needs no projection.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a node whose boot visibility is unbound, or whose console
+    /// projection already belongs to a scheduler RUN or an earlier adoption.
+    pub fn adopt_standalone_native_console_projection(&self) -> Result<(), QemuNodeChannelError> {
+        let Some(console) = &self.native_console else {
+            return Ok(());
+        };
+        let ready_counter = console.ready_counter.ok_or_else(|| {
+            QemuNodeChannelError::new(
+                "adopt standalone native console projection",
+                "ready visibility is absent",
+            )
+        })?;
+        console
+            .custody
+            .adopt_standalone_projection(&console.node, ready_counter)
+            .map_err(|source| {
+                QemuNodeChannelError::new(
+                    "adopt standalone native console projection",
+                    source.to_string(),
+                )
+            })
+    }
 }

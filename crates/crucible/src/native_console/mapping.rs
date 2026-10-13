@@ -1,8 +1,10 @@
 //! Original scheduler projection and boot visibility for retained byte origins.
 //!
-//! Only a sealed RUN admission constructs these leases. Native emission and
-//! acceptance authority remain independent; neither a map nor its generation
-//! grants permission to execute or consume a transport prefix.
+//! A sealed RUN admission constructs these leases for scheduled nodes. A
+//! harness stepping one node outside any scheduler uses the standalone lease,
+//! whose clock is the node's own counter. Native emission and acceptance
+//! authority remain independent; neither a map nor its generation grants
+//! permission to execute or consume a transport prefix.
 
 use crate::{
     NativeConsoleByteOrigin, NodeCounter, NodeId, NodeTimeMapping, ObservableEvent, SchedulerError,
@@ -129,6 +131,25 @@ impl NativeConsoleMappingLease {
     fn codec_error() -> SchedulerError {
         SchedulerError::BoundaryViolation {
             message: String::from("malformed retained native-console projection"),
+        }
+    }
+
+    /// Builds the projection for one node stepped outside any scheduler.
+    ///
+    /// Such a node's own counter is its logical clock, so RUN bytes keep their
+    /// emitted picoseconds. Boot bytes become visible at genesis, where a
+    /// scheduler anchors the same `ready` point. Like a RUN lease, this supplies
+    /// projection only, never execution or acceptance authority.
+    #[must_use]
+    pub fn standalone(node: NodeId, logical_generation: u64, ready: NodeCounter) -> Self {
+        Self {
+            node,
+            logical_generation,
+            mapping: NodeTimeMapping::IDENTITY,
+            ready_point_mapping: NodeTimeMapping {
+                anchor_counter: ready,
+                anchor_time: crate::SimInstant::EPOCH,
+            },
         }
     }
 
