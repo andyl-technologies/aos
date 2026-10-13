@@ -1,6 +1,6 @@
-From b41b01f985f51107ffafa60e670d10608cdd8f8e Mon Sep 17 00:00:00 2001
+From 5158d178ac2f2b98a984cc0cd4b6f713535c86de Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Tue, 13 Oct 2026 23:50:00 +0000
+Date: Tue, 13 Oct 2026 23:55:00 +0000
 Subject: [PATCH] Integrate deterministic execution and native effect ownership
 
 Keep small TCG invalidation page-lock sets in four caller-owned sorted
@@ -635,6 +635,27 @@ No QOM/listener/CPUAddressSpace/name-storage work in progress is included.
 Complete native MR/AS/FlatView/range/dispatch graph and RCU dispatch remain
 pending. Local membership provides no BIOS copy certificate, full seal,
 Capture/Ready, guest, installed-pair, package or release qualification.
+
+Complete the existing non-system native constructor stubs with a strong
+false source_current implementation. Ordinary qemu-io/qemu-nbd/storage
+daemon targets cannot own a system constructor or its history. Preserve
+real system source providers and the existing stub archive selection;
+no weak permission, new source file or cross-process boundary change.
+
+Fresh complete corrected-stub and unchanged endpoint-utility source TUs
+pass with warnings as errors against exact signed b41 source/header.
+Focused ordinary utility/QOM-support link and protected owner/output
+refusal pass. Exact parent-stub substitution reproduces the missing
+source_current symbol from the literal endpoint owner reader. Historical
+normal5 archive/QOM objects are explicit control-only support; initial
+incomplete fixture-support link failures remain preserved separately.
+
+Reconstruct the entire signed b41 tree plus exactly one existing source
+post. Source inventory and cumulative license ledger are unchanged. The
+original failed d903 package build is not relabeled; a complete current
+ordinary package/source/runtime rebuild remains required. This correction
+provides no graph seal, constructor authority, Capture/Ready, guest,
+installed-pair, package or release qualification.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -172388,15 +172409,21 @@ index b8975bf5a8adc1fe3850349111d1239b6f1b04d4..3220628ec6cfc8928c54346ffe146758
 +}
 diff --git a/stubs/crucible-whole-early.c b/stubs/crucible-whole-early.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..215f86256d0d70df878decd153165692975191de
+index 0000000000000000000000000000000000000000..984b7060d5e7eed0d76627fab870551e056d7db4
 --- /dev/null
 +++ b/stubs/crucible-whole-early.c
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,31 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Common utility users without the system constructor cannot own its arena
 + * or start a guest. System executables link their real source providers. */
 +#include "qemu/osdep.h"
 +#include "system/crucible-whole-early.h"
++
++/* Non-system executables have no selected native source owner. */
++bool crucible_whole_setup_source_current(void)
++{
++    return false;
++}
 +
 +bool crucible_whole_setup_constructor_current(void)
 +{

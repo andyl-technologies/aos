@@ -3327,6 +3327,34 @@ package result. The operator's failed record remains unchanged; all observed
 build generations are now terminal. A strong refusing non-system stub and
 terminal-only operator reclamation are separate follow-up work.
 
+## Refusing non-system source provider and ordinary utility linkage
+
+The existing non-system constructor stub now supplies a strong
+`crucible_whole_setup_source_current()` implementation returning false. This
+repairs the missing symbol observed in the actual qemu-io, qemu-nbd and
+qemu-storage-daemon links. Ordinary utility targets have no selected system
+constructor source owner. Their existing stub archive route and the real system
+provider remain unchanged; the correction supplies no native permission.
+
+The corrected stub and unchanged endpoint-utility translation units compile
+with warnings as errors against the exact signed dispatch source. A focused
+ordinary utility/QOM-support link and protected-owner refusal control pass.
+Substituting the original stub reproduces the missing source-current symbol.
+Historical archive support is explicitly fixture-only; the seven original
+control/compiler processes are reaped. This is not a full current utility or
+ordinary package build.
+
+The final signed native commit is
+`5158d178ac2f2b98a984cc0cd4b6f713535c86de`, with complete tree
+`8dd8f156013c0d2bafb8aad587b0cb0270c48164`. Independent canonical review verifies
+all 78,084 entries, the sole existing-file delta, unchanged license inventory,
+sole signed base, patch and bundle, descriptor and explicit AOS signing client.
+Its receipt is
+`0d77bc824bff38b03a087384b7f8376ef345a3bf4a22f605f12305fb91b49e0f`.
+The earlier failed package remains failed on its original source; current full
+package/source qualification, system constructor closure and native Ready
+remain pending.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
