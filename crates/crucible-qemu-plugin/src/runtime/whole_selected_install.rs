@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::ffi::{c_int, c_void};
 use std::os::fd::AsRawFd;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use crucible_protocol::whole_control::staged::StagedControlProfile;
@@ -18,6 +18,7 @@ use thiserror::Error;
 
 use crate::{PluginArgs, PluginSetupCompletion, QemuPluginId};
 
+use super::whole_callback_origin::{CallbackRegistration, NativeCallbackOriginApi, current_tid};
 use super::whole_initial_setup::OriginalWholeInitialSetup;
 use super::whole_journals::WholeJournals;
 use super::whole_native_abi::*;
@@ -32,9 +33,14 @@ use super::{
 // entry checks this lock-free scalar before any copied TLS or userdata access.
 static ORIGINAL_PROCESS: AtomicU32 = AtomicU32::new(0);
 
+// This one original Arc is published before any native callback registration.
+// The static requires compiler-checked Send + Sync; no unsafe trait impl is used.
+static ORIGINAL_CALLBACK: OnceLock<Arc<SharedCallbackCustody>> = OnceLock::new();
+static ORIGINAL_ORIGIN_API: OnceLock<NativeCallbackOriginApi> = OnceLock::new();
+
 thread_local! {
-    // The native API authenticates the original loader/RR thread. This owning
-    // slot is published before FD claim, and is never replaced on failure.
+    // This constructor-only slot belongs to the original loader thread. Native
+    // worker callbacks use ORIGINAL_CALLBACK and never enter this RefCell.
     static ORIGINAL: RefCell<Option<Rc<SelectedCustody>>> = const { RefCell::new(None) };
 }
 
@@ -75,31 +81,44 @@ struct WaitAttempt {
     status: c_int,
 }
 
+/// Keeps the constructor cursors exclusively on the original loader thread.
 struct SelectedCustody {
-    process: u32,
+    shared: Arc<SharedCallbackCustody>,
+    initial: RefCell<OriginalWholeInitialSetup>,
     #[expect(
         dead_code,
-        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+        reason = "The Preparing-only controller has no positive Ready issuer."
     )]
+    ready: RefCell<OriginalWholeReadyExchange>,
+    waits: RefCell<Box<[WaitAttempt]>>,
+    wait_count: RefCell<usize>,
+}
+
+impl std::ops::Deref for SelectedCustody {
+    type Target = SharedCallbackCustody;
+
+    fn deref(&self) -> &Self::Target {
+        &self.shared
+    }
+}
+
+/// Owns the original callback resources across loader and native RR threads.
+struct SharedCallbackCustody {
+    process: u32,
     plugin_id: QemuPluginId,
+    loader_tid: u64,
     args: PluginArgs,
     profile: StagedControlProfile,
     apis: NativeWholeApis,
     original_body: Box<[u8]>,
     socket: Arc<OriginalWholeSocket>,
-    initial: RefCell<OriginalWholeInitialSetup>,
     journals: Arc<WholeJournals>,
-    #[expect(
-        dead_code,
-        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
-    )]
-    ready: RefCell<OriginalWholeReadyExchange>,
     setup: OnceLock<PluginSetupCompletion>,
-    waits: RefCell<Box<[WaitAttempt]>>,
-    wait_count: RefCell<usize>,
     failed: AtomicBool,
     callback_entry: AtomicBool,
     observed_vcpus: AtomicU8,
+    constructor_identity: AtomicUsize,
+    cpu_identities: [AtomicUsize; 4],
 }
 
 impl Drop for SelectedCustody {
@@ -132,6 +151,7 @@ struct SelectedRegistrationApis {
     vcpu_init: crate::QemuRegisterVcpuInitCbFn,
     barrier: crate::QemuRegisterHotForkBarrierFn,
     control: crate::QemuRegisterControlBoundaryCbFn,
+    origin: NativeCallbackOriginApi,
 }
 
 /// Installs the bounded original Setup/ACK and a closed native controller.
@@ -167,6 +187,8 @@ fn install_inner(
         control: capabilities
             .register_control_boundary
             .ok_or(SelectedInstallError::Native(-libc::ENOTSUP))?,
+        origin: NativeCallbackOriginApi::resolve()
+            .ok_or(SelectedInstallError::Native(-libc::ENOTSUP))?,
     };
     install_preowned(plugin_id, args, descriptor, reservation, apis, callbacks)
 }
@@ -198,11 +220,12 @@ fn install_preowned(
         selection_bytes,
         wait_bytes,
         std::mem::size_of::<SelectedCustody>(),
+        std::mem::size_of::<SharedCallbackCustody>(),
         std::mem::size_of::<PluginSetupCompletion>(),
         std::mem::size_of::<OriginalWholeInitialSetup>(),
         std::mem::size_of::<OriginalWholeReadyExchange>(),
-        // Three constructor-owned Rc/Arc allocations retain their control words.
-        6 * std::mem::size_of::<usize>(),
+        // Four constructor-owned Rc/Arc allocations retain their control words.
+        8 * std::mem::size_of::<usize>(),
     ]
     .into_iter()
     .try_fold(0u64, |sum, size| sum.checked_add(size as u64))
@@ -240,23 +263,29 @@ fn install_preowned(
         .try_reserve_exact(descriptor.body.len())
         .map_err(|_| SelectedInstallError::Capacity)?;
     full_body.extend_from_slice(descriptor.body);
-    let original = Rc::new(SelectedCustody {
+    let shared = Arc::new(SharedCallbackCustody {
         process: std::process::id(),
         plugin_id,
+        loader_tid: current_tid().map_err(SelectedInstallError::Native)?,
         args,
         profile,
         apis,
         original_body: descriptor.body.into(),
-        initial: RefCell::new(OriginalWholeInitialSetup::new(Arc::clone(&socket))),
-        socket,
+        socket: Arc::clone(&socket),
         journals,
-        ready: RefCell::new(ready),
         setup: OnceLock::new(),
-        waits: RefCell::new(wait_backing.into_boxed_slice()),
-        wait_count: RefCell::new(0),
         failed: AtomicBool::new(false),
         callback_entry: AtomicBool::new(false),
         observed_vcpus: AtomicU8::new(0),
+        constructor_identity: AtomicUsize::new(0),
+        cpu_identities: std::array::from_fn(|_| AtomicUsize::new(0)),
+    });
+    let original = Rc::new(SelectedCustody {
+        shared,
+        initial: RefCell::new(OriginalWholeInitialSetup::new(socket)),
+        ready: RefCell::new(ready),
+        waits: RefCell::new(wait_backing.into_boxed_slice()),
+        wait_count: RefCell::new(0),
     });
     let process = std::process::id();
     if ORIGINAL_PROCESS
@@ -276,6 +305,13 @@ fn install_preowned(
         Ok(())
     })?;
 
+    ORIGINAL_ORIGIN_API
+        .set(callbacks.origin)
+        .map_err(|_| SelectedInstallError::Owner)?;
+    ORIGINAL_CALLBACK
+        .set(Arc::clone(&original.shared))
+        .map_err(|_| SelectedInstallError::Owner)?;
+
     // The reachable owning slot precedes the literal native FD transfer. There
     // is no dup, interrupt stream, replacement actor or post-HELLO constructor.
     reservation.mark_irreversible();
@@ -285,7 +321,7 @@ fn install_preowned(
     {
         Ok(stream) => stream,
         Err(status) => {
-            original.refuse(0, std::ptr::null_mut());
+            original.refuse_constructor(0, std::ptr::null_mut());
             return Err(SelectedInstallError::Native(status));
         }
     };
@@ -336,7 +372,7 @@ fn install_preowned(
             .setup
             .set(setup)
             .map_err(|_| SelectedInstallError::Owner)?;
-        let userdata = Rc::as_ptr(&original).cast_mut().cast();
+        let userdata = Arc::as_ptr(&original.shared).cast_mut().cast();
         // A setter may retain a Rust callback before returning. Every
         // subsequent error terminates instead of allowing the loader to unload
         // this cdylib; the owning slot remains reachable throughout entry.
@@ -354,7 +390,7 @@ fn install_preowned(
             &policy,
             &budget,
             &CLOSED_OPS,
-            Rc::as_ptr(&original).cast_mut().cast(),
+            Arc::as_ptr(&original.shared).cast_mut().cast(),
         );
         if status != 0 {
             return Err(SelectedInstallError::Native(status));
@@ -379,7 +415,7 @@ fn install_preowned(
         Err(_) => Err(SelectedInstallError::Panic),
     };
     if let Err(error) = prepared {
-        original.refuse(0, std::ptr::null_mut());
+        original.refuse_constructor(0, std::ptr::null_mut());
         if original.callback_entry.load(Ordering::Acquire) {
             super::AbortPostRegistrationFailure
                 .terminate(PluginRuntimeInstallError::SelectedPreparation { source: error });
@@ -447,9 +483,20 @@ impl SelectedCustody {
         }
         Ok(())
     }
+}
 
-    fn refuse(&self, sequence: u64, allocation: *mut c_void) {
+impl SharedCallbackCustody {
+    /// Fences a callback without entering any source/TLS/mapping/journal guard.
+    fn refuse_callback(&self) {
         self.failed.store(true, Ordering::Release);
+    }
+
+    /// Performs cleanup only on the authenticated original constructor thread.
+    fn refuse_constructor(&self, sequence: u64, allocation: *mut c_void) {
+        self.refuse_callback();
+        if self.process != std::process::id() || current_tid().ok() != Some(self.loader_tid) {
+            return;
+        }
         super::whole_compute_scope::refuse_native_compute_input_scope();
         if self.process != std::process::id() {
             return;
@@ -561,41 +608,75 @@ fn refuse_original(userdata: *mut c_void, sequence: u64, allocation: *mut c_void
     if !callback_process_current() {
         return;
     }
-    let _available = ORIGINAL.try_with(|slot| {
-        if let Ok(slot) = slot.try_borrow()
-            && let Some(original) = slot.as_ref()
-            && Rc::as_ptr(original).cast_mut().cast::<c_void>() == userdata
-        {
-            original.refuse(sequence, allocation);
-        }
-    });
+    let _ = (userdata, sequence, allocation);
+    if let Some(original) = ORIGINAL_CALLBACK.get() {
+        // A closed callback has no authenticated effect context. Its only
+        // permitted response is this scalar fence on the original process.
+        original.refuse_callback();
+    }
 }
 
-/// Records actual vCPU-init callbacks without granting execution or Ready.
+/// Records only source-authenticated family1 participation, never Ready.
 extern "C" fn observe_preparing_vcpu(cpu: u32, userdata: *mut c_void) {
     if !callback_process_current() {
         return;
     }
-    let _available = ORIGINAL.try_with(|slot| {
-        if let Ok(slot) = slot.try_borrow()
-            && let Some(original) = slot.as_ref()
-            && Rc::as_ptr(original).cast_mut().cast::<c_void>() == userdata
-        {
-            if original.process != std::process::id()
-                || original.failed.load(Ordering::Acquire)
-                || cpu >= 4
-            {
-                original.refuse(0, std::ptr::null_mut());
-                return;
-            }
-
-            let bit = 1u8 << cpu;
-            if original.observed_vcpus.fetch_or(bit, Ordering::AcqRel) & bit != 0 {
-                // An initializer cannot replace an original CPU incarnation.
-                original.refuse(0, std::ptr::null_mut());
-            }
+    // The raw PID fence precedes this immutable getter lookup. Native capture
+    // authenticates literal dispatch before any shared source guard or userdata
+    // interpretation. Missing origin never selects an ordinary callback path.
+    let proof = ORIGINAL_ORIGIN_API
+        .get()
+        .ok_or(-libc::ESTALE)
+        .and_then(|api| api.capture());
+    let Some(original) = ORIGINAL_CALLBACK.get() else {
+        return;
+    };
+    if Arc::as_ptr(original).cast_mut().cast::<c_void>() != userdata {
+        original.refuse_callback();
+        return;
+    }
+    let proof = match proof {
+        Ok(proof) => proof,
+        Err(_) => {
+            original.refuse_callback();
+            return;
         }
-    });
+    };
+    if original.failed.load(Ordering::Acquire)
+        || proof
+            .validate(CallbackRegistration {
+                cpu_index: cpu,
+                plugin_id: original.plugin_id,
+                process: original.process,
+                loader_tid: original.loader_tid,
+                userdata,
+                callback: observe_preparing_vcpu as *const () as usize,
+            })
+            .is_err()
+        || original
+            .constructor_identity
+            .compare_exchange(
+                0,
+                proof.original_constructor_identity(),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err_and(|identity| identity != proof.original_constructor_identity())
+        || original
+            .cpu_identities
+            .get(cpu as usize)
+            .is_none_or(|identity| {
+                identity
+                    .compare_exchange(0, proof.cpu_identity(), Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+            })
+    {
+        original.refuse_callback();
+        return;
+    }
+    original
+        .observed_vcpus
+        .fetch_or(1u8 << cpu, Ordering::AcqRel);
 }
 
 /// Refuses the exact selected control path before any legacy publication.
@@ -790,6 +871,50 @@ mod tests {
         0
     }
 
+    extern "C" fn modeled_origin(
+        destination: *mut super::super::whole_callback_origin::NativeCallbackOrigin,
+    ) -> c_int {
+        let Some(original) = ORIGINAL_CALLBACK.get() else {
+            return -libc::ESTALE;
+        };
+        let mode = MODELED_ORIGIN_MODE.with(|mode| mode.get());
+        if mode == 1 {
+            return -libc::ESTALE;
+        }
+        let cpu = MODELED_CPU.with(|cpu| cpu.get());
+        let value = super::super::whole_callback_origin::NativeCallbackOrigin {
+            version: 1,
+            size: 80,
+            family: if mode == 3 { 2 } else { 1 },
+            cpu_index: cpu,
+            plugin_id: original.plugin_id,
+            process: u64::from(std::process::id()),
+            actual_tid: current_tid().unwrap_or_default() + u64::from(mode == 2),
+            loader_tid: original.loader_tid,
+            userdata: Arc::as_ptr(original).cast_mut().cast(),
+            original_constructor: std::ptr::dangling::<c_void>(),
+            cpu: (cpu as usize + 16) as *const c_void,
+            callback: observe_preparing_vcpu as *const () as usize,
+        };
+        // SAFETY: The model getter receives exactly one initialized local ABI
+        // destination from capture. These addresses are compared, never read.
+        unsafe {
+            destination.write(value);
+        }
+        0
+    }
+
+    thread_local! { static MODELED_CPU: std::cell::Cell<u32> = const { std::cell::Cell::new(0) }; }
+
+    thread_local! {
+        static MODELED_ORIGIN_MODE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+
+    fn modeled_observe(cpu: u32, userdata: *mut c_void) {
+        MODELED_CPU.with(|index| index.set(cpu));
+        observe_preparing_vcpu(cpu, userdata);
+    }
+
     fn modeled_apis() -> NativeWholeApis {
         NativeWholeApis {
             claim_control: claim,
@@ -933,6 +1058,7 @@ mod tests {
                 vcpu_init: register_vcpu_init,
                 barrier: register_barrier,
                 control: register_control,
+                origin: NativeCallbackOriginApi::modeled(modeled_origin),
             },
         )
         .unwrap();
@@ -947,7 +1073,7 @@ mod tests {
         assert_eq!(counters.read_bytes, 34);
         assert_eq!(counters.offered_write_bytes, 19);
         assert!(!owner.original.failed.load(Ordering::Acquire));
-        let userdata = Rc::as_ptr(&owner.original).cast_mut().cast();
+        let userdata = Arc::as_ptr(&owner.original.shared).cast_mut().cast();
         reservation.publish_installation(super::super::RuntimeInstallation::Selected(owner));
         assert!(!super::super::active_runtime_is_published());
         assert_eq!(
@@ -990,17 +1116,67 @@ mod tests {
         // Only literal callbacks on the same original userdata are recorded.
         // Neither four observations nor an arbitrary foreign pointer grants
         // execution, source adoption or readiness.
-        observe_preparing_vcpu(1, userdata);
-        observe_preparing_vcpu(2, userdata);
-        observe_preparing_vcpu(3, userdata);
-        observe_preparing_vcpu(0, std::ptr::dangling_mut::<c_void>());
+        // The loader holds its constructor TLS borrow while a real Rust worker
+        // delivers modeled native origins. This proves shared Rust custody only;
+        // actual TCGRR/core dispatch participation remains a separate control.
+        ORIGINAL.with(|slot| {
+            let _loader_borrow = slot.borrow_mut();
+            let loader_tid = current_tid().unwrap();
+            let userdata_identity = userdata as usize;
+            std::thread::spawn(move || {
+                assert_ne!(current_tid().unwrap(), loader_tid);
+                for cpu in 1..4 {
+                    modeled_observe(cpu, userdata_identity as *mut c_void);
+                }
+            })
+            .join()
+            .unwrap();
+        });
         ORIGINAL.with(|slot| {
             let slot = slot.borrow();
             let original = slot.as_ref().unwrap();
             assert_eq!(original.observed_vcpus.load(Ordering::Acquire), 15);
             assert!(!original.failed.load(Ordering::Acquire));
         });
-        observe_preparing_vcpu(4, userdata);
+        let shared = Arc::clone(ORIGINAL_CALLBACK.get().unwrap());
+        std::thread::spawn(move || {
+            let setup = shared.setup.get().unwrap();
+            let mapping = setup.mapped_region().unwrap();
+            let compute = shared.journals.compute(1).unwrap();
+            let _journal_guard = compute.ring_completion.lock().unwrap();
+            let allocation = std::ptr::from_ref(compute).cast_mut().cast::<c_void>();
+            let userdata = Arc::as_ptr(&shared).cast_mut().cast();
+            assert!(!compute.is_uncertain());
+
+            super::super::whole_compute_scope::assert_guarded_input_owner_unchanged(|| {
+                modeled_observe(0, std::ptr::dangling_mut::<c_void>());
+                assert!(shared.failed.load(Ordering::Acquire));
+                assert!(!compute.is_uncertain());
+                for mode in [1, 2, 3] {
+                    MODELED_ORIGIN_MODE.with(|slot| slot.set(mode));
+                    modeled_observe(0, userdata);
+                    assert!(shared.failed.load(Ordering::Acquire));
+                    assert!(!compute.is_uncertain());
+                }
+                MODELED_ORIGIN_MODE.with(|slot| slot.set(0));
+                closed_control_boundary(0, 0, userdata);
+                refuse(userdata, 1, 1, allocation);
+                assert_eq!(
+                    (CLOSED_OPS.history.service.retained.scope_begin)(userdata, 1, 1, allocation),
+                    -libc::ENOTSUP
+                );
+                assert!(!compute.is_uncertain());
+            });
+
+            // A scalar callback fence does not select/fail the original mapping
+            // owner or revoke its constructor-prepared retention ticket.
+            assert!(setup.prepare_whole_mapping_intent_retention().is_ok());
+            assert!(mapping.region_len() > 0);
+        })
+        .join()
+        .unwrap();
+
+        modeled_observe(4, userdata);
         ORIGINAL.with(|slot| {
             let slot = slot.borrow();
             let original = slot.as_ref().unwrap();

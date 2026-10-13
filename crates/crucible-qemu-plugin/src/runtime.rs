@@ -24,6 +24,7 @@ mod run_workers;
 pub(crate) mod semantic_effect;
 pub(crate) mod semantic_prefix;
 mod teardown_channel;
+mod whole_callback_origin;
 pub(crate) mod whole_compute_scope;
 pub(crate) mod whole_initial_setup;
 pub(crate) mod whole_journals;

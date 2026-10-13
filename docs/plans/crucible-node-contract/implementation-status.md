@@ -2368,6 +2368,22 @@ and RR callbacks have different threads; constructor TLS cannot supply shared
 callback participation. That ownership successor must preserve compiler-checked
 thread safety and authentic native context before readiness is enabled.
 
+The shared-custody successor retains the original socket, mapping setup and
+journals in one compiler-checked `Arc`; constructor cursors remain on the loader
+thread. A process-private native origin getter authenticates family-one callback
+participation before guarded Rust access. Native pointer identities are compared
+inside the GPL process and never enter a public protocol. Unauthenticated,
+changed-registration and closed effect callbacks set only an atomic failure
+flag. Constructor cleanup separately requires the original process and loader
+thread.
+
+All 794 plugin controls and strict all-target Clippy pass on the frozen successor.
+A real Rust worker reaches the shared owner while loader TLS remains borrowed;
+invalid-origin controls hold the actual mapping, compute and input-TLS guards and
+preserve their state. Native dispatch and authentication peers remain modeled.
+These checks do not execute the actual installed RR callback path or qualify
+HOLD/adoption, native effects, readiness, package or boundary gates.
+
 ## Original host scheduler and exact input collection
 
 The common runtime retains one original scheduler allocation before Arm. Lazy

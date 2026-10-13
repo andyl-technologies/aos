@@ -22,6 +22,17 @@ thread_local! {
     static REFUSED: Cell<bool> = const { Cell::new(false) };
 }
 
+/// Keeps a real input-owner guard held while asserting no callback revocation.
+#[cfg(test)]
+pub(super) fn assert_guarded_input_owner_unchanged(callback: impl FnOnce()) {
+    ACTIVE.with(|active| {
+        let _guard = active.borrow_mut();
+        let before = REFUSED.get();
+        callback();
+        assert_eq!(REFUSED.get(), before);
+    });
+}
+
 struct NativeComputeInputScope {
     journals: Arc<WholeJournals>,
     process: u32,

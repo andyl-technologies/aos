@@ -192,13 +192,6 @@ pub(crate) struct OriginalComputeJournal {
     result: OriginalBody,
     acknowledgement: OriginalBody,
     consumed_acknowledgement: OriginalBody,
-    #[cfg_attr(
-        test,
-        expect(
-            dead_code,
-            reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
-        )
-    )]
     pub(crate) ring_completion: Mutex<Option<SelectedRingCompletion>>,
     uncertain: AtomicBool,
 }
