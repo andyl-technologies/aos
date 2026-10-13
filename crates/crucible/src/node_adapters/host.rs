@@ -312,6 +312,8 @@ pub struct HostModelNode {
     binding: NodeBinding,
     route: NodeRoute,
     model: Option<HostModel>,
+    // Immutable source parameters remain original when restoration replaces native state.
+    role_definition: roles::HostRoleDefinition,
     // Inactive original bytes remain with the actual capsule until durable release.
     retired_model: Option<HostModel>,
     graceful_retirement: bool,
@@ -522,6 +524,7 @@ impl HostModelNode {
                 node: node.clone(),
                 owners: vec![owner],
             },
+            role_definition: roles::HostRoleDefinition::from_model(&model),
             model: Some(model),
             retired_model: None,
             graceful_retirement: false,
@@ -754,6 +757,9 @@ pub(super) mod rate_alarm_evidence;
 
 #[path = "host_runtime.rs"]
 mod runtime;
+
+#[path = "host_roles.rs"]
+mod roles;
 
 #[path = "host_retirement.rs"]
 mod retirement;

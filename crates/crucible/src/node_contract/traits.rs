@@ -1097,44 +1097,78 @@ impl NodeFacet<'_> {
     }
 }
 
-/// Describes role semantics without exposing an alternate mutation path.
+/// Describes a realized role without granting an alternate mutation path.
+///
+/// Role views retain actual descriptor/profile content. They do not select
+/// optional facets, qualify an implementation or authorize common operations.
 pub trait RoleDescription {
-    /// Returns an immutable canonical role profile identity.
-    fn role_profile(&self) -> &crucible_node_contract::Id;
+    /// Returns the original admitted role and its durable semantic context.
+    fn declaration(&self) -> super::RoleDeclaration<'_>;
+
+    /// Returns the actual complete selected profile content reference.
+    fn role_profile(&self) -> &crucible_node_contract::ContentRef;
 }
 
 /// Exposes compute semantics through the common admitted-operation contract.
 pub trait ComputeNode: SimulationNode {
     /// Returns the architecture, processors, clocks and observation profile.
-    fn compute_description(&self) -> &dyn RoleDescription;
+    ///
+    /// # Errors
+    /// Refuses an absent role, released model or drift from the admitted source.
+    fn compute_description(&self) -> Result<super::ComputeDescription<'_>, Refusal>;
 }
 
 /// Exposes block semantics through the common admitted-operation contract.
+///
+/// The descriptor roster controls each instance; an implementation can refuse
+/// this view when a heterogeneous adapter owns another model kind.
 pub trait BlockNode: SimulationNode {
     /// Returns request, ordering, durability and storage-ownership semantics.
-    fn block_description(&self) -> &dyn RoleDescription;
+    ///
+    /// # Errors
+    /// Refuses an absent role, released model or drift from the admitted source.
+    fn block_description(&self) -> Result<super::BlockDescription<'_>, Refusal>;
 }
 
 /// Exposes filesystem semantics through the common admitted-operation contract.
+///
+/// The descriptor roster controls each instance; an implemented source interface
+/// does not advertise filesystem support on unrelated model kinds.
 pub trait FilesystemNode: SimulationNode {
     /// Returns namespace, permission, handle-lifetime and visibility semantics.
-    fn filesystem_description(&self) -> &dyn RoleDescription;
+    ///
+    /// # Errors
+    /// Refuses an absent role, released model or drift from the admitted source.
+    fn filesystem_description(&self) -> Result<super::FilesystemDescription<'_>, Refusal>;
 }
 
 /// Exposes link semantics through the common admitted-operation contract.
+///
+/// The descriptor roster controls each instance independently of Rust trait support.
 pub trait NetworkLinkNode: SimulationNode {
     /// Returns endpoint, latency, ordering and retained-frame semantics.
-    fn link_description(&self) -> &dyn RoleDescription;
+    ///
+    /// # Errors
+    /// Refuses an absent role, released model or drift from the admitted source.
+    fn link_description(&self) -> Result<super::NetworkLinkDescription<'_>, Refusal>;
 }
 
 /// Exposes clock semantics without establishing a second coordinator authority.
+///
+/// A timer-free coordinate model does not imply a consumer alarm service.
 pub trait ClockNode: SimulationNode {
     /// Returns coordinate, epoch, transform, wrap and timer semantics.
-    fn clock_description(&self) -> &dyn RoleDescription;
+    ///
+    /// # Errors
+    /// Refuses an absent role, released model or drift from the admitted source.
+    fn clock_description(&self) -> Result<super::ClockDescription<'_>, Refusal>;
 }
 
 /// Exposes external-device semantics without inferring physical pause support.
 pub trait ExternalDeviceNode: SimulationNode {
     /// Returns input capture, quantization, containment and restore limitations.
-    fn external_description(&self) -> &dyn RoleDescription;
+    ///
+    /// # Errors
+    /// Refuses an absent role, released model or drift from the admitted source.
+    fn external_description(&self) -> Result<super::ExternalDeviceDescription<'_>, Refusal>;
 }

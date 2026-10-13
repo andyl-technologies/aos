@@ -83,11 +83,6 @@ impl FacetDescription for QuantizedDescription {
         &self.0
     }
 }
-impl RoleDescription for QuantizedDescription {
-    fn role_profile(&self) -> &Id {
-        &self.0
-    }
-}
 
 /// Integrates an actual controlled child with immutable input cuts and host grants.
 ///
@@ -102,6 +97,8 @@ pub struct ControlledReferenceNode<C: ControlledReference> {
     world_hash: crucible_node_contract::HashRef,
     thread: std::thread::ThreadId,
     profile: QuantizedDescription,
+    // Role readback must reject copied native userdata before invoking child hooks.
+    role_process: u32,
     quantum_ps: u64,
     host_budget_ns: u64,
     next_quantum: U64,
@@ -278,6 +275,7 @@ impl<C: ControlledReference> ControlledReferenceNode<C> {
             world_hash: graph.world_binding_hash().clone(),
             thread: std::thread::current().id(),
             profile: QuantizedDescription(profile),
+            role_process: std::process::id(),
             quantum_ps,
             host_budget_ns,
             next_quantum: 0.into(),
@@ -483,8 +481,51 @@ impl<C: ControlledReference> ControlledReferenceNode<C> {
 }
 
 impl<C: ControlledReference> ExternalDeviceNode for ControlledReferenceNode<C> {
-    fn external_description(&self) -> &dyn RoleDescription {
-        &self.profile
+    fn external_description(&self) -> Result<ExternalDeviceDescription<'_>, Refusal> {
+        if self.role_process != std::process::id() {
+            return Err(Refusal {
+                reason: "external role belongs to another original process".into(),
+            });
+        }
+        if self.quarantined
+            || std::thread::current().id() != self.thread
+            || matches!(
+                self.child.status(),
+                DeviceStatus::Quarantined | DeviceStatus::Reaped
+            )
+            || self.child.owner_id() != &self.binding.compatibility.execution_owner.id
+            || self.child.incarnation_id() != &self.binding.authority.incarnation_id
+            || self.child.generation() != self.binding.authority.owner_generation
+            || self.child.quantized_facet() != self.profile.0.as_str()
+            || self.binding.compatibility.operating_contract.facets.len() != 1
+            || self.binding.compatibility.operating_contract.mode
+                != crucible_node_contract::OperatingMode::Quantized
+            || self.quantum_ps == 0
+            || self.host_budget_ns == 0
+            || self
+                .binding
+                .compatibility
+                .operating_contract
+                .facets
+                .first()
+                .is_none_or(|facet| facet.id != self.profile.0 || facet.version != 1)
+        {
+            return Err(Refusal {
+                reason: "external role differs from original controlled-process custody".into(),
+            });
+        }
+        let declaration =
+            checked_role_declaration(&self.descriptor, &self.binding, "external_device")?;
+
+        Ok(ExternalDeviceDescription {
+            declaration,
+            quantum_ps: self.quantum_ps,
+            host_budget_ns: self.host_budget_ns,
+            original_staged_inputs: true,
+            physical_pause: false,
+            native_memory_preservation: false,
+            external_rewind: false,
+        })
     }
 }
 
