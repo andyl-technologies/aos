@@ -20,10 +20,12 @@ use super::project_admission_metadata::{
     ProjectAdmissionMetadataV1 as ProjectAdmissionMetadata,
     ProjectAdmissionPhaseV1 as ProjectAdmissionPhase,
 };
-use super::public_operation::{OperationState, PublicOperationAuthorizationV1, PublicOperationDataError};
+use super::public_operation::{
+    OperationState, PublicOperationAuthorizationV1, PublicOperationDataError,
+};
 use super::transaction::{JournalRecord, JournalTransaction};
-use crate::publication::PublicationHistoryError;
 use crate::public_api::public_mutation_context::InvalidPublicMutationContext;
+use crate::publication::PublicationHistoryError;
 
 /// Reports passive Delete metadata refusals with their original static classifications.
 ///
@@ -82,7 +84,11 @@ pub fn validate_delete_batch_admission_records_v1(
     effects_start: usize,
 ) -> Result<(), DeleteAdmissionHistoryErrorV1> {
     use crate::public_api::PublicOperationMethodV1;
-    let invalid = || DeleteAdmissionHistoryErrorV1::Effect(EffectHistoryDataError::CorruptLedger("invalid Delete batch admission metadata"));
+    let invalid = || {
+        DeleteAdmissionHistoryErrorV1::Effect(EffectHistoryDataError::CorruptLedger(
+            "invalid Delete batch admission metadata",
+        ))
+    };
     let records = transaction.records();
     let expected_effects_start = local_start
         .checked_add(batch.count(0))
@@ -102,13 +108,18 @@ pub fn validate_delete_batch_admission_records_v1(
     let authorization = records.get(3).ok_or_else(invalid)?;
     if operation_row.namespace() != RecordNamespace::Operation
         || operation_row.key() != operation_id.as_bytes()
-        || operation_row.value().is_none_or(|bytes| bytes.len() != OPERATION_RECORD_V2_BYTES)
+        || operation_row
+            .value()
+            .is_none_or(|bytes| bytes.len() != OPERATION_RECORD_V2_BYTES)
         || idempotency.namespace() != RecordNamespace::Idempotency
-        || idempotency.key().is_empty() || idempotency.key().len() > 128
+        || idempotency.key().is_empty()
+        || idempotency.key().len() > 128
         || idempotency.value().is_none_or(|bytes| bytes.len() != 48)
         || authorization.namespace() != RecordNamespace::PublicOperationAuthorization
         || authorization.key() != operation_id.as_bytes()
-        || authorization.value().is_none_or(|bytes| bytes.len() > 64 * 1024 + 68)
+        || authorization
+            .value()
+            .is_none_or(|bytes| bytes.len() > 64 * 1024 + 68)
     {
         return Err(invalid());
     }
@@ -116,17 +127,19 @@ pub fn validate_delete_batch_admission_records_v1(
     let operation = decode_operation(operation_row.value().ok_or_else(invalid)?)?;
     let public = operation.public_operation().ok_or_else(invalid)?;
     let root = &batch.bytes()[65..81];
-    let root_row = batch.rows(0)
+    let root_row = batch
+        .rows(0)
         .find(|row| row[0] == 1 && &row[1..17] == root)
         .ok_or_else(invalid)?;
     let idempotency_value = idempotency.value().ok_or_else(invalid)?;
     if operation.runtime_intent_digest().is_some()
         || operation.ownership_gated() != (local_start == 5)
-        || operation.state() != if local_start == 5 {
-            OperationState::OwnershipPending
-        } else {
-            OperationState::Accepted
-        }
+        || operation.state()
+            != if local_start == 5 {
+                OperationState::OwnershipPending
+            } else {
+                OperationState::Accepted
+            }
         || operation.effect_count() as usize != records.len() - effects_start
         || operation.effect_count() == 0
         || public.method() != PublicOperationMethodV1::DeleteSandbox
@@ -146,8 +159,7 @@ pub fn validate_delete_batch_admission_records_v1(
     }
     let gate = if local_start == 5 {
         let gate_row = records.get(4).ok_or_else(invalid)?;
-        let gate =
-            decode_delete_gate(gate_row, operation_id, batch, idempotency)?;
+        let gate = decode_delete_gate(gate_row, operation_id, batch, idempotency)?;
         Some(gate)
     } else {
         None
@@ -156,8 +168,7 @@ pub fn validate_delete_batch_admission_records_v1(
     let mut delete_effects = 0_usize;
     for (step, row) in records[effects_start..].iter().enumerate() {
         let step = u32::try_from(step).map_err(|_| invalid())?;
-        if row.namespace() != RecordNamespace::Effect
-            || row.key() != effect_key(operation_id, step)
+        if row.namespace() != RecordNamespace::Effect || row.key() != effect_key(operation_id, step)
         {
             return Err(invalid());
         }
@@ -194,7 +205,11 @@ fn decode_delete_gate(
     batch: DeleteBatchViewV1<'_>,
     idempotency: &JournalRecord,
 ) -> Result<DeleteGateHistoryV1, DeleteAdmissionHistoryErrorV1> {
-    let invalid = || DeleteAdmissionHistoryErrorV1::Effect(EffectHistoryDataError::CorruptLedger("invalid Delete batch admission metadata"));
+    let invalid = || {
+        DeleteAdmissionHistoryErrorV1::Effect(EffectHistoryDataError::CorruptLedger(
+            "invalid Delete batch admission metadata",
+        ))
+    };
     if gate_row.namespace() != RecordNamespace::OwnershipGate
         || gate_row.key() != operation_id.as_bytes()
     {
@@ -229,8 +244,8 @@ struct OriginalCapacityEffectHistoryV1(EffectLedgerRecord);
 fn decode_capacity_effect_history(
     bytes: &[u8],
 ) -> Result<OriginalCapacityEffectHistoryV1, ControllerCapacityHistoryErrorV1> {
-    let prior = decode_effect(bytes)
-        .map_err(|_| ControllerCapacityHistoryErrorV1::ProtectedBoundary)?;
+    let prior =
+        decode_effect(bytes).map_err(|_| ControllerCapacityHistoryErrorV1::ProtectedBoundary)?;
     Ok(OriginalCapacityEffectHistoryV1(prior))
 }
 
@@ -243,17 +258,24 @@ fn decode_capacity_effect_history(
 fn compare_capacity_effect_history(
     prior: OriginalCapacityEffectHistoryV1,
     next: &JournalRecord,
-) -> Result<(ProjectAdmissionMetadata, ProjectAdmissionMetadata), ControllerCapacityHistoryErrorV1> {
+) -> Result<(ProjectAdmissionMetadata, ProjectAdmissionMetadata), ControllerCapacityHistoryErrorV1>
+{
     let prior = prior.0.into_parts();
-    let next = decode_effect(next.value().ok_or(ControllerCapacityHistoryErrorV1::ProtectedBoundary)?)
-        .map_err(|_| ControllerCapacityHistoryErrorV1::ProtectedBoundary)?
-        .into_parts();
+    let next = decode_effect(
+        next.value()
+            .ok_or(ControllerCapacityHistoryErrorV1::ProtectedBoundary)?,
+    )
+    .map_err(|_| ControllerCapacityHistoryErrorV1::ProtectedBoundary)?
+    .into_parts();
     if next.0 != prior.0 || next.1 != prior.1 || next.2 != prior.2 {
         return Err(ControllerCapacityHistoryErrorV1::ProtectedBoundary);
     }
     Ok((
-        prior.3.ok_or(ControllerCapacityHistoryErrorV1::ProtectedBoundary)?,
-        next.3.ok_or(ControllerCapacityHistoryErrorV1::ProtectedBoundary)?,
+        prior
+            .3
+            .ok_or(ControllerCapacityHistoryErrorV1::ProtectedBoundary)?,
+        next.3
+            .ok_or(ControllerCapacityHistoryErrorV1::ProtectedBoundary)?,
     ))
 }
 
@@ -274,8 +296,13 @@ fn validate_delete_effect_record(
 ) -> Result<(), DeleteAdmissionHistoryErrorV1> {
     use crate::public_api::PublicOperationMethodV1;
 
-    let invalid = || DeleteAdmissionHistoryErrorV1::Effect(EffectHistoryDataError::CorruptLedger("invalid Delete batch admission metadata"));
-    let effect = decode_effect(row.value().ok_or_else(invalid)?).map_err(DeleteAdmissionHistoryErrorV1::from)?;
+    let invalid = || {
+        DeleteAdmissionHistoryErrorV1::Effect(EffectHistoryDataError::CorruptLedger(
+            "invalid Delete batch admission metadata",
+        ))
+    };
+    let effect = decode_effect(row.value().ok_or_else(invalid)?)
+        .map_err(DeleteAdmissionHistoryErrorV1::from)?;
     if effect.state() != &EffectState::Planned
         || effect.dispatch().is_some()
         || effect.project_admission().is_some()
@@ -292,8 +319,9 @@ fn validate_delete_effect_record(
             .public_mutation_context()
             .map_err(DeleteAdmissionHistoryErrorV1::from)?
             .ok_or_else(invalid)?;
-        let crate::public_api::request::DormantSandboxRequestKindV1::Delete(request) =
-            context.validated_request().map_err(DeleteAdmissionHistoryErrorV1::from)?
+        let crate::public_api::request::DormantSandboxRequestKindV1::Delete(request) = context
+            .validated_request()
+            .map_err(DeleteAdmissionHistoryErrorV1::from)?
         else {
             return Err(invalid());
         };
@@ -409,13 +437,16 @@ fn capacity_effect_transition(
     prior: &[u8],
     key: &[u8; 20],
     transaction: &JournalTransaction,
-) -> Result<(ProjectAdmissionMetadata, ProjectAdmissionMetadata), ControllerCapacityHistoryErrorV1> {
+) -> Result<(ProjectAdmissionMetadata, ProjectAdmissionMetadata), ControllerCapacityHistoryErrorV1>
+{
     let prior = decode_capacity_effect_history(prior)?;
     let mut effects = transaction
         .records()
         .iter()
         .filter(|record| record.namespace() == RecordNamespace::Effect);
-    let next = effects.next().ok_or(ControllerCapacityHistoryErrorV1::ProtectedBoundary)?;
+    let next = effects
+        .next()
+        .ok_or(ControllerCapacityHistoryErrorV1::ProtectedBoundary)?;
     if next.key() != *key || effects.next().is_some() {
         return Err(ControllerCapacityHistoryErrorV1::ProtectedBoundary);
     }

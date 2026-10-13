@@ -769,10 +769,11 @@ fn borrow_controller_capacity_predecessor(
 fn controller_capacity_relation_error(error: ControllerCapacityHistoryErrorV1) -> JournalError {
     match error {
         ControllerCapacityHistoryErrorV1::ProtectedBoundary => JournalError::ProtectedBoundary,
-        ControllerCapacityHistoryErrorV1::AuthorityPreflightMismatch => JournalError::AuthorityPreflightMismatch,
+        ControllerCapacityHistoryErrorV1::AuthorityPreflightMismatch => {
+            JournalError::AuthorityPreflightMismatch
+        }
     }
 }
-
 
 #[cfg(test)]
 mod purpose_tests {
