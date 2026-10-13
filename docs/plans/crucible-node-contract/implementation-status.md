@@ -2376,6 +2376,22 @@ Host capture remains unsupported in this preparation profile. Full original
 host continuation, fresh restoration, native peer capture and the connected
 world's installed-provider execution remain required.
 
+The exact-world provider now retains three native participants and the genuine
+host scheduler in one original preparation capsule. The existing three-peer
+provider implementation is byte-for-byte unchanged. Exact publication lineage
+requires an additional native source validator; unsupported adapters refuse it.
+Its provenance sidecar derives only from authenticated original terminal rows,
+with complete aggregate byte credit checked before copying. Ordinary staging
+still refuses lineage without provenance, and quantized lineage retains its
+original window and empty-ancestry requirements.
+
+Thirty-seven component controls pass: five exact-lineage controls with modeled
+native peers, 29 legacy lineage controls, and three actual host-source factory
+and retirement controls. Strict all-target, all-feature checks pass. The retained
+executable and dependency files bind all 14 changed source paths. Production
+Source2/4 codecs and complete connected native execution require separate
+qualification; this stage confers no native readiness or capture guarantee.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
