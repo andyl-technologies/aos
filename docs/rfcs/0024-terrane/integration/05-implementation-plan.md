@@ -171,13 +171,23 @@ native build. Its actual inventory contains 1,116 tests across three AOS
 executables, with none ignored. Six focused cases pass before issuer rotation
 fails its old-key assertion. The fixture recreates retained entries from
 plaintext instead of carrying their authenticated provenance; its correction
-and the historical-certificate oracle remain under review. A separate sealed
-continuation fails the repeated-producer case with an exact source-free Commit
-denial. Its refusal phase is being investigated independently. The remaining
-sixteen selectors may run once in another sealed continuation on the unchanged
-executables. These separate diagnostics do not qualify the complete focused
-set. Core renewal, growth populations, owning Nix gates and the complete current
-T1 floor remain pending; no task or milestone advances.
+and the per-introducer historical-certificate oracle pass source review. A
+separate sealed continuation fails the repeated-producer case with an exact
+source-free Commit denial. Its reviewed correction stages genuine content-domain
+evidence for the new names. The next sealed continuation passes thirteen cases,
+including STORE-8. The broader-cutoff fixture then fails before publication:
+its short Manifest file violates TREE-8/OBJ-16. A reviewed fixture correction
+uses actual profile boundaries and marks both genuine manifest members. Another
+separate continuation
+fails during preservation-fixture Guard installation; the current protected
+profile must remain fixed while historical authoring interpretations vary.
+That setup correction passes source review. A final separate cancellation run
+passes once in 100.774 seconds under its unchanged 120-second limit. The last
+two continuations use the unchanged compiled Rust and executable bytes with an
+explicitly distinguished plan-only source head. Across these separate runs,
+twenty cases pass and four fail; these diagnostics do not qualify the
+complete focused set. Core renewal, growth populations, owning Nix gates and
+the complete current T1 floor remain pending; no task or milestone advances.
 
 The earlier frozen payload-sharing tree `ee7171fa88a7` passes native build,
 strict all-target SDK and Core Clippy, all-target test compilation and the exact
