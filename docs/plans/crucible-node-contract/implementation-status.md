@@ -3071,8 +3071,10 @@ derivations evaluate successfully. Neither tuple has been realized. The next
 ordinary LLVM18 build runs for 1,073.12 seconds before its disk monitor encounters
 a permission error and interrupts the build. No compiler failure is reported.
 All 3,179 observed process generations retire and the original host confirms
-writer-lock release. The failed attempt remains retained; correcting the
-monitor and realizing the package tuples remain required.
+writer-lock release. A corrected exact realization request subsequently
+succeeds in 22.62 seconds using a registered LLVM18 output, with no new compiler
+dispatch. Its full output and installed-tool audit remains pending. The failed
+attempt stays retained; neither result qualifies the backend package tuples.
 
 The direct selected DMTCP source diagnostic configures, builds and installs
 successfully in 4.13, 27.26 and 0.70 seconds. Its first startup fails before port
@@ -3110,6 +3112,18 @@ service still uses a baseline snapshot reservation, so full Capture safely
 refuses until a genuine complete-capacity consumer is joined. Actual native
 child Capture, blob settlement, fresh installation, two independent world
 restorations and Ready remain unfinished.
+
+## Exact current workspace vendor staging
+
+The fixed-output staging helper copies the workspace lockfile verbatim, so
+workspace-only dependency changes also change its NAR hash. The current lock
+preserves all 639 external registry package tuples and archive checksums. A new
+staging bundle copies the exact current lock and original checksum-matched local
+archives. Independent canonical NAR streaming verifies 101,856,224 bytes and
+SHA256 `bb071893b36afcd4e47ba13e1fd2720a1689e1eb222a7f03011babc70b6e2f45`.
+The workspace staging hash now follows these exact bytes. This source correction
+performs no fetching, store admission or package qualification and does not
+relabel the earlier staging output.
 
 ## Performance evidence
 
