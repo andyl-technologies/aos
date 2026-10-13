@@ -126,6 +126,12 @@ in {
       "guard::history::current_reads::tests::ordinary_current_binding_preserves_requested_target_and_actual_scope"
       "guard::history::current_reads::tests::current_scope_refuses_candidate_layer_and_partially_held_observations"
     ]}
+    ${qualifySuite "terrane" "--no-default-features --features tokio,surface-sdk" "guard::held_history::tests::" [
+      "guard::held_history::tests::held_owner_history_preserves_original_purpose_and_baseline_selection"
+      "guard::held_history::tests::held_owner_history_checks_each_authorization_with_scoped_pack_reads"
+      "guard::held_history::tests::held_owner_history_closes_all_physical_and_current_inputs"
+      "guard::held_history::tests::held_owner_history_cancellation_and_native_decline_preserve_failure"
+    ]}
     printf 'PASS: native ref admission, historical original authority and complete disclosure boundaries\n' > "$out/result"
   '';
 }

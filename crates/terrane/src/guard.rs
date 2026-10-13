@@ -30,6 +30,8 @@ pub(crate) use consumed::registration as consumed_registration;
 pub(crate) use current_history::{CheckedCurrentHistoryInputs, PendingCurrentReadCheck};
 #[cfg(feature = "std")]
 mod existing;
+#[cfg(all(feature = "std", feature = "tokio", unix))]
+mod held_history;
 mod history;
 #[cfg(all(feature = "tokio", unix))]
 pub(crate) use history::CompletedCandidateHistory;

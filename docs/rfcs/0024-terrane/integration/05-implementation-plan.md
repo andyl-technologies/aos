@@ -163,6 +163,18 @@ contracts, private ownership-field documentation and method separation,
 with unchanged function bodies. They remain queued until frozen growth
 qualification ends. All formal task acceptance remains pending.
 
+A separate native-component diagnostic observes five completed baseline-history
+walks between held control entry and candidate-evidence capture, spanning
+343.597 seconds before any maintained Raw publication batch. Existing resolver
+rows cannot supply a completed-history cache. A T-PROV-1/T-DRV-2 workline instead
+prepares a private per-authorization held reader: every authorization retains
+its original purpose, runs a full owning-history walk and closes complete
+physical, Original and current inputs before returning permission. Four exact
+regressions are registered in `integration.native-held-owner-history` and
+`gate:prov-commit-verify`; their absent implementation does not qualify either
+check. No store trait, identity, encoding, bucket key or dependency changes are
+required. The frozen diagnostic remains separate from this preparation.
+
 The renewed frozen composition `342f1cf7114b` (tree `90fb7240d717`) passes
 the exact formatter pair, strict SDK all-target Clippy, SDK all-target test
 compilation and the default native build. Its actual inventory contains 1,113
