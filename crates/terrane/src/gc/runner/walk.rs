@@ -167,9 +167,9 @@ where
         return Err(denied().into());
     }
     let view = match root_histories.history(&pending.hash)? {
-        Some(verified) => history::retained(guard, verified)?,
+        Some(verified) => history::retained_scoped(guard, verified)?,
         None => {
-            history::acquire(
+            history::acquire_scoped(
                 guard,
                 consumed,
                 observation,
@@ -193,6 +193,7 @@ where
     let mut expansion = Expansion::default();
     let mut targets = Vec::new();
     let mut expanded_any = false;
+    let mut schedule_edges = false;
     let mut manifests = BTreeMap::new();
 
     for occurrence in occurrences {
@@ -201,6 +202,23 @@ where
         if covered(state, &pending, &occurrence.context, mode) {
             continue;
         }
+        schedule_edges = true;
+        if mode == VisitMode::Full {
+            let own_metadata_complete = state.expanded.iter().any(|previous| {
+                previous.commit == pending.hash
+                    && previous.proof_context.as_ref() == Some(&occurrence.context)
+            });
+            if own_metadata_complete {
+                // Full completion authenticates this exact occurrence's own
+                // metadata independently of parent-cutoff progress. The fresh
+                // completed view still supplies newly eligible dependency edges.
+                expansion.complete(&pending, Some(occurrence.context.clone()), mode);
+                continue;
+            }
+        }
+        let mut prepared = occurrence.clone();
+        history::prepare_metadata(guard, view.verified(), &mut prepared)?;
+        let occurrence = &prepared;
         expanded_any = true;
         expansion.marks.insert(pending.hash);
         for (node, is_root) in &occurrence.nodes {
@@ -288,6 +306,8 @@ where
         )
         .await?;
         memos::expand(guard, &mut expansion).await?;
+    }
+    if schedule_edges {
         history::schedule(&view.edges, &pending, mode, &mut expansion);
     }
     if pending.proof_context.is_none() {
