@@ -70,7 +70,7 @@ fn cumulative_lineage_borrows_actual_preceding_public_ack_with_ordered_zero_byte
         .profile
         .bind(service.bootstrap.authority.clone())
         .unwrap();
-    call(
+    let staged = call(
         &mut controller,
         "input/2",
         None,
@@ -82,6 +82,66 @@ fn cumulative_lineage_borrows_actual_preceding_public_ack_with_ordered_zero_byte
             "input_epoch":batch.input_epoch,"events":batch.events,"batch_hash":batch.identity().unwrap(),"extensions":{}
         }),
     );
+    let MethodResult::Input(staged) = staged else {
+        panic!("second original input was not staged");
+    };
+    let inventory = batch
+        .events
+        .iter()
+        .map(
+            |event| crucible_node_provider::input_commit::CommittedDeliveryV1 {
+                connection_id: crucible_node_provider::envelope::Nullable(None),
+                connection_policy_ref: crucible_node_provider::envelope::Nullable(None),
+                external_root: crucible_node_provider::envelope::Nullable(Some(
+                    event.source.clone(),
+                )),
+                provenance_ref: event.provenance_ref.clone(),
+                publication_id: event.id.clone(),
+                producer: event.source.node_id.clone(),
+                consumer: event.destination.node_id.clone(),
+                producer_endpoint: event.source.clone(),
+                consumer_endpoint: event.destination.clone(),
+                source_sequence: event.source_sequence,
+                native_sequence: event.source_sequence,
+                evaluation: crucible_node_provider::envelope::Nullable(None),
+                causal_parents: Vec::new(),
+                publication: event.publication_position,
+                delivery: event.position,
+                payload: event.payload.clone(),
+            },
+        )
+        .collect::<Vec<_>>();
+    let inventory_bytes = canonical::canonical_json(&json!(inventory)).unwrap();
+    let inventory_ref = canonical::content_ref(
+        &inventory_bytes,
+        "application/vnd.crucible.input-inventory+json",
+    )
+    .unwrap();
+    controller.upload(&inventory_ref, &inventory_bytes).unwrap();
+    let intent = crucible_node_provider::input_commit::InputCommitIntentV1 {
+        schema_version: 1,
+        session_id: service.bootstrap.authority.session_id.clone(),
+        incarnation_id: service.bootstrap.authority.incarnation_id.clone(),
+        node_id: service.bootstrap.node_id.clone(),
+        execution_owner_id: service.bootstrap.owner_id.clone(),
+        owner_generation: service.bootstrap.authority.owner_generation,
+        activation_id: service.bootstrap.activation_id.clone(),
+        world_generation: service.bootstrap.world_generation,
+        world_binding_hash: service.bootstrap.world_binding_hash.clone(),
+        stage_operation_id: fixture::id("source-fixture/stage/2"),
+        input_request_id: fixture::id("input/2"),
+        batch_id: batch.batch_id.clone(),
+        batch_hash: batch.identity().unwrap(),
+        staging_receipt: staged.custody_receipt,
+        delivery_inventory: inventory_ref,
+        cutoff: Position::new(1001.into(), 0.into(), Phase::BoundaryControl),
+    };
+    let committed = controller.call_with_extensions(fixture::id("input-commit/2"), None, Method::Input, true, json!({
+        "binding_hash":owner.identity().unwrap(),"owner_generation":service.bootstrap.authority.owner_generation,
+        "batch_id":batch.batch_id,"batch_sequence":batch.batch_sequence,"input_epoch":batch.input_epoch,
+        "events":batch.events,"batch_hash":batch.identity().unwrap(),"extensions":{}
+    }), Extensions::from([(crucible_node_provider::input_commit::INPUT_COMMIT_FEATURE.into(), json!(intent))])).unwrap();
+    assert!(matches!(committed.result, Some(MethodResult::Input(_))));
     let arguments = json!({
         "grant_id":"window/1","participant_ids":[service.bootstrap.node_id],
         "realization_id":service.bootstrap.authority.realization_id,"activation_id":service.bootstrap.activation_id,

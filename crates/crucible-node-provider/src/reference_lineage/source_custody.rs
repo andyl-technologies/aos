@@ -518,6 +518,33 @@ impl LineageSourceGuard {
         owned: bool,
         body: impl serde::Serialize,
     ) -> Result<ResponseBody, ProviderError> {
+        self.call_with_extensions(
+            request_id,
+            operation_id,
+            method,
+            owned,
+            body,
+            crucible_node_contract::Extensions::new(),
+        )
+    }
+
+    /// Sends an original selected envelope extension under the same native custody fences.
+    ///
+    /// The existing provider identity, original realization and read-owner checks
+    /// precede the same controller journal and transport path used by [`Self::call`].
+    ///
+    /// # Errors
+    /// Refuses transferred or changed original custody, unnegotiated extensions,
+    /// absent native realization, or uncertain original SDK effects.
+    pub fn call_with_extensions(
+        &mut self,
+        request_id: Id,
+        operation_id: Option<Id>,
+        method: Method,
+        owned: bool,
+        body: impl serde::Serialize,
+        extensions: crucible_node_contract::Extensions,
+    ) -> Result<ResponseBody, ProviderError> {
         let owner = std::rc::Rc::clone(&self.read_owner);
         // Retire acknowledges publication/request custody; the same peer can
         // serve its next window. Only actual owner release or uncertainty
@@ -559,10 +586,14 @@ impl LineageSourceGuard {
             };
             kernel::verify_identity(native)?;
         }
-        let result =
-            custody
-                .controller_mut()?
-                .call(request_id.clone(), operation_id, method, owned, body);
+        let result = custody.controller_mut()?.call_with_extensions(
+            request_id.clone(),
+            operation_id,
+            method,
+            owned,
+            body,
+            extensions,
+        );
         if method == Method::Realize && result.is_ok() {
             custody.pin_native(&request_id)?;
         }

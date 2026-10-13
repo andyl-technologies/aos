@@ -294,6 +294,7 @@ fn public_linked_profiles_preserve_public_protocol_and_distinct_native_admission
         ordinary.provider_manifest.extensions_supported,
         vec![
             id("cnp.resume/1").unwrap(),
+            id(crate::input_commit::INPUT_COMMIT_FEATURE).unwrap(),
             id("reference-device/quantized-v1").unwrap(),
         ]
     );

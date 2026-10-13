@@ -25,8 +25,16 @@ ancestry, and native byte counts and checksums. Retained compiler dependency
 files and independently copied child executables bind this evidence to the
 tested source. Raw evidence stays local.
 
+The native smoke/conformance callers now negotiate the commitment extension,
+upload the complete inventory, and commit the original staged input before
+execution. The lineage guard forwards these requests through its original
+kernel/read-owner fences. The conformance runner allows only the closed Input
+intent selected by the actual handshake and rejects echoed response extensions.
+Five actual provider/client/lineage targets pass 325 controls; 14 tests remain
+ignored. All targets of the three selected crates compile on the exact caller
+successor. These results preserve their separate compiler/source scope.
+
 The ordinary installed package, complete singleton conformance, and end-to-end
-cleanup still need qualification. Smoke/conformance callers must explicitly
-commit before execution. Generic vendor and lineage-reader consumption hooks
+cleanup still need qualification. Generic vendor and lineage-reader consumption hooks
 continue to refuse unsupported behavior. This stage does not qualify native
 backend readiness or mixed-machine state preservation.

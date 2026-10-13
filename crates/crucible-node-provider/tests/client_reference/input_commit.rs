@@ -160,6 +160,9 @@ fn stage(
             } => {
                 let request: Envelope =
                     serde_json::from_value(resolve(request, &bindings)).unwrap();
+                if id.as_str() == "commit-original-input-cut" {
+                    continue;
+                }
                 if id.as_str() == "execute-native-window" {
                     let (input, result) = input.unwrap();
                     return (input, result, request);

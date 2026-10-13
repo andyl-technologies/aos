@@ -747,7 +747,11 @@ impl ReferenceProfile {
                     })?,
                 ]
             } else {
-                vec![id("cnp.resume/1")?, id("reference-device/quantized-v1")?]
+                vec![
+                    id("cnp.resume/1")?,
+                    id(crate::input_commit::INPUT_COMMIT_FEATURE)?,
+                    id("reference-device/quantized-v1")?,
+                ]
             },
             qualification_refs: Vec::new(),
             extensions: Extensions::new(),

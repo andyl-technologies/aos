@@ -442,6 +442,19 @@ impl Runner<'_> {
             }
             self.hello_attempted = true;
         } else {
+            if !request.extensions.is_empty() {
+                if request.method != Method::Input || request.extensions.len() != 1 {
+                    return Err(ProviderError::Frame("unsupported probe envelope extension"));
+                }
+                let value = request
+                    .extensions
+                    .get(crate::input_commit::INPUT_COMMIT_FEATURE)
+                    .ok_or(ProviderError::Frame("unsupported probe envelope extension"))?;
+                let intent: crate::input_commit::InputCommitIntentV1 =
+                    serde_json::from_value(value.clone())
+                        .map_err(crucible_node_contract::ContractError::from)?;
+                crucible_node_contract::Validate::validate(&intent)?;
+            }
             self.guard
                 .as_mut()
                 .ok_or(ProviderError::Correlation("request preceded hello"))?
@@ -471,6 +484,11 @@ impl Runner<'_> {
             }
             Ok(())
         } else {
+            // This selected extension carries controller intent only. A peer
+            // cannot echo it into a response as additional authority.
+            if !reply.extensions.is_empty() {
+                return Err(ProviderError::Frame("unsupported probe response extension"));
+            }
             request.matches_response(reply)?;
             self.guard
                 .as_mut()
@@ -532,12 +550,20 @@ impl Runner<'_> {
             ));
         }
         self.limits = result.limits;
+        let mut envelope_extensions = BTreeSet::new();
+        if result
+            .selected_features
+            .iter()
+            .any(|feature| feature.as_str() == crate::input_commit::INPUT_COMMIT_FEATURE)
+        {
+            envelope_extensions.insert(crate::input_commit::INPUT_COMMIT_FEATURE.to_owned());
+        }
         self.guard = Some(CorrelationGuard::new(
             result.session_id.clone(),
             result.incarnation_id.clone(),
             usize::try_from(result.limits.requests.get())
                 .map_err(|_| ProviderError::ResourceExhausted("request credit representation"))?,
-            BTreeSet::new(),
+            envelope_extensions,
         )?);
         Ok(())
     }

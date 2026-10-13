@@ -86,16 +86,16 @@ struct Schemas;
 impl BodySchemaVerifier for Schemas {
     fn verify(
         &self,
-        _: &ConnectionAuthority,
+        authority: &ConnectionAuthority,
         envelope: &Envelope,
-        _: &ReceivedBody,
+        received: &ReceivedBody,
     ) -> Result<(), ProviderError> {
-        if !envelope.extensions.is_empty()
-            || envelope
-                .body
-                .get("extensions")
-                .and_then(Value::as_object)
-                .is_none_or(|value| !value.is_empty())
+        crucible_node_provider::input_commit::verify_envelope(authority, envelope, received)?;
+        if envelope
+            .body
+            .get("extensions")
+            .and_then(Value::as_object)
+            .is_none_or(|value| !value.is_empty())
         {
             return Err(ProviderError::Frame("fixture extension unavailable"));
         }
@@ -106,7 +106,11 @@ impl BodySchemaVerifier for Schemas {
 pub(super) fn connect(service: &NativeService) -> (Handshake, ReferenceController) {
     let bootstrap = &service.bootstrap;
     let binding = service.profile.bind(bootstrap.authority.clone()).unwrap().0;
-    let features = vec![id("cnp.control-evidence/1"), id("cnp.core/1")];
+    let features = vec![
+        id("cnp.control-evidence/1"),
+        id("cnp.core/1"),
+        id(crucible_node_provider::input_commit::INPUT_COMMIT_FEATURE),
+    ];
     let mut token = [0; 32];
     token.copy_from_slice(bootstrap.admission_token.as_slice());
     let mut handshake = Handshake::new(
@@ -123,7 +127,10 @@ pub(super) fn connect(service: &NativeService) -> (Handshake, ReferenceControlle
             provider_limits: bootstrap.limits,
             required_schemas: Vec::new(),
             required_guarantees: binding.compatibility.guarantees_ref,
-            envelope_extension_features: BTreeMap::new(),
+            envelope_extension_features: BTreeMap::from([(
+                crucible_node_provider::input_commit::INPUT_COMMIT_FEATURE.into(),
+                id(crucible_node_provider::input_commit::INPUT_COMMIT_FEATURE),
+            )]),
         },
     )
     .unwrap();

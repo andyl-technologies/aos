@@ -66,7 +66,16 @@ pub(super) fn native_window(service: &NativeService) -> ProbePlan {
     let batch_value = serde_json::to_value(&batch).unwrap();
     let batch_bytes = canonical::canonical_json(&batch_value).unwrap();
     let batch_ref = canonical::content_ref(&batch_bytes, "application/json").unwrap();
-    let mut steps = vec![hello(service)];
+    let mut initial_hello = hello(service);
+    if let ProbeStep::Exchange { request, .. } = &mut initial_hello {
+        request["body"]["optional_features"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!(
+                crucible_node_provider::input_commit::INPUT_COMMIT_FEATURE
+            ));
+    }
+    let mut steps = vec![initial_hello];
     steps.push(exchange(
         "realize-withheld",
         CheckKind::PausedActivation,
@@ -291,6 +300,71 @@ pub(super) fn native_window(service: &NativeService) -> ProbePlan {
             ),
             assertion("/body/result/input_watermark", json!("1")),
         ],
+        capture("original-input-custody", "/body/result/custody_receipt"),
+    ));
+    let inventory = batch
+        .events
+        .iter()
+        .map(
+            |event| crucible_node_provider::input_commit::CommittedDeliveryV1 {
+                connection_id: crucible_node_provider::envelope::Nullable(None),
+                connection_policy_ref: crucible_node_provider::envelope::Nullable(None),
+                external_root: crucible_node_provider::envelope::Nullable(Some(
+                    event.source.clone(),
+                )),
+                provenance_ref: event.provenance_ref.clone(),
+                publication_id: event.id.clone(),
+                producer: event.source.node_id.clone(),
+                consumer: event.destination.node_id.clone(),
+                producer_endpoint: event.source.clone(),
+                consumer_endpoint: event.destination.clone(),
+                source_sequence: event.source_sequence,
+                native_sequence: event.source_sequence,
+                evaluation: crucible_node_provider::envelope::Nullable(None),
+                causal_parents: Vec::new(),
+                publication: event.publication_position,
+                delivery: event.position,
+                payload: event.payload.clone(),
+            },
+        )
+        .collect::<Vec<_>>();
+    let inventory_bytes = canonical::canonical_json(&json!(inventory)).unwrap();
+    let inventory_ref = canonical::content_ref(
+        &inventory_bytes,
+        "application/vnd.crucible.input-inventory+json",
+    )
+    .unwrap();
+    upload(
+        &mut steps,
+        service,
+        "input-commit-inventory",
+        json!(inventory_ref),
+        json!(Bytes::new(inventory_bytes)),
+    );
+    let mut commit = owned(
+        service,
+        "input",
+        "input-commit",
+        json!({
+            "binding_hash":owner_hash,"owner_generation":bootstrap.authority.owner_generation,
+            "batch_id":batch.batch_id,"batch_sequence":batch.batch_sequence,"input_epoch":batch.input_epoch,
+            "events":batch.events,"batch_hash":batch.identity().unwrap(),"extensions":{}
+        }),
+    );
+    commit["extensions"] = json!({crucible_node_provider::input_commit::INPUT_COMMIT_FEATURE: {
+        "schema_version":1,"session_id":bootstrap.authority.session_id,"incarnation_id":bootstrap.authority.incarnation_id,
+        "node_id":bootstrap.node_id,"execution_owner_id":bootstrap.owner_id,"owner_generation":bootstrap.authority.owner_generation,
+        "activation_id":bootstrap.activation_id,"world_generation":bootstrap.world_generation,"world_binding_hash":bootstrap.world_binding_hash,
+        "stage_operation_id":"source-fixture/original-stage","input_request_id":"input","batch_id":batch.batch_id,
+        "batch_hash":batch.identity().unwrap(),"staging_receipt":bound("original-input-custody"),"delivery_inventory":inventory_ref,
+        "cutoff":Position::new(1.into(),0.into(),Phase::BoundaryControl)
+    }});
+    steps.push(exchange(
+        "commit-original-input-cut",
+        CheckKind::Input,
+        commit,
+        Expectation::Completed,
+        Vec::new(),
         BTreeMap::new(),
     ));
     steps.push(exchange(

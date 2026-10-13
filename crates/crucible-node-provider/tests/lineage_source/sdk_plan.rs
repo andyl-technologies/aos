@@ -106,12 +106,13 @@ pub(super) fn execute(
                     );
                 }
                 let response = controller
-                    .call(
+                    .call_with_extensions(
                         request.request_id.0.unwrap(),
                         request.operation_id.0,
                         request.method,
                         request.execution_owner_id.0.is_some(),
                         request.body,
+                        request.extensions,
                     )
                     .unwrap_or_else(|error| panic!("{id}: {error}"));
                 let value = json!({"body":response.shape});
