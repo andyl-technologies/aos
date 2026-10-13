@@ -1,12 +1,15 @@
 //! Exercises genuine selected key rotation and immutable historical certificates.
 
 use super::current_authority::{Factory, attenuate};
-use super::witness_support::{control, file, physical_snapshot, proposal, storage_failure};
+use super::witness_support::{
+    control, control_snapshot, file, physical_snapshot, proposal, storage_failure,
+};
 use super::*;
 use crate::domain::DomainNamespace;
 use crate::ref_advance::{DisclosureCommitRequest, DisclosureCommitSelection};
 use crate::repository::Repository;
 use crate::store::{Clock, LocalFs, RefStore, StoreErrorKind};
+use std::error::Error as _;
 use std::os::unix::fs::MetadataExt;
 use terrane_core::auth::{Caveat, Verbs};
 use terrane_core::provenance::{DisclosureCandidate, OriginalBootstrapPolicy};
@@ -14,6 +17,25 @@ use terrane_core::provenance::{DisclosureCandidate, OriginalBootstrapPolicy};
 const REFERENCE: &str = "refs/heads/_/main";
 const NEW_REFERENCE: &str = "refs/heads/_/rotated";
 const PLAINTEXT: &[u8] = b"historical certificates retain their actual issuing key";
+
+fn assert_retention_denied(failure: &crate::store::StoreFailure, phase: &str) {
+    assert!(
+        matches!(
+            failure.kind(),
+            StoreErrorKind::Invalid(crate::store::InvalidReason::MalformedRequest)
+        ),
+        "{phase}: unexpected storage outcome: {failure:?}"
+    );
+    assert!(
+        matches!(
+            failure
+                .source()
+                .and_then(|source| source.downcast_ref::<crate::repository::Error>()),
+            Some(crate::repository::Error::Denied)
+        ),
+        "{phase}: expected protected retention refusal: {failure:?}"
+    );
+}
 
 async fn reopen(factory: Factory) -> Factory {
     let Factory {
@@ -68,14 +90,19 @@ async fn reopen(factory: Factory) -> Factory {
 }
 
 fn tree(names: &[&[u8]], private: bool) -> Tree<'static> {
+    let mut entries = names
+        .iter()
+        .map(|name| LeafItem {
+            key: name.to_vec(),
+            entry: file(PLAINTEXT),
+        })
+        .collect::<Vec<_>>();
+    // These names describe a namespace set, not operation or layer order.
+    // Canonical construction still rejects duplicate keys after sorting.
+    entries.sort_by(|left, right| left.key.cmp(&right.key));
+
     Tree::build(
-        names
-            .iter()
-            .map(|name| LeafItem {
-                key: name.to_vec(),
-                entry: file(PLAINTEXT),
-            })
-            .collect(),
+        entries,
         materialization::properties(private),
         262144,
         TreeUse::Ordinary,
@@ -212,7 +239,7 @@ pub(super) async fn retain_historical_and_issue_new() {
     assert_eq!(old_roles.len(), 1);
     let old_key = old_roles[0].public_key;
     assert_eq!(certificate_keys(&destination, old).await, vec![old_key]);
-    let protected_before = physical_snapshot(&control(source.coordinator().store().root())).await;
+    let protected_before = control_snapshot(source.coordinator().store().root()).await;
     let source_head = source
         .coordinator()
         .store()
@@ -238,17 +265,41 @@ pub(super) async fn retain_historical_and_issue_new() {
             .unwrap(),
         source_head
     );
-    let protected_after = physical_snapshot(&control(source.coordinator().store().root())).await;
-    for (path, bytes) in protected_before {
-        // Native publication replaces its selected descriptor; historical role,
-        // seed and Original records must retain their exact protected bytes.
-        if path
-            .file_name()
+    let protected_after = control_snapshot(source.coordinator().store().root()).await;
+    let source_control = control(source.coordinator().store().root());
+    assert!(protected_before.contains_key(&source_control.join("registration.cbor")));
+    let association = format!(
+        "commit-{}.cbor",
+        original
+            .commit
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    assert!(protected_before.contains_key(&source_control.join(association)));
+    assert!(protected_before.keys().any(|path| {
+        path.file_name()
             .unwrap()
-            .to_string_lossy()
-            .starts_with("disclosure-")
-        {
-            assert_eq!(protected_after.get(&path), Some(&bytes));
+            .as_encoded_bytes()
+            .starts_with(b"bootstrap-")
+    }));
+    for (path, entry) in protected_before {
+        let name = path.file_name().unwrap().as_encoded_bytes();
+        // Retention selectors identify immutable Original registration,
+        // bootstrap, association and import/binding/trust records. Rotation
+        // adds role/seed files and replaces the selected descriptor; directory
+        // timestamps may change, but existing protected files must stay exact.
+        let original_record = name == b"registration.cbor"
+            || (name.ends_with(b".cbor")
+                && [b"bootstrap-".as_slice(), b"commit-", b"import-"]
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix)));
+        if original_record || name.starts_with(b"disclosure-") {
+            assert_eq!(
+                protected_after.get(&path),
+                Some(&entry),
+                "rotation changed retained protected file: {path:?}"
+            );
         }
     }
     let source = reopen(source).await;
@@ -277,6 +328,24 @@ pub(super) async fn retain_historical_and_issue_new() {
         .await
         .unwrap();
     let refused_head = refused_target.record().cloned();
+    // This authorized session's epoch baseline is retained before production
+    // checks conflicting import trust. Complete that genuine setup before the
+    // refusal oracle, so its mandatory additive record is not a false mutation.
+    let guard = destination.coordinator().guard();
+    let retention = crate::repository::local_authority::NativeRetention {
+        authority: guard.configured_original_authority().unwrap(),
+        owner_uid: destination
+            .coordinator()
+            .store()
+            .publication_operator_uid()
+            .unwrap(),
+        authoring_acl: guard.config().initial_acl.clone(),
+    };
+    retention
+        .retain_baseline(guard, &destination.fs, &refused_target)
+        .await
+        .unwrap();
+    let conflict_before = physical_snapshot(destination.coordinator().store().root()).await;
     let refused = destination
         .coordinator()
         .advance_disclosure(
@@ -299,7 +368,15 @@ pub(super) async fn retain_historical_and_issue_new() {
             },
         )
         .await;
-    assert!(refused.is_err());
+    let failure = match refused {
+        Err(crate::ref_advance::AdvanceError::Store(failure)) => failure,
+        outcome => panic!("conflicting old import trust: unexpected result: {outcome:?}"),
+    };
+    assert_retention_denied(&failure, "conflicting old import trust");
+    assert_eq!(
+        physical_snapshot(destination.coordinator().store().root()).await,
+        conflict_before
+    );
     assert_eq!(refused_target.record(), refused_head.as_ref());
     assert_eq!(
         destination
@@ -320,6 +397,19 @@ pub(super) async fn retain_historical_and_issue_new() {
             .unwrap(),
         retained_import
     );
+    assert_eq!(certificate_keys(&destination, old).await, vec![old_key]);
+    let fresh = Factory::initialize(false).await;
+    let imported = issue(
+        &source,
+        &fresh,
+        REFERENCE,
+        original.commit,
+        b"conflict",
+        &[b"conflict"],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(certificate_keys(&fresh, imported).await, vec![new_key]);
     let mut author = source
         .coordinator()
         .begin(NEW_REFERENCE, source.authority.token(), "sdk")
@@ -361,6 +451,7 @@ pub(super) async fn retain_historical_and_issue_new() {
         .await
         .unwrap();
     let rollback_head = rollback_target.record().cloned();
+    let rollback_before = physical_snapshot(destination.coordinator().store().root()).await;
     let rollback = destination
         .coordinator()
         .advance_disclosure(
@@ -383,7 +474,15 @@ pub(super) async fn retain_historical_and_issue_new() {
             },
         )
         .await;
-    assert!(rollback.is_err());
+    let failure = match rollback {
+        Err(crate::ref_advance::AdvanceError::Store(failure)) => failure,
+        outcome => panic!("newest role clock rollback: unexpected result: {outcome:?}"),
+    };
+    assert_retention_denied(&failure, "newest role clock rollback");
+    assert_eq!(
+        physical_snapshot(destination.coordinator().store().root()).await,
+        rollback_before
+    );
     assert_eq!(rollback_target.record(), rollback_head.as_ref());
     assert_eq!(
         destination
@@ -415,6 +514,7 @@ pub(super) async fn retain_historical_and_issue_new() {
         .await
         .unwrap();
     let refused_head = refused_target.record().cloned();
+    let missing_seed_before = physical_snapshot(destination.coordinator().store().root()).await;
     let refused = destination
         .coordinator()
         .advance_disclosure(
@@ -437,7 +537,29 @@ pub(super) async fn retain_historical_and_issue_new() {
             },
         )
         .await;
-    assert!(refused.is_err());
+    let failure = match refused {
+        Err(crate::ref_advance::AdvanceError::Store(failure)) => failure,
+        outcome => panic!("missing selected newest seed: unexpected result: {outcome:?}"),
+    };
+    assert!(
+        matches!(
+            failure.kind(),
+            StoreErrorKind::Unavailable { retry_after: None }
+        ),
+        "missing selected newest seed: unexpected storage outcome: {failure:?}"
+    );
+    assert_eq!(
+        failure
+            .source()
+            .and_then(|source| source.downcast_ref::<std::io::Error>())
+            .map(std::io::Error::kind),
+        Some(std::io::ErrorKind::NotFound),
+        "missing selected newest seed: unexpected cause: {failure:?}"
+    );
+    assert_eq!(
+        physical_snapshot(destination.coordinator().store().root()).await,
+        missing_seed_before
+    );
     assert_eq!(refused_target.record(), refused_head.as_ref());
     assert_eq!(
         destination
@@ -508,7 +630,7 @@ pub(super) async fn deny_admin_and_ambiguous_time() {
         .unwrap();
     let root = source.coordinator().store().root().to_owned();
     let bucket_before = physical_snapshot(&root).await;
-    let protected_before = physical_snapshot(&control(&root)).await;
+    let protected_before = control_snapshot(&root).await;
     let read_only = attenuate(&source, Caveat::Verb(Verbs::new(1).unwrap()));
     let denied = source
         .repository
@@ -531,13 +653,29 @@ pub(super) async fn deny_admin_and_ambiguous_time() {
         StoreErrorKind::Denied { verb: "admin", .. }
     ));
     source.clock.set(1000, 0);
-    assert!(
+    let ambiguous = source
+        .repository
+        .rotate_disclosure_key(REFERENCE, source.authority.token(), "sdk")
+        .await
+        .unwrap_err();
+    assert_retention_denied(&storage_failure(ambiguous), "equal rotation issue time");
+    assert_eq!(
         source
-            .repository
-            .rotate_disclosure_key(REFERENCE, source.authority.token(), "sdk")
+            .coordinator()
+            .store()
+            .ref_get(REFERENCE)
             .await
-            .is_err()
+            .unwrap(),
+        Some(head.clone())
     );
+    assert_eq!(physical_snapshot(&root).await, bucket_before);
+    assert_eq!(control_snapshot(&root).await, protected_before);
+    source.clock.set(1001, 0);
+    source
+        .repository
+        .rotate_disclosure_key(REFERENCE, source.authority.token(), "sdk")
+        .await
+        .unwrap();
     assert_eq!(
         source
             .coordinator()
@@ -547,6 +685,4 @@ pub(super) async fn deny_admin_and_ambiguous_time() {
             .unwrap(),
         Some(head)
     );
-    assert_eq!(physical_snapshot(&root).await, bucket_before);
-    assert_eq!(physical_snapshot(&control(&root)).await, protected_before);
 }

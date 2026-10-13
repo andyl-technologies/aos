@@ -9,10 +9,15 @@ use terrane_core::{
     cbor, gc,
 };
 
+/// Returns the published sixteen-byte pack identifier containing bytes zero to fifteen.
 pub(super) fn pack_id() -> [u8; 16] {
     core::array::from_fn(|index| u8::try_from(index).unwrap())
 }
 
+/// Compares the complete legacy capabilities model with its published wire bytes.
+///
+/// # Panics
+/// Panics if fixture extraction or codec execution fails, or bytes/model fields differ.
 pub(super) fn capabilities() {
     let model = BucketCapabilities {
         layout_version: 2,
@@ -97,6 +102,11 @@ fn generation_with_null_exclusions() -> Vec<u8> {
     bytes
 }
 
+/// Checks published generation exclusion models and rejects the literal null control.
+///
+/// # Panics
+/// Panics if fixtures or codec execution fail, positive bytes/models differ, or
+/// the independently assembled null-exclusions control is accepted.
 pub(super) fn generations() {
     let empty = generation_model();
     let mut exclusions = empty.clone();
@@ -134,6 +144,10 @@ pub(super) fn generations() {
     assert!(GenerationManifest::decode(&negative).is_err());
 }
 
+/// Compares the collector tombstone model with its published encoding.
+///
+/// # Panics
+/// Panics if fixture extraction or decoding fails, or encoded bytes/model fields differ.
 pub(super) fn collector_tombstone() {
     let model = gc::Tombstone {
         pack: pack_id(),

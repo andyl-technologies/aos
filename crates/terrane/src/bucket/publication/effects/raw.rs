@@ -213,13 +213,11 @@ pub(crate) async fn stage_ref_log<F: LocalFs + BucketBinding>(
     let mut frame = backend(fs, observed).await?;
     let policy = FencePolicy::Payload { owner: frame.owner };
     let root = PathBuf::from(observed.identity().root());
-    if let Some(existing) = frame
+    if frame
         .actual_read(fs, &root.join(key.as_str()), policy)
         .await?
+        .is_some()
     {
-        if record.record.candidate_id.is_none() && existing != bytes {
-            return Err(corrupt());
-        }
         observed.revalidate().await?;
         return Ok(RefLogAppendOutcome::Exists);
     }

@@ -58,7 +58,7 @@ pub(crate) fn m(fields: Vec<(u64, Value)>) -> Value {
     )
 }
 
-/// Copies UTF-8 text into a primitive text string.
+/// Constructs a primitive map with UTF-8 text keys.
 pub(crate) fn texts(fields: Vec<(&str, Value)>) -> Value {
     Value::Map(
         fields

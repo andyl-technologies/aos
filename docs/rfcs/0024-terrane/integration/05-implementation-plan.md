@@ -133,7 +133,27 @@ Workers retain disjoint file ownership and separate worktrees. Independent
 review remains separate. One coordinated compiler serves build and Nix requests.
 T2 and branch worklines remain deferred.
 
-The latest frozen payload-sharing tree `ee7171fa88a7` passes native build,
+The renewed frozen composition `342f1cf7114b` (tree `90fb7240d717`) passes
+the exact formatter pair, strict SDK all-target Clippy, SDK all-target test
+compilation and the default native build. Its actual inventory contains 1,113
+tests across three AOS executables, with none ignored. Six focused cases pass,
+including the three cold-fork controls, Legacy refusal and current-authority
+disclosure. Historical-key rotation then fails full physical snapshot equality:
+the authorized session creates its mandatory epoch baseline after the snapshot.
+The exact baseline setup is corrected in an isolated fixture before the refusal
+snapshot; full equality and error assertions remain unchanged. Thirteen cases,
+Core renewal and all six growth populations remain unstarted in this packet.
+Source, compiler inputs and executables stay sealed and unchanged. A separate
+diagnostic continuation may exercise only the thirteen unstarted cases; it does
+not accept the failed focus set, any task or T1's freeze. Separate sealed
+continuations fail the repeated-producer fixture (two actual producers where
+the oracle assumed one), then pass all twelve originally unstarted cases
+09–20. Across these separate diagnostics, eighteen cases pass and two fail;
+this is not a passing full focus run. Both failed fixtures have reviewed
+corrections awaiting qualification on a fresh composition. Core renewal,
+all six growth populations and the complete current T1 floor remain pending.
+
+The earlier frozen payload-sharing tree `ee7171fa88a7` passes native build,
 strict all-target SDK and Core Clippy, all-target test compilation and the exact
 formatter pair. Its inventories contain 1,101 SDK tests and 764 no-default Core
 tests. All seventeen payload-sharing counterproofs and twelve quick native/Core
@@ -234,15 +254,69 @@ the six growing witnesses and DRV-29 qualification blocker remain unchanged.
 Test-helper documentation corrections preserve exact source bodies and remain
 isolated from that sealed qualification checkout. A fresh thirteen-case diagnostic
 privately composes the reviewed GC native-read forwarding, fixture setup semaphore,
-native admission observations and explicit disclosure snapshot corrections. It
-retains all substantive refusal assertions and original bounds, and samples test
-process descriptors separately. Actual focused runtime results remain pending.
+native admission observations and explicit disclosure snapshot corrections. Its
+SDK all-target compilation, strict Clippy, default native build and exact formatter
+pair pass. It retains all substantive refusal assertions and original bounds, and
+samples test process descriptors separately. All three exact GC cases and all
+six admission/join/Original cases pass. The run stops at its tenth case: the
+Legacy indexed-publication witness expects Commit denial but observes exactly
+`Invalid(MalformedRequest)` with no attached source. Three disclosure cases
+remain unrun in that sealed packet. One-second sampling observes test-process
+peaks of 347, 157 and 321 in the three GC cases and 12 runner descriptors,
+without establishing exact maxima. Source, input and executable seals remain
+unchanged; this focused failing phase does not qualify the package.
+An independent new packet executes each of the three unrun cases once on the
+same sealed source and executables. One rotation refusal case passes; current
+authority refuses with exact source-less Admin denial where the witness expects
+Commit denial, and successful rotation stops while building a noncanonical test
+tree. Both failures remain recorded. Source review traces the Legacy outcome to
+revision-1 rejection of `index-roots` before ACL checks. Its isolated correction
+requires the exact invalid-request category, genuine Active publication of the
+same complete proposal, absent offered identities/ref/lineage under Legacy and
+the existing ordinary Legacy revision-1 publication control. That stronger
+witness remains uncompiled and unrun. Separate source workers review current
+Admin ordering and canonical rotation fixtures; no production authorization,
+tree ordering, process bound or milestone requirement is weakened.
 Separately, a borrowed authenticated-history inventory permits producer preparation
 to refresh every retained Original, including disclosure dependencies; the iterator
 grants neither completion nor current authority. The bounded growth repair remains
-isolated and retains existing per-path trust-evaluator cloning. Owning Nix gates,
+isolated and retains existing per-path trust-evaluator cloning. Its source candidate
+passes scoped independent review and adds a genuine repeated-producer regression
+with exact current requests, separately repeated invocation work, typed Original
+and ACL refusals, and unchanged stored/publication bytes. The owning index gate
+and focused rebuild prerequisite now require this witness; its compilation and
+runtime remain pending. Owning Nix gates,
 the complete current T1 floor and mandatory application targets remain pending.
 No task or milestone advances.
+
+Fresh private composition `e10fa76d1b62` binds the reviewed producer reuse,
+Legacy refusal, exact current Admin/Commit controls and canonical rotation
+fixtures. The exact formatter pair passes. SDK Clippy then stops with a compile
+error: the new Original-selection refresh calls a private sibling-module error
+mapper. No native case, growth population or renewed Core package runs on this
+source. Its correction preserves the existing error category and attached cause;
+the failed source remains sealed before another qualification.
+
+Subsequent private trees `11bc0ef7d876` and `4d157b029455` also pass the exact
+formatter pair. Strict SDK Clippy first rejects two nonidiomatic producer-map
+updates, then reaches the Legacy fixture and rejects a request move while its
+decoded owner still borrows the offered bytes. Isolated corrections use map
+entries with unchanged vacant preparation and occupied freshness checks, and
+end borrowed fixture models before publication consumes the request. Source
+comparison after removing the lexical block confirms unchanged revision
+assertions and independent publication controls. Both failed packets retain
+unchanged sources and prior evidence; all native, Core renewal and growth
+executions remain unstarted.
+
+Independent source review also finds a valid mixed-revision cold source wrongly
+refused after its candidate already witnesses a signed root claim. An unnecessary
+prior-tree comparison reinterprets inert later parent properties under current
+semantics. The isolated PROP-30/PROV-31/ALG-32 correction stops after a sufficient
+witness and retains prior-only fallback. The owning `algebra-fork` gate now
+requires genuine recorded parent/current-child publication and the existing
+calibrated zero-Node native acknowledgement oracle. Separate rotation witnesses
+require exact protected-record errors and successful controls. These changes
+remain uncompiled and unrun; task counts, T1's exit and all freezes are unchanged.
 
 Additional isolated worklines inspect growing-index completion, indexed replay
 and permanent recovery, while a separate worker qualifies the five public SDK
@@ -6557,7 +6631,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `checks.terrane.gates.bundle-verify`.
 - [ ] **T-BKT-1** `bucket` backend over `file://`: key layout, mutability
   classes, atomic writes, filesystem CAS, generation manifests, startup
-  probe. Conformance is reopened for STORE-4: the existing ranged getter reads
+  probe. Independent full review identifies an inherited STORE-8 outcome
+  discrepancy: a safely read existing legacy log with different proposed
+  canonical bytes returns corruption instead of `exists`. The isolated fix
+  retains exact existing bytes, capabilities, ref and history, preserves missing
+  legacy-slot refusal, and awaits owning-gate and current-trunk qualification.
+  Conformance is reopened for STORE-4: the existing ranged getter reads
   the whole pack before slicing. Bounded framing/index/member reads and an
   actual no-whole-pack I/O witness remain required; previously passing slice
   and overflow checks do not qualify that requirement. D-77's version-2 ref
@@ -6949,6 +7028,20 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 - [ ] **T-GC-1** Mark-and-sweep collector: roots, mark, grace, two-phase
   sweep, singleton lease, resumability, retention values `gc`, `lease`,
   `ttl`, `forever`, and ordinary reflog duration/count selection.
+  Source review identifies a GC-6/GC-7 gap: a broader parent cutoff for the
+  same fully expanded commit and proof occurrence repeats its own metadata
+  expansion. Only newly eligible parent edges require another traversal.
+  The owning mark gate now requires a genuine native broader-cutoff regression
+  before the isolated fix. Witness-to-full promotion, distinct proof contexts,
+  checkpoint verification and current held authority remain mandatory. This
+  source finding does not explain the two overlay timeouts; their original
+  120-second bounds and separate runtime obligations remain unchanged.
+  Separate review identifies preexisting PROP-30/GC-5 refusals when collector
+  retention or metadata preparation treats preserved historical `index-roots`
+  bytes as active bindings. The mark gate now requires genuine recorded-view
+  root and graft preservation before the isolated semantic correction. Current
+  selected interpretation, malformed active-value refusals and exact native
+  proof contexts remain mandatory; no encoding or checkpoint schema changes.
   Parent-owned registrations and a nineteen-case auxiliary check now prepare
   isolated implementation of genuine local copied-destination first ownership.
   D-113 clarifies truthful conservative DATA roots/state at the existing
@@ -7438,6 +7531,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   cannot substitute for these cases. Remote-v2 permanent ownership remains
   separate. Missing selectors fail explicitly; the full two-phase gate stays
   pending until its actual requirements and runtime inventory are qualified.
+  Independent source review finds an ordinary local-v1 cancellation gap at
+  the durable Authorized-intent prefix, before any journal becomes DeleteOwned.
+  Restore currently misses that exact operation when all three creation
+  journals remain Committed. GC-15, GC-24 and GC-29 require its durable
+  cancellation before exclusion clearing or mutation. A distinct owning
+  native-local-deletion selector is registered before the isolated correction;
+  its execution and the full two-phase gate remain pending. This finding
+  establishes a cancellation conformance gap, not demonstrated data loss.
   Narrowed
   to trunk scope: compaction is T-GC-2 on
   B-jobs. — satisfies GC-1, GC-3 to GC-7, GC-9 to GC-17, GC-22 to GC-24,

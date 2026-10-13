@@ -1,5 +1,6 @@
 {sourceGate}: let
   names = [
+    "native_repeated_producer_checks_preserve_current_and_original_refusal"
     "native_index_verify_reports_divergence_without_mutation"
     "native_index_rebuild_recovers_divergent_and_missing_auxiliary_closures"
     "native_index_rebuild_rechecks_original_current_producer_and_final_ack"
@@ -16,5 +17,5 @@ in
   # Immutable rebuild data must cross the genuine current publication boundary.
   sourceGate "native-index-rebuild" ''
     ${runCases}
-    printf 'PASS: six exact native checked index verification and rebuild cases\n' > "$out/result"
+    printf 'PASS: seven exact native checked index verification and rebuild cases\n' > "$out/result"
   ''

@@ -56,6 +56,7 @@
     "root_native_cold_fork_stops_on_sync_failure_and_expiry"
     "current_revision::root_native_cold_fork_revalidates_new_current_registration_without_nodes"
     "current_revision::root_native_cold_fork_refuses_changed_historical_inputs_without_nodes"
+    "current_revision::root_native_cold_fork_preserves_inert_later_parent_after_current_revision_advance"
   ];
 in {
   algebra-fork = nativeSdkGate "algebra-fork" ''
@@ -66,7 +67,7 @@ in {
       label = "algebra-fork";
       selectors = forkSelectors;
     }}
-    printf 'PASS: native cold-fork publication (12 exact cases), selected source requalification and preservation\n' \
+    printf 'PASS: native cold-fork publication (13 exact cases), selected source requalification and preservation\n' \
       > "$out/result"
   '';
 

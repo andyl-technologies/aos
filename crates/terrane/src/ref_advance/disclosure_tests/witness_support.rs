@@ -303,10 +303,26 @@ pub(super) struct PhysicalEntry {
 /// Reads intentionally exclude atime, which inspection itself can update.
 ///
 /// # Panics
-/// Panics if a fixture entry cannot be observed or has an unexpected special kind.
+/// Panics if the bucket root has no final component, a fixture entry cannot be
+/// observed, or an entry has an unexpected special kind.
 pub(super) async fn physical_snapshot(root: &std::path::Path) -> BTreeMap<PathBuf, PhysicalEntry> {
     let root = root.to_owned();
-    let mut pending = vec![control(&root), root];
+    snapshot_namespaces(vec![control(&root), root]).await
+}
+
+/// Snapshots only the original protected control namespace of the supplied bucket.
+///
+/// Includes every retained and temporary control entry, with the same physical
+/// observations and transient-operation limits as [`physical_snapshot`].
+///
+/// # Panics
+/// Panics if the bucket root has no final component, a control entry cannot be
+/// observed, or an entry has an unexpected special kind.
+pub(super) async fn control_snapshot(root: &std::path::Path) -> BTreeMap<PathBuf, PhysicalEntry> {
+    snapshot_namespaces(vec![control(root)]).await
+}
+
+async fn snapshot_namespaces(mut pending: Vec<PathBuf>) -> BTreeMap<PathBuf, PhysicalEntry> {
     let mut entries = BTreeMap::new();
     while let Some(path) = pending.pop() {
         let metadata = tokio::fs::symlink_metadata(&path).await.unwrap();
