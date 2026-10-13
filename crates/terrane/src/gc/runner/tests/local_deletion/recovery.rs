@@ -719,3 +719,211 @@ async fn restore_durably_cancels_exact_local_owner_before_clearing_exclusion() {
         cancellation_prefix(false, Some(2)),
     );
 }
+
+#[tokio::test]
+async fn restore_durably_cancels_authorized_only_local_intent_before_clearing_exclusion() {
+    let mut fixture = Fixture::new().await;
+    let (mut collection, requested) = retired(&fixture).await;
+    let original = before(&fixture, &requested).await;
+    fixture.clock.enable_timer();
+
+    // Boundary zero durably publishes Authorized; boundary one has not yet
+    // replaced the first creator journal when this actual sync fails.
+    fixture
+        .fs
+        .fault_first_ownership(1, EffectFault::BeforeFileSync);
+    assert_io(
+        &collection
+            .own_local_pack(fixture.repository.coordinator(), requested.clone())
+            .await
+            .require_error(),
+        "injected creation file sync failure",
+    );
+    fixture.fs.assert_consumed();
+    let directory = fixture.parent.join("publication").join(format!(
+        "gc/{}/delete/{}",
+        requested.cycle,
+        PackId::from_random_bytes(requested.pack_id)
+    ));
+    let paths = std::fs::read_dir(&directory)
+        .require()
+        .map(|entry| entry.require().path())
+        .collect::<Vec<_>>();
+    assert_eq!(paths.len(), 1);
+    let key = paths[0]
+        .strip_prefix(fixture.parent.join("publication"))
+        .require()
+        .to_str()
+        .require()
+        .to_owned();
+    let authorized = operation(&fixture, &key);
+    assert_eq!(authorized.phase, DeletePhase::Authorized);
+    for creator in &original.journals {
+        assert_eq!(
+            CreationJournal::decode(&std::fs::read(journal(&fixture, &creator.key)).require())
+                .require(),
+            *creator
+        );
+    }
+    drop(collection);
+
+    fixture.reopen().await;
+    let mut fresh = fresh_collection(&fixture, 220).await;
+    let selected = image(&fixture).await;
+    fixture
+        .fs
+        .fault(DeletePhase::Cancelled, EffectFault::BeforeFileSync);
+    assert_io(
+        &fresh.restore_pack(requested.clone()).await.require_error(),
+        "injected creation file sync failure",
+    );
+    fixture.fs.assert_consumed();
+    assert_eq!(operation(&fixture, &key), authorized);
+    // The real pre-rename sync failure leaves cancellation staging beside the
+    // genuine operation. Reopen must retain it as private residue, not authority.
+    let staging = std::fs::read_dir(&directory)
+        .require()
+        .map(|entry| entry.require().path())
+        .filter(|path| {
+            path.file_name()
+                .require()
+                .to_str()
+                .require()
+                .starts_with(".cancel-")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(staging.len(), 1);
+    let staging_path = &staging[0];
+    let staging_name = staging_path.file_name().require().to_str().require();
+    let staging_nonce = staging_name.strip_prefix(".cancel-").require();
+    assert_eq!(staging_nonce.len(), 32);
+    assert!(
+        staging_nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    );
+    let staging_bytes = std::fs::read(staging_path).require();
+    let staged = terrane_core::gc::DeleteOperation::decode(&staging_bytes, &key).require();
+    assert_eq!(staged.phase, DeletePhase::Cancelled);
+    assert_eq!(staged.authorization, authorized.authorization);
+    let refused = image(&fixture).await;
+    assert_eq!(refused.manifest, selected.manifest);
+    assert_eq!(refused.cap, selected.cap);
+    assert_current_values(&selected, &refused);
+    for (index, path) in original.paths.iter().enumerate() {
+        assert_eq!(std::fs::read(path).require(), original.bodies[index]);
+        assert_eq!(
+            CreationJournal::decode(
+                &std::fs::read(journal(&fixture, &original.journals[index].key)).require()
+            )
+            .require(),
+            original.journals[index]
+        );
+    }
+    drop(fresh);
+
+    fixture.reopen().await;
+    let mut fresh = fresh_collection(&fixture, 221).await;
+    fixture.fs.fault(
+        DeletePhase::Cancelled,
+        EffectFault::AfterCancelledIntentSync,
+    );
+    assert_io(
+        &fresh.restore_pack(requested.clone()).await.require_error(),
+        "injected failure after durable Cancelled intent",
+    );
+    fixture.fs.assert_consumed();
+    assert_eq!(operation(&fixture, &key).phase, DeletePhase::Cancelled);
+    assert_eq!(
+        operation(&fixture, &key).authorization,
+        authorized.authorization
+    );
+    assert!(
+        image(&fixture)
+            .await
+            .manifest
+            .exclusions
+            .as_ref()
+            .require()
+            .contains(&requested)
+    );
+    for creator in &original.journals {
+        assert_eq!(
+            CreationJournal::decode(&std::fs::read(journal(&fixture, &creator.key)).require())
+                .require(),
+            *creator
+        );
+    }
+    drop(fresh);
+
+    fixture.reopen().await;
+    let mut fresh = fresh_collection(&fixture, 222).await;
+    fixture.fs.fault(
+        DeletePhase::Cancelled,
+        EffectFault::BeforeCancelledJournalDirectorySync(2),
+    );
+    assert_io(
+        &fresh.restore_pack(requested.clone()).await.require_error(),
+        "injected directory sync after journal invalidation",
+    );
+    fixture.fs.assert_consumed();
+    assert_eq!(operation(&fixture, &key).phase, DeletePhase::Cancelled);
+    assert!(
+        image(&fixture)
+            .await
+            .manifest
+            .exclusions
+            .as_ref()
+            .require()
+            .contains(&requested)
+    );
+    for creator in &original.journals {
+        let actual =
+            CreationJournal::decode(&std::fs::read(journal(&fixture, &creator.key)).require())
+                .require();
+        assert_eq!(actual.key, creator.key);
+        assert_eq!(actual.nonce, creator.nonce);
+        assert_eq!(actual.state, JournalState::Invalidated);
+    }
+    drop(fresh);
+
+    fixture.reopen().await;
+    let mut fresh = fresh_collection(&fixture, 223).await;
+    assert!(fresh.restore_pack(requested.clone()).await.require());
+    assert_eq!(operation(&fixture, &key).phase, DeletePhase::Cancelled);
+    assert_eq!(
+        operation(&fixture, &key).authorization,
+        authorized.authorization
+    );
+    let restored = image(&fixture).await;
+    assert!(
+        !restored
+            .manifest
+            .exclusions
+            .as_ref()
+            .require()
+            .contains(&requested)
+    );
+    assert_pack_rows(
+        &restored,
+        PackId::from_random_bytes(requested.pack_id),
+        RecordState::Live,
+    );
+    for (index, path) in original.paths.iter().enumerate() {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::symlink_metadata(path).require();
+        assert_eq!((metadata.dev(), metadata.ino()), original.identities[index]);
+        assert_eq!(std::fs::read(path).require(), original.bodies[index]);
+        let creator = CreationJournal::decode(
+            &std::fs::read(journal(&fixture, &original.journals[index].key)).require(),
+        )
+        .require();
+        assert_eq!(creator.key, original.journals[index].key);
+        assert_eq!(creator.nonce, original.journals[index].nonce);
+        assert_eq!(creator.state, JournalState::Invalidated);
+    }
+    assert_eq!(std::fs::read(staging_path).require(), staging_bytes);
+    assert_eq!(fixture.base.fs.data_body_read_attempts(), 0);
+    drop(fresh);
+    fixture.cleanup();
+}

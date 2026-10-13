@@ -145,7 +145,13 @@ snapshot; full equality and error assertions remain unchanged. Thirteen cases,
 Core renewal and all six growth populations remain unstarted in this packet.
 Source, compiler inputs and executables stay sealed and unchanged. A separate
 diagnostic continuation may exercise only the thirteen unstarted cases; it does
-not accept the failed focus set, any task or T1's freeze.
+not accept the failed focus set, any task or T1's freeze. Separate sealed
+continuations fail the repeated-producer fixture (two actual producers where
+the oracle assumed one), then pass all twelve originally unstarted cases
+09–20. Across these separate diagnostics, eighteen cases pass and two fail;
+this is not a passing full focus run. Both failed fixtures have reviewed
+corrections awaiting qualification on a fresh composition. Core renewal,
+all six growth populations and the complete current T1 floor remain pending.
 
 The earlier frozen payload-sharing tree `ee7171fa88a7` passes native build,
 strict all-target SDK and Core Clippy, all-target test compilation and the exact
@@ -7525,6 +7531,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   cannot substitute for these cases. Remote-v2 permanent ownership remains
   separate. Missing selectors fail explicitly; the full two-phase gate stays
   pending until its actual requirements and runtime inventory are qualified.
+  Independent source review finds an ordinary local-v1 cancellation gap at
+  the durable Authorized-intent prefix, before any journal becomes DeleteOwned.
+  Restore currently misses that exact operation when all three creation
+  journals remain Committed. GC-15, GC-24 and GC-29 require its durable
+  cancellation before exclusion clearing or mutation. A distinct owning
+  native-local-deletion selector is registered before the isolated correction;
+  its execution and the full two-phase gate remain pending. This finding
+  establishes a cancellation conformance gap, not demonstrated data loss.
   Narrowed
   to trunk scope: compaction is T-GC-2 on
   B-jobs. — satisfies GC-1, GC-3 to GC-7, GC-9 to GC-17, GC-22 to GC-24,
