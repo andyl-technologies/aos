@@ -2693,6 +2693,24 @@ remains historically unqualified for shell dispatch. This replay qualifies
 configured compilation and linking, while ordinary installed packages, runtime
 behavior, readiness and ABI/license gates still require their own checks.
 
+## Same-mapping stopped callback preparation
+
+The shared mapping owner lends its unique ordinary mapping for callback
+construction after pre-reserved retention, without holding a backing selection
+lock across native setters or HOLD. Ordinary per-method gates remain active;
+busy ownership, intent, failure and changed generation prevent publication.
+A post-callback raw process check prevents a forked child from returning copied
+results or invoking inherited result, guard or fence destructors.
+
+Four original component controls and an isolated parent-lock-held fork fixture
+pass on their recorded predecessor. The successor adds a passing real
+in-callback fork control: the child leaves copied destructors untouched, while
+the parent drops its result once and reacquires its original mapping. The
+successor also passes strict all-target/all-feature shared-memory checks.
+These helpers issue no native execution, capture, restoration or readiness
+authority. Current complete application compilation and ABI/license gates
+remain required with the final integrated source.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

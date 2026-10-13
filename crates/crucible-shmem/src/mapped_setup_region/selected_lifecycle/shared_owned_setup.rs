@@ -116,6 +116,19 @@ pub struct SharedOwnedSetupMapping {
     current: AtomicPtr<OwnerGeneration>,
 }
 
+struct SharedPreparationFence<'a> {
+    owner: &'a SharedOwnedSetupMapping,
+    succeeded: bool,
+}
+
+impl Drop for SharedPreparationFence<'_> {
+    fn drop(&mut self) {
+        if !self.succeeded {
+            self.owner.refuse_whole_control();
+        }
+    }
+}
+
 struct SharedCallbackFence<'a> {
     generation: &'a OwnerGeneration,
     succeeded: bool,
@@ -201,6 +214,70 @@ impl SharedOwnedSetupMapping {
             .get_mut()
             .map_err(|_| WholeMappingCustodyError::Poisoned)?
             .ordinary_mapping_mut()
+    }
+
+    /// Lends the unique ordinary mapping for stopped callback construction.
+    ///
+    /// The caller reserves owning retention and authenticates its native
+    /// preparation before entering this
+    /// closure. It constructs registered queue handles from this same mapping,
+    /// then ends the loan before native setters or HOLD. No mapping reference
+    /// can escape. The helper creates no native preparation or execution grant.
+    /// Per-method ordinary mutation gates remain active; no backing-domain
+    /// selection lock spans the callback.
+    ///
+    /// # Errors
+    ///
+    /// Refuses foreign PID before inherited locks, intent, selection, sticky
+    /// failure, unprepared retention, busy or poisoned ownership, or another
+    /// strong mapping owner. Current-generation error or panic sticks refusal. Concurrent whole intent makes
+    /// the result unavailable even when the callback itself succeeds.
+    pub fn with_ordinary_preparation<T, E>(
+        &self,
+        callback: impl FnOnce(&mut MappedSetupRegion) -> Result<T, E>,
+    ) -> Result<Result<T, E>, WholeMappingCustodyError> {
+        let generation = self.generation()?;
+        let mut fence = SharedPreparationFence {
+            owner: self,
+            succeeded: false,
+        };
+        if !generation.retention_slot.armed() {
+            return Err(WholeMappingCustodyError::ResourceLimit);
+        }
+        let domain = generation.domain.as_ref().map_err(|error| *error)?;
+        let ordinary_current = || {
+            !generation.intent.load(Ordering::Acquire)
+                && !generation.selected.load(Ordering::Acquire)
+                && !generation.failed.load(Ordering::Acquire)
+                && !domain.selected.load(Ordering::Acquire)
+        };
+        if !ordinary_current() {
+            return Err(WholeMappingCustodyError::Selected);
+        }
+        let mut owner = try_lock(&generation.owner)?;
+        if !ordinary_current() {
+            return Err(WholeMappingCustodyError::Selected);
+        }
+        let mapping = owner.ordinary_mapping_mut()?;
+        let result = callback(mapping);
+        // A callback which forks cannot return copied ownership or generic
+        // destructors through this process-private loan. Only the original
+        // parent may unlock its guard or publish its construction result.
+        if generation.process != std::process::id() {
+            std::mem::forget(result);
+            std::mem::forget(fence);
+            std::mem::forget(owner);
+            return Err(WholeMappingCustodyError::Unregistered);
+        }
+        if !std::ptr::eq(self.generation()?, generation) {
+            return Err(WholeMappingCustodyError::Unregistered);
+        }
+
+        if !ordinary_current() {
+            return Err(WholeMappingCustodyError::Selected);
+        }
+        fence.succeeded = result.is_ok();
+        Ok(result)
     }
 
     /// Reserves bounded owning retention before any native source HOLD.
@@ -566,3 +643,15 @@ impl Drop for SharedOwnedSetupMapping {
 ))]
 #[path = "shared_owned_setup_tests.rs"]
 mod tests;
+
+#[cfg(all(
+    test,
+    target_os = "linux",
+    target_arch = "x86_64",
+    target_env = "gnu",
+    target_abi = "",
+    target_endian = "little",
+    target_pointer_width = "64"
+))]
+#[path = "shared_owned_setup/ordinary_preparation_tests.rs"]
+mod ordinary_preparation_tests;
