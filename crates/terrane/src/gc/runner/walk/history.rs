@@ -9,7 +9,7 @@ use crate::indexing::SemanticRevisions;
 use crate::store::{Clock, CorruptSubject, InvalidReason, Store, StoreErrorKind, StoreFailure};
 use terrane_core::derived::{AttributeName, AttributeValue};
 use terrane_core::identity::{Digest, Identity};
-use terrane_core::indexing::IndexRoots;
+use terrane_core::properties::RootLayer;
 use terrane_core::provenance::{EntryLocation, VerifiedDisclosureBatch};
 use terrane_core::tree_format::{ContentRef, EntryKind};
 
@@ -239,20 +239,37 @@ pub(super) fn prepare_metadata<S: Store, C: Clock>(
         .nodes()
         .map(|node| (node.identity(), node.identity() == root))
         .collect();
-    let bindings = match tree
-        .props()
-        .unwrap_or_default()
+    let path = evidence.tree().evidence.policy_path(
+        occurrence.context.absolute_path(),
+        guard.config().min_chunk_size,
+    )?;
+    let layers = path
         .iter()
-        .find(|property| property.name == "index-roots")
-    {
-        None => Vec::new(),
-        Some(property) => IndexRoots::decode_binding(property.value)
-            .map_err(invalid)?
-            .as_bindings()
-            .iter()
-            .map(|binding| (binding.attribute.to_owned(), binding.node))
-            .collect(),
-    };
+        .map(|(properties, overrides)| RootLayer {
+            properties,
+            overrides,
+        })
+        .collect::<Vec<_>>();
+    let interpretation = evidence
+        .completed()
+        .history()
+        .property_selection(commit)
+        .map_err(invalid)?;
+    let effective = interpretation
+        .resolve(&layers, guard.defaults_for(&evidence.tree().evidence))
+        .map_err(invalid)?;
+    // Owner-local bindings exist only when the independently selected revision
+    // gives them behavior. Canonical preserved bytes do not become pointers.
+    let bindings = effective
+        .active_index_roots()
+        .map(|roots| {
+            roots
+                .as_bindings()
+                .iter()
+                .map(|binding| (binding.attribute.to_owned(), binding.node))
+                .collect()
+        })
+        .unwrap_or_default();
     let mut files = Vec::new();
     for item in tree.iter() {
         let mut entries = vec![&item.entry];

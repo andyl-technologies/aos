@@ -25,6 +25,7 @@ mod disclosure;
 mod indexes;
 mod memos;
 mod overlays;
+mod preservation;
 mod root_inventory;
 mod rooted;
 mod support;
@@ -96,4 +97,9 @@ async fn gc_common_walk_native_independently_rooted_source_keeps_own_producer_co
 #[tokio::test]
 async fn gc_common_walk_native_broader_cutoff_reuses_full_occurrence_expansion() {
     cutoffs::broader_cutoff_reuses_full_occurrence_expansion().await;
+}
+
+#[tokio::test]
+async fn gc_common_walk_native_recorded_preservation_keeps_inert_index_bindings() {
+    preservation::recorded_preservation_keeps_inert_index_bindings().await;
 }
