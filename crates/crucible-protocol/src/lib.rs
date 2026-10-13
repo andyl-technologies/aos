@@ -54,6 +54,7 @@ mod doorbell_marker;
 mod golden_vectors;
 pub mod guest_introspection;
 pub mod guest_introspection_doorbell;
+pub mod kvm_constructor;
 pub mod node_control;
 pub mod plugin_setup_plan;
 pub mod whole_control;
