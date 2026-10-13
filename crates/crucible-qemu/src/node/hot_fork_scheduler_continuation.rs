@@ -424,6 +424,8 @@ impl QemuHotForkSchedulerNodeContinuation {
             pending_network_outputs: Vec::new(),
             pending_priming_observations: Vec::new(),
             next_network_output_sequence: state.next_network_output_sequence,
+            // A fork boundary is a settled checkpoint; no marker awaits its stop.
+            carried_campaign_marker: None,
             native_console,
             authenticated_launch,
             fault_capabilities: state.fault_capabilities,

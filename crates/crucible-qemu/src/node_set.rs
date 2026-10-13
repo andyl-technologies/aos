@@ -28,6 +28,7 @@ use crucible_shmem::{
 };
 
 use crate::QemuVmSnapshot;
+use crate::node::CAMPAIGN_BOUNDARY_MARKERS;
 #[cfg(target_os = "linux")]
 use crate::{
     QemuHotForkTemplateIdentity, QemuHotForkTemplatePreparer, QemuLaunchResourceRequirements,
@@ -538,8 +539,6 @@ impl QemuCampaignMarkerBoundaryDiagnostic {
     }
 }
 
-const CAMPAIGN_BOUNDARY_MARKERS: [&str; 2] = ["fault.transport.ready", "fault.followup.ready"];
-
 fn campaign_marker_parked_at(
     node: &NodeId,
     physical_icount: Icount,
@@ -625,6 +624,35 @@ fn campaign_marker_parked_at(
         });
     }
     Ok(matched)
+}
+
+/// Proves a physical pause against fresh or carried campaign markers.
+///
+/// Markers drained at this pause keep the fail-closed proof. When none is
+/// present, a quantum may have ended between the marker and its deferred
+/// VMStop, so the marker drained with that quantum is tried; one that does
+/// not exactly prove this stop is stale and proves nothing.
+fn campaign_marker_stop(
+    node: &NodeId,
+    physical_icount: Icount,
+    calibration: QemuLogicalTimeCalibration,
+    fresh: &[ObservableEvent],
+    carried: Option<&ObservableEvent>,
+) -> Result<Option<QemuParkedCampaignMarker>, BackendError> {
+    let matched = campaign_marker_parked_at(node, physical_icount, calibration, fresh)?;
+    if matched.is_some() {
+        return Ok(matched);
+    }
+    Ok(carried.and_then(|carried| {
+        campaign_marker_parked_at(
+            node,
+            physical_icount,
+            calibration,
+            std::slice::from_ref(carried),
+        )
+        .ok()
+        .flatten()
+    }))
 }
 
 #[cfg(test)]
@@ -1259,7 +1287,15 @@ impl QemuNodeSet {
         let backend = self.node_mut(node)?;
         let calibration = backend.boundary_logical_time_calibration()?;
         let events = backend.drain_observable_events()?;
-        let matched = campaign_marker_parked_at(node, physical_icount, calibration, &events)?;
+        let matched = campaign_marker_stop(
+            node,
+            physical_icount,
+            calibration,
+            &events,
+            backend.carried_campaign_marker(),
+        )?;
+        // Either this stop consumed the marker or the carried one is stale.
+        backend.forget_carried_campaign_marker();
         self.retained_observable_events.extend(events);
         if let Some(parked) = matched {
             self.parked_campaign_markers.insert(node.clone(), parked);

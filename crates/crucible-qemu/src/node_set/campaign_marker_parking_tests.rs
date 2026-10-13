@@ -174,3 +174,45 @@ fn production_hot_fork_marker_coordinates_prove_the_stop() {
         }))
     );
 }
+
+/// A quantum can end between a marker and its deferred VMStop. The marker
+/// drained with that quantum still proves the stop; a stale one proves
+/// nothing and fails nothing, while a fresh non-proving marker stays fatal.
+#[test]
+fn carried_marker_proves_only_its_own_deferred_stop() {
+    let node = NodeId {
+        name: "router-a".to_owned(),
+    };
+    let stopped_at = Icount { retired: 2_100 };
+    let calibration = QemuLogicalTimeCalibration {
+        logical_icount: 2_100,
+        raw_icount: 42,
+    };
+    let carried = transport_marker(&node, 2_050);
+    let stale = transport_marker(&node, 1_050);
+
+    let parked = campaign_marker_stop(&node, stopped_at, calibration, &[], Some(&carried));
+    assert_eq!(
+        parked.map(|parked| parked.map(|parked| parked.marker_tick)),
+        Ok(Some(Icount { retired: 2_050 }))
+    );
+
+    assert_eq!(
+        campaign_marker_stop(&node, stopped_at, calibration, &[], Some(&stale)),
+        Ok(None)
+    );
+    assert_eq!(
+        campaign_marker_stop(&node, stopped_at, calibration, &[], None),
+        Ok(None)
+    );
+    assert!(
+        campaign_marker_stop(
+            &node,
+            stopped_at,
+            calibration,
+            std::slice::from_ref(&stale),
+            Some(&carried)
+        )
+        .is_err()
+    );
+}
