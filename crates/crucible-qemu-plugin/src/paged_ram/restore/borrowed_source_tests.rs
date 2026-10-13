@@ -18,13 +18,6 @@ impl SourceOperationFactory for NoReplacementOperation {
     fn begin(&self, _: SourceOperationClass) -> io::Result<Box<dyn SourceOperation>> {
         panic!("retained exchange cannot start a replacement operation")
     }
-
-    fn with_fingerprint_operation(
-        &self,
-        _: &mut dyn FnMut(&dyn SourceOperation),
-    ) -> Result<(), ObservationOperationError> {
-        panic!("retained exchange cannot borrow a new fingerprint operation")
-    }
 }
 
 struct BorrowedOperation {

@@ -315,22 +315,20 @@ impl FaultService {
                     Some(root) => (root.hasher, Some(root.failure)),
                     None => (None, None),
                 };
-                super::super::source::with_observation_operation(
-                    self.operations.as_ref(),
-                    |operation| {
-                        let spill = self.spill.try_lock().map_err(|_| {
-                            SourceFetchError::Owner(RamError::Invariant(
-                                "spill ownership unavailable",
-                            ))
-                        })?;
-                        spill.read_with_borrowed_hasher(&record, scratch, hasher)?;
-                        drop(spill);
-                        operation.complete_observation()?;
-                        count_completed(&self.counters.preserved_reads)
-                            .map_err(SourceFetchError::Owner)?;
-                        Ok(())
-                    },
-                )
+                super::super::source::with_observation_operation(|operation| {
+                    // The native Root owns this running Original. Check it
+                    // before backing I/O; completion supplies the post cut.
+                    operation.wait_slice_for_observation()?;
+                    let spill = self.spill.try_lock().map_err(|_| {
+                        SourceFetchError::Owner(RamError::Invariant("spill ownership unavailable"))
+                    })?;
+                    spill.read_with_borrowed_hasher(&record, scratch, hasher)?;
+                    drop(spill);
+                    operation.complete_observation()?;
+                    count_completed(&self.counters.preserved_reads)
+                        .map_err(SourceFetchError::Owner)?;
+                    Ok(())
+                })
                 .map_err(|error| source_read_failure(error, root_failure))?;
                 return Ok(record.valid_length());
             }

@@ -5,13 +5,6 @@ use super::*;
 struct NoStatusOperations;
 
 impl SourceOperationFactory for NoStatusOperations {
-    fn with_fingerprint_operation(
-        &self,
-        _: &mut dyn FnMut(&dyn SourceOperation),
-    ) -> Result<(), ObservationOperationError> {
-        panic!("status cannot start a guest observation")
-    }
-
     fn begin(&self, _: SourceOperationClass) -> io::Result<Box<dyn SourceOperation>> {
         panic!("status cannot start or renew an operation")
     }

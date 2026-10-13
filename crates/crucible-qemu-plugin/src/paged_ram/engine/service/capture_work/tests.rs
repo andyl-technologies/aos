@@ -64,13 +64,6 @@ impl SourceOperationFactory for Operations {
             refuse_completion: self.refuse_completion,
         }))
     }
-
-    fn with_fingerprint_operation(
-        &self,
-        _exchange: &mut dyn FnMut(&dyn SourceOperation),
-    ) -> Result<(), ObservationOperationError> {
-        Err(io::Error::from_raw_os_error(libc::ENOTSUP).into())
-    }
 }
 
 fn event(address: u64) -> FaultEvent {

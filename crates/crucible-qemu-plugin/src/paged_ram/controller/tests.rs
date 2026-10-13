@@ -60,6 +60,19 @@ pub(super) fn controller() -> LivePagerController {
     }
 }
 
+impl LivePagerController {
+    // Existing admission and terminal-cause controls exercise an explicitly
+    // entered component operation; they cannot enroll a native Root borrower.
+    fn with_entered_observation<T>(
+        &self,
+        exchange: impl FnOnce(&dyn SourceOperation) -> T,
+    ) -> Result<T, ObservationOperationError> {
+        let operation = self.begin_inline::<true>(SourceOperationClass::FingerprintUpdate)?;
+        operation.wait_slice_for_observation()?;
+        Ok(exchange(&operation))
+    }
+}
+
 // This component fixture records a completed Apply without creating guest
 // mapping authority or advertising any backend qualification.
 fn applied_controller() -> (LivePagerController, RamControlPolicy, RamControlResources) {
@@ -693,11 +706,11 @@ fn early_child_accepts_only_recorded_initial_retry_before_native_runtime_ready()
 }
 
 #[test]
-fn fingerprint_loan_retains_live_slot_until_return_and_callback_unwind() {
+fn entered_observation_retains_live_slot_until_return_and_callback_unwind() {
     let controller = controller();
     let mut calls = 0;
     controller
-        .with_fingerprint_operation(&mut |operation| {
+        .with_entered_observation(|operation| {
             calls += 1;
             assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 1);
             assert!(operation.wait_slice_for_observation().is_ok());
@@ -710,7 +723,7 @@ fn fingerprint_loan_retains_live_slot_until_return_and_callback_unwind() {
     assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 0);
 
     let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = controller.with_fingerprint_operation(&mut |_| {
+        let _ = controller.with_entered_observation(|_| {
             assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 1);
             panic!("callback unwind control");
         });
@@ -720,12 +733,12 @@ fn fingerprint_loan_retains_live_slot_until_return_and_callback_unwind() {
 }
 
 #[test]
-fn fingerprint_loan_refuses_before_callback_and_keeps_original_terminal_cause() {
+fn entered_observation_refuses_before_exchange_and_keeps_original_terminal_cause() {
     let controller = controller();
     controller.canceled.store(true, Ordering::Release);
     let mut calls = 0;
     let error = controller
-        .with_fingerprint_operation(&mut |_| calls += 1)
+        .with_entered_observation(|_| calls += 1)
         .unwrap_err();
     assert!(matches!(
         error,
@@ -743,7 +756,7 @@ fn fingerprint_loan_refuses_before_callback_and_keeps_original_terminal_cause() 
         .capacity
         .store(MAX_OPERATIONS, Ordering::Release);
     assert!(matches!(
-        controller.with_fingerprint_operation(&mut |_| calls += 1),
+        controller.with_entered_observation(|_| calls += 1),
         Err(ObservationOperationError::Static {
             message: "RAM operation slots exhausted",
             ..
@@ -758,7 +771,7 @@ fn fingerprint_loan_refuses_before_callback_and_keeps_original_terminal_cause() 
 
     controller.state.lock().unwrap().budgets[5].poll_ns = 0;
     assert!(matches!(
-        controller.with_fingerprint_operation(&mut |_| calls += 1),
+        controller.with_entered_observation(|_| calls += 1),
         Err(ObservationOperationError::Static {
             kind: io::ErrorKind::TimedOut,
             ..
@@ -769,7 +782,7 @@ fn fingerprint_loan_refuses_before_callback_and_keeps_original_terminal_cause() 
 
     controller.state.lock().unwrap().budgets[5].poll_ns = 10_000_000;
     controller
-        .with_fingerprint_operation(&mut |operation| {
+        .with_entered_observation(|operation| {
             controller.canceled.store(true, Ordering::Release);
             assert!(matches!(
                 operation.wait_slice_for_observation(),
@@ -814,36 +827,36 @@ fn restore_page_exchange_forwards_the_live_loan_and_releases_source_custody() {
 
     impl SourceOperationFactory for AuditedLoan {
         fn begin(&self, _: SourceOperationClass) -> io::Result<Box<dyn SourceOperation>> {
-            panic!("borrowed restore must not enter the owned operation factory");
+            panic!("retained restore must not enter another operation factory");
         }
+    }
 
-        fn with_fingerprint_operation(
+    impl AuditedLoan {
+        fn with_entered_exchange<T>(
             &self,
-            exchange: &mut dyn FnMut(&dyn SourceOperation),
-        ) -> Result<(), ObservationOperationError> {
-            self.controller
-                .with_fingerprint_operation(&mut |operation| {
-                    self.callbacks.fetch_add(1, Ordering::AcqRel);
-                    exchange(operation);
-                    let source = self.source.lock().unwrap().upgrade().unwrap();
-                    // This is still inside the actual LiveOperation loan. The
-                    // page exchange must have returned the connection lock first.
-                    assert!(source.endpoint_descriptors().is_ok());
-                    assert_eq!(
-                        self.controller.operations.capacity.load(Ordering::Acquire),
-                        1
-                    );
-                    if self.mode == 2 {
-                        exchange(operation);
-                    }
-                    if self.mode == 3 {
-                        panic!("factory unwind after the production page exchange");
-                    }
-                })?;
-            if self.mode == 1 {
-                return Err(io::Error::from_raw_os_error(libc::EPIPE).into());
+            exchange: impl FnOnce(&dyn SourceOperation) -> Result<T, SourceFetchError>,
+        ) -> Result<T, SourceFetchError> {
+            // This is a controller component operation entered explicitly by
+            // the test, not a native Root or a replacement production lender.
+            let result = self.controller.with_entered_observation(|operation| {
+                self.callbacks.fetch_add(1, Ordering::AcqRel);
+                let result = exchange(operation);
+                let source = self.source.lock().unwrap().upgrade().unwrap();
+                assert!(source.endpoint_descriptors().is_ok());
+                assert_eq!(
+                    self.controller.operations.capacity.load(Ordering::Acquire),
+                    1
+                );
+                if self.mode == 3 {
+                    panic!("parent unwind after the retained page exchange");
+                }
+                result
+            })?;
+            match result {
+                Err(error) => Err(error),
+                Ok(_) if self.mode == 1 => Err(io::Error::from_raw_os_error(libc::EPIPE).into()),
+                Ok(value) => Ok(value),
             }
-            Ok(())
         }
     }
 
@@ -854,7 +867,6 @@ fn restore_page_exchange_forwards_the_live_loan_and_releases_source_custody() {
         (0, true, false),
         (1, true, false),
         (1, false, false),
-        (2, false, false),
         (3, false, false),
         (0, false, true),
     ] {
@@ -935,7 +947,9 @@ fn restore_page_exchange_forwards_the_live_loan_and_releases_source_custody() {
         };
         let mut output = [0xa5; super::super::PAGE_BYTES];
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            source.fetch_with_borrowed_hasher(0, 0, &mut output, None)
+            factory.with_entered_exchange(|operation| {
+                source.fetch_with_retained_operation(0, 0, operation, &mut output, None)
+            })
         }));
         if mode == 3 {
             assert!(outcome.is_err());
@@ -965,14 +979,6 @@ fn restore_page_exchange_forwards_the_live_loan_and_releases_source_custody() {
                 assert!(
                     matches!(result, Err(SourceFetchError::Io(error)) if error.raw_os_error() == Some(libc::EPIPE))
                 );
-            } else if mode == 2 {
-                assert!(matches!(
-                    result,
-                    Err(SourceFetchError::Diagnostic(SourceDiagnostic::Operation {
-                        message: "fingerprint operation exchange repeated",
-                        ..
-                    }))
-                ));
             } else {
                 assert!(matches!(result, Ok((7, actual)) if actual == digest));
                 assert_eq!(&output[..7], b"content");

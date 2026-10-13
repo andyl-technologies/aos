@@ -193,18 +193,6 @@ pub(crate) trait SourceOperationFactory: Send + Sync {
     /// # Errors
     /// Refuses expired/canceled authority, unbounded infrastructure, or capacity.
     fn begin(&self, class: SourceOperationClass) -> io::Result<Box<dyn SourceOperation>>;
-
-    /// Lends one stack-owned fingerprint operation to a synchronous exchange.
-    ///
-    /// The exchange is called exactly once after admission and cannot retain the
-    /// operation reference. The operation closes before this method returns.
-    ///
-    /// # Errors
-    /// Refuses canceled, expired, unavailable or exhausted operation authority.
-    fn with_fingerprint_operation(
-        &self,
-        exchange: &mut dyn FnMut(&dyn SourceOperation),
-    ) -> Result<(), ObservationOperationError>;
 }
 
 /// Keeps logical validation typed until the caller selects its error boundary.
@@ -372,52 +360,19 @@ impl From<ObservationOperationError> for SourceFetchError {
     }
 }
 
-/// Enforces one exchange and keeps its first cause through factory disposition.
+/// Borrows the running native Root Original without entering a local clock.
 ///
-/// A nonconforming factory cannot perform a second exchange. Successful private
-/// scratch is discarded by the native caller if the factory later refuses.
+/// Absence or refusal leaves the exchange untouched. Held checkpoint and PageIn
+/// callers pass their already retained operation directly to the source instead.
+///
+/// # Errors
+/// Refuses a missing native Original or preserves the exchange's original error.
 pub(super) fn with_observation_operation<T>(
-    factory: &dyn SourceOperationFactory,
     exchange: impl FnOnce(&dyn SourceOperation) -> Result<T, SourceFetchError>,
 ) -> Result<T, SourceFetchError> {
-    let mut exchange = Some(exchange);
-    if let Some(result) = crate::ram_fingerprint::with_native_original_read(|operation| {
-        let exchange = exchange.take().ok_or_else(|| {
-            SourceFetchError::from(ObservationOperationError::Static {
-                kind: io::ErrorKind::Other,
-                message: "native Original exchange repeated",
-            })
-        })?;
-        exchange(operation)
-    }) {
-        return result;
-    }
-    let mut result = None;
-    let disposition = factory.with_fingerprint_operation(&mut |operation| {
-        let Some(exchange) = exchange.take() else {
-            if !matches!(result, Some(Err(_))) {
-                result = Some(Err(ObservationOperationError::Static {
-                    kind: io::ErrorKind::Other,
-                    message: "fingerprint operation exchange repeated",
-                }
-                .into()));
-            }
-            return;
-        };
-        result = Some(exchange(operation));
-    });
-    match result {
-        Some(Err(error)) => Err(error),
-        Some(Ok(value)) => disposition.map(|()| value).map_err(Into::into),
-        None => match disposition {
-            Err(error) => Err(error.into()),
-            Ok(()) => Err(ObservationOperationError::Static {
-                kind: io::ErrorKind::Other,
-                message: "fingerprint operation exchange absent",
-            }
-            .into()),
-        },
-    }
+    crate::ram_fingerprint::with_native_original_read(exchange).ok_or_else(|| {
+        SourceFetchError::unavailable("RAM observation lacks an active native Original")
+    })?
 }
 
 /// Owns one independently namespaced immutable source connection.
@@ -1869,77 +1824,20 @@ mod tests {
         assert!(reader.reader.diagnostic.is_none());
     }
 
-    struct LoanFixture {
-        calls: usize,
-        fails_after: bool,
-    }
-
-    impl SourceOperationFactory for LoanFixture {
-        fn begin(&self, _: SourceOperationClass) -> io::Result<Box<dyn SourceOperation>> {
-            panic!("borrowed factory invoked the ordinary owned operation")
-        }
-
-        fn with_fingerprint_operation(
-            &self,
-            exchange: &mut dyn FnMut(&dyn SourceOperation),
-        ) -> Result<(), ObservationOperationError> {
-            let operation = PollAllowance(Duration::from_millis(10));
-            for _ in 0..self.calls {
-                exchange(&operation);
-            }
-            if self.fails_after {
-                Err(ObservationOperationError::Static {
-                    kind: io::ErrorKind::Other,
-                    message: "factory disposition refused",
-                })
-            } else {
-                Ok(())
-            }
-        }
-    }
-
     #[test]
-    fn observation_adapter_refuses_absent_repeat_and_post_callback_failure() {
-        for (calls, fails_after, expected) in [
-            (0, false, "fingerprint operation exchange absent"),
-            (1, true, "factory disposition refused"),
-            (2, false, "fingerprint operation exchange repeated"),
-        ] {
-            let mut effects = 0;
-            let result = with_observation_operation(&LoanFixture { calls, fails_after }, |_| {
-                effects += 1;
-                Ok(12_u32)
-            });
-            assert_eq!(effects, usize::from(calls != 0));
-            assert!(
-                matches!(result, Err(SourceFetchError::Diagnostic(SourceDiagnostic::Operation { message, .. })) if message == expected)
-            );
-        }
-        assert!(matches!(
-            with_observation_operation(
-                &LoanFixture {
-                    calls: 1,
-                    fails_after: false
-                },
-                |_| Ok(17)
-            ),
+    fn ordinary_observation_without_native_original_refuses_before_exchange() {
+        let mut effects = 0;
+        let result = with_observation_operation(|_| {
+            effects += 1;
             Ok(17)
-        ));
-    }
+        });
 
-    #[test]
-    fn observation_adapter_keeps_first_exchange_error_over_factory_and_repeat() {
-        for (calls, fails_after) in [(1, true), (2, false), (2, true)] {
-            let mut effects = 0;
-            let result: Result<(), _> =
-                with_observation_operation(&LoanFixture { calls, fails_after }, |_| {
-                    effects += 1;
-                    Err(io::Error::from_raw_os_error(libc::EIO).into())
-                });
-            assert_eq!(effects, 1);
-            assert!(
-                matches!(result, Err(SourceFetchError::Io(error)) if error.raw_os_error() == Some(libc::EIO))
-            );
-        }
+        assert_eq!(effects, 0);
+        assert!(matches!(
+            result,
+            Err(SourceFetchError::Diagnostic(SourceDiagnostic::Unavailable(
+                "RAM observation lacks an active native Original"
+            )))
+        ));
     }
 }

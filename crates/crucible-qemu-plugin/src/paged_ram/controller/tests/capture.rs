@@ -8,13 +8,6 @@ impl SourceOperationFactory for NoGuestWork {
     fn begin(&self, _: SourceOperationClass) -> io::Result<Box<dyn SourceOperation>> {
         panic!("policy hold must not execute guest work")
     }
-
-    fn with_fingerprint_operation(
-        &self,
-        _: &mut dyn FnMut(&dyn SourceOperation),
-    ) -> Result<(), ObservationOperationError> {
-        panic!("policy hold must not start a page observation")
-    }
 }
 
 pub(in crate::paged_ram::controller) fn capture_controller()
@@ -79,7 +72,7 @@ fn admitted_operation_settles_but_no_new_page_or_observer_token_is_born() {
     assert!(controller.begin(SourceOperationClass::PageIn).is_err());
     assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 1);
     let mut observed = false;
-    let refusal = controller.with_fingerprint_operation(&mut |_| observed = true);
+    let refusal = controller.with_entered_observation(|_| observed = true);
     assert!(refusal.is_err());
     assert!(!observed);
     assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 1);
@@ -216,7 +209,7 @@ fn refused_birth_during_hold_does_not_taint_existing_disposition() {
     assert!(controller.begin(SourceOperationClass::PageIn).is_err());
     assert!(
         controller
-            .with_fingerprint_operation(&mut |_| panic!("must refuse"))
+            .with_entered_observation(|_| panic!("must refuse"))
             .is_err()
     );
 
@@ -227,7 +220,7 @@ fn refused_birth_during_hold_does_not_taint_existing_disposition() {
 #[test]
 fn unfinished_borrowed_observation_is_not_disposed_by_stack_return() {
     let (controller, _, _) = capture_controller();
-    controller.with_fingerprint_operation(&mut |_| {}).unwrap();
+    controller.with_entered_observation(|_| {}).unwrap();
     controller.prepare_checkpoint_policy(24).unwrap();
 
     assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 0);
@@ -238,7 +231,7 @@ fn unfinished_borrowed_observation_is_not_disposed_by_stack_return() {
 fn actual_observation_completion_preserves_settlement_after_body_return() {
     let (controller, _, _) = capture_controller();
     controller
-        .with_fingerprint_operation(&mut |operation| {
+        .with_entered_observation(|operation| {
             operation.complete_observation().unwrap();
         })
         .unwrap();

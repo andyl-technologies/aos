@@ -179,13 +179,6 @@ fn pending_work_and_retained_failure_precede_success_evidence() {
 struct NoOperations;
 
 impl SourceOperationFactory for NoOperations {
-    fn with_fingerprint_operation(
-        &self,
-        _: &mut dyn FnMut(&dyn SourceOperation),
-    ) -> Result<(), crate::paged_ram::source::ObservationOperationError> {
-        panic!("a status snapshot cannot request guest observation authority")
-    }
-
     fn begin(&self, _: SourceOperationClass) -> io::Result<Box<dyn SourceOperation>> {
         panic!("a status snapshot cannot create or renew an operation")
     }

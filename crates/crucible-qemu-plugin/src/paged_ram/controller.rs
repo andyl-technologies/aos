@@ -1009,55 +1009,6 @@ impl SourceOperationFactory for LivePagerController {
             .map_err(ObservationOperationError::into_io)?;
         Ok(Box::new(operation))
     }
-
-    fn with_fingerprint_operation(
-        &self,
-        exchange: &mut dyn FnMut(&dyn SourceOperation),
-    ) -> Result<(), ObservationOperationError> {
-        {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| ObservationOperationError::Static {
-                    kind: io::ErrorKind::Other,
-                    message: "RAM observation admission poisoned",
-                })?;
-            if state.checkpoint_producer_held(&self.state, &self.operations) {
-                return Err(ObservationOperationError::Static {
-                    kind: io::ErrorKind::WouldBlock,
-                    message: "checkpoint retains ordinary observation admission",
-                });
-            }
-            self.operations
-                .capacity
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                    (count < MAX_OPERATIONS).then_some(count + 1)
-                })
-                .map_err(|_| ObservationOperationError::Static {
-                    kind: io::ErrorKind::Other,
-                    message: "RAM operation slots exhausted",
-                })?;
-            self.operations.start();
-        }
-        let started = OperationalStart::begin();
-        let operation = LiveOperation {
-            state: self.state.clone(),
-            canceled: self.canceled.clone(),
-            operations: self.operations.clone(),
-            class: 5,
-            started,
-            progress: Mutex::new(OperationProgress {
-                completed_units: 0,
-                last_completed: started,
-            }),
-            terminal: AtomicU8::new(0),
-            tracked: true,
-            admitted: AtomicBool::new(false),
-        };
-        operation.wait_slice_for_observation()?;
-        exchange(&operation);
-        Ok(())
-    }
 }
 
 impl LiveOperation {

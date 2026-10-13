@@ -112,7 +112,7 @@ impl RestorePageSource {
         output: &mut [u8; PAGE_BYTES],
         hasher: Option<&NativePageHasher>,
     ) -> Result<(u32, PageDigest), super::source::SourceFetchError> {
-        super::source::with_observation_operation(self.operations.as_ref(), |operation| {
+        super::source::with_observation_operation(|operation| {
             self.fetch_with_retained_operation(
                 region_ordinal,
                 page_index,
