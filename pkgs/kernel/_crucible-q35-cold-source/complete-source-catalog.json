@@ -122,8 +122,8 @@
     {
       "path": "arch/x86/include/asm/kvm_host.h",
       "identity": {
-        "sha256": "ec17d85d28cf0cf7f53a6a161e3e11761eaa2c78e8de2c1746b26d29d27652d3",
-        "bytes": 89056
+        "sha256": "5f1ee50bd2a7ad7661123500f0d62ab04cbaf5bd41a30bfe862da07bb6312bfe",
+        "bytes": 89771
       }
     },
     {
@@ -171,15 +171,15 @@
     {
       "path": "arch/x86/kvm/crucible-clock.c",
       "identity": {
-        "sha256": "108c5bbcef79ab6c3d178e99d7590503a183c87c5d696836c7e84e076da6e7ae",
-        "bytes": 32400
+        "sha256": "b574d1b6d7601a05ca4ea689a902e6e1bbffb09a26d2f277a47322a0471a6fcf",
+        "bytes": 32492
       }
     },
     {
       "path": "arch/x86/kvm/crucible-clock.h",
       "identity": {
-        "sha256": "9d3c1b2bdd006ce77708984b6e88d089b4a502e4726d1dc1b40d8384bbf23ee9",
-        "bytes": 3017
+        "sha256": "d12596dae9b86f11abd0c01b4d3de030f2a9d0cb09065c7188a3fa75a636661f",
+        "bytes": 3423
       }
     },
     {
@@ -337,17 +337,24 @@
       }
     },
     {
+      "path": "arch/x86/kvm/crucible-q35-pit-ps-adoption.inc.c",
+      "identity": {
+        "sha256": "a68ecb4d3022769375be98f621dccabef01b5bac556a75a05f4d617acab3047e",
+        "bytes": 5616
+      }
+    },
+    {
       "path": "arch/x86/kvm/crucible-q35-ps-clock.inc.c",
       "identity": {
-        "sha256": "a93850466e4e84c6553b5bae6e5e5da978357f69d182365ae07785f2d37a4eb0",
-        "bytes": 11879
+        "sha256": "3bbb6ac8d834131f555f8041933d62b4e23e0068401cca93fe112a0bc9a64ddf",
+        "bytes": 12135
       }
     },
     {
       "path": "arch/x86/kvm/crucible-q35-ps-native-cut.inc.c",
       "identity": {
-        "sha256": "f53c7259e1f745eaf8cf9149e54dc36b80fc861ef00074b49a0f364db002aa43",
-        "bytes": 5501
+        "sha256": "c053c5dbc06aa0a46c2af321416ad956e2bfbef6a21c4721d05fdf8ff89c322e",
+        "bytes": 9469
       }
     },
     {
@@ -381,8 +388,8 @@
     {
       "path": "arch/x86/kvm/i8254.c",
       "identity": {
-        "sha256": "180190c7c272086ff08f7146b3f93a6ac51fbd65e47550481ef5591d25cb2c8a",
-        "bytes": 26967
+        "sha256": "898cb788106fd5a89e26b068f8431495878678d7c8e64bd04b3a710f0dcadebb",
+        "bytes": 27013
       }
     },
     {
@@ -794,8 +801,8 @@
     {
       "path": "arch/x86/kvm/x86.c",
       "identity": {
-        "sha256": "afb6eb70ebf1a036ad3240a19d8c98320c53a5432c9c05e35c71f4c813377488",
-        "bytes": 427862
+        "sha256": "d4141b7cc32f4d1dc4e71cda5aec30da80f79f4464e7f04ab643f18c8b0f528d",
+        "bytes": 428002
       }
     },
     {
@@ -962,8 +969,8 @@
     {
       "path": "include/uapi/linux/kvm.h",
       "identity": {
-        "sha256": "b13fdcd16d4bc4eab109386a3818669535f5645c6dc8df8747dafb8a8133a976",
-        "bytes": 70659
+        "sha256": "3085e7a812321c76c90ad8f14ae6a97818ffc5c177f1a9c118ddef9f1239386f",
+        "bytes": 71447
       }
     },
     {
@@ -1030,6 +1037,13 @@
       }
     },
     {
+      "path": "virt/kvm/crucible-q35-ps-irq-input.inc.c",
+      "identity": {
+        "sha256": "63ceeec77b15eb630038f0009dbc7f5c0700068734b02dc8211d43e82d1415c5",
+        "bytes": 9901
+      }
+    },
+    {
       "path": "virt/kvm/crucible-response-bytes.c",
       "identity": {
         "sha256": "b4bee79df2bb1bdef16de1ad1bd12cb1d488c36fa3ede68a9205a1db4d81fae3",
@@ -1039,15 +1053,15 @@
     {
       "path": "virt/kvm/irqchip.c",
       "identity": {
-        "sha256": "811a8c07b05cdf48908bbcac6bd98f57dc91fd67c0ca2dca137aa0b34a410f62",
-        "bytes": 19359
+        "sha256": "a8a1327d910696f5d1e90545930f454010076525daac75a48e2a4e252f15fc1c",
+        "bytes": 19601
       }
     },
     {
       "path": "virt/kvm/kvm_main.c",
       "identity": {
-        "sha256": "63426d2c0f33ce362f0de74f62e011d8088fcf4cad7881b0773573abf90ec096",
-        "bytes": 189379
+        "sha256": "1ca759b4442fae520d6b7768211abb0d7d861e16a48bf931917251b0532005e2",
+        "bytes": 189423
       }
     },
     {

@@ -31,7 +31,7 @@ in
           cat > $out/report <<'REPORT'
           complete ordered native source chain: exact preimages and postimages
           patch application: zero fuzz and no offsets
-          cap43 availability and selected RUN: unsupported
+          cap43/45 availability and selected RUN: unsupported
           kernel compilation/link, device timers, native QEMU, nested guest,
           physical quantum stop, output publication and Ready: unqualified
           REPORT

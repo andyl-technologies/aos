@@ -8,6 +8,9 @@
 }: let
   fixtures = ./_crucible-q35-cold-source;
   sourcePatches = import (fixtures + "/patches.nix");
+  aosBuildSource = import (fixtures + "/build-source.nix") {inherit lib;};
+  companion = ''"$source/share/aos/linux-controller-corresponding-source"'';
+  collector = "${python3}/bin/python3 -I -B ${fixtures}/corresponding-source.py";
 in
   # This variant preserves the ordinary configuration, features and artifacts.
   # The native cold source does not confer active clock, RUN or Ready authority.
@@ -19,4 +22,18 @@ in
         "$PWD" ${patch}/bin/patch \
         ${lib.concatMapStringsSep " " (sourcePatch: lib.escapeShellArg "${sourcePatch}") sourcePatches}
     '';
+    sourceArtifact = {
+      prepare = ''
+        ${collector} prepare "$PWD" ${companion} ${aosBuildSource} ${linuxSource.src} ${fixtures}
+      '';
+      configured = ''
+        ${collector} configured "$PWD" ${companion}
+      '';
+      built = ''
+        ${collector} built "$PWD" ${companion}
+      '';
+      finish = ''
+        ${collector} finish ${companion} "$out" "$dev" "$vmlinux" "$source"
+      '';
+    };
   }

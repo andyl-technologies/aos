@@ -1,0 +1,148 @@
+--- a/arch/x86/include/asm/kvm_host.h
++++ b/arch/x86/include/asm/kvm_host.h
+@@ -1445,6 +1445,9 @@
+ 	struct kvm_crucible_q35_ps_clock last_request;
+ 	struct kvm_crucible_q35_ps_clock last_result;
+ 	struct task_struct *controller;
++	struct kvm_crucible_q35_device_effect *pit_birth;
++	struct kvm_pit *native_pit;
++	bool pit_birth_bound;
+ 	u64 current_ps;
+ 	u64 start_ps;
+ 	u64 end_ps;
+--- a/arch/x86/kvm/crucible-clock.h
++++ b/arch/x86/kvm/crucible-clock.h
+@@ -20,6 +20,7 @@
+ bool kvm_arch_crucible_q35_ps_native_cut_locked(struct kvm *kvm,
+ 	u64 *closed_workers, u64 *pending_mask);
+ bool kvm_arch_crucible_q35_ps_execution_ready_locked(struct kvm *kvm);
++int kvm_crucible_q35_ps_pit_bind_original_birth(struct kvm *kvm);
+ 
+ int kvm_crucible_clock_continuation_control(struct kvm *kvm, struct kvm_enable_cap *cap);
+ int kvm_crucible_initialization_control(struct kvm *kvm, struct kvm_enable_cap *cap);
+--- /dev/null
++++ b/arch/x86/kvm/crucible-q35-pit-ps-adoption.inc.c
+@@ -0,0 +1,113 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* A parked original PIT setter is a constructor birth, not an invented RUN.
++ * This binding preserves its exact native state and immutable effect. It arms
++ * no host timer and supplies no clock, IRQ, RUN or output-seal permission.
++ */
++
++#include <linux/kvm_crucible_ps_clock.h>
++
++static struct kvm_crucible_q35_device_effect *pit_ps_original_birth_locked(
++	struct kvm *kvm)
++{
++	struct kvm_crucible_q35_device_state *devices =
++		&kvm->arch.crucible_pic_board.q35_device;
++	struct kvm_crucible_q35_device_effect *birth = NULL;
++	u32 index;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	if (!devices->selected || devices->inflight || devices->uncertain ||
++	    !devices->effects || !devices->issued ||
++	    devices->issued > devices->maximum_effects ||
++	    devices->maximum_effects > KVM_CRUCIBLE_Q35_DEVICE_MAX_EFFECTS)
++		return NULL;
++	for (index = 0; index < devices->issued; index++) {
++		struct kvm_crucible_q35_device_effect *effect = &devices->effects[index];
++
++		if (!effect->known || effect->inflight || effect->uncertain)
++			return NULL;
++		if (effect->original.native_ioctl == KVM_SET_PIT2)
++			birth = effect;
++	}
++	if (!birth || birth->actor != kvm->arch.crucible_pic_board.constructor ||
++	    !birth->native_entered || birth->native_result || !birth->input ||
++	    !birth->native_buffer || birth->bytes != sizeof(struct kvm_pit_state2) ||
++	    memcmp(birth->input, birth->native_buffer, sizeof(struct kvm_pit_state2)))
++		return NULL;
++	return birth;
++}
++
++/* Caller retains the original full controller/configuration/resource cut.
++ * Trylock prevents an inverse wait on a native PIT access. No unexpected arm
++ * is canceled or discarded in order to make this constructor appear idle.
++ */
++int kvm_crucible_q35_ps_pit_bind_original_birth(struct kvm *kvm)
++{
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_crucible_ps_clock_state *ps = &clock->ps;
++	struct kvm_crucible_pic_board *board = &kvm->arch.crucible_pic_board;
++	struct kvm_pit *pit = kvm->arch.vpit;
++	struct kvm_crucible_q35_device_effect *birth;
++	struct kvm_crucible_pit_journal *journal;
++	const struct kvm_pit_state2 *input;
++	unsigned long flags;
++	u64 closed_workers, pending, interval;
++	bool disabled;
++	int result = -EOPNOTSUPP;
++
++	lockdep_assert_held(&clock->control_lock);
++	lockdep_assert_held(&kvm->crucible_configuration_lock);
++	lockdep_assert_held(&kvm->lock);
++	lockdep_assert_held(&kvm->slots_lock);
++	lockdep_assert_held(&kvm->irq_lock);
++	if (!pit || !mutex_trylock(&pit->pit_state.lock))
++		return -EBUSY;
++	journal = &pit->pit_state.crucible;
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	if (!ps->selected || ps->plan.version != 2 || ps->controller != current ||
++	    ps->phase != KVM_CRUCIBLE_PS_COLD || ps->pit_birth_bound ||
++	    board->constructor != current || board->pit != pit ||
++	    board->q35_configuration.enrollment_id != ps->plan.configuration_enrollment_id ||
++	    clock->enabled || clock->active || clock->version || clock->window_generation ||
++	    clock->run_owners || clock->timer_owners || kvm->crucible_effect_owners ||
++	    kvm->crucible_irq_input.enabled || kvm->crucible_irq_input.owners ||
++	    !kvm_arch_crucible_q35_ps_native_cut_locked(kvm, &closed_workers, &pending) ||
++	    pending || closed_workers != 15 ||
++	    !kvm_arch_crucible_q35_pit_bootstrap_quiescent_locked(kvm))
++		goto unlock;
++	birth = pit_ps_original_birth_locked(kvm);
++	if (!birth || journal->valid || journal->queued || journal->count ||
++	    journal->callback_active || journal->worker_active || journal->work_scheduled ||
++	    journal->access_active || journal->issued || journal->queue_issued ||
++	    journal->awaiting_ack || atomic_read(&pit->pit_state.pending))
++		goto unlock;
++	input = birth->input;
++	if (memcmp(pit->pit_state.channels, input->channels, sizeof(pit->pit_state.channels)) ||
++	    pit->pit_state.flags != input->flags)
++		goto unlock;
++	disabled = input->channels[0].mode == 255 ||
++		(input->flags & KVM_PIT_FLAGS_HPET_LEGACY);
++	if (disabled) {
++		if (journal->bootstrap_pending)
++			goto unlock;
++	} else {
++		interval = mul_u64_u32_div(input->channels[0].count, NSEC_PER_SEC, KVM_PIT_FREQ);
++		if (interval < min_timer_period_us * 1000ULL)
++			interval = min_timer_period_us * 1000ULL;
++		if (!interval || interval > KTIME_MAX || !journal->bootstrap_pending ||
++		    journal->bootstrap_effect != birth || !journal->bootstrap_periodic ||
++		    !pit->pit_state.is_periodic || pit->pit_state.period != interval ||
++		    ktime_to_ns(journal->bootstrap_logical) != interval)
++			goto unlock;
++	}
++
++	/* Only this process-private binding changes. Native channel bytes, period,
++	 * parked arm, work queue and immutable birth result remain untouched. */
++	ps->pit_birth = birth;
++	ps->native_pit = pit;
++	ps->pit_birth_bound = true;
++	result = 0;
++unlock:
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	mutex_unlock(&pit->pit_state.lock);
++	return result;
++}
+--- a/arch/x86/kvm/i8254.c
++++ b/arch/x86/kvm/i8254.c
+@@ -79,6 +79,7 @@
+ 
+ #include "crucible-pit-ancestry.inc.c"
+ #include "crucible-q35-pit-bootstrap-arm.inc.c"
++#include "crucible-q35-pit-ps-adoption.inc.c"
+ 
+ /* The frozen source lane admits guest PIT effects only from the actual
+  * original RUN. A host ioctl, IRQ context or same-process foreign task cannot

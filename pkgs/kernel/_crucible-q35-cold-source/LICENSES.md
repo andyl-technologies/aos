@@ -44,3 +44,12 @@ The cumulative Q35/CPU/counter/PS bridge adds these private GPL kernel roles:
 | `virt/kvm/crucible-q35-memory-effects.inc.c` | `GPL-2.0-only` |
 
 Every existing notice is retained, including complete PIT/PIC MIT notices and IOAPIC LGPL scope. Native tasks, callbacks and objects remain kernel-private. Cap43 availability and selected RUN remain unsupported; no whole-clock, physical output seal or Ready follows from this source closure.
+
+Typed PS IRQ and native timer closure add these private GPL roles:
+
+| Source role | SPDX notice |
+| --- | --- |
+| `arch/x86/kvm/crucible-q35-pit-ps-adoption.inc.c` | `GPL-2.0-only` |
+| `virt/kvm/crucible-q35-ps-irq-input.inc.c` | `GPL-2.0-only` |
+
+Cap43/45 availability and selected RUN remain unsupported. These original source journals do not issue active clock, physical output or Ready authority.

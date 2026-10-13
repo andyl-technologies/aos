@@ -1,0 +1,24 @@
+--- a/virt/kvm/crucible-q35-ps-irq-input.inc.c
++++ b/virt/kvm/crucible-q35-ps-irq-input.inc.c
+@@ -157,6 +157,21 @@
+ 		irq->installed = true;
+ 		output = input;
+ 		output.flags = KVM_CRUCIBLE_Q35_PS_IRQ_KNOWN;
++		/* The PIT helper releases the gate while preserving native locks.
++		 * A notifier may still taint its original cut in that interval. Retain
++		 * this attempted installation and contain; never renew its binding. */
++		if (!ps->pit_birth_bound || ps->phase != KVM_CRUCIBLE_PS_COLD ||
++		    clock->active || clock->run_owners || clock->timer_owners ||
++		    kvm->crucible_effect_owners || kvm->crucible_irq_input.owners ||
++		    kvm->crucible_irq_input.tainted || kvm->crucible_memory_tainted ||
++		    !kvm_arch_crucible_q35_ps_native_cut_locked(kvm, &closed, &pending) ||
++		    closed != 15 || pending) {
++			output.flags |= KVM_CRUCIBLE_Q35_PS_IRQ_UNCERTAIN;
++			output.native_result = -EIO;
++			irq->uncertain = true;
++			ps->phase = KVM_CRUCIBLE_PS_UNKNOWN;
++			contain = true;
++		}
+ 		irq->installation_output = output;
+ 		goto unlock_gate;
+ 	}

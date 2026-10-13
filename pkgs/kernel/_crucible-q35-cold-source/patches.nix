@@ -14,4 +14,9 @@
   ../_crucible-pic-source/deferred-pit-component.patch
   ./reviewed-initialization-component.patch
   ./reviewed-q35-cold-ps-component.patch
+  ./ps-pit-original-birth.patch
+  ./ps-typed-boundary-irq.patch
+  ./ps-irq-install-currentness.patch
+  ./ps-native-timer-work-cut.patch
+  ./ps-typed-irq-readiness.patch
 ]

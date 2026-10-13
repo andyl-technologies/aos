@@ -1,0 +1,417 @@
+--- a/arch/x86/include/asm/kvm_host.h
++++ b/arch/x86/include/asm/kvm_host.h
+@@ -1440,6 +1440,27 @@
+ /* The original constructor owns one fixed plan and last-operation journal.
+  * Native closure never substitutes for the separate QEMU output cohort cut.
+  */
++struct kvm_crucible_ps_irq_row {
++	struct kvm_crucible_q35_ps_irq_input input;
++	struct kvm_crucible_q35_ps_irq_input output;
++	bool known;
++	bool queried;
++	bool claimed;
++};
++
++struct kvm_crucible_ps_irq_state {
++	struct kvm_crucible_q35_ps_irq_input installation;
++	struct kvm_crucible_q35_ps_irq_input installation_output;
++	bool installation_queried;
++	struct kvm_crucible_ps_irq_row *rows;
++	struct kvm_crucible_ps_irq_row *inflight;
++	struct kvm_irq_routing_table *routing;
++	struct task_struct *owner;
++	u32 issued;
++	bool installed;
++	bool uncertain;
++};
++
+ struct kvm_crucible_ps_clock_state {
+ 	struct kvm_crucible_q35_ps_clock plan;
+ 	struct kvm_crucible_q35_ps_clock last_request;
+@@ -1448,6 +1469,8 @@
+ 	struct kvm_crucible_q35_device_effect *pit_birth;
+ 	struct kvm_pit *native_pit;
+ 	bool pit_birth_bound;
++	struct kvm_crucible_ps_irq_state irq;
++	bool execution_installed;
+ 	u64 current_ps;
+ 	u64 start_ps;
+ 	u64 end_ps;
+--- a/arch/x86/kvm/crucible-clock.c
++++ b/arch/x86/kvm/crucible-clock.c
+@@ -198,6 +198,8 @@
+ {
+ 	/* Destruction precedes vCPU/IRQ resources that the callback can visit. */
+ 	hrtimer_cancel(&kvm->arch.crucible_clock.ceiling_timer);
++	kfree(kvm->arch.crucible_clock.ps.irq.rows);
++	kvm->arch.crucible_clock.ps.irq.rows = NULL;
+ }
+ 
+ static int clock_control_locked(struct kvm *kvm, struct kvm_crucible_clock *request)
+--- a/arch/x86/kvm/crucible-clock.h
++++ b/arch/x86/kvm/crucible-clock.h
+@@ -21,6 +21,9 @@
+ 	u64 *closed_workers, u64 *pending_mask);
+ bool kvm_arch_crucible_q35_ps_execution_ready_locked(struct kvm *kvm);
+ int kvm_crucible_q35_ps_pit_bind_original_birth(struct kvm *kvm);
++int kvm_crucible_q35_ps_irq_control(struct kvm *kvm, struct kvm_enable_cap *cap);
++bool kvm_crucible_q35_ps_irq_claim_locked(struct kvm *kvm, u32 kind,
++	int source, u32 gsi, int level, bool line_status);
+ 
+ int kvm_crucible_clock_continuation_control(struct kvm *kvm, struct kvm_enable_cap *cap);
+ int kvm_crucible_initialization_control(struct kvm *kvm, struct kvm_enable_cap *cap);
+--- a/arch/x86/kvm/crucible-q35-ps-clock.inc.c
++++ b/arch/x86/kvm/crucible-q35-ps-clock.inc.c
+@@ -36,7 +36,7 @@
+ 	u64 end_ps;
+ 	u32 index;
+ 
+-	if (request->version != 1 || !request->configuration_enrollment_id ||
++	if ((request->version != 1 && request->version != 2) || !request->configuration_enrollment_id ||
+ 	    !request->maximum_controls ||
+ 	    request->maximum_controls > KVM_CRUCIBLE_Q35_PS_MAX_CONTROLS ||
+ 	    request->request_flags || !request->physical_slice_ns ||
+@@ -64,6 +64,7 @@
+ 	const struct kvm_crucible_q35_ps_clock *plan = &ps->plan;
+ 
+ 	return ps->selected && ps->controller == current &&
++		request->version == plan->version &&
+ 		request->configuration_enrollment_id == plan->configuration_enrollment_id &&
+ 		request->maximum_controls == plan->maximum_controls &&
+ 		request->quantum_ps == plan->quantum_ps && request->phase_ps == plan->phase_ps &&
+--- a/arch/x86/kvm/crucible-q35-ps-native-cut.inc.c
++++ b/arch/x86/kvm/crucible-q35-ps-native-cut.inc.c
+@@ -104,6 +104,8 @@
+ 	 * IRQ/clock issuer. Keep admission closed until a source-owned whole-board
+ 	 * installation actually establishes all these native fields. */
+ 	return kvm->arch.crucible_clock.ps.selected &&
++		(kvm->arch.crucible_clock.ps.plan.version == 1 ||
++		 kvm->arch.crucible_clock.ps.execution_installed) &&
+ 		kvm->arch.crucible_clock.enabled && kvm->crucible_controlled &&
+ 		kvm->crucible_continuation_roster_frozen && kvm->crucible_irq_input.enabled &&
+ 		!kvm->crucible_irq_input.inflight && !kvm->crucible_irq_input.tainted &&
+--- a/arch/x86/kvm/x86.c
++++ b/arch/x86/kvm/x86.c
+@@ -4880,6 +4880,7 @@
+ 	int r = 0;
+ 
+ 	switch (ext) {
++	case KVM_CAP_CRUCIBLE_Q35_PS_IRQ_INPUT_V2:
+ 	case KVM_CAP_CRUCIBLE_Q35_PS_WHOLE_CLOCK_V1:
+ 		/* Reserved whole PS clock edition is unsupported until fully installed. */
+ 		return 0;
+@@ -7113,6 +7114,8 @@
+ 	switch (cap->cap) {
+ 	case KVM_CAP_CRUCIBLE_PIC_DEVICE_BIRTH_V1:
+ 		return kvm_crucible_pic_device_birth_control(kvm, cap);
++	case KVM_CAP_CRUCIBLE_Q35_PS_IRQ_INPUT_V2:
++		return kvm_crucible_q35_ps_irq_control(kvm, cap);
+ 	case KVM_CAP_CRUCIBLE_Q35_PS_WHOLE_CLOCK_V1:
+ 		return kvm_crucible_q35_ps_clock_control(kvm, cap);
+ 	case KVM_CAP_CRUCIBLE_Q35_LOADED_COUNTER_V1:
+--- a/include/uapi/linux/kvm.h
++++ b/include/uapi/linux/kvm.h
+@@ -1025,6 +1025,7 @@
+ /* 0xa042 remains reserved for a separately versioned CPU output reader. */
+ #define KVM_CAP_CRUCIBLE_Q35_PS_WHOLE_CLOCK_V1 0xa043
+ #define KVM_CAP_CRUCIBLE_Q35_LOADED_COUNTER_V1 0xa044
++#define KVM_CAP_CRUCIBLE_Q35_PS_IRQ_INPUT_V2 0xa045
+ 
+ #define KVM_CRUCIBLE_Q35_COUNTER_APPLY 1
+ #define KVM_CRUCIBLE_Q35_COUNTER_QUERY 2
+@@ -1092,6 +1093,32 @@
+ 	__u64 flags;
+ 	__u64 controls_used;
+ 	__u64 reserved[4];
++};
++
++/* Separate typed PS boundary input. Public correlations do not establish the
++ * original kernel Task, route table, native callbacks or publication owner. */
++#define KVM_CRUCIBLE_Q35_PS_IRQ_INSTALL 1
++#define KVM_CRUCIBLE_Q35_PS_IRQ_SUBMIT 2
++#define KVM_CRUCIBLE_Q35_PS_IRQ_QUERY 3
++#define KVM_CRUCIBLE_Q35_PS_IRQ_MAX_INPUTS 256
++#define KVM_CRUCIBLE_Q35_PS_IRQ_KNOWN 1ULL
++#define KVM_CRUCIBLE_Q35_PS_IRQ_UNCERTAIN 2ULL
++
++struct kvm_crucible_q35_ps_irq_input {
++	__u32 version;
++	__u32 operation;
++	__u64 configuration_enrollment_id;
++	__u64 generation;
++	__u64 input_id;
++	__u64 position_ps;
++	__u32 maximum_inputs;
++	__u32 gsi;
++	__u32 level;
++	__u32 expected_phase;
++	__s64 native_result;
++	__u64 flags;
++	__u64 inputs_used;
++	__u64 reserved[6];
+ };
+ 
+ #define KVM_CRUCIBLE_Q35_CLOCK_OBSERVE 1
+--- /dev/null
++++ b/virt/kvm/crucible-q35-ps-irq-input.inc.c
+@@ -0,0 +1,226 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Source-owned boundary IRQ inputs have their own copied-byte journal. This
++ * installation neither opens RUN nor supplies a native output publication cut.
++ */
++
++static bool ps_irq_geometry_valid(const struct kvm_crucible_q35_ps_irq_input *input)
++{
++	u32 index;
++
++	if (input->version != 2 || !input->configuration_enrollment_id ||
++	    !input->maximum_inputs || input->maximum_inputs > KVM_CRUCIBLE_Q35_PS_IRQ_MAX_INPUTS ||
++	    input->operation < KVM_CRUCIBLE_Q35_PS_IRQ_INSTALL ||
++	    input->operation > KVM_CRUCIBLE_Q35_PS_IRQ_QUERY ||
++	    input->gsi >= 24 || input->level > 1 || input->native_result ||
++	    input->flags || input->inputs_used)
++		return false;
++	for (index = 0; index < ARRAY_SIZE(input->reserved); index++)
++		if (input->reserved[index])
++			return false;
++	return true;
++}
++
++static bool ps_irq_identity(const struct kvm_crucible_q35_ps_irq_input *query,
++	const struct kvm_crucible_q35_ps_irq_input *input)
++{
++	struct kvm_crucible_q35_ps_irq_input identity = *query;
++
++	identity.operation = input->operation;
++	return !memcmp(&identity, input, sizeof(identity));
++}
++
++bool kvm_crucible_q35_ps_irq_claim_locked(struct kvm *kvm, u32 kind,
++	int source, u32 gsi, int level, bool line_status)
++{
++	struct kvm_crucible_ps_clock_state *ps = &kvm->arch.crucible_clock.ps;
++	struct kvm_crucible_ps_irq_state *irq = &ps->irq;
++	struct kvm_crucible_ps_irq_row *row = irq->inflight;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	if (!irq->installed || irq->uncertain || irq->owner != current ||
++	    ps->controller != current || ps->plan.version != 2 || !row || row->known ||
++	    row->claimed || in_interrupt() || kind != KVM_CRUCIBLE_IRQ_SOURCE_LINE ||
++	    source != KVM_USERSPACE_IRQ_SOURCE_ID || line_status ||
++	    level < 0 || level > 1 || row->input.gsi != gsi || row->input.level != level ||
++	    irq->routing != rcu_dereference_protected(kvm->irq_routing, 1) ||
++	    (ps->phase != KVM_CRUCIBLE_PS_COLD && ps->phase != KVM_CRUCIBLE_PS_ACKNOWLEDGED) ||
++	    row->input.generation != kvm->arch.crucible_clock.window_generation ||
++	    row->input.position_ps != ps->current_ps)
++		return false;
++	row->claimed = true;
++	return true;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_q35_ps_irq_claim_locked);
++
++/* Every resource lock is acquired without waiting behind a native RUN. The
++ * exact retained route table stays published while irq_lock and the original
++ * configuration mutex exclude replacement. Input bytes are never recopied.
++ */
++int kvm_crucible_q35_ps_irq_control(struct kvm *kvm, struct kvm_enable_cap *cap)
++{
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_crucible_ps_clock_state *ps = &clock->ps;
++	struct kvm_crucible_ps_irq_state *irq = &ps->irq;
++	struct kvm_crucible_q35_ps_irq_input input, output;
++	struct kvm_crucible_ps_irq_row *allocation = NULL, *row = NULL;
++	struct kvm_kernel_irq_routing_entry routes[KVM_NR_IRQCHIPS];
++	struct kvm_vcpu *vcpu;
++	void __user *argument = u64_to_user_ptr(cap->args[0]);
++	unsigned long index, flags;
++	u64 closed, pending;
++	u32 locked = 0;
++	int result = -EBUSY, count, route, native_result;
++	bool contain = false;
++
++	BUILD_BUG_ON(sizeof(input) != 128);
++	if (cap->flags || !argument || cap->args[1] || cap->args[2] || cap->args[3])
++		return -EINVAL;
++	if (copy_from_user(&input, argument, sizeof(input)))
++		return -EFAULT;
++	if (!ps_irq_geometry_valid(&input))
++		return -EINVAL;
++	if (!mutex_trylock(&clock->control_lock))
++		return -EBUSY;
++	if (!mutex_trylock(&kvm->crucible_configuration_lock))
++		goto unlock_control;
++	if (!mutex_trylock(&kvm->lock))
++		goto unlock_configuration;
++	if (!mutex_trylock(&kvm->slots_lock))
++		goto unlock_vm;
++	if (!mutex_trylock(&kvm->irq_lock))
++		goto unlock_slots;
++	kvm_for_each_vcpu(index, vcpu, kvm) {
++		if (index != locked || index >= 4 || !mutex_trylock(&vcpu->mutex))
++			goto unlock_vcpus;
++		locked++;
++	}
++	if (input.operation == KVM_CRUCIBLE_Q35_PS_IRQ_INSTALL) {
++		/* Typed rows are reserved before any retained binding or IRQ effect.
++		 * The fixed maximum bounds all later original input/output storage. */
++		allocation = kcalloc(input.maximum_inputs, sizeof(*allocation), GFP_KERNEL_ACCOUNT);
++		if (!allocation) {
++			result = -ENOMEM;
++			goto unlock_vcpus;
++		}
++	}
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	result = -EOPNOTSUPP;
++	if (!ps->selected || ps->plan.version != 2 || ps->controller != current ||
++	    ps->plan.configuration_enrollment_id != input.configuration_enrollment_id ||
++	    irq->uncertain || kvm->crucible_irq_input.tainted || READ_ONCE(kvm->vm_dead))
++		goto unlock_gate;
++	if (input.operation == KVM_CRUCIBLE_Q35_PS_IRQ_QUERY) {
++		if (!irq->installed || input.maximum_inputs != irq->installation.maximum_inputs)
++			goto unlock_gate;
++		if (!input.input_id) {
++			if (irq->installation_queried || !ps_irq_identity(&input, &irq->installation))
++				goto unlock_gate;
++			irq->installation_queried = true;
++			output = irq->installation_output;
++		} else {
++			if (input.input_id > irq->issued)
++				goto unlock_gate;
++			row = &irq->rows[input.input_id - 1];
++			if (!row->known || row->queried || !ps_irq_identity(&input, &row->input))
++				goto unlock_gate;
++			row->queried = true;
++			output = row->output;
++		}
++		output.operation = input.operation;
++		result = 0;
++		goto unlock_gate;
++	}
++	if (clock->active || clock->run_owners || clock->timer_owners ||
++	    kvm->crucible_effect_owners || kvm->crucible_irq_input.owners ||
++	    kvm->crucible_irq_input.inflight || irq->inflight ||
++	    input.expected_phase != ps->phase || input.generation != clock->window_generation ||
++	    input.position_ps != ps->current_ps ||
++	    (ps->phase != KVM_CRUCIBLE_PS_COLD && ps->phase != KVM_CRUCIBLE_PS_ACKNOWLEDGED) ||
++	    !kvm_arch_crucible_q35_ps_native_cut_locked(kvm, &closed, &pending) ||
++	    closed != 15 || pending)
++		goto unlock_gate;
++	if (input.operation == KVM_CRUCIBLE_Q35_PS_IRQ_INSTALL) {
++		if (irq->installed || irq->rows || input.input_id || input.gsi || input.level ||
++		    ps->phase != KVM_CRUCIBLE_PS_COLD || input.generation || ps->pit_birth_bound)
++			goto unlock_gate;
++		raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++		result = kvm_crucible_q35_ps_pit_bind_original_birth(kvm);
++		raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++		if (result)
++			goto unlock_gate;
++		irq->installation = input;
++		irq->rows = allocation;
++		allocation = NULL;
++		irq->routing = kvm->arch.crucible_pic_board.routing;
++		irq->owner = current;
++		irq->installed = true;
++		output = input;
++		output.flags = KVM_CRUCIBLE_Q35_PS_IRQ_KNOWN;
++		irq->installation_output = output;
++		goto unlock_gate;
++	}
++	/* Whole installation remains unissued until the original parked QEMU
++	 * output join and physical-stop issuer exist. The cold binding alone
++	 * cannot authorize even a boundary input effect. */
++	if (!ps->execution_installed || !irq->installed || irq->owner != current ||
++	    input.maximum_inputs != irq->installation.maximum_inputs ||
++	    irq->routing != kvm->arch.crucible_pic_board.routing ||
++	    irq->routing != rcu_dereference_protected(kvm->irq_routing, 1) ||
++	    irq->issued >= irq->installation.maximum_inputs || input.input_id != irq->issued + 1)
++		goto unlock_gate;
++	/* Mapping bounds are guaranteed by the original24-GSI source publication.
++	 * No MSI/irqfd or unrelated asynchronous producer gains this input permit. */
++	count = kvm_irq_map_gsi(kvm, routes, input.gsi);
++	if (count <= 0 || count > KVM_NR_IRQCHIPS)
++		goto unlock_gate;
++	for (route = 0; route < count; route++)
++		if (routes[route].type != KVM_IRQ_ROUTING_IRQCHIP || !routes[route].set)
++			goto unlock_gate;
++	row = &irq->rows[irq->issued++];
++	row->input = input;
++	irq->inflight = row;
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++
++	native_result = kvm_set_irq(kvm, KVM_USERSPACE_IRQ_SOURCE_ID,
++		row->input.gsi, row->input.level, false);
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	output = row->input;
++	output.native_result = native_result;
++	output.inputs_used = irq->issued;
++	output.flags = KVM_CRUCIBLE_Q35_PS_IRQ_KNOWN;
++	if (!row->claimed || irq->inflight != row || kvm->crucible_irq_input.tainted ||
++	    kvm->crucible_memory_tainted) {
++		output.flags |= KVM_CRUCIBLE_Q35_PS_IRQ_UNCERTAIN;
++		irq->uncertain = true;
++		ps->phase = KVM_CRUCIBLE_PS_UNKNOWN;
++		contain = true;
++	}
++	row->output = output;
++	row->known = true;
++	irq->inflight = NULL;
++	result = 0;
++unlock_gate:
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++unlock_vcpus:
++	while (locked)
++		mutex_unlock(&kvm_get_vcpu(kvm, --locked)->mutex);
++	mutex_unlock(&kvm->irq_lock);
++unlock_slots:
++	mutex_unlock(&kvm->slots_lock);
++unlock_vm:
++	mutex_unlock(&kvm->lock);
++unlock_configuration:
++	mutex_unlock(&kvm->crucible_configuration_lock);
++unlock_control:
++	mutex_unlock(&clock->control_lock);
++	kfree(allocation);
++	if (contain)
++		kvm_vm_dead(kvm);
++	if (result)
++		return result;
++	/* Failed delivery leaves the exact native output and one-query allowance. */
++	return copy_to_user(argument, &output, sizeof(output)) ? -EFAULT : 0;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_q35_ps_irq_control);
+--- a/virt/kvm/irqchip.c
++++ b/virt/kvm/irqchip.c
+@@ -20,6 +20,11 @@
+ #include <linux/interrupt.h>
+ #include <linux/uaccess.h>
+ #include <trace/events/kvm.h>
++#ifdef CONFIG_X86
++#include "../../arch/x86/kvm/crucible-clock.h"
++#include <linux/kvm_crucible_ps_clock.h>
++#include "crucible-q35-ps-irq-input.inc.c"
++#endif
+ 
+ /* The original request is private kernel state; no task/route pointer crosses
+  * the public ABI. One exact source-owned callback consumes its admission. */
+@@ -38,7 +43,8 @@
+ 	int source, u32 gsi, int level, bool line_status)
+ {
+ #ifdef CONFIG_X86
+-	return kvm_arch_crucible_q35_device_irq_claim_locked(kvm, kind, source, gsi, level, line_status);
++	return kvm_arch_crucible_q35_device_irq_claim_locked(kvm, kind, source, gsi, level, line_status) ||
++		kvm_crucible_q35_ps_irq_claim_locked(kvm, kind, source, gsi, level, line_status);
+ #else
+ 	return false;
+ #endif
+--- a/virt/kvm/kvm_main.c
++++ b/virt/kvm/kvm_main.c
+@@ -5539,6 +5539,7 @@
+ 	case KVM_CAP_CRUCIBLE_PIC_MEMORY_INITIALIZATION_V1:
+ 		return kvm_crucible_pic_memory_control(kvm, cap);
+ #endif
++	case KVM_CAP_CRUCIBLE_Q35_PS_IRQ_INPUT_V2:
+ 	case KVM_CAP_CRUCIBLE_Q35_PS_WHOLE_CLOCK_V1:
+ 	case KVM_CAP_CRUCIBLE_Q35_LOADED_COUNTER_V1:
+ 	case KVM_CAP_CRUCIBLE_PIC_DEVICE_BIRTH_V1:

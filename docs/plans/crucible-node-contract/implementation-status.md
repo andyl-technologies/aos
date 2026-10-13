@@ -2855,6 +2855,26 @@ absent and explicitly refuses. Current native/plugin realization, a distinct
 source-bound RR operator, actual stopped-pair execution and readiness remain
 unfinished.
 
+## Same-build selected kernel corresponding source
+
+The selected Q35 kernel recipe now guards nineteen patch stages across 154
+native source roles and co-produces complete corresponding source in the same
+build. It retains the original patched tree before generated signing inputs,
+the complete AOS build/bootstrap recipes, actual configuration, generated
+interfaces and Kbuild commands, then binds the installed image, modules and
+ELF. Runtime, development and ELF outputs retain the source output. Ordinary
+kernel configuration and features remain unchanged.
+
+The optional source-output contract validates exactly four string phases before
+derivation construction. Publication requires exactly one matching installed
+configuration. Six representative collector controls pass, including changed
+source/configuration, missing commands and missing or duplicate configurations;
+the exact source guard and three corruption controls also pass. Independent
+review verifies source continuity, per-file licenses and both functional and
+formatting layers. Nix shape/equality controls, full Kbuild, installed output
+and nested guest qualification remain pending. Active clock, RUN and readiness
+remain unavailable.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
