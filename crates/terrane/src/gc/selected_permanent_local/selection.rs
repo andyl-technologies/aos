@@ -14,11 +14,17 @@ use terrane_core::gc::retirement::{
     RecordPointer,
 };
 
+/// Resolves permanent ownership records from the retained selected publication chain.
 pub(super) struct ResolvedOwner {
+    /// Names the backend control directory containing the retained immutable slots.
     pub(super) backend_control: PathBuf,
+    /// Retains the authorization bound to the selected permanent owner.
     pub(super) authorization: PermanentDeleteAuthorization,
+    /// Identifies the genesis slot bound to the active backend registration.
     pub(super) genesis: OwnershipSlot,
+    /// Identifies the slot that selected the permanent retirement authorization.
     pub(super) owner: OwnershipSlot,
+    /// Binds the selected operation key to the canonical authorization digest.
     pub(super) selected_owner: RecordPointer,
 }
 
@@ -35,6 +41,11 @@ fn physical<'read>(
         .ok_or_else(denied)
 }
 
+/// Resolves a publication slot and its bound transaction from retained physical reads.
+///
+/// # Errors
+/// Refuses missing retained slot or proposal bytes, invalid encodings, mismatched
+/// slot keys or transaction bindings, and revisions that differ from the request.
 pub(super) fn transaction(
     observed: &SelectedObservation<'_>,
     control: &Path,
