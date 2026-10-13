@@ -8,11 +8,11 @@
 use super::*;
 use crate::bucket::{FileBucketConfig, FileBucketPublicationConfig};
 use crate::domain::DomainNamespace;
-use crate::guard::{GuardConfig, StagedUpload};
+use crate::guard::{AuthoringNamespaceProfile, GuardConfig, StagedUpload, ViewSelection};
 use crate::ref_advance::{CommitRequest, CommitTiming, Coordinator};
 use crate::repository::Repository;
 use crate::store::native_publication_effects::collection::test_fs::{TestClock, TestFs};
-use crate::store::{ContentValidator, MetaUpload, NativeEffectClock};
+use crate::store::{Clock, ContentValidator, MetaUpload, NativeEffectClock, RefStore, Store};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -42,6 +42,15 @@ impl ContentValidator for Validator {
             IdentityKind::Commit => Commit::decode(upload.bytes())
                 .map(|_| ())
                 .map_err(|_| denied()),
+            IdentityKind::Attribute => terrane_core::derived::AttrRecord::decode(upload.bytes())
+                .map(|_| ())
+                .map_err(|_| denied()),
+            IdentityKind::Pack => crate::pack::PackReader::open(upload.bytes())
+                .map(|_| ())
+                .map_err(|_| denied()),
+            IdentityKind::Index => crate::pack::PackIndexSnapshot::decode(upload.bytes(), 1)
+                .map(|_| ())
+                .map_err(|_| denied()),
             _ => Err(denied()),
         }
     }
@@ -59,7 +68,7 @@ pub(crate) struct Fixture {
     /// Actual opened native layout and independently configured operator.
     pub(crate) config: FileBucketConfig,
     /// Production retained repository that publishes the signed source history.
-    pub(super) repository: NativeRepository,
+    pub(crate) repository: NativeRepository,
     /// Opaque registration obtained from the genuinely published original context.
     pub(crate) authority: OriginalAuthority,
     /// Exact selected first source record.
@@ -68,6 +77,8 @@ pub(crate) struct Fixture {
     pub(crate) clock: TestClock,
     /// Actual native executor with bounded test queue observation.
     pub(crate) fs: TestFs,
+    /// Semantic inputs independently chosen before the first protected Guard.
+    pub(crate) authoring: Option<AuthoringNamespaceProfile>,
 }
 
 fn key(hex: &str) -> [u8; 32] {
@@ -110,12 +121,78 @@ fn token() -> Vec<u8> {
     .encode()
 }
 
+/// Captures exact historical inputs from genuinely verified signed heads and parents.
+///
+/// These ordinary configuration rows grant no Original or publication authority.
+/// Missing strict selections fail rather than inheriting a candidate's profile.
+///
+/// # Panics
+/// Panics if signed history, independently selected inputs or their associations fail.
+pub(crate) async fn capture_view_selections<S: Store, C: Clock>(
+    old: &Guard<S, C>,
+    heads: &[terrane_core::identity::Digest],
+) -> Vec<ViewSelection> {
+    let mut pending = heads.to_vec();
+    let mut visited = std::collections::BTreeSet::new();
+    let mut selections = Vec::new();
+    while let Some(view) = pending.pop() {
+        if !visited.insert(view) {
+            continue;
+        }
+        let verified = old.verified_tree(view).await.unwrap();
+        let commit = verified.commit.commit();
+        let (selection, inputs) = old
+            .selected_view_context_for_tests(view, commit.tree)
+            .unwrap();
+        selections.push(
+            ViewSelection::new(view, commit.tree, selection, inputs.attribute_revision).unwrap(),
+        );
+        pending.extend(commit.parents.iter().copied());
+    }
+    selections
+}
+
+/// Constructs the same independently selected profile at initialization and reopening.
+///
+/// # Panics
+/// Panics if the fixture's explicit authoring profile is rejected.
+pub(crate) fn configured_guard<S, C>(
+    store: S,
+    clock: C,
+    keys: Vec<IssuerKey>,
+    config: GuardConfig,
+    authoring: Option<&AuthoringNamespaceProfile>,
+) -> Guard<S, C> {
+    match authoring {
+        Some(profile) => Guard::new_active(store, clock, keys, config)
+            .with_recorded_authoring(
+                profile.context().clone(),
+                profile.registries().attribute_revision,
+            )
+            .unwrap(),
+        None => Guard::new(store, clock, keys, config),
+    }
+}
+
 impl Fixture {
     /// Initializes protected storage and publishes a genuinely signed source.
     ///
     /// # Panics
     /// Panics when private native setup, original retention or signed publication fails.
     pub(crate) async fn new() -> Self {
+        Self::new_with_authoring(None).await
+    }
+
+    /// Initializes an indexed source with explicit semantics before any protected Guard.
+    ///
+    /// # Panics
+    /// Panics if the exact registered profile or genuine native initialization fails.
+    pub(crate) async fn new_indexed() -> Self {
+        let authoring = AuthoringNamespaceProfile::new(3, 3, &[], 2).unwrap();
+        Self::new_with_authoring(Some(authoring)).await
+    }
+
+    async fn new_with_authoring(authoring: Option<AuthoringNamespaceProfile>) -> Self {
         let fs = TestFs::default();
         let entropy = fs.random_bytes(16).await.unwrap();
         let suffix = entropy
@@ -147,7 +224,7 @@ impl Fixture {
         )
         .await
         .unwrap();
-        let guard = Guard::new(
+        let guard = configured_guard(
             bucket,
             clock.retain_native_clock().unwrap(),
             vec![IssuerKey {
@@ -167,6 +244,7 @@ impl Fixture {
                 chunk_profile: Box::new(ChunkProfile::cdc_1m([0; 32])),
                 policy_authority: None,
             },
+            authoring.as_ref(),
         );
         let coordinator = Coordinator::new(
             guard,
@@ -218,6 +296,7 @@ impl Fixture {
             head,
             clock,
             fs,
+            authoring,
         }
     }
 
@@ -307,6 +386,18 @@ impl Fixture {
     /// # Panics
     /// Panics when actual bucket opening or existing retained history verification fails.
     pub(super) async fn reopen_repository(&self) -> NativeRepository {
+        let selections = if self.authoring.is_some() {
+            let head = self
+                .guard()
+                .store()
+                .ref_get("refs/heads/_/main")
+                .await
+                .unwrap()
+                .unwrap();
+            capture_view_selections(self.guard(), &[head.commit]).await
+        } else {
+            Vec::new()
+        };
         let clock = self.clock.retain_native_clock().unwrap();
         let bucket = FileBucket::open(
             self.config.clone(),
@@ -316,7 +407,7 @@ impl Fixture {
         )
         .await
         .unwrap();
-        let guard = Guard::new(
+        let guard = configured_guard(
             bucket,
             clock,
             vec![IssuerKey {
@@ -326,7 +417,13 @@ impl Fixture {
                 retirement: None,
             }],
             self.guard().config().clone(),
+            self.authoring.as_ref(),
         );
+        let guard = if self.authoring.is_some() {
+            guard.with_view_selections(selections).unwrap()
+        } else {
+            guard
+        };
         let coordinator = Coordinator::new(
             guard,
             CommitTiming::new(

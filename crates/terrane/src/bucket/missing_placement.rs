@@ -389,3 +389,6 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         Ok(())
     }
 }
+
+#[cfg(all(test, feature = "tokio", unix))]
+mod tests;

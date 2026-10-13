@@ -15,11 +15,20 @@ use crate::store::{
     ContentValidator, IdentityPrefix, LocalFs, RefCasOutcome, RefLogAppendOutcome, RefStore,
     StoreErrorKind, StoreFailure,
 };
-use std::{collections::BTreeMap, sync::Mutex};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Mutex,
+};
 use terrane_core::bucket::{BucketCapabilities, BucketKey, GenerationManifest};
+use terrane_core::derivation::Memo;
+use terrane_core::derived::AttrRecord;
 use terrane_core::gc::publication::CommittedSelection;
 use terrane_core::identity::{Identity, IdentityKind, TERRANE_V1};
 use terrane_core::refs::{RefClass, RefLogRecord, RefName, RefRecord};
+
+#[path = "observation/containers.rs"]
+mod containers;
+pub(crate) use containers::CollectionCatalog;
 
 /// Contains one exact inventoried commit-bearing ref and its selected history.
 pub(crate) struct RootRef {
@@ -140,6 +149,14 @@ pub(crate) struct MetadataStore<'operation, 'held, F, B, V> {
     selected: BTreeMap<String, Option<Vec<u8>>>,
     bodies: Mutex<BTreeMap<(u8, terrane_core::identity::Digest), Vec<u8>>>,
     session: &'operation crate::gc::runner::session::Session,
+    restore: Mutex<Option<RestoreCandidate>>,
+}
+
+#[derive(Clone)]
+struct RestoreCandidate {
+    inventory: terrane_core::bucket::PackInventoryEntry,
+    snapshot: PackIndexSnapshot,
+    check: crate::selected_bridge::OwnedFinalCheck,
 }
 
 impl<'operation, 'held, F, B, V> MetadataStore<'operation, 'held, F, B, V> {
@@ -156,6 +173,7 @@ impl<'operation, 'held, F, B, V> MetadataStore<'operation, 'held, F, B, V> {
             selected: observed.logical().clone(),
             bodies: Mutex::new(BTreeMap::new()),
             session,
+            restore: Mutex::new(None),
         }
     }
 
@@ -188,6 +206,92 @@ where
     B: Clock + BucketBinding,
     V: ContentValidator + BucketBinding,
 {
+    /// Checks the actual held adapter, selected projection and live Session binding.
+    ///
+    /// # Errors
+    /// Refuses another HeldBucket or Session reference, differing selected logical
+    /// bytes, changed namespace identity/role or unavailable native retention.
+    /// This checks observation binding only; current trust and asynchronous whole
+    /// selected revalidation remain the closed producer's separate obligations.
+    pub(crate) fn check_binding(
+        &self,
+        held: &HeldBucket<'_, F, B, V, true>,
+        observed: &SelectedObservation<'_>,
+        session: &crate::gc::runner::session::Session,
+    ) -> Result<(), StoreFailure> {
+        session.recheck()?;
+        if !std::ptr::eq(self.held, held)
+            || !std::ptr::eq(self.session, session)
+            || self.selected != *observed.logical()
+            || held.root() != observed.identity().root()
+            || held.physical_identity() != observed.identity().physical_identity()
+            || !observed.identity().writable()
+        {
+            return Err(unsupported());
+        }
+        held.retained_namespace()?;
+        observed.identity().retained_namespace()?;
+        Ok(())
+    }
+
+    /// Enables only the exact native candidate's nonquarantined metadata reads.
+    ///
+    /// # Errors
+    /// Refuses another backend, changed pair, incomplete catalog, missing active
+    /// exclusion, selected permanent burn or a second candidate configuration.
+    pub(crate) async fn enable_restore(
+        &self,
+        pair: &crate::store::native_publication_effects::NativeRestorePair,
+    ) -> Result<(), StoreFailure> {
+        pair.check_root(self.held.root())
+            .map_err(crate::selected_bridge::native_restore_failure)?;
+        let catalog = self.collection_catalog().await?;
+        let row = pair.inventory();
+        if !catalog.inventory()?.contains(row)
+            || !catalog
+                .exclusions()?
+                .iter()
+                .any(|exclusion| exclusion.pack_id == row.pack_id)
+            || catalog.burns()?.binary_search(&row.pack_id).is_ok()
+        {
+            return Err(unsupported());
+        }
+        let mut candidate = self.restore.lock().map_err(|_| corrupt())?;
+        if candidate.is_some() {
+            return Err(unsupported());
+        }
+        *candidate = Some(RestoreCandidate {
+            inventory: row.clone(),
+            snapshot: pair.snapshot().clone(),
+            check: crate::selected_bridge::OwnedFinalCheck::restore_continuity(pair),
+        });
+        Ok(())
+    }
+
+    fn restore_candidate(&self) -> Result<Option<RestoreCandidate>, StoreFailure> {
+        let candidate = self.restore.lock().map_err(|_| corrupt())?.clone();
+        if let Some(candidate) = &candidate {
+            candidate.check.recheck()?;
+        }
+        Ok(candidate)
+    }
+
+    fn permits_restore(
+        &self,
+        candidate: Option<&RestoreCandidate>,
+        row: &crate::pack::MergedEntry,
+    ) -> bool {
+        candidate.is_some_and(|candidate| {
+            row.pack().as_bytes() == &candidate.inventory.pack_id
+                && row.state() != RecordState::Quarantine
+                && candidate
+                    .snapshot
+                    .entries()
+                    .iter()
+                    .any(|entry| entry == row.entry())
+        })
+    }
+
     async fn catalog(&self) -> Result<crate::bucket::catalog::Catalog, StoreFailure> {
         let capability_bytes = self
             .selected
@@ -260,7 +364,96 @@ where
         })
     }
 
-    async fn metadata(&self, identity: &Identity) -> Result<Vec<u8>, StoreFailure> {
+    /// Inspects canonical side records without declaring every discovered row live.
+    ///
+    /// The walker independently verifies producer and occurrence compatibility.
+    /// Inspection retains physical preimages; a subsequent semantic `get` still
+    /// records the identity even when inspection already cached its body.
+    ///
+    /// # Errors
+    /// Rejects incomplete selected inventories, malformed records, unsafe reads,
+    /// poisoned sessions and conflicting content identities.
+    pub(crate) async fn attribute_records(
+        &self,
+    ) -> Result<Vec<(Identity, AttrRecord)>, StoreFailure> {
+        self.side_records(IdentityKind::Attribute, |identity, bytes| {
+            let record = AttrRecord::decode(bytes).map_err(|_| corrupt())?;
+            if record.identity().map_err(|_| corrupt())? != *identity {
+                return Err(corrupt());
+            }
+            Ok(record)
+        })
+        .await
+    }
+
+    /// Inspects advisory Memos without introducing their claimed roots or recipes.
+    ///
+    /// The walker retains a record only after independently reaching its output
+    /// Node. Inspection alone records physical preimages, never semantic marks.
+    ///
+    /// # Errors
+    /// Rejects incomplete selected inventories, malformed or misaddressed records,
+    /// unsafe physical reads and poisoned or expired observation sessions.
+    pub(crate) async fn memo_records(&self) -> Result<Vec<(Identity, Memo)>, StoreFailure> {
+        self.side_records(IdentityKind::Memo, |identity, bytes| {
+            let record = Memo::decode(bytes).map_err(|_| corrupt())?;
+            if record.identity().map_err(|_| corrupt())?
+                != identity.terrane_v1_digest().map_err(|_| corrupt())?
+            {
+                return Err(corrupt());
+            }
+            Ok(record)
+        })
+        .await
+    }
+
+    /// Checks each selected association before reading the next physical body.
+    ///
+    /// Keeping decoding within the loop preserves the first refusal and final
+    /// Session check of the existing Attribute observation.
+    async fn side_records<R>(
+        &self,
+        kind: IdentityKind,
+        decode: impl Fn(&Identity, &[u8]) -> Result<R, StoreFailure>,
+    ) -> Result<Vec<(Identity, R)>, StoreFailure> {
+        self.session.recheck()?;
+        let catalog = self.catalog().await?;
+        if catalog.inventory.is_none() || catalog.exclusions.is_none() || catalog.burns.is_none() {
+            return Err(unsupported());
+        }
+
+        let candidate = self.restore_candidate()?;
+        let identities = catalog
+            .shards
+            .iter()
+            .flat_map(|shard| shard.entries())
+            .filter(|row| {
+                row.entry().kind().identity_kind() == kind
+                    && ((row.state() == RecordState::Live
+                        && !self
+                            .held
+                            .bucket()
+                            .physically_excluded(&catalog, row.pack().as_bytes()))
+                        || self.permits_restore(candidate.as_ref(), row))
+            })
+            .map(|row| *row.entry().hash())
+            .collect::<BTreeSet<_>>();
+        let mut records = Vec::with_capacity(identities.len());
+        for hash in identities {
+            let identity = TERRANE_V1.from_digest(kind, &hash).map_err(|_| corrupt())?;
+            let bytes = self.metadata(&identity, false).await?;
+            let record = decode(&identity, &bytes)?;
+            records.push((identity, record));
+        }
+        self.session.recheck()?;
+        Ok(records)
+    }
+
+    async fn metadata(
+        &self,
+        identity: &Identity,
+        retain_identity: bool,
+    ) -> Result<Vec<u8>, StoreFailure> {
         self.session.recheck()?;
         if matches!(
             identity.kind(),
@@ -279,6 +472,12 @@ where
             .get(&cache_key)
             .cloned()
         {
+            if retain_identity {
+                self.identities
+                    .lock()
+                    .map_err(|_| corrupt())?
+                    .push(identity.clone());
+            }
             return Ok(bytes);
         }
         let bucket = self.held.bucket();
@@ -286,7 +485,8 @@ where
         if catalog.inventory.is_none() || catalog.exclusions.is_none() || catalog.burns.is_none() {
             return Err(unsupported());
         }
-        let location = catalog
+        let candidate = self.restore_candidate()?;
+        let selected_row = catalog
             .shards
             .iter()
             .find(|shard| shard.shard() == hash[0])
@@ -295,14 +495,99 @@ where
                     .entries()
                     .iter()
                     .find(|row| row.entry().hash() == &hash)
-            })
-            .filter(|row| {
-                row.state() == RecordState::Live
-                    && row.entry().kind().identity_kind() == identity.kind()
-                    && !bucket.physically_excluded(&catalog, row.pack().as_bytes())
-            })
-            .ok_or_else(|| StoreFailure::new(StoreErrorKind::Absent(identity.clone())))?;
-        let id = location.pack();
+            });
+        // Sticky identity quarantine blocks every maintenance placement. A fresh
+        // selected Live row is preserved even when a recorded physical loss
+        // requires candidate-only metadata for current-history verification.
+        if selected_row.is_some_and(|row| row.state() == RecordState::Quarantine) {
+            return Err(StoreFailure::new(StoreErrorKind::Absent(identity.clone())));
+        }
+        let candidate_entry = candidate.as_ref().and_then(|candidate| {
+            candidate
+                .snapshot
+                .entries()
+                .iter()
+                .find(|entry| {
+                    entry.hash() == &hash && entry.kind().identity_kind() == identity.kind()
+                })
+                .map(|entry| {
+                    (
+                        crate::pack::PackId::from_random_bytes(candidate.inventory.pack_id),
+                        entry.clone(),
+                    )
+                })
+        });
+        let ordinary = selected_row.filter(|row| {
+            row.entry().kind().identity_kind() == identity.kind()
+                && ((row.state() == RecordState::Live
+                    && !bucket.physically_excluded(&catalog, row.pack().as_bytes()))
+                    || self.permits_restore(candidate.as_ref(), row))
+        });
+        let (id, location) = if let Some(row) = ordinary {
+            let mut location = (row.pack(), row.entry().clone());
+            if let Some(candidate_entry) = candidate_entry
+                && row.pack() != candidate_entry.0
+            {
+                let primary_index = bucket
+                    .read_optional_observed(
+                        &BucketKey::parse(&row.pack().index_key()).map_err(|_| corrupt())?,
+                    )
+                    .await?;
+                if let Some(bytes) = primary_index.bytes() {
+                    let inventory = catalog
+                        .inventory
+                        .as_ref()
+                        .and_then(|rows| {
+                            rows.iter()
+                                .find(|entry| entry.pack_id == *row.pack().as_bytes())
+                        })
+                        .ok_or_else(corrupt)?;
+                    if u64::try_from(bytes.len()).map_err(|_| corrupt())? != inventory.index_size {
+                        return Err(corrupt());
+                    }
+
+                    let identity = TERRANE_V1
+                        .from_digest(IdentityKind::Index, &inventory.index_hash)
+                        .map_err(|_| corrupt())?;
+                    TERRANE_V1.verify(&identity, bytes).map_err(|_| corrupt())?;
+
+                    let header = PackIndexSnapshot::decode(
+                        bytes,
+                        catalog.capabilities.generation.ok_or_else(corrupt)?,
+                    )
+                    .map_err(|_| corrupt())?;
+                    if header.header().id() != row.pack()
+                        || header.header().class() != PackClass::Meta
+                        || !header.entries().contains(row.entry())
+                    {
+                        return Err(corrupt());
+                    }
+
+                    let primary = bucket
+                        .read_optional_observed(
+                            &BucketKey::parse(&row.pack().pack_key()).map_err(|_| corrupt())?,
+                        )
+                        .await?;
+                    if primary.bytes().is_none() {
+                        location = candidate_entry;
+                    }
+                    self.reads
+                        .lock()
+                        .map_err(|_| corrupt())?
+                        .extend([primary_index, primary]);
+                } else {
+                    self.reads
+                        .lock()
+                        .map_err(|_| corrupt())?
+                        .push(primary_index);
+                    location = candidate_entry;
+                }
+            }
+            location
+        } else {
+            candidate_entry
+                .ok_or_else(|| StoreFailure::new(StoreErrorKind::Absent(identity.clone())))?
+        };
         let index = bucket
             .read_optional_observed(&BucketKey::parse(&id.index_key()).map_err(|_| corrupt())?)
             .await?;
@@ -346,19 +631,21 @@ where
         reader
             .check_index_object(index_bytes)
             .map_err(|_| corrupt())?;
-        if !reader.entries().contains(location.entry()) {
+        if !reader.entries().contains(&location) {
             return Err(corrupt());
         }
         let body = reader
-            .read(location.entry().kind(), &hash, &RawBodyDecoder)
+            .read(location.kind(), &hash, &RawBodyDecoder)
             .map_err(|_| corrupt())?;
         self.session.recheck()?;
         let mut reads = self.reads.lock().map_err(|_| corrupt())?;
         reads.extend([index, pack]);
-        self.identities
-            .lock()
-            .map_err(|_| corrupt())?
-            .push(identity.clone());
+        if retain_identity {
+            self.identities
+                .lock()
+                .map_err(|_| corrupt())?
+                .push(identity.clone());
+        }
         self.bodies
             .lock()
             .map_err(|_| corrupt())?
@@ -387,7 +674,7 @@ where
         if range.is_some() {
             return Err(unsupported());
         }
-        self.metadata(identity).await
+        self.metadata(identity, true).await
     }
 
     async fn has(&self, _: &[Identity]) -> Result<Vec<bool>, StoreFailure> {

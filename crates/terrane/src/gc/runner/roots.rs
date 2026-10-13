@@ -5,9 +5,10 @@ use crate::bucket::publication::collection_observation::RootRef;
 use crate::guard::{ConsumedResolver, Guard, HistoryObservation};
 use crate::store::{Clock, Store};
 use terrane_core::gc::{
-    GcRoot, GcRoots, GcState, ParentCutoff, Pending, Phase, ReflogRetention, RetentionPolicy,
-    RetentionTimes, RootReason, Windows,
+    GcError, GcRoot, GcRoots, GcState, ParentCutoff, Pending, Phase, ReflogRetention,
+    RetentionPolicy, RetentionTimes, RootReason, Windows,
 };
+use terrane_core::properties::{PropertyName, RootLayer, Value};
 use terrane_core::refs::{RefClass, RefRecord, Retention};
 
 /// Contains snapshot coordinates read from the actual collector session.
@@ -51,6 +52,11 @@ pub(crate) fn initial(roots: &GcRoots) -> GcState {
     }
 }
 
+/// Resolves explicit local retention under the completed view's own interpretation.
+///
+/// # Errors
+/// Preserves complete history, selected scope and property validation refusals;
+/// rejects absent canonical root occurrences or inconsistent typed retention.
 async fn policy<S: Store, C: Clock>(
     guard: &Guard<S, C>,
     consumed: &ConsumedResolver,
@@ -58,18 +64,57 @@ async fn policy<S: Store, C: Clock>(
     record: &RefRecord,
     windows: Windows,
 ) -> Result<(terrane_core::provenance::VerifiedCommit, RetentionPolicy), CollectionError> {
-    let verified = guard
-        .verified_tree_observed(record.commit, observation.tracked(consumed))
+    let checked = guard
+        .verified_collection_tree_observed(record.commit, observation.tracked(consumed))
         .await?;
+    let verified = checked.tree();
     let tree = verified
         .evidence
         .tree(verified.evidence.root, guard.config().min_chunk_size)?;
-    let policy = RetentionPolicy::resolve(
-        tree.props().unwrap_or_default(),
-        RetentionPolicy::default_for(windows),
-        record.policy.as_ref().and_then(|policy| policy.retention),
+    let properties = tree.props().unwrap_or_default();
+    let occurrences = guard.collection_occurrences(&checked)?;
+    let root = occurrences
+        .iter()
+        .find(|occurrence| occurrence.root() == verified.evidence.root && occurrence.path() == b"/")
+        .ok_or_else(super::denied)?;
+    let effective = root.interpretation().resolve(
+        &[RootLayer {
+            properties,
+            overrides: &[],
+        }],
+        guard.defaults_for(&verified.evidence),
     )?;
-    Ok((verified.commit, policy))
+
+    // The selected resolver validates every local property before projection.
+    // Its registry defaults must not shorten the collector's retention window;
+    // only explicit local values replace window-derived defaults.
+    let mut policy = RetentionPolicy::default_for(windows);
+    if properties
+        .iter()
+        .any(|property| property.name == PropertyName::Retain.as_str())
+    {
+        policy.mode = match effective.get(PropertyName::Retain) {
+            Some(Value::Text("gc")) => Retention::Gc,
+            Some(Value::Text("lease")) => Retention::Lease,
+            Some(Value::Text("forever")) => Retention::Forever,
+            Some(Value::Ttl(duration)) => Retention::Ttl(*duration),
+            _ => return Err(GcError::Schema.into()),
+        };
+    }
+    if properties
+        .iter()
+        .any(|property| property.name == PropertyName::ReflogRetain.as_str())
+    {
+        policy.reflog = match effective.get(PropertyName::ReflogRetain) {
+            Some(Value::Unsigned(duration)) => ReflogRetention::Duration(*duration),
+            Some(Value::Count(count)) => ReflogRetention::Count(*count),
+            _ => return Err(GcError::Schema.into()),
+        };
+    }
+    if let Some(mode) = record.policy.as_ref().and_then(|policy| policy.retention) {
+        policy.mode = mode;
+    }
+    Ok((verified.commit.clone(), policy))
 }
 
 /// Resolves the current roots and committed sequence retention with actual timestamps.

@@ -1,6 +1,6 @@
 //! Completes supported local source history before same-head lineage publication.
 //!
-//! The history owner alone promotes actual pending Legacy inputs to completion.
+//! The history owner alone promotes actual pending independently selected inputs to completion.
 //! This route then checks current Fork separately for every real occurrence. Its
 //! ordinary profile comparisons grant neither native publication nor cold reuse.
 
@@ -11,7 +11,6 @@ use terrane_core::gc::publication::evidence::{
 use terrane_core::provenance::VerifiedCommit;
 use terrane_core::refs::{Commit, RefRecord};
 
-use super::history::completion::InterpretationSelection;
 use super::{
     AuthorizedRef, ConsumedResolver, Guard, HistoryObservation, OriginalCommitContext, denied,
     invalid,
@@ -58,7 +57,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
     ///
     /// # Errors
     /// Preserves signed history/profile/Original and storage failures, including
-    /// unsupported indexed, Recorded or foreign completion. Denies current Fork,
+    /// unsupported relationships or foreign completion. Denies current Fork,
     /// path/domain restrictions, or a changed whole source record.
     pub(crate) async fn complete_fork_source_requalification<'operation>(
         &self,
@@ -140,9 +139,7 @@ impl<S, C> Guard<S, C> {
         &self,
     ) -> Result<Guard<(), ()>, StoreFailure> {
         self.completion_inputs()?;
-        let mut configured = Guard::new((), (), self.keys.clone(), self.config.clone());
-        configured.interpretation = self.interpretation;
-        Ok(configured)
+        Ok(self.configuration_adapter((), ()))
     }
 
     /// Checks the actual signed source's independently configured physical profile.
@@ -167,8 +164,8 @@ impl<S, C> Guard<S, C> {
     ///
     /// Prior full history supplies the exact signed view/root association. Current
     /// selection and every registry field come independently from Guard construction,
-    /// never the decoded tuple or a missing optional field. This bounded factory is
-    /// explicitly Legacy/attribute1; it cannot qualify active or Recorded inputs.
+    /// never the decoded tuple or a missing optional field. Each exact view/root
+    /// independently selects its installed or owning-completed interpretation.
     ///
     /// # Errors
     /// Refuses absent context and rejects differing modes, roots or full profiles.
@@ -187,17 +184,17 @@ impl<S, C> Guard<S, C> {
             .binary_search_by_key(&view.view, |context| context.view)
             .map_err(|_| invalid())?;
         let retained = contexts.get(index).ok_or_else(invalid)?;
-        let mode = match self.interpretation {
-            InterpretationSelection::Legacy => ViewInterpretationMode::Legacy,
-            InterpretationSelection::Active => {
-                return Err(StoreFailure::new(StoreErrorKind::Unsupported));
-            }
-        };
+        let inputs = self.selected_view_inputs(view.view, root, HistoryObservation::default())?;
         let current = ConsumedViewInterpretation {
             view: view.view,
             original_root: root,
-            mode,
-            registries: self.completion_inputs()?.registries,
+            mode: match inputs.selection {
+                terrane_core::properties::selected::Selection::Legacy => {
+                    ViewInterpretationMode::Legacy
+                }
+                _ => ViewInterpretationMode::Recorded,
+            },
+            registries: inputs.registries,
         };
         current
             .check_supported_interpretation()

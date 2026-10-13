@@ -3,6 +3,8 @@
 //! Setup uses ordinary signed Node/history admission. Calibration and complete
 //! source requalification finish before each independent measured fork interval.
 
+#[path = "publication/current_revision.rs"]
+mod current_revision;
 #[path = "fs.rs"]
 mod fs;
 #[path = "support.rs"]
@@ -25,6 +27,13 @@ async fn root_native_cold_fork_publishes_fresh_signed_namespace_without_nodes() 
     fixture.complete_source(ALL_VERBS).await?;
 
     fixture.assert_cold(SOURCE, TARGET).await?;
+
+    // A genuine cold producer must retain enough checked history for its own
+    // result to become a source. Each oracle calibrates before its independent
+    // zero-Node interval and checks the actual durable native publication.
+    fixture
+        .assert_cold(TARGET, "refs/heads/_/fork-of-fork")
+        .await?;
 
     Ok(())
 }
@@ -365,6 +374,144 @@ async fn root_native_cold_fork_refuses_changed_original_and_selected_controls() 
         // Physical damage is left as the real observed fault. No fixture repair
         // is passed off as the operation preserving or recreating authority.
     }
+    Ok(())
+}
+
+/// Names the independently observed source dependency whose incarnation changes.
+enum SourceIncarnation {
+    WholeRecord,
+    SelectedLog,
+}
+
+#[tokio::test]
+async fn root_native_cold_fork_refuses_source_record_incarnation_after_preparation() -> TestResult {
+    check_source_incarnation(SourceIncarnation::WholeRecord).await
+}
+
+#[tokio::test]
+async fn root_native_cold_fork_refuses_selected_log_incarnation_after_preparation() -> TestResult {
+    check_source_incarnation(SourceIncarnation::SelectedLog).await
+}
+
+/// Changes a real selected dependency only after genuine cold preparation.
+async fn check_source_incarnation(changed: SourceIncarnation) -> TestResult {
+    let fixture = Fixture::open().await?;
+    fixture.complete_source(ALL_VERBS).await?;
+    let before = Snapshot::capture(&fixture, SOURCE).await?;
+    fixture
+        .calibrate(Commit::decode(&before.commit)?.tree)
+        .await?;
+    let calibrated = Snapshot::capture(&fixture, SOURCE).await?;
+
+    let holder = crate::bucket::held::SingleHeld::acquire(fixture.bucket()).await?;
+    let held = holder.destination();
+    let observed = held.observe_publication().await?;
+    let history = held
+        .selected_source_history_records(&observed, SOURCE, &before.record)
+        .await?;
+    let source_key = terrane_core::bucket::BucketKey::ref_record(SOURCE)?;
+    let encoded = before.record.encode()?;
+    let source_transaction = observed
+        .physical_reads()
+        .iter()
+        .rev()
+        .find(|read| {
+            read.bytes()
+                .and_then(|bytes| {
+                    terrane_core::gc::publication::PublicationTransaction::decode(bytes).ok()
+                })
+                .is_some_and(|transaction| {
+                    transaction.changes.iter().any(|change| {
+                        change.key == source_key.as_str()
+                            && change.new.as_deref() == Some(encoded.as_slice())
+                    })
+                })
+        })
+        .cloned()
+        .ok_or("actual whole source record selection transaction")?;
+    let replaced = match changed {
+        SourceIncarnation::WholeRecord => source_transaction,
+        SourceIncarnation::SelectedLog => history
+            .first()
+            .cloned()
+            .ok_or("actual selected source log")?,
+    };
+    let retained = observed
+        .physical_reads()
+        .iter()
+        .chain(history.iter())
+        .chain(std::iter::once(&calibrated.guard_read))
+        .chain(calibrated.lineage_read.iter())
+        .filter(|read| read.bytes().is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+    observed.revalidate().await?;
+    drop(observed);
+    // The observation adapter also retains the actual namespace exclusion.
+    drop(held);
+    drop(holder);
+
+    // Original controls are independent postcondition observations, never inputs
+    // constructed by this fixture for source qualification or publication.
+    let mut originals = Vec::new();
+    for path in fixture.fs.read_dir(&fixture.original).await? {
+        if path.extension() != Some(std::ffi::OsStr::new("cbor")) {
+            continue;
+        }
+        originals.push((
+            fixture.fs.read_nofollow(&path).await?,
+            stamp(&fixture.fs.symlink_metadata(&path).await?),
+            path,
+        ));
+    }
+    fixture
+        .fs
+        .arm(fs::Hook::Replace(replaced.path().to_owned()));
+    let observer = fixture.bucket().observe_content_for_tests();
+
+    let error = rejected(
+        fixture
+            .repository
+            .fork(SOURCE, TARGET, fork_request()?)
+            .await,
+    );
+
+    assert!(fixture.fs.reached() && fixture.fs.staging_reached());
+    assert!(matches!(
+        store_failure(&error).kind(),
+        StoreErrorKind::Unavailable { .. }
+    ));
+    assert_no_nodes(&observer.snapshot());
+    assert_eq!(fixture.fs.successful_ref_ack(TARGET), 0);
+    assert!(fixture.bucket().ref_get(TARGET).await?.is_none());
+    let after = Snapshot::capture(&fixture, SOURCE).await?;
+    assert_eq!(after.record, before.record);
+    assert_eq!(after.commit, before.commit);
+    assert_eq!(after.state, calibrated.state);
+    assert_eq!(after.logical, calibrated.logical);
+
+    assert_eq!(
+        fixture.fs.read_nofollow(replaced.path()).await?.as_slice(),
+        replaced.bytes().ok_or("actual replaced body")?
+    );
+    use std::os::unix::fs::MetadataExt;
+    let previous = replaced.metadata().ok_or("actual replaced incarnation")?;
+    let current = fixture.fs.symlink_metadata(replaced.path()).await?;
+    assert_ne!(
+        (current.dev(), current.ino()),
+        (previous.dev(), previous.ino())
+    );
+    for read in retained
+        .iter()
+        .filter(|read| read.path() != replaced.path())
+    {
+        assert_read_unchanged(&fixture.fs, read).await?;
+    }
+    for (bytes, metadata, path) in originals {
+        assert_eq!(fixture.fs.read_nofollow(&path).await?, bytes);
+        assert_eq!(stamp(&fixture.fs.symlink_metadata(&path).await?), metadata);
+    }
+    assert_no_nodes(&observer.snapshot());
     Ok(())
 }
 

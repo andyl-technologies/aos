@@ -16,6 +16,27 @@ use std::sync::Arc;
 
 use super::StoreFailure;
 
+#[path = "native_effect/immutable_cohort.rs"]
+mod immutable_cohort;
+
+#[cfg(test)]
+#[path = "native_effect/check_timings.rs"]
+mod check_timings;
+
+#[cfg(all(test, unix))]
+#[path = "native_effect/check_timings_tests.rs"]
+mod check_timings_tests;
+
+#[path = "native_effect/parent_scratch.rs"]
+mod parent_scratch;
+
+#[cfg(all(test, unix))]
+#[path = "native_effect/parent_scratch_tests.rs"]
+mod parent_scratch_tests;
+
+#[path = "native_effect/projection.rs"]
+mod projection;
+
 #[cfg(all(test, target_os = "linux"))]
 #[path = "native_effect/body_read_eio_fixture.rs"]
 mod body_read_eio_fixture;
@@ -62,6 +83,7 @@ impl NativeExclusion {
     ///
     /// Genuine bindings duplicate only their private acquired guard; this helper
     /// does not validate actor authority or acquire a lock from an arbitrary file.
+    #[cfg(any(feature = "tokio", test))]
     pub(super) fn from_held_descriptor(file: File) -> Self {
         Self { file }
     }
@@ -172,21 +194,7 @@ fn parent_paths(path: &std::path::Path) -> io::Result<Vec<PathBuf>> {
 }
 
 fn check_parents(path: &std::path::Path, parents: &[ParentFence], owner: u32) -> io::Result<()> {
-    let paths = parent_paths(path)?;
-    if paths.len() != parents.len() {
-        return Err(io::Error::other("incomplete native parent fence"));
-    }
-    for (path, expected) in paths.iter().zip(parents) {
-        if path != &expected.path {
-            return Err(io::Error::other("misbound native parent fence"));
-        }
-        let actual = MetadataStamp::checked(&std::fs::symlink_metadata(path)?)?;
-        FencePolicy::ProtectedAncestor { owner }.validate(actual)?;
-        if !actual.same_incarnation(expected.stamp) {
-            return Err(io::Error::other("native parent incarnation changed"));
-        }
-    }
-    Ok(())
+    parent_scratch::check_parents(path, parents, owner, &mut PathBuf::new())
 }
 
 /// Records a physically checked name and, for coordination, its retained descriptor.
@@ -253,10 +261,24 @@ impl MetadataStamp {
 
 impl NamedFence {
     fn check(&self, exclusions: &[NativeExclusion]) -> io::Result<()> {
+        self.check_with_parent_scratch(exclusions, &mut PathBuf::new())
+    }
+
+    /// Reuses lexical path capacity while preserving every fresh physical check.
+    fn check_with_parent_scratch(
+        &self,
+        exclusions: &[NativeExclusion],
+        parent_prefix: &mut PathBuf,
+    ) -> io::Result<()> {
         let named = std::fs::symlink_metadata(&self.path)?;
         let actual = MetadataStamp::checked(&named)?;
         self.policy.validate(actual)?;
-        check_parents(&self.path, &self.parents, self.policy.configured_owner())?;
+        parent_scratch::check_parents(
+            &self.path,
+            &self.parents,
+            self.policy.configured_owner(),
+            parent_prefix,
+        )?;
         if !actual.same_incarnation(self.stamp) {
             return Err(io::Error::other("current physical fence changed"));
         }
@@ -305,17 +327,55 @@ impl ExactRead {
         created.check()
     }
 
-    #[cfg(unix)]
     fn check(&self) -> io::Result<()> {
+        self.check_with_scratch(&mut Vec::new())
+    }
+
+    /// Reuses capacity while freshly reading and comparing this whole preimage.
+    #[cfg(unix)]
+    fn check_with_scratch(&self, bytes: &mut Vec<u8>) -> io::Result<()> {
+        self.check_with_parent_scratch(bytes, &mut PathBuf::new())
+    }
+
+    /// Reconstructs ancestry and reads the whole preimage using capacity only.
+    #[cfg(unix)]
+    fn check_with_parent_scratch(
+        &self,
+        bytes: &mut Vec<u8>,
+        parent_prefix: &mut PathBuf,
+    ) -> io::Result<()> {
+        self.check_leaf(bytes, parent_prefix, true)
+    }
+
+    /// Refreshes every physical predicate, optionally comparing the whole body.
+    #[cfg(unix)]
+    fn check_leaf(
+        &self,
+        bytes: &mut Vec<u8>,
+        parent_prefix: &mut PathBuf,
+        body: bool,
+    ) -> io::Result<()> {
         use std::io::Read;
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-        check_parents(&self.path, &self.parents, self.owner)?;
+        #[cfg(test)]
+        let _leaf_span = check_timings::span(check_timings::Group::Leaf);
+        #[cfg(test)]
+        let parents_span = check_timings::span(check_timings::Group::Parents);
+        parent_scratch::check_parents(&self.path, &self.parents, self.owner, parent_prefix)?;
+        #[cfg(test)]
+        drop(parents_span);
+        #[cfg(test)]
+        let mut open_span = Some(check_timings::span(check_timings::Group::Open));
         let actual = match std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(&self.path)
         {
             Ok(file) => {
+                #[cfg(test)]
+                drop(open_span.take());
+                #[cfg(test)]
+                let descriptor_span = check_timings::span(check_timings::Group::Descriptor);
                 let metadata = file.metadata()?;
                 let opened = MetadataStamp::checked(&metadata)?;
                 self.policy.validate(opened)?;
@@ -331,32 +391,61 @@ impl ExactRead {
                 {
                     return Err(io::Error::other("physical preimage changed"));
                 }
+                #[cfg(test)]
+                drop(descriptor_span);
                 let limit = self
                     .expected
                     .as_ref()
                     .map_or(1, |bytes| bytes.len().saturating_add(1));
-                let mut bytes = Vec::new();
-                (&file)
-                    .take(u64::try_from(limit).map_err(io::Error::other)?)
-                    .read_to_end(&mut bytes)?;
+                if body {
+                    #[cfg(test)]
+                    let _body_span = check_timings::span(check_timings::Group::BodyRead);
+                    #[cfg(test)]
+                    check_timings::expected_bytes(self.expected.as_ref().map_or(0, Vec::len));
+                    // Capacity is reusable; prior contents never establish evidence.
+                    bytes.clear();
+                    bytes.try_reserve_exact(limit)?;
+                    (&file)
+                        .take(u64::try_from(limit).map_err(io::Error::other)?)
+                        .read_to_end(bytes)?;
+                }
+                #[cfg(test)]
+                let named_span = check_timings::span(check_timings::Group::NamedAfter);
                 let named = MetadataStamp::checked(&std::fs::symlink_metadata(&self.path)?)?;
                 self.policy.validate(named)?;
                 if !named.same_incarnation(opened) {
                     return Err(io::Error::other("exact read pathname changed"));
                 }
-                Some(bytes)
+                #[cfg(test)]
+                drop(named_span);
+                Some(bytes.as_slice())
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => return Err(error),
         };
-        if actual != self.expected {
+        #[cfg(test)]
+        drop(open_span);
+        #[cfg(test)]
+        let _compare_span = check_timings::span(check_timings::Group::BodyCompare);
+        if actual.is_some() != self.expected.is_some()
+            || (body && actual != self.expected.as_deref())
+        {
             return Err(io::Error::other("whole preimage changed"));
         }
         Ok(())
     }
 
     #[cfg(not(unix))]
-    fn check(&self) -> io::Result<()> {
+    fn check_with_parent_scratch(
+        &self,
+        bytes: &mut Vec<u8>,
+        _parent_prefix: &mut PathBuf,
+    ) -> io::Result<()> {
+        self.check_with_scratch(bytes)
+    }
+
+    #[cfg(not(unix))]
+    fn check_with_scratch(&self, _bytes: &mut Vec<u8>) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "nofollow native receipts unavailable",
@@ -406,8 +495,17 @@ impl CreatedDirectory {
 
 /// Fixes one physical command from actual producer-owned paths.
 enum Plan {
+    InstallImmutableCohort(immutable_cohort::Request),
     // Only the native worker can populate the result channel or consume a seal
     // into a protected creation-journal commitment.
+    SealRetirementBarrier(Box<artifact_seal::retirement_barrier::BarrierRequest>),
+    SealRestorePublication(Box<artifact_seal::restore_publication::RestoreRequest>),
+    ObserveCurrentPair(Box<artifact_seal::current_pair::PairRequest>),
+    ObserveLocalTriple(Box<artifact_seal::local_ownership::TripleRequest>),
+    AcknowledgeLocalOwnership(Box<artifact_seal::local_ownership::ownership::OwnershipRequest>),
+    ObserveLocalDeletion(Box<artifact_seal::local_deletion::observation::ObservationRequest>),
+    AdvanceLocalDeletion(Box<artifact_seal::local_deletion::effects::StepRequest>),
+    ObserveRestorePair(Box<artifact_seal::restore_pair::PairRequest>),
     SealLeasePublication(Box<artifact_seal::lease_publication::LeaseRequest>),
     SealMutationPublication(Box<artifact_seal::mutation_publication::MutationRequest>),
     SealRawPublication(Box<artifact_seal::raw_publication::RawRequest>),
@@ -455,6 +553,7 @@ enum Plan {
     Remove {
         path: PathBuf,
     },
+    #[cfg(all(test, unix))]
     Permissions {
         path: PathBuf,
         permissions: std::fs::Permissions,
@@ -463,7 +562,7 @@ enum Plan {
 
 impl Plan {
     /// Borrows the actual primitive, refusing unexpected nested wrappers.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "tokio"))]
     fn primitive(&self) -> Option<&Self> {
         match self {
             Self::RetainedDirectories { operation, .. } => {
@@ -616,8 +715,11 @@ impl std::error::Error for NativeEffectFailure {
 }
 
 /// Identifies actual planned phases only for existing native fault wrappers.
-#[cfg(test)]
+#[cfg(all(test, feature = "tokio"))]
 pub(crate) enum EffectFaultProbe<'a> {
+    /// Identifies durability of the actual selected initial exclusion barrier.
+    SealRetirementBarrier(&'a std::path::Path),
+
     /// Identifies durability of a genuinely checked Guard/ref selected slot.
     #[cfg(feature = "tokio")]
     SealMutationPublication(&'a std::path::Path),
@@ -625,7 +727,6 @@ pub(crate) enum EffectFaultProbe<'a> {
     #[cfg(feature = "tokio")]
     SealRawPublication(&'a std::path::Path),
     /// Identifies durability of the exact selected collector lease slot.
-    #[cfg(feature = "tokio")]
     SealLeasePublication(&'a std::path::Path),
     /// Identifies durability of a new copied destination retirement plan.
     CopiedPreparation(&'a std::path::Path),
@@ -641,6 +742,14 @@ pub(crate) enum EffectFaultProbe<'a> {
     PermanentLocalProgress(&'a std::path::Path),
     /// Identifies durability of Pending before the first artifact mutation.
     SealPendingCreation(&'a std::path::Path),
+    /// Identifies descriptor-only qualification of one existing container pair.
+    ObserveCurrentPair(&'a std::path::Path),
+    /// Identifies actual descriptor qualification of a pack/index/Trash triple.
+    ObserveLocalTriple(&'a std::path::Path),
+    /// Identifies one native first-ownership boundary and its exact protected destination.
+    LocalFirstOwnership(&'a std::path::Path, u8),
+    /// Identifies an actual ordinary local deletion phase and protected destination.
+    LocalDeletion(&'a std::path::Path, terrane_core::gc::DeletePhase),
     /// Identifies same-descriptor verification and durability of one artifact.
     SealArtifact(&'a std::path::Path),
     /// Identifies the exact protected Pending-to-Committed destination.
@@ -667,8 +776,22 @@ pub(crate) enum EffectFault {
     BeforeFileSync,
     /// Fails after an actual targeted file descriptor has been synchronized.
     AfterFileSync,
+    /// Fails immediately before an actual owned unlink.
+    #[cfg(feature = "tokio")]
+    BeforeUnlink,
+    /// Fails after an actual owned unlink and before directory durability.
+    #[cfg(feature = "tokio")]
+    AfterUnlink,
+    /// Fails after protected Cancelled intent has actually synchronized.
+    #[cfg(feature = "tokio")]
+    AfterCancelledIntentSync,
+    /// Fails the first directory sync after one exact journal invalidation rename.
+    #[cfg(feature = "tokio")]
+    BeforeCancelledJournalDirectorySync(u8),
     /// Fails before the actual rename syscall.
     BeforeRename,
+    /// Fails before the actual no-replace rename to this exact destination.
+    BeforeRenameAt(PathBuf),
     /// Fails after a creation commitment has physically replaced Pending.
     AfterRename,
     /// Fails directory sync after any preceding physical mutation.
@@ -697,6 +820,7 @@ pub struct NativeFsEffect {
     names: Vec<NamedFence>,
     preimages: Vec<ExactRead>,
     final_check: Option<OwnedFinalCheck>,
+    pairs: Vec<Arc<artifact_seal::current_pair::PairHold>>,
     plan: Plan,
     #[cfg(test)]
     faults: Vec<EffectFault>,
@@ -715,10 +839,15 @@ struct TestGate {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TestGatePhase {
     BeforeChecks,
+    AfterCohortStaging,
     AfterDirectoryCreate,
     BeforeOpen,
     AfterOpen,
+    // Holds the actual bounded index read before its post-read metadata checks.
+    AfterCurrentPairIndexRead,
     AfterSourceSync,
+    BeforeRawSyncRefresh,
+    AfterRawSyncBody,
     AfterRename,
     BeforeDirectorySync,
     AfterDirectorySync,
@@ -735,22 +864,53 @@ fn wait_test_gate(gates: &mut Vec<TestGate>, phase: TestGatePhase) -> io::Result
 }
 
 impl NativeFsEffect {
+    /// Copies actual fixed cohort targets for explicit test callback observation.
+    ///
+    /// This test-only probe supplies no constructor, replacement command or
+    /// physical completion claim. Ordinary primitive probes remain distinct.
+    #[cfg(all(test, feature = "tokio"))]
+    pub(crate) fn immutable_catalog_cohort_targets(&self) -> Option<Vec<PathBuf>> {
+        let Plan::InstallImmutableCohort(request) = self.plan.primitive()? else {
+            return None;
+        };
+        Some(request.targets())
+    }
+
     /// Identifies the fixed effect phase for an existing test fault wrapper.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "tokio"))]
     pub(crate) fn fault_probe(&self) -> EffectFaultProbe<'_> {
         let Some(plan) = self.plan.primitive() else {
             return EffectFaultProbe::Other;
         };
         match plan {
+            Plan::SealRestorePublication(request) => {
+                EffectFaultProbe::SealRetirementBarrier(request.path())
+            }
+            Plan::SealRetirementBarrier(request) => {
+                EffectFaultProbe::SealRetirementBarrier(request.path())
+            }
+            Plan::ObserveRestorePair(request) => {
+                EffectFaultProbe::ObserveCurrentPair(request.path())
+            }
+            Plan::ObserveLocalTriple(request) => {
+                EffectFaultProbe::ObserveLocalTriple(request.path())
+            }
+            Plan::AcknowledgeLocalOwnership(request) => {
+                EffectFaultProbe::LocalFirstOwnership(request.path(), request.boundary())
+            }
+            Plan::AdvanceLocalDeletion(request) => {
+                EffectFaultProbe::LocalDeletion(request.path(), request.phase())
+            }
+            Plan::ObserveCurrentPair(request) => {
+                EffectFaultProbe::ObserveCurrentPair(request.path())
+            }
             #[cfg(feature = "tokio")]
             Plan::SealMutationPublication(request) => {
                 EffectFaultProbe::SealMutationPublication(request.path())
             }
-            #[cfg(feature = "tokio")]
             Plan::SealRawPublication(request) => {
                 EffectFaultProbe::SealRawPublication(request.path())
             }
-            #[cfg(feature = "tokio")]
             Plan::SealLeasePublication(request) => {
                 EffectFaultProbe::SealLeasePublication(request.path())
             }
@@ -789,7 +949,7 @@ impl NativeFsEffect {
     /// Existing fault wrappers inspect the already staged slot and its fixed
     /// transaction to distinguish branch publication from preparation. This
     /// accessor supplies no constructor or replacement for the fixed operation.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "tokio"))]
     pub(crate) fn rename_noreplace_source(&self) -> Option<&std::path::Path> {
         match self.plan.primitive()? {
             Plan::RenameNoReplace { from, .. } => Some(from),
@@ -900,21 +1060,18 @@ impl NativeFsEffect {
         if artifact_seal::owns(&self.plan) {
             return artifact_seal::execute(self);
         }
-        // Destructure first, and explicitly drop the actual guards only after
-        // the syscall and directory sync. They must not be dropped after a
-        // merely pre-dispatch check or retained only by an async parent.
         let Self {
             exclusions,
             names,
             preimages,
             final_check,
+            pairs,
             plan,
             #[cfg(test)]
             faults,
             #[cfg(all(test, feature = "tokio"))]
-            mut gates,
+            gates,
         } = self;
-
         let (plan, directories) = match plan {
             Plan::RetainedDirectories {
                 directories,
@@ -922,334 +1079,38 @@ impl NativeFsEffect {
             } => (*operation, Some(directories)),
             primitive => (primitive, None),
         };
-
-        let result = (|| {
-            if matches!(&plan, Plan::RetainedDirectories { .. }) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "nested native directory retention",
-                )
-                .into());
-            }
+        let mut worker = PrimitiveWorker {
+            exclusions,
+            names,
+            preimages,
+            final_check,
+            pairs,
+            #[cfg(test)]
+            faults,
             #[cfg(all(test, feature = "tokio"))]
-            wait_test_gate(&mut gates, TestGatePhase::BeforeChecks)?;
-            let durable_parent = |path: &std::path::Path| -> io::Result<()> {
-                #[cfg(test)]
-                let parent = path
-                    .parent()
-                    .ok_or_else(|| io::Error::other("missing sync parent"))?;
-                #[cfg(test)]
-                if faults.contains(&EffectFault::BeforeDirectorySync)
-                    || faults.contains(&EffectFault::BeforeDirectorySyncAt(parent.to_owned()))
-                {
-                    return Err(io::Error::other("injected retained directory sync failure"));
-                }
-                sync_parent(path)?;
-                #[cfg(test)]
-                if faults.contains(&EffectFault::AfterDirectorySyncAt(parent.to_owned())) {
-                    return Err(io::Error::other(
-                        "injected failure after retained directory sync",
-                    ));
-                }
-                Ok(())
-            };
-            let fresh_fence = || -> io::Result<()> {
-                if let Some(directories) = &directories {
-                    for directory in directories.iter() {
-                        directory.check()?;
-                    }
-                }
-                for name in &names {
-                    name.check(&exclusions)?;
-                }
-                Ok(())
-            };
-            let fresh_projection =
-                |created: Option<&CreatedDirectory>| -> Result<(), NativeEffectFailure> {
-                    fresh_fence()?;
-                    for preimage in &preimages {
-                        #[cfg(test)]
-                        if faults.contains(&EffectFault::UnavailableRead(preimage.path.clone())) {
-                            return Err(
-                                io::Error::other("injected retained exact read failure").into()
-                            );
-                        }
-                        match created.filter(|created| created.path == preimage.path) {
-                            Some(created) => preimage.check_created_directory(created)?,
-                            None => preimage.check()?,
-                        }
-                    }
-                    fresh_fence()?;
-                    if let Some(created) = created {
-                        created.check()?;
-                    }
-                    if let Some(final_check) = &final_check {
-                        final_check.recheck()?;
-                    }
-                    Ok(())
-                };
-            fresh_projection(None)?;
-
-            match plan {
-                Plan::SealMutationPublication(_)
-                | Plan::SealRawPublication(_)
-                | Plan::SealLeasePublication(_)
-                | Plan::SealCopiedPreparation(_)
-                | Plan::ObserveCopiedBarrier(_)
-                | Plan::SealCopiedOwnership(_)
-                | Plan::ObservePermanentLocal(_)
-                | Plan::ReclaimPermanentLocal(_)
-                | Plan::SealPermanentLocalProgress(_)
-                | Plan::SealPendingCreation(_)
-                | Plan::SealArtifact(_)
-                | Plan::CommitCreation(_) => {
-                    return Err(io::Error::other("incorrect artifact-seal dispatch").into());
-                }
-                Plan::ProbeRange {
-                    path,
-                    start,
-                    expected,
-                } => {
-                    range::verify(&path, start, &expected, &preimages)?;
-                    fresh_projection(None)?;
-                }
-                Plan::CreateDirectoryNew { path } => {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::DirBuilderExt;
-                        let mut builder = std::fs::DirBuilder::new();
-                        builder.mode(0o700).create(&path)?;
-                        let mut created = CreatedDirectory::capture(&path)?;
-                        #[cfg(all(test, feature = "tokio"))]
-                        wait_test_gate(&mut gates, TestGatePhase::AfterDirectoryCreate)?;
-                        created.check()?;
-                        #[cfg(all(test, feature = "tokio"))]
-                        wait_test_gate(&mut gates, TestGatePhase::BeforeOpen)?;
-                        let directory = open_native(&path, true).map_err(|error| {
-                            if error.kind() == io::ErrorKind::PermissionDenied {
-                                io::Error::new(
-                                    io::ErrorKind::Unsupported,
-                                    "created directory cannot be safely opened for mode repair",
-                                )
-                            } else {
-                                error
-                            }
-                        })?;
-                        #[cfg(all(test, feature = "tokio"))]
-                        wait_test_gate(&mut gates, TestGatePhase::AfterOpen)?;
-                        fresh_projection(Some(&created))?;
-                        created.check_descriptor(&directory)?;
-
-                        use std::os::unix::fs::PermissionsExt;
-                        directory.set_permissions(std::fs::Permissions::from_mode(0o700))?;
-                        let mut final_stamp = created.stamp;
-                        final_stamp.mode = (final_stamp.mode & !0o7777) | 0o700;
-                        created.stamp = final_stamp;
-                        created.check_descriptor(&directory)?;
-                        directory.sync_all()?;
-                        durable_parent(&path)?;
-                    }
-                    #[cfg(not(unix))]
-                    return Err(io::Error::new(
-                        io::ErrorKind::Unsupported,
-                        "private native directories unavailable",
-                    )
-                    .into());
-                }
-                Plan::WriteNew { path, bytes } => {
-                    use std::io::Write;
-                    #[cfg(test)]
-                    let mut file = if faults.contains(&EffectFault::ReplaceCreateOnce) {
-                        // Model an actual broken create-new primitive, including
-                        // its write and sync, rather than a fabricated success.
-                        let mut options = std::fs::OpenOptions::new();
-                        options.write(true).create(true).truncate(true);
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::OpenOptionsExt;
-                            options
-                                .mode(0o600)
-                                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-                        }
-                        options.open(&path)?
-                    } else {
-                        create_private_file(&path)?
-                    };
-                    #[cfg(not(test))]
-                    let mut file = create_private_file(&path)?;
-                    file.write_all(&bytes)?;
-                    #[cfg(test)]
-                    if faults.contains(&EffectFault::BeforeFileSync) {
-                        return Err(io::Error::other("injected retained file sync failure").into());
-                    }
-                    file.sync_all()?;
-                    #[cfg(test)]
-                    if faults.contains(&EffectFault::AfterFileSync) {
-                        return Err(
-                            io::Error::other("injected failure after retained file sync").into(),
-                        );
-                    }
-                    durable_parent(&path)?;
-                }
-                Plan::SyncFile { path } => {
-                    #[cfg(test)]
-                    if faults.contains(&EffectFault::BeforeFileSync) {
-                        return Err(io::Error::other("injected retained file sync failure").into());
-                    }
-                    let file = open_native(&path, false)?;
-                    fresh_projection(None)?;
-                    check_opened_name(&file, &path, false)?;
-                    file.sync_all()?;
-                    #[cfg(test)]
-                    if faults.contains(&EffectFault::AfterFileSync) {
-                        return Err(
-                            io::Error::other("injected failure after retained file sync").into(),
-                        );
-                    }
-                }
-                Plan::SyncDirectory { path } => {
-                    #[cfg(test)]
-                    if faults.contains(&EffectFault::BeforeDirectorySync)
-                        || faults.contains(&EffectFault::BeforeDirectorySyncAt(path.clone()))
-                    {
-                        return Err(
-                            io::Error::other("injected retained directory sync failure").into()
-                        );
-                    }
-                    let directory = open_native(&path, true)?;
-                    fresh_projection(None)?;
-                    check_opened_name(&directory, &path, true)?;
-                    directory.sync_all()?;
-                    #[cfg(test)]
-                    if faults.contains(&EffectFault::AfterDirectorySyncAt(path)) {
-                        return Err(io::Error::other(
-                            "injected failure after retained directory sync",
-                        )
-                        .into());
-                    }
-                }
-                Plan::RenameNoReplace { from, to } => {
-                    #[cfg(all(test, feature = "tokio"))]
-                    wait_test_gate(&mut gates, TestGatePhase::BeforeOpen)?;
-                    let source = open_native(&from, false)?;
-                    #[cfg(all(test, feature = "tokio"))]
-                    wait_test_gate(&mut gates, TestGatePhase::AfterOpen)?;
-                    fresh_projection(None)?;
-                    check_opened_name(&source, &from, false)?;
-                    #[cfg(test)]
-                    if faults.contains(&EffectFault::BeforeFileSync) {
-                        return Err(io::Error::other("injected retained file sync failure").into());
-                    }
-                    source.sync_all()?;
-                    #[cfg(test)]
-                    if faults.contains(&EffectFault::AfterFileSync) {
-                        return Err(
-                            io::Error::other("injected failure after retained file sync").into(),
-                        );
-                    }
-                    #[cfg(all(test, feature = "tokio"))]
-                    wait_test_gate(&mut gates, TestGatePhase::AfterSourceSync)?;
-                    fresh_projection(None)?;
-                    check_opened_name(&source, &from, false)?;
-                    #[cfg(test)]
-                    {
-                        if faults.contains(&EffectFault::BeforeRename) {
-                            return Err(io::Error::other("injected retained rename failure").into());
-                        }
-                        if faults.contains(&EffectFault::ReplaceCreateOnce) {
-                            std::fs::rename(&from, &to)?;
-                            durable_parent(&to)?;
-                            return Ok(());
-                        }
-                    }
-                    atomic_rename_no_replace(&from, &to)?;
-                    #[cfg(all(test, feature = "tokio"))]
-                    wait_test_gate(&mut gates, TestGatePhase::AfterRename)?;
-                    #[cfg(test)]
-                    if faults.contains(&EffectFault::AfterRename) {
-                        return Err(
-                            io::Error::other("injected failure after retained rename").into()
-                        );
-                    }
-                    // The one syscall leaves no second hardlink alias. There
-                    // is no post-rename authority gate which can skip cleanup.
-                    durable_parent(&to)?;
-                    if from.parent() != to.parent() {
-                        durable_parent(&from)?;
-                    }
-                }
-                Plan::Rename { from, to } => {
-                    #[cfg(all(test, feature = "tokio"))]
-                    wait_test_gate(&mut gates, TestGatePhase::BeforeOpen)?;
-                    let source = open_native(&from, false)?;
-                    #[cfg(all(test, feature = "tokio"))]
-                    wait_test_gate(&mut gates, TestGatePhase::AfterOpen)?;
-                    fresh_projection(None)?;
-                    check_opened_name(&source, &from, false)?;
-                    #[cfg(test)]
-                    if faults.contains(&EffectFault::BeforeFileSync) {
-                        return Err(io::Error::other("injected retained file sync failure").into());
-                    }
-                    source.sync_all()?;
-                    #[cfg(test)]
-                    if faults.contains(&EffectFault::AfterFileSync) {
-                        return Err(
-                            io::Error::other("injected failure after retained file sync").into(),
-                        );
-                    }
-                    #[cfg(all(test, feature = "tokio"))]
-                    wait_test_gate(&mut gates, TestGatePhase::AfterSourceSync)?;
-                    fresh_projection(None)?;
-                    check_opened_name(&source, &from, false)?;
-                    #[cfg(test)]
-                    if faults.contains(&EffectFault::BeforeRename) {
-                        return Err(io::Error::other("injected retained rename failure").into());
-                    }
-                    std::fs::rename(&from, &to)?;
-                    #[cfg(all(test, feature = "tokio"))]
-                    wait_test_gate(&mut gates, TestGatePhase::AfterRename)?;
-                    #[cfg(test)]
-                    if faults.contains(&EffectFault::AfterRename) {
-                        return Err(
-                            io::Error::other("injected failure after retained rename").into()
-                        );
-                    }
-                    durable_parent(&to)?;
-                    if from.parent() != to.parent() {
-                        durable_parent(&from)?;
-                    }
-                }
-                Plan::Remove { path } => {
-                    std::fs::remove_file(&path)?;
-                    durable_parent(&path)?;
-                }
-                Plan::Permissions { path, permissions } => {
-                    #[cfg(all(test, feature = "tokio"))]
-                    wait_test_gate(&mut gates, TestGatePhase::BeforeOpen)?;
-                    let file = open_native(&path, false)?;
-                    #[cfg(all(test, feature = "tokio"))]
-                    wait_test_gate(&mut gates, TestGatePhase::AfterOpen)?;
-                    fresh_projection(None)?;
-                    check_opened_name(&file, &path, false)?;
-                    file.set_permissions(permissions)?;
-                    file.sync_all()?;
-                }
-                Plan::RetainedDirectories { .. } => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "nested native directory retention",
-                    )
-                    .into());
-                }
+            gates,
+        };
+        let result = match plan {
+            Plan::InstallImmutableCohort(request) if directories.is_none() => {
+                immutable_cohort::execute(&mut worker, request)
             }
-            if let Some(directories) = &directories {
-                for directory in directories.iter() {
-                    directory.check()?;
-                }
-            }
-            Ok(())
-        })();
+            primitive => worker.execute(primitive, directories.as_deref()),
+        };
 
+        // The physical worker retains every actual hold through all commands,
+        // recapture, durability and final acknowledgment, even without a waiter.
+        let PrimitiveWorker {
+            exclusions,
+            pairs,
+            names: _names,
+            preimages: _preimages,
+            final_check: _final_check,
+            #[cfg(test)]
+                faults: _faults,
+            #[cfg(all(test, feature = "tokio"))]
+                gates: _gates,
+        } = worker;
+        drop(pairs);
         drop(directories);
         drop(exclusions);
         result
@@ -1268,6 +1129,421 @@ impl NativeFsEffect {
             .spawn_blocking(move || self.execute_inline())
             .await
             .map_err(io::Error::other)?
+    }
+}
+
+/// Owns one complete projection throughout a primitive or immutable cohort.
+struct PrimitiveWorker {
+    exclusions: Arc<[NativeExclusion]>,
+    names: Vec<NamedFence>,
+    preimages: Vec<ExactRead>,
+    final_check: Option<OwnedFinalCheck>,
+    pairs: Vec<Arc<artifact_seal::current_pair::PairHold>>,
+    #[cfg(test)]
+    faults: Vec<EffectFault>,
+    #[cfg(all(test, feature = "tokio"))]
+    gates: Vec<TestGate>,
+}
+
+impl PrimitiveWorker {
+    /// Runs the original primitive checks and durability under borrowed holds.
+    fn execute(
+        &mut self,
+        plan: Plan,
+        directories: Option<&[NativeOpenedDirectory]>,
+    ) -> Result<(), NativeEffectFailure> {
+        self.execute_scoped(plan, directories, None)
+    }
+
+    /// Applies only the closed Raw producer's unrelated-output body scope.
+    fn execute_scoped(
+        &mut self,
+        plan: Plan,
+        directories: Option<&[NativeOpenedDirectory]>,
+        scope: Option<&immutable_cohort::scope::Scope>,
+    ) -> Result<(), NativeEffectFailure> {
+        let Self {
+            exclusions,
+            names,
+            preimages,
+            final_check,
+            pairs,
+            #[cfg(test)]
+            faults,
+            #[cfg(all(test, feature = "tokio"))]
+            gates,
+        } = self;
+        if matches!(&plan, Plan::RetainedDirectories { .. }) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "nested native directory retention",
+            )
+            .into());
+        }
+        #[cfg(all(test, feature = "tokio"))]
+        wait_test_gate(gates, TestGatePhase::BeforeChecks)?;
+        let durable_parent = |path: &std::path::Path| -> io::Result<()> {
+            #[cfg(test)]
+            let parent = path
+                .parent()
+                .ok_or_else(|| io::Error::other("missing sync parent"))?;
+            #[cfg(test)]
+            if faults.contains(&EffectFault::BeforeDirectorySync)
+                || faults.contains(&EffectFault::BeforeDirectorySyncAt(parent.to_owned()))
+            {
+                return Err(io::Error::other("injected retained directory sync failure"));
+            }
+            sync_parent(path)?;
+            #[cfg(test)]
+            if faults.contains(&EffectFault::AfterDirectorySyncAt(parent.to_owned())) {
+                return Err(io::Error::other(
+                    "injected failure after retained directory sync",
+                ));
+            }
+            Ok(())
+        };
+        let projection = projection::Projection {
+            exclusions,
+            names,
+            preimages,
+            final_check: final_check.as_ref(),
+            pairs,
+            #[cfg(test)]
+            faults,
+        };
+        let fresh_projection = |created: Option<&CreatedDirectory>| {
+            projection.check_scoped(directories, created, scope)
+        };
+        fresh_projection(None)?;
+
+        match plan {
+            Plan::SealMutationPublication(_)
+            | Plan::SealRawPublication(_)
+            | Plan::SealRestorePublication(_)
+            | Plan::SealRetirementBarrier(_)
+            | Plan::ObserveCurrentPair(_)
+            | Plan::ObserveLocalTriple(_)
+            | Plan::AcknowledgeLocalOwnership(_)
+            | Plan::ObserveLocalDeletion(_)
+            | Plan::AdvanceLocalDeletion(_)
+            | Plan::ObserveRestorePair(_)
+            | Plan::SealLeasePublication(_)
+            | Plan::SealCopiedPreparation(_)
+            | Plan::ObserveCopiedBarrier(_)
+            | Plan::SealCopiedOwnership(_)
+            | Plan::ObservePermanentLocal(_)
+            | Plan::ReclaimPermanentLocal(_)
+            | Plan::SealPermanentLocalProgress(_)
+            | Plan::SealPendingCreation(_)
+            | Plan::SealArtifact(_)
+            | Plan::CommitCreation(_) => {
+                return Err(io::Error::other("incorrect artifact-seal dispatch").into());
+            }
+            Plan::ProbeRange {
+                path,
+                start,
+                expected,
+            } => {
+                range::verify(&path, start, &expected, preimages)?;
+                fresh_projection(None)?;
+            }
+            Plan::CreateDirectoryNew { path } => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::DirBuilderExt;
+                    let mut builder = std::fs::DirBuilder::new();
+                    builder.mode(0o700).create(&path)?;
+                    let mut created = CreatedDirectory::capture(&path)?;
+                    #[cfg(all(test, feature = "tokio"))]
+                    wait_test_gate(gates, TestGatePhase::AfterDirectoryCreate)?;
+                    created.check()?;
+                    #[cfg(all(test, feature = "tokio"))]
+                    wait_test_gate(gates, TestGatePhase::BeforeOpen)?;
+                    let directory = open_native(&path, true).map_err(|error| {
+                        if error.kind() == io::ErrorKind::PermissionDenied {
+                            io::Error::new(
+                                io::ErrorKind::Unsupported,
+                                "created directory cannot be safely opened for mode repair",
+                            )
+                        } else {
+                            error
+                        }
+                    })?;
+                    #[cfg(all(test, feature = "tokio"))]
+                    wait_test_gate(gates, TestGatePhase::AfterOpen)?;
+                    fresh_projection(Some(&created))?;
+                    created.check_descriptor(&directory)?;
+
+                    use std::os::unix::fs::PermissionsExt;
+                    directory.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+                    let mut final_stamp = created.stamp;
+                    final_stamp.mode = (final_stamp.mode & !0o7777) | 0o700;
+                    created.stamp = final_stamp;
+                    created.check_descriptor(&directory)?;
+                    #[cfg(test)]
+                    let syscall_span = check_timings::span(check_timings::Group::DirectorySync);
+                    directory.sync_all()?;
+                    #[cfg(test)]
+                    drop(syscall_span);
+                    durable_parent(&path)?;
+                }
+                #[cfg(not(unix))]
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "private native directories unavailable",
+                )
+                .into());
+            }
+            Plan::WriteNew { path, bytes } => {
+                use std::io::Write;
+                #[cfg(test)]
+                let mut file = if faults.contains(&EffectFault::ReplaceCreateOnce) {
+                    // Model an actual broken create-new primitive, including
+                    // its write and sync, rather than a fabricated success.
+                    let mut options = std::fs::OpenOptions::new();
+                    options.write(true).create(true).truncate(true);
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::OpenOptionsExt;
+                        options
+                            .mode(0o600)
+                            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+                    }
+                    options.open(&path)?
+                } else {
+                    create_private_file(&path)?
+                };
+                #[cfg(not(test))]
+                let mut file = create_private_file(&path)?;
+                #[cfg(test)]
+                let syscall_span = check_timings::span(check_timings::Group::Write);
+                file.write_all(&bytes)?;
+                #[cfg(test)]
+                drop(syscall_span);
+                #[cfg(test)]
+                if faults.contains(&EffectFault::BeforeFileSync) {
+                    return Err(io::Error::other("injected retained file sync failure").into());
+                }
+                #[cfg(test)]
+                let syscall_span = check_timings::span(check_timings::Group::FileSync);
+                file.sync_all()?;
+                #[cfg(test)]
+                drop(syscall_span);
+                #[cfg(test)]
+                if faults.contains(&EffectFault::AfterFileSync) {
+                    return Err(
+                        io::Error::other("injected failure after retained file sync").into(),
+                    );
+                }
+                durable_parent(&path)?;
+            }
+            Plan::SyncFile { path } => {
+                #[cfg(test)]
+                if faults.contains(&EffectFault::BeforeFileSync) {
+                    return Err(io::Error::other("injected retained file sync failure").into());
+                }
+                let file = open_native(&path, false)?;
+                fresh_projection(None)?;
+                check_opened_name(&file, &path, false)?;
+                #[cfg(test)]
+                let syscall_span = check_timings::span(check_timings::Group::FileSync);
+                file.sync_all()?;
+                #[cfg(test)]
+                drop(syscall_span);
+                #[cfg(test)]
+                if faults.contains(&EffectFault::AfterFileSync) {
+                    return Err(
+                        io::Error::other("injected failure after retained file sync").into(),
+                    );
+                }
+            }
+            Plan::SyncDirectory { path } => {
+                #[cfg(test)]
+                if faults.contains(&EffectFault::BeforeDirectorySync)
+                    || faults.contains(&EffectFault::BeforeDirectorySyncAt(path.clone()))
+                {
+                    return Err(io::Error::other("injected retained directory sync failure").into());
+                }
+                let directory = open_native(&path, true)?;
+                fresh_projection(None)?;
+                check_opened_name(&directory, &path, true)?;
+                #[cfg(test)]
+                let syscall_span = check_timings::span(check_timings::Group::DirectorySync);
+                directory.sync_all()?;
+                #[cfg(test)]
+                drop(syscall_span);
+                #[cfg(all(test, feature = "tokio"))]
+                wait_test_gate(gates, TestGatePhase::AfterDirectorySync)?;
+                #[cfg(test)]
+                if faults.contains(&EffectFault::AfterDirectorySyncAt(path)) {
+                    return Err(
+                        io::Error::other("injected failure after retained directory sync").into(),
+                    );
+                }
+            }
+            Plan::RenameNoReplace { from, to } => {
+                #[cfg(all(test, feature = "tokio"))]
+                wait_test_gate(gates, TestGatePhase::BeforeOpen)?;
+                let source = open_native(&from, false)?;
+                #[cfg(all(test, feature = "tokio"))]
+                wait_test_gate(gates, TestGatePhase::AfterOpen)?;
+                fresh_projection(None)?;
+                check_opened_name(&source, &from, false)?;
+                #[cfg(test)]
+                if faults.contains(&EffectFault::BeforeFileSync) {
+                    return Err(io::Error::other("injected retained file sync failure").into());
+                }
+                #[cfg(test)]
+                let syscall_span = check_timings::span(check_timings::Group::FileSync);
+                source.sync_all()?;
+                #[cfg(test)]
+                drop(syscall_span);
+                #[cfg(test)]
+                if faults.contains(&EffectFault::AfterFileSync) {
+                    return Err(
+                        io::Error::other("injected failure after retained file sync").into(),
+                    );
+                }
+                #[cfg(all(test, feature = "tokio"))]
+                wait_test_gate(gates, TestGatePhase::AfterSourceSync)?;
+                fresh_projection(None)?;
+                check_opened_name(&source, &from, false)?;
+                #[cfg(test)]
+                {
+                    if faults.contains(&EffectFault::BeforeRename)
+                        || faults.iter().any(|fault| {
+                            matches!(fault, EffectFault::BeforeRenameAt(target) if target == &to)
+                        })
+                    {
+                        return Err(io::Error::other("injected retained rename failure").into());
+                    }
+                    if faults.contains(&EffectFault::ReplaceCreateOnce) {
+                        #[cfg(test)]
+                        let syscall_span = check_timings::span(check_timings::Group::Rename);
+                        std::fs::rename(&from, &to)?;
+                        #[cfg(test)]
+                        drop(syscall_span);
+                        durable_parent(&to)?;
+                        return Ok(());
+                    }
+                }
+                #[cfg(test)]
+                let syscall_span = check_timings::span(check_timings::Group::RenameNoReplace);
+                atomic_rename_no_replace(&from, &to)?;
+                #[cfg(test)]
+                drop(syscall_span);
+                #[cfg(all(test, feature = "tokio"))]
+                wait_test_gate(gates, TestGatePhase::AfterRename)?;
+                #[cfg(test)]
+                if faults.contains(&EffectFault::AfterRename) {
+                    return Err(io::Error::other("injected failure after retained rename").into());
+                }
+                // The one syscall leaves no second hardlink alias. There
+                // is no post-rename authority gate which can skip cleanup.
+                durable_parent(&to)?;
+                if from.parent() != to.parent() {
+                    durable_parent(&from)?;
+                }
+            }
+            Plan::Rename { from, to } => {
+                #[cfg(all(test, feature = "tokio"))]
+                wait_test_gate(gates, TestGatePhase::BeforeOpen)?;
+                let source = open_native(&from, false)?;
+                #[cfg(all(test, feature = "tokio"))]
+                wait_test_gate(gates, TestGatePhase::AfterOpen)?;
+                fresh_projection(None)?;
+                check_opened_name(&source, &from, false)?;
+                #[cfg(test)]
+                if faults.contains(&EffectFault::BeforeFileSync) {
+                    return Err(io::Error::other("injected retained file sync failure").into());
+                }
+                #[cfg(test)]
+                let syscall_span = check_timings::span(check_timings::Group::FileSync);
+                source.sync_all()?;
+                #[cfg(test)]
+                drop(syscall_span);
+                #[cfg(test)]
+                if faults.contains(&EffectFault::AfterFileSync) {
+                    return Err(
+                        io::Error::other("injected failure after retained file sync").into(),
+                    );
+                }
+                #[cfg(all(test, feature = "tokio"))]
+                wait_test_gate(gates, TestGatePhase::AfterSourceSync)?;
+                fresh_projection(None)?;
+                check_opened_name(&source, &from, false)?;
+                #[cfg(test)]
+                if faults.contains(&EffectFault::BeforeRename) {
+                    return Err(io::Error::other("injected retained rename failure").into());
+                }
+                #[cfg(test)]
+                let syscall_span = check_timings::span(check_timings::Group::Rename);
+                std::fs::rename(&from, &to)?;
+                #[cfg(test)]
+                drop(syscall_span);
+                #[cfg(all(test, feature = "tokio"))]
+                wait_test_gate(gates, TestGatePhase::AfterRename)?;
+                #[cfg(test)]
+                if faults.contains(&EffectFault::AfterRename) {
+                    return Err(io::Error::other("injected failure after retained rename").into());
+                }
+                durable_parent(&to)?;
+                if from.parent() != to.parent() {
+                    durable_parent(&from)?;
+                }
+            }
+            Plan::Remove { path } => {
+                #[cfg(test)]
+                let syscall_span = check_timings::span(check_timings::Group::Remove);
+                std::fs::remove_file(&path)?;
+                #[cfg(test)]
+                drop(syscall_span);
+                durable_parent(&path)?;
+            }
+            #[cfg(all(test, unix))]
+            Plan::Permissions { path, permissions } => {
+                #[cfg(all(test, feature = "tokio"))]
+                wait_test_gate(gates, TestGatePhase::BeforeOpen)?;
+                let file = open_native(&path, false)?;
+                #[cfg(all(test, feature = "tokio"))]
+                wait_test_gate(gates, TestGatePhase::AfterOpen)?;
+                fresh_projection(None)?;
+                check_opened_name(&file, &path, false)?;
+                file.set_permissions(permissions)?;
+                #[cfg(test)]
+                let syscall_span = check_timings::span(check_timings::Group::FileSync);
+                file.sync_all()?;
+                #[cfg(test)]
+                drop(syscall_span);
+            }
+            Plan::InstallImmutableCohort(_) | Plan::RetainedDirectories { .. } => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "nested native directory retention",
+                )
+                .into());
+            }
+        }
+        if let Some(directories) = directories {
+            for directory in directories.iter() {
+                #[cfg(test)]
+                let _final_span = check_timings::span(check_timings::Group::FinalDirectory);
+                directory.check()?;
+            }
+        }
+        for pair in pairs.iter() {
+            #[cfg(test)]
+            let _final_span = check_timings::span(check_timings::Group::FinalPair);
+            pair.recheck()?;
+        }
+        // Pair verification performs bounded reads after the effect. Refresh
+        // the genuine producer's clock and authority after that final work.
+        if let Some(check) = &final_check {
+            #[cfg(test)]
+            let _final_span = check_timings::span(check_timings::Group::FinalCurrent);
+            check.recheck()?;
+        }
+        Ok(())
     }
 }
 

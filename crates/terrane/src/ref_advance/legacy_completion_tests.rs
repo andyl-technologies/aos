@@ -2,7 +2,6 @@
 
 use terrane_core::gc::publication::evidence::{CheckedLineage, ViewInterpretationMode};
 use terrane_core::identity::IdentityKind;
-use terrane_core::properties::PropertyName;
 use terrane_core::tree_builder::Tree;
 use terrane_core::tree_format::{Property, TreeUse};
 
@@ -52,11 +51,47 @@ async fn native_legacy_completion_retains_every_signed_parent_context() -> TestR
         .ok_or("missing view contexts")?;
     assert_eq!(contexts.len(), 2);
     assert_eq!(lineage.used.views.len(), 2);
-    let mut names = PropertyName::ALL
-        .iter()
-        .map(|name| name.as_str().to_owned())
-        .collect::<Vec<_>>();
+    // Legacy-1's vocabulary is frozen independently of later registries.
+    let mut names = [
+        "acl",
+        "baseline",
+        "chunk",
+        "classify",
+        "compaction_threshold",
+        "compression",
+        "dedup",
+        "degraded",
+        "domain",
+        "durability",
+        "encryption",
+        "gap_merge_bytes",
+        "hashes",
+        "home",
+        "index",
+        "merge",
+        "on-release",
+        "passthrough",
+        "prefetch",
+        "quota",
+        "reassembly",
+        "redundancy",
+        "reflog_retain",
+        "replicate",
+        "retain",
+        "span_max_bytes",
+        "store",
+        "strict-attrs",
+        "trust",
+        "warm",
+        "whole_pack_threshold",
+        "wipe",
+        "writers",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
     names.sort();
+    assert_eq!(names.len(), 33);
     for (identity, root) in [(first.commit, first_root), (second.commit, second_root)] {
         let context = contexts
             .iter()
@@ -327,14 +362,10 @@ async fn native_legacy_completion_refuses_historical_binding_with_empty_head_ind
             .observed_completed_view_contexts_for_tests()?
             .is_empty()
     );
-    let pending = consumed
-        .finish()
-        .err()
-        .ok_or("head preparation was unexpectedly completed")?;
-    assert!(matches!(
-        pending.kind(),
-        StoreErrorKind::Invalid(crate::store::InvalidReason::MalformedRequest)
-    ));
+    // This malformed Legacy binding is refused before any pending preparation.
+    let unprepared = consumed.finish()?;
+    assert!(unprepared.views.is_empty());
+    assert_eq!(unprepared.view_interpretations, Some(Vec::new()));
     assert_eq!(
         destination.selected_lineage(&observed, reference).await?,
         before

@@ -4,7 +4,15 @@
 //! The acyclic capture shares the FileBucket Arc and actual filesystem; public
 //! arguments supply neither callbacks nor checked history/profile constructors.
 
-use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use crate::guard::AdmittedCommit;
+use std::{
+    collections::BTreeMap,
+    future::Future,
+    pin::Pin,
+    sync::{Arc, RwLock, Weak},
+    time::Duration,
+};
+use terrane_core::{identity::Digest, refs::RefRecord};
 
 use super::{OriginalState, PublicationClock, retain_clock, unavailable};
 use crate::bucket::held::HeldIdentity;
@@ -18,6 +26,25 @@ use crate::store::{Clock, ContentValidator, LocalFs, Store, StoreFailure};
 use terrane_core::gc::publication::evidence::{
     CheckedLineage, ControlKind, OriginalAssociation, OriginalBootstrap,
 };
+
+/// Holds route-only identities whose actual prepared attempt still survives.
+pub(super) type PendingColdForks = Arc<RwLock<BTreeMap<Digest, Vec<ColdRoute>>>>;
+
+/// Binds routing data to one genuine attempt without retaining its lifetime.
+pub(super) struct ColdRoute {
+    lifetime: Weak<()>,
+    source: String,
+    record: RefRecord,
+}
+
+// An entry survives only while its actual admitted source retains the token.
+// Live entries are never evicted or converted into ordinary final traversal.
+fn prune_abandoned(pending: &mut BTreeMap<Digest, Vec<ColdRoute>>) {
+    pending.retain(|_, routes| {
+        routes.retain(|route| route.lifetime.strong_count() != 0);
+        !routes.is_empty()
+    });
+}
 
 /// Owns request data and the parent's genuinely checked destination baseline.
 pub(super) struct Preparation {
@@ -108,12 +135,50 @@ impl<S: Store, C: Clock> Guard<S, C> {
         )
         .await
     }
+
+    /// Selects mandatory cold dispatch only for the exact genuinely prepared operation.
+    ///
+    /// # Errors
+    /// Refuses substituted source coordinates or unavailable synchronization.
+    pub(crate) fn is_cold_fork_candidate(
+        &self,
+        admitted: &AdmittedCommit,
+    ) -> Result<bool, crate::store::StoreFailure> {
+        if admitted.cold_fork.is_none() {
+            return Ok(false);
+        }
+        let Some(source) = admitted.source_authorization.as_ref() else {
+            return Ok(false);
+        };
+        let Some(lifetime) = source.cold_route_lifetime.as_ref() else {
+            return Ok(false);
+        };
+        let verifier = self.original_verifier()?;
+        let mut pending = verifier
+            .cold_candidates
+            .write()
+            .map_err(|_| unavailable())?;
+        prune_abandoned(&mut pending);
+        let routes = pending
+            .get(&admitted.commit.identity())
+            .ok_or_else(invalid)?;
+        let expected_lifetime = Arc::downgrade(lifetime);
+        let route = routes
+            .iter()
+            .find(|route| Weak::ptr_eq(&route.lifetime, &expected_lifetime))
+            .ok_or_else(invalid)?;
+        if source.reference != route.source || source.record != route.record {
+            return Err(invalid());
+        }
+        Ok(true)
+    }
 }
 
 /// Captures the actual bucket without a self-retaining installed verifier cycle.
 pub(super) fn factory<F, B, V>(
     concrete: Arc<Guard<FileBucket<F, B, V>, ()>>,
     authority: OriginalAuthority,
+    pending: PendingColdForks,
 ) -> Arc<PreparationCheck>
 where
     F: LocalFs + BucketBinding + 'static,
@@ -125,6 +190,7 @@ where
     Arc::new(move |input, clock, state| {
         let concrete = Arc::clone(&concrete);
         let authority = authority.clone();
+        let pending = Arc::clone(&pending);
         Box::pin(async move {
             let clock = retain_clock(clock)?;
             let holder = crate::bucket::held::SingleHeld::acquire(concrete.store()).await?;
@@ -154,7 +220,7 @@ where
                 },
             )
             .await?;
-            let admitted = guard
+            let mut admitted = guard
                 .admit_qualified_cold_fork(
                     &mut qualified,
                     &input.reference,
@@ -164,6 +230,26 @@ where
                 )
                 .await?;
             qualified.revalidate(&guard).await?;
+            // The route is installed only after genuine successful qualification.
+            // Absence or refusal never selects a full-tree fallback in this lane.
+            let lifetime = Arc::new(());
+            let source = admitted.source_authorization.as_mut().ok_or_else(invalid)?;
+            if source.reference != input.source
+                || source.record != *qualified.policies().source_record()
+            {
+                return Err(invalid().into());
+            }
+            source.cold_route_lifetime = Some(Arc::clone(&lifetime));
+            let mut routes = pending.write().map_err(|_| unavailable())?;
+            prune_abandoned(&mut routes);
+            routes
+                .entry(admitted.commit.identity())
+                .or_default()
+                .push(ColdRoute {
+                    lifetime: Arc::downgrade(&lifetime),
+                    source: input.source,
+                    record: qualified.policies().source_record().clone(),
+                });
             Ok(admitted)
         })
     })
@@ -289,5 +375,53 @@ where
             checked.insert(association.commit, context);
         }
         Ok(checked.into_values().collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn abandoned_routes_are_pruned_without_evicting_live_attempts() {
+        let live = Arc::new(());
+        let record = RefRecord::first([11; 32], 1, terrane_core::refs::Locality::default());
+        let mut pending = BTreeMap::new();
+        pending.insert(
+            [1; 32],
+            vec![ColdRoute {
+                lifetime: Arc::downgrade(&live),
+                source: "refs/heads/_/source".into(),
+                record: record.clone(),
+            }],
+        );
+        for index in 0u64..1025 {
+            let abandoned = Arc::new(());
+            let mut candidate = [2; 32];
+            candidate[..8].copy_from_slice(&index.to_be_bytes());
+            pending.insert(
+                candidate,
+                vec![ColdRoute {
+                    lifetime: Arc::downgrade(&abandoned),
+                    source: "refs/heads/_/source".into(),
+                    record: record.clone(),
+                }],
+            );
+        }
+
+        prune_abandoned(&mut pending);
+
+        assert_eq!(pending.len(), 1);
+        let routes = &pending[&[1; 32]];
+        assert!(Weak::ptr_eq(&routes[0].lifetime, &Arc::downgrade(&live)));
+        let substitute = Arc::new(());
+        assert!(!Weak::ptr_eq(
+            &routes[0].lifetime,
+            &Arc::downgrade(&substitute)
+        ));
+
+        drop(live);
+        prune_abandoned(&mut pending);
+        assert!(pending.is_empty());
     }
 }

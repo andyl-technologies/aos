@@ -29,6 +29,10 @@ pub(crate) mod collection_copied_retirement;
 #[path = "../../gc/permanent_local_effects.rs"]
 pub(crate) mod collection_permanent_local;
 
+/// Selects initial retirement and creates Trash from the closed repository producer.
+#[path = "../../gc/retirement_effects.rs"]
+pub(crate) mod collection_retirement;
+
 #[path = "effects/capture.rs"]
 mod capture;
 #[path = "effects/retained_read.rs"]
@@ -56,12 +60,50 @@ mod raw;
 #[path = "effects/creation.rs"]
 mod creation;
 
+/// Captures and acknowledges first local ownership without unlinking artifacts.
+#[path = "../../gc/local_ownership_effects.rs"]
+pub(crate) mod collection_local_ownership;
+
+/// Reclaims exact locally owned artifacts under independently current authority.
+#[path = "../../gc/local_deletion_effects.rs"]
+pub(crate) mod collection_local_deletion;
+
+/// Publishes current restoration after independently qualified local cancellation.
+#[path = "../../gc/restore_effects.rs"]
+pub(crate) mod collection_restore;
+#[path = "effects/current_pair.rs"]
+mod current_pair;
+
+#[path = "effects/restore_pair.rs"]
+mod restore_pair;
+
+/// Owns actual maintenance descriptors returned exclusively by native execution.
+pub(crate) use super::artifact_seal::restore_pair::NativeRestorePair;
+/// Captures maintenance-only native descriptors without creator or age permission.
+pub(crate) use restore_pair::observe as observe_restore_pair;
+/// Captures a present restore pair through actual local ownership evidence.
+pub(crate) use restore_pair::observe_cancellation as observe_cancellation_pair;
+
+/// Exposes read-only native pair observations to genuine repository producers.
+pub(crate) use super::artifact_seal::current_pair::NativeCurrentPair;
+pub(crate) use current_pair::observe as observe_current_pair;
+#[cfg(all(test, feature = "tokio", unix))]
+pub(crate) use current_pair::recheck_for_test as recheck_current_pair_for_test;
+
+#[cfg(all(test, feature = "tokio", unix))]
+#[path = "effects/creation_tests.rs"]
+mod creation_tests;
+
 #[cfg(all(test, feature = "tokio", unix))]
 pub(crate) use raw::{backend_sync_for_test, gate_active_cap_probe_for_test};
 pub(crate) use raw::{
     probe_active, publish as publish_raw, publish_contextual as publish_raw_contextual, repair,
     stage_container, stage_container_contextual, stage_ref_log,
 };
+
+#[cfg(unix)]
+#[path = "../domain_deletion/frame.rs"]
+mod domain_deletion_frame;
 
 use super::{
     ExactRead, FencePolicy, MetadataStamp, NamedFence, NativeEffectFailure, NativeExclusion,
@@ -92,8 +134,9 @@ pub(crate) struct CheckedPublication {
 ///
 /// Every command duplicates this projection into its submitted worker. The
 /// asynchronous owner can disappear without releasing that worker's exclusions.
-struct Frame {
+pub(super) struct Frame {
     exclusions: Arc<[NativeExclusion]>,
+    pairs: Vec<Arc<super::artifact_seal::current_pair::PairHold>>,
     names: Vec<NamedFence>,
     reads: Vec<ExactRead>,
     parents: BTreeMap<PathBuf, (MetadataStamp, u32)>,
@@ -158,11 +201,12 @@ fn unsupported() -> StoreFailure {
 }
 
 fn io_failure(error: std::io::Error) -> StoreFailure {
-    if error.kind() == std::io::ErrorKind::Unsupported {
-        StoreFailure::with_source(StoreErrorKind::Unsupported, error)
+    let kind = if error.kind() == std::io::ErrorKind::Unsupported {
+        StoreErrorKind::Unsupported
     } else {
-        StoreFailure::with_source(StoreErrorKind::Unavailable { retry_after: None }, error)
-    }
+        StoreErrorKind::Unavailable { retry_after: None }
+    };
+    StoreFailure::with_source(kind, error)
 }
 
 fn native_failure(error: NativeEffectFailure) -> StoreFailure {
@@ -202,7 +246,7 @@ fn copy_parents(parents: &[ParentFence]) -> Vec<ParentFence> {
 /// # Errors
 /// Preserves actual descriptor/owner/ancestor/record checks and refuses changed
 /// or unavailable selected/control inputs or expired retained request checks.
-async fn contextual_frame<F: LocalFs + BucketBinding>(
+pub(super) async fn contextual_frame<F: LocalFs + BucketBinding>(
     fs: &F,
     observed: &SelectedObservation<'_>,
     sources: &[&SelectedObservation<'_>],
@@ -234,6 +278,7 @@ async fn contextual_frame<F: LocalFs + BucketBinding>(
     let mut frame = Frame {
         exclusions: exclusions.into(),
         names: Vec::new(),
+        pairs: Vec::new(),
         reads: Vec::new(),
         parents: BTreeMap::new(),
         final_check: Some(context.final_check()),
@@ -443,6 +488,7 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
             return Err(corrupt());
         }
         for read in reads {
+            read.require_effect_compatible()?;
             if !read.path().starts_with(observed.identity().root()) {
                 return Err(corrupt());
             }

@@ -44,7 +44,7 @@ where
             return Err(denied(reference, Verb::Commit));
         }
         let policies = qualified.policies();
-        if self.completion_inputs()?.registries != *policies.source_profile()? {
+        if self.configured_authoring_registries()? != *policies.source_profile()? {
             return Err(StoreFailure::new(StoreErrorKind::Unsupported));
         }
         let destination = self
@@ -59,15 +59,20 @@ where
         let mut admin_checks = Vec::new();
         for view in policies.source_views() {
             for root in &view.roots {
-                let widens =
-                    with_occurrence_policy(self, root, view, policies.configuration(), |policy| {
+                let widens = with_occurrence_policy(
+                    root,
+                    view,
+                    policies.configuration(),
+                    policies.interpretation(view)?,
+                    |policy| {
                         let Some(Value::Grants(grants)) =
                             policy.get(terrane_core::properties::PropertyName::Acl)
                         else {
                             return Err(invalid());
                         };
                         Ok(root.path == b"/" && self.bootstrap_acl_widens(grants))
-                    })?;
+                    },
+                )?;
                 if widens && admin_checks.is_empty() {
                     let initial = self
                         .config
@@ -150,13 +155,23 @@ where
         check_original_bootstrap(self, policies, &commit, original)?;
         let completion_inputs = self.completion_inputs()?;
         let cold_fork = Some(super::ColdForkBinding::prepared(&commit, policies));
+        let (admission_interpretation, admission_profile) =
+            self.admitted_authoring_inputs(&commit)?;
         Ok(AdmittedCommit {
+            tree_usage: terrane_core::tree_format::TreeUse::Ordinary,
+            overlay_sources: Vec::new(),
+            #[cfg(unix)]
+            existing_owner_references: None,
+            index_work: Default::default(),
             commit,
             completion_inputs,
             cold_fork,
+            admission_interpretation,
+            admission_profile,
             requirements: Vec::new(),
             admin_checks,
             publication_reference: reference.to_owned(),
+            publication_paths: destination.root_paths.clone(),
             uploads: Vec::new(),
             expected: None,
             observed_current: None,
@@ -166,6 +181,7 @@ where
                 verb: Verb::Fork,
                 paths: qualified.authorization().root_paths.clone(),
                 record: policies.source_record().clone(),
+                cold_route_lifetime: None,
             }),
             token: request.token,
             principal: authority.subject.clone(),
@@ -237,6 +253,10 @@ where
             .as_ref()
             .ok_or_else(invalid)?
             .check(admitted)?;
+        let (selected, profile) = self.admitted_authoring_inputs(&admitted.commit)?;
+        if profile != admitted.admission_profile || selected != admitted.admission_interpretation {
+            return Err(invalid());
+        }
         let destination = self
             .authorize_cold_fork_destination(
                 policies,
@@ -285,15 +305,20 @@ where
                 if root.path != b"/" {
                     continue;
                 }
-                let widens =
-                    with_occurrence_policy(self, root, view, policies.configuration(), |policy| {
+                let widens = with_occurrence_policy(
+                    root,
+                    view,
+                    policies.configuration(),
+                    policies.interpretation(view)?,
+                    |policy| {
                         let Some(Value::Grants(grants)) =
                             policy.get(terrane_core::properties::PropertyName::Acl)
                         else {
                             return Err(invalid());
                         };
                         Ok(self.bootstrap_acl_widens(grants))
-                    })?;
+                    },
+                )?;
                 if widens {
                     let initial = self
                         .config
@@ -324,6 +349,32 @@ where
             }
         }
         Ok(destination)
+    }
+
+    /// Retains immutable inputs only after genuine cold completion and Original checks.
+    ///
+    /// # Errors
+    /// Rejects changed source/profile/Original coordinates or conflicting retained inputs.
+    pub(crate) fn retain_cold_fork_selection(
+        &self,
+        qualified: &QualifiedSource<'_, '_, F>,
+        admitted: &AdmittedCommit,
+        original: &crate::guard::OriginalCommitContext,
+    ) -> Result<(), StoreFailure> {
+        if admitted.commit.commit().tree != qualified.commit().commit().tree
+            || admitted.commit.commit().parents != [qualified.commit().identity()]
+            || admitted.completion_inputs.registries != *qualified.policies().source_profile()?
+            || original.commit() != &admitted.commit.identity()
+            || self.original_commit(original.commit())? != *original
+        {
+            return Err(invalid());
+        }
+        self.capture_candidate_inputs(admitted)?;
+        self.retain_executed_view_inputs(
+            admitted.commit.identity(),
+            admitted.commit.commit().tree,
+            &admitted.completion_inputs,
+        )
     }
 }
 
@@ -361,17 +412,27 @@ fn check_original_bootstrap<S, C>(
             if root.path != b"/" {
                 continue;
             }
-            let widens =
-                with_occurrence_policy(guard, root, view, policies.configuration(), |policy| {
+            let widens = with_occurrence_policy(
+                root,
+                view,
+                policies.configuration(),
+                policies.interpretation(view)?,
+                |policy| {
                     let Some(Value::Grants(grants)) =
                         policy.get(terrane_core::properties::PropertyName::Acl)
                     else {
                         return Err(invalid());
                     };
                     Ok(widens_original_acl(grants, original.acl()))
-                })?;
+                },
+            )?;
             if widens {
-                let domain = occurrence_domain(guard, root, view, policies.configuration())?;
+                let domain = occurrence_domain(
+                    root,
+                    view,
+                    policies.configuration(),
+                    policies.interpretation(view)?,
+                )?;
                 let roots = [RequestRoot {
                     path: &root.path,
                     domain: &domain,

@@ -393,6 +393,16 @@ impl LocalFs for HeldFs {
         self.inner.lock_existing_exclusive(path).await
     }
 
+    async fn try_lock_existing_shared(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        self.locks.fetch_add(1, Ordering::SeqCst);
+        self.inner.try_lock_existing_shared(path).await
+    }
+
+    async fn try_lock_existing_exclusive(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        self.locks.fetch_add(1, Ordering::SeqCst);
+        self.inner.try_lock_existing_exclusive(path).await
+    }
+
     async fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         self.inner.read(path).await
     }

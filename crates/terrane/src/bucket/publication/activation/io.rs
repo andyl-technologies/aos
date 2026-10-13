@@ -202,9 +202,10 @@ impl<F: LocalFs + BucketBinding> LocalFs for RetainedFs<'_, F> {
         &self,
         effect: NativeFsEffect,
     ) -> Result<(), NativeEffectFailure> {
-        self.inner
-            .execute_retained_effect(retain(effect, &self.directories)?)
-            .await
+        let effect = retain(effect, &self.directories)?;
+        #[cfg(all(test, feature = "tokio", unix))]
+        let effect = initializer_faults::intercept(effect)?;
+        self.inner.execute_retained_effect(effect).await
     }
 
     async fn random_bytes(&self, length: usize) -> io::Result<Vec<u8>> {

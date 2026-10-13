@@ -84,11 +84,16 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     /// # Errors
     /// Refuses unavailable exclusion or invalid and changed capability records.
     pub(super) async fn read_exclusion(&self) -> Result<Option<F::Lock>, StoreFailure> {
+        #[cfg(test)]
+        let trace =
+            crate::ref_advance::NativeTrace::new(self.root(), "plain-bucket-read-exclusion");
         let guard = if self.inner.access.read_only() {
             None
         } else {
             Some(self.existing_exclusive().await?)
         };
+        #[cfg(test)]
+        trace.mark("plain-read-exclusion-acquired");
         self.ensure_layout().await?;
         Ok(guard)
     }
