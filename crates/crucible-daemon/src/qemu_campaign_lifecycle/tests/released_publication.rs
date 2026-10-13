@@ -20,6 +20,7 @@ fn publication_fixture(
         checkpoint_ready: true,
         fingerprint_error: false,
         fingerprint_node_override: Arc::new(Mutex::new(None)),
+        network_park: None,
     }
 }
 

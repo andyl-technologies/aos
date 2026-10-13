@@ -72,7 +72,9 @@ use event_log_retention::{RetainedChoiceDiscoveries, append_event_entries, appen
 
 #[cfg(test)]
 use network_fault_boundary::validate_network_fault_boundary;
-pub(crate) use network_fault_boundary::{NETWORK_FAULT_PHASE_MARKERS, declares_network_fault};
+pub(crate) use network_fault_boundary::{
+    NETWORK_FAULT_PHASE_MARKERS, declares_network_fault, phase_marker,
+};
 use network_fault_boundary::{
     discover_initial_network_fault_choice, discover_quantum_network_fault_choice,
     park_network_fault_markers,

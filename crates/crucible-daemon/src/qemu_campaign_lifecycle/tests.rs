@@ -733,6 +733,7 @@ fn observed_lifecycle_retains_only_successful_execution_evidence() {
         checkpoint_ready: true,
         fingerprint_error: false,
         fingerprint_node_override: Arc::new(Mutex::new(None)),
+        network_park: None,
     };
     let evidence = QemuAttemptExecutionEvidence::default();
     let mut observed = QemuObservedFreshAttemptLifecycle::new(
@@ -837,6 +838,7 @@ fn observed_lifecycle_rejects_a_mismatched_terminal_fingerprint_atomically() {
         checkpoint_ready: true,
         fingerprint_error: false,
         fingerprint_node_override: Arc::clone(&fingerprint_node_override),
+        network_park: None,
     };
     let evidence = QemuAttemptExecutionEvidence::default();
     let mut observed =
@@ -888,6 +890,7 @@ fn observed_lifecycle_does_not_publish_staged_fingerprints_when_cleanup_fails() 
         checkpoint_ready: true,
         fingerprint_error: false,
         fingerprint_node_override: Arc::new(Mutex::new(None)),
+        network_park: None,
     };
     let evidence = QemuAttemptExecutionEvidence::default();
     let mut observed =
@@ -1236,6 +1239,7 @@ impl QemuFreshAttemptLifecycleFactory for FakeFreshLifecycleFactory {
             checkpoint_ready: self.checkpoint_ready,
             fingerprint_error: false,
             fingerprint_node_override: Arc::new(Mutex::new(None)),
+            network_park: None,
         })
     }
 }
@@ -1331,6 +1335,7 @@ impl QemuFreshAttemptLifecycleFactory for PromotionRecordingFreshLifecycleFactor
             checkpoint_ready: true,
             fingerprint_error: false,
             fingerprint_node_override: Arc::new(Mutex::new(None)),
+            network_park: None,
         })
     }
 }

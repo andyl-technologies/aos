@@ -451,6 +451,39 @@ impl ProductionVmLifecycleLoop {
         Ok(Some(self.inner.loop_impl().frontier()))
     }
 
+    /// Commits one network fault campaign branch at the joined all-VM boundary.
+    ///
+    /// Every phase-marker park must already have joined the frontier the branch
+    /// names. The VMs stay physically paused; the caller releases each marker
+    /// only after this selection is committed. Returns the selected
+    /// configuration and the event-log entries the selection recorded.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when peer outcomes are unpublished, a park has not
+    /// joined, the scheduler refuses the branch boundary, or trigger
+    /// settlement fails.
+    pub fn append_network_fault_campaign_branch(
+        &mut self,
+        branch: &crucible::NetworkFaultCampaignBranch,
+    ) -> Result<(Configuration, Vec<SchedulerEventLogEntry>), SchedulerError> {
+        if self.pending_held_host_outcomes.is_some() || self.inner.has_campaign_parks() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("network fault branch preceded its joined park boundary"),
+            });
+        }
+
+        let (configuration, append) = self
+            .inner
+            .loop_impl_mut()
+            .append_network_fault_campaign_branch(branch)?;
+        let mut entries = append.entries;
+        for settled in self.settle_trigger_graph()? {
+            entries.extend(settled.entries);
+        }
+        Ok((configuration, entries))
+    }
+
     /// Publishes already committed peer outcomes without admitting another RUN.
     ///
     /// An absent retained suffix returns `None`. The original quantum branch

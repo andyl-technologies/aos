@@ -224,6 +224,13 @@ where
         self.lifecycle.join_campaign_parks_to_frontier()
     }
 
+    fn append_network_fault_campaign_branch(
+        &mut self,
+        branch: &crucible::NetworkFaultCampaignBranch,
+    ) -> Result<(Configuration, Vec<SchedulerEventLogEntry>), SchedulerError> {
+        self.lifecycle.append_network_fault_campaign_branch(branch)
+    }
+
     fn campaign_marker_release_committed(
         &self,
         node: &NodeId,

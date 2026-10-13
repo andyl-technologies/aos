@@ -15,6 +15,7 @@ pub(super) struct FakeFreshLifecycle {
     pub(super) checkpoint_ready: bool,
     pub(super) fingerprint_error: bool,
     pub(super) fingerprint_node_override: Arc<Mutex<Option<crucible::NodeId>>>,
+    pub(super) network_park: Option<super::network_fault_replay::FakeNetworkPark>,
 }
 
 impl FakeFreshLifecycle {
@@ -119,7 +120,57 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
             .lock()
             .expect("fresh lifecycle order")
             .push("park");
+        if let Some(park) = &mut self.network_park {
+            park.observe_quantum(self.completed_quanta);
+        }
         Ok(1)
+    }
+
+    fn parked_campaign_marker(
+        &mut self,
+        node: &crucible::NodeId,
+    ) -> Result<Option<QemuParkedCampaignMarker>, SchedulerError> {
+        Ok(self
+            .network_park
+            .as_ref()
+            .and_then(|park| park.parked_marker(node)))
+    }
+
+    fn join_campaign_parks_to_frontier(&mut self) -> Result<Option<VirtualTime>, SchedulerError> {
+        self.order
+            .lock()
+            .expect("fresh lifecycle order")
+            .push("join");
+        Ok(self.network_park.as_ref().and_then(|park| park.joined_at()))
+    }
+
+    fn append_network_fault_campaign_branch(
+        &mut self,
+        branch: &crucible::NetworkFaultCampaignBranch,
+    ) -> Result<(Configuration, Vec<SchedulerEventLogEntry>), SchedulerError> {
+        self.order
+            .lock()
+            .expect("fresh lifecycle order")
+            .push("append");
+        Ok((branch.selected().clone(), Vec::new()))
+    }
+
+    fn release_parked_campaign_marker(
+        &mut self,
+        node: &crucible::NodeId,
+        marker: &str,
+        _selected: crucible::ContentHash,
+    ) -> Result<(), SchedulerError> {
+        self.order
+            .lock()
+            .expect("fresh lifecycle order")
+            .push("release");
+        self.network_park
+            .as_mut()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("fake lifecycle has no network park"),
+            })?
+            .release(node, marker)
     }
 
     fn publish_released_host_outcomes(

@@ -221,6 +221,7 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
         checkpoint_ready: true,
         fingerprint_error: false,
         fingerprint_node_override: Arc::new(Mutex::new(None)),
+        network_park: None,
     };
     let mut current = parent.clone();
     let diagnostic_config = crate::GuestSelectableBoundaryDiagnosticConfig::new(4)
@@ -294,6 +295,7 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
         checkpoint_ready: true,
         fingerprint_error: false,
         fingerprint_node_override: Arc::new(Mutex::new(None)),
+        network_park: None,
     };
     let mut drift_current = parent.clone();
     let mut drift_materialization = QemuFreshStartMaterialization::genesis();

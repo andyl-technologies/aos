@@ -80,6 +80,11 @@ pub use remote_observation_resume::RemoteObservationResumeFactory;
 mod resume_admission;
 use resume_admission::validate_exact_resume_request;
 
+mod network_fault_replay;
+use network_fault_replay::{
+    cross_replayed_network_fault_boundary, park_replayed_network_fault_markers,
+};
+
 mod start_replay_log;
 use start_replay_log::{
     StartReplayProgress, append_start_replay_events, observe_replayed_choice_free_boot,
@@ -345,6 +350,22 @@ pub trait QemuFreshAttemptLifecycleOwner {
     /// Returns an error when the scheduler rejects the join.
     fn join_campaign_parks_to_frontier(&mut self) -> Result<Option<VirtualTime>, SchedulerError> {
         Ok(None)
+    }
+
+    /// Commits one network fault campaign branch at the joined all-VM boundary.
+    ///
+    /// Returns the selected configuration and its recorded event-log entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the owner has no scheduler or refuses the boundary.
+    fn append_network_fault_campaign_branch(
+        &mut self,
+        _branch: &crucible::NetworkFaultCampaignBranch,
+    ) -> Result<(Configuration, Vec<SchedulerEventLogEntry>), SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("network fault campaign branch append is unavailable"),
+        })
     }
 
     /// Authenticates a previously released physical marker on this selected branch.
@@ -615,6 +636,13 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
 
     fn join_campaign_parks_to_frontier(&mut self) -> Result<Option<VirtualTime>, SchedulerError> {
         ProductionVmLifecycleLoop::join_campaign_parks_to_frontier(self)
+    }
+
+    fn append_network_fault_campaign_branch(
+        &mut self,
+        branch: &crucible::NetworkFaultCampaignBranch,
+    ) -> Result<(Configuration, Vec<SchedulerEventLogEntry>), SchedulerError> {
+        ProductionVmLifecycleLoop::append_network_fault_campaign_branch(self, branch)
     }
 
     fn campaign_marker_release_committed(
@@ -2504,6 +2532,10 @@ pub(crate) fn materialize_start_from<F, D>(
         &mut replay,
     )?;
     append_start_replay_events(&mut replay, &initial_selection_entries)?;
+    // A restored parent can already hold every VM at a network fault park.
+    let initial_network_entries =
+        cross_replayed_network_fault_boundary(lifecycle, input, target, &mut current, &mut replay)?;
+    append_start_replay_events(&mut replay, &initial_network_entries)?;
     publish_replayed_host_outcomes(lifecycle, target, &mut current, &mut replay)?;
     if current == *target {
         replay.restored_configuration = Some(current);
@@ -2640,10 +2672,16 @@ pub(crate) fn materialize_start_from<F, D>(
         } else {
             Vec::new()
         };
+        let network_fault_entries = if terminal.is_none() {
+            cross_replayed_network_fault_boundary(lifecycle, input, target, &mut next, &mut replay)?
+        } else {
+            Vec::new()
+        };
 
         let appended = append_start_replay_events(&mut replay, &outcome.event_log_entries)
             .and_then(|()| append_start_replay_events(&mut replay, &live_network_entries))
-            .and_then(|()| append_start_replay_events(&mut replay, &selection_entries));
+            .and_then(|()| append_start_replay_events(&mut replay, &selection_entries))
+            .and_then(|()| append_start_replay_events(&mut replay, &network_fault_entries));
         if let Err(failure) = appended {
             return Err(with_replay_progress(
                 failure,
@@ -2672,29 +2710,6 @@ pub(crate) fn materialize_start_from<F, D>(
             current.schedule.len(),
         ))?;
     }
-}
-
-/// Parks VMs held at network fault phase markers during start replay.
-///
-/// The modeled driver parks these holds after every quantum so staggered VMs
-/// each reach their marker before the atomic choice. Replay must do the same:
-/// an unparked hold blocks every later RUN, so a replay crossing the first
-/// marker would otherwise fail before reaching its target.
-fn park_replayed_network_fault_markers<F, D>(
-    lifecycle: &mut dyn QemuFreshAttemptLifecycleOwner,
-    input: &CrucibleAttemptExecution,
-    outcome: &mut QuantumOutcome,
-) -> Result<(), AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>> {
-    if !crate::qemu_campaign_driver::declares_network_fault(input) {
-        return Ok(());
-    }
-    lifecycle
-        .park_held_campaign_markers(
-            &crate::qemu_campaign_driver::NETWORK_FAULT_PHASE_MARKERS,
-            outcome,
-        )
-        .map_err(map_start_replay_scheduler_failure)?;
-    Ok(())
 }
 
 fn apply_replayed_live_network_selection<F, D>(

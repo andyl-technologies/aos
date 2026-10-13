@@ -134,7 +134,8 @@ pub(crate) fn declares_network_fault(input: &CrucibleAttemptExecution) -> bool {
         .is_some()
 }
 
-const fn phase_marker(phase: NetworkFaultPhase) -> &'static str {
+/// Returns the guest marker at which every VM parks before `phase`.
+pub(crate) const fn phase_marker(phase: NetworkFaultPhase) -> &'static str {
     match phase {
         NetworkFaultPhase::First => "fault.transport.ready",
         NetworkFaultPhase::Followup => "fault.followup.ready",

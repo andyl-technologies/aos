@@ -144,3 +144,110 @@ fn join_with_a_live_peer_rejects_a_park_beyond_the_frontier() {
     assert_eq!(logical_time(&scheduler, "a"), 50);
     assert_eq!(scheduler.frontier(), VirtualTime { ticks: 30 });
 }
+
+fn network_fault_scenario() -> crate::ScenarioDefForm {
+    use crate::model::{
+        Icount, NodeTemplate, Plan, Properties, ReadyPoint, ScenarioSelectableLimits,
+        ScenarioSelectables, Seed, WhiteBoxPolicy, World, WorldNode,
+    };
+
+    let world = World::from_nodes(vec![WorldNode {
+        id: vm("a"),
+        arch: NodeTemplate::DEFAULT_ARCH,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::from("network-fault-branch-test"),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 1 },
+        },
+        white_box: WhiteBoxPolicy::Enabled,
+        smp_vcpus: 1,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    }])
+    .unwrap_or_else(|error| panic!("test world should build: {error}"));
+    let declaration = crate::NetworkFaultSelectable::declaration()
+        .unwrap_or_else(|error| panic!("network fault declaration should build: {error}"));
+    let selectables = ScenarioSelectables::new(
+        &world,
+        ScenarioSelectableLimits::default(),
+        vec![declaration],
+    )
+    .unwrap_or_else(|error| panic!("test selectables should build: {error}"));
+    crate::ScenarioDefForm::from_components(
+        &world,
+        &Plan::empty(),
+        &Properties::empty(),
+        Seed::from_u64(21),
+    )
+    .and_then(|base| base.with_selectables(selectables))
+    .unwrap_or_else(|error| panic!("test scenario should build: {error}"))
+}
+
+fn network_fault_branch(
+    scenario: &crate::ScenarioDefForm,
+    parent: &Configuration,
+    at: VirtualTime,
+) -> crate::NetworkFaultCampaignBranch {
+    let selectable = crate::NetworkFaultSelectable::next(
+        scenario,
+        parent,
+        crate::NetworkFaultPhase::First,
+        at,
+        &[],
+    )
+    .unwrap_or_else(|error| panic!("network choice should resolve: {error}"))
+    .unwrap_or_else(|| panic!("network choice should be offered"));
+    let value = crate::NetworkFaultSelectable::selected_value("link_down", "primary", 1_000, 0, 0)
+        .unwrap_or_else(|error| panic!("fault value should encode: {error}"));
+    let selection = selectable
+        .branch_selection(value)
+        .unwrap_or_else(|error| panic!("branch selection should bind: {error}"));
+    selectable
+        .resolve_branch(&selection)
+        .unwrap_or_else(|error| panic!("branch should resolve: {error}"))
+}
+
+#[test]
+fn network_fault_branch_commits_only_at_its_joined_boundary() {
+    let scenario = network_fault_scenario();
+    let mut scheduler = test_scheduler(vec![runnable("a", 50), runnable("b", 30)], Vec::new());
+    scheduler.configuration = Configuration::genesis(scenario.scenario_def());
+    let parent = scheduler.configuration().clone();
+    for node in ["a", "b"] {
+        scheduler
+            .park_campaign_marker_node(&vm(node))
+            .unwrap_or_else(|error| panic!("VM should park: {error}"));
+    }
+    scheduler
+        .join_campaign_parks_to_frontier()
+        .unwrap_or_else(|error| panic!("all-parked world should join: {error}"));
+
+    // A branch recorded at another boundary must not commit here.
+    let early = network_fault_branch(&scenario, &parent, VirtualTime { ticks: 30 });
+    assert!(matches!(
+        scheduler.append_network_fault_campaign_branch(&early),
+        Err(SchedulerError::BoundaryViolation { .. })
+    ));
+    assert_eq!(scheduler.configuration(), &parent);
+
+    let branch = network_fault_branch(&scenario, &parent, scheduler.frontier());
+    let quanta = scheduler.quanta();
+    let (selected, append) = scheduler
+        .append_network_fault_campaign_branch(&branch)
+        .unwrap_or_else(|error| panic!("joined boundary should commit the branch: {error}"));
+
+    assert_eq!(&selected, branch.selected());
+    assert_eq!(scheduler.configuration(), branch.selected());
+    assert_eq!(scheduler.quanta(), quanta + 1);
+    assert_eq!(scheduler.frontier(), branch.at());
+    assert!(append.entries.iter().any(|entry| {
+        entry.payload() == &SchedulerEventLogPayload::Decision(branch.decision().clone())
+    }));
+
+    // The consumed branch's parent no longer matches the scheduler.
+    assert!(matches!(
+        scheduler.append_network_fault_campaign_branch(&branch),
+        Err(SchedulerError::BoundaryViolation { .. })
+    ));
+}

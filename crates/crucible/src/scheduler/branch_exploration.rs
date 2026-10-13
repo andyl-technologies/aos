@@ -2,7 +2,9 @@
 
 use super::*;
 use crate::model::{BindingSearchChoice, FaultCoordinate};
-use crate::{SelectionDecision, SignalFaultCampaignBranch, SignalFaultSelectable};
+use crate::{
+    NetworkFaultCampaignBranch, SelectionDecision, SignalFaultCampaignBranch, SignalFaultSelectable,
+};
 use crucible_protocol::app_random_branch_plan::MAX_APP_RANDOM_BRANCH_PLAN_ENTRIES;
 
 impl SingleScheduler {
@@ -267,6 +269,48 @@ impl SingleScheduler {
             ticks: self.frontier.ticks,
         };
         let append = self.emit_quantum_event_log(&[], branch.decisions(), &[], at, true)?;
+        self.configuration = configuration.clone();
+        self.quanta = self.quanta.saturating_add(1);
+        self.yield_to_control_inbox();
+        Ok((configuration, append))
+    }
+
+    /// Appends one authenticated network fault campaign branch.
+    ///
+    /// The selection applies at the all-VM boundary after every phase-marker
+    /// park joined one frontier. The branch must name this scheduler's exact
+    /// configuration and that joined frontier before its decision is recorded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when the branch names a
+    /// different parent or frontier, when its selected configuration differs
+    /// from applying its decision, or when event-log recording fails.
+    pub fn append_network_fault_campaign_branch(
+        &mut self,
+        branch: &NetworkFaultCampaignBranch,
+    ) -> Result<(Configuration, SchedulerEventLogAppend), SchedulerError> {
+        if self.configuration != *branch.parent() || self.frontier != branch.at() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "network fault campaign branch does not match the current scheduler boundary",
+                ),
+            });
+        }
+        let decisions = std::slice::from_ref(branch.decision());
+        let configuration = self.step_quantum(decisions)?;
+        if configuration != *branch.selected() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "network fault campaign branch selected configuration is inconsistent",
+                ),
+            });
+        }
+
+        let at = SimInstant {
+            ticks: self.frontier.ticks,
+        };
+        let append = self.emit_quantum_event_log(&[], decisions, &[], at, true)?;
         self.configuration = configuration.clone();
         self.quanta = self.quanta.saturating_add(1);
         self.yield_to_control_inbox();
