@@ -2326,6 +2326,29 @@ The firmware audit also finds that the existing package installs 55 upstream
 blobs without compiling them; complete source-built firmware providers and their
 source/license closure remain part of package qualification.
 
+## Selected plugin preparation and process fencing
+
+The selected plugin retains one original Unix socket, setup descriptor journal,
+input and compute histories, finite readiness exchange storage and callback
+userdata before native operations. Setup acknowledgement returns to machine
+construction in Preparing; it does not wait for ordinary RUN or publish native
+readiness. Native effect callbacks remain unavailable. A birth-PID fence exits
+inherited children before TLS, userdata, logging or native access.
+
+The final source cohort passes all 792 plugin unit controls in 15.62 seconds,
+including real fork containment while the parent retains a TLS borrow and the
+child receives invalid userdata. Ordinary installation controls pass. Strict
+all-target Clippy passes on the recorded predecessor; the final four indentation
+lines are separately proven to preserve source tokens. Native loader, claim,
+authentication and registration peers remain explicitly modeled in these tests.
+
+Actual native SDK execution, SourceHOLD/adoption, service and output collection,
+consumed readiness acknowledgement, complete package and ABI/license boundary
+qualification remain required. Literal native tracing also confirms that loader
+and RR callbacks have different threads; constructor TLS cannot supply shared
+callback participation. That ownership successor must preserve compiler-checked
+thread safety and authentic native context before readiness is enabled.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
