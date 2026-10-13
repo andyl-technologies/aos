@@ -428,7 +428,7 @@ impl PreparedAuthorityBrokerRequestV1 {
 }
 
 impl PreparedAuthorityEffectV1 {
-    pub(crate) const fn new(
+    pub(crate) fn new(
         binding_digest: ObjectDigest,
         publication_digest: ObjectDigest,
         preparation_clock: RawPairedClockSample,
@@ -735,7 +735,7 @@ impl PreparedAuthorityEffectV1 {
         &self.history
     }
 
-    pub(super) const fn into_history(self) -> PreparedAuthorityEffectHistoryV1 {
+    pub(super) fn into_history(self) -> PreparedAuthorityEffectHistoryV1 {
         self.history
     }
 }

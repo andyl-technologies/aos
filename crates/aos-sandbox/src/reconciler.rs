@@ -451,7 +451,7 @@ impl OperationPlan {
             || effects.iter().any(|effect| {
                 effect
                     .authority()
-                    .is_none_or(|binding| binding.source_draft_digest != publication_draft.digest())
+                    .is_none_or(|binding| binding.source_draft_digest() != publication_draft.digest())
             })
         {
             return Err(ReconcilerError::InvalidPlan(

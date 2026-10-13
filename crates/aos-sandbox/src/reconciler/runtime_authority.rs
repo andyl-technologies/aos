@@ -39,12 +39,13 @@ pub(crate) fn validate_runtime_authority_pending(
             .ok_or(ReconcilerError::CorruptLedger(
                 "runtime revocation effect is missing",
             ))
-            .and_then(decode_effect)?;
+            .and_then(|bytes| decode_effect(bytes).map_err(ReconcilerError::from))?
+            .into_parts();
         validate_intent_effects(
             pending.state(),
             pending.operation(),
             plan.publication_draft(),
-            &[effect.plan],
+            &[effect.0],
         )?;
     }
     if let OwnershipGateStatusV1::Activated {
@@ -85,7 +86,7 @@ pub(super) fn validate_intent_effects(
     let template = draft
         .templates()
         .iter()
-        .find(|template| template.digest() == binding.template_digest)
+        .find(|template| template.digest() == binding.template_digest())
         .ok_or_else(invalid)?;
     if template.audience() != aos_sandbox_core::BrokerAudience::Host
         || template.method()

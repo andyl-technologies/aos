@@ -668,7 +668,7 @@ impl BrokerDispatchAttemptV1 {
         &self.history
     }
 
-    pub(crate) const fn into_history(self) -> BrokerDispatchAttemptHistoryV1 {
+    pub(crate) fn into_history(self) -> BrokerDispatchAttemptHistoryV1 {
         self.history
     }
 }

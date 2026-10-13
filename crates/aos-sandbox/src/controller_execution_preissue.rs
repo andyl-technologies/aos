@@ -484,7 +484,9 @@ fn current_source(
     }
     let accepted = accepted_create_execution_effect_from_journal_v1(controller, create_operation)?
         .ok_or(ControllerExecutionPreissueErrorV1::NotCurrent)?;
-    let DormantSandboxRequestKindV1::Exec(request) = accepted.validated_request()? else {
+    let DormantSandboxRequestKindV1::Exec(request) =
+        accepted.validated_request().map_err(ReconcilerError::from)?
+    else {
         return Err(ControllerExecutionPreissueErrorV1::NotCurrent);
     };
     create_holder_proof::verify_create_holder_proof_v1(&request)?;

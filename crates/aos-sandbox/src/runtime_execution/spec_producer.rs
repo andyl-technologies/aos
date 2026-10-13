@@ -468,7 +468,9 @@ fn read_controller_spec_inputs(
 ) -> Result<ControllerSpecSourceInputsV1, ProtectedExecutionSpecProducerErrorV1> {
     let accepted = accepted_create_execution_effect_from_journal_v1(controller, create_operation)?
         .ok_or(ProtectedExecutionSpecProducerErrorV1::NotCurrent)?;
-    let DormantSandboxRequestKindV1::Exec(request) = accepted.validated_request()? else {
+    let DormantSandboxRequestKindV1::Exec(request) =
+        accepted.validated_request().map_err(ReconcilerError::from)?
+    else {
         return Err(ProtectedExecutionSpecProducerErrorV1::NotCurrent);
     };
     create_holder_proof::verify_create_holder_proof_v1(&request)?;
