@@ -1,5 +1,8 @@
 //! Actual mapping-allocation custody across in-place selection.
 
+// crucible-lint: allow panic-shortcut -- Lifecycle test assertions deliberately panic on failure.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use super::super::tests::original_aliases;
 use super::*;
 use crate::SelectedRingAdmissionBudget;

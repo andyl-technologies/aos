@@ -1,5 +1,8 @@
 //! Actual source-intent fencing and failure cancellation on original mapping owners.
 
+// crucible-lint: allow panic-shortcut -- Lifecycle test assertions deliberately panic on failure.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use super::*;
 
 #[test]

@@ -1,5 +1,8 @@
 //! Actual fork generations and ordinary teardown while another thread owns a loan.
 
+// crucible-lint: allow panic-shortcut -- Lifecycle test assertions deliberately panic on failure.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use super::*;
 
 #[test]
@@ -105,8 +108,10 @@ fn inherited_lock_fixture() -> TestResult {
     Ok(())
 }
 
+type BeforeUnmapHook = Box<dyn FnOnce(usize)>;
+
 thread_local! {
-    static BEFORE_UNMAP_WAIT: std::cell::RefCell<Option<Box<dyn FnOnce(usize)>>> =
+    static BEFORE_UNMAP_WAIT: std::cell::RefCell<Option<BeforeUnmapHook>> =
         std::cell::RefCell::new(None);
 }
 

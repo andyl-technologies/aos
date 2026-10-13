@@ -1,5 +1,8 @@
 //! Actual memfd aliases and process-local selected lifecycle controls.
 
+// crucible-lint: allow panic-shortcut -- Lifecycle test assertions deliberately panic on failure.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::fs::File;
 use std::io::Write;
 use std::os::fd::AsFd;

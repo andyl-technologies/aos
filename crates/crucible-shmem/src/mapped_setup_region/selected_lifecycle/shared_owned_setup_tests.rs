@@ -1,5 +1,8 @@
 //! Same-field ownership through shared userdata and short guarded callbacks.
 
+// crucible-lint: allow panic-shortcut -- Lifecycle test assertions deliberately panic on failure.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use super::super::tests::original_aliases;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -711,6 +714,8 @@ fn atomic_roster_adoption_refuses_invalid_input_without_ordinary_fallback() -> T
 }
 
 #[test]
+// crucible-lint: allow nondeterminism -- Bounded host-only watchdog; never simulation time.
+#[allow(clippy::disallowed_methods)]
 fn concurrent_refusal_during_adoption_cannot_return_successful_custody() -> TestResult {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};

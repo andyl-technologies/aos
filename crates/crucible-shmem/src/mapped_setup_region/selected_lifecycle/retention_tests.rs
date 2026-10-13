@@ -1,5 +1,8 @@
 //! Actual initializing-slot forks before original source effects.
 
+// crucible-lint: allow panic-shortcut -- Lifecycle test assertions deliberately panic on failure.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use super::*;
 use crate::mapped_setup_region::selected_lifecycle::{
     OwnedSetupMapping, registry, tests::original_aliases,

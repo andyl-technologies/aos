@@ -9,13 +9,16 @@
 //! A selected epoch is correlation, not native eligibility. This module has
 //! no terminal release operation: ACK consumption cannot release a mapping.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError, Weak};
 
 #[path = "selected_lifecycle/retention.rs"]
 mod retention;
 use retention::RetentionSlot;
+
+#[path = "selected_lifecycle/registry_map.rs"]
+mod registry_map;
+use registry_map::RegistryMap;
 
 use super::{MappedSetupRegion, SetupRegionBackingIdentity, SetupRegionMapError};
 
@@ -96,8 +99,8 @@ struct MappingRecord {
 
 #[derive(Default)]
 struct Registry {
-    mappings: HashMap<usize, MappingRecord>,
-    domains: HashMap<(u32, u64, u64), Weak<Domain>>,
+    mappings: RegistryMap<usize, MappingRecord>,
+    domains: RegistryMap<(u32, u64, u64), Weak<Domain>>,
 }
 
 const MAX_MAPPING_RECORDS: usize = 65_536;
@@ -799,10 +802,10 @@ impl RetainedWholeMapping {
             // Every endpoint shares the backing fence but adopts its own
             // original mmap cell once. A second node never renews this cell.
             domain.selected.store(true, Ordering::Release);
-            if let Some(original) = preselected {
-                if !Arc::ptr_eq(original, &domain) {
-                    return Err(WholeMappingCustodyError::Unregistered);
-                }
+            if let Some(original) = preselected
+                && !Arc::ptr_eq(original, &domain)
+            {
+                return Err(WholeMappingCustodyError::Unregistered);
             }
             cell.selected
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
