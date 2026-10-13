@@ -66,6 +66,9 @@ impl NodeRuntime {
         if prior.original_transferred() {
             return Ok(());
         }
+        if let Some(state) = &self.scheduler {
+            state.revoke();
+        }
         // All copies below are fixed retained barrier data, never native callbacks.
         let activation = self.barrier.record().clone();
         let node_preparations = self.barrier.retained_nodes();

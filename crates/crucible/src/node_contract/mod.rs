@@ -60,3 +60,6 @@ pub(crate) fn test_nodes(
 pub(crate) fn test_custody_slot() -> Box<dyn RuntimeCustodySlot> {
     runtime::test_custody_slot()
 }
+
+mod host_scheduling_owner;
+pub use host_scheduling_owner::*;

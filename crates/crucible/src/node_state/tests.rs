@@ -1168,6 +1168,7 @@ fn complete_restore_publishes_one_fresh_world_and_preserves_scheduler() {
     assert_eq!(snapshot.positions, evidence.snapshot.positions);
     assert_eq!(snapshot.producers, evidence.snapshot.producers);
     assert_eq!(snapshot.used_operations, evidence.snapshot.used_operations);
+    drop(scheduler);
     drop(restored);
     assert!(quarantine.get() > 0);
 }

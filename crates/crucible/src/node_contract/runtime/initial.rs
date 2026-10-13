@@ -72,7 +72,7 @@ impl NodeRuntime {
         if maximum_record_bytes == 0
             || maximum_record_bytes > MAXIMUM_ACTIVATION_COORDINATOR_BYTES
             || self.activated
-            || self.scheduler.is_some()
+            || self.scheduling_origin()?.initialized()?
             || !self.operations.is_empty()
             || !self.input_batches.is_empty()
             || preparations.len() != self.nodes.len()

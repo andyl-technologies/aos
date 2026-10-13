@@ -280,7 +280,8 @@ impl ConditionExecution {
                     continue;
                 }
                 if node == observer {
-                    let inputs = runtime.scheduler(graph, activation)?.pending_inputs(node)?;
+                    let scheduler = runtime.scheduler(graph, activation)?;
+                    let inputs = scheduler.pending_inputs(node)?;
                     if let Some(delivery) = inputs.first() {
                         // A complete input cut promises consumption of every
                         // earlier delivery. Do not stage that cut before the
@@ -327,10 +328,9 @@ impl ConditionExecution {
                     {
                         let stage = self.name("stage", node)?;
                         let batch = self.name("batch", node)?;
-                        match runtime
-                            .scheduler(graph, activation)?
-                            .prepare_input_batch(node, stage, batch, target)
-                        {
+                        let prepared = runtime.scheduler(graph, activation)?
+                            .prepare_input_batch(node, stage, batch, target);
+                        match prepared {
                             Ok(input) => {
                                 let acknowledgement = runtime.stage_inputs(input)?;
                                 let commit =

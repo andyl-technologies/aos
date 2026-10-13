@@ -161,7 +161,8 @@ impl NodeRuntime {
             )
         });
         if matches!(result, Err(_) | Ok(BeginResult::Refused(_)))
-            && let Some(scheduler) = &mut self.scheduler
+            && let Some(state) = &self.scheduler
+            && let Some(mut scheduler) = state.borrow_if_initialized()?
         {
             scheduler
                 .reconcile_no_effect(&admission)
@@ -322,6 +323,7 @@ impl NodeRuntime {
         self.scheduler
             .as_ref()
             .ok_or(RuntimeError::NotActivated)?
+            .retained()?
             .preflight_receipts(&receipts)
             .map_err(|error| RuntimeError::SchedulerRefused(error.to_string()))
     }
@@ -365,6 +367,7 @@ impl NodeRuntime {
             .scheduler
             .as_mut()
             .ok_or(RuntimeError::NotActivated)?
+            .borrow_mut()?
             .accept_receipt(receipt)
             .map_err(|error| RuntimeError::SchedulerRefused(error.to_string()))?;
         let entry = self

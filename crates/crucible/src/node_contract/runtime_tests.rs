@@ -875,8 +875,11 @@ fn runtime(mode: OperatingMode) -> (NodeRuntime, Vec<Rc<RefCell<NativeState>>>) 
         .into_iter()
         .map(|node| (node.route().node.clone(), node))
         .collect();
+    let authority = Rc::new(());
+    let scheduling_state =
+        OriginalSchedulingState::new(&authority, record.world_binding_hash.clone());
     let runtime = NodeRuntime {
-        authority: Rc::new(()),
+        authority,
         nodes,
         snapshots,
         owners,
@@ -885,7 +888,7 @@ fn runtime(mode: OperatingMode) -> (NodeRuntime, Vec<Rc<RefCell<NativeState>>>) 
         barrier: ActivationBarrier::new(record).unwrap(),
         activated: false,
         limits: RuntimeLimits::default(),
-        scheduler: None,
+        scheduler: Some(scheduling_state),
         custody_slot: Some(crate::node_contract::test_custody_slot()),
         terminal: None,
         condition_stop: None,
@@ -1652,7 +1655,7 @@ fn complete_graph_activation_retains_one_scheduler_instead_of_resetting_cursors(
         .admit_exact(&id("a"), id("reserved-before-borrow-drop"), U64::new(10))
         .unwrap();
 
-    let scheduler = runtime.scheduler(&graph, &activation).unwrap();
+    let mut scheduler = runtime.scheduler(&graph, &activation).unwrap();
     assert!(
         scheduler
             .admit_exact(&id("a"), id("conflicting-after-borrow-drop"), U64::new(10))
@@ -1928,4 +1931,86 @@ pub(super) fn original_admission(name: &str) -> OperationAdmission {
     let admission = states[0].borrow().admission.clone().unwrap();
     assert!(admission.token().same_authority(&token));
     admission
+}
+
+#[test]
+fn original_scheduling_views_share_lazy_queue_identity_and_reentrant_refusal() {
+    // Native adapters are modeled; the scheduler, slot and runtime are original core objects.
+    let (graph, _) = crate::node_admission::test_fixture_isolated_execution(false);
+    let (graph, nodes, _states, record) = admitted_parts_from_graph(graph);
+    let mut runtime = NodeRuntime::new(
+        &graph,
+        nodes,
+        record,
+        RuntimeLimits::default(),
+        test_custody_slot(),
+    )
+    .unwrap_or_else(|failure| panic!("valid runtime refused: {}", failure.error));
+    let state = runtime.scheduler.as_ref().unwrap();
+    let source = state.source();
+    let world = graph.world_binding_hash().clone();
+    assert!(source.authenticate_current(&world).is_ok());
+    assert!(source.authenticate_initial(&world).is_ok());
+    assert!(source.same_original(state));
+    assert!(!state.initialized().unwrap());
+
+    let activation = activate(&mut runtime);
+    let admission = runtime
+        .scheduler(&graph, &activation)
+        .unwrap()
+        .admit_exact(&id("a"), id("retained-original-reservation"), 10.into())
+        .unwrap();
+    let state = runtime.scheduler.as_ref().unwrap();
+    assert!(source.same_original(state));
+    assert!(source.authenticate_initial(&world).is_err());
+    let mut scheduler = state.borrow_mut().unwrap();
+    assert!(matches!(
+        state.borrow_mut(),
+        Err(RuntimeError::OutstandingObligations)
+    ));
+    assert!(matches!(
+        state.retained(),
+        Err(RuntimeError::OutstandingObligations)
+    ));
+    assert!(
+        scheduler
+            .admit_exact(&id("a"), id("foreign-queue-replacement"), 10.into())
+            .is_err()
+    );
+    scheduler.abandon_undispatched(admission).unwrap();
+    drop(scheduler);
+    assert!(
+        state
+            .retained()
+            .unwrap()
+            .snapshot(position(0), 1.into())
+            .is_ok()
+    );
+}
+
+#[test]
+fn original_scheduling_views_cannot_reanchor_after_revocation_or_authority_loss() {
+    let (mut runtime, _states) = runtime(OperatingMode::Exact);
+    let world = runtime.barrier.record().world_binding_hash.clone();
+    let source = runtime.scheduler.as_ref().unwrap().source();
+    let clone = source.clone();
+    assert!(source.authenticate_current(&world).is_ok());
+    assert!(source.authenticate_current(&hash("foreign.world")).is_err());
+    runtime.scheduler.as_ref().unwrap().revoke();
+    assert!(source.authenticate_current(&world).is_err());
+    assert!(clone.authenticate_current(&world).is_err());
+    assert!(runtime.scheduler.as_ref().unwrap().borrow_mut().is_err());
+    assert!(source.authenticate_initial(&world).is_err());
+
+    // A fresh allocation with equal portable metadata cannot revive old views.
+    runtime.scheduler = Some(OriginalSchedulingState::new(
+        &runtime.authority,
+        world.clone(),
+    ));
+    assert!(!source.same_original(runtime.scheduler.as_ref().unwrap()));
+    assert!(runtime.scheduler.as_ref().unwrap().current().is_ok());
+    assert!(source.authenticate_current(&world).is_err());
+    let fresh = runtime.scheduler.as_ref().unwrap().source();
+    drop(runtime);
+    assert!(fresh.authenticate_current(&world).is_err());
 }

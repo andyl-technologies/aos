@@ -115,6 +115,8 @@ where
             }
         }
 
+        drop(scheduler);
+
         let input = match runtime.scheduler(graph, activation)?.prepare_input_batch(
             node,
             request.names.stage,

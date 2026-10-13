@@ -199,6 +199,7 @@ impl NodeRuntime {
         self.scheduler
             .as_ref()
             .ok_or(RuntimeError::NotActivated)?
+            .retained()?
             .condition_capture_snapshot(saved, ordinal, maximum_bytes)
     }
 
@@ -452,6 +453,8 @@ impl NodeRuntime {
             .scheduler
             .as_ref()
             .ok_or(RuntimePollFailure::Admission(RuntimeError::NotActivated))?
+            .retained()
+            .map_err(RuntimePollFailure::Admission)?
             .condition_stop_scope(&inventories, maximum_bytes)
             .map_err(RuntimePollFailure::Admission)?;
         if scheduler != stop.record.scheduler
@@ -892,6 +895,8 @@ impl NodeRuntime {
         self.scheduler
             .as_mut()
             .ok_or(RuntimePollFailure::Admission(RuntimeError::NotActivated))?
+            .borrow_mut()
+            .map_err(RuntimePollFailure::Admission)?
             .retain_condition_identity(operation.clone())
             .map_err(RuntimePollFailure::Admission)?;
         self.condition_stop

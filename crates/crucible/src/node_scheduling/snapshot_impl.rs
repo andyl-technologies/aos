@@ -135,6 +135,136 @@ impl CausalScheduler {
     /// # Errors
     /// Refuses an unrepresentable budget or an unsupported retained permission
     /// before publishing a partial coordinator continuation record.
+    // Precharge borrowed original bytes before creating a second snapshot copy.
+    // A counting serializer observes data only and retains no encoded buffer.
+    pub(crate) fn snapshot_preflight(
+        &self,
+        maximum_bytes: usize,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
+        use std::io::{self, Write};
+
+        struct Credit(usize);
+        impl Write for Credit {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.0 = self.0.checked_sub(bytes.len()).ok_or_else(|| {
+                    io::Error::other("original scheduler snapshot credit exhausted")
+                })?;
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        fn count<T: serde::Serialize>(credit: &mut Credit, value: &T) -> Result<(), RuntimeError> {
+            serde_json::to_writer(credit, value).map_err(|_| RuntimeError::ResourceLimit)
+        }
+        if self.restored_epochs.is_some() {
+            // Original epoch scopes need their own complete source-selected codec.
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        let rows = self
+            .owners
+            .len()
+            .checked_add(self.bounds.len())
+            .and_then(|n| n.checked_add(self.pending.len()))
+            .and_then(|n| n.checked_add(self.operations.len()))
+            .and_then(|n| n.checked_add(self.input_batches.len()))
+            .and_then(|n| n.checked_add(self.used_operations.len()))
+            .and_then(|n| n.checked_add(self.used_input_batches.len()))
+            .and_then(|n| n.checked_add(self.native_sequences.len()))
+            .and_then(|n| n.checked_add(self.external_closed_prefixes.len()))
+            .and_then(|n| n.checked_add(self.payloads.len()))
+            .and_then(|n| n.checked_add(1))
+            .ok_or(RuntimeError::ResourceLimit)?;
+        let metadata = rows.checked_mul(1024).ok_or(RuntimeError::ResourceLimit)?;
+        // Double the complete borrowed encoding to cover snapshot field names,
+        // duplicate scalar rows and collection allocation without optimistic reuse.
+        let mut credit = Credit(
+            maximum_bytes
+                .checked_sub(metadata)
+                .ok_or(RuntimeError::ResourceLimit)?
+                / 2,
+        );
+        count(
+            &mut credit,
+            &(
+                &self.activation.record().world_binding_hash,
+                &self.activation.record().activation_id,
+                self.activation.record().generation,
+                self.activation.record().boundary,
+                &self.used_operations,
+                &self.used_input_batches,
+                &self.closed_prefixes,
+                &self.sequences,
+                self.maximum_microsteps,
+            ),
+        )?;
+        for owner in &self.activation.record().owners {
+            count(
+                &mut credit,
+                &(&owner.owner, &owner.incarnation, owner.generation),
+            )?;
+        }
+        for (owner, schedule) in &self.owners {
+            count(&mut credit, &(owner, schedule.cursor, &schedule.policy))?;
+        }
+        for (node, bound) in &self.bounds {
+            match bound {
+                OutputBound::Unknown => count(&mut credit, &(node, "unknown"))?,
+                OutputBound::At(position) => count(&mut credit, &(node, position))?,
+                OutputBound::AfterInstant(time) => count(&mut credit, &(node, time))?,
+            }
+        }
+        for delivery in self.pending.values() {
+            count(&mut credit, delivery)?;
+        }
+        for (operation, reservation) in &self.operations {
+            count(
+                &mut credit,
+                &(
+                    operation,
+                    &reservation.node,
+                    &reservation.owner,
+                    &reservation.request,
+                    &reservation.input_batch,
+                ),
+            )?;
+        }
+        for (owner, state) in &self.input_batches {
+            let batch = &state.batch;
+            count(
+                &mut credit,
+                &(
+                    owner,
+                    batch.node(),
+                    batch.stage_operation(),
+                    batch.batch(),
+                    batch.owners(),
+                    batch.cutoff(),
+                    batch.inventory(),
+                    batch.deliveries(),
+                    batch.payloads(),
+                    &state.acknowledgement,
+                    state.consumer_committed,
+                    &state.activated_by,
+                    &state.consumed,
+                ),
+            )?;
+        }
+        for row in &self.native_sequences {
+            count(&mut credit, &row)?;
+        }
+        for row in &self.external_closed_prefixes {
+            count(&mut credit, &row)?;
+        }
+        for row in &self.payloads {
+            count(&mut credit, &row)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn snapshot(
         &self,
         capture_cut: Position,

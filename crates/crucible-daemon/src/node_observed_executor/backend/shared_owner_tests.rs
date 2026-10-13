@@ -186,6 +186,8 @@ fn backpressured_first_alias_does_not_starve_its_runnable_consumer_sibling() {
         vec![id("fill-credit")]
     );
 
+    drop(scheduler);
+
     assert!(harness.backend.begin_round().unwrap());
     let tokens = harness
         .backend
@@ -222,6 +224,8 @@ fn backpressured_first_alias_does_not_starve_its_runnable_consumer_sibling() {
         harness.journals[1].borrow().acknowledgements,
         vec![id("observe/0/z")]
     );
+    drop(scheduler);
+
     assert!(!harness.backend.begin_round().unwrap());
     harness.clean();
 }

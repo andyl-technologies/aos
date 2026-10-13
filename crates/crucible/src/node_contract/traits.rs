@@ -41,6 +41,14 @@ pub struct RetainedRetirementHistory {
 /// descriptions do not provide alternate mutation paths. Implementations need
 /// not be `Send` or `Sync`; a worker requires explicit custody transfer.
 pub trait SimulationNode {
+    /// Borrows an opaque original host scheduling node witness when selected.
+    ///
+    /// Ordinary providers return None. Source metadata cannot create this token;
+    /// the runtime verifies its actual private factory anchor before attachment.
+    fn original_host_scheduling_owner(&self) -> Option<super::HostSchedulingNodeWitness<'_>> {
+        None
+    }
+
     /// Borrows the retained original collection-only scope when explicitly installed.
     ///
     /// Ordinary nodes return None. A collection node cannot enter an ordinary

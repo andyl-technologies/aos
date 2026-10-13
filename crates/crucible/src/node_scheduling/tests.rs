@@ -1474,3 +1474,214 @@ fn captured_input_commit_state_survives_restore_without_upgrading_an_ack() {
     legacy.input_batches[0].custody_edition = None;
     assert!(super::snapshot_impl::validate_structure(&legacy).is_err());
 }
+
+// These controls execute the original core scheduler. Native ACK/Commit peers
+// are explicitly modeled; they do not qualify a real packet process or Ready.
+fn exact_position_ack(
+    scheduler: &mut CausalScheduler,
+    cutoff: Position,
+) -> crate::node_scheduling::InputCustodyCommit {
+    let batch = scheduler
+        .prepare_input_batch(
+            &id("A"),
+            id("stage/full-position"),
+            id("batch/full-position"),
+            cutoff,
+        )
+        .unwrap();
+    let ack = crate::node_scheduling::NativeInputAcknowledgement {
+        stage_operation: batch.stage_operation.clone(),
+        batch: batch.batch.clone(),
+        node: batch.node.clone(),
+        owners: batch.owners.clone(),
+        cutoff: batch.cutoff,
+        inventory: batch.inventory.clone(),
+        proof_ref: reference(),
+    };
+    scheduler
+        .accept_input_acknowledgement(crate::node_scheduling::ValidatedInputAcknowledgement::new(
+            scheduler.activation.clone(),
+            ack,
+        ))
+        .unwrap()
+}
+
+#[test]
+fn full_position_exact_refuses_unknown_and_slower_producers_with_empty_queues() {
+    let mut scheduler = fixture(exact(ExactCeiling::StrictPredecessor), 1, Some(1));
+    let limit = position(6, 0, Phase::Reaction);
+    assert!(scheduler.pending.is_empty());
+    assert!(
+        scheduler
+            .admit_exact_position(&id("A"), id("unknown/full-cut"), limit)
+            .is_err()
+    );
+    assert!(
+        scheduler
+            .prepare_input_batch(&id("A"), id("unknown/stage"), id("unknown/batch"), limit)
+            .is_err()
+    );
+    observe(
+        &mut scheduler,
+        OutputBound::At(position(4, 0, Phase::Publication)),
+    );
+    assert!(
+        scheduler
+            .admit_exact_position(&id("A"), id("slow/full-cut"), limit)
+            .is_err()
+    );
+    assert!(scheduler.operations.is_empty());
+    assert!(scheduler.used_operations.is_empty());
+}
+
+#[test]
+fn full_position_exact_preserves_positive_delay_cut_and_requires_source_commit() {
+    let mut scheduler = fixture(exact(ExactCeiling::StrictPredecessor), 1, Some(1));
+    observe(
+        &mut scheduler,
+        OutputBound::At(position(5, 1, Phase::Publication)),
+    );
+    let limit = position(6, 0, Phase::Delivery);
+    let commit = exact_position_ack(&mut scheduler, limit);
+    assert!(
+        scheduler
+            .admit_exact_position(&id("A"), id("before-source-commit"), limit)
+            .is_err()
+    );
+    scheduler.commit_input_custody(&commit).unwrap();
+    let grant = scheduler
+        .admit_exact_position(&id("A"), id("original-full-cut"), limit)
+        .unwrap();
+    assert_eq!(grant.limit(), limit);
+    assert_eq!(grant.input_batch(), Some(&id("batch/full-position")));
+    assert!(
+        matches!(grant.request(), OperationRequest::ExactRun { limit: actual, .. } if actual == limit)
+    );
+    assert!(
+        scheduler
+            .admit_exact_position(&id("A"), id("competing-full-cut"), limit)
+            .is_err()
+    );
+}
+
+#[test]
+fn full_position_exact_zero_delay_requires_commit_for_same_tick_settlement() {
+    let mut scheduler = fixture(exact(ExactCeiling::StrictPredecessor), 1, Some(0));
+    scheduler.owners.get_mut(&id("owner/A")).unwrap().cursor = position(6, 1, Phase::Delivery);
+    observe(&mut scheduler, OutputBound::AfterInstant(6.into()));
+    let limit = position(6, 1, Phase::Reaction);
+    assert!(
+        scheduler
+            .admit_exact_position(&id("A"), id("missing-empty-commit"), limit)
+            .is_err()
+    );
+    let commit = exact_position_ack(&mut scheduler, limit);
+    assert!(
+        scheduler
+            .admit_exact_position(&id("A"), id("ack-only-settle"), limit)
+            .is_err()
+    );
+    scheduler.commit_input_custody(&commit).unwrap();
+    let grant = scheduler
+        .admit_exact_position(&id("A"), id("source-committed-settle"), limit)
+        .unwrap();
+    assert!(
+        matches!(grant.request(), OperationRequest::BoundarySettle { start, limit: actual }
+        if start == position(6, 1, Phase::Delivery) && actual == limit)
+    );
+}
+
+#[test]
+fn full_position_exact_nonempty_original_cut_keeps_delivery_pending_until_receipt() {
+    let (mut scheduler, endpoint) = routed_fixture();
+    let observation = publication_observation(&scheduler, &endpoint, b"original bytes");
+    publish_original(&mut scheduler, observation);
+    let delivery = scheduler.pending.values().next().unwrap().clone();
+    let cutoff = position(100, 0, Phase::Reaction);
+    let commit = exact_position_ack(&mut scheduler, cutoff);
+    assert_eq!(
+        scheduler.input_batches[&id("owner/A")].batch.deliveries(),
+        std::slice::from_ref(&delivery)
+    );
+    assert!(
+        scheduler
+            .admit_exact_position(&id("A"), id("nonempty-ack-only"), cutoff)
+            .is_err()
+    );
+    scheduler.commit_input_custody(&commit).unwrap();
+    let grant = scheduler
+        .admit_exact_position(&id("A"), id("nonempty-original"), cutoff)
+        .unwrap();
+    assert_eq!(grant.limit(), cutoff);
+    assert_eq!(scheduler.pending.len(), 1);
+    assert_eq!(
+        scheduler.payloads.values().next().unwrap(),
+        b"original bytes"
+    );
+    assert!(
+        scheduler
+            .admit_exact_position(&id("A"), id("duplicate-delivery"), cutoff)
+            .is_err()
+    );
+}
+
+#[test]
+fn original_input_batch_guard_rejects_equal_world_with_foreign_runtime_authority() {
+    let mut original = fixture(exact(ExactCeiling::StrictPredecessor), 1, None);
+    let mut foreign = fixture(exact(ExactCeiling::StrictPredecessor), 1, None);
+    let original_batch = original
+        .prepare_input_batch(
+            &id("A"),
+            id("stage/retained-origin"),
+            id("batch/retained-origin"),
+            position(10, 0, Phase::Reaction),
+        )
+        .unwrap();
+    let foreign_batch = foreign
+        .prepare_input_batch(
+            &id("A"),
+            id("stage/retained-origin"),
+            id("batch/retained-origin"),
+            position(10, 0, Phase::Reaction),
+        )
+        .unwrap();
+    assert_eq!(
+        original_batch.activation().record(),
+        foreign_batch.activation().record()
+    );
+    assert!(
+        original
+            .authenticate_original_input_batch(&original_batch)
+            .is_ok()
+    );
+    assert!(matches!(
+        original.authenticate_original_input_batch(&foreign_batch),
+        Err(SchedulingError::ForeignActivation)
+    ));
+    let mut changed = original_batch.retained_copy();
+    changed.cutoff = position(10, 1, Phase::Reaction);
+    assert!(
+        original
+            .authenticate_original_input_batch(&changed)
+            .is_err()
+    );
+    assert!(
+        original
+            .authenticate_original_input_batch(&original_batch)
+            .is_ok()
+    );
+    assert!(original.operations.is_empty());
+}
+
+#[test]
+fn original_scheduler_snapshot_precharges_actual_payload_before_copying() {
+    let (mut scheduler, endpoint) = routed_fixture();
+    let observation = publication_observation(&scheduler, &endpoint, b"hello");
+    publish_original(&mut scheduler, observation);
+    let before = scheduler.pending.len();
+    assert!(scheduler.snapshot_preflight(1).is_err());
+    assert!(scheduler.snapshot_preflight(1024).is_err());
+    assert!(scheduler.snapshot_preflight(1024 * 1024).is_ok());
+    assert_eq!(scheduler.pending.len(), before);
+    assert_eq!(scheduler.payloads.values().next().unwrap().len(), 5);
+}

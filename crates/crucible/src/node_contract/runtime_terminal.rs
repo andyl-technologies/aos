@@ -154,6 +154,7 @@ impl NodeRuntime {
         self.scheduler
             .as_ref()
             .ok_or(RuntimeError::NotActivated)?
+            .retained()?
             .snapshot(cut, ordinal)
             .map_err(|error| RuntimeError::SchedulerRefused(error.to_string()))
     }

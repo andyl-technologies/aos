@@ -92,7 +92,11 @@ impl NodeRuntime {
         let (route, token, provenance, lineage) = match checked {
             Ok(checked) => checked,
             Err(error) => {
-                if let Some(scheduler) = &mut self.scheduler {
+                if let Some(state) = &self.scheduler
+                    && let Some(mut scheduler) = state
+                        .borrow_if_initialized()
+                        .map_err(RuntimePollFailure::Admission)?
+                {
                     scheduler
                         .reconcile_input_no_effect(&batch)
                         .map_err(|failure| {
@@ -184,8 +188,11 @@ impl NodeRuntime {
                 }
                 if failure.effects == EffectKnowledge::None {
                     self.release_reservation(&token);
-                    if let (Some(scheduler), Some(retained)) =
-                        (&mut self.scheduler, self.input_batches.get(&operation))
+                    if let (Some(state), Some(retained)) =
+                        (&self.scheduler, self.input_batches.get(&operation))
+                        && let Some(mut scheduler) = state
+                            .borrow_if_initialized()
+                            .map_err(RuntimePollFailure::Admission)?
                     {
                         scheduler
                             .reconcile_input_no_effect(&retained.batch)
@@ -304,6 +311,8 @@ impl NodeRuntime {
             .as_mut()
             .ok_or(RuntimePollFailure::Admission(RuntimeError::NotActivated))?;
         let commit = scheduler
+            .borrow_mut()
+            .map_err(RuntimePollFailure::Admission)?
             .accept_input_acknowledgement(acknowledgement)
             .map_err(|error| {
                 RuntimePollFailure::Admission(RuntimeError::SchedulerRefused(error.to_string()))
@@ -391,7 +400,11 @@ impl NodeRuntime {
 
         // Grant issuance itself remains closed until the original native
         // consumer's commit has succeeded, independently of dispatch checks.
-        if let Some(scheduler) = &mut self.scheduler {
+        if let Some(state) = &self.scheduler
+            && let Some(mut scheduler) = state
+                .borrow_if_initialized()
+                .map_err(RuntimePollFailure::Admission)?
+        {
             scheduler.commit_input_custody(commit).map_err(|error| {
                 RuntimePollFailure::Admission(RuntimeError::SchedulerRefused(error.to_string()))
             })?;

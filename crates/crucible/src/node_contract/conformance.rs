@@ -15,6 +15,9 @@ use crucible_node_contract::{Direction, Id, OperatingMode, U64};
 #[path = "conformance/quantized.rs"]
 mod quantized;
 
+#[path = "conformance/exact_inputs.rs"]
+mod exact_inputs;
+
 use super::*;
 use crate::node_admission::{ConformanceGraph, ConformancePlanEvidence, EvidenceError};
 
@@ -24,6 +27,7 @@ pub struct ConformanceRuntimeFailure {
     pub reason: String,
     _retained: Option<Box<PreparedRealization>>,
     _preparation: Option<Box<RuntimePreparationFailure>>,
+    _runtime: Option<Box<NodeRuntime>>,
 }
 
 impl ConformanceRuntimeFailure {
@@ -38,6 +42,9 @@ impl ConformanceRuntimeFailure {
         if let Some(original) = self._preparation.as_mut() {
             original.retire_original()?;
         }
+        if let Some(original) = self._runtime.as_mut() {
+            original.retire_collecting_original()?;
+        }
         Ok(())
     }
 
@@ -46,6 +53,7 @@ impl ConformanceRuntimeFailure {
             reason: reason.into(),
             _retained: Some(Box::new(retained)),
             _preparation: None,
+            _runtime: None,
         }
     }
 }
@@ -80,9 +88,39 @@ pub struct ConformanceRuntime {
     runtime: NodeRuntime,
     activation: Option<WorldActivation>,
     quantized: bool,
+    exact_inputs: Option<Rc<super::HostSchedulingSource>>,
 }
 
 impl ConformanceRuntime {
+    /// Attaches the actual host queue owner before collecting original readiness.
+    ///
+    /// The source-created node must already belong to this same complete graph;
+    /// the retained attachment is the original runtime's actual lazy scheduler.
+    ///
+    /// # Errors
+    /// Refuses foreign source/node/world, repeated attachment, initialized or
+    /// activated runtime, revoked original custody or reentrant storage access.
+    pub fn attach_host_scheduling_owner(
+        &mut self,
+        source: &Rc<super::HostSchedulingSource>,
+    ) -> Result<(), RuntimeError> {
+        self.current()?;
+        self.runtime.attach_host_scheduling_owner(source)?;
+        self.current()
+    }
+
+    /// Borrows actual common-runtime scheduling facts under the original host owner.
+    ///
+    /// # Errors
+    /// Refuses stale plan/native custody or a foreign original host attachment.
+    pub fn host_scheduling_observation<'a>(
+        &'a mut self,
+        source: &'a super::HostSchedulingSource,
+    ) -> Result<super::HostSchedulingObservation<'a>, RuntimeError> {
+        self.current()?;
+        super::HostSchedulingObservation::new(&self.runtime, source)
+    }
+
     /// Borrows the same opaque original collecting plan retained by this runtime.
     ///
     /// This view grants no execution or current-scope permission. Callers still
@@ -200,12 +238,14 @@ impl ConformanceRuntime {
             reason: failure.error.to_string(),
             _retained: None,
             _preparation: Some(failure),
+            _runtime: None,
         })?;
         Ok(Self {
             graph,
             runtime,
             activation: None,
             quantized,
+            exact_inputs: None,
         })
     }
 

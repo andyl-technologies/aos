@@ -163,6 +163,27 @@ pub trait ConformanceAdmissionAuthority: AdmissionEvidence {
         ))
     }
 
+    /// Authenticates exact input collection under the same original common scheduler owner.
+    ///
+    /// The installed source authority must bind the actual host source, complete
+    /// world and original native peers. Portable declarations are insufficient.
+    /// Preparation authentication must allow the initial unattached host slot;
+    /// operation and input callbacks additionally require its actual live attachment.
+    ///
+    /// # Errors
+    /// Defaults to refusal; rejects foreign original host/source custody,
+    /// unsupported exact input roles or unavailable original native staging.
+    fn authenticate_collection_exact_inputs(
+        &self,
+        _plan: ConformancePlanEvidence<'_>,
+        _request: AdmissionRequest<'_>,
+        _source: &crate::node_contract::HostSchedulingSource,
+    ) -> Result<(), EvidenceError> {
+        Err(failure(
+            "installed exact input collection lifecycle is unavailable",
+        ))
+    }
+
     /// Authenticates the scheduler's complete original batch before native Stage.
     ///
     /// # Errors
@@ -400,6 +421,41 @@ impl ConformanceGraph {
             .0
             .authority
             .authenticate_collection_inputs(self.plan.evidence(), batch)?;
+        self.authenticate_current_scope()
+    }
+
+    pub(crate) fn authenticate_exact_input_scope(
+        &self,
+        source: &crate::node_contract::HostSchedulingSource,
+    ) -> Result<(), EvidenceError> {
+        self.reauthenticate()?;
+        source
+            .authenticate_preparation_source(&self.plan.0.world)
+            .map_err(|error| failure(error.reason))?;
+        self.plan.0.authority.authenticate_collection_exact_inputs(
+            self.plan.evidence(),
+            self.request(),
+            source,
+        )?;
+        self.authenticate_current_scope()
+    }
+
+    pub(crate) fn authenticate_exact_inputs(
+        &self,
+        batch: &crate::node_scheduling::RuntimeInputBatch,
+        source: &crate::node_contract::HostSchedulingSource,
+    ) -> Result<(), EvidenceError> {
+        self.authenticate_exact_input_scope(source)?;
+        source
+            .authenticate_input_batch(batch)
+            .map_err(|error| failure(error.reason))?;
+        self.plan
+            .0
+            .authority
+            .authenticate_collection_inputs(self.plan.evidence(), batch)?;
+        source
+            .authenticate_input_batch(batch)
+            .map_err(|error| failure(error.reason))?;
         self.authenticate_current_scope()
     }
 

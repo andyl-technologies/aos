@@ -18,13 +18,14 @@ fn independent_round() -> (NodeRuntime, DispatchRound, Vec<Rc<RefCell<NativeStat
     )
     .unwrap_or_else(|failure| panic!("test runtime rejected: {:?}", failure.error));
     let activation = activate(&mut runtime);
-    let scheduler = runtime.scheduler(&graph, &activation).unwrap();
+    let mut scheduler = runtime.scheduler(&graph, &activation).unwrap();
     let a = scheduler
         .admit_exact(&id("a"), id("run/a"), U64::new(100))
         .unwrap();
     let z = scheduler
         .admit_exact(&id("z"), id("run/z"), U64::new(100))
         .unwrap();
+    drop(scheduler);
     let round = DispatchRound::start(&mut runtime, vec![z, a], 2).unwrap();
     (runtime, round, states)
 }
@@ -131,7 +132,7 @@ fn uncertain_second_submission_retains_the_first_and_never_retries() {
     )
     .unwrap_or_else(|failure| panic!("test runtime rejected: {:?}", failure.error));
     let activation = activate(&mut runtime);
-    let scheduler = runtime.scheduler(&graph, &activation).unwrap();
+    let mut scheduler = runtime.scheduler(&graph, &activation).unwrap();
     let a = scheduler
         .admit_exact(&id("a"), id("run/a"), U64::new(100))
         .unwrap();
@@ -139,6 +140,7 @@ fn uncertain_second_submission_retains_the_first_and_never_retries() {
         .admit_exact(&id("z"), id("run/z"), U64::new(100))
         .unwrap();
 
+    drop(scheduler);
     let failure = DispatchRound::start(&mut runtime, vec![z, a], 2)
         .err()
         .unwrap();
@@ -174,7 +176,7 @@ fn later_invalid_causal_receipt_prevents_the_entire_round_publication() {
     ));
     assert_eq!(states[0].borrow().ack_calls, 0);
     assert_eq!(states[1].borrow().ack_calls, 0);
-    let scheduler = runtime.scheduler.as_ref().unwrap();
+    let scheduler = runtime.scheduler.as_ref().unwrap().retained().unwrap();
     assert_eq!(
         scheduler.position(&id("a")).unwrap(),
         Position::new(0.into(), 0.into(), Phase::BoundaryControl)

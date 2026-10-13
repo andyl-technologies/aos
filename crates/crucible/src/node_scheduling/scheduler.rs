@@ -619,6 +619,86 @@ impl CausalScheduler {
         }))
     }
 
+    // Only the separately authenticated exact-input collection owner invokes
+    // this route. Ordinary exact horizons retain their strict physical ceiling.
+    pub(crate) fn admit_exact_position(
+        &mut self,
+        node: &Id,
+        operation: Id,
+        limit: Position,
+    ) -> Result<ExecutionAdmission, SchedulingError> {
+        crucible_node_contract::Validate::validate(&limit)?;
+        let owner = self.owner_id(node)?.clone();
+        let schedule = self.schedule(node)?;
+        if !matches!(schedule.policy, ExecutionPolicy::Exact { .. }) {
+            return Err(SchedulingError::UnsupportedMode);
+        }
+        if limit.time_ps == schedule.cursor.time_ps {
+            if !schedule.inputs.is_empty() || self.input_batches.contains_key(&owner) {
+                let staged = self.staged_batch(&owner)?;
+                if staged.batch.node != *node || staged.batch.cutoff < limit {
+                    return Err(SchedulingError::MissingObservation);
+                }
+            }
+            return self.admit_boundary_settlement(node, operation, limit);
+        }
+        if limit <= schedule.cursor
+            || !schedule.grid.contains(limit.time_ps)
+            || limit.microstep >= self.maximum_microsteps
+                && !(self.maximum_microsteps.get() == 0 && limit.microstep.get() == 0)
+        {
+            return Err(SchedulingError::NoSafeProgress);
+        }
+        for path in &schedule.inputs {
+            if self
+                .earliest_delivery(path)?
+                .is_some_and(|arrival| arrival < limit)
+            {
+                return Err(SchedulingError::InputBlocked(path.producer.clone()));
+            }
+        }
+        if self.pending.values().any(|delivery| {
+            self.node_owners.get(&delivery.consumer) == Some(&owner)
+                && delivery.delivery < limit
+                && !self.input_captured(&owner, delivery)
+        }) {
+            return Err(SchedulingError::MissingObservation);
+        }
+        let input_batch = match self.input_batches.get(&owner) {
+            Some(_) => {
+                let staged = self.staged_batch(&owner)?;
+                if staged.batch.node != *node || staged.batch.cutoff < limit {
+                    return Err(SchedulingError::MissingObservation);
+                }
+                Some(staged.batch.batch.clone())
+            }
+            None if !schedule.inputs.is_empty() => return Err(SchedulingError::MissingObservation),
+            None => None,
+        };
+        let start = schedule.cursor;
+        let boundary_policy = ExactBoundaryPolicy::HorizonPark;
+        let request = OperationRequest::ExactRun {
+            start,
+            limit,
+            boundary_policy,
+        };
+        self.reserve(node, operation.clone(), request)?;
+        if let Some(batch) = &input_batch {
+            self.activate_input_batch(&owner, &operation, batch)?;
+        }
+        Ok(ExecutionAdmission::Exact(ExactGrant {
+            activation: self.activation.clone(),
+            node: node.clone(),
+            operation,
+            input_batch,
+            permission: ExactPermission::Run {
+                start,
+                limit,
+                boundary_policy,
+            },
+        }))
+    }
+
     /// Admits one quantized window after every equal-boundary input is closed.
     ///
     /// The input batch is fixed before activation. An unresolved producer at the

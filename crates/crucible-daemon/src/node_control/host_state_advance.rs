@@ -137,6 +137,8 @@ fn plan_round(
         ) {
             return Err(refused("state capture requires qualified exact execution"));
         }
+        drop(scheduler);
+
         let names = operation_names(execution, node, horizon, round)?;
         if let Some(grant) = plan_exact_operation(
             runtime,

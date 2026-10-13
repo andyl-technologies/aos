@@ -205,6 +205,33 @@ impl CausalScheduler {
         Ok(())
     }
 
+    pub(crate) fn authenticate_original_input_batch(
+        &self,
+        batch: &RuntimeInputBatch,
+    ) -> Result<(), SchedulingError> {
+        if !self.activation.same_authority(batch.activation()) {
+            return Err(SchedulingError::ForeignActivation);
+        }
+        let owner = self.owner_id(batch.node())?;
+        let retained = &self
+            .input_batches
+            .get(owner)
+            .ok_or(SchedulingError::MissingObservation)?
+            .batch;
+        if retained.node() != batch.node()
+            || retained.stage_operation() != batch.stage_operation()
+            || retained.batch() != batch.batch()
+            || retained.owners() != batch.owners()
+            || retained.cutoff() != batch.cutoff()
+            || retained.inventory() != batch.inventory()
+            || retained.deliveries() != batch.deliveries()
+            || retained.payloads() != batch.payloads()
+        {
+            return Err(SchedulingError::InvalidReceipt);
+        }
+        Ok(())
+    }
+
     /// Abandons an original immutable cut that was never handed to native staging.
     ///
     /// # Errors

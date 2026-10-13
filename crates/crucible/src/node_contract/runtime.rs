@@ -1,6 +1,7 @@
 //! Exclusive owner routing, retained operation custody and receipt validation.
 
 use std::{
+    cell::RefMut,
     collections::BTreeMap,
     rc::Rc,
     task::{Context, Poll},
@@ -21,6 +22,12 @@ use super::{
 mod conformance_dispatch;
 
 use conformance_dispatch::final_collection_scope;
+
+#[path = "runtime/scheduling_state.rs"]
+pub(super) mod scheduling_state;
+
+pub use scheduling_state::OriginalSchedulingSource;
+use scheduling_state::OriginalSchedulingState;
 
 struct OwnerCustody {
     identity: OwnerIdentity,
@@ -126,7 +133,7 @@ pub struct NodeRuntime {
     barrier: ActivationBarrier,
     activated: bool,
     limits: RuntimeLimits,
-    scheduler: Option<crate::node_scheduling::CausalScheduler>,
+    scheduler: Option<OriginalSchedulingState>,
     custody_slot: Option<Box<dyn RuntimeCustodySlot>>,
     terminal: Option<super::terminal::TerminalState>,
     condition_stop: Option<super::condition_debug::ConditionStopState>,
@@ -138,6 +145,48 @@ pub struct NodeRuntime {
 }
 
 impl NodeRuntime {
+    pub(crate) fn attach_host_scheduling_owner(
+        &mut self,
+        source: &Rc<super::HostSchedulingSource>,
+    ) -> Result<(), RuntimeError> {
+        let state = self.scheduling_origin()?;
+        source
+            .authenticate_preparation_source(&self.barrier.record().world_binding_hash)
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        if self.collecting.is_none()
+            || self.activated
+            || !self.barrier.can_arm()
+            || state.initialized()?
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let selected = source.selection();
+        let node = self
+            .nodes
+            .get(&selected.descriptor.id)
+            .ok_or(RuntimeError::UnknownNode)?;
+        let snapshot = self
+            .snapshots
+            .get(&selected.descriptor.id)
+            .ok_or(RuntimeError::UnknownNode)?;
+        let witness = node
+            .original_host_scheduling_owner()
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        if snapshot.descriptor != selected.descriptor
+            || snapshot.binding != selected.binding
+            || !witness.matches(source)?
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        source.begin_attachment()?;
+
+        let original = state.source();
+        if !original.same_original(state) {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        source.attach(original)
+    }
+
     pub(super) fn collection_admission(
         &self,
         token: &OperationToken,
@@ -187,6 +236,9 @@ impl NodeRuntime {
         custody_slot: Box<dyn RuntimeCustodySlot>,
         collecting: Option<Rc<crate::node_admission::ConformanceGraph>>,
     ) -> Result<Self, Box<RuntimePreparationFailure>> {
+        let authority = Rc::new(());
+        let scheduling_state =
+            OriginalSchedulingState::new(&authority, activation.world_binding_hash.clone());
         if graph.collecting != collecting.is_some()
             || collecting
                 .as_ref()
@@ -286,7 +338,7 @@ impl NodeRuntime {
             .collect();
 
         Ok(Self {
-            authority: Rc::new(()),
+            authority,
             nodes,
             snapshots,
             owners,
@@ -295,7 +347,7 @@ impl NodeRuntime {
             barrier,
             activated: false,
             limits,
-            scheduler: None,
+            scheduler: Some(scheduling_state),
             custody_slot: Some(custody_slot),
             terminal: None,
             condition_stop: None,
@@ -314,6 +366,7 @@ impl NodeRuntime {
     /// Returns a native staging failure or invalid attestation. No execution
     /// permission is issued, and all handles remain under runtime custody.
     pub fn arm_all(&mut self) -> Result<(), RuntimeError> {
+        self.scheduling_origin()?;
         if self.activated
             || !self.barrier.can_arm()
             || self
@@ -471,7 +524,7 @@ impl NodeRuntime {
         &mut self,
         graph: &crate::node_admission::AdmittedGraph,
         activation: &WorldActivation,
-    ) -> Result<&mut crate::node_scheduling::CausalScheduler, RuntimeError> {
+    ) -> Result<RefMut<'_, crate::node_scheduling::CausalScheduler>, RuntimeError> {
         self.validate_activation(activation)?;
         if self.terminal.is_some() || self.condition_fenced() {
             return Err(RuntimeError::OutstandingObligations);
@@ -479,13 +532,13 @@ impl NodeRuntime {
         if graph.world_binding_hash() != &activation.record.world_binding_hash {
             return Err(RuntimeError::ForeignAuthority);
         }
-        if self.scheduler.is_none() {
+        let state = self.scheduling_origin()?;
+        if !state.initialized()? {
             let scheduler = crate::node_scheduling::CausalScheduler::new(graph, activation.clone())
                 .map_err(|error| RuntimeError::SchedulerRefused(error.to_string()))?;
-            self.scheduler = Some(scheduler);
+            state.install(scheduler)?;
         }
-
-        self.scheduler.as_mut().ok_or(RuntimeError::NotActivated)
+        state.borrow_mut()
     }
 
     pub(crate) fn install_restored_scheduler(
@@ -495,11 +548,16 @@ impl NodeRuntime {
     ) -> Result<(), RuntimeError> {
         self.validate_activation(activation)?;
         self.validate_activation(scheduler.activation())?;
-        if self.scheduler.is_some() {
-            return Err(RuntimeError::ForeignAuthority);
-        }
-        self.scheduler = Some(scheduler);
-        Ok(())
+        self.scheduling_origin()?.install(scheduler)
+    }
+
+    fn scheduling_origin(&self) -> Result<&OriginalSchedulingState, RuntimeError> {
+        let state = self
+            .scheduler
+            .as_ref()
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        state.authenticate(&self.authority, &self.barrier.record().world_binding_hash)?;
+        Ok(state)
     }
 
     /// Polls and validates original evidence before permitting publication.
@@ -844,6 +902,9 @@ impl NodeRuntime {
     /// The returned owner keeps original operations, effect evidence, native
     /// handles and scheduler custody while revoking ordinary execution access.
     pub fn into_quarantine(mut self) -> QuarantinedRuntime {
+        if let Some(state) = &self.scheduler {
+            state.revoke();
+        }
         for owner in self.owners.values_mut() {
             if owner.lifecycle != Lifecycle::Released {
                 owner.lifecycle = Lifecycle::Quarantined;
@@ -928,6 +989,26 @@ impl NodeRuntime {
         Ok(())
     }
 
+    pub(super) fn authenticate_host_scheduling_source(
+        &self,
+        source: &super::HostSchedulingSource,
+    ) -> Result<(), RuntimeError> {
+        let state = self.scheduling_origin()?;
+        source.authenticate_runtime(state)
+    }
+
+    pub(super) fn host_scheduler_preflight(&self, maximum_bytes: usize) -> Result<(), RuntimeError> {
+        self.scheduling_origin()?.retained()?.snapshot_preflight(maximum_bytes)
+    }
+
+    pub(super) fn host_scheduler_snapshot(
+        &self,
+        cut: crucible_node_contract::Position,
+        ordinal: crucible_node_contract::U64,
+    ) -> Result<crate::node_scheduling::SchedulingSnapshot, RuntimeError> {
+        self.scheduling_origin()?.snapshot(cut, ordinal)
+    }
+
     /// Reads the existing original scheduler without initializing or advancing it.
     ///
     /// This operational history retains unresolved queues and original cursors;
@@ -946,6 +1027,7 @@ impl NodeRuntime {
         self.scheduler
             .as_ref()
             .ok_or(RuntimeError::NotActivated)?
+            .retained()?
             .snapshot(cut, ordinal)
             .map_err(|error| RuntimeError::SchedulerRefused(error.to_string()))
     }
@@ -1100,6 +1182,10 @@ impl NodeRuntime {
         &self,
         activation: &WorldActivation,
     ) -> Result<(), RuntimeError> {
+        self.scheduler
+            .as_ref()
+            .ok_or(RuntimeError::ForeignAuthority)?
+            .authenticate_retained(&self.authority, &self.barrier.record().world_binding_hash)?;
         if !self.activated {
             return Err(RuntimeError::NotActivated);
         }
@@ -1143,6 +1229,7 @@ impl NodeRuntime {
     }
 
     fn checked_route(&mut self, node: &NodeId) -> Result<NodeRoute, RuntimeError> {
+        self.scheduling_origin()?;
         let handle = self.nodes.get(node).ok_or(RuntimeError::UnknownNode)?;
         let snapshot = self.snapshots.get(node).ok_or(RuntimeError::UnknownNode)?;
         let original = snapshot.route.clone();

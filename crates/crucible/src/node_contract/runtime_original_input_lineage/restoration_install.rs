@@ -24,7 +24,7 @@ impl NodeRuntime {
         scheduling: crate::node_scheduling::SchedulingSnapshot,
     ) -> Result<crate::node_scheduling::PreparedSchedulingRestore, RuntimeError> {
         context.validate_current(self)?;
-        if self.activated || self.scheduler.is_some() {
+        if self.activated || self.scheduling_origin()?.initialized()? {
             return Err(RuntimeError::ForeignAuthority);
         }
         crate::node_scheduling::PreparedSchedulingRestore::prepare_original_lineage(
@@ -51,7 +51,7 @@ impl NodeRuntime {
     ) -> Result<(), RuntimeError> {
         self.validate_activation(activation)?;
         context.validate_current(self)?;
-        if self.scheduler.is_some() {
+        if self.scheduling_origin()?.initialized()? {
             return Err(RuntimeError::ForeignAuthority);
         }
         scheduling

@@ -533,7 +533,7 @@ pub struct WholeRuntimeCustody {
     owners: BTreeMap<Id, OwnerCustody>,
     operations: BTreeMap<Id, RetainedOperation>,
     input_batches: BTreeMap<Id, inputs::RetainedInput>,
-    scheduler: Option<crate::node_scheduling::CausalScheduler>,
+    scheduler: Option<crate::node_contract::runtime::scheduling_state::OriginalSchedulingState>,
     terminal: Option<crate::node_contract::terminal::TerminalState>,
     condition_stop: Option<crate::node_contract::condition_debug::ConditionStopState>,
     prepared: Option<Box<dyn PreparedNativeResources>>,
@@ -702,6 +702,7 @@ impl WholeRuntimeCustody {
         self.scheduler
             .as_ref()
             .ok_or(RuntimeError::NotActivated)?
+            .retained()?
             .snapshot(cut, ordinal)
             .map_err(|error| RuntimeError::SchedulerRefused(error.to_string()))
     }
@@ -943,6 +944,9 @@ impl Drop for WholeRuntimeCustody {
 
 impl NodeRuntime {
     pub(super) fn transfer_whole_custody(&mut self) {
+        if let Some(state) = &self.scheduler {
+            state.revoke();
+        }
         let Some(slot) = self.custody_slot.take() else {
             return;
         };
