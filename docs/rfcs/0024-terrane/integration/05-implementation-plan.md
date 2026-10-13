@@ -248,8 +248,10 @@ passes in 16.119 seconds; the index-rebuild closure matrix passes in 177.884
 seconds under its original 900-second bound. The other twenty-three cases keep
 their original 120-second bounds. Every actual one-case summary reports one
 pass, with unchanged source, compiler inputs and original and archived binaries.
-The six growing populations, full SDK, owning Nix gates, application targets
-and complete current T1 floor remain pending; scoped success advances no task.
+The first renewed growing population, 1,024 ordinary entries, passes once in
+766.455 seconds under its original 1,800-second bound. The other five
+populations, full SDK, owning Nix gates, application targets and complete
+current T1 floor remain pending; scoped success advances no task.
 A separate reviewed private handoff correction carries each native reader's
 actual caller configuration; it is not established as this failure's cause.
 Growing populations, full SDK and owning Nix qualification remain pending.
