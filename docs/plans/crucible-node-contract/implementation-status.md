@@ -2685,6 +2685,9 @@ archive, licenses, recipe, patch and compiler inputs. Actual source-built Ninja
 pipe and console controls verify the executing shell through `/proc` despite a
 bogus `SHELL`, and preserve command exit status 33. The component build and the
 unchanged original probes pass; ordinary package realization remains separate.
+The first ordinary build exposed invalid tar option syntax during unpack. The
+corrected command extracts all 185 original files and verifies the original
+launcher; the failed build remains recorded without package success credit.
 
 A separate complete QEMU replay executes all 2,479 recorded build commands
 through pinned AOS Bash. Independent review verifies the command records,

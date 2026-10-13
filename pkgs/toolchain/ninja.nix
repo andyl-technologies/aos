@@ -112,7 +112,7 @@ in
       {
         name = "unpack";
         script = ''
-          tar --no-same-owner xf $src
+          tar --no-same-owner -xf "$src"
           cd ninja-${version}
         '';
       }
