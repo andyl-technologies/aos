@@ -408,6 +408,12 @@ with each domain owner; Lifecycle retains its schemas, accepted identities and
 private verifier factory. This ownership establishes neither a Source Cargo
 boundary nor the complete protected Source/Lifecycle closure.
 
+The unused Policy, Publisher and Cache Controller-result conversions are
+retired. Canonical applied transactions retain their exact postcommit and
+acknowledgement custody. Cache record selection and session-branded reducer
+inputs have one private owner; their sealed factories and currentness stay
+with the protected Cache owner. This is not a protected Cargo boundary.
+
 Private `cache_residency::recovery::logical_pin` owns complete Acquire/Renew/Release
 planning with one shared successor recipe. Complete retained-ledger and exact
 PinAcquire/PinDrain checks remain at their original gates; protected commit,
