@@ -674,24 +674,6 @@ pub fn collection(project: ProjectId, row: &[u8], after: bool) -> [u8; 128] {
     bytes
 }
 
-pub(crate) fn validate_collection(bytes: &[u8]) -> Result<(), LifecycleModelError> {
-    if bytes.len() != 128
-        || &bytes[..8] != b"AOSDCG01"
-        || bytes[8..10] != [0, 1]
-        || !matches!(bytes[10], 1..=6)
-        || !zero(&bytes[11..16])
-        || zero(&bytes[16..32])
-        || resource(&bytes[32..49]).is_err()
-        || !zero(&bytes[49..56])
-        || raw64(&bytes[56..64]) == 0
-        || raw64(&bytes[56..64]) == u64::MAX
-        || zero(&bytes[64..96])
-    {
-        return Err(corrupt());
-    }
-    checksum(bytes, COLLECTION_DOMAIN)
-}
-
 /// Borrows one existing canonical member without asserting complete membership.
 pub(crate) struct DeleteCollectionMemberV1<'bytes> {
     pub(crate) owner: u8,
