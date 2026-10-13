@@ -14,6 +14,9 @@
 use super::inactive_time::check_native_deadline_shift;
 use super::*;
 
+/// One directed World link staged to resume its joined receiver.
+type ResumedInboundLink = ((LinkId, NetworkLinkDirection), crucible_device::NetLink);
+
 impl SingleScheduler {
     /// Parks one VM at its committed campaign marker.
     ///
@@ -140,8 +143,7 @@ impl SingleScheduler {
         &self,
         joins: &[(usize, u64)],
         target: u64,
-    ) -> Result<Vec<((LinkId, NetworkLinkDirection), crucible_device::NetLink)>, SchedulerError>
-    {
+    ) -> Result<Vec<ResumedInboundLink>, SchedulerError> {
         let joined = joins
             .iter()
             .map(|(index, _delta)| &self.nodes[*index].id.node)
