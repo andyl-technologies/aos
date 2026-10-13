@@ -86,16 +86,16 @@ struct ClosedSchemas;
 impl BodySchemaVerifier for ClosedSchemas {
     fn verify(
         &self,
-        _: &ConnectionAuthority,
+        authority: &ConnectionAuthority,
         envelope: &Envelope,
-        _: &ReceivedBody,
+        body: &ReceivedBody,
     ) -> Result<(), ProviderError> {
-        if !envelope.extensions.is_empty()
-            || envelope
-                .body
-                .get("extensions")
-                .and_then(serde_json::Value::as_object)
-                .is_none_or(|extensions| !extensions.is_empty())
+        crucible_node_provider::input_commit::verify_envelope(authority, envelope, body)?;
+        if envelope
+            .body
+            .get("extensions")
+            .and_then(serde_json::Value::as_object)
+            .is_none_or(|extensions| !extensions.is_empty())
         {
             return Err(ProviderError::Frame(
                 "ordinary reference extension unsupported",
@@ -463,3 +463,7 @@ fn connect_original(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "ordinary_schema_tests.rs"]
+mod schema_tests;
